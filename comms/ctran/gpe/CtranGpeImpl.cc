@@ -37,7 +37,7 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
         {KernelConfig::KernelType::RECV, "Recv"},
         {KernelConfig::KernelType::SENDRECV, "SendRecv"},
         {KernelConfig::KernelType::ALLTOALL, "AllToAll"},
-        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPipes"},
+        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPrims"},
         {KernelConfig::KernelType::ALLTOALLV, "AllToAllv"},
 };
 
