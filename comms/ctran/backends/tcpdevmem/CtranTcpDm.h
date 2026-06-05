@@ -80,6 +80,9 @@ class CtranTcpDm {
     return commSuccess;
   }
 
+  void profilerStart();
+  void profilerEnd();
+
   // irecv operations can not proceed unless the peer has been connected.
   // When there is no peer, irecv operations are queued and progress()
   // has to be called to make progress on them.
@@ -99,6 +102,8 @@ class CtranTcpDm {
   // attaches ALGO_TOTAL start/end hooks. Kept private now that the
   // mapper no longer needs to drive registration post-construction.
   void registerProfilerHooks(ctran::Profiler* profiler);
+
+  ::comms::tcp_devmem::ProfilerContext profilerCtx_{};
 
   // The Transport singleton is fetched via CtranTcpDmSingleton::getTransport()
   // at each use site rather than held as a shared_ptr member. Holding it as a
