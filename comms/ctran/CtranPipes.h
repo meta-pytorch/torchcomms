@@ -7,7 +7,7 @@
 #include <cstdint>
 
 #if defined(ENABLE_PIPES)
-#include "comms/pipes/PipesTraceTypes.h"
+#include "comms/prims/PipesTraceTypes.h"
 #endif // defined(ENABLE_PIPES)
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -38,7 +38,7 @@ namespace ctran {
 
 commResult_t ctranPreparePipesTrace(
     CtranComm* comm,
-    comms::pipes::PipesTraceHandle& trace);
+    comms::prims::PipesTraceHandle& trace);
 
 } // namespace ctran
 #endif // defined(ENABLE_PIPES)

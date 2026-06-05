@@ -10,8 +10,8 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #if defined(ENABLE_PIPES)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/Transport.cuh"
+#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/Transport.cuh"
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -276,8 +276,8 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);
-    if (type != comms::pipes::TransportType::P2P_NVL &&
-        type != comms::pipes::TransportType::SELF) {
+    if (type != comms::prims::TransportType::P2P_NVL &&
+        type != comms::prims::TransportType::SELF) {
       return false;
     }
   }
