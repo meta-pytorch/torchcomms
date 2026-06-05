@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/rdma/NicDiscovery.h"
+#include "comms/prims/transport/rdma/NicDiscovery.h"
 
 #ifdef __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>

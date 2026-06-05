@@ -20,7 +20,7 @@ around code paths that have no AMD equivalent.
 
 ### The three shim headers
 
-All under `comms/prims/amd/`. Together they replace the legacy parallel
+All under `comms/prims/transport/amd/`. Together they replace the legacy parallel
 AMD-only sources (`MultipeerIbgdaTransportAmd.{h,cu}`, etc.).
 
 | Header | Layer | Purpose |
@@ -31,7 +31,7 @@ AMD-only sources (`MultipeerIbgdaTransportAmd.{h,cu}`, etc.).
 
 ### The AMD-native `pipes_gda` impl
 
-Under `comms/prims/amd/pipes_gda/`:
+Under `comms/prims/transport/amd/pipes_gda/`:
 
 - `PipesGdaDef.h` / `PipesGdaDev.h` / `PipesGdaOps.h` / `PipesGdaShared.h` /
   `PipesGdaUtils.h` — device-side `pipes_gda_*` API implementations
@@ -42,7 +42,7 @@ Under `comms/prims/amd/pipes_gda/`:
 
 ### NIC backend (mlx5)
 
-Under `comms/prims/amd/nic/`:
+Under `comms/prims/transport/amd/nic/`:
 
 - `Mlx5Hsi.h`, `Mlx5NicBackend.h`, `NicConfig.h`, `NicSelector.h` —
   hardware-specific WQE layouts and NIC-selection helpers used by the
@@ -112,7 +112,7 @@ is **retired** — use only `__HIP_PLATFORM_AMD__` going forward.
 
 ```cpp
 #include "comms/prims/MultipeerIbgdaTransport.h"
-#include "comms/prims/amd/HipHostCompat.h"  // unconditional — provides DeviceBuffer/CudaEvent on AMD
+#include "comms/prims/transport/amd/HipHostCompat.h"  // unconditional — provides DeviceBuffer/CudaEvent on AMD
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"  // NVIDIA-only — defines DeviceBuffer/CudaEvent here
 #endif

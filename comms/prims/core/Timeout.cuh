@@ -7,8 +7,8 @@
 
 // HipCompat provides `__trap` (mapped to `abort`) when this file is compiled
 // for the AMD device pass; on NVIDIA the include is a harmless no-op.
-#include "comms/prims/amd/HipHostCompat.h"
 #include "comms/prims/core/DeviceMacros.cuh"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 
 namespace comms::prims {
 

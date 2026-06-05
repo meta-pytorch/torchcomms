@@ -10,7 +10,7 @@
 // HSA + raw `mlx5dv_devx_*` + libibverbs directly.
 //
 // Call-site translation `doca_* -> pipes_gda::pipes_gda_*` lives in
-// `comms/prims/amd/DocaCompat.h` so cross-platform call sites stay
+// `comms/prims/transport/amd/DocaCompat.h` so cross-platform call sites stay
 // unchanged on the consumer side.
 //
 // Companion to the device-side `pipes_gda_*` APIs in `PipesGdaOps.h` and

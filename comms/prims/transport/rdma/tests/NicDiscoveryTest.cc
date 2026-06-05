@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
 
-#include "comms/prims/rdma/NicDiscovery.h"
+#include "comms/prims/transport/rdma/NicDiscovery.h"
 
 namespace comms::prims::tests {
 

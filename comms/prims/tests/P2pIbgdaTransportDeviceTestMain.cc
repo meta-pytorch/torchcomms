@@ -17,7 +17,7 @@
 // on NVIDIA — the existing CudaRAII / cuda_runtime path stays in use.
 #include "comms/prims/IbgdaBuffer.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"

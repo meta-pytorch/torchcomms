@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/rdma/IbHcaParser.h"
+#include "comms/prims/transport/rdma/IbHcaParser.h"
 
 #include <algorithm>
 #include <stdexcept>
