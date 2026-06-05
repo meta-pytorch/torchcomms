@@ -405,6 +405,42 @@ __device__ __noinline__ void phase3AllGather(
   }
 }
 
+// ============================================================================
+// Fused orchestrator
+//
+// Runs the shared NVL ReduceScatter (Phase 1), an algorithm-specific cross-node
+// IB phase (Phase 2), and the shared NVL AllGather (Phase 3) for one logical
+// data tile owned by `group`. `phase2` is any callable invoked as
+// `phase2(group)`; it must reduce each owner segment across nodes and leave the
+// globally reduced segment in `common.phase2Buf` (the Phase-2 contract). Passed
+// as a template parameter so the algorithm-specific phase inlines and the
+// kernel keeps a single `__launch_bounds__` register budget.
+//
+// Phase-transition `group.sync()`s and the degenerate-topology skips
+// (nLocalRanks <= 1 → no NVL phases; nNodes <= 1 → no IB phase) are identical
+// across algorithms and owned here. Correctness does not require inter-block
+// synchronization.
+// ============================================================================
+template <typename T, typename Phase2Fn>
+__device__ __forceinline__ void runAllReduceFused(
+    const common::CommonKernArgs& args,
+    comms::pipes::ThreadGroup& group,
+    Phase2Fn&& phase2) {
+  phase1ReduceScatter<T>(args, group);
+  if (args.nLocalRanks > 1) {
+    group.sync();
+  }
+  if (args.nNodes > 1) {
+    phase2(group);
+    if (args.nLocalRanks > 1) {
+      group.sync();
+    }
+  }
+  if (args.nLocalRanks > 1) {
+    phase3AllGather<T>(args, group);
+  }
+}
+
 } // namespace ctran::allreduce::nvl
 
 #endif // ENABLE_PIPES
