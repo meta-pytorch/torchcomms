@@ -184,6 +184,8 @@ class PyTorchCommBackend : public TorchCommBackend {
       const std::string& name,
       const CommOptions& options) override;
 
+  void setTimeout(std::chrono::milliseconds timeout) override;
+
  private:
   py::object py_self_;
   mutable std::string backend_name_;

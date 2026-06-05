@@ -194,6 +194,14 @@ class TorchCommFake : public TorchCommBackend {
     return abortEnabled_ && aborted_;
   }
 
+  void setTimeout(std::chrono::milliseconds timeout) override {
+    timeout_ = timeout;
+  }
+
+  std::optional<std::chrono::milliseconds> getTimeoutForTest() const {
+    return timeout_;
+  }
+
   // Memory registration — tracks registered addresses for test verification
   void tensor_register(const at::Tensor& tensor) override {
     registered_addrs_.insert(tensor.data_ptr());
@@ -216,6 +224,7 @@ class TorchCommFake : public TorchCommBackend {
   std::string name_;
   bool abortEnabled_{false};
   bool aborted_{false};
+  std::optional<std::chrono::milliseconds> timeout_;
   bool shouldFailReconfigure_{false};
   std::unordered_set<void*> registered_addrs_;
 };
