@@ -5,10 +5,10 @@
 // (P2pNvlTransportDevice or P2pIbgdaTransportDevice send/recv).
 // Compiled to LLVM bitcode with clang for linking with Triton kernels.
 //
-// Handle: void* device pointer to comms::pipes::MultiPeerDeviceHandle,
+// Handle: void* device pointer to comms::prims::MultiPeerDeviceHandle,
 // allocated by PipesDeviceBackend::create_device_transport().
 //
-// All operations use comms::pipes::make_block_group() internally —
+// All operations use comms::prims::make_block_group() internally —
 // all 128 Triton threads cooperate as one block group.
 // Send/recv are __noinline__ to prevent memcpy_vectorized alloca inlining.
 
