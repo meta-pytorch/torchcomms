@@ -648,6 +648,7 @@ class MultipeerIbgdaTransport {
     IbgdaLocalBuffer signal;
     IbgdaLocalBuffer counter;
     int64_t* stepState{nullptr};
+    detail::IbSendRecvProgressState* progressState{nullptr};
     IbgdaRemoteBuffer remoteRecvStaging;
     IbgdaRemoteBuffer remoteSignal;
   };
@@ -659,13 +660,14 @@ class MultipeerIbgdaTransport {
   std::unique_ptr<meta::comms::DeviceBuffer> signalBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> counterBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> stepStateBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> progressStateBulk_;
   IbgdaLocalBuffer recvStagingBulkReg_;
   IbgdaLocalBuffer signalBulkReg_;
   IbgdaLocalBuffer counterBulkReg_;
 
   // Lazy mode: per-peer contiguous allocation (staging + signal + counter +
-  // stepState + slot-index). Null for unmaterialized peers. Empty in eager
-  // mode.
+  // stepState + progressState + slot-index). Null for unmaterialized peers.
+  // Empty in eager mode.
   std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
 
   // Lazy mode: set to true after writeDeviceTransportSlot completes.

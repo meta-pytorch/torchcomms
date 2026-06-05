@@ -84,6 +84,7 @@ struct PeerBufferSizes {
   std::size_t srSignal{0};
   std::size_t srCounter{0};
   std::size_t srStepState{0};
+  std::size_t srProgressState{0};
   std::size_t slotSignal{0};
   std::size_t slotCounter{0};
   std::size_t slotDiscard{0};
@@ -94,13 +95,14 @@ struct PeerBufferSizes {
   void* srSignalPtr{nullptr};
   void* srCounterPtr{nullptr};
   void* srStepStatePtr{nullptr};
+  void* srProgressStatePtr{nullptr};
   void* slotSignalPtr{nullptr};
   void* slotCounterPtr{nullptr};
   void* slotDiscardPtr{nullptr};
 
   std::size_t total() const {
-    return staging * 2 + srSignal + srCounter + srStepState + slotSignal +
-        slotCounter + slotDiscard;
+    return staging * 2 + srSignal + srCounter + srStepState + srProgressState +
+        slotSignal + slotCounter + slotDiscard;
   }
 
   void layout(void* base) {
@@ -115,6 +117,8 @@ struct PeerBufferSizes {
     p += srCounter;
     srStepStatePtr = p;
     p += srStepState;
+    srProgressStatePtr = p;
+    p += srProgressState;
     slotSignalPtr = p;
     p += slotSignal;
     slotCounterPtr = p;
@@ -801,6 +805,8 @@ PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
     sizes.srSignal = 2 * sr.maxGroups * sizeof(uint64_t);
     sizes.srCounter = sr.maxGroups * sizeof(uint64_t);
     sizes.srStepState = 2 * sr.maxGroups * sizeof(int64_t);
+    sizes.srProgressState =
+        2 * sr.maxGroups * sizeof(detail::IbSendRecvProgressState);
   }
   sizes.slotSignal =
       static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
@@ -859,6 +865,7 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
         .remoteSignalBuf = pb.remoteSignal,
         .localCounterBuf = pb.counter,
         .stepState = pb.stepState,
+        .progressState = pb.progressState,
         .maxGroups = config_.sendRecv->maxGroups,
         .pipelineDepth = config_.sendRecv->pipelineDepth,
         .dataBufferSize = config_.dataBufferSize,
@@ -1807,6 +1814,7 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
   const auto signalPerPeer = sizes.srSignal;
   const auto counterPerPeer = sizes.srCounter;
   const auto stepStatePerPeer = sizes.srStepState;
+  const auto progressStatePerPeer = sizes.srProgressState;
 
   auto allocateBulk = [&](std::size_t perPeer) {
     auto buf = std::make_unique<meta::comms::DeviceBuffer>(perPeer * numPeers);
@@ -1827,6 +1835,7 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
     signalBulk_ = allocateBulk(signalPerPeer);
     counterBulk_ = allocateBulk(counterPerPeer);
     stepStateBulk_ = allocateBulk(stepStatePerPeer);
+    progressStateBulk_ = allocateBulk(progressStatePerPeer);
 
     auto sendStagingBulkReg =
         registerBuffer(sendStagingBulk_->get(), stagingPerPeer * numPeers);
@@ -1845,11 +1854,14 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
       pb.counter = counterBulkReg_.subBuffer(i * counterPerPeer);
       pb.stepState = reinterpret_cast<int64_t*>(
           static_cast<char*>(stepStateBulk_->get()) + i * stepStatePerPeer);
+      pb.progressState = reinterpret_cast<detail::IbSendRecvProgressState*>(
+          static_cast<char*>(progressStateBulk_->get()) +
+          i * progressStatePerPeer);
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: eager mode — allocated tile buffers "
             << "for " << numPeers << " peers (staging=" << stagingPerPeer
-            << "B per peer, 5 bulks)";
+            << "B per peer, 6 bulks)";
   } else {
     VLOG(1) << "MultipeerIbgdaTransport: lazy mode — per-peer allocation "
             << "deferred to materializePeer";
@@ -1912,6 +1924,7 @@ void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
   signalBulk_.reset();
   counterBulk_.reset();
   stepStateBulk_.reset();
+  progressStateBulk_.reset();
 }
 
 bool MultipeerIbgdaTransport::isPeerMaterialized(int peerRank) const {
@@ -1997,6 +2010,8 @@ void MultipeerIbgdaTransport::allocatePeerBuffers(
     pb.signal = IbgdaLocalBuffer(sizes.srSignalPtr, reg.lkey_per_device);
     pb.counter = IbgdaLocalBuffer(sizes.srCounterPtr, reg.lkey_per_device);
     pb.stepState = reinterpret_cast<int64_t*>(sizes.srStepStatePtr);
+    pb.progressState = reinterpret_cast<detail::IbSendRecvProgressState*>(
+        sizes.srProgressStatePtr);
 
     payload.recvStaging.addr = reinterpret_cast<uint64_t>(sizes.recvStagingPtr);
     payload.recvStaging.numNics = numNics_;
