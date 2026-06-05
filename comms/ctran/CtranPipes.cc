@@ -3,6 +3,7 @@
 #include "comms/ctran/CtranPipes.h"
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <set>
 
@@ -43,16 +44,11 @@ commResult_t ctran::ctranPreparePipesTrace(
   if (comm->pipesTrace_ == nullptr) {
     comm->pipesTrace_ = std::make_unique<comms::pipes::PipesTrace>();
   }
-  comm->pipesTrace_->ensure(ringSize);
+  comm->pipesTrace_->ensure(
+      ringSize,
+      std::chrono::milliseconds(NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS));
   trace = comm->pipesTrace_->deviceHandle();
   return commSuccess;
-}
-
-void ctran::ctranEnqueuePipesTraceDrain(CtranComm* comm, cudaStream_t stream) {
-  if (!ctranPipesTraceEnabled() || comm->pipesTrace_ == nullptr) {
-    return;
-  }
-  comm->pipesTrace_->enqueueDrain(stream);
 }
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
