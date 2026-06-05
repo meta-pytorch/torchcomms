@@ -559,9 +559,8 @@ class DeviceWindow {
     } else {
       int ibgdaIdx = rank_to_peer_index(source_rank);
       int slot = ibgdaIdx * peerSignalCount_ + signal_id;
-      // volatile: bypass L1 to read from L2 where RDMA atomics land
-      volatile uint64_t* sig = &ibgdaPeerSignalInbox_[slot];
-      while (!compare(*sig, cmp, value)) {
+      const uint64_t* sig = &ibgdaPeerSignalInbox_[slot];
+      while (!compare(load_ibgda_slot_acquire(sig), cmp, value)) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
             "DeviceWindow::wait_signal_from(source_rank=%d,"
@@ -635,11 +634,9 @@ class DeviceWindow {
             total += nvlPeerSignalInbox_[nvlIdx * peerSignalCount_ + signal_id]
                          .load();
           } else {
-            // volatile: bypass L1 to read from L2 where RDMA atomics land
-            volatile uint64_t* p =
+            total += load_ibgda_slot_acquire(
                 &ibgdaPeerSignalInbox_
-                    [peer_index * peerSignalCount_ + signal_id];
-            total += *p;
+                    [peer_index * peerSignalCount_ + signal_id]);
           }
         }
         if (compare(total, cmp, value)) {
@@ -678,10 +675,8 @@ class DeviceWindow {
         total +=
             nvlPeerSignalInbox_[nvlIdx * peerSignalCount_ + signal_id].load();
       } else {
-        // volatile: bypass L1 to read from L2 where RDMA atomics land
-        volatile uint64_t* p =
-            &ibgdaPeerSignalInbox_[peer_index * peerSignalCount_ + signal_id];
-        total += *p;
+        total += load_ibgda_slot_acquire(
+            &ibgdaPeerSignalInbox_[peer_index * peerSignalCount_ + signal_id]);
       }
     }
     return total;
@@ -706,10 +701,8 @@ class DeviceWindow {
       return nvlPeerSignalInbox_[nvlIdx * peerSignalCount_ + signal_id].load();
     }
     int ibgdaIdx = rank_to_peer_index(source_rank);
-    // volatile: bypass L1 to read from L2 where RDMA atomics land
-    volatile uint64_t* p =
-        &ibgdaPeerSignalInbox_[ibgdaIdx * peerSignalCount_ + signal_id];
-    return *p;
+    return load_ibgda_slot_acquire(
+        &ibgdaPeerSignalInbox_[ibgdaIdx * peerSignalCount_ + signal_id]);
   }
 
   // ===========================================================================
@@ -744,9 +737,8 @@ class DeviceWindow {
     }
     int ibgdaIdx = rank_to_peer_index(peer_rank);
     int slot = ibgdaIdx * peerCounterCount_ + counter_id;
-    // volatile: bypass L1 to read from L2 where RDMA atomics land
-    volatile uint64_t* ctr = &ibgdaPeerCounterBuf_[slot];
-    while (!compare(*ctr, cmp, value)) {
+    const uint64_t* ctr = &ibgdaPeerCounterBuf_[slot];
+    while (!compare(load_ibgda_slot_acquire(ctr), cmp, value)) {
       TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
           timeout,
           "DeviceWindow::wait_counter(peer_rank=%d,"
@@ -806,10 +798,8 @@ class DeviceWindow {
       return 0;
     }
     int ibgdaIdx = rank_to_peer_index(peer_rank);
-    // volatile: bypass L1 to read from L2 where RDMA atomics land
-    volatile uint64_t* ctr =
-        &ibgdaPeerCounterBuf_[ibgdaIdx * peerCounterCount_ + counter_id];
-    return *ctr;
+    return load_ibgda_slot_acquire(
+        &ibgdaPeerCounterBuf_[ibgdaIdx * peerCounterCount_ + counter_id]);
   }
 
   /**
@@ -986,9 +976,7 @@ class DeviceWindow {
           total += nvlBarrierInbox_[barrier_id].load();
         }
         if (nIbgdaPeers_ > 0) {
-          // volatile: bypass L1 to read from L2 where RDMA atomics land
-          volatile uint64_t* p = &ibgdaBarrierInbox_[barrier_id];
-          total += *p;
+          total += load_ibgda_slot_acquire(&ibgdaBarrierInbox_[barrier_id]);
         }
         if (compare(total, cmp, value)) {
           break;
@@ -1262,6 +1250,17 @@ class DeviceWindow {
 
  private:
 #ifdef __CUDACC__
+  __device__ __forceinline__ static uint64_t load_ibgda_slot_acquire(
+      const uint64_t* ptr) {
+    auto* slot = const_cast<uint64_t*>(ptr);
+#ifdef __HIP_PLATFORM_AMD__
+    return __hip_atomic_load(slot, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+#else
+    return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
+        cuda::memory_order_acquire);
+#endif
+  }
+
   __device__ __forceinline__ static bool
   compare(uint64_t actual, CmpOp cmp, uint64_t expected) {
     switch (cmp) {
