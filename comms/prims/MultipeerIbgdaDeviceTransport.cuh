@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "comms/prims/DeviceSpan.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 // When compiling with CUDA, include full definition for device methods
 // When compiling with host-only compiler, forward declaration is sufficient

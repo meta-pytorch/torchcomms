@@ -3,7 +3,7 @@
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pNvlTransportTest.cuh"
 
-#include "comms/prims/TiledBuffer.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 
 namespace comms::prims::test {
 

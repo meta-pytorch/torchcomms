@@ -7,7 +7,7 @@
 #include <cstdint>
 
 #if defined(ENABLE_PIPES)
-#include "comms/prims/PipesTraceTypes.h"
+#include "comms/prims/trace/PipesTraceTypes.h"
 #endif // defined(ENABLE_PIPES)
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"

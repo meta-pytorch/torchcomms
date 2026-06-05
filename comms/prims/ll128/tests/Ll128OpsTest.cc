@@ -6,7 +6,7 @@
 #include <cstring>
 #include <vector>
 
-#include "comms/prims/TimeoutUtils.h"
+#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/ll128/Ll128Packet.cuh"
 #include "comms/prims/ll128/tests/Ll128OpsTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"

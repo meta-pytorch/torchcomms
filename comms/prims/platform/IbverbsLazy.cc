@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/IbverbsLazy.h"
+#include "comms/prims/platform/IbverbsLazy.h"
 
 #include <dlfcn.h>
 #include <glog/logging.h>

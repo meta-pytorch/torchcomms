@@ -8,9 +8,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "comms/prims/Checks.h"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/collectives/AllGatherDirect.cuh"
+#include "comms/prims/core/Checks.h"
+#include "comms/prims/core/TimeoutUtils.h"
 
 // Keep the kernel definitions in this translation unit. Package builds link
 // this launcher as a standalone shared object, and CUDA kernel symbols are

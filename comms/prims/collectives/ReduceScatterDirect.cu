@@ -2,12 +2,12 @@
 
 #include "comms/prims/collectives/ReduceScatterDirect.cuh"
 
-#include "comms/prims/CopyOp.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/DeviceCheck.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
 #include "comms/prims/collectives/DirectCollectiveUtils.cuh"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 
 namespace comms::prims {
 

@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <optional>
 
-#include "comms/prims/CudaDriverLazy.h"
+#include "comms/prims/platform/CudaDriverLazy.h"
 
 namespace comms::prims {
 

@@ -216,7 +216,7 @@ __device__ __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_at(
 }
 
 // =============================================================================
-// doca_fence — wrapper from `comms/prims/DocaVerbsUtils.cuh`
+// doca_fence — wrapper from `comms/prims/platform/DocaVerbsUtils.cuh`
 // =============================================================================
 //
 // On NVIDIA, this lives in `comms::prims::doca_fence` (defined in

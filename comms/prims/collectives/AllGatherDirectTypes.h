@@ -6,8 +6,8 @@
 #include <cstdint>
 
 #include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/PipesTraceTypes.h"
 #include "comms/prims/collectives/DirectCollectiveTypes.h"
+#include "comms/prims/trace/PipesTraceTypes.h"
 
 namespace comms::prims {
 

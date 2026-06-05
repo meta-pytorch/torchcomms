@@ -12,9 +12,9 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/prims/PipesTrace.h"
-#include "comms/prims/PipesTraceTypes.h"
 #include "comms/prims/tests/PipesTraceTest.cuh"
+#include "comms/prims/trace/PipesTrace.h"
+#include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 

@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 #include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

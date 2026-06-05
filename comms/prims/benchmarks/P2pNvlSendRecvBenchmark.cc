@@ -6,11 +6,11 @@
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/TiledBuffer.cuh"
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/benchmarks/P2pNvlBenchmarkUtils.h"
 #include "comms/prims/benchmarks/TileSendRecv.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 

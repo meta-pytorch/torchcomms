@@ -28,12 +28,12 @@
 // `MultipeerIbgdaTransport.h`) which translates `doca_*` to the
 // `pipes_gda_*` host APIs in `amd/pipes_gda/PipesGdaHost.{h,cc}`.
 #ifndef __HIP_PLATFORM_AMD__
-#include "comms/prims/CudaDriverLazy.h"
-#include "comms/prims/DocaHostUtils.h"
+#include "comms/prims/platform/CudaDriverLazy.h"
+#include "comms/prims/platform/DocaHostUtils.h"
 #endif
-#include "comms/prims/IbverbsLazy.h"
 #include "comms/prims/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/MultipeerIbgdaTransportCuda.cuh"
+#include "comms/prims/platform/IbverbsLazy.h"
 #include "comms/prims/rdma/NicDiscovery.h"
 
 namespace comms::prims {

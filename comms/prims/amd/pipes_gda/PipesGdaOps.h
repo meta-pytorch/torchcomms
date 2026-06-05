@@ -72,7 +72,8 @@
 //   signal_counter / poll_one_cq_at / qp_get_cq_sq
 //
 // And `pipes_gda_fence` (no `gpu_dev_verbs_` infix) is the AMD
-// equivalent of `doca_fence` (defined in `comms/prims/DocaVerbsUtils.cuh`).
+// equivalent of `doca_fence` (defined in
+// `comms/prims/platform/DocaVerbsUtils.cuh`).
 // =============================================================================
 
 #pragma once

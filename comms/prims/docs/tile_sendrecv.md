@@ -510,9 +510,9 @@ blocks into senders and receivers.
 ```cpp
 #include "comms/prims/MultipeerIbgdaTransport.h"
 #include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 using namespace comms::prims;
 

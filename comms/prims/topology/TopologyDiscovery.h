@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/NvmlFabricInfo.h"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/topology/NvmlFabricInfo.h"
 
 namespace comms::prims {
 

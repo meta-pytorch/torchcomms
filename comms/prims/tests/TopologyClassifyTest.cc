@@ -10,9 +10,9 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/prims/NvmlFabricInfo.h"
-#include "comms/prims/TopologyDiscovery.h"
 #include "comms/prims/tests/TopologyTestUtils.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 namespace comms::prims::tests {
 

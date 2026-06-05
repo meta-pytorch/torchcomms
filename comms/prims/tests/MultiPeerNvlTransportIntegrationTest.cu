@@ -2,7 +2,7 @@
 
 #include "comms/prims/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 

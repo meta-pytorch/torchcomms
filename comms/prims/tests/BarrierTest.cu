@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/prims/BarrierState.cuh"
 #include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/core/BarrierState.cuh"
 #include "comms/prims/tests/BarrierTest.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pNvlTransportDeviceTest.cuh"
