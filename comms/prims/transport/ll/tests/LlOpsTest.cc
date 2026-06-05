@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "comms/prims/core/TimeoutUtils.h"
-#include "comms/prims/ll/LlPacket.cuh"
-#include "comms/prims/ll/tests/LlOpsTest.cuh"
+#include "comms/prims/transport/ll/LlPacket.cuh"
+#include "comms/prims/transport/ll/tests/LlOpsTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 

@@ -3,8 +3,8 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "comms/prims/ll/LlPacket.cuh"
 #include "comms/prims/tests/Checks.h"
+#include "comms/prims/transport/ll/LlPacket.cuh"
 
 namespace comms::prims::test {
 

@@ -5,10 +5,10 @@
 
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/ll128/Ll128Ops.cuh"
-#include "comms/prims/ll128/Ll128Packet.cuh"
-#include "comms/prims/ll128/tests/Ll128OpsNvlinkTest.cuh"
 #include "comms/prims/tests/Checks.h"
+#include "comms/prims/transport/ll128/Ll128Ops.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll128/tests/Ll128OpsNvlinkTest.cuh"
 
 namespace comms::prims::test {
 

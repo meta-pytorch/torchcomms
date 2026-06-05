@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/ll128/tests/Ll128TimeoutTrapTest.cuh"
+#include "comms/prims/transport/ll128/tests/Ll128TimeoutTrapTest.cuh"
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 

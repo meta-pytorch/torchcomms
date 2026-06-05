@@ -6,8 +6,8 @@
 
 #include "comms/prims/P2pSelfTransportDevice.cuh"
 #include "comms/prims/Transport.cuh"
-#include "comms/prims/ll/LlPacket.cuh"
-#include "comms/prims/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll/LlPacket.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
 #include "comms/utils/checks.h"
 
 namespace comms::prims {

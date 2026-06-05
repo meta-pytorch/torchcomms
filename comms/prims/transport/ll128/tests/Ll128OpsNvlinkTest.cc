@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "comms/prims/ll128/Ll128Packet.cuh"
-#include "comms/prims/ll128/tests/Ll128OpsNvlinkTest.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll128/tests/Ll128OpsNvlinkTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace comms::prims {

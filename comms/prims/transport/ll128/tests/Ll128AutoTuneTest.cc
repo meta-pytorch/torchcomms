@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 #include <cstddef>
 
-#include "comms/prims/ll128/Ll128AutoTune.cuh"
+#include "comms/prims/transport/ll128/Ll128AutoTune.cuh"
 
 namespace comms::prims {
 
