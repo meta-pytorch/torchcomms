@@ -304,6 +304,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       case NCCL_ALLREDUCE_ALGO::ctree:
         return ctranAllReduceTree(
             sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
+      case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+        return ctranAllReduceHierarchicalRing(
+            sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
       default:
         return commInvalidArgument;
     }
@@ -403,6 +406,16 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     nvlTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    NVL_ONLY,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    nvlTestName);
 #endif
 
 #if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY)
@@ -450,6 +463,16 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     ibTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    IB_ONLY,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    ibTestName);
 #endif
 
 #if defined(CTRAN_ALLREDUCE_TEST_HYBRID)
@@ -476,6 +499,16 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    hybridTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    HYBRID,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     hybridTestName);
