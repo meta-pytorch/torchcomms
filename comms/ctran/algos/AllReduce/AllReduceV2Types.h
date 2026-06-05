@@ -1,0 +1,82 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#pragma once
+
+#if defined(ENABLE_PIPES)
+
+#include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
+#include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
+
+namespace comms::pipes {
+struct Transport;
+}
+
+namespace ctran::allreduce::common {
+
+/** CUDA threads per block used by the fused AllReduce kernels. */
+static constexpr int kBlockSize = 640;
+/** Elements processed by one NVL tile operation in the reduction helpers. */
+static constexpr int kNvlTileElems = 15360;
+/** Elements processed by one IB tile operation in the reduction helpers. */
+static constexpr int kIbTileElems = 5120;
+
+/**
+ * Topology-agnostic device kernel arguments shared by all fused AllReduce
+ * algorithms.
+ *
+ * The fused AllReduce kernels are structured as NVL ReduceScatter (Phase 1), a
+ * cross-node IB phase (Phase 2), and NVL AllGather (Phase 3). Phase 1 and Phase
+ * 3 are identical across algorithms; only Phase 2 differs (dual-tree, ring,
+ * ...). These fields are everything those shared phases and the kernel entry
+ * need. Each algorithm layers its own Phase-2 topology (e.g. dual trees or ring
+ * neighbors) on top by embedding this struct in its own KernArgs.
+ *
+ * User buffers are owned by the caller. NVL and IB receive staging are owned by
+ * the Pipes transports and are consumed only inside transport copy callbacks.
+ */
+struct CommonKernArgs {
+  /** User input buffer; may alias `recvbuff` for in-place AllReduce. */
+  const void* sendbuff;
+  /** User output buffer that receives the final reduced tensor. */
+  void* recvbuff;
+  /**
+   * Phase 2 working buffer.
+   *
+   * Segment owners write locally reduced segments here in Phase 1, the Phase 2
+   * cross-node implementation reads and writes the same buffer, and Phase 3
+   * reads from it.
+   */
+  void* phase2Buf;
+
+  /** Total number of elements in the user tensor. */
+  size_t count;
+  /** Elements per owner segment, equal to `ceil(count / pMin)`. */
+  size_t segmentElems;
+
+  /** Number of nodes in the communicator. */
+  int nNodes;
+  /** Minimum number of local ranks across all nodes. */
+  int pMin;
+  /** Number of local ranks on this node. */
+  int nLocalRanks;
+  /** This GPU's local rank on its node. */
+  int localRank;
+  /** Number of logical data partitions processed by CUDA blocks per GPU. */
+  int numBlocks;
+
+  /** Collective datatype implemented by the kernel dispatch. */
+  commDataType_t datatype;
+  /** Reduction operation implemented by the kernel dispatch. */
+  commRedOp_t redOp;
+
+  /** Unified transport array containing NVL and IB transports by global rank.
+   */
+  comms::pipes::Transport* transports;
+
+  /** Maps local rank index `[0, nLocalRanks)` to global communicator rank. */
+  int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
+};
+
+} // namespace ctran::allreduce::common
+
+#endif // ENABLE_PIPES

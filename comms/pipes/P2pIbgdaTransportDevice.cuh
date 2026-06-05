@@ -41,6 +41,76 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // `PIPES_DEVICE_TRAP()` is defined in `comms/pipes/DeviceMacros.cuh` and
 // is intentionally available across all `comms/pipes` device headers.
 
+/**
+ * Result of one bounded send/recv progress attempt.
+ *
+ * `progress_send_once()` and `progress_recv_once()` are intended for callers
+ * that multiplex several independent transfers from one kernel. A single call
+ * may complete immediately, advance one protocol step, or find that the next
+ * signal/counter dependency is not ready yet.
+ *
+ * `Waiting` means no user-visible data movement or protocol signal was issued.
+ * The caller may retry the same state later after making progress on another
+ * lane. `Progressed` means the call advanced the operation but more calls are
+ * required. `Done` means the transfer has completed and the transport's
+ * persistent byte cursor has been committed for the participating group.
+ */
+enum class IbgdaSendRecvProgressStatus : uint8_t {
+  Waiting,
+  Progressed,
+  Done,
+};
+
+/**
+ * Stage within one resumable pipelined send or recv operation.
+ *
+ * Send operations alternate between waiting for NIC completion before reusing
+ * a local send-staging range and waiting for the receiver to mark the matching
+ * remote recv-staging range free. Recv operations wait for the sender's
+ * DATA_READY signal before copying from recv-staging and returning the slot to
+ * the sender. Callers should treat the stage as opaque state initialized by
+ * `init_send_progress()` or `init_recv_progress()`.
+ */
+enum class IbgdaSendRecvProgressStage : uint8_t {
+  WaitNicDone,
+  WaitSlotFree,
+  WaitDataReady,
+  Done,
+};
+
+/**
+ * Resumable state for one transport-managed pipelined send or recv.
+ *
+ * The caller owns one state object per in-flight operation and repeatedly
+ * passes it to `progress_send_once()` or `progress_recv_once()`. The state is
+ * pointer-independent: source and destination pointers are supplied to each
+ * progress call, while this object tracks the staging-ring byte stream and
+ * protocol stage.
+ *
+ * A state object must be used by the same `ThreadGroup` that initialized it.
+ * `activeBlocks` and the transport staging layout must remain unchanged until
+ * the state reaches `Done`; changing the participating block count changes the
+ * per-block partition of every staging slot. `maxSignalBytes` controls only
+ * sub-chunk granularity and is captured into `chunkSize` during initialization.
+ *
+ * `baseStep` is the transport's persistent byte cursor at initialization time.
+ * `nextByte` is the operation-local byte offset from that base. The sum maps to
+ * the protocol byte stream used by DATA_READY, SLOT_FREE, and NIC_DONE
+ * counters, so the signal values stay compatible with blocking `send()` and
+ * `recv()`.
+ */
+struct IbgdaSendRecvProgressState {
+  int groupId{0};
+  int activeBlocks{0};
+  std::size_t nbytes{0};
+  std::size_t maxSignalBytes{0};
+  std::size_t perBlockSlot{0};
+  std::size_t chunkSize{0};
+  std::size_t nextByte{0};
+  int64_t baseStep{0};
+  IbgdaSendRecvProgressStage stage{IbgdaSendRecvProgressStage::Done};
+};
+
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
 // constructed with no owned signal/counter buffer (numSlots == 0).
@@ -1179,6 +1249,644 @@ class P2pIbgdaTransportDevice {
   //     else
   //       transport->recv(sub, tiles.data(), tiles.bytes(), active_blocks);
   //   }
+
+ private:
+  /**
+   * Physical staging range for the next resumable progress step.
+   *
+   * `stagingOff` is an offset into the transport-owned send/recv staging
+   * buffers. `dataOff` is the matching offset into the caller's user buffer.
+   * `bytes` never crosses a per-block staging partition or the requested byte
+   * count. `streamEnd` is the absolute protocol byte value after this chunk and
+   * is used as the DATA_READY, SLOT_FREE, and NIC_DONE readiness threshold.
+   */
+  struct ProgressChunk {
+    std::size_t stagingOff;
+    std::size_t dataOff;
+    std::size_t bytes;
+    uint64_t streamEnd;
+  };
+
+  /**
+   * Validate and finalize the staging geometry stored in a progress state.
+   *
+   * This helper is called by the public init APIs before the state is exposed
+   * to the caller. It verifies that the state belongs to the current
+   * `ThreadGroup`, that the group participates in this transfer, and that the
+   * requested active block count can fit at least one 16-byte-aligned region in
+   * each staging slot.
+   *
+   * On success, `perBlockSlot` is the caller's partition within each logical
+   * staging slot and `chunkSize` is the maximum signaled sub-chunk size. A
+   * zero `maxSignalBytes` means one chunk per `perBlockSlot`; otherwise the
+   * value is rounded down to the same 16-byte alignment used by the blocking
+   * send/recv path. Invalid geometry traps on device because continuing would
+   * corrupt another block group's staging partition.
+   *
+   * The public init methods handle zero-byte operations before calling this
+   * helper. This helper is therefore only responsible for valid, non-empty
+   * transfer geometry.
+   */
+  __device__ __forceinline__ void init_progress_geometry(
+      ThreadGroup& group,
+      IbgdaSendRecvProgressState& state) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    if (state.groupId != static_cast<int>(group.group_id)) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress state group_id=%d but group.group_id=%u\n",
+            state.groupId,
+            group.group_id);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    if (state.activeBlocks > sendRecvState_.maxGroups) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress active_blocks=%d > maxGroups=%d\n",
+            state.activeBlocks,
+            sendRecvState_.maxGroups);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    if (state.groupId < 0 || state.groupId >= state.activeBlocks) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress group_id=%d >= active_blocks=%d\n",
+            state.groupId,
+            state.activeBlocks);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+
+    state.perBlockSlot =
+        (sendRecvState_.dataBufferSize / state.activeBlocks) & ~15ULL;
+    if (state.perBlockSlot == 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress perBlockSlot=0 "
+            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            (unsigned long long)sendRecvState_.dataBufferSize,
+            state.activeBlocks);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+
+    state.chunkSize =
+        (state.maxSignalBytes > 0 && state.maxSignalBytes < state.perBlockSlot)
+        ? (state.maxSignalBytes & ~15ULL)
+        : state.perBlockSlot;
+    if (state.chunkSize == 0) {
+      state.chunkSize = state.perBlockSlot;
+    }
+#endif
+  }
+
+  /**
+   * Trap if a send progress state is not in a sender-owned stage.
+   *
+   * Without this check, accidentally passing recv state to
+   * `progress_send_once()` would return `Waiting` forever because no send-side
+   * transition would match. Trapping turns that misuse into an immediate device
+   * failure with a clear diagnostic.
+   */
+  __device__ __forceinline__ void validate_send_progress_stage(
+      ThreadGroup& group,
+      const IbgdaSendRecvProgressState& state) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    if (state.stage != IbgdaSendRecvProgressStage::WaitNicDone &&
+        state.stage != IbgdaSendRecvProgressStage::WaitSlotFree &&
+        state.stage != IbgdaSendRecvProgressStage::Done) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress_send_once invalid stage=%d\n",
+            static_cast<int>(state.stage));
+      }
+      PIPES_DEVICE_TRAP();
+    }
+#endif
+  }
+
+  /**
+   * Trap if a recv progress state is not in a receiver-owned stage.
+   *
+   * Receiver progress is only valid while waiting for DATA_READY. Sender
+   * stages are protocol misuse and cannot make progress on the recv path.
+   */
+  __device__ __forceinline__ void validate_recv_progress_stage(
+      ThreadGroup& group,
+      const IbgdaSendRecvProgressState& state) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    if (state.stage != IbgdaSendRecvProgressStage::WaitDataReady &&
+        state.stage != IbgdaSendRecvProgressStage::Done) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress_recv_once invalid stage=%d\n",
+            static_cast<int>(state.stage));
+      }
+      PIPES_DEVICE_TRAP();
+    }
+#endif
+  }
+
+  /**
+   * Apply one explicit progress-state transition.
+   *
+   * The expected-stage check keeps the send/recv state machine local and
+   * auditable. If future progress states are added, each transition site must
+   * opt into the new edge instead of silently falling through.
+   */
+  __device__ __forceinline__ void transition_progress_stage(
+      ThreadGroup& group,
+      IbgdaSendRecvProgressState& state,
+      IbgdaSendRecvProgressStage expected,
+      IbgdaSendRecvProgressStage next) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    if (state.stage != expected) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: progress transition expected stage=%d, got %d\n",
+            static_cast<int>(expected),
+            static_cast<int>(state.stage));
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    state.stage = next;
+#endif
+  }
+
+  /**
+   * Map the state's logical byte cursor to the next staging-ring chunk.
+   *
+   * The transport stores each logical slot as `dataBufferSize` bytes, split
+   * into `activeBlocks` per-group partitions. The protocol cursor advances in
+   * bytes, not slots, so `baseStep + nextByte` is reduced modulo
+   * `perBlockSlot * pipelineDepth` to pick the ring slot and per-group offset.
+   *
+   * The returned chunk is clipped by three boundaries: the configured
+   * sub-chunk size, remaining user bytes, and remaining bytes in the current
+   * per-block staging partition. This keeps every progress call bounded and
+   * prevents a single RDMA put or recv copy from spanning two staging slots.
+   */
+  __device__ __forceinline__ ProgressChunk
+  next_chunk(const IbgdaSendRecvProgressState& state) const {
+    const uint64_t streamStart =
+        static_cast<uint64_t>(state.baseStep) + state.nextByte;
+    const std::size_t pipelineBytes = state.perBlockSlot *
+        static_cast<std::size_t>(sendRecvState_.pipelineDepth);
+    const std::size_t pipelineOff =
+        static_cast<std::size_t>(streamStart % pipelineBytes);
+    const int slot = static_cast<int>(pipelineOff / state.perBlockSlot);
+    const std::size_t slotOff =
+        static_cast<std::size_t>(slot) * sendRecvState_.dataBufferSize;
+    const std::size_t chunkOff =
+        pipelineOff - static_cast<std::size_t>(slot) * state.perBlockSlot;
+    const std::size_t slotRemaining = state.perBlockSlot - chunkOff;
+    const std::size_t dataRemaining = state.nbytes - state.nextByte;
+    std::size_t bytes =
+        state.chunkSize < dataRemaining ? state.chunkSize : dataRemaining;
+    bytes = bytes < slotRemaining ? bytes : slotRemaining;
+    return ProgressChunk{
+        .stagingOff = slotOff +
+            static_cast<std::size_t>(state.groupId) * state.perBlockSlot +
+            chunkOff,
+        .dataOff = state.nextByte,
+        .bytes = bytes,
+        .streamEnd = streamStart + bytes,
+    };
+  }
+
+ public:
+  /**
+   * Resumable send/recv compatibility with blocking send()/recv().
+   *
+   * The progress API deliberately uses the same wire protocol as blocking
+   * send()/recv(). For a chunk with logical byte range [streamStart,
+   * streamEnd), both APIs derive the same ring slot and staging offset from:
+   *
+   *   pipelineBytes = perBlockSlot * pipelineDepth
+   *   pipelineOff   = streamStart % pipelineBytes
+   *   slot          = pipelineOff / perBlockSlot
+   *   stagingOff    = slot * dataBufferSize + groupId * perBlockSlot +
+   *                   (pipelineOff - slot * perBlockSlot)
+   *
+   * Sender chunk state machine:
+   *
+   *   WaitNicDone
+   *        |
+   *        | local sendStaging is reusable; copy user src -> sendStaging
+   *        v
+   *   WaitSlotFree
+   *        |
+   *        | remote recvStaging is reusable; RDMA put + DATA_READY + NIC_DONE
+   *        v
+   *   Done for this chunk, then either WaitNicDone for next chunk or Done
+   *
+   * Receiver chunk state machine:
+   *
+   *   WaitDataReady
+   *        |
+   *        | DATA_READY reached streamEnd; copy recvStaging -> user dst
+   *        v
+   *   Signal SLOT_FREE, then either WaitDataReady for next chunk or Done
+   *
+   * Compatibility follows from using the same cumulative byte counters:
+   * DATA_READY advances by bytesThis/chunk.bytes on each put, SLOT_FREE
+   * advances by the same amount after recv copies out of staging, and NIC_DONE
+   * advances by the same amount after the NIC completes the sender's WQE. Both
+   * blocking and progress APIs commit the same stepState value, baseStep +
+   * nbytes, when the operation completes.
+   *
+   * Usage starts by initializing one state object per logical transfer, then
+   * calling the matching progress method until it returns `Done`:
+   *
+   *   auto state = transport->init_send_progress(
+   *       group, nbytes, active_blocks, max_signal_bytes);
+   *   while (transport->progress_send_once(group, state, src, timeout) !=
+   *          IbgdaSendRecvProgressStatus::Done) {
+   *     // Try another independent lane or return to the scheduler.
+   *   }
+   *
+   * Receivers use the symmetric `init_recv_progress()` and
+   * `progress_recv_once()` pair with the same `active_blocks` and compatible
+   * `max_signal_bytes`. Zero-byte operations initialize directly to `Done`, so
+   * callers can use the same loop shape for empty and non-empty transfers.
+   */
+
+  /**
+   * Initialize resumable state for one pipelined send operation.
+   *
+   * The returned state captures the sender-side persistent byte cursor for
+   * `group.group_id` and starts in `WaitNicDone` unless `nbytes == 0`. It does
+   * not capture the source pointer; callers pass the pointer to each
+   * `progress_send_once()` call so schedulers can store state separately from
+   * buffers.
+   *
+   * `active_blocks == 0` means all configured groups participate. Non-zero
+   * values must match the peer's recv-side initialization for the same logical
+   * transfer. `max_signal_bytes == 0` sends one signal per per-block staging
+   * partition; smaller non-zero values split that partition into multiple
+   * signaled sub-chunks for finer overlap with the receiver.
+   *
+   * Zero-byte sends return a `Done` state without reading or validating
+   * staging geometry. This matches the blocking `send()` no-op behavior and
+   * lets schedulers treat empty operations uniformly.
+   *
+   * @param group Thread group that will execute all later progress calls.
+   * @param nbytes Number of user-buffer bytes to send for this group.
+   * @param active_blocks Number of participating groups, or 0 for maxGroups.
+   * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
+   */
+  __device__ __forceinline__ IbgdaSendRecvProgressState init_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    IbgdaSendRecvProgressState state{
+        .groupId = static_cast<int>(group.group_id),
+        .activeBlocks =
+            active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups,
+        .nbytes = nbytes,
+        .maxSignalBytes = max_signal_bytes,
+        .stage = nbytes == 0 ? IbgdaSendRecvProgressStage::Done
+                             : IbgdaSendRecvProgressStage::WaitNicDone,
+    };
+    if (nbytes == 0) {
+      return state;
+    }
+    init_progress_geometry(group, state);
+    state.baseStep = sendRecvState_.stepState[state.groupId];
+    return state;
+#else
+    return {};
+#endif
+  }
+
+  /**
+   * Initialize resumable state for one pipelined recv operation.
+   *
+   * The returned state captures the receiver-side persistent byte cursor for
+   * `group.group_id` and starts in `WaitDataReady` unless `nbytes == 0`. It
+   * does not capture the destination pointer; callers pass the pointer to each
+   * `progress_recv_once()` call.
+   *
+   * The sender and receiver must use the same `active_blocks` and compatible
+   * `max_signal_bytes` for a logical transfer. The staging offset and protocol
+   * signal values are derived from those values, so a mismatch can make one
+   * side wait on a different byte range than the other side produced.
+   *
+   * Zero-byte receives return a `Done` state without reading or validating
+   * staging geometry. This matches the blocking `recv()` no-op behavior and
+   * lets schedulers treat empty operations uniformly.
+   *
+   * @param group Thread group that will execute all later progress calls.
+   * @param nbytes Number of user-buffer bytes to receive for this group.
+   * @param active_blocks Number of participating groups, or 0 for maxGroups.
+   * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
+   */
+  __device__ __forceinline__ IbgdaSendRecvProgressState init_recv_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    IbgdaSendRecvProgressState state{
+        .groupId = static_cast<int>(group.group_id),
+        .activeBlocks =
+            active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups,
+        .nbytes = nbytes,
+        .maxSignalBytes = max_signal_bytes,
+        .stage = nbytes == 0 ? IbgdaSendRecvProgressStage::Done
+                             : IbgdaSendRecvProgressStage::WaitDataReady,
+    };
+    if (nbytes == 0) {
+      return state;
+    }
+    init_progress_geometry(group, state);
+    state.baseStep =
+        sendRecvState_.stepState[sendRecvState_.maxGroups + state.groupId];
+    return state;
+#else
+    return {};
+#endif
+  }
+
+  /**
+   * Attempt bounded progress on one initialized send.
+   *
+   * This method advances at most one staged copy plus one RDMA put for the
+   * current chunk. It never spins on NIC_DONE or SLOT_FREE: if either
+   * dependency is not ready, it returns immediately so a higher-level scheduler
+   * can try another independent lane. If a `Timeout` is enabled, it is checked
+   * only at those readiness points and should already have been started by the
+   * caller.
+   *
+   * The send path first waits for NIC_DONE before reusing the local
+   * send-staging range, then copies user data into send-staging through
+   * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
+   * range, and finally issues an RDMA put that piggybacks DATA_READY and
+   * records NIC_DONE in the local counter. Returning `Done` commits the
+   * sender's persistent step state.
+   *
+   * `CopyOp` must expose `send(dst, src, bytes, group, dataOffset, args...)`.
+   * The default `Memcpy` copies bytes cooperatively across the supplied
+   * `ThreadGroup`; custom copy ops may use `args` to pass reduction or
+   * conversion context.
+   *
+   * @param group Thread group matching the one used during initialization.
+   * @param state Mutable progress state returned by `init_send_progress()`.
+   * @param src Source user buffer. The range `[src, src + nbytes)` must remain
+   *            valid until `Done`.
+   * @param timeout Optional device timeout checked while dependencies wait.
+   * @param args Additional arguments forwarded to `CopyOp::send`.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
+      ThreadGroup& group,
+      IbgdaSendRecvProgressState& state,
+      const void* __restrict__ src,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        sizeof(CopyOp) == 0,
+        "P2pIbgdaTransportDevice::progress_send_once() requires NVIDIA GPU");
+#endif
+    if (state.stage == IbgdaSendRecvProgressStage::Done ||
+        state.nextByte >= state.nbytes) {
+      state.stage = IbgdaSendRecvProgressStage::Done;
+      return IbgdaSendRecvProgressStatus::Done;
+    }
+    validate_send_progress_stage(group, state);
+
+    const IbgdaSendRecvProgressStage initialStage = state.stage;
+    const std::size_t initialNextByte = state.nextByte;
+    const std::size_t pipelineBytes = state.perBlockSlot *
+        static_cast<std::size_t>(sendRecvState_.pipelineDepth);
+
+    if (state.stage == IbgdaSendRecvProgressStage::WaitNicDone) {
+      const ProgressChunk chunk = next_chunk(state);
+      if (chunk.streamEnd > pipelineBytes) {
+        const uint64_t expected = chunk.streamEnd - pipelineBytes;
+        uint32_t ready = 1;
+        unsigned long long current = 0;
+        if (group.is_leader()) {
+          current = static_cast<unsigned long long>(
+              read_counter(sendRecvState_.localCounterBuf.subBuffer(
+                  state.groupId * sizeof(uint64_t))));
+          ready = current >= expected ? 1U : 0U;
+          if (!ready) {
+            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+                timeout,
+                "progress_send_once waiting for NIC_DONE expected>=%llu, "
+                "current=%llu",
+                static_cast<unsigned long long>(expected),
+                current);
+          }
+        }
+        ready = group.broadcast<uint32_t>(ready);
+        if (!ready) {
+          return IbgdaSendRecvProgressStatus::Waiting;
+        }
+      }
+
+      CopyOp::send(
+          sendRecvState_.sendStagingPtr + chunk.stagingOff,
+          static_cast<const char*>(src) + chunk.dataOff,
+          chunk.bytes,
+          group,
+          chunk.dataOff,
+          args...);
+      group.sync();
+      transition_progress_stage(
+          group,
+          state,
+          IbgdaSendRecvProgressStage::WaitNicDone,
+          IbgdaSendRecvProgressStage::WaitSlotFree);
+    }
+
+    if (state.stage == IbgdaSendRecvProgressStage::WaitSlotFree) {
+      const ProgressChunk chunk = next_chunk(state);
+      if (chunk.streamEnd > pipelineBytes) {
+        const uint64_t expected = chunk.streamEnd - pipelineBytes;
+        uint32_t ready = 1;
+        unsigned long long current = 0;
+        if (group.is_leader()) {
+          current = static_cast<unsigned long long>(
+              read_signal(sendRecvState_.localSignalBuf.subBuffer(
+                  (sendRecvState_.maxGroups + state.groupId) *
+                  sizeof(uint64_t))));
+          ready = current >= expected ? 1U : 0U;
+          if (!ready) {
+            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+                timeout,
+                "progress_send_once waiting for SLOT_FREE expected>=%llu, "
+                "current=%llu",
+                static_cast<unsigned long long>(expected),
+                current);
+          }
+        }
+        ready = group.broadcast<uint32_t>(ready);
+        if (!ready) {
+          return state.stage != initialStage ||
+                  state.nextByte != initialNextByte
+              ? IbgdaSendRecvProgressStatus::Progressed
+              : IbgdaSendRecvProgressStatus::Waiting;
+        }
+      }
+
+      __threadfence_system();
+      group.sync();
+      if (group.is_leader()) {
+        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        put(solo,
+            sendRecvState_.sendStagingBuf.subBuffer(chunk.stagingOff),
+            sendRecvState_.recvStagingBuf.subBuffer(chunk.stagingOff),
+            chunk.bytes,
+            sendRecvState_.remoteSignalBuf.subBuffer(
+                state.groupId * sizeof(uint64_t)),
+            chunk.bytes,
+            sendRecvState_.localCounterBuf.subBuffer(
+                state.groupId * sizeof(uint64_t)),
+            chunk.bytes);
+      }
+      group.sync();
+
+      state.nextByte += chunk.bytes;
+      if (state.nextByte >= state.nbytes) {
+        if (group.is_leader()) {
+          sendRecvState_.stepState[state.groupId] =
+              state.baseStep + static_cast<int64_t>(state.nbytes);
+        }
+        group.sync();
+        transition_progress_stage(
+            group,
+            state,
+            IbgdaSendRecvProgressStage::WaitSlotFree,
+            IbgdaSendRecvProgressStage::Done);
+        return IbgdaSendRecvProgressStatus::Done;
+      }
+      transition_progress_stage(
+          group,
+          state,
+          IbgdaSendRecvProgressStage::WaitSlotFree,
+          IbgdaSendRecvProgressStage::WaitNicDone);
+    }
+
+    return state.stage != initialStage || state.nextByte != initialNextByte
+        ? IbgdaSendRecvProgressStatus::Progressed
+        : IbgdaSendRecvProgressStatus::Waiting;
+#else
+    return IbgdaSendRecvProgressStatus::Done;
+#endif
+  }
+
+  /**
+   * Attempt bounded progress on one initialized recv.
+   *
+   * This method advances at most one recv-staging copy for the current chunk.
+   * It never spins on DATA_READY: if the sender has not signaled the next
+   * chunk, it returns `Waiting` immediately. If a `Timeout` is enabled, it is
+   * checked only while the DATA_READY dependency is not ready and should
+   * already have been started by the caller.
+   *
+   * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
+   * transport-owned recv-staging into the caller's destination through
+   * `CopyOp::recv`, then signals SLOT_FREE back to the sender. Returning `Done`
+   * commits the receiver's persistent step state.
+   *
+   * `CopyOp` must expose `recv(dst, src, bytes, group, dataOffset, args...)`.
+   * The default `Memcpy` copies bytes cooperatively across the supplied
+   * `ThreadGroup`; custom copy ops may use `args` to pass reduction or
+   * conversion context.
+   *
+   * @param group Thread group matching the one used during initialization.
+   * @param state Mutable progress state returned by `init_recv_progress()`.
+   * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
+   *            remain valid until `Done`.
+   * @param timeout Optional device timeout checked while dependencies wait.
+   * @param args Additional arguments forwarded to `CopyOp::recv`.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
+      ThreadGroup& group,
+      IbgdaSendRecvProgressState& state,
+      void* __restrict__ dst,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+    static_assert(
+        sizeof(CopyOp) == 0,
+        "P2pIbgdaTransportDevice::progress_recv_once() requires NVIDIA GPU");
+#endif
+    if (state.stage == IbgdaSendRecvProgressStage::Done ||
+        state.nextByte >= state.nbytes) {
+      state.stage = IbgdaSendRecvProgressStage::Done;
+      return IbgdaSendRecvProgressStatus::Done;
+    }
+    validate_recv_progress_stage(group, state);
+
+    const ProgressChunk chunk = next_chunk(state);
+    const uint64_t expected = chunk.streamEnd;
+    uint32_t ready = 1;
+    unsigned long long current = 0;
+    if (group.is_leader()) {
+      current = static_cast<unsigned long long>(
+          read_signal(sendRecvState_.localSignalBuf.subBuffer(
+              state.groupId * sizeof(uint64_t))));
+      ready = current >= expected ? 1U : 0U;
+      if (!ready) {
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            timeout,
+            "progress_recv_once waiting for DATA_READY expected>=%llu, "
+            "current=%llu",
+            static_cast<unsigned long long>(expected),
+            current);
+      }
+    }
+    ready = group.broadcast<uint32_t>(ready);
+    if (!ready) {
+      return IbgdaSendRecvProgressStatus::Waiting;
+    }
+
+    CopyOp::recv(
+        static_cast<char*>(dst) + chunk.dataOff,
+        sendRecvState_.recvStagingPtr + chunk.stagingOff,
+        chunk.bytes,
+        group,
+        chunk.dataOff,
+        args...);
+    group.sync();
+
+    signal(
+        group,
+        sendRecvState_.remoteSignalBuf.subBuffer(
+            (sendRecvState_.maxGroups + state.groupId) * sizeof(uint64_t)),
+        chunk.bytes);
+
+    state.nextByte += chunk.bytes;
+    if (state.nextByte >= state.nbytes) {
+      if (group.is_leader()) {
+        sendRecvState_.stepState[sendRecvState_.maxGroups + state.groupId] =
+            state.baseStep + static_cast<int64_t>(state.nbytes);
+      }
+      group.sync();
+      transition_progress_stage(
+          group,
+          state,
+          IbgdaSendRecvProgressStage::WaitDataReady,
+          IbgdaSendRecvProgressStage::Done);
+      return IbgdaSendRecvProgressStatus::Done;
+    }
+
+    return IbgdaSendRecvProgressStatus::Progressed;
+#else
+    return IbgdaSendRecvProgressStatus::Done;
+#endif
+  }
 
   /**
    * send — send one block's tile via pipelined RDMA.

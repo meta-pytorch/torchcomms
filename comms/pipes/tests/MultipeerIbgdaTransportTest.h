@@ -116,6 +116,37 @@ void testPutOnly(
     int blockSize);
 
 /**
+ * Return whether resumable send/recv progress kernels are available.
+ */
+bool supportsProgressSendRecv();
+
+/**
+ * Test kernel: Blocking pipelined send or recv.
+ */
+void testSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: Resumable pipelined send or recv progress loop.
+ */
+void testProgressSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Fill a device buffer with a pattern based on index
  */
 void fillBufferWithPattern(

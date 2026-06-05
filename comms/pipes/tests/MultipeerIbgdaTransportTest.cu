@@ -311,6 +311,112 @@ void testPutOnly(
 }
 
 // =============================================================================
+// Kernel: Blocking send/recv and resumable progress send/recv
+// =============================================================================
+
+bool supportsProgressSendRecv() {
+#ifdef __HIP_PLATFORM_AMD__
+  return false;
+#else
+  return true;
+#endif
+}
+
+__global__ void sendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+  if (send) {
+    transport->send(
+        group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout);
+  } else {
+    transport->recv(
+        group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout);
+  }
+}
+
+void testSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize) {
+  sendRecvKernel<<<numBlocks, blockSize>>>(
+      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void progressSendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+  if (send) {
+    auto state = transport->init_send_progress(
+        group, nbytes, activeBlocks, maxSignalBytes);
+    while (transport->progress_send_once(group, state, buffer, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  } else {
+    auto state = transport->init_recv_progress(
+        group, nbytes, activeBlocks, maxSignalBytes);
+    while (transport->progress_recv_once(group, state, buffer, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  }
+}
+#endif
+
+void testProgressSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)buffer;
+  (void)nbytes;
+  (void)activeBlocks;
+  (void)maxSignalBytes;
+  (void)send;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("progress send/recv is NVIDIA-only");
+#else
+  progressSendRecvKernel<<<numBlocks, blockSize>>>(
+      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
+// =============================================================================
 // Kernel: Fill buffer with pattern
 // =============================================================================
 

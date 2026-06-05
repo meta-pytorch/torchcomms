@@ -1806,6 +1806,19 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -2659,7 +2672,7 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctree
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
@@ -2667,6 +2680,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
      ctree - Ctran-based tree algorithm (Pipes-native)
+     cthierarchical_ring - Ctran-based hierarchical ring algorithm (Pipes-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum

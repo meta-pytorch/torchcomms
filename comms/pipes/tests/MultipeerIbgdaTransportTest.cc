@@ -1002,6 +1002,157 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
   }
 }
 
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    ProgressSendRecvCompatibleWithBlockingSendRecv) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  if (!test::supportsProgressSendRecv()) {
+    GTEST_SKIP() << "progress send/recv is not supported for this build";
+  }
+
+  const std::size_t nbytes = 192 * 1024;
+  const std::size_t dataBufferSize = 64 * 1024;
+  const std::size_t maxSignalBytes = 4 * 1024;
+  const int pipelineDepth = 2;
+  const int numBlocks = 1;
+  const int blockSize = 128;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t rank0Pattern = 0x34;
+  const uint8_t rank1Pattern = 0x89;
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .dataBufferSize = dataBufferSize,
+        .sendRecv =
+            MultipeerIbgdaTransportConfig::SendRecvConfig{
+                .maxGroups = numBlocks,
+                .pipelineDepth = pipelineDepth,
+            },
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+    DeviceBuffer sendBuffer(nbytes);
+    DeviceBuffer recvBuffer(nbytes);
+    DeviceBuffer errorCountBuf(sizeof(int));
+    auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          sendBuffer.get(), nbytes, rank0Pattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, nbytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      test::testProgressSendRecv(
+          peerTransportPtr,
+          sendBuffer.get(),
+          nbytes,
+          numBlocks,
+          maxSignalBytes,
+          true,
+          numBlocks,
+          blockSize);
+    } else {
+      test::testSendRecv(
+          peerTransportPtr,
+          recvBuffer.get(),
+          nbytes,
+          numBlocks,
+          maxSignalBytes,
+          false,
+          numBlocks,
+          blockSize);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          recvBuffer.get(),
+          nbytes,
+          rank0Pattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0) << "progress send to blocking recv corrupted "
+                                 << h_errorCount << " bytes";
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      test::fillBufferWithPattern(
+          sendBuffer.get(), nbytes, rank1Pattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, nbytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      test::testSendRecv(
+          peerTransportPtr,
+          sendBuffer.get(),
+          nbytes,
+          numBlocks,
+          maxSignalBytes,
+          true,
+          numBlocks,
+          blockSize);
+    } else {
+      test::testProgressSendRecv(
+          peerTransportPtr,
+          recvBuffer.get(),
+          nbytes,
+          numBlocks,
+          maxSignalBytes,
+          false,
+          numBlocks,
+          blockSize);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          recvBuffer.get(),
+          nbytes,
+          rank1Pattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0) << "blocking send to progress recv corrupted "
+                                 << h_errorCount << " bytes";
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
 // =============================================================================
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================
