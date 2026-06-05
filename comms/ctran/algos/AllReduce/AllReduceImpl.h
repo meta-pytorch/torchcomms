@@ -43,6 +43,24 @@ commResult_t ctranAllReduceTree(
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
+/**
+ * Run the Pipes-backed hierarchical ring AllReduce implementation.
+ *
+ * Three phases: NVL ReduceScatter (Phase 1), inter-node IBGDA ring (Phase 2),
+ * NVL AllGather (Phase 3), reusing the shared NVL phases with the ring as the
+ * cross-node Phase 2. Implemented in a stacked diff; this declaration plus the
+ * dispatch wiring land first.
+ */
+commResult_t ctranAllReduceHierarchicalRing(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+
 static inline const std::string allReduceAlgoName(
     enum NCCL_ALLREDUCE_ALGO algo) {
   switch (algo) {
@@ -56,6 +74,8 @@ static inline const std::string allReduceAlgoName(
       return "CtranAllReduceRing";
     case NCCL_ALLREDUCE_ALGO::ctree:
       return "CtranAllReduceTree";
+    case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+      return "CtranAllReduceHierarchicalRing";
     default:
       return "Unknown";
   }
