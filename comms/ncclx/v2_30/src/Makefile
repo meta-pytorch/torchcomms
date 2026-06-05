@@ -13,6 +13,9 @@ SRCDIR = $(abspath ./)
 NCCLDIR = $(abspath ../)
 SHAREDDIR = $(abspath ${NCCLDIR}/..)
 
+# fbcode/Pipes CUDA sources include Folly headers that require C++20.
+CXXSTD ?= -std=c++20
+
 include ../makefiles/common.mk
 include ../makefiles/version.mk
 
@@ -27,6 +30,7 @@ endif
 
 ifeq ($(ENABLE_PIPES),1)
 CXXFLAGS += -DENABLE_PIPES
+NVCUFLAGS += -DENABLE_PIPES
 endif
 
 ##### src files
@@ -100,6 +104,10 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
 LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
+ifeq ($(ENABLE_PIPES),1)
+## CTRAN CUDA source files
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceTree.cu
+endif
 ## CollTrace plugin source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
 ## Include ibverbx files
@@ -469,7 +477,7 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
 $(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
+	$(NVCC) $(NVCUFLAGS) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
 
 $(OBJDIR)/misc/git_version.o: $(GIT_VERSION_FILE)
 
