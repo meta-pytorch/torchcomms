@@ -9,12 +9,12 @@
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
+#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/window/DeviceWindow.cuh"
+#include "comms/prims/window/HostWindow.h"
 
-using comms::pipes::DeviceWindow;
-using comms::pipes::WindowConfig;
+using comms::prims::DeviceWindow;
+using comms::prims::WindowConfig;
 using ctran::CtranWin;
 
 class CtranWinDeviceEnvironment : public ctran::CtranEnvironmentBase {
