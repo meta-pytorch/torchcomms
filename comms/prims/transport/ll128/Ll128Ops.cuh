@@ -10,7 +10,7 @@
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
 
 namespace comms::prims {
 

@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
 
 namespace comms::prims::test {
 
