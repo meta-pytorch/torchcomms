@@ -14,9 +14,14 @@
 
 namespace ctran {
 
+class Profiler;
+
 class CtranTcpDm {
  public:
-  explicit CtranTcpDm(CtranComm* comm);
+  // `profiler` may be null when the comm has profiling disabled. When
+  // non-null, the transport registers its ALGO_TOTAL start/end hooks
+  // directly in the constructor.
+  explicit CtranTcpDm(CtranComm* comm, ctran::Profiler* profiler = nullptr);
   ~CtranTcpDm();
 
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
@@ -90,6 +95,11 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool);
 
  private:
+  // Called from the constructor when a non-null Profiler is supplied;
+  // attaches ALGO_TOTAL start/end hooks. Kept private now that the
+  // mapper no longer needs to drive registration post-construction.
+  void registerProfilerHooks(ctran::Profiler* profiler);
+
   // The Transport singleton is fetched via CtranTcpDmSingleton::getTransport()
   // at each use site rather than held as a shared_ptr member. Holding it as a
   // member kept the singleton ref-count elevated for the lifetime of every

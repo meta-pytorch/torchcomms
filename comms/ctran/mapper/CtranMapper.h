@@ -47,7 +47,11 @@ const std::string getReqTypeStr(CtranMapperRequest::ReqType type);
 
 class CtranMapper : public ctran::regcache::IpcExportClient {
  public:
-  CtranMapper(CtranComm* comm);
+  // `profiler` may be null when the comm has profiling disabled. When
+  // non-null, it is forwarded to the underlying CtranTcpDm so the
+  // transport can register its hooks during construction (avoiding a
+  // separate post-construction wiring pass).
+  CtranMapper(CtranComm* comm, ctran::Profiler* profiler = nullptr);
   ~CtranMapper();
 
   // Allow caller to mapper to mark the mapper object is being destroyed.
