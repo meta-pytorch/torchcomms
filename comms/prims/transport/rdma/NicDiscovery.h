@@ -8,14 +8,14 @@
 #include <vector>
 
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/DocaCompat.h"
+#include "comms/prims/transport/amd/DocaCompat.h"
 #else
 #include <doca_gpunetio_host.h>
 #include <doca_verbs_net_wrapper.h>
 #endif
 
 #include "comms/prims/platform/IbverbsLazy.h"
-#include "comms/prims/rdma/IbHcaParser.h"
+#include "comms/prims/transport/rdma/IbHcaParser.h"
 
 namespace comms::prims {
 

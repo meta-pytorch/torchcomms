@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 
 #include "comms/prims/core/ThreadGroup.cuh"
 

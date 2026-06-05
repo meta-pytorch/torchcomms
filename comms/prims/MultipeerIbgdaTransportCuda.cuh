@@ -7,10 +7,10 @@
 #include <vector>
 
 #include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/rdma/NicConstants.h"
+#include "comms/prims/transport/rdma/NicConstants.h"
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD, `doca_gpu_dev_verbs_qp` is a type alias (declared in
-// `comms/prims/amd/DocaCompat.h`) for `pipes_gda_gpu_dev_verbs_qp`.
+// `comms/prims/transport/amd/DocaCompat.h`) for `pipes_gda_gpu_dev_verbs_qp`.
 // This .cuh only uses `doca_gpu_dev_verbs_qp*` pointers, so a plain
 // forward declaration of the underlying struct + a `using` alias is
 // sufficient and avoids dragging the full device-side headers

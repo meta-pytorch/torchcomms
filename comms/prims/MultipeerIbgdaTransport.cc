@@ -8,7 +8,7 @@
 // `meta::comms::DeviceBuffer` from the pipes-local HIP shim.
 #include <hip/hip_runtime.h>
 
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #else
 #include <cuda_runtime.h>
 #endif
@@ -24,7 +24,7 @@
 #include <fmt/core.h>
 
 // NVIDIA-only host-side helpers. On AMD their functionality is provided
-// by `comms/prims/amd/DocaCompat.h` (already included via
+// by `comms/prims/transport/amd/DocaCompat.h` (already included via
 // `MultipeerIbgdaTransport.h`) which translates `doca_*` to the
 // `pipes_gda_*` host APIs in `amd/pipes_gda/PipesGdaHost.{h,cc}`.
 #ifndef __HIP_PLATFORM_AMD__
@@ -34,7 +34,7 @@
 #include "comms/prims/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/platform/IbverbsLazy.h"
-#include "comms/prims/rdma/NicDiscovery.h"
+#include "comms/prims/transport/rdma/NicDiscovery.h"
 
 namespace comms::prims {
 
@@ -433,7 +433,7 @@ void MultipeerIbgdaTransport::allocateResources() {
   // direct equivalent of CUDA's `gpuDirectRDMACapable=1` flag (the AMD
   // path uses HSA + DMA-buf for GPU memory RDMA registration). Host-
   // pinned memory works fine for the discarded atomic-FA result and
-  // matches what `comms/prims/amd/MultipeerIbgdaTransportAmd.cu` does
+  // matches what `comms/prims/transport/amd/MultipeerIbgdaTransportAmd.cu` does
   // for the same purpose.
   sinkBufferAllocSize_ = sinkBufferSize_;
   sinkBufferHandle_ = 0;

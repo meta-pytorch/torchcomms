@@ -11,10 +11,10 @@
 #include "comms/prims/Transport.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 // On AMD, `meta::comms::DeviceBuffer` is provided by
-// `comms/prims/amd/HipHostCompat.h`; the NVIDIA `CudaRAII.h` (which
+// `comms/prims/transport/amd/HipHostCompat.h`; the NVIDIA `CudaRAII.h` (which
 // includes `<cuda_runtime.h>` directly) is unavailable under hipcc.
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #else
 #include "comms/utils/CudaRAII.h"
 #endif

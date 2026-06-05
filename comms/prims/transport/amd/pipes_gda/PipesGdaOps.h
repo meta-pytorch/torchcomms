@@ -47,7 +47,7 @@
 // functionality; pick whichever is more convenient at the call site.
 //
 // 1. **NicBackend-explicit form** (legacy, used by AMD-only callers in
-//    `comms/prims/amd/{collectives,benchmarks,tests}/`)
+//    `comms/prims/transport/amd/{collectives,benchmarks,tests}/`)
 //    - First parameter is `NicBackend& nic`.
 //    - Templated on `<typename NicBackend>` for compile-time NIC selection.
 //    - Existing AMD-only call sites use this form.

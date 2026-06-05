@@ -17,7 +17,7 @@
 // On AMD, the DOCA headers don't exist; the DocaCompat shim provides
 // `doca_*` type aliases, constants, function shims, and `doca_fence`.
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/DocaCompat.h"
+#include "comms/prims/transport/amd/DocaCompat.h"
 #else
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>

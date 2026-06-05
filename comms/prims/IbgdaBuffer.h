@@ -8,8 +8,8 @@
 
 #include <endian.h>
 
-#include "comms/prims/amd/HipHostCompat.h"
-#include "comms/prims/rdma/NicConstants.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#include "comms/prims/transport/rdma/NicConstants.h"
 
 // Allow compilation in both host (C++) and device (CUDA/HIP) contexts
 #if defined(__CUDACC__) || defined(__HIPCC__)

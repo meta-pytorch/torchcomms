@@ -12,7 +12,7 @@
 
 #include "comms/prims/MultipeerIbgdaTransport.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.h"
 #include "comms/testinfra/TestXPlatUtils.h"

@@ -16,7 +16,7 @@
 // `pipes_gda_*` APIs implemented in `amd/pipes_gda/PipesGdaHost.{h,cc}`,
 // backed by HSA + raw mlx5dv + libibverbs.
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/DocaCompat.h"
+#include "comms/prims/transport/amd/DocaCompat.h"
 #else
 #include <doca_gpunetio_host.h>
 #include "doca_verbs_net_wrapper.h"

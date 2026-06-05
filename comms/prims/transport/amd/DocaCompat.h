@@ -26,9 +26,9 @@
 #include <cstddef>
 #include <cstdint>
 
-// AMD verbs/nic headers are exported by //comms/prims/amd:pipes_gda_device
-// with header_namespace = "", so they are included without the
-// `comms/prims/amd/` prefix.
+// AMD verbs/nic headers are exported by
+// //comms/prims/transport/amd:pipes_gda_device with header_namespace = "", so
+// they are included without the `comms/prims/transport/amd/` prefix.
 #include "nic/NicSelector.h" // @manual
 #include "pipes_gda/PipesGdaDev.h" // @manual
 #include "pipes_gda/PipesGdaOps.h" // @manual

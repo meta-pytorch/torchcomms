@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
