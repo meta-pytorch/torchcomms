@@ -257,6 +257,15 @@ class TorchCommXCCL : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
+  // Work tracking per stream
+  TorchWorkXCCLQueue workq_;
+
+  std::optional<xpuEvent_t>
+      dependency_event_; // Pre-allocated event for stream dependencies
+
+  size_t max_event_pool_size_{};
+  bool high_priority_stream_{false};
+
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {
@@ -297,6 +306,7 @@ class TorchCommXCCL : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
+  [[noreturn]] void throwAsyncError(bool abort_comm = true);
   void checkWorkQueue();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
@@ -308,10 +318,7 @@ class TorchCommXCCL : public TorchCommBackend,
   int comm_size_{};
   int rank_{};
   CommOptions options_;
-  size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
-  std::optional<xpuEvent_t>
-      dependency_event_; // Pre-allocated event for stream dependencies
   void* barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
@@ -329,16 +336,12 @@ class TorchCommXCCL : public TorchCommBackend,
   std::queue<xpuEvent_t> event_pool_;
   std::mutex event_pool_mutex_;
 
-  // Work tracking per stream
-  TorchWorkXCCLQueue workq_;
-
   // Timeout monitoring
   std::thread timeout_thread_;
   std::atomic<bool> shutdown_;
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
   std::string name_;
   std::string backend_version_{"unknown"};
 };

@@ -31,6 +31,61 @@ constexpr size_t kHierarchicalAgOverlapChunk2MiB = 2 * 1024 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk4MiB = 4 * 1024 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk8MiB = 8 * 1024 * 1024;
 
+bool rangesOverlap(
+    uintptr_t lhs,
+    size_t lhsBytes,
+    uintptr_t rhs,
+    size_t rhsBytes) {
+  if (lhsBytes == 0 || rhsBytes == 0) {
+    return false;
+  }
+  return lhs < rhs + rhsBytes && rhs < lhs + lhsBytes;
+}
+
+bool isAllGatherInPlace(
+    const void* sendbuff,
+    const void* recvbuff,
+    size_t sendBytes,
+    int rank,
+    int nRanks) {
+  const uintptr_t sendPtr = reinterpret_cast<uintptr_t>(sendbuff);
+  const uintptr_t recvPtr = reinterpret_cast<uintptr_t>(recvbuff);
+  const size_t recvBytes = sendBytes * static_cast<size_t>(nRanks);
+  const uintptr_t ownRecvPtr = recvPtr + static_cast<size_t>(rank) * sendBytes;
+  const bool buffersOverlap =
+      rangesOverlap(sendPtr, sendBytes, recvPtr, recvBytes);
+  return buffersOverlap && sendPtr == ownRecvPtr;
+}
+
+commResult_t validateAllGatherBufferLayout(
+    const void* sendbuff,
+    const void* recvbuff,
+    size_t sendBytes,
+    int rank,
+    int nRanks) {
+  const uintptr_t sendPtr = reinterpret_cast<uintptr_t>(sendbuff);
+  const uintptr_t recvPtr = reinterpret_cast<uintptr_t>(recvbuff);
+  const size_t recvBytes = sendBytes * static_cast<size_t>(nRanks);
+  const uintptr_t ownRecvPtr = recvPtr + static_cast<size_t>(rank) * sendBytes;
+
+  if (rangesOverlap(sendPtr, sendBytes, recvPtr, recvBytes) &&
+      sendPtr != ownRecvPtr) {
+    CLOGF_SUBSYS(
+        WARN,
+        COLL,
+        "AllGather {} invalid buffer layout: sendbuff range [0x{:x}, 0x{:x}) overlaps recvbuff range [0x{:x}, 0x{:x}) but does not start at this rank's recv slot 0x{:x}. Use sendbuff=recvbuff+rank*sendcount*sizeof(datatype) for in-place allgather, or use a disjoint send buffer for out-of-place allgather.",
+        allGatherAlgoName(myAlgo),
+        sendPtr,
+        sendPtr + sendBytes,
+        recvPtr,
+        recvPtr + recvBytes,
+        ownRecvPtr);
+    return commInvalidArgument;
+  }
+
+  return commSuccess;
+}
+
 size_t selectHierarchicalAgOverlapChunkBytes(size_t sendBytes) {
   const size_t targetChunkBytes = (sendBytes + 7) / 8;
   if (targetChunkBytes <= kHierarchicalAgOverlapChunk512KiB) {
@@ -263,6 +318,7 @@ commResult_t ctranAllGatherHierarchicalRing(
   const int nRanks = statex->nRanks();
   const int nNodes = statex->nNodes();
   const int nLocalRanks = statex->nLocalRanks();
+  const int rank = statex->rank();
   const int localRank = statex->localRank();
   const int node = statex->node();
   const size_t sendBytes = sendcount * commTypeSize(datatype);
@@ -279,6 +335,11 @@ commResult_t ctranAllGatherHierarchicalRing(
     comm->ctran_->updateOpCount();
     return commSuccess;
   }
+
+  FB_COMMCHECK(validateAllGatherBufferLayout(
+      sendbuff, recvbuff, sendBytes, rank, nRanks));
+  const bool inPlace =
+      isAllGatherInPlace(sendbuff, recvbuff, sendBytes, rank, nRanks);
 
   const bool useOverlap = NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nLocalRanks > 1;
   const int numBlocks = static_cast<int>(NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS);
@@ -316,6 +377,7 @@ commResult_t ctranAllGatherHierarchicalRing(
       static_cast<size_t>(NCCL_CTRAN_HIER_AG_NVL_SIGNAL_BYTES);
   params.sendbuf = static_cast<const char*>(sendbuff);
   params.recvbuf = static_cast<char*>(recvbuff);
+  params.in_place = inPlace;
   params.ib_num_blocks = numBlocks;
   params.timeout_ms = NCCL_CTRAN_HIER_AG_TIMEOUT_MS;
   params.stream = stream;
@@ -379,6 +441,7 @@ commResult_t ctranAllGatherHierarchicalRing(
     overlapParams.ready_sequence = comm->ctran_->getOpCount() + 1;
     overlapParams.sendbuf = params.sendbuf;
     overlapParams.recvbuf = params.recvbuf;
+    overlapParams.in_place = params.in_place;
     overlapParams.ib_num_blocks = params.ib_num_blocks;
     overlapParams.nvl_num_blocks = nvlNumBlocks;
     overlapParams.timeout_ms = params.timeout_ms;
@@ -400,7 +463,6 @@ commResult_t ctranAllGatherHierarchicalRing(
     overlapParams.ready_counters = comm->hierarchicalAgReadyCounters_;
     FB_COMMCHECK(ctran::ctranPreparePipesTrace(comm, overlapParams.trace));
     comms::pipes::launch_hierarchical_allgather_overlap(overlapParams);
-    ctran::ctranEnqueuePipesTraceDrain(comm, overlapParams.stream);
   } else {
     comms::pipes::launch_hierarchical_allgather_fused(params);
   }

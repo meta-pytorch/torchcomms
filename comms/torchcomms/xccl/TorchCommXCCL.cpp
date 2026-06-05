@@ -13,6 +13,19 @@
 
 namespace torch::comms {
 
+// Create a StreamGuard only when the device is not CPU.
+// CPU tensors don't need stream-based ordering, and constructing a
+// StreamGuard with an XPU stream on a machine without XPU devices would
+// crash.  This keeps mock tests (which use CPU tensors) working without
+// real XPU hardware.
+// StreamGuard is non-movable, so we use a macro to declare the optional
+// in the caller's scope.
+#define MAYBE_STREAM_GUARD(name, stream, device_type) \
+  std::optional<c10::StreamGuard> name;               \
+  if ((device_type) != at::DeviceType::CPU) {         \
+    (name).emplace(stream);                           \
+  }
+
 static c10::DeviceType checkAndReturnCommonDeviceType(
     const std::vector<at::Tensor>& tensors,
     const std::vector<at::Tensor>& tensors2 = {}) {
@@ -71,9 +84,10 @@ template <typename T>
 static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
     const T& input,
     const ReduceOp& op,
-    const xpuStream_t& stream) {
+    const xpuStream_t& stream,
+    at::DeviceType device_type = at::DeviceType::XPU) {
   if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-    c10::StreamGuard guard(stream);
+    MAYBE_STREAM_GUARD(guard, stream, device_type);
     if constexpr (std::is_same_v<T, at::Tensor>) {
       at::Tensor scaled_input = input.clone();
       applyPreMulFactor(scaled_input, op);
@@ -157,7 +171,7 @@ static at::Tensor createFlattenedTensor(
     }
   }
 
-  c10::StreamGuard guard(stream);
+  MAYBE_STREAM_GUARD(guard, stream, tensors[0].device().type());
 
   const auto& t = tensors[0];
   auto shape = t.sizes().vec();
@@ -372,6 +386,27 @@ void TorchCommXCCL::init(
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
 }
 
+[[noreturn]] void TorchCommXCCL::throwAsyncError(bool abort_comm) {
+  onecclResult_t asyncErr = onecclSuccess;
+  onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+  if (res != onecclSuccess) {
+    TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+    asyncErr = res;
+  }
+  if (asyncErr == onecclSuccess) {
+    asyncErr = onecclSystemError;
+  }
+  XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
+  if (abort_comm) {
+    abortXcclComm();
+  } else if (options_.abort_process_on_timeout_or_error) {
+    TC_LOG(ERROR) << "Aborting process due to error: " << xcclException.what();
+    runAbortHooks();
+    abort();
+  }
+  throw xcclException;
+}
+
 void TorchCommXCCL::finalize() {
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommXCCL not initialized");
@@ -397,27 +432,29 @@ void TorchCommXCCL::finalize() {
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
-  if (work_status == TorchWorkXCCL::WorkStatus::NOT_STARTED ||
-      work_status == TorchWorkXCCL::WorkStatus::INPROGRESS) {
+  if (comm_state_ == CommState::ERROR) {
+    throwAsyncError(true);
+  }
+
+  if (comm_state_ == CommState::TIMEOUT) {
+    abortXcclComm();
+    throw std::runtime_error("Work timed out during finalize");
+  }
+
+  if (work_status == TorchWork::WorkStatus::NOT_STARTED ||
+      work_status == TorchWork::WorkStatus::INPROGRESS) {
     throw std::runtime_error(
         "WorkQ finalize returned in progress or not started state");
   }
 
   // Update comm_state_ based on the work status
-  if (work_status == TorchWorkXCCL::WorkStatus::TIMEDOUT) {
+  if (work_status == TorchWork::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (work_status == TorchWorkXCCL::WorkStatus::ERROR) {
+  } else if (work_status == TorchWork::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
-    onecclResult_t asyncErr;
-    XCCL_CHECK_IGNORE(
-        xccl_api_,
-        xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr),
-        "XCCL commGetAsyncError failed");
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    abortXcclComm();
-    throw xcclException;
+    throwAsyncError(true);
   }
 
   // Clean up event pool
@@ -478,11 +515,14 @@ void TorchCommXCCL::finalize() {
 
 void TorchCommXCCL::abortXcclComm() {
   if (xccl_comm_) {
-    xccl_api_->commAbort(xccl_comm_);
+    onecclResult_t res = xccl_api_->commAbort(xccl_comm_);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commAbort returned " << res;
+    }
     xccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR, this) << "Aborting process due to timeout";
+    TC_LOG(ERROR, this) << "Aborting process due to error or timeout";
     runAbortHooks();
     abort();
   }
@@ -817,8 +857,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     return work;
   }
 
-  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
-  // ops to SUM and apply workarounds manually.
+  // PreMulSum/AVG are not fully supported yet so we convert all
+  // PreMulSum/AVG ops to SUM and apply workarounds manually.
   //
   // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
   // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
@@ -827,7 +867,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // reductions natively.
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       applyPreMulFactor(tensor, op);
       return ReduceOp(ReduceOp::RedOpType::SUM);
     } else if (op == ReduceOp::RedOpType::AVG) {
@@ -862,7 +902,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       tensor.div_(comm_size_, rounding_mode);
     }
   }
@@ -919,7 +959,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_tensor, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(tensor, op, stream);
+      getMaybeScaledInputsAndNewOp(tensor, op, stream, device_.type());
 
   const auto dataType = getXcclDataType(tensor);
   XCCL_CHECK(
@@ -949,7 +989,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       maybe_scaled_tensor.div_(comm_size_, rounding_mode);
     }
   }
@@ -1236,7 +1276,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   // reductions natively.
 
   const auto [maybe_scaled_input_list, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input_list, op, stream);
+      getMaybeScaledInputsAndNewOp(input_list, op, stream, device_.type());
 
   at::Tensor input_flattened = createFlattenedTensor(
       maybe_scaled_input_list, stream, /*copy_data */ true, xpu_api_);
@@ -1267,7 +1307,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }
@@ -1328,7 +1368,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_input_list, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input_list, op, stream);
+      getMaybeScaledInputsAndNewOp(input_list, op, stream, device_.type());
 
   // Use multiple reduce operations for reduce_scatter
   XCCL_CHECK(
@@ -1384,7 +1424,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }
@@ -1450,7 +1490,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_input, maybe_new_op] =
-      getMaybeScaledInputsAndNewOp(input, op, stream);
+      getMaybeScaledInputsAndNewOp(input, op, stream, device_.type());
 
   const auto dataType = getXcclDataType(maybe_scaled_input);
   XCCL_CHECK(
@@ -1477,7 +1517,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
       rounding_mode = "trunc";
     }
     {
-      c10::StreamGuard guard(stream);
+      MAYBE_STREAM_GUARD(guard, stream, device_.type());
       output.div_(comm_size_, rounding_mode);
     }
   }

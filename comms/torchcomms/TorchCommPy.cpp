@@ -1427,6 +1427,17 @@ Returns:
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "set_timeout",
+          &TorchComm::setTimeout,
+          R"(
+Set the communicator-level default operation timeout.
+
+Backends can use this as a mutable fallback for operations whose per-call
+timeout is unset.
+          )",
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(

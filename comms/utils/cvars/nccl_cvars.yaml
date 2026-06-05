@@ -1811,8 +1811,9 @@ cvars:
    default     : false
    description : |-
      Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
-     compact per-phase events to an HRDW ring buffer and the host logs them
-     after the collective stream reaches the kernel.
+     compact per-phase events to an HRDW ring buffer and a host background
+     thread polls the buffer on an interval, so breadcrumbs are logged while
+     the kernel is still running (including when it hangs).
 
  - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
    type        : uint64_t
@@ -1820,6 +1821,15 @@ cvars:
    description : |-
      Number of HRDW ring-buffer entries reserved per communicator for
      NCCL_CTRAN_PIPES_TRACE_ENABLE.
+
+ - name        : NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS
+   type        : uint64_t
+   default     : 50
+   description : |-
+     Interval in milliseconds at which the host background thread polls the
+     HRDW ring buffer for NCCL_CTRAN_PIPES_TRACE_ENABLE. Smaller values reduce
+     the chance of losing events to ring wraparound on high-rate kernels at the
+     cost of more frequent polling; a final drain always runs on teardown.
 
  - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
    type        : uint64_t
@@ -2649,13 +2659,14 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, ctree
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     ctree - Ctran-based tree algorithm (Pipes-native)
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum

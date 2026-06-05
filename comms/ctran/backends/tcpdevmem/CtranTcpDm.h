@@ -14,9 +14,14 @@
 
 namespace ctran {
 
+class Profiler;
+
 class CtranTcpDm {
  public:
-  explicit CtranTcpDm(CtranComm* comm);
+  // `profiler` may be null when the comm has profiling disabled. When
+  // non-null, the transport registers its ALGO_TOTAL start/end hooks
+  // directly in the constructor.
+  explicit CtranTcpDm(CtranComm* comm, ctran::Profiler* profiler = nullptr);
   ~CtranTcpDm();
 
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
@@ -75,6 +80,9 @@ class CtranTcpDm {
     return commSuccess;
   }
 
+  void profilerStart();
+  void profilerEnd();
+
   // irecv operations can not proceed unless the peer has been connected.
   // When there is no peer, irecv operations are queued and progress()
   // has to be called to make progress on them.
@@ -90,7 +98,19 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(void* pool);
 
  private:
-  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_;
+  // Called from the constructor when a non-null Profiler is supplied;
+  // attaches ALGO_TOTAL start/end hooks. Kept private now that the
+  // mapper no longer needs to drive registration post-construction.
+  void registerProfilerHooks(ctran::Profiler* profiler);
+
+  ::comms::tcp_devmem::ProfilerContext profilerCtx_{};
+
+  // The Transport singleton is fetched via CtranTcpDmSingleton::getTransport()
+  // at each use site rather than held as a shared_ptr member. Holding it as a
+  // member kept the singleton ref-count elevated for the lifetime of every
+  // CtranTcpDm and prevented folly::Singleton's destroyInstances from running
+  // cleanly at process exit (FATAL "living references"). Mirrors what
+  // CtranIb does with CtranIbSingleton::getInstance().
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};

@@ -28,6 +28,8 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
     case NCCL_ALLREDUCE_ALGO::ctran:
     case NCCL_ALLREDUCE_ALGO::ctdirect:
       return true;
+    case NCCL_ALLREDUCE_ALGO::ctree:
+      return true;
     default: // invalid query
       return false;
   }
@@ -64,6 +66,9 @@ commResult_t ctranAllReduce(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       return ctranAllReduceRing(
+          sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+    case NCCL_ALLREDUCE_ALGO::ctree:
+      return ctranAllReduceTree(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:
     default:

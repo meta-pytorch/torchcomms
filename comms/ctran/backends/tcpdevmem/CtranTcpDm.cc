@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
@@ -106,16 +107,19 @@ void CtranTcpDm::bootstrapAccept() {
     FB_SYSCHECKTHROW_EX(
         socket.recv(&peerRank, sizeof(int)), rank_, commHash_, commDesc_);
 
+    auto transport = CtranTcpDmSingleton::getTransport();
+
     ::comms::tcp_devmem::Handle handle{};
     ::comms::tcp_devmem::ListenerInterface* listenComm{};
-    COMMCHECKTHROW(transport_->listen(netdev_, &handle, &listenComm));
+    COMMCHECKTHROW(transport->listen(netdev_, &handle, &listenComm));
 
     FB_SYSCHECKTHROW_EX(
         socket.send(&handle, sizeof(handle)), rank_, commHash_, commDesc_);
 
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
-    COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));
-    COMMCHECKTHROW(transport_->closeListen(listenComm));
+    COMMCHECKTHROW(transport->accept(listenComm, &recvComm));
+    COMMCHECKTHROW(transport->closeListen(listenComm));
+    recvComm->setCommStats(&profilerCtx_.commStats);
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
@@ -164,7 +168,10 @@ commResult_t CtranTcpDm::bootstrapConnect(
   FB_SYSCHECKRETURN(sock.recv(&handle, sizeof(handle)), commInternalError);
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
-  COMMCHECKTHROW(transport_->connect(netdev_, &handle, &sendComm));
+  COMMCHECKTHROW(
+      CtranTcpDmSingleton::getTransport()->connect(
+          netdev_, &handle, &sendComm));
+  sendComm->setCommStats(&profilerCtx_.commStats);
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
@@ -182,19 +189,27 @@ commResult_t CtranTcpDm::bootstrapConnect(
   return res;
 }
 
-CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
-  transport_ = CtranTcpDmSingleton::getTransport();
-
+CtranTcpDm::CtranTcpDm(
+    [[maybe_unused]] CtranComm* comm,
+    ctran::Profiler* profiler) {
   cudaDev_ = comm->statex_->cudaDev();
   rank_ = comm->statex_->rank();
   nRanks_ = comm->statex_->nRanks();
   commHash_ = comm->statex_->commHash();
   commDesc_ = comm->statex_->commDesc();
-  netdev_ = transport_->getDeviceFor(cudaDev_);
 
-  transport_->open(netdev_);
+  auto transport = CtranTcpDmSingleton::getTransport();
+  netdev_ = transport->getDeviceFor(cudaDev_);
+  transport->open(netdev_);
+
+  profilerCtx_.cuDev = cudaDev_;
+  profilerCtx_.rank = rank_;
+  profilerCtx_.nRanks = nRanks_;
+  profilerCtx_.commHash = commHash_;
 
   bootstrapPrepare(comm->bootstrap_.get());
+
+  registerProfilerHooks(profiler);
 
   CLOGF_SUBSYS(
       INFO,
@@ -209,18 +224,25 @@ CtranTcpDm::~CtranTcpDm() {
   listenSocket_.shutdown();
   listenThread_.join();
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   for (auto comm : sendComms_) {
-    transport_->closeSend(comm.second);
+    transport->closeSend(comm.second);
   }
   for (auto comm : recvComms_) {
-    transport_->closeRecv(comm.second);
+    transport->closeRecv(comm.second);
   }
 
-  // shutdown the transport if this is the last CtranTcpDm instance
-  // cudaFreeHost() will fail if wait until Singleton is destroyed
-  if (transport_.use_count() <= 2) {
-    transport_->shutdown(false);
-  }
+  // Always request shutdown; Transport self-gates on `comms_ > 0` so only
+  // the last CtranTcpDm actually tears down, while CUDA is still alive.
+  transport->shutdown(false);
+}
+
+void CtranTcpDm::profilerStart() {
+  CtranTcpDmSingleton::getTransport()->profilerStart(profilerCtx_);
+}
+
+void CtranTcpDm::profilerEnd() {
+  CtranTcpDmSingleton::getTransport()->profilerEnd(profilerCtx_);
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -273,15 +295,16 @@ commResult_t CtranTcpDm::isend(
 
   ::comms::tcp_devmem::CommunicatorInterface* comm = sendComms_.at(peerRank);
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   ::comms::tcp_devmem::RequestInterface* request{nullptr};
-  COMMCHECK_TCP(transport_->queueRequest(
+  COMMCHECK_TCP(transport->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Send,
       data,
       size,
       handle,
       &request));
-  req.track(transport_.get(), request);
+  req.track(transport.get(), request);
 
   return commSuccess;
 }
@@ -363,8 +386,9 @@ commResult_t CtranTcpDm::irecvConnected(
     return commInternalError;
   }
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   ::comms::tcp_devmem::RequestInterface* request{nullptr};
-  COMMCHECK_TCP(transport_->queueRequest(
+  COMMCHECK_TCP(transport->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Recv,
       data,
@@ -373,20 +397,34 @@ commResult_t CtranTcpDm::irecvConnected(
       &request,
       unpackPool));
 
-  req.track(transport_.get(), request);
+  req.track(transport.get(), request);
 
   return commSuccess;
 }
 
 commResult_t
 CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
-  COMMCHECK_TCP(transport_->prepareUnpackConsumer(netdev_, sqs, blocks, pool));
+  COMMCHECK_TCP(
+      CtranTcpDmSingleton::getTransport()->prepareUnpackConsumer(
+          netdev_, sqs, blocks, pool));
   return commSuccess;
 }
 
 commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
-  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
+  COMMCHECK_TCP(
+      CtranTcpDmSingleton::getTransport()->teardownUnpackConsumer(
+          netdev_, pool));
   return commSuccess;
+}
+
+void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
+  if (!profiler) {
+    return;
+  }
+  profiler->registerStartHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerStart(); });
+  profiler->registerEndHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerEnd(); });
 }
 
 } // namespace ctran
