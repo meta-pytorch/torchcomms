@@ -5,9 +5,9 @@
 #include <nccl.h>
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/benchmarks/CollectiveBenchmark.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 

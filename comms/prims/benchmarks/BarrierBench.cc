@@ -6,8 +6,8 @@
 #include <folly/init/Init.h>
 #include <glog/logging.h>
 
-#include "comms/prims/BarrierState.cuh"
 #include "comms/prims/benchmarks/BarrierBench.cuh"
+#include "comms/prims/core/BarrierState.cuh"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/testinfra/CudaBenchBase.h"
 #include "comms/utils/CudaRAII.h"

@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/prims/P2pSelfTransportDevice.cuh"
 #include "comms/prims/benchmarks/SelfTransportBench.cuh"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
 

@@ -8,10 +8,10 @@
 #include <sstream>
 #include <vector>
 
-#include "comms/prims/MultipeerIbgdaTransport.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/RingAllgatherLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 

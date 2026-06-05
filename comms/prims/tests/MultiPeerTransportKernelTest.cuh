@@ -6,7 +6,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 namespace comms::prims::test {
 

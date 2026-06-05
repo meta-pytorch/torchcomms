@@ -1,9 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
 #include "comms/prims/benchmarks/BarrierBench.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
 

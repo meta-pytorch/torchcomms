@@ -5,7 +5,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/HostWindow.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"

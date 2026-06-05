@@ -5,11 +5,11 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "comms/prims/DeviceCheck.cuh"
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/Timeout.cuh"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/collectives/AllToAllv.cuh" // ChunkInfo
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/Transport.cuh"
 
 namespace comms::prims {
 

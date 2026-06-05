@@ -4,8 +4,8 @@
 #if defined(ENABLE_PIPES)
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/rdma/NicConstants.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/rdma/NicConstants.h"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"

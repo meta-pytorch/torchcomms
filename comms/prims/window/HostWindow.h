@@ -6,9 +6,9 @@
 #include <optional>
 #include <vector>
 
-#include "comms/prims/GpuMemHandler.h"
-#include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/Transport.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/utils/CudaRAII.h"
 
 namespace comms::prims {

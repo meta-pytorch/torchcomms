@@ -7,9 +7,9 @@
 #include <cstddef>
 #include <optional>
 
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/collectives/AllToAllv.cuh" // ChunkInfo
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/Transport.cuh"
 
 namespace comms::prims {
 

@@ -6,13 +6,13 @@
 #include <chrono>
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/AllToAllv.h"
 #include "comms/prims/collectives/AllToAllvLl128.h"
-#include "comms/prims/ll128/Ll128AutoTune.cuh"
-#include "comms/prims/ll128/Ll128Packet.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/prims/transport/ll128/Ll128AutoTune.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"

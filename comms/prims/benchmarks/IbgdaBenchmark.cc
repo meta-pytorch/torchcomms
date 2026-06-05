@@ -11,11 +11,11 @@
 #include <sstream>
 #include <vector>
 
-#include "comms/prims/MultipeerIbgdaTransport.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/benchmarks/IbgdaBenchmark.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #ifndef __HIP_PLATFORM_AMD__

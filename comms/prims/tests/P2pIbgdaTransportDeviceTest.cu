@@ -3,12 +3,12 @@
 // CudaHipCompat must come before Checks.h so the `cuda*` -> `hip*`
 // macro renames apply on AMD builds (Checks.h uses `cudaError_t` /
 // `cudaSuccess` / `cudaGetErrorString` / `cudaGetLastError` directly).
-#include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/TimeoutUtils.h"
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::tests {
 

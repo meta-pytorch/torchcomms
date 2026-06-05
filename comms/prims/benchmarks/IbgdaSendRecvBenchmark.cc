@@ -10,9 +10,9 @@
 #include <memory>
 #include <vector>
 
-#include "comms/prims/MultipeerIbgdaTransport.h"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
+#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 

@@ -4,8 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 
 namespace comms::prims::test {

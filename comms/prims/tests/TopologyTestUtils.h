@@ -4,8 +4,8 @@
 
 #include <cstring>
 
-#include "comms/prims/NvmlFabricInfo.h"
-#include "comms/prims/TopologyDiscovery.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 namespace comms::prims::tests {
 

@@ -6,7 +6,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::test {
 

@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "comms/prims/DeviceCheck.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
 
 namespace comms::prims::test {
 

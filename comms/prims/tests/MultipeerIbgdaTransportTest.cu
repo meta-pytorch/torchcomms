@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.cuh"
 
 #include <cuda_runtime.h>

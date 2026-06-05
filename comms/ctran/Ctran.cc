@@ -20,9 +20,9 @@
 #include "comms/ctran/utils/CommGroupUtils.h"
 
 #if defined(ENABLE_PIPES)
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/PipesTrace.h"
+#include "comms/prims/trace/PipesTrace.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #endif // defined(ENABLE_PIPES)
 
 Ctran::Ctran(

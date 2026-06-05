@@ -5,11 +5,11 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/collectives/AllToAllvLl128.cuh"
 #include "comms/prims/collectives/tests/AllToAllvLl128Test.cuh"
-#include "comms/prims/ll128/Ll128Packet.cuh"
 #include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"

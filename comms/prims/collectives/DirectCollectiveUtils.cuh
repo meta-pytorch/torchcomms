@@ -4,12 +4,12 @@
 
 #include <cstddef>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/DeviceCheck.cuh"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims {
 

@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "comms/prims/MultiPeerTransport.h"
 #include "comms/prims/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 #include "comms/testinfra/TestXPlatUtils.h"

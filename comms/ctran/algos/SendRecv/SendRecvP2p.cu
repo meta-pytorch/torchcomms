@@ -7,8 +7,8 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 __device__ __forceinline__ void sendImpl(
     ctran::sendrecv::SendRecvOp* sends,

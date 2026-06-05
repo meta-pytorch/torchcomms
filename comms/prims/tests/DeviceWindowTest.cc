@@ -5,8 +5,8 @@
 #include <numeric>
 #include <vector>
 
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/tests/DeviceWindowTest.cuh"
+#include "comms/prims/transport/Transport.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 

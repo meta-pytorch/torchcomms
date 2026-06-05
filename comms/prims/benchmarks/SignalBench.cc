@@ -6,8 +6,8 @@
 #include <folly/init/Init.h>
 #include <glog/logging.h>
 
-#include "comms/prims/SignalState.cuh"
 #include "comms/prims/benchmarks/SignalBench.cuh"
+#include "comms/prims/core/SignalState.cuh"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/testinfra/CudaBenchBase.h"
 #include "comms/utils/CudaRAII.h"
