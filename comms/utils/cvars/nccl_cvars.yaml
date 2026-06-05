@@ -3158,7 +3158,7 @@ cvars:
 
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
-   default     : HIGH
+   default     : NORMAL
    choices     : CRITICAL, HIGH, NORMAL, LOW
    description : |-
      Minimum log priority level for MCCL Scuba logging. Only logs at or above
