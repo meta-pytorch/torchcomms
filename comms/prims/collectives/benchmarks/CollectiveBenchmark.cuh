@@ -4,9 +4,9 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/collectives/AllGather.cuh"
 #include "comms/prims/collectives/AllToAllv.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims::benchmark {
 

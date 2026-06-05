@@ -22,15 +22,15 @@
 #include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
-#include "comms/prims/DocaVerbsUtils.cuh"
+#include "comms/prims/platform/DocaVerbsUtils.cuh"
 #endif
-#include "comms/prims/CopyOp.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/DeviceMacros.cuh"
-#include "comms/prims/DeviceSpan.cuh"
 #include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceMacros.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 namespace comms::prims {
 
@@ -38,7 +38,7 @@ struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
-// `PIPES_DEVICE_TRAP()` is defined in `comms/prims/DeviceMacros.cuh` and
+// `PIPES_DEVICE_TRAP()` is defined in `comms/prims/core/DeviceMacros.cuh` and
 // is intentionally available across all `comms/prims` device headers.
 
 // Slot-id bounds checks for the slot-index API. Catches both

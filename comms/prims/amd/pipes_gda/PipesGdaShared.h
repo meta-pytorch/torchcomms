@@ -11,8 +11,8 @@
 #pragma once
 
 #include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace pipes_gda {
 
@@ -72,4 +72,5 @@ inline Timeout make_timeout_us(uint64_t timeoutUs) {
 
 } // namespace pipes_gda
 
-// TIMEOUT_TRAP_IF_EXPIRED_SINGLE is already defined in comms/prims/Timeout.cuh
+// TIMEOUT_TRAP_IF_EXPIRED_SINGLE is already defined in
+// comms/prims/core/Timeout.cuh

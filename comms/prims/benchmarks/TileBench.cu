@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/Tile.cuh"
 #include "comms/prims/benchmarks/TileBench.cuh"
+#include "comms/prims/core/Tile.cuh"
 
 namespace comms::prims::benchmark {
 

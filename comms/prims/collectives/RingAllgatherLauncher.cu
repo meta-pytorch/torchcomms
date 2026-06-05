@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <string>
 
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/collectives/RingAllgather.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 

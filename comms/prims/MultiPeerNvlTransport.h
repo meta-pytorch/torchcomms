@@ -6,10 +6,10 @@
 #include <optional>
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/GpuMemHandler.h"
 #include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/prims/P2pSelfTransportDevice.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
 // On AMD, `meta::comms::DeviceBuffer` is provided by
 // `comms/prims/amd/HipHostCompat.h`; the NVIDIA `CudaRAII.h` (which
 // includes `<cuda_runtime.h>` directly) is unavailable under hipcc.

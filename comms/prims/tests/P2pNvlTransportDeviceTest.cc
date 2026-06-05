@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/SignalState.cuh"
+#include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/tests/P2pNvlTransportDeviceTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 

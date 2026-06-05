@@ -13,8 +13,8 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
-#include "comms/prims/NvmlFabricInfo.h"
-#include "comms/prims/TopologyDiscovery.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"

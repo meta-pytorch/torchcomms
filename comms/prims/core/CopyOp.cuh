@@ -4,10 +4,10 @@
 
 #include <cstddef>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/MemcpyCopyOp.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Tile.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/MemcpyCopyOp.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Tile.cuh"
 
 namespace comms::prims {
 

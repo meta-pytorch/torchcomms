@@ -3,7 +3,7 @@
 #pragma once
 
 #include "comms/common/DeviceConstants.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
 
 namespace comms::prims::benchmark {

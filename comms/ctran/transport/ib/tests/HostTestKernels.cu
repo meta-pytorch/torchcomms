@@ -4,8 +4,8 @@
 
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/transport/ib/HostTransportDev.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace ctran::transport::ib {
 

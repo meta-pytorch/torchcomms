@@ -6,19 +6,19 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <cstring>
-#include "comms/prims/BarrierState.cuh"
-#include "comms/prims/ChunkState.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/DeviceCheck.cuh"
-#include "comms/prims/DeviceMacros.cuh"
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/MemcpyCopyOp.cuh"
-#include "comms/prims/SignalState.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/core/BarrierState.cuh"
+#include "comms/prims/core/ChunkState.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/DeviceMacros.cuh"
+#include "comms/prims/core/MemcpyCopyOp.cuh"
+#include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/ll/LlOps.cuh"
 #include "comms/prims/ll128/Ll128Ops.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 namespace comms::prims {
 

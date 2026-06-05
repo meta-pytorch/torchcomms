@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/collectives/ReduceScatterDirectTypes.h"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 

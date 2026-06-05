@@ -9,7 +9,7 @@
 #include <cstddef>
 
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 using namespace comms::prims;
 

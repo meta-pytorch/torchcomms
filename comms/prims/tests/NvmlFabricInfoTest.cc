@@ -6,7 +6,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/NvmlFabricInfo.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
 
 namespace comms::prims::tests {
 
