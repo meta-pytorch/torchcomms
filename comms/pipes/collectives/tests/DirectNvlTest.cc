@@ -22,6 +22,7 @@ namespace {
 struct DirectNvlTestParams {
   std::size_t bytes{0};
   int num_blocks{8};
+  bool in_place{false};
   std::string name;
 };
 
@@ -73,19 +74,24 @@ TEST_P(DirectAllGatherNvlTest, Correctness) {
     GTEST_SKIP() << "NVLink transport not available: " << e.what();
   }
 
-  DeviceBuffer sendbuf(params.bytes);
   DeviceBuffer recvbuf(params.bytes * worldSize);
   CUDACHECK_TEST(cudaMemset(recvbuf.get(), 0, params.bytes * worldSize));
 
-  fill_sendbuf(static_cast<char*>(sendbuf.get()), params.bytes);
+  DeviceBuffer sendbuf(params.bytes);
+  const auto ownOffset = static_cast<std::size_t>(globalRank) * params.bytes;
+  char* ownRecvSlot = static_cast<char*>(recvbuf.get()) + ownOffset;
+  char* sendbuf_d =
+      params.in_place ? ownRecvSlot : static_cast<char*>(sendbuf.get());
+  fill_sendbuf(sendbuf_d, params.bytes);
 
   DirectAllgatherNvlLaunchParams launchParams{};
   launchParams.my_rank = globalRank;
   launchParams.num_ranks = worldSize;
   launchParams.sendcount = params.bytes;
   launchParams.signaling_data_size = 0;
-  launchParams.sendbuf = static_cast<const char*>(sendbuf.get());
+  launchParams.sendbuf = sendbuf_d;
   launchParams.recvbuf = static_cast<char*>(recvbuf.get());
+  launchParams.in_place = params.in_place;
   launchParams.num_blocks = params.num_blocks;
   launchParams.timeout_ms = 30000.0f;
 
@@ -167,7 +173,12 @@ INSTANTIATE_TEST_SUITE_P(
         DirectNvlTestParams{
             .bytes = 1024 * 1024,
             .num_blocks = 8,
-            .name = "1MB_8B"}),
+            .name = "1MB_8B"},
+        DirectNvlTestParams{
+            .bytes = 64 * 1024,
+            .num_blocks = 4,
+            .in_place = true,
+            .name = "64KB_4B_InPlace"}),
     param_name);
 
 INSTANTIATE_TEST_SUITE_P(

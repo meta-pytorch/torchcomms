@@ -33,6 +33,8 @@ target_compile_features(torchcomms_comms_rcclx PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_rcclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_rcclx PRIVATE
     torchcomms
+    glog::glog
+    fmt::fmt
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     ${RCCLX_SHARED_LIB}

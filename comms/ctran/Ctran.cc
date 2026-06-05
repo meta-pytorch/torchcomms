@@ -31,14 +31,18 @@ Ctran::Ctran(
     : comm_(comm) {
   ctran::logging::initCtranLogging();
 
-  mapper = std::make_unique<CtranMapper>(comm_);
-  gpe = std::make_unique<CtranGpe>(comm->statex_->cudaDev(), comm_);
-
-  algo = std::make_unique<CtranAlgo>(comm, this);
-
+  // Profiler is constructed first so it can be passed into the mapper
+  // (and through to CtranTcpDm) -- CtranTcpDm registers its profiler
+  // hooks during construction, removing the need for a separate
+  // post-construction registerProfilerHooks() round-trip via the mapper.
   if (comm->config_.enableProfiler) {
     profiler = std::make_unique<ctran::Profiler>(comm, std::move(reporter));
   }
+
+  mapper = std::make_unique<CtranMapper>(comm_, profiler.get());
+  gpe = std::make_unique<CtranGpe>(comm->statex_->cudaDev(), comm_);
+
+  algo = std::make_unique<CtranAlgo>(comm, this);
 }
 
 Ctran::~Ctran() {

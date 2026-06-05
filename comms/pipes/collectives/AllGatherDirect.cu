@@ -5,6 +5,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceCheck.cuh"
+#include "comms/pipes/MemcpyCopyOp.cuh"
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/TiledBuffer.cuh"
@@ -29,9 +30,10 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
   const std::size_t tile_offset = group.group_id * tile.tile_elements;
   const std::size_t tile_bytes = tile.bytes();
 
-  const char* own_src = args.sendbuf + tile_offset;
-  char* own_dst = args.recvbuf + my_rank * sendcount + tile_offset;
-  memcpy_vectorized(own_dst, own_src, tile_bytes, group);
+  const char* tile_src = args.sendbuf + tile_offset;
+  char* own_dst = args.recvbuf + static_cast<std::size_t>(my_rank) * sendcount +
+      tile_offset;
+  memcpy_vectorized(own_dst, tile_src, tile_bytes, group);
   group.sync();
 
   if (W <= 1 || tile_bytes == 0) {
@@ -48,7 +50,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
     const std::size_t window =
         remaining < pipeline_window ? remaining : pipeline_window;
 
-    const char* send_src = args.sendbuf + tile_offset + off;
+    const char* send_src = tile_src + off;
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
       if (peer_rank == my_rank) {
         continue;
@@ -86,17 +88,17 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
   const std::size_t io_tile_offset = group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const char* own_src = args.sendbuf + io_tile_offset;
   char* own_dst = args.recvbuf +
       (static_cast<std::size_t>(args.ib_rank) * args.nvl_size + args.nvl_rank) *
           chunk_bytes +
       io_tile_offset;
+  const char* tile_src = args.sendbuf + io_tile_offset;
 
   // Single IB node (W==1): self-copy then NVL broadcast within the local
   // NVL group. The broadcast is still needed because each NVL peer must
   // receive every other peer's chunk even when there is only one IB node.
   if (W <= 1) {
-    memcpy_vectorized(own_dst, own_src, io_tile_bytes, group);
+    memcpy_vectorized(own_dst, tile_src, io_tile_bytes, group);
     group.sync();
     hierarchical_allgather_nvl_broadcast_from_recvbuf(
         group,
@@ -126,7 +128,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
     const std::size_t window =
         (remaining < pipeline_window) ? remaining : pipeline_window;
 
-    const char* send_src = args.sendbuf + io_tile_offset + off;
+    const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
         group,
         send_src,
@@ -275,12 +277,12 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       const std::size_t bytes = (off + chunk_bytes <= args.sendcount)
           ? chunk_bytes
           : (args.sendcount - off);
-      const char* send_src = args.sendbuf + off;
       char* own_dst = args.recvbuf +
           (static_cast<std::size_t>(args.ib_rank) * args.nvl_size +
            args.nvl_rank) *
               args.sendcount +
           off;
+      const char* send_src = args.sendbuf + off;
 
       if (W <= 1) {
         memcpy_vectorized(own_dst, send_src, bytes, group);

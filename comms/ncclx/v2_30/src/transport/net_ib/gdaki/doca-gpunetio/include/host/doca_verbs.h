@@ -289,22 +289,13 @@ enum doca_verbs_qp_send_dbr_mode {
  * @brief The maximum number of outstanding RDMA Read/Atomic requests that a single QP is allowed to
  * initiate concurrently.
  *
- * [META] Neutralized to 0 — Meta's vendored 2.x doca-gpunetio source bundle has
- * no concept of these attr_mask bits, and `is_init2rtr_attrs_valid` would reject
- * an attr_mask containing the upstream (1 << 16/17) values. With the bits set to
- * 0, gin_host_gdaki.cc's `qp_modify(... | MAX_(QP|DEST)_RD_ATOMIC)` calls become
- * inert OR's that pass the validity check. The companion shim
- * `doca_verbs_v2_30_shim.cpp` provides stub setters that make the build link.
- * Net runtime effect: NCCLX 2.30 silently uses MLX5 driver defaults for
- * max_(dest_)?rd_atomic. Restore to (1 << 16) and (1 << 17) when comms/pipes
- * migrates off the shared 2.x doca-gpunetio shim and v2_30+ links a real DOCA 3.x.
  */
-#define DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC 0
+#define DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC (1 << 16)
 /**
  * @brief The maximum number of incoming RDMA Read/Atomic requests that a single QP can handle
- * concurrently as a responder. See note above.
+ * concurrently as a responder.
  */
-#define DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC 0
+#define DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC (1 << 17)
 
 /**
  * @brief Specifies the length of a GID (Global ID) in bytes.

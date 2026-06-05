@@ -516,6 +516,10 @@ bool TorchComm::isAborted() const {
   return impl_->isAborted();
 }
 
+void TorchComm::setTimeout(std::chrono::milliseconds timeout) {
+  impl_->setTimeout(timeout);
+}
+
 int64_t TorchComm::get_device_transport() {
   return impl_->get_device_transport();
 }

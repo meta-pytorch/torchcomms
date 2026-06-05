@@ -94,6 +94,39 @@ TEST_P(CopyUtilsTestParameterized, CopyChunkVectorized) {
       << ", srcOffset=" << params.srcOffset << ")";
 }
 
+TEST_F(CopyUtilsTestFixture, CopyChunkVectorizedExactOverlapIsNoOp) {
+  constexpr std::size_t kBufferSize = 4097;
+  DeviceBuffer buffer(kBufferSize);
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto buffer_d = static_cast<char*>(buffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  std::vector<char> expected(kBufferSize);
+  for (std::size_t i = 0; i < kBufferSize; i++) {
+    expected[i] = static_cast<char>((i * 17) % 256);
+  }
+
+  CUDACHECK_TEST(cudaMemcpy(
+      buffer_d, expected.data(), kBufferSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  testCopyChunkVectorized(
+      buffer_d, buffer_d, kBufferSize, errorCount_d, 1, 256);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0);
+
+  std::vector<char> actual(kBufferSize);
+  CUDACHECK_TEST(
+      cudaMemcpy(actual.data(), buffer_d, kBufferSize, cudaMemcpyDeviceToHost));
+  EXPECT_EQ(actual, expected);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CopyUtilsTests,
     CopyUtilsTestParameterized,
