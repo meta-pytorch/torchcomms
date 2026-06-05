@@ -21,9 +21,9 @@ export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
 
-python3 -m pip install --no-deps --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
+python3 -m pip install --pre torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
-#Build and run XCCL C++ unit tests (mock-based, no XPU hardware required)
+#Build and run XCCL C++ unit tests (mock-based, no XPU hardware required.)
 cd torchcomms
 cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_GLOO=OFF -DUSE_TRANSPORT=OFF
 cmake --build build
