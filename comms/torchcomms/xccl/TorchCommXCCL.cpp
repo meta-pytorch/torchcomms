@@ -1111,9 +1111,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
   }
 
   XCCL_CHECK(
-      xccl_api_,
-      xccl_api_->groupEnd(),
-      "XCCL groupEnd failed in all_gather_v");
+      xccl_api_, xccl_api_->groupEnd(), "XCCL groupEnd failed in all_gather_v");
 
   work->recordEnd();
 
