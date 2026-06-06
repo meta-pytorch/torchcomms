@@ -125,7 +125,6 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         params[i].counterBuf,
         params[i].numSignalSlots,
         params[i].numCounterSlots,
-        params[i].discardSignalSlot,
         params[i].sendRecvState);
   }
 
@@ -211,7 +210,6 @@ void writeDeviceTransportSlot(
       params.counterBuf,
       params.numSignalSlots,
       params.numCounterSlots,
-      params.discardSignalSlot,
       params.sendRecvState);
 
   err = cudaMemcpy(

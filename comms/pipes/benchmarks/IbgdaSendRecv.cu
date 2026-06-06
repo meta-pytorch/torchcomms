@@ -11,6 +11,16 @@
 
 namespace comms::pipes::benchmark {
 
+namespace {
+
+__device__ std::size_t section_bytes(
+    P2pIbgdaTransportDevice* transport,
+    std::size_t totalBytes) {
+  return min(transport->send_recv_state().dataBufferSize, totalBytes);
+}
+
+} // namespace
+
 __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
     char* src,
@@ -27,8 +37,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
 
   // Section size = transport's staging slot size (dataBufferSize).
   // Clamp to totalBytes for small transfers.
-  const std::size_t sectionBytes =
-      min(transport->send_recv_state().dataBufferSize, totalBytes);
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
   const std::size_t totalSections = totalBytes / sectionBytes;
 
   for (std::size_t s = 0; s < totalSections; ++s) {
@@ -61,6 +70,75 @@ void launch_ibgda_send_recv(
   if (err != cudaSuccess) {
     printf("[PIPES] Kernel launch failed: %s\n", cudaGetErrorString(err));
   }
+}
+
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+  auto [role, sub] = group.partition(2);
+  const bool isSender = (role == 0);
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    const std::size_t offset = s * sectionBytes;
+
+    if (isSender) {
+      TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
+      transport->init_send_progress(
+          sub, tiles.bytes(), numBlocks, maxSignalBytes);
+      while (transport->progress_send_once(sub, tiles.data(), timeout) !=
+             IbgdaSendRecvProgressStatus::Done) {
+      }
+    } else {
+      TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
+      transport->init_recv_progress(
+          sub, tiles.bytes(), numBlocks, maxSignalBytes);
+      while (transport->progress_recv_once(sub, tiles.data(), timeout) !=
+             IbgdaSendRecvProgressStatus::Done) {
+      }
+    }
+  }
+}
+#endif
+
+void launch_ibgda_progress_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)dst;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress send/recv benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_send_recv_kernel<<<2 * numBlocks, 512, 0, stream>>>(
+      transport, src, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress sendrecv kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
@@ -152,8 +230,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_kernel(
     Timeout timeout) {
   auto group = make_block_group();
 
-  const std::size_t sectionBytes =
-      min(transport->send_recv_state().dataBufferSize, totalBytes);
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
   const std::size_t totalSections = totalBytes / sectionBytes;
 
   for (std::size_t s = 0; s < totalSections; ++s) {
@@ -172,8 +249,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
     Timeout timeout) {
   auto group = make_block_group();
 
-  const std::size_t sectionBytes =
-      min(transport->send_recv_state().dataBufferSize, totalBytes);
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
   const std::size_t totalSections = totalBytes / sectionBytes;
 
   for (std::size_t s = 0; s < totalSections; ++s) {
@@ -205,6 +281,98 @@ void launch_ibgda_recv(
     Timeout timeout) {
   ibgda_recv_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+}
+
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
+    transport->init_send_progress(
+        group, tiles.bytes(), numBlocks, maxSignalBytes);
+    while (transport->progress_send_once(group, tiles.data(), timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  }
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
+    transport->init_recv_progress(
+        group, tiles.bytes(), numBlocks, maxSignalBytes);
+    while (transport->progress_recv_once(group, tiles.data(), timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  }
+}
+#endif
+
+void launch_ibgda_progress_send(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress send benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_send_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+#endif
+}
+
+void launch_ibgda_progress_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)dst;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress recv benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_recv_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+#endif
 }
 
 __global__ void ibgda_snapshot_step_state_kernel(

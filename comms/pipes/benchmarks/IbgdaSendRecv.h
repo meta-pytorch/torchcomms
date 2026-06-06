@@ -40,6 +40,22 @@ void launch_ibgda_send_recv(
     Timeout timeout = Timeout());
 
 /**
+ * Launch bidirectional progress-send/recv kernel for IBGDA transport.
+ *
+ * Uses the resumable init/progress API and loops until each initialized
+ * transfer reaches Done.
+ */
+void launch_ibgda_progress_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
  * Launch bidirectional tile sendrecv kernel that performs two back-to-back
  * send()/recv() calls with independent maxSignalBytes values.
  */
@@ -71,6 +87,30 @@ void launch_ibgda_send(
  * Launch unidirectional tile recv kernel. All blocks receive.
  */
 void launch_ibgda_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch unidirectional progress send kernel. All blocks send.
+ */
+void launch_ibgda_progress_send(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch unidirectional progress recv kernel. All blocks receive.
+ */
+void launch_ibgda_progress_recv(
     P2pIbgdaTransportDevice* transport,
     char* dst,
     std::size_t nbytes,
