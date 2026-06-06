@@ -6,7 +6,11 @@
 #include "comms/uniflow/transport/nvlink/NVLinkRegistrationHandle.h"
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h> // @manual=third-party//rocm:hip
+#else
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#endif
 
 #include <gtest/gtest.h>
 
