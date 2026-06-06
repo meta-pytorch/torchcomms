@@ -1806,6 +1806,19 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
