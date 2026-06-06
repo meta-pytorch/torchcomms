@@ -630,16 +630,14 @@ class MultipeerIbgdaTransport {
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Slot-index signal/counter/discard buffers.
+  // Slot-index signal/counter buffers.
   // Eager mode: bulk-allocated in exchange(). Null in lazy mode.
   void* signalInboxGpu_{nullptr};
   void* counterGpu_{nullptr};
-  void* discardSignalGpu_{nullptr};
-  // Per-peer views into signal/counter/discard (populated by both modes).
+  // Per-peer views into signal/counter (populated by both modes).
   std::vector<IbgdaRemoteBuffer> signalRemoteViews_;
   std::vector<IbgdaLocalBuffer> signalLocalViews_;
   std::vector<IbgdaLocalBuffer> counterViews_;
-  std::vector<IbgdaRemoteBuffer> discardSignalRemoteViews_;
 
   // Per-peer send/recv buffer views (populated by both modes).
   struct SendRecvPeerBuffers {

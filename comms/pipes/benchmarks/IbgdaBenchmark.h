@@ -42,13 +42,30 @@ void launchIbgdaPutSignalSingle(
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
-void launchIbgdaPutWaitLocalBatch(
+void launchIbgdaPutWaitCounterBatch(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
     const IbgdaLocalBuffer& localCounterBuf,
     int counterId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream);
+
+/**
+ * Launch batched kernel: Multiple put + flush iterations
+ *
+ * Measures raw RDMA write completion through flush(), matching the NCCL GIN
+ * put latency benchmark shape.
+ *
+ * @param totalCycles Output: total GPU cycles for numIters operations
+ */
+void launchIbgdaPutFlushBatch(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream);
@@ -61,7 +78,7 @@ void launchIbgdaPutWaitLocalBatch(
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
-void launchIbgdaPutSignalWaitLocalBatch(
+void launchIbgdaPutSignalWaitCounterBatch(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,

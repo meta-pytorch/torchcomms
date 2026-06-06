@@ -27,7 +27,7 @@ constexpr int kMaxPeers = 128;
 // Each kernel does exactly one put + signal + counter, then waits on the
 // local counter slot. No warmup, no loop.
 
-__global__ void ibgdaPutSignalWaitLocalKernel(
+__global__ void ibgdaPutSignalWaitCounterKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
@@ -58,7 +58,7 @@ __global__ void ibgdaPutSignalWaitLocalKernel(
 // kernel launch to exclude kernel launch overhead and use GPU cycle counters
 // for accurate timing.
 
-__global__ void ibgdaPutWaitLocalBatchKernel(
+__global__ void ibgdaPutWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
@@ -111,7 +111,33 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
   }
 }
 
-__global__ void ibgdaPutSignalWaitLocalBatchKernel(
+__global__ void ibgdaPutFlushBatchKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    for (int i = 0; i < 10; i++) {
+      transport->put(localBuf, remoteBuf, nbytes);
+      transport->flush();
+    }
+
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
+
+    for (int i = 0; i < numIters; i++) {
+      transport->put(localBuf, remoteBuf, nbytes);
+      transport->flush();
+    }
+
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
+    *totalCycles = endCycle - startCycle;
+  }
+}
+
+__global__ void ibgdaPutSignalWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
@@ -352,7 +378,7 @@ void launchIbgdaPutSignalSingle(
     const IbgdaLocalBuffer& localCounterBuf,
     int counterId,
     cudaStream_t stream) {
-  ibgdaPutSignalWaitLocalKernel<<<1, 32, 0, stream>>>(
+  ibgdaPutSignalWaitCounterKernel<<<1, 32, 0, stream>>>(
       transport,
       localBuf,
       remoteBuf,
@@ -370,7 +396,7 @@ void launchIbgdaPutSignalSingle(
 
 // Batched launchers for performance measurement
 
-void launchIbgdaPutWaitLocalBatch(
+void launchIbgdaPutWaitCounterBatch(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
@@ -380,7 +406,7 @@ void launchIbgdaPutWaitLocalBatch(
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream) {
-  ibgdaPutWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
+  ibgdaPutWaitCounterBatchKernel<<<1, 32, 0, stream>>>(
       transport,
       localBuf,
       remoteBuf,
@@ -391,7 +417,19 @@ void launchIbgdaPutWaitLocalBatch(
       totalCycles);
 }
 
-void launchIbgdaPutSignalWaitLocalBatch(
+void launchIbgdaPutFlushBatch(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream) {
+  ibgdaPutFlushBatchKernel<<<1, 32, 0, stream>>>(
+      transport, localBuf, remoteBuf, nbytes, numIters, totalCycles);
+}
+
+void launchIbgdaPutSignalWaitCounterBatch(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
@@ -403,7 +441,7 @@ void launchIbgdaPutSignalWaitLocalBatch(
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream) {
-  ibgdaPutSignalWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
+  ibgdaPutSignalWaitCounterBatchKernel<<<1, 32, 0, stream>>>(
       transport,
       localBuf,
       remoteBuf,

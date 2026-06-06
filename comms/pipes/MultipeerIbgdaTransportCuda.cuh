@@ -60,7 +60,6 @@ struct P2pIbgdaTransportBuildParams {
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
   IbgdaLocalBuffer counterBuf{};
-  IbgdaRemoteBuffer discardSignalSlot{};
   int numSignalSlots{0};
   int numCounterSlots{0};
   IbSendRecvState sendRecvState{};

@@ -76,7 +76,6 @@ struct PeerBufferPayload {
   IbgdaBufferExchInfo recvStaging;
   IbgdaBufferExchInfo srSignal;
   IbgdaBufferExchInfo slotSignal;
-  IbgdaBufferExchInfo slotDiscard;
 };
 
 struct PeerBufferSizes {
@@ -87,7 +86,6 @@ struct PeerBufferSizes {
   std::size_t srProgressState{0};
   std::size_t slotSignal{0};
   std::size_t slotCounter{0};
-  std::size_t slotDiscard{0};
 
   // Pointers into a contiguous allocation (set by layout())
   void* sendStagingPtr{nullptr};
@@ -98,11 +96,10 @@ struct PeerBufferSizes {
   void* srProgressStatePtr{nullptr};
   void* slotSignalPtr{nullptr};
   void* slotCounterPtr{nullptr};
-  void* slotDiscardPtr{nullptr};
 
   std::size_t total() const {
     return staging * 2 + srSignal + srCounter + srStepState + srProgressState +
-        slotSignal + slotCounter + slotDiscard;
+        slotSignal + slotCounter;
   }
 
   void layout(void* base) {
@@ -123,7 +120,6 @@ struct PeerBufferSizes {
     p += slotSignal;
     slotCounterPtr = p;
     p += slotCounter;
-    slotDiscardPtr = p;
   }
 };
 
@@ -812,7 +808,6 @@ PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
       static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
   sizes.slotCounter =
       static_cast<std::size_t>(config_.numCounterSlots) * sizeof(uint64_t);
-  sizes.slotDiscard = (config_.numCounterSlots > 0) ? sizeof(uint64_t) : 0;
   return sizes;
 }
 
@@ -851,7 +846,6 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   }
   if (config_.numCounterSlots > 0) {
     params.counterBuf = counterViews_[peerIndex];
-    params.discardSignalSlot = discardSignalRemoteViews_[peerIndex];
     params.numCounterSlots = config_.numCounterSlots;
   }
   if (!sendRecvPeerBuffers_.empty()) {
@@ -989,7 +983,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       signalRemoteViews_.resize(numPeers);
       signalLocalViews_.resize(numPeers);
       counterViews_.resize(numPeers);
-      discardSignalRemoteViews_.resize(numPeers);
       lazyPeerBufs_.resize(numPeers);
       peerMaterialized_.resize(numPeers, false);
     }
@@ -1050,8 +1043,8 @@ void MultipeerIbgdaTransport::cleanup() {
 
   // Deregister and free transport-owned signal/counter buffers.
   // MRs must be deregistered BEFORE freeing (correct RDMA teardown order).
-  // On AMD: signal/discard inboxes are host-pinned (NIC-accessible);
-  // counter is GPU device memory (sender-local, no NIC access).
+  // On AMD: signal inboxes are host-pinned (NIC-accessible); counter is GPU
+  // device memory (sender-local, no NIC access).
   if (signalInboxGpu_ != nullptr) {
     deregisterBuffer(signalInboxGpu_);
 #ifdef __HIP_PLATFORM_AMD__
@@ -1074,17 +1067,6 @@ void MultipeerIbgdaTransport::cleanup() {
     counterGpu_ = nullptr;
   }
   counterViews_.clear();
-
-  if (discardSignalGpu_ != nullptr) {
-    deregisterBuffer(discardSignalGpu_);
-#ifdef __HIP_PLATFORM_AMD__
-    hipHostFree(discardSignalGpu_);
-#else
-    cudaFree(discardSignalGpu_);
-#endif
-    discardSignalGpu_ = nullptr;
-  }
-  discardSignalRemoteViews_.clear();
 
   // Destroy user buffer MRs
   for (auto& [_, cached] : registeredBuffers_) {
@@ -1425,63 +1407,6 @@ void MultipeerIbgdaTransport::exchange() {
     VLOG(1) << "MultipeerIbgdaTransport: allocated counter buffer "
             << totalCounterBytes << " bytes (" << config_.numCounterSlots
             << " slots/peer, " << numPeers << " peers)";
-  }
-
-  // ---- Allocate transport-owned discard-signal buffer (if counter used) ----
-  //
-  // The discard-signal buffer exists solely so that counter-only puts can be
-  // routed through the async signal_counter compound (see
-  // P2pIbgdaTransportDevice::put_impl). DOCA verbs has no "counter-only"
-  // primitive: signal_counter posts the counter atomic on the companion QP
-  // ordered against a FENCEd signal on the primary QP. To use it without a
-  // real signal recipient, we need a remote-addressable uint64_t to act as
-  // the signal target — peers never read these slots, so the value is
-  // garbage by design.
-  //
-  // Layout: numPeers slots, one per peer that may write to us. Each rank
-  // exchanges the buffer addr/rkey; per-peer remote view points to *our*
-  // slot in the peer's discard buffer (offset = myPeerIndexOnPeer).
-  if (config_.numCounterSlots > 0) {
-    const std::size_t totalDiscardBytes =
-        static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
-
-#ifdef __HIP_PLATFORM_AMD__
-    // See signal-inbox AMD branch above — same host-pinned rationale.
-    hipError_t hipErr = hipHostMalloc(
-        &discardSignalGpu_, totalDiscardBytes, hipHostMallocDefault);
-    if (hipErr != hipSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate discard-signal buffer (host-pinned): " +
-          std::string(hipGetErrorString(hipErr)));
-    }
-    std::memset(discardSignalGpu_, 0, totalDiscardBytes);
-#else
-    cudaError_t cudaErr = cudaMalloc(&discardSignalGpu_, totalDiscardBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate discard-signal buffer: " +
-          std::string(cudaGetErrorString(cudaErr)));
-    }
-    cudaErr = cudaMemset(discardSignalGpu_, 0, totalDiscardBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error("Failed to zero discard-signal buffer");
-    }
-#endif
-
-    auto localDiscardBuf = registerBuffer(discardSignalGpu_, totalDiscardBytes);
-    auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
-
-    discardSignalRemoteViews_.resize(numPeers);
-    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-      int peerRank = peerIndexToRank(peerIndex);
-      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-      discardSignalRemoteViews_[peerIndex] =
-          remoteDiscardBufs[peerIndex].subBuffer(
-              static_cast<std::size_t>(myPeerIndexOnPeer) * sizeof(uint64_t));
-    }
-
-    VLOG(1) << "MultipeerIbgdaTransport: allocated discard-signal buffer "
-            << totalDiscardBytes << " bytes (" << numPeers << " peers)";
   }
 
   exchange_send_recv_buffers();
@@ -2036,11 +1961,6 @@ void MultipeerIbgdaTransport::allocatePeerBuffers(
   if (config_.numCounterSlots > 0) {
     counterViews_[peerIndex] =
         IbgdaLocalBuffer(sizes.slotCounterPtr, reg.lkey_per_device);
-    payload.slotDiscard.addr = reinterpret_cast<uint64_t>(sizes.slotDiscardPtr);
-    payload.slotDiscard.numNics = numNics_;
-    for (int n = 0; n < numNics_; ++n) {
-      payload.slotDiscard.rkey_per_device[n] = HostRKey(mr.mrs[n]->rkey);
-    }
   }
 }
 
@@ -2150,10 +2070,6 @@ void MultipeerIbgdaTransport::applyRemoteViews(
   }
   if (config_.numSignalSlots > 0) {
     signalRemoteViews_[peerIndex] = remotePayload.slotSignal.toRemoteBuffer();
-  }
-  if (config_.numCounterSlots > 0) {
-    discardSignalRemoteViews_[peerIndex] =
-        remotePayload.slotDiscard.toRemoteBuffer();
   }
 }
 
