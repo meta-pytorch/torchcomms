@@ -69,18 +69,19 @@ TorchComm provides the following categories of operations:
 #### Constructor
 
 ```python
-torchcomms.new_comm(backend, device, ...)
+torchcomms.new_comm(backend, device, name, ...)
 ```
 
 - **backend** (str): Communication backend to use (e.g., "ncclx")
 - **device** (torch.device): Device to use for communication
-- **options** (CommOptions, optional): Configuration options including store,
-  timeout, and other settings
+- **name** (str): Communicator name, unique within the process
+- **optional keyword arguments**: `abort_process_on_timeout_or_error`,
+  `timeout`, `high_priority_stream`, `store`, `enable_reconfigure`, and
+  `hints`
 
-**Note**: The store parameter is now optional and can be provided through the
-options parameter. TorchComms supports multiple bootstrap backends including
-TCPStore, and Torchrun. If no store is provided, TorchComms will automatically
-detect the environment and use the appropriate bootstrap mechanism.
+**Note**: TorchComms supports multiple bootstrap backends including TCPStore
+and Torchrun. If no store is provided, TorchComms will automatically detect the
+environment and use the appropriate bootstrap mechanism.
 
 #### Initialization Methods
 
@@ -443,18 +444,25 @@ arguments:
 
 **Backend-Specific Hints:**
 
-- **"high_priority_stream"**: Set to "true" to enable high priority CUDA stream
-  for NCCL operations (default: not set, equivalent to false)
+- **"high_priority_stream"**: Set to `"true"` or `"false"` to override the
+  high-priority stream setting for GPU backends. If both this hint and the
+  `high_priority_stream` communicator option are provided, the hint takes
+  precedence.
 
 #### Communicator Options
 
-The `new_comm` function accepts several optional parameters for configuration:
+The `new_comm` function accepts the following parameters for configuration:
 
 - **abort_process_on_timeout_or_error** (bool, optional): Whether to abort the
   process on timeout or error
 - **timeout** (timedelta, optional): Default timeout for operations
+- **high_priority_stream** (bool, optional): Whether to use a high-priority
+  stream by default for GPU backends when the `high_priority_stream` hint is
+  not provided
 - **store** (Store, optional): Store for communication between processes
-- **name** (str, optional): Communicator name
+- **name** (str): Communicator name
+- **enable_reconfigure** (bool, optional): Enables `reconfigure()` for fault
+  tolerance on supported backends
 - **hints** (Dict[str, str], optional): Dictionary of string hints for
   backend-specific options
 

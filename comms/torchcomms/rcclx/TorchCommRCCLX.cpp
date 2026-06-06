@@ -179,8 +179,7 @@ void TorchCommRCCLX::initRcclxResources() {
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  high_priority_stream_ = options_.isHighPriorityStreamEnabled();
 
   // Create internal stream
   //
