@@ -2,7 +2,11 @@
 
 #pragma once
 
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#endif
 
 #include "comms/uniflow/Result.h"
 
@@ -43,13 +47,19 @@ class CudaApi {
       void* dst,
       const void* src,
       size_t count,
+#ifdef __HIP_PLATFORM_AMD__
+      hipMemcpyKind kind,
+      hipStream_t stream);
+#else
       cudaMemcpyKind kind,
       cudaStream_t stream);
+#endif
 
-#if CUDART_VERSION >= 12080
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12080
   // Batch DMA submission. Available on CUDA 12.8+; the underlying CUDA
   // signature changed in CUDA 13.0 (failIdx removed), but the wrapper
   // surface stays stable.
+  // Note: Not available on AMD/HIP - use individual memcpyAsync calls instead.
   virtual Status memcpyBatchAsync(
       void* const* dsts,
       const void* const* srcs,
@@ -64,14 +74,33 @@ class CudaApi {
       const void* src,
       int srcDevice,
       size_t count,
+#ifdef __HIP_PLATFORM_AMD__
+      hipStream_t stream);
+#else
       cudaStream_t stream);
+#endif
 
   // --- Stream ---
 
+#ifdef __HIP_PLATFORM_AMD__
+  virtual Status streamSynchronize(hipStream_t stream);
+#else
   virtual Status streamSynchronize(cudaStream_t stream);
+#endif
 
   // --- Event ---
 
+#ifdef __HIP_PLATFORM_AMD__
+  virtual Status eventCreate(hipEvent_t* event);
+
+  virtual Status eventRecord(hipEvent_t event, hipStream_t stream);
+
+  /// Query whether a recorded event has completed.
+  /// Returns true if the event has completed, false if still in-flight.
+  virtual Result<bool> eventQuery(hipEvent_t event);
+
+  virtual Status eventDestroy(hipEvent_t event);
+#else
   virtual Status eventCreate(cudaEvent_t* event);
 
   virtual Status eventRecord(cudaEvent_t event, cudaStream_t stream);
@@ -81,6 +110,7 @@ class CudaApi {
   virtual Result<bool> eventQuery(cudaEvent_t event);
 
   virtual Status eventDestroy(cudaEvent_t event);
+#endif
 };
 
 /// RAII guard that saves the current CUDA device on construction and

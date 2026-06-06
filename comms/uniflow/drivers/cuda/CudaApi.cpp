@@ -100,7 +100,7 @@ Status CudaApi::memcpyAsync(
   return Ok();
 }
 
-#if CUDART_VERSION >= 12080
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12080
 Status CudaApi::memcpyBatchAsync(
     void* const* dsts,
     const void* const* srcs,
