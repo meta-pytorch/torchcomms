@@ -4,8 +4,8 @@
 
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/transport/ib/HostTransportDev.cuh"
-#include "comms/pipes/CopyUtils.cuh"
-#include "comms/pipes/ThreadGroup.cuh"
+#include "comms/prims/CopyUtils.cuh"
+#include "comms/prims/ThreadGroup.cuh"
 
 namespace ctran::transport::ib {
 
@@ -26,7 +26,7 @@ __device__ __forceinline__ void ibCopyStagingChunked(
     bool isSend,
     int myBlockIdx,
     int numBlocks) {
-  auto block = comms::pipes::make_block_group();
+  auto block = comms::prims::make_block_group();
 
   const size_t chunkSize = dt->chunkSize;
   const int pipelineDepth = dt->pipelineDepth;
@@ -58,10 +58,10 @@ __device__ __forceinline__ void ibCopyStagingChunked(
       char* staging = desc.stagingSlot;
       char* user = userBuf + offset;
       if (isSend) {
-        comms::pipes::memcpy_vectorized(
+        comms::prims::memcpy_vectorized(
             staging + myStart, user + myStart, myLen, block);
       } else {
-        comms::pipes::memcpy_vectorized(
+        comms::prims::memcpy_vectorized(
             user + myStart, staging + myStart, myLen, block);
       }
     }

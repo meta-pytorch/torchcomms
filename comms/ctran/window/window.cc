@@ -12,9 +12,9 @@
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
+#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/window/DeviceWindow.cuh"
+#include "comms/prims/window/HostWindow.h"
 #endif
 #include "comms/utils/logger/LogUtils.h"
 
@@ -326,8 +326,8 @@ bool CtranWin::nvlEnabled(int rank) const {
 
 #if defined(ENABLE_PIPES)
 commResult_t CtranWin::getDeviceWin(
-    comms::pipes::DeviceWindow* devWin,
-    const comms::pipes::WindowConfig& config) {
+    comms::prims::DeviceWindow* devWin,
+    const comms::prims::WindowConfig& config) {
   auto* transport = comm->multiPeerTransport_.get();
   if (!transport) {
     FB_ERRORRETURN(
@@ -349,7 +349,7 @@ commResult_t CtranWin::getDeviceWin(
         winDataPtr,
         dataBytes);
 
-    hostWindow_ = std::make_unique<comms::pipes::HostWindow>(
+    hostWindow_ = std::make_unique<comms::prims::HostWindow>(
         *transport, config, winDataPtr, dataBytes);
 
     hostWindow_->exchange();
@@ -358,7 +358,7 @@ commResult_t CtranWin::getDeviceWin(
         INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
   }
 
-  new (devWin) comms::pipes::DeviceWindow(hostWindow_->getDeviceWindow());
+  new (devWin) comms::prims::DeviceWindow(hostWindow_->getDeviceWindow());
   return commSuccess;
 }
 #endif // ENABLE_PIPES
