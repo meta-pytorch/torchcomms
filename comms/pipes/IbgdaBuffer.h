@@ -414,6 +414,43 @@ struct IbgdaBufferExchInfo {
   }
 };
 
+namespace detail {
+
+/**
+ * Internal stage for one transport-owned resumable send/recv operation.
+ *
+ * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
+ * Send operations use `WaitNicDone` and `WaitSlotFree`; recv operations use
+ * `WaitDataReady`.
+ */
+enum class IbSendRecvProgressStage : uint8_t {
+  Done,
+  WaitNicDone,
+  WaitSlotFree,
+  WaitDataReady,
+};
+
+/**
+ * Internal resumable state for one transport-owned send/recv operation.
+ *
+ * The state is indexed by direction and transport group. It tracks the
+ * reserved protocol byte range and the current staging-ring cursor for the
+ * progress APIs in `P2pIbgdaTransportDevice`.
+ */
+struct IbSendRecvProgressState {
+  int groupId{0};
+  int activeBlocks{0};
+  std::size_t nbytes{0};
+  std::size_t maxSignalBytes{0};
+  std::size_t perBlockSlot{0};
+  std::size_t chunkSize{0};
+  std::size_t nextByte{0};
+  int64_t baseStep{0};
+  IbSendRecvProgressStage stage{IbSendRecvProgressStage::Done};
+};
+
+} // namespace detail
+
 /**
  * IbSendRecvState — device-side state for pipelined RDMA send/recv.
  *
@@ -444,6 +481,10 @@ struct IbgdaBufferExchInfo {
  *   stepState: 2 * maxGroups * sizeof(int64_t).
  *     [0, maxGroups)             — sender byte cursors
  *     [maxGroups, 2*maxGroups)   — receiver byte cursors
+ *
+ *   progressState: 2 * maxGroups internal progress states.
+ *     [0, maxGroups)             — sender progress slots
+ *     [maxGroups, 2*maxGroups)   — receiver progress slots
  */
 struct IbSendRecvState {
   IbgdaLocalBuffer
@@ -457,6 +498,8 @@ struct IbSendRecvState {
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
   int64_t* stepState{nullptr}; ///< Per-group byte cursors
+  detail::IbSendRecvProgressState* progressState{
+      nullptr}; ///< Per-group progress slots
   int maxGroups{0}; ///< Layout size for signals/step arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
