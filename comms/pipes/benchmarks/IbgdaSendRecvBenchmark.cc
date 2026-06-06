@@ -26,6 +26,29 @@ using SendRecvConfig = MultipeerIbgdaTransportConfig::SendRecvConfig;
 
 namespace {
 
+enum class SendRecvApi {
+  Blocking,
+  Progress,
+};
+
+const char* sendRecvApiName(SendRecvApi api) {
+  switch (api) {
+    case SendRecvApi::Blocking:
+      return "send/recv";
+    case SendRecvApi::Progress:
+      return "progress";
+  }
+  return "unknown";
+}
+
+std::vector<SendRecvApi> benchmarkApis() {
+  std::vector<SendRecvApi> apis{SendRecvApi::Blocking};
+#ifndef __HIP_PLATFORM_AMD__
+  apis.push_back(SendRecvApi::Progress);
+#endif
+  return apis;
+}
+
 std::vector<int64_t> snapshotStepState(
     P2pIbgdaTransportDevice* transport,
     int maxGroups,
@@ -511,7 +534,7 @@ TEST_F(IbgdaSendRecvTest, Bandwidth) {
     XLOGF(
         INFO,
         "================================================================");
-    XLOGF(INFO, "  IBGDA Tile SendRecv Bandwidth");
+    XLOGF(INFO, "  IBGDA Tile SendRecv Bandwidth Comparison");
     XLOGF(
         INFO,
         "  numBlocks={}, slotSize={}MB, pipelineDepth={}",
@@ -522,59 +545,92 @@ TEST_F(IbgdaSendRecvTest, Bandwidth) {
         INFO,
         "================================================================");
     XLOGF(
-        INFO, "{:>10s}  {:>10s}  {:>12s}", "MsgSize", "Sections", "BW (GB/s)");
-    XLOGF(INFO, "----------------------------------------------");
+        INFO,
+        "{:>10s}  {:>10s}  {:>10s}  {:>12s}",
+        "API",
+        "MsgSize",
+        "Sections",
+        "BW (GB/s)");
+    XLOGF(INFO, "----------------------------------------------------------");
   }
 
-  for (auto nBytes : messageSizes) {
-    bootstrap->barrierAll();
-
-    // Warmup
-    for (int i = 0; i < kWarmupIters; ++i) {
-      launch_ibgda_send_recv(
-          deviceTransport,
-          static_cast<char*>(sendBuf.get()),
-          static_cast<char*>(recvBuf.get()),
-          nBytes,
-          kNumBlocks,
-          stream_);
-      cudaStreamSynchronize(stream_);
+  for (auto api : benchmarkApis()) {
+    for (auto nBytes : messageSizes) {
       bootstrap->barrierAll();
-    }
 
-    bootstrap->barrierAll();
-
-    // Benchmark
-    cudaEventRecord(start, stream_);
-    for (int i = 0; i < kBenchIters; ++i) {
-      launch_ibgda_send_recv(
-          deviceTransport,
-          static_cast<char*>(sendBuf.get()),
-          static_cast<char*>(recvBuf.get()),
-          nBytes,
-          kNumBlocks,
-          stream_);
-    }
-    cudaEventRecord(stop, stream_);
-    cudaEventSynchronize(stop);
-
-    bootstrap->barrierAll();
-
-    float totalMs = 0;
-    cudaEventElapsedTime(&totalMs, start, stop);
-    float avgMs = totalMs / kBenchIters;
-
-    float bwGBs = (2.0f * nBytes / 1e9f) / (avgMs / 1000.0f);
-    std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
-
-    if (globalRank == 0) {
-      std::string sizeStr;
-      if (nBytes >= 1ULL << 30) {
-        sizeStr = fmt::format("{}GB", nBytes >> 30);
-      } else {
-        sizeStr = fmt::format("{}MB", nBytes >> 20);
+      // Warmup
+      for (int i = 0; i < kWarmupIters; ++i) {
+        if (api == SendRecvApi::Blocking) {
+          launch_ibgda_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        } else {
+          launch_ibgda_progress_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        }
+        cudaStreamSynchronize(stream_);
+        bootstrap->barrierAll();
       }
-      XLOGF(INFO, "{:>10s}  {:>10d}  {:>12.2f}", sizeStr, numSections, bwGBs);
+
+      bootstrap->barrierAll();
+
+      // Benchmark
+      cudaEventRecord(start, stream_);
+      for (int i = 0; i < kBenchIters; ++i) {
+        if (api == SendRecvApi::Blocking) {
+          launch_ibgda_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        } else {
+          launch_ibgda_progress_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        }
+      }
+      cudaEventRecord(stop, stream_);
+      cudaEventSynchronize(stop);
+
+      bootstrap->barrierAll();
+
+      float totalMs = 0;
+      cudaEventElapsedTime(&totalMs, start, stop);
+      float avgMs = totalMs / kBenchIters;
+
+      float bwGBs = (2.0f * nBytes / 1e9f) / (avgMs / 1000.0f);
+      std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
+
+      if (globalRank == 0) {
+        std::string sizeStr;
+        if (nBytes >= 1ULL << 30) {
+          sizeStr = fmt::format("{}GB", nBytes >> 30);
+        } else {
+          sizeStr = fmt::format("{}MB", nBytes >> 20);
+        }
+        XLOGF(
+            INFO,
+            "{:>10s}  {:>10s}  {:>10d}  {:>12.2f}",
+            sendRecvApiName(api),
+            sizeStr,
+            numSections,
+            bwGBs);
+      }
     }
   }
 
@@ -640,7 +696,9 @@ TEST_F(IbgdaSendRecvTest, UnidirectionalBandwidth) {
     XLOGF(
         INFO,
         "================================================================");
-    XLOGF(INFO, "  IBGDA Tile Unidirectional Bandwidth (rank 0 → rank 1)");
+    XLOGF(
+        INFO,
+        "  IBGDA Tile Unidirectional Bandwidth Comparison (rank 0 -> rank 1)");
     XLOGF(
         INFO,
         "  numBlocks={}, slotSize={}MB, pipelineDepth={}",
@@ -651,76 +709,121 @@ TEST_F(IbgdaSendRecvTest, UnidirectionalBandwidth) {
         INFO,
         "================================================================");
     XLOGF(
-        INFO, "{:>10s}  {:>10s}  {:>12s}", "MsgSize", "Sections", "BW (GB/s)");
-    XLOGF(INFO, "----------------------------------------------");
+        INFO,
+        "{:>10s}  {:>10s}  {:>10s}  {:>12s}",
+        "API",
+        "MsgSize",
+        "Sections",
+        "BW (GB/s)");
+    XLOGF(INFO, "----------------------------------------------------------");
   }
 
-  for (auto nBytes : messageSizes) {
-    bootstrap->barrierAll();
-
-    // Warmup
-    for (int i = 0; i < kWarmupIters; ++i) {
-      if (globalRank == 0) {
-        launch_ibgda_send(
-            deviceTransport,
-            static_cast<char*>(sendBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      } else {
-        launch_ibgda_recv(
-            deviceTransport,
-            static_cast<char*>(recvBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      }
-      cudaStreamSynchronize(stream_);
+  for (auto api : benchmarkApis()) {
+    for (auto nBytes : messageSizes) {
       bootstrap->barrierAll();
-    }
 
-    bootstrap->barrierAll();
+      // Warmup
+      for (int i = 0; i < kWarmupIters; ++i) {
+        if (globalRank == 0) {
+          if (api == SendRecvApi::Blocking) {
+            launch_ibgda_send(
+                deviceTransport,
+                static_cast<char*>(sendBuf.get()),
+                nBytes,
+                kNumBlocks,
+                stream_);
+          } else {
+            launch_ibgda_progress_send(
+                deviceTransport,
+                static_cast<char*>(sendBuf.get()),
+                nBytes,
+                kNumBlocks,
+                stream_);
+          }
+        } else if (api == SendRecvApi::Blocking) {
+          launch_ibgda_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        } else {
+          launch_ibgda_progress_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        }
+        cudaStreamSynchronize(stream_);
+        bootstrap->barrierAll();
+      }
 
-    // Benchmark
-    cudaEventRecord(start, stream_);
-    for (int i = 0; i < kBenchIters; ++i) {
+      bootstrap->barrierAll();
+
+      // Benchmark
+      cudaEventRecord(start, stream_);
+      for (int i = 0; i < kBenchIters; ++i) {
+        if (globalRank == 0) {
+          if (api == SendRecvApi::Blocking) {
+            launch_ibgda_send(
+                deviceTransport,
+                static_cast<char*>(sendBuf.get()),
+                nBytes,
+                kNumBlocks,
+                stream_);
+          } else {
+            launch_ibgda_progress_send(
+                deviceTransport,
+                static_cast<char*>(sendBuf.get()),
+                nBytes,
+                kNumBlocks,
+                stream_);
+          }
+        } else if (api == SendRecvApi::Blocking) {
+          launch_ibgda_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        } else {
+          launch_ibgda_progress_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              kNumBlocks,
+              stream_);
+        }
+      }
+      cudaEventRecord(stop, stream_);
+      cudaEventSynchronize(stop);
+
+      bootstrap->barrierAll();
+
+      float totalMs = 0;
+      cudaEventElapsedTime(&totalMs, start, stop);
+      float avgMs = totalMs / kBenchIters;
+
+      // Unidirectional: only one direction.
+      float bwGBs = (nBytes / 1e9f) / (avgMs / 1000.0f);
+      std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
+
       if (globalRank == 0) {
-        launch_ibgda_send(
-            deviceTransport,
-            static_cast<char*>(sendBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      } else {
-        launch_ibgda_recv(
-            deviceTransport,
-            static_cast<char*>(recvBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
+        std::string sizeStr;
+        if (nBytes >= 1ULL << 30) {
+          sizeStr = fmt::format("{}GB", nBytes >> 30);
+        } else {
+          sizeStr = fmt::format("{}MB", nBytes >> 20);
+        }
+        XLOGF(
+            INFO,
+            "{:>10s}  {:>10s}  {:>10d}  {:>12.2f}",
+            sendRecvApiName(api),
+            sizeStr,
+            numSections,
+            bwGBs);
       }
-    }
-    cudaEventRecord(stop, stream_);
-    cudaEventSynchronize(stop);
-
-    bootstrap->barrierAll();
-
-    float totalMs = 0;
-    cudaEventElapsedTime(&totalMs, start, stop);
-    float avgMs = totalMs / kBenchIters;
-
-    // Unidirectional: only one direction
-    float bwGBs = (nBytes / 1e9f) / (avgMs / 1000.0f);
-    std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
-
-    if (globalRank == 0) {
-      std::string sizeStr;
-      if (nBytes >= 1ULL << 30) {
-        sizeStr = fmt::format("{}GB", nBytes >> 30);
-      } else {
-        sizeStr = fmt::format("{}MB", nBytes >> 20);
-      }
-      XLOGF(INFO, "{:>10s}  {:>10d}  {:>12.2f}", sizeStr, numSections, bwGBs);
     }
   }
 
