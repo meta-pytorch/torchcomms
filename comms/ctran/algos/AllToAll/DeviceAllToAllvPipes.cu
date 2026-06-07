@@ -5,10 +5,10 @@
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/ll128/Ll128Packet.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the
 // displacement for the given rank. Each thread computes its own peer's

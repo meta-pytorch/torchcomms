@@ -7,8 +7,8 @@
 
 // HipCompat provides `__trap` (mapped to `abort`) when this file is compiled
 // for the AMD device pass; on NVIDIA the include is a harmless no-op.
-#include "comms/prims/DeviceMacros.cuh"
 #include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/core/DeviceMacros.cuh"
 
 namespace comms::prims {
 
@@ -152,7 +152,7 @@ struct Timeout {
 
 // Include ThreadGroup for the inline implementation of check(ThreadGroup&)
 // This is placed after the namespace to avoid circular dependencies
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims {
 

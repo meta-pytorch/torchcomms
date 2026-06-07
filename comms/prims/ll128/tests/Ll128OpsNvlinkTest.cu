@@ -3,8 +3,8 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/ll128/Ll128Ops.cuh"
 #include "comms/prims/ll128/Ll128Packet.cuh"
 #include "comms/prims/ll128/tests/Ll128OpsNvlinkTest.cuh"

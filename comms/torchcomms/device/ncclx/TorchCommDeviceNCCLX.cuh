@@ -34,7 +34,7 @@
 #include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 #include "comms/common/AtomicUtils.cuh"
-#include "comms/prims/CopyUtils.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 
 namespace torchcomms::device {

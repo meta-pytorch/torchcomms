@@ -14,7 +14,7 @@
 #include <doca_verbs_net_wrapper.h>
 #endif
 
-#include "comms/prims/IbverbsLazy.h"
+#include "comms/prims/platform/IbverbsLazy.h"
 #include "comms/prims/rdma/IbHcaParser.h"
 
 namespace comms::prims {

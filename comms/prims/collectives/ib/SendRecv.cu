@@ -14,8 +14,8 @@
 
 #include <stdexcept>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/TiledBuffer.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLX.cuh"
 
 namespace comms::prims::ib {

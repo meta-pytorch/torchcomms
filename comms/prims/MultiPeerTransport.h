@@ -9,7 +9,7 @@
 #include <vector>
 
 // `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
-// `comms/prims/GpuMemHandler.h` (included below) brings in the HIP
+// `comms/prims/memory/GpuMemHandler.h` (included below) brings in the HIP
 // runtime headers under `#ifdef __HIP_PLATFORM_AMD__` and provides the
 // stand-in types needed for the `CUdeviceptr` /
 // `CUmemGenericAllocationHandle` member fields used by the
@@ -20,12 +20,12 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/GpuMemHandler.h"
 #include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/MultipeerIbgdaTransport.h"
 #include "comms/prims/P2pSelfTransportDevice.cuh"
-#include "comms/prims/TopologyDiscovery.h"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 namespace comms::prims {
 

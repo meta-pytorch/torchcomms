@@ -5,7 +5,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/prims/GpuMemHandler.h"
+#include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"

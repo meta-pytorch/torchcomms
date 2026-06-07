@@ -9,7 +9,7 @@
 #include <cstdio>
 #include "comms/prims/amd/HipHostCompat.h"
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims {
 

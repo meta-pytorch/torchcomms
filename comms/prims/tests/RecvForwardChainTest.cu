@@ -2,9 +2,9 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/CopyOp.cuh"
 #include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::test {
 

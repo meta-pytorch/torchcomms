@@ -25,12 +25,12 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/CopyUtils.cuh"
 #include "comms/prims/IbgdaBuffer.h"
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/P2pIbgdaTransportDevice.cuh"
 #include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"

@@ -13,12 +13,11 @@
 
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/NvmlFabricInfo.h"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/topology/NvmlFabricInfo.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
-#include "comms/utils/CudaRAII.h"
 
 using namespace meta::comms;
 

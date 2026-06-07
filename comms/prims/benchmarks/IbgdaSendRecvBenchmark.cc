@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "comms/prims/MultipeerIbgdaTransport.h"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"

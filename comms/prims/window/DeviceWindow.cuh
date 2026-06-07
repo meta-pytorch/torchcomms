@@ -4,13 +4,13 @@
 
 #include <cassert>
 #include <cstdint>
-#include "comms/prims/DeviceSpan.cuh"
 #include "comms/prims/IbgdaBuffer.h"
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/SignalState.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 #ifdef __CUDACC__
 #include "comms/prims/P2pIbgdaTransportDevice.cuh"

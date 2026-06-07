@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 class P2pIbgdaTransportDevice;

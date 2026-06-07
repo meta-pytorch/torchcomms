@@ -101,7 +101,7 @@ struct TiledBuffer {
 
 // Include ThreadGroup for the group-bound constructor implementation.
 // Placed after the struct to break the circular dependency.
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims {
 

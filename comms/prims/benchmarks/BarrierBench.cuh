@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "comms/prims/BarrierState.cuh"
+#include "comms/prims/core/BarrierState.cuh"
 
 namespace comms::prims::benchmark {
 

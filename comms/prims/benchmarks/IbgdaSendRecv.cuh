@@ -3,8 +3,8 @@
 #pragma once
 
 #include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/TiledBuffer.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims::benchmark {
 

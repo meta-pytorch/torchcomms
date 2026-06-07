@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/prims/PipesTrace.h"
+#include "comms/prims/trace/PipesTrace.h"
 
 #include <pthread.h>
 

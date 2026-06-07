@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/CudaDriverLazy.h"
+#include "comms/prims/platform/CudaDriverLazy.h"
 
 #include <cstdio>
 #include <mutex>

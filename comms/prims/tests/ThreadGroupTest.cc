@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/ThreadGroupTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"

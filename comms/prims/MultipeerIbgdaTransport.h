@@ -24,7 +24,7 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/IbverbsLazy.h"
+#include "comms/prims/platform/IbverbsLazy.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
 #endif

@@ -5,8 +5,8 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 
