@@ -13,12 +13,12 @@
 #include <string>
 #include <vector>
 
-#include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/MultipeerIbgdaTransport.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/prims/collectives/AllGatherLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 

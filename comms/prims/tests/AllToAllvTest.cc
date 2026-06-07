@@ -5,13 +5,13 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/prims/MultiPeerNvlTransport.h"
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/collectives/AllToAllv.cuh"
 #include "comms/prims/tests/AllToAllvTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #ifndef __HIP_PLATFORM_AMD__

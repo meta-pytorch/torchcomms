@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "comms/prims/P2pSelfTransportDevice.cuh"
 #include "comms/prims/tests/P2pSelfTransportDeviceTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"

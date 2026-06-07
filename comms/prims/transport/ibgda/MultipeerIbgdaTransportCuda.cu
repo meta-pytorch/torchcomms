@@ -1,13 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/MultipeerIbgdaTransportCuda.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 
 #include <cuda_runtime.h>
 #include <glog/logging.h>
 
 #include <cstring>
 
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims {
 

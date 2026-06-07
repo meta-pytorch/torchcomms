@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-#include "comms/prims/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims::tests {
 

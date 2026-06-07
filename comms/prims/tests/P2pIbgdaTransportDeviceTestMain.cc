@@ -15,11 +15,11 @@
 // On AMD (`__HIP_PLATFORM_AMD__`), this maps `cuda*` runtime APIs to
 // `hip*` and provides a HIP-backed `meta::comms::DeviceBuffer`. No-op
 // on NVIDIA — the existing CudaRAII / cuda_runtime path stays in use.
-#include "comms/prims/IbgdaBuffer.h"
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"

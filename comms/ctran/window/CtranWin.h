@@ -15,7 +15,7 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PIPES)
-#include "comms/prims/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #endif
 
 #if defined(ENABLE_PIPES)

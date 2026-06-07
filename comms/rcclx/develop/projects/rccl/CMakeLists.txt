@@ -874,7 +874,7 @@ endforeach()
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Ii]bgda")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Dd]oca")
 # MultiPeerTransport unconditionally includes MultipeerIbgdaTransport.h, so exclude it too.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/MultiPeerTransport\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerTransport\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerTransportAmd\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "AllToAllvAmd\\.")
 # Exclude Dispatchv files (currently disabled)
@@ -888,7 +888,7 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/benchmarks/.*")
 # P2pIbgdaTransportDevice.cuh, __trap) that are not available on ROCm/HIP.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/collectives/.*")
 # Exclude rdma files — they depend on spdlog which is not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/rdma/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/rdma/.*")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/window/.*")
 # Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
@@ -896,11 +896,11 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
-# Exclude comms/prims/amd/ — the AMD GDA (GPUDirect Async) verbs backend
+# Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
 # (pipes_gda, mlx5/bnxt nic backends) is only consumed by the excluded
 # MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
 # (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/amd/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/amd/.*")
 
 # Run this command to get RCCLX_LIB_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort

@@ -6,8 +6,8 @@
 #include <new>
 #include <type_traits>
 
-#include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/P2pSelfTransportDevice.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
 namespace comms::prims {
 // Transport union members must be safe for cudaMemcpy to device.

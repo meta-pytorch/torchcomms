@@ -7,8 +7,8 @@
 // Provides `doca_*` device-side type aliases, constants, and function
 // wrappers that forward to the DOCA-aligned `pipes_gda_*` overloads in
 // `amd/pipes_gda/PipesGdaOps.h`. Included by
-// `comms/prims/P2pIbgdaTransportDevice.cuh` when `__HIP_PLATFORM_AMD__` is
-// defined, instead of the NVIDIA DOCA headers
+// `comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh` when
+// `__HIP_PLATFORM_AMD__` is defined, instead of the NVIDIA DOCA headers
 // (`<device/doca_gpunetio_dev_verbs_*.cuh>` + `DocaVerbsUtils.cuh`).
 //
 // Each `doca_X` shim is a **pure name-prefix forward** to

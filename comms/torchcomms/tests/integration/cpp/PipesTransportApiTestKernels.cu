@@ -6,9 +6,9 @@
 #include "PipesTransportApiTestKernels.cuh"
 #include "StressTestKernelUtils.cuh"
 
-#include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 // Transport layer uses SIGNAL_ADD / CMP_GE (not window layer's ADD / GE)
 using comms::prims::CmpOp;

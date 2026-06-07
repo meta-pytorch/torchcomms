@@ -10,8 +10,8 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #if defined(ENABLE_PIPES)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
-#include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/Transport.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/Transport.cuh"
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"

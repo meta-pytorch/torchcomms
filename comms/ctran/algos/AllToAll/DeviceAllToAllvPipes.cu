@@ -5,9 +5,9 @@
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 
 // Compute the exclusive prefix sum of counts[0..rank-1] to get the

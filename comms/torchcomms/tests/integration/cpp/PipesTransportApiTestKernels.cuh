@@ -7,7 +7,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 namespace torchcomms::device::test {
 

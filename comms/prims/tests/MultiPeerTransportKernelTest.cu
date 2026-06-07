@@ -3,9 +3,9 @@
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/MultiPeerTransportKernelTest.cuh"
 
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/P2pSelfTransportDevice.cuh"
-#include "comms/prims/Transport.cuh"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
 namespace comms::prims::test {
 

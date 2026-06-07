@@ -3,10 +3,10 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/prims/MultipeerIbgdaTransport.h"
 #include "comms/prims/collectives/RingReduceScatterLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
 #include "comms/prims/collectives/tests/ReduceScatterTestHarness.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 
 using meta::comms::DeviceBuffer;
 

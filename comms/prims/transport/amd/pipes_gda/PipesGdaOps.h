@@ -62,7 +62,8 @@
 //    - No `nic` parameter; the function creates a stack-local
 //      `ActiveNicBackend nic{}` (stateless empty struct → zero-cost) and
 //      forwards to the NicBackend-explicit overload.
-//    - Lets `comms/prims/P2pIbgdaTransportDevice.cuh` use one set of call
+//    - Lets `comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh` use one
+//    set of call
 //      shapes that resolve to DOCA on NVIDIA and to these wrappers on AMD,
 //      via a thin name-prefix shim in `DocaCompat.h`.
 //

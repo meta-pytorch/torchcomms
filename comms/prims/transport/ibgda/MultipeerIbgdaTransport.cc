@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD: use the HIP runtime for the cuda* API calls below (HIPify
@@ -31,9 +31,9 @@
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
 #endif
-#include "comms/prims/MultipeerIbgdaDeviceTransport.cuh"
-#include "comms/prims/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/platform/IbverbsLazy.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
 
 namespace comms::prims {

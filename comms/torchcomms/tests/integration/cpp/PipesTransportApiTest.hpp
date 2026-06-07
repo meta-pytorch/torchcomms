@@ -11,7 +11,7 @@
 
 #include "StressTestHelpers.hpp"
 #include "TorchCommTestHelpers.h"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/torchcomms/TorchComm.hpp"
 
 class PipesTransportApiTest : public ::testing::Test {

@@ -23,8 +23,8 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/IbgdaBuffer.h"
 #include "comms/prims/platform/IbverbsLazy.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
 #endif

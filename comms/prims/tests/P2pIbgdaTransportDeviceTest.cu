@@ -5,11 +5,11 @@
 // `cudaSuccess` / `cudaGetErrorString` / `cudaGetLastError` directly).
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
-#include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
 #include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::tests {
 

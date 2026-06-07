@@ -12,12 +12,12 @@
 #include <folly/init/Init.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/tests/TopologyTestUtils.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/Transport.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"

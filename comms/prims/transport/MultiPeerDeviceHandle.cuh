@@ -10,8 +10,8 @@
 // In host-only compilation, a forward declaration suffices because DeviceSpan
 // only stores a pointer (T*) — it doesn't need sizeof(T).
 #ifdef __CUDACC__
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/Transport.cuh"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 #else
 namespace comms::prims {
 struct Transport;

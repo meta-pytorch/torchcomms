@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "comms/prims/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/rdma/NicConstants.h"
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD, `doca_gpu_dev_verbs_qp` is a type alias (declared in

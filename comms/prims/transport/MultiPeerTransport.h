@@ -20,12 +20,12 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/MultipeerIbgdaTransport.h"
-#include "comms/prims/P2pSelfTransportDevice.cuh"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
 namespace comms::prims {
 
