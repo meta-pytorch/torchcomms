@@ -15,15 +15,15 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PIPES)
-#include "comms/pipes/IbgdaBuffer.h"
+#include "comms/prims/IbgdaBuffer.h"
 #endif
 
 #if defined(ENABLE_PIPES)
-namespace comms::pipes {
+namespace comms::prims {
 class DeviceWindow;
 class HostWindow;
 struct WindowConfig;
-} // namespace comms::pipes
+} // namespace comms::prims
 #endif
 
 namespace ctran {
@@ -118,13 +118,13 @@ struct CtranWin {
   // @param devWin  Output: populated device-side window handle.
   // @param config  WindowConfig controlling signal/counter/barrier allocation.
   commResult_t getDeviceWin(
-      comms::pipes::DeviceWindow* devWin,
-      const comms::pipes::WindowConfig& config);
+      comms::prims::DeviceWindow* devWin,
+      const comms::prims::WindowConfig& config);
 
   // Returns the pipes HostWindow pointer for this window.
   // The caller does not take ownership.
   // Returns nullptr if pipes device window is not initialized.
-  comms::pipes::HostWindow* getPipesHostWindow() const {
+  comms::prims::HostWindow* getPipesHostWindow() const {
     return hostWindow_.get();
   }
 #endif
@@ -177,7 +177,7 @@ struct CtranWin {
   size_t range_{0};
 
 #if defined(ENABLE_PIPES)
-  std::unique_ptr<comms::pipes::HostWindow> hostWindow_;
+  std::unique_ptr<comms::prims::HostWindow> hostWindow_;
 #endif
 };
 

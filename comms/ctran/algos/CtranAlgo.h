@@ -15,7 +15,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
 
 #include <folly/Synchronized.h>
@@ -49,7 +49,7 @@ class CtranAlgo {
   CtranAlgoDeviceState* getDevState();
   // Get base pointer to pre-allocated P2pNvlTransportDevice array
   // Array is indexed by peer local rank
-  comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
+  comms::prims::P2pNvlTransportDevice* getNvlTransportsBase();
 
   // Thread-safe get-or-create for persistent algorithm plans.
   // Returns a non-owning pointer to the plan (lifetime owned by this map).
@@ -160,7 +160,7 @@ class CtranAlgo {
   // Pre-allocated array of P2pNvlTransportDevice objects for all peers
   // Allocated with cudaMalloc for device accessibility
   // Indexed by peer local rank, slot for self (localRank) is unused
-  comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
+  comms::prims::P2pNvlTransportDevice* nvlTransports_{nullptr};
 
   // Generic persistent plan map: any algorithm can register a cached plan.
   folly::Synchronized<std::unordered_map<
