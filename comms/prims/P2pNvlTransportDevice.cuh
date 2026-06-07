@@ -16,9 +16,9 @@
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/ll/LlOps.cuh"
-#include "comms/prims/ll128/Ll128Ops.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/ll/LlOps.cuh"
+#include "comms/prims/transport/ll128/Ll128Ops.cuh"
 
 namespace comms::prims {
 

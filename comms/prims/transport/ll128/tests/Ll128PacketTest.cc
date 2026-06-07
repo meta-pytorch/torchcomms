@@ -4,8 +4,8 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 
-#include "comms/prims/ll128/Ll128Packet.cuh"
-#include "comms/prims/ll128/tests/Ll128PacketTest.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/ll128/tests/Ll128PacketTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 
