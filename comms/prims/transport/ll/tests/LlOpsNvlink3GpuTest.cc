@@ -5,8 +5,8 @@
 #include <cstddef>
 #include <vector>
 
-#include "comms/prims/ll/LlPacket.cuh"
-#include "comms/prims/ll/tests/LlOpsNvlinkTest.cuh"
+#include "comms/prims/transport/ll/LlPacket.cuh"
+#include "comms/prims/transport/ll/tests/LlOpsNvlinkTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace comms::prims {

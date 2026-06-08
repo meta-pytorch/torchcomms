@@ -91,7 +91,7 @@ These exist only on AMD; no NVIDIA counterpart by design.
 |---|---|---|---|
 | `SendRecv` | `:sendrecv` | ❌ | Uses `<nccl.h>` and `comms/torchcomms/ncclx`. Same NCCL-on-AMD blocker. |
 
-## LL128 (`comms/prims/ll128/`)
+## LL128 (`comms/prims/transport/ll128/`)
 
 | Component | Target | AMD | Notes |
 |---|---|---|---|

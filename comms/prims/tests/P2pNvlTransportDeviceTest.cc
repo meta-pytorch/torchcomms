@@ -1246,9 +1246,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, Ll128SendRecv_4KB) {
 #ifdef __HIP_PLATFORM_AMD__
   // TODO: AMD port. The LL128 protocol uses `__syncwarp(uint32_t mask)` which
   // requires a 64-bit mask on AMD's 64-lane wavefront (uint32_t is rejected
-  // by `amd_warp_sync_functions.h`). Underlying `comms/prims/ll128/Ll128Ops`
-  // also uses CUDA-only intrinsics like `comms::device::ld_volatile_global`.
-  // Needs proper AMD-side intrinsic shims before this test can pass.
+  // by `amd_warp_sync_functions.h`). Underlying
+  // `comms/prims/transport/ll128/Ll128Ops` also uses CUDA-only intrinsics like
+  // `comms::device::ld_volatile_global`. Needs proper AMD-side intrinsic shims
+  // before this test can pass.
   GTEST_SKIP() << "Ll128 not yet ported to AMD (warp sync mask type, "
                   "device intrinsic shims). See TODO above.";
 #else
