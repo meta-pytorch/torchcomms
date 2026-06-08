@@ -88,16 +88,27 @@ IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
 USE_TRITON = flag_enabled("USE_TRITON", False)
 
+
+def parse_requirements(path: str) -> list[str]:
+    """Parse a pip requirements file, skipping blank lines and comments."""
+    requirements = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                requirements.append(line)
+    return requirements
+
+
 requirement_path = os.path.join(ROOT, "requirements.txt")
-try:
-    with open(requirement_path) as f:
-        install_requires = f.read().splitlines()
-except FileNotFoundError:
-    install_requires = []
+install_requires = parse_requirements(requirement_path)
 
 for i, req in enumerate(install_requires):
     if req.startswith("torch"):
         install_requires[i] = f"torch=={torch.__version__.partition('+')[0]}"
+
+dev_requirement_path = os.path.join(ROOT, "dev-requirements.txt")
+dev_requires = parse_requirements(dev_requirement_path)
 
 
 def get_version() -> str:
@@ -189,15 +200,7 @@ class build_ext(build_ext_orig):
 
 
 extras_require = {
-    "dev": [
-        "pytest",
-        "numpy",
-        "psutil",
-        "lintrunner",
-        "parameterized",
-        "pydot",
-        "expecttest",
-    ],
+    "dev": dev_requires,
 }
 
 BACKEND_FLAGS = [
