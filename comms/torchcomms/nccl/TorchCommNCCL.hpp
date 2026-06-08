@@ -214,6 +214,8 @@ class TorchCommNCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
   void abort() override;
+  bool isAbortSupported() const override;
+  bool isAborted() const override;
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
@@ -289,6 +291,12 @@ class TorchCommNCCL : public TorchCommBackend,
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
+
+  // Set once the communicator has been revoked (the graceful abort path used in
+  // reconfigurable mode). Guards revokeNcclComm() so its teardown runs at most
+  // once per communicator generation, even when both the timeout watchdog and a
+  // synchronous collective observe the same failure. Reset on reconfigure.
+  std::atomic<bool> revoked_{false};
 
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
