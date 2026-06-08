@@ -13,7 +13,7 @@
 
 #include "comms/prims/MultipeerIbgdaTransport.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/benchmarks/IbgdaBenchmark.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"

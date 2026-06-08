@@ -19,8 +19,8 @@
 //    runners. Provides hipMalloc-based RAII with the minimal interface
 //    those runners need. Active only on AMD (`__HIP_PLATFORM_AMD__`).
 //
-// Scope: pipes-only. Lives in `comms/prims/amd/` so the cross-platform
-// plumbing stays scoped to this directory.
+// Scope: pipes-only. Lives in `comms/prims/transport/amd/` so the
+// cross-platform plumbing stays scoped to this directory.
 //
 // For AMD GCN device-side intrinsic shims (used by IBGDA WQE construction
 // + `pipes_gda_*` device code), see `HipDeviceCompat.h` instead.

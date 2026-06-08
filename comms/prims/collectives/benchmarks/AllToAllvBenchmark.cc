@@ -11,7 +11,7 @@
 #include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/core/TimeoutUtils.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/AllToAllv.h"

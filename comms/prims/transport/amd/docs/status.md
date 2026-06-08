@@ -9,7 +9,7 @@ library / test, platform-specific bits routed via `select()` on
 `ovr_config//gpu:amd`. Legacy `*_amd_unified` and `*_amd` sibling
 targets retired. NIC backend on AMD is selected at parse time via
 `-c hpc_comms.nic={mlx5,bnxt,ionic}` (default `bnxt`), wired by
-`//comms/prims/amd:nic_config.bzl`; the chosen backend swaps the
+`//comms/prims/transport/amd:nic_config.bzl`; the chosen backend swaps the
 `PipesGdaHost.cc` `#ifdef NIC_*` blocks and the `rdma-core` dep
 without forking the source tree.
 
@@ -31,7 +31,7 @@ without forking the source tree.
 
 All device-side transports either compile directly under hipcc (HIPify
 rewrites the simple cases) or pick up the AMD shims via
-`comms/prims/amd/HipDeviceCompat.h` (transitively included by
+`comms/prims/transport/amd/HipDeviceCompat.h` (transitively included by
 `Timeout.cuh`).
 
 | Component | Target | AMD | Notes |

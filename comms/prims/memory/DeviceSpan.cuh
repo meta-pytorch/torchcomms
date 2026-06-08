@@ -9,7 +9,7 @@
 #include <cassert>
 #include <cstdint>
 
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 
 namespace comms::prims {
 
