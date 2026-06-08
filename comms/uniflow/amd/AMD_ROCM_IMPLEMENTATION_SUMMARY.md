@@ -50,17 +50,21 @@ buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:amd-toolcha
 
 **XGMI Support:** The `hipMemcpyPeerAsync` implementation enables P2P transfers over XGMI interconnect, equivalent to NVLink on NVIDIA.
 
-### 4. D107220757 - Uniflow-AMD Library Target and Tests
-**Purpose:** Main library target and platform-agnostic tests
+### 4. Unified uniflow target and tests
+**Purpose:** Single library target for both platforms, plus platform-agnostic tests
 
 **Changes:**
-- Added `uniflow-amd` target to BUCK file
+- Unified `uniflow` target builds for both NVIDIA and AMD via the
+  `ovr_config//gpu:amd` constraint (the separate `uniflow-amd` target was removed)
+- NVLink/RDMA transports are NVIDIA-only and are compiled out on AMD via
+  `#ifndef __HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, with their BUCK deps
+  `select()`'d out on AMD
 - Created `PlatformSelectionTest.cpp` with comprehensive tests
 - Refactored tests to be platform-agnostic (removed `#ifdef` conditionals from test logic)
 
 **Build Command:**
 ```bash
-buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 ```
 
 **Test Results (AMD Mode):**
@@ -156,8 +160,8 @@ The CudaApi HIP implementation provides the runtime support for these translated
 ### Example Builds
 
 ```bash
-# Uniflow AMD library (ROCm 7.0)
-buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+# Unified uniflow library, AMD (ROCm 7.0)
+buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 # CUDA API with HIP support
 buck build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-api

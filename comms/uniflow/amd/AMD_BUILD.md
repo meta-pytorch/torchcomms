@@ -2,6 +2,19 @@
 
 This document describes how to build uniflow with AMD GPU support using ROCm/HIP.
 
+Uniflow uses a **single `//comms/uniflow:uniflow` target** for both NVIDIA and AMD.
+The platform is selected at build time via the `ovr_config//gpu:amd` constraint
+(set by the AMD build modes / modifier). On AMD, HIP-specific code paths are
+selected through `__HIP_PLATFORM_AMD__` and the CUDA runtime deps are swapped for
+ROCm/HIP — there is no separate AMD library target.
+
+> **Current AMD limitation:** The unified `uniflow` target *compiles* for AMD, but
+> the GPU transports (NVLink, RDMA) are NVIDIA-only and are compiled out on AMD
+> (guarded by `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`). An AMD build
+> therefore links but registers **no GPU transport** until an AMD/XGMI transport is
+> implemented. The driver abstraction layer (`CudaApi`, `CudaDeviceAdapter`) and the
+> XGMI peer-to-peer test are HIP-functional today.
+
 ## Prerequisites
 
 - Access to a machine with AMD GPU and ROCm installed, OR
@@ -9,27 +22,32 @@ This document describes how to build uniflow with AMD GPU support using ROCm/HIP
 
 ## Quick Start
 
-### Build AMD Toolchain
-
-```bash
-# Build with default ROCm version
-buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:amd-toolchain
-
-# Build with specific ROCm version (recommended)
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:amd-toolchain
-```
-
 ### Build Uniflow for AMD
 
 ```bash
-# Build uniflow with AMD support (default ROCm)
-buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow-amd
+# Build uniflow for AMD (default ROCm)
+buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow
 
-# Build with specific ROCm version
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+# Build with a specific ROCm version (recommended)
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 # Build and show output location
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd --show-full-output
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow --show-full-output
+```
+
+The same target builds for NVIDIA with no GPU constraint:
+
+```bash
+buck build fbcode//comms/uniflow:uniflow
+```
+
+### Build via the constraint modifier (no mode file)
+
+The AMD platform can also be selected directly with the `ovr_config//gpu:amd`
+modifier — handy for quick checks:
+
+```bash
+buck2 build 'fbcode//comms/uniflow:uniflow?ovr_config//gpu:amd'
 ```
 
 ## ROCm Version Selection
@@ -52,13 +70,13 @@ If `-m` is not specified, Buck uses the system default ROCm version configured i
 
 ```bash
 # ROCm 7.0 (recommended)
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 # ROCm 6.0
-buck build @//mode/opt-amd-gpu -m rocm60 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/opt-amd-gpu -m rocm60 fbcode//comms/uniflow:uniflow
 
 # System default
-buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow
 ```
 
 ## Build Modes
@@ -75,22 +93,16 @@ buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow-amd
 
 ```bash
 # Optimized build (production)
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 # Debug build
-buck build @//mode/dbg-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/dbg-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 # Development build
-buck build @//mode/dev-nosan-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/dev-nosan-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 ```
 
 ## Building Specific Components
-
-### AMD Toolchain
-
-```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:amd-toolchain
-```
 
 ### Device Adapter (CUDA/HIP)
 
@@ -99,14 +111,16 @@ buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:amd-toolchain
 buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-device-adapter
 ```
 
+### CUDA/HIP API wrapper
+
+```bash
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-api
+```
+
 ### Main Library
 
 ```bash
-# Standard uniflow (uses device adapter)
 buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
-
-# AMD-specific uniflow target
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
 ```
 
 ## Archive Types
@@ -116,8 +130,8 @@ buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
 By default, Buck produces thin archives (small files with references to object files):
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
-# Produces: buck-out/v2/gen/fbcode/comms/uniflow/libuniflow-amd.a (thin archive)
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
+# Produces: buck-out/v2/gen/fbcode/comms/uniflow/libuniflow.a (thin archive)
 ```
 
 ### Full Archives (Normal)
@@ -125,26 +139,16 @@ buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
 For distribution or when device code linking is required, build with normal archives:
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd -c fbcode.archive_contents=normal
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow -c fbcode.archive_contents=normal
 # Produces: Full archive with embedded object files
 ```
 
-The AMD toolchain is already configured with `archive_contents = "normal"` to ensure proper device code linking.
-
 ## Output Locations
 
-After building, artifacts are located in:
-
-```
-buck-out/v2/gen/fbcode/comms/uniflow/
-├── libuniflow-amd.a          # Main AMD library (thin archive by default)
-└── libcomms_uniflow_uniflow-amd.so  # Shared library (if applicable)
-```
-
-To find the exact path:
+To find the exact path of the built artifact:
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd --show-full-json-output
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow --show-full-json-output
 ```
 
 ## Troubleshooting
@@ -162,19 +166,21 @@ ls /opt/rocm 2>/dev/null || echo "ROCm not installed locally"
 
 **Problem:** Wrong architecture or GPU target
 
-**Solution:** The build automatically detects GPU architectures via `get_rocm_arch_args()`. To override:
+**Solution:** To override the GPU architecture:
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd -c rocm.arch=gfx942
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow -c rocm.arch=gfx942
 ```
 
-### HIPIFY Translation Issues
+### HIP/CUDA Translation Issues
 
 If you encounter errors about CUDA functions not being recognized on AMD:
 
-1. Ensure source files use `.cpp` or `.cu` extension (HIPIFY processes these)
-2. Check that `__HIP_PLATFORM_AMD__` guards are in place for CUDA-specific headers
-3. Verify the file is being compiled with the AMD toolchain
+1. Check that `__HIP_PLATFORM_AMD__` guards are in place for CUDA-specific code
+2. Verify the file is being compiled with the AMD toolchain (the `ovr_config//gpu:amd`
+   constraint is active)
+3. New NVIDIA-only code added under `MultiTransport`/transports must be guarded with
+   `#ifndef __HIP_PLATFORM_AMD__` and its BUCK dep `select()`'d out on AMD
 
 ### Missing Symbols
 
@@ -190,20 +196,14 @@ Uniflow's AMD support follows the same patterns as rcclx:
 
 | Aspect | rcclx | uniflow |
 |--------|-------|---------|
-| Toolchain | `hip_toolchain_override` | `hip_toolchain_override` |
+| Platform selection | `ovr_config//gpu:amd` | `ovr_config//gpu:amd` |
 | Archive type | `archive_contents = "normal"` | `archive_contents = "normal"` |
 | ROCm selection | `-m rocm70` | `-m rocm70` |
 | Build mode | `@//mode/opt-amd-gpu` | `@//mode/opt-amd-gpu` |
-| HIPIFY | Automatic CUDA→HIP translation | Automatic CUDA→HIP translation |
-
-Example rcclx build:
-```bash
-buck2 build @//mode/opt-amd-gpu -m rocm70 //param_bench/train/comms/cpp/rccl-tests/src:rccl_allreduce_perf
-```
 
 Equivalent uniflow build:
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 ```
 
 ## Advanced Usage
@@ -213,7 +213,7 @@ buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd
 If ROCm is installed in a non-standard location:
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd \
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow \
   -c rocm.path=/custom/rocm/path
 ```
 
@@ -222,32 +222,20 @@ buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd \
 To see detailed compilation commands:
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow-amd -v 2
-```
-
-### Cleaning Build Artifacts
-
-```bash
-# Clean all artifacts
-buck clean
-
-# Clean only stale artifacts (keeps daemon running)
-buck clean --stale
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow -v 2
 ```
 
 ## Integration with Applications
 
-To use uniflow with AMD support in your application:
+Because uniflow is a single target for both platforms, applications simply depend on
+`fbcode//comms/uniflow:uniflow` — no per-GPU `select()` is required:
 
 ```python
 # In your BUCK file
 cpp_library(
     name = "my_app",
     srcs = [...],
-    deps = select({
-        "ovr_config//gpu:amd": ["fbcode//comms/uniflow:uniflow-amd"],
-        "DEFAULT": ["fbcode//comms/uniflow:uniflow"],
-    }),
+    deps = ["fbcode//comms/uniflow:uniflow"],
 )
 ```
 
