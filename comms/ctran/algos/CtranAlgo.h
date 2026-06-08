@@ -15,7 +15,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
 
 #include <folly/Synchronized.h>

@@ -10,9 +10,9 @@
 
 #pragma once
 
-#include "comms/prims/IbgdaBuffer.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace pipes_gda {
 

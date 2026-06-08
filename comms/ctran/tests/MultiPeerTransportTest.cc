@@ -11,10 +11,10 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 

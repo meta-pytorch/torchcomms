@@ -6,8 +6,8 @@
 #include <memory>
 #include <vector>
 
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"

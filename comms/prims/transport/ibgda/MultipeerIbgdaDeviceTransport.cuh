@@ -7,7 +7,7 @@
 // When compiling with CUDA, include full definition for device methods
 // When compiling with host-only compiler, forward declaration is sufficient
 #ifdef __CUDACC__
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 #else
 namespace comms::prims {
 // Forward declaration - full definition in P2pIbgdaTransportDevice.cuh

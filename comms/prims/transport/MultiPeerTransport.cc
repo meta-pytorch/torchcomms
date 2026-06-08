@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -24,9 +24,9 @@
 
 #include <glog/logging.h>
 
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 namespace comms::prims {
 

@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/prims/P2pSelfTransportDevice.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pSelfTransportDeviceTest.cuh"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
 namespace comms::prims::test {
 

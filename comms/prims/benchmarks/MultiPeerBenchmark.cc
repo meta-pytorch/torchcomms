@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "comms/common/DeviceConstants.cuh"
-#include "comms/prims/MultiPeerTransport.h"
 #include "comms/prims/benchmarks/MultiPeerBenchmark.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/HostWindow.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"

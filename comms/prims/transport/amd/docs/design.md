@@ -111,7 +111,7 @@ is **retired** — use only `__HIP_PLATFORM_AMD__` going forward.
 ### Wrap NVIDIA-only includes
 
 ```cpp
-#include "comms/prims/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/amd/HipHostCompat.h"  // unconditional — provides DeviceBuffer/CudaEvent on AMD
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"  // NVIDIA-only — defines DeviceBuffer/CudaEvent here

@@ -14,9 +14,9 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
-#include "comms/prims/MultiPeerTransport.h"
 #include "comms/prims/collectives/AllGatherLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 

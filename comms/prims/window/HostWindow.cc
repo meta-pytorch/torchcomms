@@ -5,9 +5,9 @@
 #include <stdexcept>
 #include <vector>
 
-#include "comms/prims/MultiPeerTransport.h"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/utils/checks.h"
 

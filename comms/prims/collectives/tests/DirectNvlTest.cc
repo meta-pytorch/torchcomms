@@ -7,11 +7,11 @@
 #include <string>
 #include <vector>
 
-#include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/collectives/AllGatherLauncher.h"
 #include "comms/prims/collectives/ReduceScatterLauncher.h"
 #include "comms/prims/collectives/tests/AllGatherTestHarness.h"
 #include "comms/prims/collectives/tests/ReduceScatterTestHarness.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 
 using meta::comms::DeviceBuffer;
 

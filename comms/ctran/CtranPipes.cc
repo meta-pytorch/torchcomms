@@ -16,8 +16,8 @@
 
 #if defined(ENABLE_PIPES)
 
-#include "comms/prims/MultiPeerTransport.h"
 #include "comms/prims/trace/PipesTrace.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 
 namespace {

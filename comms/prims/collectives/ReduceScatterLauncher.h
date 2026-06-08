@@ -6,8 +6,8 @@
 
 #include <cstddef>
 
-#include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/prims/collectives/ReduceScatterDirectTypes.h"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims {
 

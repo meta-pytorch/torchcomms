@@ -6,8 +6,8 @@
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
 
 #include "nccl.h"
 

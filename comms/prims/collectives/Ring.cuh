@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims {
 

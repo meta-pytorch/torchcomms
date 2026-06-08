@@ -5,9 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/P2pNvlTransportDevice.cuh"
 #include "comms/prims/collectives/DirectCollectiveTypes.h"
 #include "comms/prims/trace/PipesTraceTypes.h"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims {
 

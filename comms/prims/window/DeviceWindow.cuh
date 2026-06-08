@@ -4,16 +4,16 @@
 
 #include <cassert>
 #include <cstdint>
-#include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/Transport.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 #ifdef __CUDACC__
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 #else
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
