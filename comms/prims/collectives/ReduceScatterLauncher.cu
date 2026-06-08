@@ -8,10 +8,10 @@
 #include <stdexcept>
 #include <string>
 
-#include "comms/prims/Checks.h"
-#include "comms/prims/CopyOp.cuh"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/collectives/ReduceScatterDirect.cuh"
+#include "comms/prims/core/Checks.h"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 

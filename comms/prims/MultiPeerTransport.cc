@@ -19,14 +19,14 @@
 #else
 #include <cuda_runtime.h>
 
-#include "comms/prims/CudaDriverLazy.h"
+#include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
 #include <glog/logging.h>
 
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/TopologyDiscovery.h"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 namespace comms::prims {
 

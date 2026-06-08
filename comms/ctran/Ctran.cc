@@ -22,7 +22,7 @@
 #if defined(ENABLE_PIPES)
 #include "comms/prims/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/MultiPeerTransport.h"
-#include "comms/prims/PipesTrace.h"
+#include "comms/prims/trace/PipesTrace.h"
 #endif // defined(ENABLE_PIPES)
 
 Ctran::Ctran(

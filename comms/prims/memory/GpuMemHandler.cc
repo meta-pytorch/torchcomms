@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/GpuMemHandler.h"
+#include "comms/prims/memory/GpuMemHandler.h"
 
 // CUDA driver API (`cuda.h` / `cudaTypedefs.h`) is NVIDIA-only. On AMD,
 // fabric handles aren't supported, so all `cuMem*` driver-API code paths
@@ -10,7 +10,7 @@
 #ifdef __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 #else
-#include "comms/prims/CudaDriverLazy.h"
+#include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
 #include <glog/logging.h>

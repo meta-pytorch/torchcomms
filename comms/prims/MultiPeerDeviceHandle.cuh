@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include "comms/prims/DeviceSpan.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 // In CUDA compilation, include full Transport definition for device accessors.
 // In host-only compilation, a forward declaration suffices because DeviceSpan

@@ -1,10 +1,10 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/CopyOp.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
 #include "comms/prims/collectives/RingAllgather.cuh"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 
 namespace comms::prims {
 

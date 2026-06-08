@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

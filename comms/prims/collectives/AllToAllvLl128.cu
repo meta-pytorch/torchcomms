@@ -10,8 +10,8 @@
 #include <chrono>
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/Checks.h"
-#include "comms/prims/TimeoutUtils.h"
+#include "comms/prims/core/Checks.h"
+#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 

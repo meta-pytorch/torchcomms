@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 

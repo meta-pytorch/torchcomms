@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "comms/prims/DeviceSpan.cuh"
-#include "comms/prims/Timeout.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 namespace comms::prims {
 

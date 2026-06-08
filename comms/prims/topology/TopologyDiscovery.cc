@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/TopologyDiscovery.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -17,7 +17,7 @@
 #include <cuda_runtime.h>
 #include <glog/logging.h>
 
-#include "comms/prims/NvmlFabricInfo.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
 
 namespace comms::prims {
 

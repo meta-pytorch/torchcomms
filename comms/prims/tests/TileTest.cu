@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/Tile.cuh"
+#include "comms/prims/core/Tile.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/TileTest.cuh"
 

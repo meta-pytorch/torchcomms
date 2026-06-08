@@ -7,8 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/BarrierState.cuh"
 #include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/core/BarrierState.cuh"
 
 namespace comms::prims::test {
 

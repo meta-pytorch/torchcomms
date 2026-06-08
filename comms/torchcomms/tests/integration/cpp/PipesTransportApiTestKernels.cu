@@ -7,8 +7,8 @@
 #include "StressTestKernelUtils.cuh"
 
 #include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
 #include "comms/prims/Transport.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 // Transport layer uses SIGNAL_ADD / CMP_GE (not window layer's ADD / GE)
 using comms::prims::CmpOp;

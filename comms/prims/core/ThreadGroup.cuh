@@ -8,8 +8,8 @@
 
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/DeviceConstants.cuh"
-#include "comms/prims/DeviceSpan.cuh"
 #include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/memory/DeviceSpan.cuh"
 
 namespace comms::prims {
 

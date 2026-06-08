@@ -11,9 +11,9 @@
 
 #include "comms/prims/MultiPeerNvlTransport.h"
 #include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/TiledBuffer.cuh"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/benchmarks/TileSendRecv.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/P2pNvlTransportTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
