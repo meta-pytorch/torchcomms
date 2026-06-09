@@ -4,6 +4,7 @@
 /// Requires real GPUs, NVML, and ibverbs — not for CI without GPU hardware.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <string>
@@ -19,7 +20,7 @@ namespace uniflow {
 class MultiTransportFactoryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    topo_ = &Topology::get();
+    topo_ = &sharedTopology();
     if (!topo_->available()) {
       GTEST_SKIP() << "Topology not available";
     }
