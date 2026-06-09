@@ -18,7 +18,6 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
-#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/utils/CudaRAII.h"
 
 #if defined(ENABLE_PIPES)
