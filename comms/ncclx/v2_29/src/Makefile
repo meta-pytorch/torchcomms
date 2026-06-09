@@ -131,6 +131,23 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
 
+ifeq ($(ENABLE_PRIMS),1)
+LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/IbverbsLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
+endif
+
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
 INCLUDES += -I${NCCLDIR}/
@@ -269,7 +286,7 @@ LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
 ifeq ($(ENABLE_PRIMS),1)
-LDFLAGS    += -lpipes
+LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
 endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
