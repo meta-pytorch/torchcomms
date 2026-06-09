@@ -92,6 +92,10 @@ class TorchCommNCCL : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  // Returns the underlying host ncclComm_t as an opaque integer pointer.
+  // Mirrors TorchCommNCCLX::getCommPtr; used to wire this comm into PyTorch's
+  // symmetric-memory registry from Python (see get_nccl_comm_ptr binding).
+  int64_t getCommPtr() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
