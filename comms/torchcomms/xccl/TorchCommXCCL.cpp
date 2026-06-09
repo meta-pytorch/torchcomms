@@ -411,7 +411,7 @@ void TorchCommXCCL::init(
   } else if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR) << "Aborting process due to error: " << xcclException.what();
     runAbortHooks();
-    abort();
+    ::abort();
   }
   throw xcclException;
 }
@@ -536,7 +536,7 @@ void TorchCommXCCL::abortXcclComm() {
   if (options_.abort_process_on_timeout_or_error) {
     TC_LOG(ERROR, this) << "Aborting process due to error or timeout";
     runAbortHooks();
-    abort();
+    ::abort();
   }
 }
 

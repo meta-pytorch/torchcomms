@@ -7,6 +7,7 @@ add_library(TorchCommXCCLTestBase STATIC
     ${ROOT}/comms/torchcomms/xccl/TorchWorkXCCLQueue.cpp
     ${ROOT}/comms/torchcomms/xccl/TorchCommXCCLUtils.cpp
     ${ROOT}/comms/torchcomms/xccl/TorchCommXCCLBootstrap.cpp
+    ${ROOT}/comms/torchcomms/xccl/TorchCommXCCLCCA.cpp
     ${ROOT}/comms/torchcomms/xccl/XcclApi.cpp
     ${ROOT}/comms/torchcomms/xccl/../device/xpu/XpuApi.cpp
 )
@@ -17,11 +18,27 @@ target_include_directories(TorchCommXCCLTestBase PRIVATE
 )
 target_compile_features(TorchCommXCCLTestBase PRIVATE cxx_std_20)
 target_link_directories(TorchCommXCCLTestBase PUBLIC ${CONDA_LIB})
+
+# libtorch_python.so references torch::xpu::XPUPluggableAllocator (link-time)
+# and the CPython API (runtime). It has no DT_NEEDED on libpython since it
+# expects the embedding interpreter to supply those symbols, so for standalone
+# test executables we also link libpython directly.
+find_library(PYTHON_EMBED_LIB
+    NAMES python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}
+          python${Python3_VERSION_MAJOR}
+          python
+    HINTS ${Python3_LIBRARY_DIRS} ${Python3_RUNTIME_LIBRARY_DIRS}
+          ${CONDA_LIB} "${TORCH_INSTALL_PREFIX}/../../.."
+    REQUIRED)
+
 target_link_libraries(TorchCommXCCLTestBase PUBLIC
     torchcomms
     ${TORCH_LIBRARIES}
+    ${TORCH_PYTHON_LIB}
+    ${PYTHON_EMBED_LIB}
     GTest::gmock
 )
+
 if(USE_SYSTEM_LIBS)
     target_link_libraries(TorchCommXCCLTestBase PUBLIC
         "-lglog"

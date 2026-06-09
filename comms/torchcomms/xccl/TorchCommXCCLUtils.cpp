@@ -1,5 +1,6 @@
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
@@ -215,7 +216,7 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
 
       runAbortHooks();
 
-      abort();
+      ::abort();
     }
   }
 
@@ -237,7 +238,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
       runAbortHooks();
-      abort();
+      ::abort();
     } else {
       throw std::runtime_error("XCCL operation timed out");
     }
