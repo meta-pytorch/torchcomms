@@ -150,8 +150,17 @@ if(USE_SYSTEM_LIBS)
         "-lboost_filesystem"
     )
 else()
+    set(TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS "")
+    if(TORCHCOMMS_ENABLE_PRIMS)
+        list(APPEND TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS
+            "-ldoca_gpunetio"
+            "-libverbs"
+            "-lmlx5"
+        )
+    endif()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
+        ${TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS}
         "-l:libcomms_tracing_service.a"
         "-Wl,--start-group"
         "-l:libasync.a"
