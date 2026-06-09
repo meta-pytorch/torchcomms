@@ -64,8 +64,12 @@ constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 // Global call-once check for graph timeout monitoring (env var gated).
 // Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
 // Default: enabled. Set to "0" or "false" to disable (for benchmarking).
-// Also returns false when NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled, since
-// the colltrace watchdog plugin handles graph timeout detection instead.
+// Also returns false when the colltrace cudagraph watchdog will actually run —
+// i.e. NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled AND NCCL_COLLTRACE selects a
+// "trace"/"verbose" mode — since the colltrace watchdog plugin then handles
+// graph timeout detection instead. If cudagraph tracing is requested but
+// colltrace is not in trace/verbose mode (so no watchdog plugin is installed),
+// GraphEventTracker is kept active and a warning is logged.
 bool isGraphTimeoutMonitoringEnabled();
 
 // Test-only: reset the cached state so next call re-reads the env var.
