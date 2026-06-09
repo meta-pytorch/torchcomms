@@ -208,7 +208,7 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
 #if defined(ENABLE_PIPES)
 #include <cuda_runtime_api.h>
 
-#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 

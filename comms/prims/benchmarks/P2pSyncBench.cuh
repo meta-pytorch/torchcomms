@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "comms/prims/ChunkState.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ChunkState.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

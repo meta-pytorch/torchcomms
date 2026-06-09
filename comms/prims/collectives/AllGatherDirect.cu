@@ -3,13 +3,13 @@
 #include "comms/prims/collectives/AllGatherDirect.cuh"
 
 #include "comms/common/AtomicUtils.cuh"
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/DeviceCheck.cuh"
-#include "comms/prims/MemcpyCopyOp.cuh"
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
 #include "comms/prims/collectives/DirectCollectiveUtils.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/MemcpyCopyOp.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims {
 

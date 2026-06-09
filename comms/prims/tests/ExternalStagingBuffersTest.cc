@@ -9,10 +9,10 @@
 #include <memory>
 #include <vector>
 
-#include "comms/prims/GpuMemHandler.h"
-#include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"

@@ -8,13 +8,13 @@
 #endif
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/MultiPeerNvlTransport.h"
-#include "comms/prims/TimeoutUtils.h"
 #ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/amd/HipHostCompat.h"
+#include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/AllToAllv.h"
+#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #ifndef __HIP_PLATFORM_AMD__

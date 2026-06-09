@@ -7,9 +7,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "comms/prims/CopyOp.cuh"
-#include "comms/prims/TimeoutUtils.h"
 #include "comms/prims/collectives/RingReduceScatter.cuh"
+#include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 

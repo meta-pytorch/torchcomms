@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "comms/prims/DeviceSpan.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/tests/Checks.h"
 
 namespace comms::prims::test {

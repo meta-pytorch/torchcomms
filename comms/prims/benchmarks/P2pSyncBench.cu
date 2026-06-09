@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/ThreadGroup.cuh"
 #include "comms/prims/benchmarks/P2pSyncBench.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

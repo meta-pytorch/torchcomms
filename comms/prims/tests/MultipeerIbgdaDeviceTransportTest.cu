@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/tests/MultipeerIbgdaDeviceTransportTest.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 
 namespace comms::prims::tests {
 

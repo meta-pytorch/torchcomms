@@ -2,7 +2,7 @@
 
 #include "comms/prims/benchmarks/IbgdaForward.cuh"
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

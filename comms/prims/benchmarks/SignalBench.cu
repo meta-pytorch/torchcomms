@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/prims/ThreadGroup.cuh"
 #include "comms/prims/benchmarks/SignalBench.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims::benchmark {
 

@@ -5,8 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/IbgdaBuffer.h"
-#include "comms/prims/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 // Include the host-safe header for the public API
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.h"

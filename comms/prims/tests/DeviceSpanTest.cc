@@ -6,7 +6,7 @@
 #include <numeric>
 #include <vector>
 
-#include "comms/prims/DeviceSpan.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/tests/DeviceSpanTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"

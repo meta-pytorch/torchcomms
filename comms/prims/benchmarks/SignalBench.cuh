@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "comms/prims/SignalState.cuh"
+#include "comms/prims/core/SignalState.cuh"
 
 namespace comms::prims::benchmark {
 

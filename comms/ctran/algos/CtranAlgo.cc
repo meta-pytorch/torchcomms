@@ -10,8 +10,8 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
-#include "comms/prims/ChunkState.cuh"
-#include "comms/prims/P2pNvlTransportDevice.cuh"
+#include "comms/prims/core/ChunkState.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"

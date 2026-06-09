@@ -8,8 +8,8 @@
 
 #include <cstddef>
 
-#include "comms/prims/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 using namespace comms::prims;
 

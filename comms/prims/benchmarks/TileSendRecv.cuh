@@ -117,8 +117,8 @@
 
 #pragma once
 
-#include "comms/prims/P2pNvlTransportDevice.cuh"
-#include "comms/prims/TiledBuffer.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
 

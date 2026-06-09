@@ -5,10 +5,10 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <stdexcept>
-#include "comms/prims/ChunkState.cuh"
-#include "comms/prims/SignalState.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TimeoutUtils.h"
+#include "comms/prims/core/ChunkState.cuh"
+#include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims::test {
 

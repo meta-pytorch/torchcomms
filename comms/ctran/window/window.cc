@@ -12,7 +12,7 @@
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PIPES)
-#include "comms/prims/MultiPeerTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 #endif

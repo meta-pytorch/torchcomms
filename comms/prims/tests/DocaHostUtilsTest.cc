@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
-#include "comms/prims/DocaHostUtils.h"
+#include "comms/prims/platform/DocaHostUtils.h"
 
 namespace comms::prims::tests {
 

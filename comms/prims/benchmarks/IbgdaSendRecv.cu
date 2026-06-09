@@ -4,10 +4,10 @@
 
 #include <algorithm>
 
-#include "comms/prims/CopyUtils.cuh"
-#include "comms/prims/ThreadGroup.cuh"
-#include "comms/prims/TiledBuffer.cuh"
-#include "comms/prims/Timeout.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims::benchmark {
 

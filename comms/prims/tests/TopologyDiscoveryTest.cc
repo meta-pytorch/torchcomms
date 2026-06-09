@@ -13,9 +13,9 @@
 #include <folly/init/Init.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
-#include "comms/prims/NvmlFabricInfo.h"
-#include "comms/prims/TopologyDiscovery.h"
 #include "comms/prims/tests/TopologyTestUtils.h"
+#include "comms/prims/topology/NvmlFabricInfo.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
 
 namespace comms::prims::tests {
 

@@ -159,11 +159,14 @@ function build_third_party {
     build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog
     build_fb_oss_library "https://github.com/google/glog.git" "v0.4.0" glog "-DBUILD_SHARED_LIBS=ON"
     build_fb_oss_library "https://github.com/facebook/zstd.git" "v1.5.6" zstd
+    # RCCL (projects/rccl/CMakeLists.txt) links the static libsnappy.a from
+    # folly's transitive deps; build it static+PIC so the link step resolves.
+    build_fb_oss_library "https://github.com/google/snappy.git" "1.2.1" snappy "-DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF"
     build_automake_library "https://github.com/jedisct1/libsodium.git" "1.0.20-RELEASE" sodium
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
     # Abseil provides absl::log / absl::check used by
     # comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc, which is pulled into
-    # librccl via comms/prims/PipesTrace.cc and comms/utils/colltrace/CollTrace.cc.
+    # librccl via comms/prims/trace/PipesTrace.cc and comms/utils/colltrace/CollTrace.cc.
     build_fb_oss_library "https://github.com/abseil/abseil-cpp.git" "20240722.0" abseil-cpp "-DABSL_PROPAGATE_CXX_STD=ON -DABSL_ENABLE_INSTALL=ON -DABSL_BUILD_TESTING=OFF"
     # Build libevent as both static and shared (thrift needs .a, others may need .so)
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event "-DEVENT__LIBRARY_TYPE=BOTH"
@@ -359,7 +362,7 @@ fi
 # through unchanged into hipified source. Define them directly.
 # CUDART_CB (the CUDA host-callback calling-convention macro, empty on Linux)
 # is likewise not mapped by hipify; define it empty so callbacks like
-# drainPipesTraceCallback in comms/prims/PipesTrace.cc parse correctly.
+# drainPipesTraceCallback in comms/prims/trace/PipesTrace.cc parse correctly.
 export CXXFLAGS="-I${CONDA_INCLUDE_DIR} -I${BASE_DIR} -DSO_INCOMING_NAPI_ID=56 -DCUDART_CB= -DcudaEventWaitDefault=0x00 -DcudaEventWaitExternal=0x01 -DcudaEventRecordDefault=0x00 -DcudaEventRecordExternal=0x01"
 
 # Create linker version script to hide gflags/glog symbols from librccl.so.

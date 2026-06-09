@@ -7,8 +7,8 @@
 #include <glog/logging.h>
 
 #include "comms/common/CudaWrap.h"
-#include "comms/prims/ChunkState.cuh"
 #include "comms/prims/benchmarks/P2pSyncBench.cuh"
+#include "comms/prims/core/ChunkState.cuh"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/testinfra/CudaBenchBase.h"
 #include "comms/utils/CudaRAII.h"

@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/ThreadGroup.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/ThreadGroupTest.cuh"
 

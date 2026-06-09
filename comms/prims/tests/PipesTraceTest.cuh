@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/prims/PipesTraceTypes.h"
+#include "comms/prims/trace/PipesTraceTypes.h"
 
 namespace comms::prims::test {
 
