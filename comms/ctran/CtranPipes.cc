@@ -14,7 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "comms/prims/trace/PipesTrace.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
@@ -512,4 +512,4 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
   return commSuccess;
 }
 
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)

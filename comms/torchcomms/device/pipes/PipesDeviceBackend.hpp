@@ -15,7 +15,7 @@
 
 #pragma once
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include <memory>
 
@@ -206,4 +206,4 @@ struct PipesDeviceBackend {
 
 } // namespace torchcomms::device
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
