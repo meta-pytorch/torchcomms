@@ -6,7 +6,7 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 1
+ENABLE_PRIMS ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
@@ -25,8 +25,8 @@ ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
 endif
 
-ifeq ($(ENABLE_PIPES),1)
-CXXFLAGS += -DENABLE_PIPES
+ifeq ($(ENABLE_PRIMS),1)
+CXXFLAGS += -DENABLE_PRIMS
 endif
 
 ##### src files
@@ -279,7 +279,7 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PIPES),1)
+ifeq ($(ENABLE_PRIMS),1)
 LDFLAGS    += -lpipes
 endif
 LDFLAGS    += -Wl,--version-script=version.script

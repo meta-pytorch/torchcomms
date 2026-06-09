@@ -19,11 +19,11 @@
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/prims/trace/PipesTrace.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
 
 Ctran::Ctran(
     CtranComm* comm,
@@ -106,7 +106,7 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   if (!multiPeerTransport_) {
     return nullptr;
@@ -117,7 +117,7 @@ comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   return nullptr;
 }
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
 
 std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
     const {
@@ -193,7 +193,7 @@ void CtranComm::destroy() {
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   pipesTrace_.reset();
   if (hierarchicalAgReadyCounters_ != nullptr) {
     cudaFree(hierarchicalAgReadyCounters_);
@@ -204,7 +204,7 @@ void CtranComm::destroy() {
   // buffers used as external data buffers) and before bootstrap_ (since
   // multiPeerTransport_ holds a non-owning reference to it).
   multiPeerTransport_.reset();
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
   ctran_.reset();
   bootstrap_.reset();
   colltraceNew_.reset();

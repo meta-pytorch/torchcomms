@@ -14,11 +14,11 @@
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #endif
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 namespace comms::prims {
 class DeviceWindow;
 class HostWindow;
@@ -108,7 +108,7 @@ struct CtranWin {
   commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // COLLECTIVE on first call: all ranks must call this together.
   // Prerequisite: allocate() and exchange() must have been called first.
   // Registers the window data buffer with pipes' MultiPeerTransport for
@@ -176,7 +176,7 @@ struct CtranWin {
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::HostWindow> hostWindow_;
 #endif
 };
