@@ -7,8 +7,7 @@ Symmetric memory rendezvous over a torchcomms-backed c10d ProcessGroup.
 Builds a torchcomms nccl comm directly, wraps it in _BackendWrapper, and
 registers it onto a bare dist.ProcessGroup as the NCCL backend type. Then
 publishes the underlying ncclComm into NCCLDevCommManager via PyTorch's
-_symmetric_memory._nccl.register_external_nccl_comm (passing
-comm.get_nccl_comm_ptr()),
+register_external_nccl_comm helper (passing comm.get_nccl_comm_ptr()),
 allocates a symmetric-memory buffer, rendezvouses on it, and verifies every
 rank can read its peers' buffers through the returned handle.
 
@@ -26,7 +25,6 @@ import torch
 import torch.distributed as dist
 import torch.distributed._symmetric_memory as symm_mem
 import torchcomms
-from torch.distributed._symmetric_memory._nccl import register_external_nccl_comm
 from torch.distributed.distributed_c10d import GroupName
 from torchcomms._comms import _BackendWrapper
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
@@ -36,6 +34,21 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 
 
 GROUP_NAME = GroupName("symm_mem_torchcomms_nccl")
+
+
+def _get_register_external_nccl_comm():
+    register = getattr(symm_mem, "_register_external_nccl_comm", None)
+    if register is not None:
+        return register
+
+    try:
+        from torch.distributed._symmetric_memory._nccl import (
+            register_external_nccl_comm,
+        )
+    except ImportError:
+        return None
+
+    return register_external_nccl_comm
 
 
 def _set_group_name(pg: dist.ProcessGroup, name: GroupName) -> None:
@@ -64,6 +77,9 @@ class TestSymmMemRendezvous(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if os.getenv("TEST_BACKEND") != "nccl":
+            raise unittest.SkipTest("symm_mem rendezvous requires nccl backend")
+
         if not torchcomms.is_backend_built("nccl"):
             raise unittest.SkipTest("torchcomms nccl backend not built")
 
@@ -110,19 +126,19 @@ class TestSymmMemRendezvous(unittest.TestCase):
         # symm_mem should use this comm (dropped in tearDownClass). The C++
         # entry point only exists in NCCL builds with symm-mem device
         # support, so a missing symbol means this build can't exercise it.
-        try:
-            # get_nccl_comm_ptr is bound on the backend impl (TorchCommNCCL),
-            # not the TorchComm wrapper.
-            comm_ptr = cls.nccl_comm.get_backend_impl().get_nccl_comm_ptr()
-            cls._symm_mem_reg = register_external_nccl_comm(
-                GROUP_NAME, comm_ptr, cls.device, comm=cls.nccl_comm
-            )
-        except ImportError:
+        register_external_nccl_comm = _get_register_external_nccl_comm()
+        if register_external_nccl_comm is None:
             raise unittest.SkipTest(
                 "PyTorch was built without NCCL symmetric-memory device "
                 "support (register_external_nccl_comm unavailable); cannot "
                 "exercise symm_mem rendezvous."
             )
+        # get_nccl_comm_ptr is bound on the backend impl (TorchCommNCCL),
+        # not the TorchComm wrapper.
+        comm_ptr = cls.nccl_comm.get_backend_impl().get_nccl_comm_ptr()
+        cls._symm_mem_reg = register_external_nccl_comm(
+            GROUP_NAME, comm_ptr, cls.device, comm=cls.nccl_comm
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
