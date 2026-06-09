@@ -1466,8 +1466,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
 
     // Verify each peer has a valid transport pointer
     for (int r = 0; r < numRanks; r++) {
-      if (r == globalRank)
+      if (r == globalRank) {
         continue;
+      }
       P2pIbgdaTransportDevice* ptr = transport->getP2pTransportDevice(r);
       EXPECT_NE(ptr, nullptr)
           << "getP2pTransportDevice(" << r << ") returned null";
