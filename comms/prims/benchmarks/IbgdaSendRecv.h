@@ -80,11 +80,11 @@ void launch_ibgda_recv(
     Timeout timeout = Timeout());
 
 /**
- * Snapshot the transport send/recv step-state array into device memory.
+ * Snapshot the transport send/recv byte cursors into device memory.
  *
  * @param transport  GPU-resident P2pIbgdaTransportDevice pointer
  * @param dst        Device buffer receiving `count` int64_t values
- * @param count      Number of step-state entries to copy
+ * @param count      Number of byte cursor entries to copy
  * @param stream     CUDA stream
  */
 void launch_ibgda_snapshot_step_state(

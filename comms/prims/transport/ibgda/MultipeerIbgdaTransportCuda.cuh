@@ -56,6 +56,10 @@ struct NicDeviceIbgdaResourcesBuildSpec {
  * companionQps within a NicDeviceIbgdaResourcesBuildSpec must be the same size.
  */
 struct P2pIbgdaTransportBuildParams {
+  P2pIbgdaTransportBuildParams() = default;
+  explicit P2pIbgdaTransportBuildParams(IbSendRecvState sendRecvStateIn)
+      : sendRecvState(sendRecvStateIn) {}
+
   std::vector<NicDeviceIbgdaResourcesBuildSpec> h_nicDeviceIbgdaResources;
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
