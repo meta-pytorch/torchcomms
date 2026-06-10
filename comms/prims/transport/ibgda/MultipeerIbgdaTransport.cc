@@ -539,26 +539,24 @@ void MultipeerIbgdaTransport::registerMemory() {
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
-  // Register sink buffer as a zero-based MR (iova=0) on each NIC's PD.
-  //
-  // The sink buffer receives the discarded return value from RDMA atomic
-  // fetch-add operations. Device code uses sinkAddr.addr=0 with the sink
-  // lkey, so the MR must be zero-based: addr=0 maps to offset 0 within the
-  // MR (i.e., the actual sinkBuffer_ GPU address).
-  //
-  // With a standard ibv_reg_mr(), the IOVA equals the virtual address, so
-  // addr=0 would be outside the MR's valid range → NIC local protection
-  // error → QP error state → hang.
-  //
-  // ibv_reg_mr_iova2(pd, addr, length, iova=0, access) creates a zero-based
-  // MR where IOVA range [0, length) maps to [addr, addr+length). Matches
-  // GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
-  //
-  // Multi-NIC: the same physical sink buffer is registered once per PD
-  // (one MR per NIC). DMABUF export is shared across NICs (same fd
-  // re-imported per PD); on first dmabuf failure we fall back to plain
-  // ibv_reg_mr_iova2 across the remaining NICs to keep behavior consistent.
+  // Register the sink buffer (which receives discarded RDMA atomic fetch-add
+  // return values) as a zero-based MR (iova=0) on each NIC's PD. Device code
+  // addresses it as sinkAddr.addr=0, so the MR must be zero-based: a standard
+  // ibv_reg_mr() has IOVA==virtual address, so addr=0 would be out of range →
+  // NIC local protection error → QP error → hang. ibv_reg_mr_iova2(pd, addr,
+  // length, iova=0, access) maps IOVA [0, length) onto [addr, addr+length).
+  // One MR per NIC.
   for (int n = 0; n < numNics_; ++n) {
+#if defined(__HIP_PLATFORM_AMD__) && defined(NIC_MLX5)
+    // AMD+mlx5: register directly against the PD's libibverbs, the same policy
+    // registerBuffer() uses to avoid the lazy/dlopen'd libibverbs on AMD+mlx5
+    // (a separate instance from the PD's). The sink is host-pinned, so unlike
+    // the data path there is no GPU dmabuf to export — hence direct
+    // ibv_reg_mr_iova2 here vs direct ibv_reg_dmabuf_mr in registerBuffer.
+    nicDevices_[n].sinkMr = ibv_reg_mr_iova2(
+        nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
+#else
+    // NVIDIA / AMD+BNXT: DMABUF export (zero-based) with a lazy iova2 fallback.
     auto sinkDmabuf =
         export_gpu_dmabuf_aligned(docaGpu_, sinkBuffer_, sinkBufferSize_);
     if (sinkDmabuf) {
@@ -574,11 +572,11 @@ void MultipeerIbgdaTransport::registerMemory() {
     if (!nicDevices_[n].sinkMr) {
       nicDevices_[n].sinkMr = lazy_ibv_reg_mr_iova2(
           nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
-      if (!nicDevices_[n].sinkMr) {
-        throw std::runtime_error(
-            "Failed to register sink memory region on NIC " +
-            std::to_string(n));
-      }
+    }
+#endif
+    if (!nicDevices_[n].sinkMr) {
+      throw std::runtime_error(
+          "Failed to register sink memory region on NIC " + std::to_string(n));
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n
@@ -1614,11 +1612,32 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   // Try DMABUF first per NIC, fall back to plain reg_mr per NIC. If any
   // NIC's registration fails, deregister everything we already registered
   // and propagate the error.
+  //
+  // On AMD+mlx5, call `ibv_reg_dmabuf_mr` DIRECTLY (not via the lazy/
+  // dlopen'd system libibverbs path). The PD on AMD+mlx5 is owned by
+  // `pipes_gda` which uses a statically-linked libibverbs; the lazy
+  // path's dlopen'd system libibverbs is a separate instance with
+  // independent state — registering across instances SIGSEGVs inside the
+  // userspace mlx5 provider. Direct call uses the same static libibverbs
+  // as the PD. On NVIDIA the lazy and direct paths refer to the same
+  // libibverbs (DOCA's internal one), so we keep the lazy form. On
+  // AMD+BNXT (`NIC_BNXT`) the lazy path goes through SysIbv (the same
+  // libibverbs that pipes_gda's BNXT path uses) — keep it. Future ionic
+  // support (`NIC_IONIC`) defaults to the lazy path until proven otherwise.
   for (int n = 0; n < numNics_; ++n) {
     ibv_mr* mr = nullptr;
     auto dmabuf = export_gpu_dmabuf_aligned(
         docaGpu_, reinterpret_cast<void*>(allocBase), allocSize);
     if (dmabuf) {
+#if defined(__HIP_PLATFORM_AMD__) && defined(NIC_MLX5)
+      mr = ibv_reg_dmabuf_mr(
+          nicDevices_[n].ibvPd,
+          dmabuf->alignment.dmabufOffset,
+          allocSize,
+          static_cast<uint64_t>(allocBase),
+          dmabuf->fd,
+          accessFlags);
+#else
       mr = lazy_ibv_reg_dmabuf_mr(
           nicDevices_[n].ibvPd,
           dmabuf->alignment.dmabufOffset,
@@ -1626,6 +1645,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
           static_cast<uint64_t>(allocBase),
           dmabuf->fd,
           accessFlags);
+#endif
       close(dmabuf->fd);
     }
     if (!mr) {

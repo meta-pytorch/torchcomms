@@ -96,20 +96,26 @@ struct Mlx5NicBackend {
     amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
   }
 
+  // Ring the doorbell: publish the producer index to the DBR, then copy the
+  // last WQE's ctrl segment to the BlueFlame register. The DBR store uses
+  // RELEASE + system scope so the NIC observes the new producer index before
+  // the BlueFlame write (a plain volatile store was observed to stall the NIC
+  // for hundreds of us at small message sizes).
   __device__ void ringDoorbell(
       pipes_gda_gpu_dev_verbs_qp* qp,
       uint64_t nextWqeIdx) {
     uint32_t pi =
         static_cast<uint32_t>(nextWqeIdx) & PIPES_GDA_VERBS_WQE_PI_MASK;
 
-    *reinterpret_cast<volatile uint32_t*>(
-        qp->sq_dbrec + PIPES_GDA_IB_MLX5_SND_DBR) = amd_bswap32(pi);
-    __atomic_signal_fence(__ATOMIC_SEQ_CST);
+    __hip_atomic_store(
+        reinterpret_cast<uint32_t*>(qp->sq_dbrec + PIPES_GDA_IB_MLX5_SND_DBR),
+        amd_bswap32(pi),
+        __ATOMIC_RELEASE,
+        __HIP_MEMORY_SCOPE_SYSTEM);
 
     uint64_t lastWqeIdx = nextWqeIdx - 1;
     pipes_gda_gpu_dev_verbs_wqe* lastWqe = getWqePtr(qp, lastWqeIdx);
     uint64_t dbVal = *reinterpret_cast<volatile uint64_t*>(lastWqe);
-
     amd_store_doorbell_sys_u64(qp->sq_db, dbVal);
 
     uint64_t dbAddr = __hip_atomic_load(

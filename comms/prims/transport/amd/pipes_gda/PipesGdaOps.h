@@ -88,7 +88,7 @@
 
 namespace pipes_gda {
 
-#ifdef NIC_BNXT
+#if defined(__HIP_PLATFORM_AMD__)
 namespace {
 // File-local helper: spin on the non-blocking `pollOneCqAt` until the
 // CQE arrives, then trap on NIC error. Intentionally does NOT advance
@@ -96,9 +96,15 @@ namespace {
 // locally because ringing the CQ doorbell on the BNXT counter-only
 // paths flushes the QP into LOC_QP_OP error state (see callers).
 //
-// Not exposed in the `pipes_gda_*` API surface: this is a BNXT
-// CQE-drain idiom with no DOCA equivalent, kept internal to preserve
-// the 1:1 mirror with NVIDIA's `doca_gpu_dev_verbs_*` names.
+// Used by both the BNXT chunked-put paths (`#ifdef NIC_BNXT`) and the
+// AMD counter/signal fast paths (`#if defined(__HIP_PLATFORM_AMD__)`),
+// so it must be visible for every AMD build (bnxt AND mlx5), not just
+// NIC_BNXT. NVIDIA never compiles this file (it uses the real DOCA
+// `doca_gpu_dev_verbs_*` headers), so this is AMD-only.
+//
+// Not exposed in the `pipes_gda_*` API surface: this is a CQE-drain
+// idiom with no DOCA equivalent, kept internal to preserve the 1:1
+// mirror with NVIDIA's `doca_gpu_dev_verbs_*` names.
 template <typename NicBackend>
 __device__ __forceinline__ void spin_poll_or_trap(
     NicBackend& nic,
@@ -294,6 +300,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
   uint64_t lastIdx = baseIdx + numChunks - 1;
 #ifdef NIC_MLX5
   // Mlx5: batched doorbell — single ring after all chunks prepared.
+  // Uses fast submit with ctrl segment captured on GPU stack (avoids
+  // PCIe round-trip re-read from SQ buffer).
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, lastIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, lastIdx + 1);
 #endif
@@ -627,14 +635,17 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
   pipes_gda_gpu_dev_verbs_submit(nic, mainQp, lastIdx + 1);
 #endif
 
-#ifdef NIC_BNXT
-  // BNXT has no inter-QP wait WQE primitive, so we can't gate a companion
-  // QP's atomic on the main QP's CQ. Use a single QP for everything:
-  // spin-poll the main QP's CQ on the monotonic con_indx, then
-  // GPU-atomic-increment the local counter directly. ncqe=1 + phase
-  // compression means the NIC overwrites the single CQE slot per WQE
-  // completion; ringing the CQ doorbell here causes the NIC to flush the
-  // QP into error state (status=LOC_QP_OP), so just track cqe_ci locally.
+#if defined(__HIP_PLATFORM_AMD__)
+  // AMD: spin-poll main QP CQ + GPU atomic instead of companion-QP/WAIT.
+  // BNXT: no inter-QP wait WQE primitive (must use this path).
+  // mlx5+AMD: WAIT WQE / companion-QP loopback observed not to advance
+  // cross-host on the available MI300X test hardware — matches the legacy
+  // AMD `wait_local(work)` direct main-QP CQ-poll pattern, which was the
+  // validated cross-host surface.
+  // (BNXT-specific note: ncqe=1 + phase compression means the NIC
+  // overwrites the single CQE slot per WQE completion; ringing the CQ
+  // doorbell here would cause the NIC to flush the QP into LOC_QP_OP,
+  // so just track cqe_ci locally.)
   spin_poll_or_trap(nic, &mainQp->cq_sq, lastIdx);
   mainQp->cq_sq.cqe_ci = lastIdx + 1;
   __atomic_fetch_add(
@@ -697,17 +708,20 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
     pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
     pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
     uint64_t counterVal) {
-#ifdef NIC_BNXT
-  // BNXT counter-only fast path: when sigVal == 0 (P2pIbgdaTransportDevice
+#if defined(__HIP_PLATFORM_AMD__)
+  // AMD counter-only fast path: when sigVal == 0 (P2pIbgdaTransportDevice
   // routes counter-only puts through signal_counter with sigVal=0 against
   // a discardSignalSlot — atomic FA on the slot is purely there to give
-  // mlx5's companion-QP something to wait on; on BNXT we don't need it),
-  // skip posting the slow atomic-FA WQE entirely. The prior put_cooperative
-  // WRITE was posted with CQ_UPDATE, so a CQE is on its way for that
-  // completion. Spin-poll until we observe the new CQE (con_indx >
-  // current cqe_ci) and bump the local counter via GPU atomic. Drops
-  // per-iter latency from ~700us (BNXT atomic-FA RTT) to ~10us (RDMA-WRITE
-  // RTT).
+  // NVIDIA mlx5's companion-QP something to wait on; on AMD we don't need
+  // it), skip posting the slow atomic-FA WQE entirely. The prior put's
+  // WRITE was posted with CQ_UPDATE, so a CQE is on its way. Spin-poll
+  // until we observe the new CQE and bump the local counter via GPU atomic.
+  //
+  // Required on AMD across both BNXT (no inter-QP wait WQE primitive) and
+  // mlx5 (WAIT WQE / companion-QP loopback path observed to never advance
+  // cross-host on the available MI300X test hardware) — matches the legacy
+  // `wait_local(work)` direct main-QP CQ-poll pattern, which was the
+  // validated cross-host surface.
   if (sigVal == 0) {
     // Wait for the last reserved WQE (the prior put() may have chunked
     // into multiple WRITE WQEs when size > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE).
@@ -746,11 +760,13 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
 
-#ifdef NIC_BNXT
-  // BNXT: signal-with-real-target path. Spin-poll on mainQp's CQ
-  // con_indx, advance cqe_ci locally, then GPU-atomic-increment the local
-  // counter. Don't ring the CQ doorbell — for ncqe=1 it triggers a NIC
-  // flush into LOC_QP_OP.
+#if defined(__HIP_PLATFORM_AMD__)
+  // AMD: signal-with-real-target path. Spin-poll on mainQp's CQ con_indx,
+  // advance cqe_ci locally, then GPU-atomic-increment the local counter.
+  // Same rationale as the sigVal==0 fast path above — companion-QP/WAIT
+  // path is broken on AMD across BNXT and mlx5 cross-host. (BNXT-specific
+  // note: don't ring the CQ doorbell — for ncqe=1 it triggers a NIC flush
+  // into LOC_QP_OP.)
   spin_poll_or_trap(nic, &mainQp->cq_sq, sigIdx);
   mainQp->cq_sq.cqe_ci = sigIdx + 1;
   __atomic_fetch_add(
