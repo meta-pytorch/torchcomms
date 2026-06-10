@@ -4,6 +4,7 @@
 /// Requires real GPUs, NVML, and ibverbs — not for CI without GPU hardware.
 
 #include "comms/uniflow/transport/Topology.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 
 #include <gtest/gtest.h>
 
@@ -12,7 +13,7 @@ using namespace uniflow;
 class TopologyIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    topo_ = &Topology::get();
+    topo_ = &sharedTopology();
     ASSERT_TRUE(topo_->available());
   }
 

@@ -83,9 +83,30 @@ TEST(CtranIbQpConfigRegressionTest, MaxQps1DevPerRank2) {
   EXPECT_EQ(vc.getMaxNumQp(), 2);
 }
 
-TEST(CtranIbDefaultFlushTest, EnablesFlushForOldNvidiaAndGb300) {
-  EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
-  EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
-  EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(1000));
-  EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
+TEST(CtranIbDefaultFlushTest, EnablesFlushForOldNvidiaGb300AndForceFlush) {
+  ncclCvarInit();
+
+  {
+    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 1);
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(900));
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1000));
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
+  }
+
+  {
+    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
+    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
+    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(1000));
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
+  }
+
+  {
+    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 2);
+    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
+    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
+  }
 }

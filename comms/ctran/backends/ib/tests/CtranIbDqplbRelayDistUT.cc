@@ -81,8 +81,8 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
 
   struct DqplbEnvRAII {
     // The relay case depends on multi-NIC DQPLB over multiple QPs. It does not
-    // issue iflush, so only the NIC and QP selection cvars are part of the
-    // local test setup.
+    // issue iflush, so NCCL_CTRAN_NET_FORCE_FLUSH is not part of the local test
+    // setup.
     std::vector<std::string> qpConfig{"524288", "2", "dqplb", "128"};
     EnvRAII<decltype(NCCL_CTRAN_IB_DEVICES_PER_RANK)> devices{
         NCCL_CTRAN_IB_DEVICES_PER_RANK,

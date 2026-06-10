@@ -1642,6 +1642,15 @@ cvars:
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
 
+ - name        : NCCL_CTRAN_NET_FORCE_FLUSH
+   type        : int
+   default     : 0
+   description : |-
+     Enable PCIe flush support (RDMA READ) for CTRAN network receives. On
+     platforms where the NIC-PCIe-GPU topology does not guarantee immediate
+     GPU visibility for DMA writes, the flush drains pending writes before
+     received data is forwarded or read by GPU copy engines/kernels.
+
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1

@@ -641,6 +641,38 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  /* Drain pending NIC PCIe writes into GPU HBM after RDMA receives complete
+   * and before host or stream-side work reads the just-received buffer. On
+   * split-path topologies, PCIe write ordering does not necessarily extend to
+   * GPU memory visibility, so callers that need immediate GPU-side visibility
+   * should issue a flush and wait for it to complete.
+   */
+  template <typename PerfConfig = DefaultPerfCollConfig>
+  inline commResult_t flush(const void* buf, const void* regHdl) {
+    if (this->ctranIb) {
+      auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
+          const_cast<void*>(regHdl));
+      if (!regElem) {
+        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        return commSuccess;
+      }
+
+      CtranIbRequest ibReq;
+      {
+        auto regLk = regElem->stateMnger.rlock();
+        FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, &ibReq));
+      }
+      while (!ibReq.isComplete() && !comm->testAbort()) {
+        FB_COMMCHECK(this->ctranIb->progress<PerfConfig>());
+      }
+
+      if (comm->testAbort()) {
+        throwCommAbortException("flush");
+      }
+    }
+    return commSuccess;
+  }
+
   /* Initialize the notify instance for receiving remote notification from a
    * peer rank. The backend of flag is determined based on the peer's backend
    * and the local receive buffer. NVL-based notify instance will be initialized
@@ -969,6 +1001,19 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
  private:
+  [[noreturn]] inline void throwCommAbortException(
+      const std::string& abortContext) {
+    auto commAbort = comm->getAbort();
+    std::string message =
+        commAbort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        message,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        abortContext);
+  }
+
   inline commResult_t checkComplete(CtranMapperRequest* req, bool* isComplete) {
     if (req->isComplete()) {
       *isComplete = true;
@@ -1104,6 +1149,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t testRequestImpl(
       CtranMapperRequest* req,
       bool* isComplete) {
+    FB_COMMCHECK(this->checkComplete(req, isComplete));
+    if (*isComplete) {
+      return commSuccess;
+    }
+
     FB_COMMCHECK(this->progress<PerfConfig>());
     FB_COMMCHECK(this->checkComplete(req, isComplete));
 
@@ -1119,14 +1169,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      auto _abort = comm->getAbort();
-      std::string _ctx =
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
-      throw ctran::utils::Exception(
-          _ctx,
-          commRemoteError,
-          comm->logMetaData_.rank,
-          comm->logMetaData_.commHash,
+      throwCommAbortException(
           fmt::format("waitRequest for peer {}", req->peer));
     }
 
