@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // PipesDeviceBackend - Static method implementations
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
@@ -308,4 +308,4 @@ PipesDeviceBackend::get_device_transport(
 
 } // namespace torchcomms::device
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

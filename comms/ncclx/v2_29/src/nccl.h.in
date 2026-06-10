@@ -995,7 +995,7 @@ ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, vo
  */
 ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 /*
  * Create a DeviceWindow in device memory from a ctran-registered ncclWindow_t.
  * COLLECTIVE on first call — all ranks must call together.
@@ -1087,7 +1087,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
 ncclResult_t ncclWinLocalDeregisterBuffer(
     ncclComm_t comm,
     void* ptr);
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
 /*
  * Free the window object and free the allocated memory

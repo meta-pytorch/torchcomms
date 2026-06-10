@@ -8,7 +8,7 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/Transport.cuh"
@@ -18,7 +18,7 @@
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
     int* flag,
@@ -187,7 +187,7 @@ bool ctranAllToAllSupport(
   return commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 // ============================================================================
 // Device AllToAllv (split sizes on device)
 // NVLink domain only — all peers must be reachable via NVLink.
@@ -284,11 +284,11 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
 
   return true;
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
-// Stubs when ENABLE_PIPES is not defined — prevents linker errors from
+// Stubs when ENABLE_PRIMS is not defined — prevents linker errors from
 // unconditional declarations in Ctran.h.
-#if !defined(ENABLE_PIPES)
+#if !defined(ENABLE_PRIMS)
 commResult_t ctranDeviceAllToAllv(
     const void* /*sendbuff*/,
     void* /*recvbuff*/,
@@ -306,4 +306,4 @@ commResult_t ctranDeviceAllToAllv(
 bool ctranDeviceAllToAllvSupport(CtranComm* /*comm*/) {
   return false;
 }
-#endif // !ENABLE_PIPES
+#endif // !ENABLE_PRIMS
