@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
@@ -30,6 +31,7 @@ inline int resolveFwdPeers(int nSteps) {
 struct PutQElem {
   int step;
   int chunk;
+  CtranMapperRequest* flushReq;
 };
 
 } // namespace ctran::allgather::ctsrd::common
@@ -57,9 +59,11 @@ struct AlgoContext {
   // Only the last iput to each peer uses a tracked request; earlier iputs
   // pass nullptr (fire-and-forget, safe due to in-order completion guarantee).
   std::vector<CtranMapperRequest> iputReqs;
-
   // Per-step deferred puts flushed at step start.
   std::vector<std::vector<common::PutQElem>> deferredPuts;
+  // Per-step iflush requests referenced by putQ/deferredPuts. progressPuts()
+  // waits for the relevant flush before issuing a dependent iput.
+  std::vector<std::vector<std::unique_ptr<CtranMapperRequest>>> recvFlushReqs;
   // Per-step count of received notifications.
   std::vector<int> numReceived;
 
@@ -87,6 +91,7 @@ struct AlgoContext {
         notifyVec(notifyVecSize),
         iputReqs(recvPlan.nSteps()),
         deferredPuts(recvPlan.nSteps()),
+        recvFlushReqs(recvPlan.nSteps()),
         numReceived(recvPlan.nSteps(), 0),
         putCount(recvPlan.nSteps(), 0) {}
 
@@ -144,11 +149,29 @@ inline commResult_t waitCtrl(AlgoContext& ctx) {
   return commSuccess;
 }
 
-// Receive chunks for the current step and post forward puts for future steps.
+template <typename AlgoContext>
+inline commResult_t
+postRecvFlush(AlgoContext& ctx, int step, CtranMapperRequest** flushReq) {
+  *flushReq = nullptr;
+
+  CtranMapperRequest* req = nullptr;
+  FB_COMMCHECK(ctx.mapper->iflush(ctx.recvbuff, ctx.memHdl, &req));
+  if (req != nullptr) {
+    auto reqOwner = std::unique_ptr<CtranMapperRequest>(req);
+    *flushReq = reqOwner.get();
+    ctx.recvFlushReqs.at(step).push_back(std::move(reqOwner));
+  }
+  return commSuccess;
+}
+
+// Receive chunks for the current step, post one iflush for the ready batch, and
+// queue future-step forwards that will poll that flush before issuing iput.
 template <typename AlgoContext>
 inline commResult_t progressRecvFwd(AlgoContext& ctx, int step) {
   const auto nSteps = ctx.recvPlan.nSteps();
   const auto expNumRecv = static_cast<int>(ctx.recvPlan.chunks(step).size());
+  std::vector<int> readyChunks;
+  readyChunks.reserve(static_cast<std::size_t>(expNumRecv));
   while (ctx.numReceived.at(step) < expNumRecv) {
     const auto recvIdx = ctx.numReceived.at(step);
     const auto chunk = ctx.recvPlan.chunk(step, recvIdx);
@@ -158,13 +181,23 @@ inline commResult_t progressRecvFwd(AlgoContext& ctx, int step) {
       break;
     }
     ctx.numReceived.at(step)++;
+    readyChunks.push_back(chunk);
+  }
 
+  if (readyChunks.empty()) {
+    return commSuccess;
+  }
+
+  CtranMapperRequest* flushReq = nullptr;
+  FB_COMMCHECK(postRecvFlush(ctx, step, &flushReq));
+
+  for (const auto chunk : readyChunks) {
     const int immEnd = std::min(step + 1 + ctx.recvPlan.fwdPeers(), nSteps);
     for (int fwd = step + 1; fwd < immEnd; fwd++) {
-      ctx.enqueuePut(fwd, chunk);
+      ctx.enqueuePut(fwd, chunk, flushReq);
     }
     for (int fwd = immEnd; fwd < nSteps; fwd++) {
-      ctx.deferredPuts.at(fwd).push_back({fwd, chunk});
+      ctx.deferredPuts.at(fwd).push_back({fwd, chunk, flushReq});
     }
   }
   return commSuccess;
@@ -193,6 +226,14 @@ template <typename AlgoContext>
 inline commResult_t progressPuts(AlgoContext& ctx) {
   while (!ctx.putQ.empty()) {
     const auto elem = ctx.putQ.front();
+    if (elem.flushReq != nullptr) {
+      bool flushComplete = false;
+      FB_COMMCHECK(ctx.mapper->testRequest(elem.flushReq, &flushComplete));
+      if (!flushComplete) {
+        return commSuccess;
+      }
+    }
+
     CtranMapperRequest* req = nullptr;
     if (ctx.sendPlan.isLastChunk(elem.step, elem.chunk)) {
       req = &ctx.iputReqs.at(elem.step);
@@ -207,8 +248,25 @@ inline commResult_t progressPuts(AlgoContext& ctx) {
 template <typename AlgoContext>
 inline void postDeferredPuts(AlgoContext& ctx, int step) {
   for (const auto& fwd : ctx.deferredPuts.at(step)) {
-    ctx.enqueuePut(fwd.step, fwd.chunk);
+    ctx.enqueuePut(fwd.step, fwd.chunk, fwd.flushReq);
   }
+}
+
+template <typename AlgoContext>
+inline commResult_t waitStepFlushes(AlgoContext& ctx, int step) {
+  for (const auto& req : ctx.recvFlushReqs.at(step)) {
+    FB_COMMCHECK(ctx.mapper->waitRequest(req.get()));
+  }
+  return commSuccess;
+}
+
+template <typename AlgoContext>
+inline commResult_t waitAllFlushes(AlgoContext& ctx) {
+  const auto nSteps = ctx.recvPlan.nSteps();
+  for (int step = 0; step < nSteps; step++) {
+    FB_COMMCHECK(waitStepFlushes(ctx, step));
+  }
+  return commSuccess;
 }
 
 // Wait for all tracked iput requests (one per peer/step).
@@ -238,6 +296,12 @@ inline commResult_t progressSteps(AlgoContext& ctx, int localChunk) {
     FB_COMMCHECK(ctx.onStepComplete(step));
   }
 
+  // Flush-gated puts may still be queued after all recv steps are done.
+  while (!ctx.putQ.empty()) {
+    FB_COMMCHECK(progressPuts(ctx));
+  }
+  // Make all received NIC writes GPU-visible before subsequent GPU work.
+  FB_COMMCHECK(waitAllFlushes(ctx));
   FB_COMMCHECK(waitAllPuts(ctx));
   return commSuccess;
 }

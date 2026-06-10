@@ -47,7 +47,8 @@ constexpr int kGb300CudaArch = 1030;
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
 
 bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
-  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch;
+  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch ||
+      NCCL_CTRAN_NET_FORCE_FLUSH;
 }
 
 commResult_t checkEpochLock(CtranIb* ctranIb) {
@@ -332,7 +333,9 @@ CtranIb::CtranIb(
     // https://ontrack.amd.com/browse/FBA-633
     enableLocalFlush_ = true;
 #else
-    // Turn on flush for NVidia GPUs older than H100 and GB300.
+    // Turn on flush by default for NVidia GPUs older than H100 and for GB300.
+    // Multi-NIC topologies with cross-NIC DMA ordering hazards must opt in via
+    // NCCL_CTRAN_NET_FORCE_FLUSH=1.
     // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
     // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology
     // detection.
