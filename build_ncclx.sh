@@ -459,7 +459,7 @@ function build_nccl {
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
     CUDARTLIB="$CUDARTLIB" \
-    ENABLE_PIPES="${ENABLE_PIPES:-0}"
+    ENABLE_PRIMS="${ENABLE_PRIMS:-0}"
 }
 
 function build_and_install_nccl {
@@ -476,7 +476,7 @@ make VERBOSE=1 -j$(nproc) \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
     CUDARTLIB="$CUDARTLIB" \
-    ENABLE_PIPES="${ENABLE_PIPES:-0}"
+    ENABLE_PRIMS="${ENABLE_PRIMS:-0}"
 }
 
 if [[ -z "${NCCL_BUILD_AND_INSTALL}" ]]; then

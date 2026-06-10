@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
@@ -171,4 +171,4 @@ template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>(
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

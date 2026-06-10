@@ -205,7 +205,7 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include <cuda_runtime_api.h>
 
 #include "comms/prims/transport/MultiPeerTransport.h"
@@ -392,4 +392,4 @@ ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t comm, void* ptr) {
     return ncclInternalError;
   }
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
