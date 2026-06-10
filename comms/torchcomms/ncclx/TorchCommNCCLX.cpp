@@ -12,6 +12,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <fmt/core.h>
+#include <folly/String.h>
 #include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include "comms/torchcomms/TorchCommFactory.hpp"
@@ -51,13 +52,46 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
 
 std::atomic<int> g_graphTimeoutMonitoringState{-1};
 
-bool isColltraceGraphTracingEnabled() {
+// Returns true if NCCL_COLLTRACE enables a full-trace mode ("trace" or
+// "verbose"), i.e. the colltrace worker thread and WatchdogPlugin will actually
+// be created by CollTraceWrapper::newCollTraceInit. NCCL_COLLTRACE is a
+// comma-separated stringlist, so we tokenize and trim exactly like the cvar
+// parser (comms/utils/cvars) and newCollTraceInit do — an exact whole-string
+// compare would miss valid multi-token configs such as "trace,algostat".
+bool colltraceTraceModeEnabled() {
+  const char* env = std::getenv("NCCL_COLLTRACE");
+  if (env == nullptr) {
+    return false;
+  }
+  std::vector<std::string> tokens;
+  folly::split(',', env, tokens, true /* ignoreEmpty */);
+  for (const auto& token : tokens) {
+    const std::string trimmed = folly::trimWhitespace(token).str();
+    if (trimmed == "trace" || trimmed == "verbose") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns true if NCCL_COLLTRACE_TRACE_CUDA_GRAPH requests cudagraph-captured
+// collective tracing.
+bool colltraceCudaGraphTracingRequested() {
   const char* env = std::getenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   if (env == nullptr) {
     return false;
   }
-  std::string val(env);
+  const std::string val(env);
   return val == "1" || val == "true";
+}
+
+// The colltrace cudagraph watchdog only fires when BOTH the cudagraph tracing
+// flag is set AND colltrace itself is in trace/verbose mode — otherwise
+// CollTraceWrapper::newCollTraceInit short-circuits before installing the
+// WatchdogPlugin. Both conditions must hold before we hand graph-timeout
+// monitoring over to colltrace and disable GraphEventTracker.
+bool isColltraceGraphTracingEnabled() {
+  return colltraceCudaGraphTracingRequested() && colltraceTraceModeEnabled();
 }
 
 } // namespace
@@ -71,6 +105,25 @@ bool isGraphTimeoutMonitoringEnabled() {
       std::string val(env);
       enabled = (val != "0" && val != "false");
     }
+    // Misconfiguration guard: the operator asked for colltrace cudagraph
+    // tracing, but colltrace is not in trace/verbose mode, so
+    // CollTraceWrapper::newCollTraceInit will never install the timeout
+    // WatchdogPlugin. Warn loudly — otherwise both watchdogs can end up
+    // silently disabled (the failure mode that let a hang go undetected).
+    if (colltraceCudaGraphTracingRequested() && !colltraceTraceModeEnabled()) {
+      const char* colltraceEnv = std::getenv("NCCL_COLLTRACE");
+      LOG(WARNING)
+          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled but NCCL_COLLTRACE='"
+          << (colltraceEnv != nullptr ? colltraceEnv : "<unset>")
+          << "' does not enable a 'trace'/'verbose' mode — the colltrace timeout "
+          << "watchdog will NOT be installed. "
+          << (enabled
+                  ? "Keeping GraphEventTracker as the graph-collective watchdog."
+                  : "TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is also disabled, so "
+                    "NO graph-collective watchdog will be active.")
+          << " Set NCCL_COLLTRACE=trace to enable the colltrace watchdog.";
+    }
+
     if (enabled && isColltraceGraphTracingEnabled()) {
       LOG(WARNING)
           << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled — "
