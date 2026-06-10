@@ -71,6 +71,31 @@ __global__ void putOnlyKernel(
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes);
 
+__global__ void sendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send);
+
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void progressSendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    std::size_t maxSignalBytes,
+    bool send);
+
+__global__ void progressReservationKernel(
+    P2pIbgdaTransportDevice* transport,
+    int64_t* output,
+    std::size_t sendBytes,
+    std::size_t recvBytes,
+    int activeBlocks);
+#endif
+
 __global__ void
 fillPatternKernel(uint8_t* buffer, std::size_t nbytes, uint8_t baseValue);
 
