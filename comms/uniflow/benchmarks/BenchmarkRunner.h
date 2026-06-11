@@ -26,6 +26,7 @@ struct BenchmarkConfig {
   bool bidirectional{false};
   std::string direction{"both"};
   std::vector<int> numStreams{1, 2, 4, 8};
+  std::string topology{"fanout"}; // "fanout", "fanin"
 };
 
 class Benchmark {

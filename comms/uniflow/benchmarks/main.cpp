@@ -37,6 +37,7 @@ struct CliOptions {
   int cudaDevice{-1};
   bool bidirectional{false};
   std::vector<int> numStreams{1, 2, 4, 8};
+  std::string topology{"fanout"};
   std::vector<std::string> rdmaDevices;
 };
 
@@ -90,6 +91,7 @@ void printUsage(const char* prog) {
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
+      << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -124,6 +126,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"num-nics", required_argument, nullptr, 258},
       {"chunk-size", required_argument, nullptr, 256},
       {"cuda-device", required_argument, nullptr, 'c'},
+      {"topology", required_argument, nullptr, 259},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -255,6 +258,14 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 259:
+        opts.topology = optarg;
+        if (opts.topology != "fanout" && opts.topology != "fanin") {
+          std::cerr << "Invalid value for --topology: '" << optarg
+                    << "' (expected fanout|fanin)\n";
+          std::exit(1);
+        }
+        break;
       case 'l':
         listMode = true;
         break;
@@ -322,6 +333,7 @@ int main(int argc, char** argv) {
   config.chunkSize = opts.chunkSize;
   config.cudaDevice = opts.cudaDevice;
   config.numStreams = opts.numStreams;
+  config.topology = opts.topology;
 
   UNIFLOW_LOG_INFO(
       "Rank {}/{} starting benchmark (transport={})",
