@@ -2,7 +2,7 @@
 
 #pragma once
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -90,4 +90,4 @@ __global__ void ctranKernelAllReduceTree(
     CtranAlgoDeviceState* devState,
     ctran::allreduce::tree::KernArgs args);
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

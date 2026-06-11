@@ -14,7 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/ctran/algos/AllReduce/AllReduceTree.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #endif
@@ -56,7 +56,7 @@ int getAllReduceTreeFanOut() {
   return kDefaultFanOut;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 /** Return the topology-wide cap for CTREE logical CUDA blocks. */
 int getAllReduceTreeNumBlockCap() {
   return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
@@ -260,7 +260,7 @@ commResult_t ctranAllReduceTree(
       tree1.isRoot,
       tree1.isLeaf);
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   const int nLocalRanks = statex->nLocalRanks();
   const size_t elementSize = commTypeSize(datatype);
   const size_t totalBytes = count * elementSize;
@@ -340,7 +340,7 @@ commResult_t ctranAllReduceTree(
     CLOGF(
         ERR,
         "AllReduce ctree: getMultiPeerTransportsPtr() returned null - "
-        "Prims transport not initialized. Ensure ENABLE_PIPES is defined "
+        "Prims transport not initialized. Ensure ENABLE_PRIMS is defined "
         "and multiPeerTransport is set up.");
     return commInternalError;
   }
@@ -380,7 +380,7 @@ commResult_t ctranAllReduceTree(
 
   return commSuccess;
 #else
-  CLOGF(ERR, "AllReduce ctree requires ENABLE_PIPES");
+  CLOGF(ERR, "AllReduce ctree requires ENABLE_PRIMS");
   return commInternalError;
 #endif
 }

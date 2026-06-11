@@ -20,7 +20,7 @@
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/utils/CudaRAII.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #endif
 
@@ -2112,7 +2112,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
   const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
@@ -2338,7 +2338,7 @@ class NCCLXRegistration {
 static const NCCLXRegistration registration{};
 } // namespace
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 int64_t TorchCommNCCLX::get_device_transport() {
   if (!device_transport_handle_) {
     device_transport_handle_ =
