@@ -417,7 +417,7 @@ int main(int argc, char** argv) {
   if (bootstrap.isRank0()) {
     if (opts.format == "table" || opts.format == "both") {
       uniflow::benchmark::Reporter::printHeader(
-          bootstrap, opts.transport, std::cout);
+          bootstrap, opts.benchmark, std::cout);
       uniflow::benchmark::Reporter::printTable(results, std::cout);
     }
 

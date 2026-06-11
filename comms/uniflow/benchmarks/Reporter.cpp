@@ -32,11 +32,10 @@ std::string formatInt(int val, int width = 8) {
 
 void Reporter::printHeader(
     const BootstrapConfig& config,
-    const std::string& transport,
+    const std::string& benchmarkName,
     std::ostream& os) {
   os << "======================================================================\n"
-     << "                    Uniflow Transport Benchmark\n"
-     << "  Transport: " << transport << "    Ranks: " << config.worldSize
+     << "  Benchmark: " << benchmarkName << "    Ranks: " << config.worldSize
      << "    LocalRank: " << config.localRank << "\n"
      << "======================================================================\n"
      << "\n";
