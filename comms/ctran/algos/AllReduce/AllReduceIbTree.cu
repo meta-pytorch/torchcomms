@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "comms/ctran/algos/AllReduce/AllReduceFusedCommon.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceFusedOrchestrator.cuh"
 #include "comms/ctran/algos/AllReduce/AllReduceIbTree.cuh"
 #include "comms/ctran/algos/AllReduce/AllReduceNvlDirect.cuh"
 #include "comms/prims/core/CopyOp.cuh"
@@ -15,12 +17,13 @@
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
-// Phase 1 (NVL ReduceScatter) and Phase 3 (NVL AllGather) are topology-agnostic
-// and live in AllReduceNvlDirect.cuh; bring them and their helpers into scope.
-using namespace ctran::allreduce::nvl;
-
-// IbReduceCopy<T> and logicalDataGroup are shared across all fused AllReduce
-// kernels and live in AllReduceNvlDirect.cuh.
+// Shared device utilities (tileReduce, IbReduceCopy, logicalDataGroup,
+// segmentTile, actualSegElems, pipelineStepBytes, ...) live in
+// AllReduceFusedCommon.cuh (ctran::allreduce::common). The NVL phases live in
+// AllReduceNvlDirect.cuh (ctran::allreduce::nvl::direct) and the
+// phase-sequencing orchestrator in AllReduceFusedOrchestrator.cuh
+// (ctran::allreduce::fused).
+using namespace ctran::allreduce::common;
 
 enum class TreeLanePhase : uint8_t {
   ReduceLeafSend,
@@ -392,10 +395,11 @@ template <typename T>
 __device__ __forceinline__ void runAllReduceTree(
     const ctran::allreduce::tree::KernArgs& args,
     comms::prims::ThreadGroup& group) {
-  runAllReduceFused<T>(
-      args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
-        phase2IbDualTree<T>(args, phaseGroup);
-      });
+  ctran::allreduce::fused::
+      runAllReduceFused<T, ctran::allreduce::nvl::direct::Ops>(
+          args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
+            phase2IbDualTree<T>(args, phaseGroup);
+          });
 }
 
 // ============================================================================

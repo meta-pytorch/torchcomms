@@ -16,6 +16,21 @@ static constexpr int kIbTileElems = 5120;
 
 } // namespace ctran::allreduce::common
 
+namespace ctran::allreduce::nvl::direct {
+
+/**
+ * Per-NVL-variant device-state slot embedded in each algorithm's `KernArgs`.
+ *
+ * Empty for NvlDirect, which needs no extra device state. A future NvlSharp
+ * variant defines its own `ExtraArgs` (multicast/SHARP handles) so that state
+ * has a home without bloating `common::CommonKernArgs`. Defined here
+ * (host-safe, no `__device__` code) so `KernArgs` headers stay includable from
+ * host `.cc`.
+ */
+struct ExtraArgs {};
+
+} // namespace ctran::allreduce::nvl::direct
+
 #if defined(ENABLE_PRIMS)
 
 namespace comms::prims {
