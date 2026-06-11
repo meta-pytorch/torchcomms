@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "comms/ctran/ibverbx/Ibvcore.h"
+
 // Host-side DOCA APIs are NVIDIA-only. On AMD, `DocaCompat.h`
 // translates both device-side and host-side `doca_*` symbols to the
 // `pipes_gda_*` APIs implemented in `amd/pipes_gda/PipesGdaHost.{h,cc}`,
@@ -19,11 +21,9 @@
 #include "comms/prims/transport/amd/DocaCompat.h"
 #else
 #include <doca_gpunetio_host.h>
-#include "doca_verbs_net_wrapper.h"
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
-#include "comms/prims/platform/IbverbsLazy.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
@@ -210,7 +210,7 @@ struct IbgdaTransportExchInfo {
   uint16_t lid{0};
 
   // Port active MTU. Used to negotiate path MTU: min(local, remote).
-  enum ibv_mtu mtu { IBV_MTU_4096 };
+  ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
 };
 
 /**
@@ -247,7 +247,7 @@ struct IbgdaTransportExchInfoAll {
 
   // Common (shared across NICs on this rank).
   int gidIndex{0};
-  enum ibv_mtu mtu { IBV_MTU_4096 };
+  ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
 
   // Number of NICs (rails) used by this rank.
   // Must match across all ranks (validated at exchange time).
@@ -576,11 +576,11 @@ class MultipeerIbgdaTransport {
   // are indexed [peer * numQpsPerPeerPerNic + q].
   struct NicHostIbgdaResources {
     std::string deviceName;
-    ibv_context* ibvCtx{nullptr};
-    ibv_pd* ibvPd{nullptr};
+    ibverbx::ibv_context* ibvCtx{nullptr};
+    ibverbx::ibv_pd* ibvPd{nullptr};
     doca_verbs_ah_attr* ahAttr{nullptr};
-    union ibv_gid localGid{};
-    ibv_mr* sinkMr{nullptr};
+    ibverbx::ibv_gid localGid{};
+    ibverbx::ibv_mr* sinkMr{nullptr};
     std::vector<doca_gpu_verbs_qp_group_hl*> qpGroups;
     std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
   };
@@ -600,7 +600,7 @@ class MultipeerIbgdaTransport {
   // Multiple user buffers within the same cudaMalloc allocation share one
   // MR per NIC; the MR set covers all NICs for the same physical buffer.
   struct CachedMr {
-    std::array<ibv_mr*, kMaxNicsPerGpu> mrs{};
+    std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
     size_t allocSize{0};
     int refs{0};
   };
@@ -618,7 +618,7 @@ class MultipeerIbgdaTransport {
   // GID index + active MTU are common across NICs (same config knob, same
   // fabric/HCA generation in multi-NIC platforms like GB200/GB300).
   int gidIndex_{3};
-  enum ibv_mtu localMtu_ { IBV_MTU_4096 };
+  ibverbx::ibv_mtu localMtu_{ibverbx::IBV_MTU_4096};
 
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};

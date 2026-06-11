@@ -7,14 +7,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef __HIP_PLATFORM_AMD__
-#include "comms/prims/transport/amd/DocaCompat.h"
-#else
-#include <doca_gpunetio_host.h>
-#include <doca_verbs_net_wrapper.h>
-#endif
-
-#include "comms/prims/platform/IbverbsLazy.h"
 #include "comms/prims/transport/rdma/IbHcaParser.h"
 
 namespace comms::prims {
@@ -246,27 +238,6 @@ class GpuNicDiscovery : public NicDiscovery {
    * Get PCIe bus ID string from CUDA device.
    */
   static std::string getCudaPciBusId(int cudaDevice);
-
-  /**
-   * Check if an IB device supports MLX5 DV interface.
-   */
-  static bool isMlx5Supported(ibv_device* device);
-
-  /**
-   * Check if an IB context supports DMA-BUF registration.
-   * Probes with a dummy ibv_reg_dmabuf_mr call (fd=-1).
-   */
-  static bool isDmaBufCapable(ibv_context* ctx);
-
-  /**
-   * Get the Data Direct sysfs path for an MLX5 device.
-   *
-   * @param ctx ibv_context for the device
-   * @param path Output: filled with the full sysfs path (e.g.,
-   * /sys/devices/...)
-   * @return true if device supports Data Direct and path was retrieved
-   */
-  static bool getDataDirectSysfsPath(ibv_context* ctx, std::string& path);
 
  private:
   void initGpuTopology();
