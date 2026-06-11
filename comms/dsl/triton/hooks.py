@@ -2,12 +2,13 @@
 
 # pyre-unsafe
 
-"""Minimal demo hooks: a plain identity copy through staging.
+"""Minimal demo + example hooks (Triton), all in the ``Ctx`` form.
 
-The trivial ``produce``/``consume`` used by the minimal launcher and smoke test.
 Hooks take a single ``Ctx`` (see ``triton/ctx.py``); ``consume`` also receives the
-loaded tile payload ``regs``. Real Ops (transpose, gather, quantize, accumulate,
-…) supply their own hooks against this same ``ctx`` form.
+loaded tile payload ``regs``. ``copy_*`` are the trivial identity hooks; the
+``scale2``/``addone`` pair are non-trivial examples that prove the seam composes.
+Real Ops (transpose, gather, quantize, accumulate, …) supply their own hooks
+against this same ``ctx`` form — adding a ``Ctx`` field never changes a signature.
 """
 
 import triton
@@ -24,3 +25,15 @@ def copy_produce(ctx):
 def copy_consume(ctx, regs):
     """Write a received tile to the output (overwrite)."""
     tl.store(ctx.ptr + ctx.idx, regs, mask=ctx.mask)
+
+
+@triton.jit
+def scale2_produce(ctx):
+    """Send-side hook: load a tile and multiply by 2 (a real value transform)."""
+    return tl.load(ctx.ptr + ctx.idx, mask=ctx.mask) * 2.0
+
+
+@triton.jit
+def addone_consume(ctx, regs):
+    """Recv-side hook: add 1 to the received tile before storing."""
+    tl.store(ctx.ptr + ctx.idx, regs + 1.0, mask=ctx.mask)

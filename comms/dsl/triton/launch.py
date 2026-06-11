@@ -37,6 +37,7 @@ def send(
     send_buf: torch.Tensor,
     peer: int,
     *,
+    produce=copy_produce,
     num_blocks: int = _DEFAULT_NUM_BLOCKS,
     num_warps: int = _DEFAULT_NUM_WARPS,
     block: int = _DEFAULT_BLOCK,
@@ -50,7 +51,7 @@ def send(
         ep.send_dst,
         ep.signal_dst,
         send_buf.numel(),
-        copy_produce,
+        produce,
         nvl_ops.put,
         nvl_ops.signal,
         BLOCK=block,
@@ -63,6 +64,7 @@ def recv(
     recv_buf: torch.Tensor,
     peer: int,
     *,
+    consume=copy_consume,
     num_blocks: int = _DEFAULT_NUM_BLOCKS,
     num_warps: int = _DEFAULT_NUM_WARPS,
     block: int = _DEFAULT_BLOCK,
@@ -76,7 +78,7 @@ def recv(
         ep.recv_src,
         ep.signal_src,
         recv_buf.numel(),
-        copy_consume,
+        consume,
         nvl_ops.get,
         nvl_ops.wait,
         BLOCK=block,
@@ -90,13 +92,20 @@ def sendrecv(
     recv_buf: torch.Tensor,
     send_peer: int,
     recv_peer: int | None = None,
+    *,
+    produce=copy_produce,
+    consume=copy_consume,
     **kwargs: int,
 ) -> None:
     """Bidirectional minimal exchange. ``send`` is non-blocking, so issuing it
-    before ``recv`` does not deadlock."""
+    before ``recv`` does not deadlock.
+
+    ``produce`` routes to the send leg and ``consume`` to the recv leg; the
+    remaining launch kwargs (``num_blocks``/``num_warps``/``block``) go to both.
+    """
     recv_peer = send_peer if recv_peer is None else recv_peer
-    send(transport, send_buf, send_peer, **kwargs)
-    recv(transport, recv_buf, recv_peer, **kwargs)
+    send(transport, send_buf, send_peer, produce=produce, **kwargs)
+    recv(transport, recv_buf, recv_peer, consume=consume, **kwargs)
 
 
 # ---------------------------------------------------------------------------

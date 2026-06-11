@@ -179,6 +179,18 @@ class TritonInterfaceTest(unittest.TestCase):
         self.assertEqual(self._arg_names(hooks.copy_consume), ["ctx", "regs"])
         self.assertIsNotNone(Ctx)
 
+    def test_hooks_present(self) -> None:
+        from comms.dsl.triton import hooks
+        from triton.runtime.jit import JITFunction
+
+        for name in (
+            "copy_produce",
+            "copy_consume",
+            "scale2_produce",
+            "addone_consume",
+        ):
+            self.assertIsInstance(getattr(hooks, name), JITFunction)
+
 
 class CuteInterfaceTest(unittest.TestCase):
     def test_cute_backend_host_api(self) -> None:
@@ -195,4 +207,12 @@ class CuteInterfaceTest(unittest.TestCase):
             params = list(inspect.signature(fn).parameters)
             self.assertIn("transport", params)
             self.assertIn("peer", params)
+        self.assertIn("produce", inspect.signature(send).parameters)
+        self.assertIn("consume", inspect.signature(recv).parameters)
         self.assertTrue(callable(sendrecv))
+
+        # Example CuTe hooks exist in the unified produce(ctx)/consume(ctx) form.
+        from comms.dsl.cute import hooks as cute_hooks
+
+        self.assertTrue(callable(cute_hooks.scale2_produce))
+        self.assertTrue(callable(cute_hooks.addone_consume))
