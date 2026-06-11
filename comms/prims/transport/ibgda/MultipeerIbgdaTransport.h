@@ -297,10 +297,9 @@ class MultipeerIbgdaTransport
 
   // GPU PCIe bus ID.
   std::string gpuPciBusId_;
-  // GID index + active MTU are common across NICs (same config knob, same
-  // fabric/HCA generation in multi-NIC platforms like GB200/GB300).
-  int gidIndex_{3};
-  ibverbx::ibv_mtu localMtu_{ibverbx::IBV_MTU_4096};
+  // gidIndex_ and localMtu_ are generic IB facts owned by
+  // MultiPeerIbTransportBase (set by openNics()); the backend reads them
+  // (inherited) when building DOCA AH attrs and connecting QPs.
 
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};

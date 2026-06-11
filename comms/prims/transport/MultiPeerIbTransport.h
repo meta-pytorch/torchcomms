@@ -284,6 +284,15 @@ class MultiPeerIbTransportBase {
     return (peerIndex < myRank_) ? peerIndex : (peerIndex + 1);
   }
 
+  // Generic NIC bring-up: resolve NIC names (config.gpuNicMap / topology
+  // auto-discovery), open device + PD, and query GID + port (active MTU, link
+  // layer, port state). Fills nics_
+  // (deviceName/ibvCtx/ibvPd/localGid/linkLayer) and localMtu_ (from NIC 0),
+  // using gidIndex_. numNics_ must be set first. No backend hook — each backend
+  // builds its address handles afterwards from nics_[n].linkLayer +
+  // config_.addressFamily.
+  void openNics();
+
   // ---- shared eager-exchange scaffolding ----
   // Collective allGather of this rank's exchange info. The backend fills the
   // backend-specific QPN/GID/LID fields of localInfo; the base guards the rank
@@ -331,15 +340,22 @@ class MultiPeerIbTransportBase {
   // Number of NICs (rails) in use; set by the backend at construction.
   int numNics_{1};
 
-  // Per-NIC generic IB resources (device name, context, PD, GID). The backend
-  // fills these during NIC bring-up; the base registers MRs on the PDs. The
-  // backend keeps only its backend-specific per-NIC state (e.g. DOCA AH attrs
-  // and QP groups), index-aligned with this vector.
+  // Generic IB facts captured during NIC bring-up (openNics()): the RoCE GID
+  // index (resolved from config in the ctor) and the negotiated active MTU
+  // (NIC 0's). Read by backends when building address handles / connecting QPs.
+  int gidIndex_{3};
+  ibverbx::ibv_mtu localMtu_{ibverbx::IBV_MTU_4096};
+
+  // Per-NIC generic IB resources (device name, context, PD, GID, link layer).
+  // openNics() fills these; the base registers MRs on the PDs. The backend
+  // keeps only its backend-specific per-NIC state (e.g. DOCA AH attrs and QP
+  // groups), index-aligned with this vector.
   struct NicResources {
     std::string deviceName;
     ibverbx::ibv_context* ibvCtx{nullptr};
     ibverbx::ibv_pd* ibvPd{nullptr};
     ibverbx::ibv_gid localGid{};
+    int linkLayer{0}; // ibverbx::IBV_LINK_LAYER_* (IB vs Ethernet/RoCE)
   };
   std::vector<NicResources> nics_;
 
