@@ -61,6 +61,7 @@ void Topology::clear() {
   pxnPaths_.clear();
   gpuNodeIds_.clear();
   nicNodeIds_.clear();
+  nicNameToNuma_.clear();
   cpuNodeIds_.clear();
   p2pMatrix_.clear();
 }
@@ -96,6 +97,9 @@ void Topology::registerNicNode(int nicIndex, int nodeId) {
     nicNodeIds_.resize(nicIndex + 1, -1);
   }
   nicNodeIds_[nicIndex] = nodeId;
+  const auto& node = nodes_[nodeId];
+  const auto& nicData = std::get<TopoNode::NicData>(node.data);
+  nicNameToNuma_[node.name] = nicData.numaNode;
 }
 
 void Topology::setP2pMatrix(std::vector<std::vector<bool>> matrix) {
@@ -320,6 +324,14 @@ int Topology::getCurrentCpuNumaNode() const {
     return static_cast<int>(node);
   }
   return -1;
+}
+
+int Topology::nicNumaNode(const std::string& nicName) const {
+  if (nicName.empty()) {
+    return -1;
+  }
+  auto it = nicNameToNuma_.find(nicName);
+  return it != nicNameToNuma_.end() ? it->second : -1;
 }
 
 bool Topology::filterNic(int nicIndex, const NicFilter& filter) const {

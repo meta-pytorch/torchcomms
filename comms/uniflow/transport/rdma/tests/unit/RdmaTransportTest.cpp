@@ -206,7 +206,7 @@ NicResources makeNic(
   ON_CALL(*mockApi, deallocPd(pd)).WillByDefault(Return(Ok()));
   ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
 
-  return NicResources(dev, mockApi, 3, port);
+  return NicResources(dev, mockApi, -1, 3, port);
 }
 
 // --- Mock-based transport tests ---
