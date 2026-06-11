@@ -1,4 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#include <sys/socket.h>
+#include <thread>
+
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/profiler/Profiler.h"
@@ -109,6 +112,21 @@ void CtranTcpDm::bootstrapAccept() {
 
     auto transport = CtranTcpDmSingleton::getTransport();
 
+    // Negative rank = ctrl socket connection (bufSync)
+    if (peerRank < 0) {
+      int actualPeer = -(peerRank + 1);
+      int ctrlFd = socket.getFd();
+      std::lock_guard lock(mutex_);
+      ctrlSocks_.emplace(actualPeer, std::move(socket));
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-TCPDM: ctrl socket accepted from peer {} fd={}",
+          actualPeer,
+          ctrlFd);
+      continue;
+    }
+
     ::comms::tcp_devmem::Handle handle{};
     ::comms::tcp_devmem::ListenerInterface* listenComm{};
     COMMCHECKTHROW(transport->listen(netdev_, &handle, &listenComm));
@@ -126,8 +144,8 @@ void CtranTcpDm::bootstrapAccept() {
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "CTRAN-TC: Established connection: commHash {:x}, commDesc {}, "
-        "rank {}, peer {}",
+        "CTRAN-TCPDM: Established data connection: commHash {:x}, "
+        "commDesc {}, rank {}, peer {}",
         commHash_,
         commDesc_,
         rank_,
@@ -178,8 +196,8 @@ commResult_t CtranTcpDm::bootstrapConnect(
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-TCPDM: Established connection: commHash {:x}, commDesc {}, pimpl {}, "
-      "rank {}, peer {}",
+      "CTRAN-TCPDM: Established data connection: commHash {:x}, "
+      "commDesc {}, pimpl {}, rank {}, peer {}",
       commHash_,
       commDesc_,
       (void*)this,
@@ -187,6 +205,34 @@ commResult_t CtranTcpDm::bootstrapConnect(
       peerRank);
 
   return res;
+}
+
+void CtranTcpDm::ensureCtrlSocket(int peerRank) {
+  {
+    std::lock_guard lock(mutex_);
+    if (ctrlSocks_.count(peerRank)) {
+      return;
+    }
+  }
+
+  folly::SocketAddress peerAddr;
+  peerAddr.setFromSockaddr(
+      reinterpret_cast<sockaddr_in6*>(&allListenSocketAddrs_[peerRank]));
+  ctran::bootstrap::Socket sock;
+  FB_SYSCHECKTHROW_EX(
+      sock.connect(
+          peerAddr,
+          NCCL_CLIENT_SOCKET_IFNAME,
+          std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
+          NCCL_SOCKET_RETRY_CNT),
+      rank_,
+      commHash_,
+      commDesc_);
+  int marker = -(rank_ + 1);
+  FB_SYSCHECKTHROW_EX(
+      sock.send(&marker, sizeof(int)), rank_, commHash_, commDesc_);
+  std::lock_guard lock(mutex_);
+  ctrlSocks_.emplace(peerRank, std::move(sock));
 }
 
 CtranTcpDm::CtranTcpDm(
@@ -320,8 +366,66 @@ commResult_t CtranTcpDm::connectPeer(int peerRank) {
   return bootstrapConnect(peerRank, peerAddr);
 }
 
+void CtranTcpDm::ctrlSyncProgress() {
+  for (auto& [peerRank, sock] : ctrlSocks_) {
+    auto& pending = pendingSyncRecvs_[peerRank];
+    while (!pending.empty()) {
+      uint8_t sync;
+      int ret = ::recv(sock.getFd(), &sync, sizeof(sync), MSG_DONTWAIT);
+      if (ret <= 0) {
+        break;
+      }
+      syncRecvCount_[peerRank]++;
+      pending.front()->complete();
+      pending.pop_front();
+      CLOGF_SUBSYS(
+          INFO,
+          COLL,
+          "CTRAN-TCPDM: ctrlSyncProgress completed sync from peer {}, total={}, remaining={}, fd={}",
+          peerRank,
+          syncRecvCount_[peerRank],
+          pending.size(),
+          sock.getFd());
+    }
+  }
+}
+
+commResult_t CtranTcpDm::isendCtrlMsg(
+    const ControlMsg& msg,
+    int peerRank,
+    CtranTcpDmRequest& req) {
+  // only allow sync messages to be sent on the ctrl socket
+  if (msg.type != ControlMsgType::SYNC) {
+    req.complete();
+    return commSuccess;
+  }
+  // only sendeer can do lazy connect to avoid deadlock.
+  ensureCtrlSocket(peerRank);
+  std::lock_guard lock(mutex_);
+  auto& sock = ctrlSocks_.at(peerRank);
+  uint8_t sync = 1;
+  sock.send(&sync, sizeof(sync));
+  req.complete();
+  return commSuccess;
+}
+
+commResult_t CtranTcpDm::irecvCtrlMsg(
+    ControlMsg& msg,
+    int peerRank,
+    CtranTcpDmRequest& req) {
+  if (msg.type != ControlMsgType::SYNC) {
+    req.complete();
+    return commSuccess;
+  }
+  std::lock_guard lock(mutex_);
+  pendingSyncRecvs_[peerRank].push_back(&req);
+  return commSuccess;
+}
+
 commResult_t CtranTcpDm::progress() {
   std::unique_lock lock(mutex_);
+
+  ctrlSyncProgress();
 
   for (auto it = queuedRecv_.begin(); it != queuedRecv_.end();) {
     auto& recvReq = *it;
