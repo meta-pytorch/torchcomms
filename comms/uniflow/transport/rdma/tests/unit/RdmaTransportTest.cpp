@@ -179,7 +179,8 @@ NicResources makeNic(
     std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi,
     uint16_t lid = 0,
     ibv_gid gid = {},
-    uint8_t port = 1) {
+    uint8_t port = 1,
+    int numaNode = -1) {
   ON_CALL(*mockApi, openDevice(dev))
       .WillByDefault(Return(Result<ibv_context*>(ctx)));
   ON_CALL(*mockApi, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
@@ -206,7 +207,7 @@ NicResources makeNic(
   ON_CALL(*mockApi, deallocPd(pd)).WillByDefault(Return(Ok()));
   ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
 
-  return NicResources(dev, mockApi, -1, 3, port);
+  return NicResources(dev, mockApi, numaNode, 3, port);
 }
 
 // --- Mock-based transport tests ---
@@ -1808,3 +1809,99 @@ INSTANTIATE_TEST_SUITE_P(
             IBV_WR_RDMA_READ,
             "Get_unaligned_x3"}),
     putGetParamName);
+
+// --- NUMA-aware getQpAvail tests ---
+// Uses friend access to test getQpAvail with NUMA filtering directly.
+// 2 NICs: NIC0 on NUMA 0, NIC1 on NUMA 1.
+// 4 QPs round-robin: QP0→NIC0, QP1→NIC1, QP2→NIC0, QP3→NIC1.
+
+namespace uniflow {
+
+class GetQpAvailNumaTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
+
+    auto nics = std::make_shared<std::vector<NicResources>>();
+    nics->reserve(2);
+    nics->push_back(
+        makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, {}, 1, 0));
+    nics->push_back(
+        makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0, {}, 1, 1));
+
+    RdmaTransportConfig config;
+    config.numQps = 4;
+    config.maxWr = 100;
+
+    transport_ = std::make_unique<RdmaTransport>(
+        mockApi_, mockCudaApi_, nullptr, &evb_, nics, 42, config);
+    transport_->numWrsPerQp_.resize(4, 0);
+  }
+
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail, int bufNuma) {
+    return transport_->getQpAvail(qpAvail, bufNuma);
+  }
+
+  void setNumWrsPerQp(uint32_t qpIdx, uint32_t val) {
+    transport_->numWrsPerQp_[qpIdx] = val;
+  }
+
+  std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
+  LockFreeEventBase evb_;
+  std::unique_ptr<RdmaTransport> transport_;
+
+  ibv_device fakeDev0_{};
+  ibv_device fakeDev1_{};
+  ibv_context fakeCtx0_{.device = &fakeDev0_};
+  ibv_context fakeCtx1_{.device = &fakeDev1_};
+  ibv_pd fakePd0_{};
+  ibv_pd fakePd1_{};
+};
+
+} // namespace uniflow
+
+TEST_F(GetQpAvailNumaTest, NumaMatchFiltersToLocalNics) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 0);
+
+  EXPECT_EQ(qpAvail[0], 100u);
+  EXPECT_EQ(qpAvail[1], 0u);
+  EXPECT_EQ(qpAvail[2], 100u);
+  EXPECT_EQ(qpAvail[3], 0u);
+  EXPECT_EQ(total, 200u);
+}
+
+TEST_F(GetQpAvailNumaTest, NoLocalNicFallsBackToAll) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 99);
+
+  EXPECT_EQ(total, 400u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 100u);
+  }
+}
+
+TEST_F(GetQpAvailNumaTest, UnknownNumaUsesAllQps) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, -1);
+
+  EXPECT_EQ(total, 400u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 100u);
+  }
+}
+
+TEST_F(GetQpAvailNumaTest, LocalQpsFullReturnsZeroNoSpill) {
+  setNumWrsPerQp(0, 100);
+  setNumWrsPerQp(2, 100);
+
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 0);
+
+  EXPECT_EQ(total, 0u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 0u);
+  }
+}
