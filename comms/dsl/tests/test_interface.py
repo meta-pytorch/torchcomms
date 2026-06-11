@@ -181,10 +181,18 @@ class TritonInterfaceTest(unittest.TestCase):
 
 
 class CuteInterfaceTest(unittest.TestCase):
-    def test_cute_stubs_reserved(self) -> None:
-        from comms.dsl.cute import recv, send
+    def test_cute_backend_host_api(self) -> None:
+        # The CuTe backend consumes the SAME host contract (transport + peer) as
+        # Triton — only the device kernel differs. Importing it requires the
+        # cutlass DSL, which may be unavailable in a GPU-less sandbox, so skip
+        # rather than fail there.
+        try:
+            from comms.dsl.cute import recv, send, sendrecv
+        except Exception as e:  # cutlass import / CUDA init may fail GPU-free
+            self.skipTest(f"cutlass DSL not importable: {e}")
 
-        with self.assertRaises(NotImplementedError):
-            send(None, None, 1)
-        with self.assertRaises(NotImplementedError):
-            recv(None, None, 1)
+        for fn in (send, recv):
+            params = list(inspect.signature(fn).parameters)
+            self.assertIn("transport", params)
+            self.assertIn("peer", params)
+        self.assertTrue(callable(sendrecv))
