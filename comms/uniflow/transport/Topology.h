@@ -11,10 +11,6 @@
 #include <vector>
 
 #include "comms/uniflow/Result.h"
-#include "comms/uniflow/drivers/cuda/CudaApi.h"
-#include "comms/uniflow/drivers/ibverbs/IbvApi.h"
-#include "comms/uniflow/drivers/nvml/NvmlApi.h"
-#include "comms/uniflow/drivers/sysfs/SysfsApi.h"
 
 namespace uniflow {
 
@@ -142,19 +138,17 @@ struct PathFilter {
 
 /// Graph-based topology covering GPUs, CPUs, NICs, and NVSwitches.
 ///
-/// After discover(), all path queries are O(1) lookups into a pre-computed
-/// all-pairs path matrix. NIC discovery uses IbvApi (ibverbs wrapper).
+/// Pure data structure: holds the graph, the all-pairs path matrix, and
+/// query methods. Construction is done from the outside via the mutation
+/// API (`addNode`, `addLink`, `setP2pMatrix`, ..., then `recomputePaths`).
+/// Discovery backends live in `comms/uniflow/drivers/` — see
+/// `drivers/TopologyDiscovery.h` for the public entry point.
+///
+/// After populating, all path queries are O(1) lookups into the
+/// pre-computed all-pairs path matrix.
 class Topology {
  public:
-  // --- Singleton ---
-  /// Returns the singleton Topology instance. Driver overrides are only
-  /// honored on the first call for Unit Test — subsequent calls return the
-  /// existing instance regardless of arguments (static local semantics).
-  static Topology& get(
-      std::shared_ptr<CudaApi> cudaApi = nullptr,
-      std::shared_ptr<NvmlApi> nvmlApi = nullptr,
-      std::shared_ptr<IbvApi> ibvApi = nullptr,
-      std::shared_ptr<SysfsApi> sysfsApi = nullptr);
+  Topology() = default;
 
   // --- Status ---
   Status available() const {
@@ -175,7 +169,7 @@ class Topology {
     return cpuNodeIds_.size();
   }
 
-  // --- Pre-computed path lookups (O(1) after discover) ---
+  // --- Pre-computed path lookups (O(1) after recomputePaths) ---
 
   /// Returns the pre-computed path, filtered by PathFilter.
   /// By default (C2C and PXN disabled), returns the BFS-only path.
@@ -214,35 +208,45 @@ class Topology {
       int cudaDeviceId,
       const NicFilter& filter = {}) const;
 
-  friend class TopologyTest;
+  // --- Mutation API (used by discovery backends) ---
+
+  /// Reset to an empty topology (status, nodes, links, paths, indices).
+  void clear();
+
+  /// Set the discovery status (typically Ok() at the end of discovery).
+  void setStatus(Status s) {
+    status = std::move(s);
+  }
+
+  /// Append a node. Returns the assigned nodeId.
+  int addNode(TopoNode node);
+
+  /// Append a bidirectional link between two existing nodes.
+  void addLink(int srcId, int dstId, PathType type, uint32_t bw);
+
+  /// Register a GPU node id under its cudaDeviceId (appended).
+  void registerGpuNode(int cudaDeviceId, int nodeId);
+
+  /// Register a CPU node id under its NUMA id (appended).
+  void registerCpuNode(int numaId, int nodeId);
+
+  /// Register a NIC node id under its NIC index (appended).
+  void registerNicNode(int nicIndex, int nodeId);
+
+  /// Install the GPU→GPU peer-access matrix. Must be square of size
+  /// `gpuCount()`.
+  void setP2pMatrix(std::vector<std::vector<bool>> matrix);
+
+  /// Recompute all-pairs paths (BFS), C2C overrides, and PXN overrides.
+  /// Call after all nodes and links have been added.
+  void recomputePaths();
 
  private:
-  Topology(
-      std::shared_ptr<CudaApi> cudaApi,
-      std::shared_ptr<NvmlApi> nvmlApi,
-      std::shared_ptr<IbvApi> ibvApi,
-      std::shared_ptr<SysfsApi> sysfsApi);
-
-  /// Probe GPUs, NICs, NUMA nodes, build graph, and compute all-pairs paths.
-  /// Always detects C2C links and computes PXN routes.
-  Status discover();
-
-  struct DiscoveryData;
-  Status discoverHardware(DiscoveryData& data);
-  void buildNodes(const DiscoveryData& data);
-  void buildP2pMatrix();
-  void buildEdges(const DiscoveryData& data);
   void computePaths();
   void computeC2cPaths();
   void computePxnPaths();
-  int addNode(TopoNode node);
-  void addLink(int srcId, int dstId, PathType type, uint32_t bw);
 
   Status status{ErrCode::TopologyDisconnect};
-  std::shared_ptr<CudaApi> cudaApi_;
-  std::shared_ptr<NvmlApi> nvmlApi_;
-  std::shared_ptr<IbvApi> ibvApi_;
-  std::shared_ptr<SysfsApi> sysfsApi_;
 
   std::vector<TopoNode> nodes_;
   // BFS paths (no C2C, no PXN). This is the baseline.

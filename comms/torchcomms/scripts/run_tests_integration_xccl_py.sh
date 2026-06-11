@@ -32,6 +32,7 @@ run_tests () {
         FullgraphCompileAutogradTest.py
         FullgraphCompileTest.py
         GatherTest.py
+        MemPoolTest.py
         MultiCommTest.py
         ObjColTest.py
         OptionsTest.py

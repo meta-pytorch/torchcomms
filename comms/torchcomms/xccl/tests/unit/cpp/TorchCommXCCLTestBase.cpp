@@ -1,8 +1,16 @@
 #include "TorchCommXCCLTestBase.hpp"
 
+#include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
+
 namespace torch::comms::test {
 
 void TorchCommXCCLTest::SetUp() {
+  // Install a no-op caching-allocator hook so TorchCommXCCL::detachMemoryHook
+  // does not lazy-init the default impl, whose constructor calls into the XPU
+  // runtime and hangs on hosts with no XPU device.
+  XcclCachingAllocatorHook::setInstance(
+      std::make_unique<XcclCachingAllocatorHookImpl>());
+
   xpu_mock_ = std::make_shared<NiceMock<XpuMock>>();
   xccl_mock_ = std::make_shared<NiceMock<XcclMock>>();
 

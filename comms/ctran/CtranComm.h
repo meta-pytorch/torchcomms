@@ -22,15 +22,15 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
-namespace comms::pipes {
+namespace comms::prims {
 class MultiPeerTransport;
 class PipesTrace;
 struct Transport;
-} // namespace comms::pipes
+} // namespace comms::prims
 
 using meta::comms::CommBackend;
 
-// Per-communicator Pipes transport overrides.
+// Per-communicator Prims transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
@@ -67,7 +67,7 @@ class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
-namespace comms::pipes {
+namespace comms::prims {
 class MultiPeerTransport;
 }
 
@@ -155,7 +155,7 @@ class CtranComm {
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
-  comms::pipes::Transport* getMultiPeerTransportsPtr() const;
+  comms::prims::Transport* getMultiPeerTransportsPtr() const;
 
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
@@ -198,12 +198,12 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
-#if defined(ENABLE_PIPES)
-  std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+#if defined(ENABLE_PRIMS)
+  std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
   size_t hierarchicalAgReadyCounterCount_{0};
-  std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
-#endif // defined(ENABLE_PIPES)
+  std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
+#endif // defined(ENABLE_PRIMS)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
   // callbacks cannot call CUDA APIs, so cleanup is enqueued here and
@@ -230,7 +230,8 @@ class CtranComm {
   friend class CtranGpe;
   friend commResult_t ctranInit(
       CtranComm* comm,
-      std::unique_ptr<ctran::IProfilerReporter> reporter);
+      std::unique_ptr<ctran::IProfilerReporter> reporter,
+      std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter);
   std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.

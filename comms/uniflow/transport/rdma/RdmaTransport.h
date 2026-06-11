@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
@@ -58,6 +59,7 @@ struct RdmaTransportConfig {
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
   uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
+  RdmaSlabPoolConfig slabPoolConfig{.slabNum = 0}; /* Disabled by default. */
 };
 
 /*
@@ -675,6 +677,7 @@ class RdmaTransportFactory : public TransportFactory {
   std::atomic<uint64_t> dmaBufFallbackCount_{0};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   const RdmaTransportConfig config_;
+  std::shared_ptr<RdmaSlabPool> slabPool_;
 };
 
 } // namespace uniflow

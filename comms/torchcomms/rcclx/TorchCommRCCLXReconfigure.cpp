@@ -336,6 +336,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
     ncclComm_t current = nccl_comm_;
 
     if (quorum.ranks.size() < static_cast<size_t>(comm_size_)) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
       // Build the exclude list: ranks in the old comm that are NOT in quorum.
       std::vector<int> excludeRanks;
       for (int r = 0; r < comm_size_; ++r) {
@@ -357,6 +358,11 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reconfigure(
               NCCL_SHRINK_ABORT),
           "RCCLX commShrink failed during reconfigure");
       current = shrunk;
+#else
+      throw std::runtime_error(
+          "RCCLX commShrink (NCCL_SHRINK_ABORT) requires RCCL >= 2.27; "
+          "reconfigure with shrink is not supported on this RCCL version");
+#endif
     }
 
     if (quorum.newMemberCount > 0) {
