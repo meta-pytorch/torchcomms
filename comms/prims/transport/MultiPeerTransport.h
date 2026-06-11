@@ -22,6 +22,7 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/IbTransportConfig.h"
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
@@ -36,6 +37,9 @@ struct MultiPeerDeviceHandle;
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
+
+  // Selects the IB backend for non-NVL peers. Default remains IBGDA.
+  IbBackendMode ibMode{IbBackendMode::kIbgda};
 
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
