@@ -30,6 +30,7 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -37,6 +38,24 @@ namespace comms::prims {
 struct Memcpy;
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
+
+#if PIPES_IS_DEVICE_COMPILE
+__device__ __forceinline__ uint32_t trace_ibgda_step(std::size_t value) {
+  constexpr std::size_t kMaxTraceStep = static_cast<std::size_t>(UINT32_MAX);
+  return value > kMaxTraceStep ? UINT32_MAX : static_cast<uint32_t>(value);
+}
+
+__device__ __forceinline__ void trace_ibgda_event(
+    PipesTraceHandle trace,
+    uint8_t self_rank,
+    PipesTraceEventType type,
+    uint32_t step,
+    uint16_t group_id) {
+  // write_pipes_trace short-circuits when trace.ring == nullptr, so an
+  // unconfigured handle has effectively no cost.
+  write_pipes_trace(trace, type, step, group_id, self_rank);
+}
+#endif
 
 // `PIPES_DEVICE_TRAP()` is defined in `comms/prims/core/DeviceMacros.cuh` and
 // is intentionally available across all `comms/prims` device headers.
@@ -1731,6 +1750,40 @@ class P2pIbgdaTransportDevice {
     (void)max_signal_bytes;
     (void)timeout;
 #else
+    sendWithTrace<CopyOp>(
+        group,
+        src,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        {},
+        0,
+        args...);
+#endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void sendWithTrace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
+      Args... args) {
+#if !PIPES_IS_DEVICE_COMPILE
+    (void)group;
+    (void)src;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+    (void)trace;
+    (void)self_rank;
+#else
     if (nbytes == 0) {
       return;
     }
@@ -1791,6 +1844,15 @@ class P2pIbgdaTransportDevice {
       state.activeStage = detail::IbSendRecvProgressStage::Busy;
       state.activeBaseStep = static_cast<int64_t>(baseByte);
       state.activeNextByte = 0;
+    }
+
+    if (group.is_leader()) {
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbSendBegin,
+          /*step=*/0,
+          static_cast<uint16_t>(groupId));
     }
 
     for (std::size_t dataOff = 0; dataOff < nbytes;) {
@@ -1867,6 +1929,12 @@ class P2pIbgdaTransportDevice {
       state.activeStage = detail::IbSendRecvProgressStage::Done;
       state.activeBaseStep = 0;
       state.activeNextByte = 0;
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbSendEnd,
+          trace_ibgda_step(nbytes),
+          static_cast<uint16_t>(groupId));
     }
     group.sync();
 #endif
@@ -1916,6 +1984,40 @@ class P2pIbgdaTransportDevice {
     (void)active_blocks;
     (void)max_signal_bytes;
     (void)timeout;
+#else
+    recvWithTrace<CopyOp>(
+        group,
+        dst,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        {},
+        0,
+        args...);
+#endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recvWithTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
+      Args... args) {
+#if !PIPES_IS_DEVICE_COMPILE
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)active_blocks;
+    (void)max_signal_bytes;
+    (void)timeout;
+    (void)trace;
+    (void)self_rank;
 #else
     if (nbytes == 0) {
       return;
@@ -1979,6 +2081,15 @@ class P2pIbgdaTransportDevice {
       state.activeNextByte = 0;
     }
 
+    if (group.is_leader()) {
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbRecvBegin,
+          /*step=*/0,
+          static_cast<uint16_t>(groupId));
+    }
+
     for (std::size_t dataOff = 0; dataOff < nbytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
@@ -2027,6 +2138,12 @@ class P2pIbgdaTransportDevice {
       state.activeStage = detail::IbSendRecvProgressStage::Done;
       state.activeBaseStep = 0;
       state.activeNextByte = 0;
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbRecvEnd,
+          trace_ibgda_step(nbytes),
+          static_cast<uint16_t>(groupId));
     }
     group.sync();
 #endif
@@ -2099,6 +2216,31 @@ class P2pIbgdaTransportDevice {
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
+      Args... args) {
+    forwardWithTrace<CopyOp>(
+        group,
+        dst,
+        fwd,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        {},
+        0,
+        args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forwardWithTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
       Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
@@ -2201,6 +2343,15 @@ class P2pIbgdaTransportDevice {
       fwdSlotState.activeStage = detail::IbSendRecvProgressStage::Busy;
       fwdSlotState.activeBaseStep = static_cast<int64_t>(fwdBaseByte);
       fwdSlotState.activeNextByte = 0;
+    }
+
+    if (group.is_leader()) {
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbForwardBegin,
+          /*step=*/0,
+          static_cast<uint16_t>(groupId));
     }
 
     for (std::size_t dataOff = 0; dataOff < nbytes;) {
@@ -2315,6 +2466,12 @@ class P2pIbgdaTransportDevice {
       fwdSlotState.activeStage = detail::IbSendRecvProgressStage::Done;
       fwdSlotState.activeBaseStep = 0;
       fwdSlotState.activeNextByte = 0;
+      trace_ibgda_event(
+          trace,
+          self_rank,
+          PipesTraceEventType::kIbForwardEnd,
+          trace_ibgda_step(nbytes),
+          static_cast<uint16_t>(groupId));
     }
     group.sync();
 #endif
