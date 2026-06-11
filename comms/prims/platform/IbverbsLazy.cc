@@ -35,8 +35,15 @@ void do_load_ibverbs() {
     return;
   }
 
+  // Try the versioned symbol first (preferred — pins to the ABI we built
+  // against), fall back to the unversioned symbol (older system
+  // libibverbs.so.1 on production hosts may not export the versioned tag).
   gIbvRegMrIova2 = reinterpret_cast<IbvRegMrIova2Fn>(
       dlvsym(handle, "ibv_reg_mr_iova2", "IBVERBS_1.8"));
+  if (!gIbvRegMrIova2) {
+    gIbvRegMrIova2 =
+        reinterpret_cast<IbvRegMrIova2Fn>(dlsym(handle, "ibv_reg_mr_iova2"));
+  }
   if (!gIbvRegMrIova2) {
     LOG(WARNING) << "IbverbsLazy: ibv_reg_mr_iova2 not available: "
                  << dlerror();
@@ -44,6 +51,10 @@ void do_load_ibverbs() {
 
   gIbvRegDmabufMr = reinterpret_cast<IbvRegDmabufMrFn>(
       dlvsym(handle, "ibv_reg_dmabuf_mr", "IBVERBS_1.12"));
+  if (!gIbvRegDmabufMr) {
+    gIbvRegDmabufMr =
+        reinterpret_cast<IbvRegDmabufMrFn>(dlsym(handle, "ibv_reg_dmabuf_mr"));
+  }
   if (!gIbvRegDmabufMr) {
     LOG(WARNING) << "IbverbsLazy: ibv_reg_dmabuf_mr not available: "
                  << dlerror();
