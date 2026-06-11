@@ -7,7 +7,7 @@
 // AMD-native host APIs that mirror the DOCA host surface
 // (`doca_gpu_*`, `doca_verbs_*`, `doca_gpu_verbs_*`) used by
 // `comms/prims/MultipeerIbgdaTransport.{h,cc}`. Implementations call
-// HSA + raw `mlx5dv_devx_*` + libibverbs directly.
+// HSA + libibverbs directly.
 //
 // Call-site translation `doca_* -> pipes_gda::pipes_gda_*` lives in
 // `comms/prims/transport/amd/DocaCompat.h` so cross-platform call sites stay
@@ -137,7 +137,8 @@ enum pipes_gda_verbs_qp_attr_mask {
 // pipes_gda_gpu_verbs_* - GPU-side QP / CQ creation
 // ===========================================================================
 //
-// Manual orchestration via raw `mlx5dv_devx_*` + `hsa_amd_memory_lock`.
+// Manual orchestration via `ibv_create_qp` + `mlx5dv_init_obj` +
+// `hsa_amd_memory_lock`.
 
 struct pipes_gda_gpu_verbs_qp_init_attr_hl {
   pipes_gda_gpu* gpu_dev{nullptr};

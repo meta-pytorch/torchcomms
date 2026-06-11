@@ -83,7 +83,7 @@ struct PeerBufferSizes {
   std::size_t staging{0};
   std::size_t srSignal{0};
   std::size_t srCounter{0};
-  std::size_t srStepState{0};
+  std::size_t srState{0};
   std::size_t slotSignal{0};
   std::size_t slotCounter{0};
   std::size_t slotDiscard{0};
@@ -93,13 +93,13 @@ struct PeerBufferSizes {
   void* recvStagingPtr{nullptr};
   void* srSignalPtr{nullptr};
   void* srCounterPtr{nullptr};
-  void* srStepStatePtr{nullptr};
+  void* srStatePtr{nullptr};
   void* slotSignalPtr{nullptr};
   void* slotCounterPtr{nullptr};
   void* slotDiscardPtr{nullptr};
 
   std::size_t total() const {
-    return staging * 2 + srSignal + srCounter + srStepState + slotSignal +
+    return staging * 2 + srSignal + srCounter + srState + slotSignal +
         slotCounter + slotDiscard;
   }
 
@@ -113,8 +113,8 @@ struct PeerBufferSizes {
     p += srSignal;
     srCounterPtr = p;
     p += srCounter;
-    srStepStatePtr = p;
-    p += srStepState;
+    srStatePtr = p;
+    p += srState;
     slotSignalPtr = p;
     p += slotSignal;
     slotCounterPtr = p;
@@ -539,26 +539,24 @@ void MultipeerIbgdaTransport::registerMemory() {
   int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
       IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
 
-  // Register sink buffer as a zero-based MR (iova=0) on each NIC's PD.
-  //
-  // The sink buffer receives the discarded return value from RDMA atomic
-  // fetch-add operations. Device code uses sinkAddr.addr=0 with the sink
-  // lkey, so the MR must be zero-based: addr=0 maps to offset 0 within the
-  // MR (i.e., the actual sinkBuffer_ GPU address).
-  //
-  // With a standard ibv_reg_mr(), the IOVA equals the virtual address, so
-  // addr=0 would be outside the MR's valid range → NIC local protection
-  // error → QP error state → hang.
-  //
-  // ibv_reg_mr_iova2(pd, addr, length, iova=0, access) creates a zero-based
-  // MR where IOVA range [0, length) maps to [addr, addr+length). Matches
-  // GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
-  //
-  // Multi-NIC: the same physical sink buffer is registered once per PD
-  // (one MR per NIC). DMABUF export is shared across NICs (same fd
-  // re-imported per PD); on first dmabuf failure we fall back to plain
-  // ibv_reg_mr_iova2 across the remaining NICs to keep behavior consistent.
+  // Register the sink buffer (which receives discarded RDMA atomic fetch-add
+  // return values) as a zero-based MR (iova=0) on each NIC's PD. Device code
+  // addresses it as sinkAddr.addr=0, so the MR must be zero-based: a standard
+  // ibv_reg_mr() has IOVA==virtual address, so addr=0 would be out of range →
+  // NIC local protection error → QP error → hang. ibv_reg_mr_iova2(pd, addr,
+  // length, iova=0, access) maps IOVA [0, length) onto [addr, addr+length).
+  // One MR per NIC.
   for (int n = 0; n < numNics_; ++n) {
+#if defined(__HIP_PLATFORM_AMD__) && defined(NIC_MLX5)
+    // AMD+mlx5: register directly against the PD's libibverbs, the same policy
+    // registerBuffer() uses to avoid the lazy/dlopen'd libibverbs on AMD+mlx5
+    // (a separate instance from the PD's). The sink is host-pinned, so unlike
+    // the data path there is no GPU dmabuf to export — hence direct
+    // ibv_reg_mr_iova2 here vs direct ibv_reg_dmabuf_mr in registerBuffer.
+    nicDevices_[n].sinkMr = ibv_reg_mr_iova2(
+        nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
+#else
+    // NVIDIA / AMD+BNXT: DMABUF export (zero-based) with a lazy iova2 fallback.
     auto sinkDmabuf =
         export_gpu_dmabuf_aligned(docaGpu_, sinkBuffer_, sinkBufferSize_);
     if (sinkDmabuf) {
@@ -574,11 +572,11 @@ void MultipeerIbgdaTransport::registerMemory() {
     if (!nicDevices_[n].sinkMr) {
       nicDevices_[n].sinkMr = lazy_ibv_reg_mr_iova2(
           nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
-      if (!nicDevices_[n].sinkMr) {
-        throw std::runtime_error(
-            "Failed to register sink memory region on NIC " +
-            std::to_string(n));
-      }
+    }
+#endif
+    if (!nicDevices_[n].sinkMr) {
+      throw std::runtime_error(
+          "Failed to register sink memory region on NIC " + std::to_string(n));
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n
@@ -800,7 +798,7 @@ PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
     sizes.staging = sr.pipelineDepth * config_.dataBufferSize;
     sizes.srSignal = 2 * sr.maxGroups * sizeof(uint64_t);
     sizes.srCounter = sr.maxGroups * sizeof(uint64_t);
-    sizes.srStepState = 2 * sr.maxGroups * sizeof(int64_t);
+    sizes.srState = 2 * sr.maxGroups * sizeof(IbSendRecvState::ProgressSlot);
   }
   sizes.slotSignal =
       static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
@@ -813,7 +811,27 @@ PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
 P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
   const int numQps = config_.numQpsPerPeerPerNic;
-  P2pIbgdaTransportBuildParams params;
+  auto makeSendRecvState = [&]() -> IbSendRecvState {
+    if (sendRecvPeerBuffers_.empty()) {
+      return {};
+    }
+    const auto& pb = sendRecvPeerBuffers_[peerIndex];
+    return IbSendRecvState{
+        .sendStagingBuf = pb.sendStaging,
+        .recvStagingBuf = pb.remoteRecvStaging,
+        .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
+        .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
+        .localSignalBuf = pb.signal,
+        .remoteSignalBuf = pb.remoteSignal,
+        .localCounterBuf = pb.counter,
+        .state = pb.state.value_or(DeviceSpan<IbSendRecvState::ProgressSlot>()),
+        .maxGroups = config_.sendRecv->maxGroups,
+        .pipelineDepth = config_.sendRecv->pipelineDepth,
+        .dataBufferSize = config_.dataBufferSize,
+    };
+  };
+
+  P2pIbgdaTransportBuildParams params(makeSendRecvState());
   params.h_nicDeviceIbgdaResources.resize(numNics_);
   for (int n = 0; n < numNics_; ++n) {
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
@@ -847,22 +865,6 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     params.counterBuf = counterViews_[peerIndex];
     params.discardSignalSlot = discardSignalRemoteViews_[peerIndex];
     params.numCounterSlots = config_.numCounterSlots;
-  }
-  if (!sendRecvPeerBuffers_.empty()) {
-    const auto& pb = sendRecvPeerBuffers_[peerIndex];
-    params.sendRecvState = IbSendRecvState{
-        .sendStagingBuf = pb.sendStaging,
-        .recvStagingBuf = pb.remoteRecvStaging,
-        .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
-        .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
-        .localSignalBuf = pb.signal,
-        .remoteSignalBuf = pb.remoteSignal,
-        .localCounterBuf = pb.counter,
-        .stepState = pb.stepState,
-        .maxGroups = config_.sendRecv->maxGroups,
-        .pipelineDepth = config_.sendRecv->pipelineDepth,
-        .dataBufferSize = config_.dataBufferSize,
-    };
   }
   return params;
 }
@@ -1480,9 +1482,10 @@ void MultipeerIbgdaTransport::exchange() {
   exchange_send_recv_buffers();
 
   // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams(numPeers);
+  std::vector<P2pIbgdaTransportBuildParams> buildParams;
+  buildParams.reserve(numPeers);
   for (int peer = 0; peer < numPeers; peer++) {
-    buildParams[peer] = buildPeerTransportParams(peer);
+    buildParams.emplace_back(buildPeerTransportParams(peer));
   }
 
   peerTransportsGpu_ =
@@ -1609,11 +1612,32 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   // Try DMABUF first per NIC, fall back to plain reg_mr per NIC. If any
   // NIC's registration fails, deregister everything we already registered
   // and propagate the error.
+  //
+  // On AMD+mlx5, call `ibv_reg_dmabuf_mr` DIRECTLY (not via the lazy/
+  // dlopen'd system libibverbs path). The PD on AMD+mlx5 is owned by
+  // `pipes_gda` which uses a statically-linked libibverbs; the lazy
+  // path's dlopen'd system libibverbs is a separate instance with
+  // independent state — registering across instances SIGSEGVs inside the
+  // userspace mlx5 provider. Direct call uses the same static libibverbs
+  // as the PD. On NVIDIA the lazy and direct paths refer to the same
+  // libibverbs (DOCA's internal one), so we keep the lazy form. On
+  // AMD+BNXT (`NIC_BNXT`) the lazy path goes through SysIbv (the same
+  // libibverbs that pipes_gda's BNXT path uses) — keep it. Future ionic
+  // support (`NIC_IONIC`) defaults to the lazy path until proven otherwise.
   for (int n = 0; n < numNics_; ++n) {
     ibv_mr* mr = nullptr;
     auto dmabuf = export_gpu_dmabuf_aligned(
         docaGpu_, reinterpret_cast<void*>(allocBase), allocSize);
     if (dmabuf) {
+#if defined(__HIP_PLATFORM_AMD__) && defined(NIC_MLX5)
+      mr = ibv_reg_dmabuf_mr(
+          nicDevices_[n].ibvPd,
+          dmabuf->alignment.dmabufOffset,
+          allocSize,
+          static_cast<uint64_t>(allocBase),
+          dmabuf->fd,
+          accessFlags);
+#else
       mr = lazy_ibv_reg_dmabuf_mr(
           nicDevices_[n].ibvPd,
           dmabuf->alignment.dmabufOffset,
@@ -1621,6 +1645,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
           static_cast<uint64_t>(allocBase),
           dmabuf->fd,
           accessFlags);
+#endif
       close(dmabuf->fd);
     }
     if (!mr) {
@@ -1806,7 +1831,10 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
   const auto stagingPerPeer = sizes.staging;
   const auto signalPerPeer = sizes.srSignal;
   const auto counterPerPeer = sizes.srCounter;
-  const auto stepStatePerPeer = sizes.srStepState;
+  const auto statePerPeer = sizes.srState;
+  const auto stateSlotsPerPeer =
+      static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
+          2 * sr.maxGroups);
 
   auto allocateBulk = [&](std::size_t perPeer) {
     auto buf = std::make_unique<meta::comms::DeviceBuffer>(perPeer * numPeers);
@@ -1826,7 +1854,7 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
     recvStagingBulk_ = allocateBulk(stagingPerPeer);
     signalBulk_ = allocateBulk(signalPerPeer);
     counterBulk_ = allocateBulk(counterPerPeer);
-    stepStateBulk_ = allocateBulk(stepStatePerPeer);
+    stateBulk_ = allocateBulk(statePerPeer);
 
     auto sendStagingBulkReg =
         registerBuffer(sendStagingBulk_->get(), stagingPerPeer * numPeers);
@@ -1843,8 +1871,9 @@ void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
       pb.recvStaging = recvStagingBulkReg_.subBuffer(i * stagingPerPeer);
       pb.signal = signalBulkReg_.subBuffer(i * signalPerPeer);
       pb.counter = counterBulkReg_.subBuffer(i * counterPerPeer);
-      pb.stepState = reinterpret_cast<int64_t*>(
-          static_cast<char*>(stepStateBulk_->get()) + i * stepStatePerPeer);
+      auto* statePtr = reinterpret_cast<IbSendRecvState::ProgressSlot*>(
+          static_cast<char*>(stateBulk_->get()) + i * statePerPeer);
+      pb.state.emplace(statePtr, stateSlotsPerPeer);
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: eager mode — allocated tile buffers "
@@ -1911,7 +1940,7 @@ void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
   recvStagingBulk_.reset();
   signalBulk_.reset();
   counterBulk_.reset();
-  stepStateBulk_.reset();
+  stateBulk_.reset();
 }
 
 bool MultipeerIbgdaTransport::isPeerMaterialized(int peerRank) const {
@@ -1996,7 +2025,12 @@ void MultipeerIbgdaTransport::allocatePeerBuffers(
         IbgdaLocalBuffer(sizes.recvStagingPtr, reg.lkey_per_device);
     pb.signal = IbgdaLocalBuffer(sizes.srSignalPtr, reg.lkey_per_device);
     pb.counter = IbgdaLocalBuffer(sizes.srCounterPtr, reg.lkey_per_device);
-    pb.stepState = reinterpret_cast<int64_t*>(sizes.srStepStatePtr);
+    auto* statePtr =
+        reinterpret_cast<IbSendRecvState::ProgressSlot*>(sizes.srStatePtr);
+    const auto stateSlots =
+        static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
+            2 * config_.sendRecv->maxGroups);
+    pb.state.emplace(statePtr, stateSlots);
 
     payload.recvStaging.addr = reinterpret_cast<uint64_t>(sizes.recvStagingPtr);
     payload.recvStaging.numNics = numNics_;

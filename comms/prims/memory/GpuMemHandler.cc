@@ -278,6 +278,14 @@ void GpuMemHandler::exchangeMemPtrs() {
   exchanged_ = true;
 }
 
+const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
+  if (mode_ == MemSharingMode::kFabric) {
+    throw std::runtime_error(
+        "GpuMemHandler::getLocalIpcHandle: not available in kFabric mode");
+  }
+  return cudaIpcLocalHandle_;
+}
+
 // ============================================================================
 // Fabric Mode Implementation
 // ============================================================================
@@ -508,7 +516,18 @@ void GpuMemHandler::cleanupFabric() {
 // ============================================================================
 
 void GpuMemHandler::allocateCudaIpcMemory(size_t size) {
-  checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
+  if (mode_ == MemSharingMode::kCudaIpcUncached) {
+    // GPU-uncached alloc on AMD; see MemSharingMode::kCudaIpcUncached.
+#ifdef __HIP_PLATFORM_AMD__
+    checkCudaError(
+        hipExtMallocWithFlags(&cudaIpcLocalPtr_, size, hipDeviceMallocUncached),
+        "hipExtMallocWithFlags(hipDeviceMallocUncached) failed");
+#else
+    checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
+#endif
+  } else {
+    checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
+  }
   allocatedSize_ = size;
 
   // Get IPC handle for local memory

@@ -6,9 +6,11 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <cstdlib>
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #ifdef __HIP_PLATFORM_AMD__
@@ -38,6 +40,19 @@ constexpr int kIbgdaBatchIters = 450;
 #else
 constexpr int kIbgdaBatchIters = 1000;
 #endif
+
+// NIC selection for the benchmark transport. Returns an NCCL_IB_HCA-style
+// filter string (e.g. "mlx5_0") read from the NCCL_IB_HCA env var, or ""
+// for PCIe-topology auto-discovery. Hosts with multiple NIC vendors (e.g.
+// a host exposing both bnxt and mlx5) need this to pin the
+// benchmark to the NIC matching the compiled backend; single-vendor hosts
+// leave it unset and keep the auto-discovery default. When the env var is
+// unset the behavior is identical to before (so the NVIDIA path, which
+// never sets it here, is unchanged).
+inline std::string benchIbHca() {
+  const char* hca = std::getenv("NCCL_IB_HCA");
+  return hca ? std::string(hca) : std::string();
+}
 
 // CUDA error checking macro for void functions
 #define CUDA_CHECK_VOID(call)        \
@@ -345,6 +360,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
@@ -463,6 +479,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
@@ -583,6 +600,7 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
@@ -693,6 +711,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
@@ -836,6 +855,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(

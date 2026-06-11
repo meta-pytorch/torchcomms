@@ -213,7 +213,7 @@ __global__ void ibgda_snapshot_step_state_kernel(
     int count) {
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < count) {
-    dst[idx] = transport->send_recv_state().stepState[idx];
+    dst[idx] = transport->send_recv_state().state[idx].nextStep;
   }
 }
 

@@ -45,6 +45,12 @@ enum class MemSharingMode {
   // Works on: All CUDA GPUs
   // Limitation: Intra-node only
   kCudaIpc,
+
+  // Like kCudaIpc, but on AMD the buffer is allocated GPU-uncached / HSA
+  // fine-grained (hipExtMallocWithFlags + hipDeviceMallocUncached) so BNXT NICs
+  // can DMA into it via dma-buf (see transport/amd/docs/design.md). On NVIDIA
+  // it falls back to cudaMalloc; the IPC contract is identical.
+  kCudaIpcUncached,
 };
 
 /**
@@ -160,6 +166,14 @@ class GpuMemHandler {
    * @throws std::runtime_error if exchange hasn't happened yet
    */
   void* getPeerDeviceMemPtr(int32_t rank) const;
+
+  /**
+   * Get the local IPC handle (cudaIpc / hipIpc). Only valid in `kCudaIpc` /
+   * `kCudaIpcUncached` mode.
+   *
+   * @throws std::runtime_error when mode is `kFabric`.
+   */
+  const cudaIpcMemHandle_t& getLocalIpcHandle() const;
 
   /**
    * Get the actual allocated size (may be larger than requested due to

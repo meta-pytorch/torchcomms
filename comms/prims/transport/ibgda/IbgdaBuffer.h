@@ -8,6 +8,7 @@
 
 #include <endian.h>
 
+#include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #include "comms/prims/transport/rdma/NicConstants.h"
 
@@ -414,6 +415,26 @@ struct IbgdaBufferExchInfo {
   }
 };
 
+namespace detail {
+
+/**
+ * Internal stage for one transport-owned resumable send/recv operation.
+ *
+ * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
+ * Send operations use `WaitNicDone` and `WaitSlotFree`; recv operations use
+ * `WaitDataReady`. Blocking send/recv temporarily use `Busy` to make
+ * same-direction overlap fail explicitly instead of sharing a cursor.
+ */
+enum class IbSendRecvProgressStage : uint8_t {
+  Done,
+  WaitNicDone,
+  WaitSlotFree,
+  WaitDataReady,
+  Busy,
+};
+
+} // namespace detail
+
 /**
  * IbSendRecvState — device-side state for pipelined RDMA send/recv.
  *
@@ -431,8 +452,8 @@ struct IbgdaBufferExchInfo {
  *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
  *     is further subdivided into signaled sub-chunks:
  *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
- *     stepState counts bytes, not sub-chunks, so max_signal_bytes may change
- *     between calls as long as active_blocks is unchanged.
+ *     state[].nextStep counts bytes, not sub-chunks, so max_signal_bytes may
+ *     change between calls as long as active_blocks is unchanged.
  *
  *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — DATA_READY (sender -> receiver)
@@ -441,11 +462,33 @@ struct IbgdaBufferExchInfo {
  *   counterBuf: maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — NIC_DONE counters (loopback atomic)
  *
- *   stepState: 2 * maxGroups * sizeof(int64_t).
- *     [0, maxGroups)             — sender byte cursors
- *     [maxGroups, 2*maxGroups)   — receiver byte cursors
+ *   state: 2 * maxGroups ProgressSlot entries.
+ *     [0, maxGroups)             — sender state slots
+ *     [maxGroups, 2*maxGroups)   — receiver state slots
+ *
+ *     nextStep is the persistent byte cursor used by both blocking and async
+ *     send/recv APIs. The active* fields describe at most one outstanding
+ *     async progress operation or blocking call in that direction/group.
+ *     Static transfer geometry is passed to init/progress calls and computed
+ *     in registers.
  */
 struct IbSendRecvState {
+  /**
+   * Internal protocol state for one transport-owned send/recv direction.
+   *
+   * The state is indexed by direction and transport group. `nextStep` is the
+   * shared byte-stream cursor used by blocking send/recv and async init.
+   * `activeBaseStep`, `activeNextByte`, and `activeStage` track the currently
+   * initialized async operation or a blocking call in progress, if any.
+   */
+  struct ProgressSlot {
+    int64_t nextStep{0};
+    std::size_t activeNextByte{0};
+    int64_t activeBaseStep{0};
+    detail::IbSendRecvProgressStage activeStage{
+        detail::IbSendRecvProgressStage::Done};
+  };
+
   IbgdaLocalBuffer
       sendStagingBuf; ///< Registered sendStaging (lkey for put src)
   IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
@@ -456,8 +499,8 @@ struct IbSendRecvState {
   IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
-  int64_t* stepState{nullptr}; ///< Per-group byte cursors
-  int maxGroups{0}; ///< Layout size for signals/step arrays
+  DeviceSpan<ProgressSlot> state; ///< Per-direction byte cursors + async state
+  int maxGroups{0}; ///< Layout size for signal/state arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
 };

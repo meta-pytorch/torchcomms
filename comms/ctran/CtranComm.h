@@ -230,7 +230,8 @@ class CtranComm {
   friend class CtranGpe;
   friend commResult_t ctranInit(
       CtranComm* comm,
-      std::unique_ptr<ctran::IProfilerReporter> reporter);
+      std::unique_ptr<ctran::IProfilerReporter> reporter,
+      std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter);
   std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.

@@ -1826,6 +1826,19 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -3195,11 +3208,15 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Enable ctran transport profiling for MCCL. When true, MCCL overrides
-     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
-     Profiler is created and algo profiling data flows to the
-     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
-     false to disable ctran profiling from the MCCL level.
+     Enable ctran transport profiling for MCCL. When true (and the rank
+     passes MCCL_FILTER_PROFILER_LOGGING_BY_RANKS), MCCL sets
+     comm_->config_.enableProfiler and injects BOTH
+     McclAlgoProfilerReporter and McclGpeProfilerReporter into
+     ctranInit. Algo rows land in mccl_operation_trace with
+     mcclop="ALGO_PROFILING"; GPE per-tracepoint rows land in the same
+     table with mcclop="GPE_PROFILING". Set to false to disable both
+     reporters from the MCCL level (CTRAN-side defaults for the GPE
+     profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist
