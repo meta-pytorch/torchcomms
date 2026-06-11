@@ -527,7 +527,10 @@ void TorchCommXCCL::finalize() {
 void TorchCommXCCL::abortXcclComm() {
   detachMemoryHook();
   if (xccl_comm_) {
-    xccl_api_->commAbort(xccl_comm_);
+    onecclResult_t res = xccl_api_->commAbort(xccl_comm_);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commAbort returned " << res;
+    }
     xccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
@@ -2438,3 +2441,4 @@ class XCCLRegistration {
 
 static XCCLRegistration registration{};
 } // namespace
+ 
