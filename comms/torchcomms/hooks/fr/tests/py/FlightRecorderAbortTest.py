@@ -145,3 +145,6 @@ class TestFlightRecorderAbort(unittest.TestCase):
                     os.remove(trace_file)
                 except OSError:
                     pass
+
+if __name__ == "__main__":
+    unittest.main()

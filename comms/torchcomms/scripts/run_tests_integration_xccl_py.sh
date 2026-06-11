@@ -49,6 +49,7 @@ run_tests () {
 
     cd -
     cd "$(dirname "$0")/../hooks/fr/tests/py"
+    torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s FlightRecorderAbortTest.py
     torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s FlightRecorderTest.py
 }
 
