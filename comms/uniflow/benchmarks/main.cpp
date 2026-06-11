@@ -14,6 +14,7 @@
 #include "comms/uniflow/benchmarks/Reporter.h"
 #include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
 #include "comms/uniflow/logging/Logger.h"
@@ -40,6 +41,8 @@ struct CliOptions {
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
   int pipelineDepth{2};
+  size_t slabSize{0};
+  int slabNum{0};
   std::vector<std::string> rdmaDevices;
 };
 
@@ -95,6 +98,8 @@ void printUsage(const char* prog) {
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
       << "  --pipeline-depth <n>   Send/recv staging pipeline depth (default: 2)\n"
+      << "  --slab-size <bytes>    Staging slab size in bytes (default: chunk-size)\n"
+      << "  --slab-num <n>         Number of staging slabs (default: pipeline-depth)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -131,6 +136,8 @@ CliOptions parseArgs(int argc, char** argv) {
       {"cuda-device", required_argument, nullptr, 'c'},
       {"topology", required_argument, nullptr, 259},
       {"pipeline-depth", required_argument, nullptr, 260},
+      {"slab-size", required_argument, nullptr, 261},
+      {"slab-num", required_argument, nullptr, 262},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -284,6 +291,30 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 261:
+        try {
+          opts.slabSize = std::stoull(optarg);
+          if (opts.slabSize < 1) {
+            std::cerr << "Invalid value for --slab-size: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --slab-size: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 262:
+        try {
+          opts.slabNum = std::stoi(optarg);
+          if (opts.slabNum < 1) {
+            std::cerr << "Invalid value for --slab-num: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --slab-num: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
       case 'l':
         listMode = true;
         break;
@@ -323,6 +354,8 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
           opts.rdmaDevices));
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
 
   if (opts.benchmark == "__list__") {
     std::cout << "Available benchmarks:\n";
@@ -356,6 +389,8 @@ int main(int argc, char** argv) {
   config.numStreams = opts.numStreams;
   config.topology = opts.topology;
   config.pipelineDepth = opts.pipelineDepth;
+  config.slabSize = opts.slabSize;
+  config.slabNum = opts.slabNum;
 
   UNIFLOW_LOG_INFO(
       "Rank {}/{} starting benchmark (transport={})",

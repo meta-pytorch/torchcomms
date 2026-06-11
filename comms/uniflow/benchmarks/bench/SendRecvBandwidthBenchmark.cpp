@@ -251,8 +251,10 @@ std::optional<MultiTransportSession> setupMultiTransport(
   const auto numPeers = std::max(size_t{1}, peers.size());
   const auto pipelineDepth =
       static_cast<size_t>(std::max(1, config.pipelineDepth));
-  rdmaConfig.slabPoolConfig.slabSize = config.chunkSize;
-  rdmaConfig.slabPoolConfig.slabNum = pipelineDepth * numPeers;
+  rdmaConfig.slabPoolConfig.slabSize =
+      config.slabSize > 0 ? config.slabSize : config.chunkSize;
+  rdmaConfig.slabPoolConfig.slabNum =
+      config.slabNum > 0 ? config.slabNum : pipelineDepth * numPeers;
   auto cudaDriverApi = std::make_shared<CudaDriverApi>();
 
   MultiTransportSession session;
