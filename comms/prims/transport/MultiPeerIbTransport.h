@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -17,6 +18,112 @@
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
+
+/**
+ * IP address family for RoCE GID selection (similar to NCCL_IB_ADDR_FAMILY).
+ */
+enum class AddressFamily {
+  IPV4, // IPv4
+  IPV6, // IPv6
+};
+
+/**
+ * Shared configuration for the multi-peer IB transports (IBGDA, IBRC). Every
+ * field is backend-agnostic IB transport config. IMPORTANT: all ranks must use
+ * identical configuration values.
+ */
+struct MultipeerIbTransportConfig {
+  // CUDA device index for GPU operations
+  int cudaDevice{0};
+
+  // Override GID index for RoCE. If not set, auto-discovers a valid RoCEv2 GID.
+  std::optional<int> gidIndex;
+
+  // IP address family for the InfiniBand GID (similar to NCCL_IB_ADDR_FAMILY).
+  // Used to determine the address type for RoCE connections when gidIndex is
+  // not explicitly set. Has no effect on InfiniBand (non-RoCE) links.
+  AddressFamily addressFamily{AddressFamily::IPV6};
+
+  // GPU-to-NIC mapping for RDMA device selection. Maps CUDA device index to a
+  // list of NIC names (first element is preferred). If empty, uses
+  // topology-aware auto-discovery. (Data buffers are NOT managed by the
+  // transport; users allocate and register them.)
+  std::map<int, std::vector<std::string>> gpuNicMap;
+
+  // IB HCA filter string (NCCL_IB_HCA format) for NIC filtering during
+  // auto-discovery. If empty, all discovered NICs are considered. Only used
+  // during auto-discovery (not when gpuNicMap has a mapping for the GPU).
+  std::string ibHca;
+
+  // Per-peer data buffer size in bytes. Raw put()/signal() users interpret
+  // this as the exported per-peer RDMA buffer size; send()/recv() users
+  // interpret it as the size of one logical staging slot.
+  std::size_t dataBufferSize{0};
+
+  // Number of signal slots managed by the transport (per peer), for the
+  // slot-index API. Independent of send/recv's private signal buffers.
+  int numSignalSlots{0};
+
+  // Number of counter slots managed by the transport (per peer), for the
+  // slot-index API. Independent of send/recv's private counter buffers.
+  int numCounterSlots{0};
+
+  // Send/recv configuration. When set, the transport allocates a private
+  // pipelined staging ring plus private signal/counter state for send()/recv().
+  // When nullopt (default), only the raw put/signal APIs are available.
+  struct SendRecvConfig {
+    // Maximum number of block-groups that may participate in one send()/recv()
+    // call. Sizes the private signal/counter/step arrays and caps
+    // active_blocks.
+    int maxGroups{128};
+
+    // Number of logical slots in the send/recv staging ring. Total staging
+    // bytes per peer per direction: pipelineDepth * dataBufferSize.
+    int pipelineDepth{2};
+  };
+  std::optional<SendRecvConfig> sendRecv;
+
+  // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
+  // because qpDepth also sizes msn_tbl_sz on bnxt_re.
+#ifdef NIC_BNXT
+  uint32_t qpDepth{2048};
+#else
+  uint32_t qpDepth{1024};
+#endif
+
+  // Number of QP sets per (peer, NIC). Total QPs to a peer =
+  // numQpsPerPeerPerNic * numNics. Multiple QPs let different GPU blocks use
+  // independent QPs.
+  int numQpsPerPeerPerNic{1};
+
+  // InfiniBand Verbs Timeout for QP ACK timeout (4.096us * 2^timeout). Valid
+  // 1-31; 0 or >=32 is infinite. Default 20 (similar to NCCL_IB_TIMEOUT).
+  uint8_t timeout{20};
+
+  // InfiniBand retry count for QP transport errors (NCCL_IB_RETRY_CNT).
+  uint8_t retryCount{7};
+
+  // InfiniBand traffic class field (similar to NCCL_IB_TC).
+  uint8_t trafficClass{224};
+
+  // InfiniBand Service Level (similar to NCCL_IB_SL).
+  uint8_t serviceLevel{0};
+
+  // Minimum RNR NAK Timer field (ibv_qp_attr.min_rnr_timer); NCCL
+  // IbvQpUtils=12.
+  uint8_t minRnrTimer{12};
+
+  // RNR retry count (ibv_qp_attr.rnr_retry); 7 means infinite.
+  uint8_t rnrRetry{7};
+
+  // When true, defer per-peer state (QPs, staging, signal buffers) to first
+  // use via materializePeer(). When false (default), allocate eagerly at
+  // exchange() time.
+  bool ibLazyConnect{false};
+
+  // Timeout (ms) for the bilateral exchange in materializePeer().
+  uint32_t materializePeerTimeoutMs{30000};
+};
 
 /**
  * Transport connection information for RDMA QP setup.
