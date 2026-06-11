@@ -15,7 +15,7 @@ namespace comms::prims::benchmark {
 
 // Internal kernel declarations - only visible to CUDA compilation units
 
-__global__ void ibgdaPutSignalWaitLocalKernel(
+__global__ void ibgdaPutSignalWaitCounterKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
@@ -25,13 +25,13 @@ __global__ void ibgdaPutSignalWaitLocalKernel(
     IbgdaLocalBuffer localCounterBuf,
     int counterId);
 
-__global__ void ibgdaPutWaitLocalKernel(
+__global__ void ibgdaPutWaitCounterKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes);
 
-__global__ void ibgdaPutWaitLocalBatchKernel(
+__global__ void ibgdaPutWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
@@ -41,7 +41,15 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
-__global__ void ibgdaPutSignalWaitLocalBatchKernel(
+__global__ void ibgdaPutFlushBatchKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles);
+
+__global__ void ibgdaPutSignalWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
