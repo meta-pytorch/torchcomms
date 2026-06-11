@@ -109,12 +109,10 @@ void MultiPeerTransport::initFromTopology(
     }
     // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
-    if (config.ibMode == IbBackendMode::kIbrc) {
-      throw std::runtime_error(
-          "MultiPeerTransport: IBRC mode selected, but the IBRC "
-          "backend is not implemented yet.");
-    }
-
+    // NOTE: non-NVL peers are tagged P2P_IBGDA regardless of ibMode; the IBRC
+    // device-side type tag + tagged-union handoff land with the IBRC device
+    // transport. IBRC's exchange() currently throws before the device handle is
+    // built, so this tag is not yet observed for IBRC.
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
         typePerRank_.at(r) = TransportType::SELF;
@@ -169,16 +167,26 @@ void MultiPeerTransport::initFromTopology(
             << " nvlLocalRank=" << nvlLocalRank_;
   }
 
-  // Always create IBGDA transport — it is the universal fallback for all peers.
-  // NVL is preferred when available, but IBGDA covers every non-self rank.
+  // Create the IB sub-transport — the universal fallback for all non-NVL peers.
+  // Exactly one backend is built, selected by config.ibMode (kIbgda default;
+  // kIbrc selects the CPU-proxy skeleton backend, whose functional entry points
+  // still fail fast until the backend is implemented).
   if (!config.disableIb && nRanks_ > 1) {
-    auto ibgdaConfig = config.ibgdaConfig;
-    ibgdaConfig.cudaDevice = deviceId_;
-    ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
-        myRank_, nRanks_, bootstrap_, ibgdaConfig);
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_
-            << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
-            << " peers";
+    auto ibConfig = config.ibgdaConfig;
+    ibConfig.cudaDevice = deviceId_;
+    if (config.ibMode == IbBackendMode::kIbrc) {
+      ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBRC sub-transport for " << ibgdaPeerRanks_.size()
+              << " peers";
+    } else {
+      ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
+              << " peers";
+    }
   }
 }
 
@@ -213,6 +221,9 @@ void MultiPeerTransport::exchange() {
   }
   if (ibgdaTransport_) {
     ibgdaTransport_->exchange();
+  }
+  if (ibrcTransport_) {
+    ibrcTransport_->exchange();
   }
 
   build_device_handle();
@@ -302,46 +313,67 @@ bool MultiPeerTransport::is_lazy_mode() const {
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
-  if (ibgdaTransport_) {
+  if (ibrcTransport_) {
+    throw std::runtime_error(
+        "MultiPeerTransport::materializePeers: IBRC lazy materialization is not implemented yet");
+  }
+
+  auto materializeOn = [&](auto& ibTransport) {
     for (int peer : peers) {
       if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
           typePerRank_[peer] == TransportType::P2P_IBGDA) {
-        ibgdaTransport_->queuePeerForMaterialization(peer);
+        ibTransport->queuePeerForMaterialization(peer);
       }
     }
-    ibgdaTransport_->connectPeers();
+    ibTransport->connectPeers();
+  };
+  if (ibgdaTransport_) {
+    materializeOn(ibgdaTransport_);
   }
 }
 
 void MultiPeerTransport::connectPeers() {
   if (ibgdaTransport_) {
     ibgdaTransport_->connectPeers();
+  } else if (ibrcTransport_) {
+    throw std::runtime_error(
+        "MultiPeerTransport::connectPeers: IBRC lazy materialization is not implemented yet");
   }
 }
 
 IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     void* ptr,
     size_t size) {
-  if (!ibgdaTransport_) {
-    throw std::runtime_error(
-        "localRegisterIbgdaBuffer: IBGDA transport not available");
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->registerBuffer(ptr, size);
   }
-  return ibgdaTransport_->registerBuffer(ptr, size);
+  if (ibrcTransport_) {
+    throw std::runtime_error(
+        "localRegisterIbgdaBuffer: IBRC buffer registration is not implemented yet");
+  }
+  throw std::runtime_error(
+      "localRegisterIbgdaBuffer: IB transport not available");
 }
 
 void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
   if (ibgdaTransport_) {
     ibgdaTransport_->deregisterBuffer(ptr);
+  } else if (ibrcTransport_) {
+    throw std::runtime_error(
+        "localDeregisterIbgdaBuffer: IBRC buffer registration is not implemented yet");
   }
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
     const IbgdaLocalBuffer& localBuf) {
-  if (!ibgdaTransport_) {
-    throw std::runtime_error(
-        "exchangeIbgdaBuffer: IBGDA transport not available");
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->exchangeBuffer(localBuf);
   }
-  return ibgdaTransport_->exchangeBuffer(localBuf);
+  if (ibrcTransport_) {
+    throw std::runtime_error(
+        "exchangeIbgdaBuffer: IBRC buffer exchange is not implemented yet");
+  }
+  throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
 }
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
