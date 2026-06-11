@@ -39,6 +39,7 @@ struct CliOptions {
   bool bidirectional{false};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
+  int pipelineDepth{2};
   std::vector<std::string> rdmaDevices;
 };
 
@@ -93,6 +94,7 @@ void printUsage(const char* prog) {
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
+      << "  --pipeline-depth <n>   Send/recv staging pipeline depth (default: 2)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -128,6 +130,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"chunk-size", required_argument, nullptr, 256},
       {"cuda-device", required_argument, nullptr, 'c'},
       {"topology", required_argument, nullptr, 259},
+      {"pipeline-depth", required_argument, nullptr, 260},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -267,6 +270,20 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 260:
+        try {
+          opts.pipelineDepth = std::stoi(optarg);
+          if (opts.pipelineDepth < 1 || opts.pipelineDepth > 65535) {
+            std::cerr
+                << "Invalid value for --pipeline-depth: must be in [1, 65535]\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --pipeline-depth: '" << optarg
+                    << "'\n";
+          std::exit(1);
+        }
+        break;
       case 'l':
         listMode = true;
         break;
@@ -338,6 +355,7 @@ int main(int argc, char** argv) {
   config.cudaDevice = opts.cudaDevice;
   config.numStreams = opts.numStreams;
   config.topology = opts.topology;
+  config.pipelineDepth = opts.pipelineDepth;
 
   UNIFLOW_LOG_INFO(
       "Rank {}/{} starting benchmark (transport={})",

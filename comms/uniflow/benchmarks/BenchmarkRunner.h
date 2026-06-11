@@ -27,6 +27,7 @@ struct BenchmarkConfig {
   std::string direction{"both"};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"}; // "fanout", "fanin"
+  int pipelineDepth{2}; // send/recv staging pipeline depth
 };
 
 class Benchmark {

@@ -161,7 +161,8 @@ struct PeerTransport {
 };
 
 struct MultiTransportSession {
-  // Factory must be declared BEFORE transports so it is destroyed AFTER them.
+  // EventBase thread must outlive factory which must outlive transports.
+  std::unique_ptr<ScopedEventBaseThread> evbThread;
   std::unique_ptr<RdmaTransportFactory> factory;
   std::vector<PeerTransport> peerTransports;
 
@@ -183,84 +184,105 @@ struct MultiTransportSession {
   }
 };
 
+std::optional<std::unique_ptr<Transport>> connectOneTransport(
+    RdmaTransportFactory& factory,
+    controller::Conn& ctrl,
+    bool isRank0,
+    int peerRank) {
+  auto localTopology = factory.getTopology();
+  auto remoteTopoResult = exchangeMetadata(ctrl, localTopology, isRank0);
+  if (!remoteTopoResult) {
+    UNIFLOW_LOG_ERROR(
+        "SendRecvBandwidthBenchmark: topology exchange with peer {} "
+        "failed: {}",
+        peerRank,
+        remoteTopoResult.error().toString());
+    return std::nullopt;
+  }
+
+  auto transportResult =
+      factory.createTransport(std::move(remoteTopoResult).value());
+  if (!transportResult) {
+    UNIFLOW_LOG_ERROR(
+        "SendRecvBandwidthBenchmark: createTransport for peer {} "
+        "failed: {}",
+        peerRank,
+        transportResult.error().toString());
+    return std::nullopt;
+  }
+  auto transport = std::move(transportResult).value();
+
+  auto localInfo = transport->bind();
+  auto remoteInfoResult = exchangeMetadata(ctrl, localInfo, isRank0);
+  if (!remoteInfoResult) {
+    UNIFLOW_LOG_ERROR(
+        "SendRecvBandwidthBenchmark: info exchange with peer {} "
+        "failed: {}",
+        peerRank,
+        remoteInfoResult.error().toString());
+    transport->shutdown();
+    return std::nullopt;
+  }
+
+  auto connectStatus = transport->connect(std::move(remoteInfoResult).value());
+  if (!connectStatus) {
+    UNIFLOW_LOG_ERROR(
+        "SendRecvBandwidthBenchmark: connect to peer {} failed: {}",
+        peerRank,
+        connectStatus.error().toString());
+    transport->shutdown();
+    return std::nullopt;
+  }
+
+  return transport;
+}
+
 std::optional<MultiTransportSession> setupMultiTransport(
     const std::vector<std::string>& devices,
-    ScopedEventBaseThread& evbThread,
     const std::shared_ptr<IbvApi>& ibvApi,
     std::vector<PeerConnection>& peers,
     const BootstrapConfig& bootstrap,
-    size_t chunkSize,
+    const BenchmarkConfig& config,
     bool useGpu) {
   RdmaTransportConfig rdmaConfig{};
-  rdmaConfig.chunkSize = chunkSize;
+  rdmaConfig.chunkSize = config.chunkSize;
   rdmaConfig.numQps = static_cast<uint32_t>(devices.size());
-
+  rdmaConfig.pipelineDepth = static_cast<uint16_t>(config.pipelineDepth);
+  const auto numPeers = std::max(size_t{1}, peers.size());
+  const auto pipelineDepth =
+      static_cast<size_t>(std::max(1, config.pipelineDepth));
+  rdmaConfig.slabPoolConfig.slabSize = config.chunkSize;
+  rdmaConfig.slabPoolConfig.slabNum = pipelineDepth * numPeers;
   auto cudaDriverApi = std::make_shared<CudaDriverApi>();
-  auto factory = std::make_unique<RdmaTransportFactory>(
-      devices, evbThread.getEventBase(), rdmaConfig, ibvApi, cudaDriverApi);
-
-  auto localTopology = factory->getTopology();
 
   MultiTransportSession session;
+  session.evbThread = std::make_unique<ScopedEventBaseThread>("bench-evb");
+  session.factory = std::make_unique<RdmaTransportFactory>(
+      devices,
+      session.evbThread->getEventBase(),
+      rdmaConfig,
+      ibvApi,
+      cudaDriverApi);
+
   session.peerTransports.reserve(peers.size());
 
   for (size_t i = 0; i < peers.size(); ++i) {
     auto& peer = peers[i];
-    auto remoteTopoResult =
-        exchangeMetadata(*peer.ctrl, localTopology, bootstrap.isRank0());
-    if (!remoteTopoResult) {
-      UNIFLOW_LOG_ERROR(
-          "SendRecvBandwidthBenchmark: topology exchange with peer {} "
-          "failed: {}",
-          peer.peerRank,
-          remoteTopoResult.error().toString());
-      return std::nullopt;
-    }
-
-    auto transportResult =
-        factory->createTransport(std::move(remoteTopoResult).value());
-    if (!transportResult) {
-      UNIFLOW_LOG_ERROR(
-          "SendRecvBandwidthBenchmark: createTransport for peer {} "
-          "failed: {}",
-          peer.peerRank,
-          transportResult.error().toString());
-      return std::nullopt;
-    }
-    auto transport = std::move(transportResult).value();
-
-    auto localInfo = transport->bind();
-    auto remoteInfoResult =
-        exchangeMetadata(*peer.ctrl, localInfo, bootstrap.isRank0());
-    if (!remoteInfoResult) {
-      UNIFLOW_LOG_ERROR(
-          "SendRecvBandwidthBenchmark: info exchange with peer {} "
-          "failed: {}",
-          peer.peerRank,
-          remoteInfoResult.error().toString());
-      transport->shutdown();
-      return std::nullopt;
-    }
-
-    auto connectStatus =
-        transport->connect(std::move(remoteInfoResult).value());
-    if (!connectStatus) {
-      UNIFLOW_LOG_ERROR(
-          "SendRecvBandwidthBenchmark: connect to peer {} failed: {}",
-          peer.peerRank,
-          connectStatus.error().toString());
-      transport->shutdown();
+    auto t = connectOneTransport(
+        *session.factory, *peer.ctrl, bootstrap.isRank0(), peer.peerRank);
+    if (!t) {
       return std::nullopt;
     }
 
     PeerTransport pt;
-    pt.transport = std::move(transport);
+    pt.transport = std::move(*t);
     if (useGpu) {
       auto ret = cudaStreamCreate(&pt.stream);
       if (ret != cudaSuccess) {
         UNIFLOW_LOG_ERROR(
-            "SendRecvBandwidthBenchmark: cudaStreamCreate failed for peer {}",
-            peer.peerRank);
+            "SendRecvBandwidthBenchmark: cudaStreamCreate failed for peer {}: {}",
+            peer.peerRank,
+            cudaGetErrorString(ret));
         pt.transport->shutdown();
         return std::nullopt;
       }
@@ -274,11 +296,10 @@ std::optional<MultiTransportSession> setupMultiTransport(
     session.peerTransports.push_back(std::move(pt));
   }
 
-  session.factory = std::move(factory);
   return session;
 }
 
-// --- Benchmark loop: fan-out (rank 0 sends, others recv) ---
+// --- Benchmark loop: topology-driven concurrent send/recv ---
 
 std::vector<BenchmarkResult> runBenchmarkLoop(
     MultiTransportSession& session,
@@ -294,14 +315,15 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
   std::vector<BenchmarkResult> results;
   const int txDepth = std::max(1, config.txDepth);
   const int numPeers = static_cast<int>(session.peerTransports.size());
+  const auto& topology = config.topology;
+
   if (numPeers == 0) {
     UNIFLOW_LOG_ERROR("SendRecvBandwidthBenchmark: numPeers == 0");
     return {};
   }
 
-  // Fan-out: rank 0 sends, non-zero ranks receive.
-  bool doSend = bootstrap.isRank0();
-  bool doRecv = !bootstrap.isRank0();
+  bool doSend = (topology == "fanout" && bootstrap.isRank0()) ||
+      (topology == "fanin" && !bootstrap.isRank0());
 
   Segment srcSeg(bufs.src, maxSize, bufs.memType, bufs.gpuDevice);
   Segment dstSeg(bufs.dst, maxSize, bufs.memType, bufs.gpuDevice);
@@ -333,8 +355,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
         auto& pt = session.peerTransports[p];
         if (doSend) {
           futs.push_back(pt.transport->send(srcSpan, pt.opts));
-        }
-        if (doRecv) {
+        } else {
           futs.push_back(pt.transport->recv(dstSpan, pt.opts));
         }
       }
@@ -436,7 +457,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
     results.push_back({
         .benchmarkName = benchmarkName,
         .transport = "rdma",
-        .direction = "fanout",
+        .direction = topology,
         .messageSize = size,
         .iterations = config.iterations,
         .batchSize = 1,
@@ -454,9 +475,10 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
     });
 
     UNIFLOW_LOG_WARN(
-        "[rank {}] fanout peers={} size={:<10} txdepth={:<3} iters={:<6} "
+        "[rank {}] {} peers={} size={:<10} txdepth={:<3} iters={:<6} "
         "aggBw={:.2f} GB/s  perLink={:.2f} GB/s  avg={:.1f} us",
         bootstrap.rank,
+        topology,
         numPeers,
         size,
         txDepth,
@@ -560,9 +582,8 @@ std::vector<BenchmarkResult> SendRecvBandwidthBenchmark::run(
     return {};
   }
 
-  ScopedEventBaseThread evbThread("bench-evb");
-  auto session = setupMultiTransport(
-      myDevices, evbThread, ibvApi, peers, bootstrap, config.chunkSize, useGpu);
+  auto session =
+      setupMultiTransport(myDevices, ibvApi, peers, bootstrap, config, useGpu);
   if (!session) {
     UNIFLOW_LOG_ERROR(
         "SendRecvBandwidthBenchmark: transport setup failed on rank {}",
