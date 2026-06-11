@@ -1355,7 +1355,7 @@ Result<size_t> RdmaTransport::postSlabTransfer(
 
   size_t chunkIdx = 0;
   for (uint32_t q = 0; q < numQps; ++q) {
-    if (qpAssigned[q] == 0) {
+    if (qpAssigned[q] <= 1) {
       continue;
     }
     uint32_t localNicIdx = q % nics_.size();
