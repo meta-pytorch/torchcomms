@@ -2,85 +2,28 @@
 # pyre-unsafe
 
 import torch
-import torchcomms
 from torchcomms.tests.perf.py.perf_test_helpers import (
+    BenchRecord,
+    CommAdapter,
     create_tensor,
-    PerfParams,
-    PerfResult,
-    PerfTimer,
-    print_perf_header,
-    print_perf_result,
-    sync_device,
+    run_bench_sweep,
 )
 
 
 def run_all_reduce_perf(
-    comm: torchcomms.TorchComm,
-    params: PerfParams,
+    comm: CommAdapter,
+    record: BenchRecord,
     device: torch.device,
 ) -> None:
-    rank = comm.get_rank()
-    num_ranks = comm.get_size()
+    op = comm.get_reduce_op(record.params.reduce_op)
 
-    if rank == 0:
-        mode = "Asynchronous" if params.async_op else "Synchronous"
-        print(f"\n=== {mode} AllReduce Performance ===")
-    print_perf_header(rank)
+    def setup(num_elements, rank, num_ranks, device, dtype):
+        tensor = create_tensor(num_elements, rank, device, dtype)
+        return (tensor, op), {}
 
-    element_size = torch.tensor([], dtype=params.dtype).element_size()
+    def bus_bw(num_elements, element_size, num_ranks, avg_time_us):
+        # AllReduce: 2 * (n-1) / n * size / time
+        algo_bw = (num_elements * element_size) / avg_time_us
+        return algo_bw * 2.0 * (num_ranks - 1) / num_ranks / 1000.0
 
-    msg_size = params.min_size
-    while msg_size <= params.max_size:
-        num_elements = msg_size // element_size
-        if num_elements == 0:
-            num_elements = 1
-        tensor = create_tensor(num_elements, rank, device, params.dtype)
-
-        # Warmup
-        for _ in range(params.warmup_iterations):
-            work = comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, params.async_op)
-            if params.async_op:
-                work.wait()
-
-        # Synchronize all ranks before measurement
-        comm.barrier(False)
-
-        # Measure
-        timer = PerfTimer()
-        sync_device(device)
-        timer.start()
-
-        for i in range(params.measure_iterations):
-            work = comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, params.async_op)
-            if params.async_op:
-                work.wait()
-
-            if params.iteration_window > 0 and (i + 1) % params.iteration_window == 0:
-                sync_device(device)
-
-        sync_device(device)
-        timer.stop()
-
-        # Calculate statistics
-        total = timer.elapsed_us()
-        avg_time = total / params.measure_iterations
-
-        # AllReduce bus bandwidth: 2 * (n-1) / n * size / time
-        algo_bw = (num_elements * element_size) / avg_time  # bytes/us = MB/s
-        bus_bw_factor = 2.0 * (num_ranks - 1) / num_ranks
-        bus_bw_gbps = algo_bw * bus_bw_factor / 1000.0  # Convert to GB/s
-
-        result = PerfResult(
-            message_size_bytes=num_elements * element_size,
-            num_ranks=num_ranks,
-            iterations=params.measure_iterations,
-            total_time_us=total,
-            avg_time_us=avg_time,
-            min_time_us=avg_time,
-            max_time_us=avg_time,
-            bus_bw_gbps=bus_bw_gbps,
-        )
-
-        print_perf_result(result, rank)
-
-        msg_size *= params.size_scaling_factor
+    run_bench_sweep(comm, record, device, "all_reduce", setup, bus_bw)
