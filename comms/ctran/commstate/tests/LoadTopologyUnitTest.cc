@@ -6,6 +6,19 @@
 
 #include "comms/ctran/commstate/Topology.h"
 
+namespace {
+
+void expectHostFromGethostname(
+    const std::optional<ctran::commstate::TopologyResult>& topo) {
+  ASSERT_TRUE(topo);
+  char hostname[256] = {};
+  ASSERT_EQ(gethostname(hostname, sizeof(hostname) - 1), 0);
+  EXPECT_EQ(std::string(topo->rankTopology.host), std::string(hostname));
+  EXPECT_EQ(topo->networkTopo, "");
+}
+
+} // namespace
+
 TEST(TopologyTest, LoadTopologySuccess) {
   const std::string filepath = "/tmp/ut-topology.txt";
   std::ofstream file(filepath);
@@ -25,25 +38,34 @@ TEST(TopologyTest, LoadTopologySuccess) {
 TEST(TopologyTest, LoadTopologyFallsBackToHostnameWhenFileIsEmpty) {
   const std::string filepath = "/tmp/ut-topology.txt";
   std::ofstream file(filepath);
+  file.close();
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
-  ASSERT_TRUE(topo);
-  char hostname[256] = {};
-  ASSERT_EQ(gethostname(hostname, sizeof(hostname) - 1), 0);
-  EXPECT_EQ(std::string(topo->rankTopology.host), std::string(hostname));
-  EXPECT_EQ(topo->networkTopo, "");
+  expectHostFromGethostname(topo);
 }
 
 TEST(TopologyTest, LoadTopologyFallsBackToHostnameWhenHostMissing) {
   const std::string filepath = "/tmp/mocked_fbwhoami.txt";
   std::ofstream file(filepath);
-  file << "DEVICE_NAME=";
+  file << "DEVICE_NAME=" << std::endl;
+  file.close();
+
+  auto topo = ctran::commstate::loadTopology(0, filepath);
+  expectHostFromGethostname(topo);
+}
+
+TEST(TopologyTest, LoadTopologyTruncatesLongHostNameSafely) {
+  const std::string filepath = "/tmp/ut-topology.txt";
+  const std::string longHost(ncclx::kMaxNameLen + 16, 'a');
+  std::ofstream file(filepath);
+  file << "DEVICE_NAME=" << longHost << std::endl;
+  file.close();
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
   ASSERT_TRUE(topo);
-  char hostname[256] = {};
-  ASSERT_EQ(gethostname(hostname, sizeof(hostname) - 1), 0);
-  EXPECT_EQ(std::string(topo->rankTopology.host), std::string(hostname));
+  const std::string host(topo->rankTopology.host);
+  EXPECT_EQ(host.size(), ncclx::kMaxNameLen - 1);
+  EXPECT_EQ(host, longHost.substr(0, ncclx::kMaxNameLen - 1));
   EXPECT_EQ(topo->networkTopo, "");
 }
 
@@ -52,11 +74,7 @@ TEST(TopologyTest, LoadTopologyFallsBackToHostnameWhenFileMissing) {
   unlink(filepath.c_str());
 
   auto topo = ctran::commstate::loadTopology(0, filepath);
-  ASSERT_TRUE(topo);
-  char hostname[256] = {};
-  ASSERT_EQ(gethostname(hostname, sizeof(hostname) - 1), 0);
-  EXPECT_EQ(std::string(topo->rankTopology.host), std::string(hostname));
-  EXPECT_EQ(topo->networkTopo, "");
+  expectHostFromGethostname(topo);
 }
 
 TEST(TopologyTest, RailBasedTopology) {

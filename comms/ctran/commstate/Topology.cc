@@ -1,4 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#include <cstring>
 #include <unistd.h>
 #include <fstream>
 
@@ -13,6 +14,13 @@ namespace {
 constexpr std::string_view kDeviceName = "DEVICE_NAME";
 constexpr std::string_view kNetworkTopo = "DEVICE_BACKEND_NETWORK_TOPOLOGY";
 constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL";
+
+template <size_t N>
+void copyStringToFixedBuffer(char (&dst)[N], const std::string& src) {
+  static_assert(N > 0);
+  std::strncpy(dst, src.c_str(), N - 1);
+  dst[N - 1] = '\0';
+}
 } // namespace
 
 // DEVICE_BACKEND_NETWORK_TOPOLOGY should be present in all T20 hosts with
@@ -135,13 +143,13 @@ std::optional<TopologyResult> loadTopology(
     }
   }
 
-  ncclx::RankTopology topo;
+  ncclx::RankTopology topo{};
   topo.rank = rank;
   topo.pid = getpid();
-  std::strncpy(topo.rackSerial, rackSerial.c_str(), ncclx::kMaxNameLen);
-  std::strncpy(topo.dc, dc.c_str(), ncclx::kMaxNameLen);
-  std::strncpy(topo.zone, zone.c_str(), ncclx::kMaxNameLen);
-  std::strncpy(topo.host, host.c_str(), ncclx::kMaxNameLen);
+  copyStringToFixedBuffer(topo.rackSerial, rackSerial);
+  copyStringToFixedBuffer(topo.dc, dc);
+  copyStringToFixedBuffer(topo.zone, zone);
+  copyStringToFixedBuffer(topo.host, host);
   return TopologyResult{topo, std::move(backendNetworkTopology)};
 }
 
