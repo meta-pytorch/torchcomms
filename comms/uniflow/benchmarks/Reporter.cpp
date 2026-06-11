@@ -32,11 +32,10 @@ std::string formatInt(int val, int width = 8) {
 
 void Reporter::printHeader(
     const BootstrapConfig& config,
-    const std::string& transport,
+    const std::string& benchmarkName,
     std::ostream& os) {
   os << "======================================================================\n"
-     << "                    Uniflow Transport Benchmark\n"
-     << "  Transport: " << transport << "    Ranks: " << config.worldSize
+     << "  Benchmark: " << benchmarkName << "    Ranks: " << config.worldSize
      << "    LocalRank: " << config.localRank << "\n"
      << "======================================================================\n"
      << "\n";
@@ -119,7 +118,7 @@ void Reporter::printCSV(
   os << "benchmark,transport,direction,size_bytes,iterations,"
         "batch_size,tx_depth,chunk_size,"
         "bw_gbps,lat_avg_us,lat_p50_us,lat_p99_us,"
-        "lat_min_us,lat_max_us,msg_rate_mops,num_streams\n";
+        "lat_min_us,lat_max_us,msg_rate_mops,num_streams,num_peers\n";
 
   for (const auto& r : results) {
     os << r.benchmarkName << "," << r.transport << "," << r.direction << ","
@@ -128,7 +127,7 @@ void Reporter::printCSV(
        << std::setprecision(4) << r.bandwidthGBs << "," << r.latency.avg << ","
        << r.latency.p50 << "," << r.latency.p99 << "," << r.latency.min << ","
        << r.latency.max << "," << r.messageRateMops << "," << r.numStreams
-       << "\n";
+       << "," << r.numPeers << "\n";
   }
 }
 

@@ -23,7 +23,7 @@ class Reporter {
 
   static void printHeader(
       const BootstrapConfig& config,
-      const std::string& transport,
+      const std::string& benchmarkName,
       std::ostream& os);
 };
 

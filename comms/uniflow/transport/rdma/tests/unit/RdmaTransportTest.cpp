@@ -714,6 +714,26 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReflectsConfiguredQps) {
   EXPECT_EQ(topo1[0], topo4[0]);
 }
 
+// --- Slab pool ownership tests ---
+
+TEST_F(RdmaTransportFactoryTest, DefaultConfigSkipsSlabPool) {
+  setupSingleDevice();
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
+}
+
+TEST_F(RdmaTransportFactoryTest, SlabPoolFailurePropagates) {
+  setupSingleDevice();
+  ON_CALL(*mockApi_, regMr(_, _, _, _))
+      .WillByDefault(
+          Return(Err(ErrCode::DriverError, "simulated regMr failure")));
+  RdmaTransportConfig config{.slabPoolConfig = {.slabNum = 4}};
+  EXPECT_THROW(
+      RdmaTransportFactory(
+          {"mlx5_0"}, evbThread_.getEventBase(), config, mockApi_),
+      std::runtime_error);
+}
+
 // --- supported() tests ---
 
 TEST_F(RdmaTransportFactoryTest, SupportedReturnsTrueWithActiveDevice) {
