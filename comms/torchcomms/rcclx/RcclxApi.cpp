@@ -87,8 +87,20 @@ ncclResult_t DefaultRcclxApi::commShrink(
     ncclConfig_t* config,
     int shrinkFlags) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
   return ncclCommShrink(
       comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+#else
+  (void)comm;
+  (void)excludeRanksList;
+  (void)excludeRanksCount;
+  (void)newcomm;
+  (void)config;
+  (void)shrinkFlags;
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommShrink API";
+  return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::commGetUniqueId(

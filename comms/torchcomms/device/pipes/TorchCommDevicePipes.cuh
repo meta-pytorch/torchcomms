@@ -6,7 +6,7 @@
 //   - IBGDA peers: RDMA Write via DOCA GPUNetIO (P2pIbgdaTransportDevice)
 //   - SELF: NVLink local copy
 //
-// This file delegates to the comms::pipes::DeviceWindow public API for all
+// This file delegates to the comms::prims::DeviceWindow public API for all
 // signal, barrier, and put operations. The DeviceWindow handles transport
 // dispatch (NVL vs IBGDA) internally.
 //
@@ -17,7 +17,7 @@
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #ifndef __CUDACC__
 #error "TorchCommDevicePipes.cuh must be compiled with nvcc."
@@ -25,13 +25,13 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/pipes/CopyUtils.cuh"
-#include "comms/pipes/IbgdaBuffer.h"
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/P2pIbgdaTransportDevice.cuh"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
-#include "comms/pipes/Transport.cuh"
-#include "comms/pipes/window/DeviceWindow.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
 
@@ -44,40 +44,40 @@ namespace torchcomms::device {
 namespace detail {
 
 // Map TorchComms SignalOp to Pipes SignalOp.
-__device__ inline comms::pipes::SignalOp to_pipes_signal_op(SignalOp op) {
-  return (op == SignalOp::ADD) ? comms::pipes::SignalOp::SIGNAL_ADD
-                               : comms::pipes::SignalOp::SIGNAL_SET;
+__device__ inline comms::prims::SignalOp to_pipes_signal_op(SignalOp op) {
+  return (op == SignalOp::ADD) ? comms::prims::SignalOp::SIGNAL_ADD
+                               : comms::prims::SignalOp::SIGNAL_SET;
 }
 
 // Map TorchComms CmpOp to Pipes CmpOp.
-__device__ inline comms::pipes::CmpOp to_pipes_cmp_op(CmpOp cmp) {
+__device__ inline comms::prims::CmpOp to_pipes_cmp_op(CmpOp cmp) {
   switch (cmp) {
     case CmpOp::EQ:
-      return comms::pipes::CmpOp::CMP_EQ;
+      return comms::prims::CmpOp::CMP_EQ;
     case CmpOp::NE:
-      return comms::pipes::CmpOp::CMP_NE;
+      return comms::prims::CmpOp::CMP_NE;
     case CmpOp::LT:
-      return comms::pipes::CmpOp::CMP_LT;
+      return comms::prims::CmpOp::CMP_LT;
     case CmpOp::LE:
-      return comms::pipes::CmpOp::CMP_LE;
+      return comms::prims::CmpOp::CMP_LE;
     case CmpOp::GT:
-      return comms::pipes::CmpOp::CMP_GT;
+      return comms::prims::CmpOp::CMP_GT;
     case CmpOp::GE:
-      return comms::pipes::CmpOp::CMP_GE;
+      return comms::prims::CmpOp::CMP_GE;
   }
-  return comms::pipes::CmpOp::CMP_GE;
+  return comms::prims::CmpOp::CMP_GE;
 }
 
 // Build a pipes::ThreadGroup for the given CoopScope.
-__device__ inline comms::pipes::ThreadGroup make_pipes_thread_group(
+__device__ inline comms::prims::ThreadGroup make_pipes_thread_group(
     CoopScope scope) {
   switch (scope) {
     case CoopScope::WARP:
-      return comms::pipes::make_warp_group();
+      return comms::prims::make_warp_group();
     case CoopScope::BLOCK:
-      return comms::pipes::make_block_group();
+      return comms::prims::make_block_group();
     case CoopScope::THREAD:
-      return comms::pipes::make_thread_solo();
+      return comms::prims::make_thread_solo();
   }
   __builtin_unreachable();
 }
@@ -88,7 +88,7 @@ __device__ inline comms::pipes::ThreadGroup make_pipes_thread_group(
 // TorchCommDeviceWindow<PipesDeviceBackend> Signal Operations
 // =============================================================================
 //
-// Delegates to comms::pipes::DeviceWindow::signal_peer() which handles
+// Delegates to comms::prims::DeviceWindow::signal_peer() which handles
 // NVL vs IBGDA transport dispatch internally. Signal slots are indexed
 // by (peer, signal_id) pairs.
 
@@ -136,12 +136,12 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
   // Loop bounded by src_buf.lkey_per_device.size (the populated NIC count
   // returned by the backend); on a 1-NIC host only slot 0 is read.
   const int numNics = src_buf.lkey_per_device.size;
-  ::comms::pipes::NetworkLKeys pipes_lkeys(numNics);
+  ::comms::prims::NetworkLKeys pipes_lkeys(numNics);
   for (int n = 0; n < numNics; ++n) {
     pipes_lkeys[n] =
-        ::comms::pipes::NetworkLKey{src_buf.lkey_per_device.values[n]};
+        ::comms::prims::NetworkLKey{src_buf.lkey_per_device.values[n]};
   }
-  ::comms::pipes::LocalBufferRegistration pipes_src{
+  ::comms::prims::LocalBufferRegistration pipes_src{
       src_buf.base_ptr, src_buf.size, pipes_lkeys};
 
   bool has_signal = signal_id >= 0;
@@ -347,7 +347,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::flush(
   int nPeers = win.num_peers();
   for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
     int r = win.peer_index_to_rank(peer_index);
-    if (win.get_type(r) == comms::pipes::TransportType::P2P_IBGDA) {
+    if (win.get_type(r) == comms::prims::TransportType::P2P_IBGDA) {
       win.get_ibgda(r).fence(group);
     }
   }
@@ -391,4 +391,4 @@ TorchCommDeviceWindow<PipesDeviceBackend>::get_multimem_address(
 
 } // namespace torchcomms::device
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

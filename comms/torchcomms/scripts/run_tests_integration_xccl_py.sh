@@ -30,6 +30,7 @@ run_tests () {
         FinalizeWarningTest.py
         FSDPCommTest.py
         GatherTest.py
+        MemPoolTest.py
         MultiCommTest.py
         ObjColTest.py
         OptionsTest.py

@@ -1355,7 +1355,7 @@ Result<size_t> RdmaTransport::postSlabTransfer(
 
   size_t chunkIdx = 0;
   for (uint32_t q = 0; q < numQps; ++q) {
-    if (qpAssigned[q] == 0) {
+    if (qpAssigned[q] <= 1) {
       continue;
     }
     uint32_t localNicIdx = q % nics_.size();
@@ -1826,6 +1826,11 @@ RdmaTransportFactory::RdmaTransportFactory(
 
     nicsHandle_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
   }
+
+  if (config_.slabPoolConfig.slabNum > 0) {
+    slabPool_ = std::make_shared<RdmaSlabPool>(
+        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
+  }
 }
 
 Result<std::unique_ptr<RegistrationHandle>>
@@ -1974,6 +1979,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
   auto peerTopo = RdmaTopologyInfo::deserialize(peerTopology).value();
   auto config = config_;
   config.numQps = std::min(peerTopo.numQps, config.numQps);
+
   return std::make_unique<RdmaTransport>(
       ibvApi_,
       cudaApi_,
@@ -1982,7 +1988,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
       nicsHandle_,
       domainId_,
       config,
-      nullptr);
+      slabPool_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for

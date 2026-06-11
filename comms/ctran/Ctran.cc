@@ -19,15 +19,16 @@
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
 
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/PipesTrace.h"
-#endif // defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/trace/PipesTrace.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#endif // defined(ENABLE_PRIMS)
 
 Ctran::Ctran(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter)
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter)
     : comm_(comm) {
   ctran::logging::initCtranLogging();
 
@@ -40,7 +41,8 @@ Ctran::Ctran(
   }
 
   mapper = std::make_unique<CtranMapper>(comm_, profiler.get());
-  gpe = std::make_unique<CtranGpe>(comm->statex_->cudaDev(), comm_);
+  gpe = std::make_unique<CtranGpe>(
+      comm->statex_->cudaDev(), comm_, std::move(gpeReporter));
 
   algo = std::make_unique<CtranAlgo>(comm, this);
 }
@@ -106,18 +108,18 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
-#if defined(ENABLE_PIPES)
-comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+#if defined(ENABLE_PRIMS)
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   if (!multiPeerTransport_) {
     return nullptr;
   }
   return multiPeerTransport_->get_device_handle().transports.data();
 }
 #else
-comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   return nullptr;
 }
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
 
 std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
     const {
@@ -138,11 +140,13 @@ void CtranComm::recordAlgoStats(
 
 commResult_t ctranInit(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter) {
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter) {
   NcclScubaEvent initEvent(&comm->logMetaData_);
   initEvent.lapAndRecord("CtranInit START");
   try {
-    comm->ctran_ = std::make_shared<Ctran>(comm, std::move(reporter));
+    comm->ctran_ = std::make_shared<Ctran>(
+        comm, std::move(reporter), std::move(gpeReporter));
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
@@ -193,7 +197,7 @@ void CtranComm::destroy() {
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   pipesTrace_.reset();
   if (hierarchicalAgReadyCounters_ != nullptr) {
     cudaFree(hierarchicalAgReadyCounters_);
@@ -204,7 +208,7 @@ void CtranComm::destroy() {
   // buffers used as external data buffers) and before bootstrap_ (since
   // multiPeerTransport_ holds a non-owning reference to it).
   multiPeerTransport_.reset();
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
   ctran_.reset();
   bootstrap_.reset();
   colltraceNew_.reset();

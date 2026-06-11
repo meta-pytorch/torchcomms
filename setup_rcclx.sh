@@ -14,8 +14,7 @@ FBCODE_DIR=$HOME/fbsource/fbcode
 rsync -av --exclude 'analyzer/ground_truth_csvs' --exclude 'analyzer/integration_test_data' "$FBCODE_DIR"/comms . -q
 cp "$FBCODE_DIR"/comms/github/*.sh .
 cp "$FBCODE_DIR"/comms/github/setup.py .
-cp "$FBCODE_DIR"/comms/github/CMakeLists.txt .
-cp "$FBCODE_DIR"/comms/github/version.txt .
+cp "$FBCODE_DIR"/comms/github/*.txt .
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm6.4
 export BUILD_RCCL_ONLY=1
 export BUILDDIR=${PWD}/build/rcclx

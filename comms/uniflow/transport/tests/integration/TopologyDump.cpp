@@ -5,6 +5,7 @@
 /// fbcode//comms/uniflow/transport/tests/integration:topology_dump
 /// @fbcode//mode/opt
 
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/transport/Topology.h"
 
 #include <cstdio>
@@ -14,7 +15,7 @@
 using namespace uniflow;
 
 int main() {
-  auto& topo = Topology::get();
+  auto& topo = sharedTopology();
   if (!topo.available()) {
     fprintf(
         stderr,

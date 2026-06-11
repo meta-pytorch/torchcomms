@@ -10,14 +10,14 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
-#include "comms/pipes/ChunkState.cuh"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/prims/core/ChunkState.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-using comms::pipes::ChunkState;
-using comms::pipes::DeviceSpan;
+using comms::prims::ChunkState;
+using comms::prims::DeviceSpan;
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
@@ -97,7 +97,7 @@ CtranAlgoDeviceState* CtranAlgo::getDevState() {
   return this->devState_d_;
 }
 
-comms::pipes::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
+comms::prims::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
   if (!isResInitialized_) {
     CLOGF(
         ERR,
@@ -281,7 +281,7 @@ commResult_t CtranAlgo::initKernelResources() {
           &this->comm_->logMetaData_,
           "initKernelResources-nvlTransports"));
 
-  comms::pipes::P2pNvlTransportOptions options{
+  comms::prims::P2pNvlTransportOptions options{
       .dataBufferSize =
           nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
       .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
@@ -293,25 +293,25 @@ commResult_t CtranAlgo::initKernelResources() {
       continue;
     }
 
-    comms::pipes::LocalState localState{
+    comms::prims::LocalState localState{
         .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
         .receiverStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
-    comms::pipes::RemoteState remoteState{
+    comms::prims::RemoteState remoteState{
         .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
         .receiverStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
     // Construct the object on CPU and copy to device memory
-    comms::pipes::P2pNvlTransportDevice transport(
+    comms::prims::P2pNvlTransportDevice transport(
         localRank, peer, options, localState, remoteState);
     FB_CUDACHECK(cudaMemcpy(
         &nvlTransports_[peer],
         &transport,
-        sizeof(comms::pipes::P2pNvlTransportDevice),
+        sizeof(comms::prims::P2pNvlTransportDevice),
         cudaMemcpyHostToDevice));
   }
 

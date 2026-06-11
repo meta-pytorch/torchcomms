@@ -62,7 +62,7 @@ __device__ int torchcomms_self_copy_block(
 #else
   auto group = detail::make_thread_group(CoopScope::BLOCK);
 #endif
-  comms::pipes::memcpy_vectorized(dst, src, static_cast<size_t>(bytes), group);
+  comms::prims::memcpy_vectorized(dst, src, static_cast<size_t>(bytes), group);
   return 0;
 }
 

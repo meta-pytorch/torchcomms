@@ -42,7 +42,10 @@ struct AlgoContext : CtsrdAlgoContext {
     return static_cast<size_t>(chunk) * sendSize;
   }
 
-  inline void enqueuePut(int step, int chunkOffset) {
+  inline void enqueuePut(
+      int step,
+      int chunkOffset,
+      CtranMapperRequest* flushReq = nullptr) {
     const auto nth = putCount.at(step)++;
     const auto expChunkOffset = sendPlan.chunk(step, nth);
     FB_CHECKABORT(
@@ -52,7 +55,7 @@ struct AlgoContext : CtsrdAlgoContext {
         nth,
         expChunkOffset,
         chunkOffset);
-    putQ.push_back({step, chunkOffset});
+    putQ.push_back({step, chunkOffset, flushReq});
   }
 };
 

@@ -54,7 +54,7 @@ struct alignas(16) CtranAlgoDeviceState {
   void* localStagingBufsMap[CTRAN_MAX_NVL_PEERS];
 
   // TODO: The followings are used by P2P NVL copy-based kernel, and should be
-  // managed by comms::pipes::MultiPeerNvlTransport instead of tracked by Ctran.
+  // managed by comms::prims::MultiPeerNvlTransport instead of tracked by Ctran.
   // indexed by rank ID
   void* remoteChunkStatesMap[CTRAN_MAX_NVL_PEERS];
   void* localChunkStatesMap[CTRAN_MAX_NVL_PEERS];
