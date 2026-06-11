@@ -25,6 +25,7 @@
 #include "comms/prims/transport/IbTransportConfig.h"
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
@@ -296,7 +297,11 @@ class MultiPeerTransport {
   // --- Sub-transports ---
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
+  // Exactly one IB backend is constructed, selected by MultiPeerTransportConfig
+  // ::ibMode (kIbgda by default, kIbrc selects the CPU-proxy skeleton backend).
+  // IBRC functional entry points fail fast until the backend is implemented.
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
