@@ -24,10 +24,12 @@ struct NicResources {
   int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
   uint8_t portNum{1}; /* Physical port number on the HCA. */
   bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
+  int numaNode{-1}; /* NUMA node of the NIC, from Topology (-1 = unknown). */
 
   NicResources(
       ibv_device* device,
       std::shared_ptr<IbvApi> api,
+      int numaNode = -1,
       uint8_t gidIndex = 3,
       std::optional<uint8_t> port = std::nullopt);
 
