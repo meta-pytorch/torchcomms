@@ -224,7 +224,8 @@ void MultipeerIbgdaTransport::initDocaGpu() {
 }
 
 void MultipeerIbgdaTransport::openIbDevice() {
-  nicDevices_.resize(numNics_);
+  nicDoca_.resize(numNics_);
+  nics_.resize(numNics_); // base-owned generic per-NIC resources, filled below
   auto initResult = ibverbx::ibvInit();
   if (!initResult) {
     throw std::runtime_error(
@@ -240,7 +241,7 @@ void MultipeerIbgdaTransport::openIbDevice() {
     throw std::runtime_error("No IB devices found");
   }
 
-  // Resolve nicDevices_[0..numNics_).deviceName — config override first,
+  // Resolve nicDoca_[0..numNics_).deviceName — config override first,
   // then topology-aware auto-discovery.
   //
   // Priority 1: Explicit GPU-to-NIC mapping from config (vector per GPU,
@@ -258,17 +259,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
               numNics_));
     }
     for (int n = 0; n < numNics_; ++n) {
-      nicDevices_[n].deviceName = names[n];
+      nics_[n].deviceName = names[n];
     }
     VLOG(1) << "MultipeerIbgdaTransport: using config.gpuNicMap for GPU "
-            << config_.cudaDevice << " -> " << nicDevices_[0].deviceName
+            << config_.cudaDevice << " -> " << nics_[0].deviceName
             << (numNics_ > 1 ? " (+ " + std::to_string(numNics_ - 1) +
                         " more for multi-NIC)"
                              : "");
   }
 
   // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
-  if (nicDevices_[0].deviceName.empty()) {
+  if (nics_[0].deviceName.empty()) {
     // On AMD, the `DataDirectMode::Only` default triggers
     // `ibv_reg_dmabuf_mr` inside `augmentWithDataDirect()`, which is not
     // exercised on AMD's libibverbs path here. Force `Disabled` to skip the
@@ -292,11 +293,10 @@ void MultipeerIbgdaTransport::openIbDevice() {
               numNics_));
     }
     for (int n = 0; n < numNics_; ++n) {
-      nicDevices_[n].deviceName = candidates[n].name;
+      nics_[n].deviceName = candidates[n].name;
     }
     VLOG(1) << "MultipeerIbgdaTransport: auto-discovered NIC "
-            << nicDevices_[0].deviceName << " for GPU device "
-            << config_.cudaDevice;
+            << nics_[0].deviceName << " for GPU device " << config_.cudaDevice;
   }
 
   // Open + setup each NIC: find by name, open ctx, alloc PD, query GID +
@@ -306,7 +306,7 @@ void MultipeerIbgdaTransport::openIbDevice() {
     int nicIdx = -1;
     for (int i = 0; i < numDevices; i++) {
       const char* devName = symbols.ibv_internal_get_device_name(deviceList[i]);
-      if (devName && nicDevices_[n].deviceName == devName) {
+      if (devName && nics_[n].deviceName == devName) {
         nicIdx = i;
         break;
       }
@@ -314,65 +314,60 @@ void MultipeerIbgdaTransport::openIbDevice() {
     if (nicIdx < 0) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
-          "Specified NIC not found: " + nicDevices_[n].deviceName);
+          "Specified NIC not found: " + nics_[n].deviceName);
     }
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n << " = "
-            << nicDevices_[n].deviceName << " at device-list index " << nicIdx;
+            << nics_[n].deviceName << " at device-list index " << nicIdx;
 
-    nicDevices_[n].ibvCtx =
-        symbols.ibv_internal_open_device(deviceList[nicIdx]);
-    if (!nicDevices_[n].ibvCtx) {
+    nics_[n].ibvCtx = symbols.ibv_internal_open_device(deviceList[nicIdx]);
+    if (!nics_[n].ibvCtx) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
-          "Failed to open IB device: " + nicDevices_[n].deviceName);
+          "Failed to open IB device: " + nics_[n].deviceName);
     }
 
-    nicDevices_[n].ibvPd = symbols.ibv_internal_alloc_pd(nicDevices_[n].ibvCtx);
-    if (!nicDevices_[n].ibvPd) {
+    nics_[n].ibvPd = symbols.ibv_internal_alloc_pd(nics_[n].ibvCtx);
+    if (!nics_[n].ibvPd) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
-          "Failed to allocate protection domain on NIC " +
-          nicDevices_[n].deviceName);
+          "Failed to allocate protection domain on NIC " + nics_[n].deviceName);
     }
 
     if (symbols.ibv_internal_query_gid(
-            nicDevices_[n].ibvCtx, 1, gidIndex_, &nicDevices_[n].localGid) !=
-        0) {
+            nics_[n].ibvCtx, 1, gidIndex_, &nics_[n].localGid) != 0) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
           "Failed to query GID at index " + std::to_string(gidIndex_) +
-          " on NIC " + nicDevices_[n].deviceName);
+          " on NIC " + nics_[n].deviceName);
     }
 
     auto gidStr = fmt::format(
         "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:"
         "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
-        nicDevices_[n].localGid.raw[0],
-        nicDevices_[n].localGid.raw[1],
-        nicDevices_[n].localGid.raw[2],
-        nicDevices_[n].localGid.raw[3],
-        nicDevices_[n].localGid.raw[4],
-        nicDevices_[n].localGid.raw[5],
-        nicDevices_[n].localGid.raw[6],
-        nicDevices_[n].localGid.raw[7],
-        nicDevices_[n].localGid.raw[8],
-        nicDevices_[n].localGid.raw[9],
-        nicDevices_[n].localGid.raw[10],
-        nicDevices_[n].localGid.raw[11],
-        nicDevices_[n].localGid.raw[12],
-        nicDevices_[n].localGid.raw[13],
-        nicDevices_[n].localGid.raw[14],
-        nicDevices_[n].localGid.raw[15]);
+        nics_[n].localGid.raw[0],
+        nics_[n].localGid.raw[1],
+        nics_[n].localGid.raw[2],
+        nics_[n].localGid.raw[3],
+        nics_[n].localGid.raw[4],
+        nics_[n].localGid.raw[5],
+        nics_[n].localGid.raw[6],
+        nics_[n].localGid.raw[7],
+        nics_[n].localGid.raw[8],
+        nics_[n].localGid.raw[9],
+        nics_[n].localGid.raw[10],
+        nics_[n].localGid.raw[11],
+        nics_[n].localGid.raw[12],
+        nics_[n].localGid.raw[13],
+        nics_[n].localGid.raw[14],
+        nics_[n].localGid.raw[15]);
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n << " GID[" << gidIndex_
             << "] = " << gidStr;
 
     ibverbx::ibv_port_attr portAttr{};
-    if (symbols.ibv_internal_query_port(nicDevices_[n].ibvCtx, 1, &portAttr) !=
-        0) {
+    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) != 0) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
-          "Failed to query port attributes on NIC " +
-          nicDevices_[n].deviceName);
+          "Failed to query port attributes on NIC " + nics_[n].deviceName);
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n
@@ -383,7 +378,7 @@ void MultipeerIbgdaTransport::openIbDevice() {
     if (portAttr.state != ibverbx::IBV_PORT_ACTIVE) {
       symbols.ibv_internal_free_device_list(deviceList);
       throw std::runtime_error(
-          "NIC " + nicDevices_[n].deviceName + " port 1 is not active (state=" +
+          "NIC " + nics_[n].deviceName + " port 1 is not active (state=" +
           std::to_string(portAttr.state) + ")");
     }
 
@@ -400,27 +395,25 @@ void MultipeerIbgdaTransport::openIbDevice() {
       }
     } else if (portAttr.active_mtu != localMtu_) {
       LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << n << " ("
-                   << nicDevices_[n].deviceName
+                   << nics_[n].deviceName
                    << ") active_mtu=" << portAttr.active_mtu
                    << " differs from NIC 0 active_mtu=" << localMtu_
                    << "; using NIC 0's MTU for negotiation";
     }
 
     doca_error_t err = doca_verbs_ah_attr_create(
-        reinterpret_cast<::ibv_context*>(nicDevices_[n].ibvCtx),
-        &nicDevices_[n].ahAttr);
+        reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx), &nicDoca_[n].ahAttr);
     checkDocaError(err, "Failed to create AH attributes");
-    err = doca_verbs_ah_attr_set_addr_type(nicDevices_[n].ahAttr, addrType);
+    err = doca_verbs_ah_attr_set_addr_type(nicDoca_[n].ahAttr, addrType);
     checkDocaError(err, "Failed to set address type");
-    err = doca_verbs_ah_attr_set_sgid_index(nicDevices_[n].ahAttr, gidIndex_);
+    err = doca_verbs_ah_attr_set_sgid_index(nicDoca_[n].ahAttr, gidIndex_);
     checkDocaError(err, "Failed to set SGID index");
-    err = doca_verbs_ah_attr_set_hop_limit(nicDevices_[n].ahAttr, kHopLimit);
+    err = doca_verbs_ah_attr_set_hop_limit(nicDoca_[n].ahAttr, kHopLimit);
     checkDocaError(err, "Failed to set hop limit");
     err = doca_verbs_ah_attr_set_traffic_class(
-        nicDevices_[n].ahAttr, config_.trafficClass);
+        nicDoca_[n].ahAttr, config_.trafficClass);
     checkDocaError(err, "Failed to set traffic class");
-    err =
-        doca_verbs_ah_attr_set_sl(nicDevices_[n].ahAttr, config_.serviceLevel);
+    err = doca_verbs_ah_attr_set_sl(nicDoca_[n].ahAttr, config_.serviceLevel);
     checkDocaError(err, "Failed to set service level");
   }
   symbols.ibv_internal_free_device_list(deviceList);
@@ -563,12 +556,11 @@ void MultipeerIbgdaTransport::registerMemory() {
         nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
 #else
     // NVIDIA / AMD+BNXT: DMABUF export (zero-based) with a lazy iova2 fallback.
-    auto sinkDmabuf =
-        export_gpu_dmabuf_aligned(docaGpu_, sinkBuffer_, sinkBufferSize_);
+    auto sinkDmabuf = export_gpu_dmabuf_aligned(sinkBuffer_, sinkBufferSize_);
     if (sinkDmabuf) {
       if (symbols.ibv_internal_reg_dmabuf_mr != nullptr) {
-        nicDevices_[n].sinkMr = symbols.ibv_internal_reg_dmabuf_mr(
-            nicDevices_[n].ibvPd,
+        nicDoca_[n].sinkMr = symbols.ibv_internal_reg_dmabuf_mr(
+            nics_[n].ibvPd,
             sinkDmabuf->alignment.dmabufOffset,
             sinkBufferSize_,
             0, // iova=0: zero-based MR
@@ -577,21 +569,21 @@ void MultipeerIbgdaTransport::registerMemory() {
       }
       close(sinkDmabuf->fd);
     }
-    if (!nicDevices_[n].sinkMr) {
+    if (!nicDoca_[n].sinkMr) {
       if (symbols.ibv_internal_reg_mr_iova2 == nullptr) {
         throw std::runtime_error("ibv_reg_mr_iova2 is unavailable");
       }
-      nicDevices_[n].sinkMr = symbols.ibv_internal_reg_mr_iova2(
-          nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
+      nicDoca_[n].sinkMr = symbols.ibv_internal_reg_mr_iova2(
+          nics_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
     }
 #endif
-    if (!nicDevices_[n].sinkMr) {
+    if (!nicDoca_[n].sinkMr) {
       throw std::runtime_error(
           "Failed to register sink memory region on NIC " + std::to_string(n));
     }
 
     VLOG(1) << "MultipeerIbgdaTransport: NIC " << n
-            << " sink lkey=" << nicDevices_[n].sinkMr->lkey
+            << " sink lkey=" << nicDoca_[n].sinkMr->lkey
             << " (zero-based MR, iova=0)";
   }
 }
@@ -600,7 +592,7 @@ void MultipeerIbgdaTransport::createQpGroups() {
   const int numQps = config_.numQpsPerPeerPerNic;
   const int totalQpsPerPeer = numNics_ * numQps;
   const int totalQpGroups = numPeers * totalQpsPerPeer;
-  for (auto& nic : nicDevices_) {
+  for (auto& nic : nicDoca_) {
     nic.qpGroups.resize(static_cast<size_t>(numPeers) * numQps);
     nic.loopbackCompanionQps.resize(static_cast<size_t>(numPeers) * numQps);
   }
@@ -619,7 +611,7 @@ void MultipeerIbgdaTransport::createQpGroups() {
   // Query IB device capabilities for debugging (NIC 0 is representative).
   ibverbx::ibv_device_attr devAttr{};
   auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_query_device(nicDevices_[0].ibvCtx, &devAttr) == 0) {
+  if (symbols.ibv_internal_query_device(nics_[0].ibvCtx, &devAttr) == 0) {
     VLOG(1) << "MultipeerIbgdaTransport: IB device - max_qp=" << devAttr.max_qp
             << " max_cq=" << devAttr.max_cq << " max_mr=" << devAttr.max_mr
             << " max_qp_wr=" << devAttr.max_qp_wr;
@@ -646,17 +638,16 @@ void MultipeerIbgdaTransport::connectQp(
   doca_verbs_gid remoteGid{};
   memcpy(remoteGid.raw, peerInfo.gid, sizeof(remoteGid.raw));
   doca_error_t err =
-      doca_verbs_ah_attr_set_gid(nicDevices_[nic].ahAttr, remoteGid);
+      doca_verbs_ah_attr_set_gid(nicDoca_[nic].ahAttr, remoteGid);
   checkDocaError(err, "Failed to set remote GID");
 
   // Query port for IB-specific parameters
   ibverbx::ibv_port_attr portAttr{};
   auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_query_port(nicDevices_[nic].ibvCtx, 1, &portAttr) !=
-      0) {
+  if (symbols.ibv_internal_query_port(nics_[nic].ibvCtx, 1, &portAttr) != 0) {
     LOG(WARNING) << "Failed to query port for IB-specific parameters";
   } else if (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND) {
-    err = doca_verbs_ah_attr_set_dlid(nicDevices_[nic].ahAttr, peerInfo.lid);
+    err = doca_verbs_ah_attr_set_dlid(nicDoca_[nic].ahAttr, peerInfo.lid);
     checkDocaError(err, "Failed to set DLID");
   }
 
@@ -701,7 +692,7 @@ void MultipeerIbgdaTransport::connectQp(
     checkDocaError(err, "Failed to set RQ PSN");
     err = doca_verbs_qp_attr_set_dest_qp_num(qpAttr, peerInfo.qpn);
     checkDocaError(err, "Failed to set dest QP number");
-    err = doca_verbs_qp_attr_set_ah_attr(qpAttr, nicDevices_[nic].ahAttr);
+    err = doca_verbs_qp_attr_set_ah_attr(qpAttr, nicDoca_[nic].ahAttr);
     checkDocaError(err, "Failed to set AH attributes");
     err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, config_.minRnrTimer);
     checkDocaError(err, "Failed to set min RNR timer");
@@ -743,20 +734,12 @@ void MultipeerIbgdaTransport::connectQp(
           << peerInfo.qpn;
 }
 
-int MultipeerIbgdaTransport::rankToPeerIndex(int rank) const {
-  return (rank < myRank_) ? rank : (rank - 1);
-}
-
-int MultipeerIbgdaTransport::peerIndexToRank(int peerIndex) const {
-  return (peerIndex < myRank_) ? peerIndex : (peerIndex + 1);
-}
-
 void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
   const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
     mainAttr.gpu_dev = docaGpu_;
-    mainAttr.ibpd = reinterpret_cast<::ibv_pd*>(nicDevices_[nic].ibvPd);
+    mainAttr.ibpd = reinterpret_cast<::ibv_pd*>(nics_[nic].ibvPd);
     mainAttr.sq_nwqe = config_.qpDepth;
     mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
     mainAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
@@ -764,8 +747,8 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
     loopbackAttr.sq_nwqe = kCompanionQpDepth;
 
-    auto& nicQps = nicDevices_[nic].qpGroups;
-    auto& nicLoopback = nicDevices_[nic].loopbackCompanionQps;
+    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
     for (int q = 0; q < numQps; q++) {
       const int qpIdx = peerIndex * numQps + q;
       doca_error_t err =
@@ -780,17 +763,16 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
 void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
   const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDevices_[nic].qpGroups;
-    auto& nicLoopback = nicDevices_[nic].loopbackCompanionQps;
+    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
 
     IbgdaTransportExchInfo selfInfo;
-    memcpy(selfInfo.gid, nicDevices_[nic].localGid.raw, sizeof(selfInfo.gid));
+    memcpy(selfInfo.gid, nics_[nic].localGid.raw, sizeof(selfInfo.gid));
     selfInfo.gidIndex = gidIndex_;
     selfInfo.mtu = localMtu_;
     ibverbx::ibv_port_attr portAttr{};
     auto& symbols = ibverbx::ibvSymbols;
-    if (symbols.ibv_internal_query_port(
-            nicDevices_[nic].ibvCtx, 1, &portAttr) == 0) {
+    if (symbols.ibv_internal_query_port(nics_[nic].ibvCtx, 1, &portAttr) == 0) {
       selfInfo.lid = portAttr.lid;
     }
 
@@ -850,12 +832,12 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
     nicSpec.qps.resize(numQps);
     nicSpec.companionQps.resize(numQps);
-    nicSpec.sinkLkey = NetworkLKey(HostLKey(nicDevices_[n].sinkMr->lkey));
+    nicSpec.sinkLkey = NetworkLKey(HostLKey(nicDoca_[n].sinkMr->lkey));
     nicSpec.deviceId = n;
   }
 
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDevices_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].qpGroups;
     auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
     for (int q = 0; q < numQps; q++) {
       const int qpIdx = peerIndex * numQps + q;
@@ -889,16 +871,11 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     int nRanks,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultipeerIbgdaTransportConfig& config)
-    : myRank_(myRank),
-      nRanks_(nRanks),
-      bootstrap_(std::move(bootstrap)),
+    : MultiPeerIbTransport<MultipeerIbgdaTransport>(
+          myRank,
+          nRanks,
+          std::move(bootstrap)),
       config_(config) {
-  if (myRank < 0 || myRank >= nRanks) {
-    throw std::invalid_argument("Invalid rank");
-  }
-  if (nRanks < 2) {
-    throw std::invalid_argument("Need at least 2 ranks");
-  }
   if (config.numQpsPerPeerPerNic < 1 ||
       config.numQpsPerPeerPerNic > kMaxQpsPerPeerPerNic) {
     throw std::invalid_argument(
@@ -988,7 +965,7 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       createQpGroups();
     } else {
       const int numPeers = nRanks - 1;
-      for (auto& nic : nicDevices_) {
+      for (auto& nic : nicDoca_) {
         nic.qpGroups.resize(
             static_cast<size_t>(numPeers) * config.numQpsPerPeerPerNic);
         nic.loopbackCompanionQps.resize(
@@ -1043,7 +1020,7 @@ void MultipeerIbgdaTransport::cleanup() {
   cleanup_send_recv_buffers();
 
   // Destroy per-NIC QP groups (main + companion) and loopback responders.
-  for (auto& nic : nicDevices_) {
+  for (auto& nic : nicDoca_) {
     for (auto* qpGroup : nic.qpGroups) {
       if (qpGroup != nullptr) {
         doca_gpu_verbs_destroy_qp_group_hl(qpGroup);
@@ -1109,15 +1086,15 @@ void MultipeerIbgdaTransport::cleanup() {
   }
   registeredBuffers_.clear();
 
-  // Destroy per-NIC sink MRs. Iterate over actual nicDevices_ entries
+  // Destroy per-NIC sink MRs. Iterate over actual nicDoca_ entries
   // (vector is empty if cleanup runs before openIbDevice; partial init leaves
   // unset fields as nullptr).
-  for (int n = 0; n < static_cast<int>(nicDevices_.size()); ++n) {
-    if (nicDevices_[n].sinkMr != nullptr) {
+  for (int n = 0; n < static_cast<int>(nicDoca_.size()); ++n) {
+    if (nicDoca_[n].sinkMr != nullptr) {
       if (symbols.ibv_internal_dereg_mr != nullptr) {
-        symbols.ibv_internal_dereg_mr(nicDevices_[n].sinkMr);
+        symbols.ibv_internal_dereg_mr(nicDoca_[n].sinkMr);
       }
-      nicDevices_[n].sinkMr = nullptr;
+      nicDoca_[n].sinkMr = nullptr;
     }
   }
 
@@ -1138,30 +1115,30 @@ void MultipeerIbgdaTransport::cleanup() {
   }
 
   // Destroy per-NIC AH attributes
-  for (int n = 0; n < static_cast<int>(nicDevices_.size()); ++n) {
-    if (nicDevices_[n].ahAttr != nullptr) {
-      doca_verbs_ah_attr_destroy(nicDevices_[n].ahAttr);
-      nicDevices_[n].ahAttr = nullptr;
+  for (int n = 0; n < static_cast<int>(nicDoca_.size()); ++n) {
+    if (nicDoca_[n].ahAttr != nullptr) {
+      doca_verbs_ah_attr_destroy(nicDoca_[n].ahAttr);
+      nicDoca_[n].ahAttr = nullptr;
     }
   }
 
-  // Destroy per-NIC PDs
-  for (int n = 0; n < static_cast<int>(nicDevices_.size()); ++n) {
-    if (nicDevices_[n].ibvPd != nullptr) {
+  // Destroy per-NIC PDs (bound on nics_, the vector indexed here)
+  for (int n = 0; n < static_cast<int>(nics_.size()); ++n) {
+    if (nics_[n].ibvPd != nullptr) {
       if (symbols.ibv_internal_dealloc_pd != nullptr) {
-        symbols.ibv_internal_dealloc_pd(nicDevices_[n].ibvPd);
+        symbols.ibv_internal_dealloc_pd(nics_[n].ibvPd);
       }
-      nicDevices_[n].ibvPd = nullptr;
+      nics_[n].ibvPd = nullptr;
     }
   }
 
-  // Close per-NIC devices
-  for (int n = 0; n < static_cast<int>(nicDevices_.size()); ++n) {
-    if (nicDevices_[n].ibvCtx != nullptr) {
+  // Close per-NIC devices (bound on nics_, the vector indexed here)
+  for (int n = 0; n < static_cast<int>(nics_.size()); ++n) {
+    if (nics_[n].ibvCtx != nullptr) {
       if (symbols.ibv_internal_close_device != nullptr) {
-        symbols.ibv_internal_close_device(nicDevices_[n].ibvCtx);
+        symbols.ibv_internal_close_device(nics_[n].ibvCtx);
       }
-      nicDevices_[n].ibvCtx = nullptr;
+      nics_[n].ibvCtx = nullptr;
     }
   }
 
@@ -1220,12 +1197,12 @@ void MultipeerIbgdaTransport::exchange() {
   for (int n = 0; n < numNics_; ++n) {
     memcpy(
         myInfo.nicInfo[n].gid,
-        nicDevices_[n].localGid.raw,
+        nics_[n].localGid.raw,
         sizeof(myInfo.nicInfo[n].gid));
     // Query NIC n's port for LID (IB only — RoCE leaves LID as 0).
     ibverbx::ibv_port_attr exchPortAttr{};
-    if (symbols.ibv_internal_query_port(
-            nicDevices_[n].ibvCtx, 1, &exchPortAttr) != 0) {
+    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &exchPortAttr) !=
+        0) {
       LOG(WARNING) << "Failed to query port for LID on NIC " << n;
     } else {
       myInfo.nicInfo[n].lid = exchPortAttr.lid;
@@ -1238,7 +1215,7 @@ void MultipeerIbgdaTransport::exchange() {
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
     const int peerRank = peerIndexToRank(peerIndex);
     for (int nic = 0; nic < numNics_; nic++) {
-      const auto& nicQps = nicDevices_[nic].qpGroups;
+      const auto& nicQps = nicDoca_[nic].qpGroups;
       for (int q = 0; q < numQps; q++) {
         const int qpIdx = peerIndex * numQps + q;
         myInfo.nicInfo[nic].qpnForRank[peerRank][q] =
@@ -1316,7 +1293,7 @@ void MultipeerIbgdaTransport::exchange() {
         allInfo[peerIndexToRank(peerIndex)];
 
     for (int nic = 0; nic < numNics_; nic++) {
-      auto& nicQps = nicDevices_[nic].qpGroups;
+      auto& nicQps = nicDoca_[nic].qpGroups;
       for (int q = 0; q < numQps; q++) {
         const int qpIdx = peerIndex * numQps + q;
         IbgdaTransportExchInfo qpPeerInfo;
@@ -1563,246 +1540,12 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceSlot(
       peerIndex * peerTransportSize_);
 }
 
-int MultipeerIbgdaTransport::numPeers() const {
-  return nRanks_ - 1;
-}
-
-int MultipeerIbgdaTransport::myRank() const {
-  return myRank_;
-}
-
 int MultipeerIbgdaTransport::getGidIndex() const {
   return gidIndex_;
 }
 
 int MultipeerIbgdaTransport::numQpsPerPeerPerNic() const {
   return config_.numQpsPerPeerPerNic;
-}
-
-IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
-    void* ptr,
-    std::size_t size) {
-  if (ptr == nullptr || size == 0) {
-    throw std::invalid_argument("Invalid buffer pointer or size");
-  }
-
-  // Fast path: containment lookup — if [ptr, ptr+size) falls entirely
-  // within an existing registration, return the cached per-NIC lkeys
-  // without any CUDA driver call.
-  auto addr = reinterpret_cast<uintptr_t>(ptr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  if (it != registeredBuffers_.begin()) {
-    --it;
-    if (addr + size <= it->first + it->second.allocSize) {
-      it->second.refs++;
-      VLOG(1) << "MultipeerIbgdaTransport: cache hit for ptr=" << ptr
-              << " allocBase=0x" << std::hex << it->first << std::dec
-              << " refs=" << it->second.refs;
-      NetworkLKeys keys(numNics_);
-      for (int n = 0; n < numNics_; ++n) {
-        keys[n] = NetworkLKey(HostLKey(it->second.mrs[n]->lkey));
-      }
-      return IbgdaLocalBuffer(ptr, keys);
-    }
-  }
-
-  // Cache miss — find the GPU allocation base and register it on every
-  // NIC's PD. Each NIC gets an independent MR over the same physical
-  // memory; lkey/rkey differ per NIC.
-#ifdef __HIP_PLATFORM_AMD__
-  // On AMD: HIP doesn't expose an exact equivalent of
-  // `cuMemGetAddressRange` (which returns the original allocation
-  // base/size for a pointer in the middle of an allocation). For the
-  // common case where the caller passes the base pointer of an
-  // allocation, register exactly the requested range.
-  uintptr_t allocBase = reinterpret_cast<uintptr_t>(ptr);
-  size_t allocSize = size;
-#else
-  CUdeviceptr allocBase = 0;
-  size_t allocSize = 0;
-  CUresult cuRes =
-      pfn_cuMemGetAddressRange(&allocBase, &allocSize, (CUdeviceptr)ptr);
-  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
-    throw std::runtime_error(
-        "registerBuffer: cuMemGetAddressRange failed for ptr");
-  }
-#endif
-  auto& symbols = ibverbx::ibvSymbols;
-  int accessFlags = ibverbx::IBV_ACCESS_LOCAL_WRITE |
-      ibverbx::IBV_ACCESS_REMOTE_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ |
-      ibverbx::IBV_ACCESS_REMOTE_ATOMIC;
-
-  CachedMr cached;
-  cached.allocSize = allocSize;
-  cached.refs = 1;
-
-  // Try DMABUF first per NIC, fall back to plain reg_mr per NIC. If any
-  // NIC's registration fails, deregister everything we already registered
-  // and propagate the error. Registration goes through the ibverbx symbol
-  // table so it shares the same libibverbs instance that owns the PD.
-  for (int n = 0; n < numNics_; ++n) {
-    ibverbx::ibv_mr* mr = nullptr;
-    auto dmabuf = export_gpu_dmabuf_aligned(
-        docaGpu_, reinterpret_cast<void*>(allocBase), allocSize);
-    if (dmabuf) {
-      if (symbols.ibv_internal_reg_dmabuf_mr != nullptr) {
-        mr = symbols.ibv_internal_reg_dmabuf_mr(
-            nicDevices_[n].ibvPd,
-            dmabuf->alignment.dmabufOffset,
-            allocSize,
-            static_cast<uint64_t>(allocBase),
-            dmabuf->fd,
-            accessFlags);
-      }
-      close(dmabuf->fd);
-    }
-    if (!mr) {
-      errno = 0;
-      mr = symbols.ibv_internal_reg_mr(
-          nicDevices_[n].ibvPd,
-          reinterpret_cast<void*>(allocBase),
-          allocSize,
-          accessFlags);
-      if (!mr) {
-        const int savedErrno = errno;
-        // Roll back partial registration before throwing.
-        for (int j = 0; j < n; ++j) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
-        }
-        throw std::runtime_error(
-            fmt::format(
-                "Failed to register buffer with RDMA on NIC {} "
-                "(allocBase=0x{:x} allocSize={} errno={} ({}))",
-                n,
-                allocBase,
-                allocSize,
-                savedErrno,
-                std::strerror(savedErrno)));
-      }
-    }
-    cached.mrs[n] = mr;
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: registered allocation allocBase=0x"
-          << std::hex << allocBase << std::dec << " allocSize=" << allocSize
-          << " across " << numNics_
-          << " NIC(s) (NIC0 lkey=" << cached.mrs[0]->lkey
-          << " rkey=" << cached.mrs[0]->rkey << ", requested ptr=" << ptr
-          << " size=" << size << ")";
-
-  registeredBuffers_.emplace(static_cast<uintptr_t>(allocBase), cached);
-
-  NetworkLKeys keys(numNics_);
-  for (int n = 0; n < numNics_; ++n) {
-    keys[n] = NetworkLKey(HostLKey(cached.mrs[n]->lkey));
-  }
-  return IbgdaLocalBuffer(ptr, keys);
-}
-
-void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
-  // Containment lookup on the ordered map: find the allocation whose base
-  // address is <= ptr and whose range covers ptr.  This avoids calling
-  // cuMemGetAddressRange, which fails when CUDA has already freed the
-  // underlying memory (e.g. PyTorch caching allocator teardown).
-  auto addr = reinterpret_cast<uintptr_t>(ptr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  if (it != registeredBuffers_.begin()) {
-    --it;
-    if (addr < it->first + it->second.allocSize) {
-      it->second.refs--;
-      VLOG(1) << "MultipeerIbgdaTransport: deregister ptr=" << ptr
-              << " allocBase=0x" << std::hex << it->first << std::dec
-              << " refs=" << it->second.refs;
-      if (it->second.refs <= 0) {
-        auto& symbols = ibverbx::ibvSymbols;
-        for (int n = 0; n < numNics_; ++n) {
-          symbols.ibv_internal_dereg_mr(it->second.mrs[n]);
-        }
-        registeredBuffers_.erase(it);
-      }
-      return;
-    }
-  }
-  LOG(WARNING) << "MultipeerIbgdaTransport: buffer not registered: " << ptr;
-}
-
-std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
-    const IbgdaLocalBuffer& localBuf) {
-  const int numPeers = nRanks_ - 1;
-
-  // Find the MR for this buffer via its GPU allocation base.
-#ifdef __HIP_PLATFORM_AMD__
-  // Use `hipMemGetAddressRange` (direct analog of NVIDIA's
-  // `cuMemGetAddressRange`) so a sub-buffer (`localBuf.ptr` pointing into
-  // the middle of an allocation) resolves to the same key the MR was
-  // registered under. NOTE: an earlier attempt used
-  // `hipPointerGetAttributes().devicePointer`, but that returns the queried
-  // pointer (or its host-mapped equivalent) — NOT the allocation base —
-  // so it didn't actually fix the sub-buffer bug.
-  hipDeviceptr_t basePtr = 0;
-  size_t allocRange = 0;
-  if (hipMemGetAddressRange(&basePtr, &allocRange, localBuf.ptr) !=
-          hipSuccess ||
-      basePtr == 0) {
-    throw std::runtime_error(
-        "exchangeBuffer: hipMemGetAddressRange failed for ptr");
-  }
-  uintptr_t allocBase = reinterpret_cast<uintptr_t>(basePtr);
-#else
-  CUdeviceptr allocBase = 0;
-  size_t allocSize = 0;
-  CUresult cuRes = pfn_cuMemGetAddressRange(
-      &allocBase, &allocSize, (CUdeviceptr)localBuf.ptr);
-  if (cuRes != CUDA_SUCCESS || allocBase == 0) {
-    throw std::runtime_error(
-        "exchangeBuffer: cuMemGetAddressRange failed for ptr");
-  }
-#endif
-  auto it = registeredBuffers_.find(static_cast<uintptr_t>(allocBase));
-  if (it == registeredBuffers_.end()) {
-    throw std::runtime_error(
-        "Buffer not registered - call registerBuffer() first");
-  }
-
-  // Allocate buffer for allGather: one entry per rank.
-  std::vector<IbgdaBufferExchInfo> allInfo(nRanks_);
-
-  // Write my info at my rank's slot — populate per-NIC rkeys (each PD
-  // gave us its own MR for the same physical buffer).
-  allInfo[myRank_].addr = reinterpret_cast<uint64_t>(localBuf.ptr);
-  allInfo[myRank_].numNics = numNics_;
-  for (int n = 0; n < numNics_; ++n) {
-    allInfo[myRank_].rkey_per_device[n] = HostRKey(it->second.mrs[n]->rkey);
-  }
-
-  // Use allGather to exchange buffer info with all ranks
-  auto result =
-      bootstrap_
-          ->allGather(
-              allInfo.data(), sizeof(IbgdaBufferExchInfo), myRank_, nRanks_)
-          .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "MultipeerIbgdaTransport::exchangeBuffer allGather failed");
-  }
-
-  // Convert to IbgdaRemoteBuffer vector, extracting peer entries
-  // peerIndex maps to ranks: 0..myRank_-1 -> ranks 0..myRank_-1
-  //                          myRank_..numPeers-1 -> ranks
-  //                          myRank_+1..nRanks_-1
-  std::vector<IbgdaRemoteBuffer> peerBuffers(numPeers);
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    int peerRank = peerIndexToRank(peerIndex);
-    peerBuffers[peerIndex] = allInfo[peerRank].toRemoteBuffer();
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: exchanged buffer info with " << numPeers
-          << " peers";
-
-  return peerBuffers;
-}
-int MultipeerIbgdaTransport::nRanks() const {
-  return nRanks_;
 }
 
 // =============================================================================
@@ -1979,14 +1722,13 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   for (int n = 0; n < numNics_; ++n) {
     memcpy(
         payload.nicInfo[n].gid,
-        nicDevices_[n].localGid.raw,
+        nics_[n].localGid.raw,
         sizeof(payload.nicInfo[n].gid));
     ibverbx::ibv_port_attr portAttr{};
-    if (symbols.ibv_internal_query_port(nicDevices_[n].ibvCtx, 1, &portAttr) ==
-        0) {
+    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) == 0) {
       payload.nicInfo[n].lid = portAttr.lid;
     }
-    auto& nicQps = nicDevices_[n].qpGroups;
+    auto& nicQps = nicDoca_[n].qpGroups;
     for (int q = 0; q < numQps; q++) {
       const int qpIdx = peerIndex * numQps + q;
       payload.nicInfo[n].qpns[q] =
@@ -2152,7 +1894,7 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
     const PeerQpPayload& remotePayload) {
   const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDevices_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].qpGroups;
     for (int q = 0; q < numQps; q++) {
       const int qpIdx = peerIndex * numQps + q;
       IbgdaTransportExchInfo peerInfo;
@@ -2187,8 +1929,8 @@ void MultipeerIbgdaTransport::applyRemoteViews(
 void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDevices_[nic].qpGroups;
-    auto& nicLoopback = nicDevices_[nic].loopbackCompanionQps;
+    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
     for (int q = 0; q < numQps; q++) {
       const int qpIdx = peerIndex * numQps + q;
       if (nicQps[qpIdx] != nullptr) {

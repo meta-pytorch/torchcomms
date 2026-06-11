@@ -1956,8 +1956,9 @@ pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_group_hl(
 
 namespace comms::prims {
 
-std::optional<DmaBufExport>
-export_gpu_dmabuf_aligned(pipes_gda_gpu* /*gpu*/, void* ptr, std::size_t size) {
+std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
+    void* ptr,
+    std::size_t size) {
   // Skip dmabuf for non-GPU pointers. HSA's
   // `hsa_amd_portable_export_dmabuf` will export host-pinned
   // (`hipHostMalloc`) memory as a dmabuf, but the resulting fd

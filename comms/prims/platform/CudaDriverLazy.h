@@ -62,4 +62,9 @@ extern PFN_cuMemGetAllocationPropertiesFromHandle_v10020
 extern PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle;
 extern PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange;
 
+// DMA-BUF export. doca_gpu_dmabuf_fd() is a thin wrapper over this driver call,
+// so the generic GPU dmabuf helper uses it directly (no DOCA context needed).
+extern PFN_cuMemGetHandleForAddressRange_v11070
+    pfn_cuMemGetHandleForAddressRange;
+
 } // namespace comms::prims
