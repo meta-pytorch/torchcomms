@@ -17,7 +17,7 @@
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #ifndef __CUDACC__
 #error "TorchCommDevicePipes.cuh must be compiled with nvcc."
@@ -391,4 +391,4 @@ TorchCommDeviceWindow<PipesDeviceBackend>::get_multimem_address(
 
 } // namespace torchcomms::device
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

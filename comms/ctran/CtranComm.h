@@ -198,12 +198,12 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
   size_t hierarchicalAgReadyCounterCount_{0};
   std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
   // callbacks cannot call CUDA APIs, so cleanup is enqueued here and

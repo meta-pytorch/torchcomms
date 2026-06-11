@@ -11,7 +11,7 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
@@ -309,7 +309,7 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
   }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
 #endif
@@ -324,7 +324,7 @@ bool CtranWin::nvlEnabled(int rank) const {
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 commResult_t CtranWin::getDeviceWin(
     comms::prims::DeviceWindow* devWin,
     const comms::prims::WindowConfig& config) {
@@ -361,7 +361,7 @@ commResult_t CtranWin::getDeviceWin(
   new (devWin) comms::prims::DeviceWindow(hostWindow_->getDeviceWindow());
   return commSuccess;
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
 commResult_t ctranWinAllocate(
     size_t size,
