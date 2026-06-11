@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #include "comms/uniflow/drivers/DeviceAdapter.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
@@ -1824,7 +1825,9 @@ RdmaTransportFactory::RdmaTransportFactory(
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    nicsHandle_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
+    int numaNode = sharedTopology().nicNumaNode(deviceName);
+    nicsHandle_->emplace_back(
+        targetDevice, ibvApi_, numaNode, config_.gidIndex, portNum);
   }
 
   if (config_.slabPoolConfig.slabNum > 0) {

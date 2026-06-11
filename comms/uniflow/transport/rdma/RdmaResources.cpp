@@ -11,9 +11,10 @@ namespace uniflow {
 NicResources::NicResources(
     ibv_device* device,
     std::shared_ptr<IbvApi> api,
+    int numaNode,
     uint8_t gidIndex,
     std::optional<uint8_t> port)
-    : ibvApi(std::move(api)) {
+    : numaNode(numaNode), ibvApi(std::move(api)) {
   try {
     if (!ibvApi) {
       ibvApi = std::make_shared<IbvApi>();
@@ -21,7 +22,8 @@ NicResources::NicResources(
 
     auto ctxResult = ibvApi->openDevice(device);
     if (ctxResult.hasError()) {
-      throw std::runtime_error("NicResources: failed to open device");
+      throw std::runtime_error(
+          "NicResources: failed to open device" + ctxResult.error().message());
     }
     ctx = ctxResult.value();
 
@@ -73,6 +75,7 @@ NicResources::NicResources(NicResources&& other) noexcept
       linkLayer(other.linkLayer),
       portNum(other.portNum),
       dmaBufSupported(other.dmaBufSupported),
+      numaNode(other.numaNode),
       ibvApi(std::move(other.ibvApi)) {
   other.ctx = nullptr;
   other.pd = nullptr;

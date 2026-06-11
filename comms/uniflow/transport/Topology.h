@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -191,6 +192,10 @@ class Topology {
   /// Returns the NUMA node of the calling thread's CPU.
   int getCurrentCpuNumaNode() const;
 
+  /// Returns the NUMA node id of the NIC with the given device name (e.g.
+  /// "mlx5_0"), or -1 if unknown. O(1) lookup into a map built at discovery.
+  int nicNumaNode(const std::string& nicName) const;
+
   /// Check if a NIC passes the given filter.
   bool filterNic(int nicIndex, const NicFilter& filter) const;
 
@@ -259,6 +264,7 @@ class Topology {
   // Index maps for quick lookup
   std::vector<int> gpuNodeIds_; // gpuNodeIds_[cudaDeviceId] = nodeId
   std::vector<int> nicNodeIds_; // nicNodeIds_[nicIndex] = nodeId
+  std::unordered_map<std::string, int> nicNameToNuma_; // nic name -> NUMA id
   std::vector<int> cpuNodeIds_; // cpuNodeIds_[numaId] = nodeId
   std::vector<std::vector<bool>> p2pMatrix_;
 };

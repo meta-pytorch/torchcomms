@@ -84,10 +84,10 @@ class RdmaSlabPoolTest : public ::testing::Test {
 
     nics->reserve(count);
     setupNic(&fakeDev0_, &fakeCtx0_, &fakePd0_);
-    nics->emplace_back(&fakeDev0_, mockIbvApi_, 3, uint8_t{1});
+    nics->emplace_back(&fakeDev0_, mockIbvApi_, -1, 3, uint8_t{1});
     if (count > 1) {
       setupNic(&fakeDev1_, &fakeCtx1_, &fakePd1_);
-      nics->emplace_back(&fakeDev1_, mockIbvApi_, 3, uint8_t{1});
+      nics->emplace_back(&fakeDev1_, mockIbvApi_, -1, 3, uint8_t{1});
     }
     return nics;
   }
