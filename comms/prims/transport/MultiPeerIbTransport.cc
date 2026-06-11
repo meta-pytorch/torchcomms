@@ -53,6 +53,58 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
   // RoCE GID index: config override, else the RoCEv2 default. Read by
   // openNics() (query_gid) and by backends when building address handles.
   gidIndex_ = config_.gidIndex.value_or(kDefaultGidIndex);
+
+  // Resolve numNics_ from the available NIC sources. No numeric knob — the
+  // count is implied by what the caller / topology actually provides:
+  //   1. config.gpuNicMap[cudaDevice] populated → use its NIC list.
+  //   2. Otherwise auto-discover via GpuNicDiscovery — every NIC at the
+  //      best-affinity tier (same pathType + bandwidth + isDataDirect as
+  //      the top candidate).
+  // No silent fallback to 1: if a GPU is wired to N best-affinity NICs, the
+  // transport must use all N. H100 (1 NIC) and GB200/GB300 (2 NICs) both get
+  // the right count automatically; an unexpected count throws with a clear
+  // hint.
+  auto it = config_.gpuNicMap.find(config_.cudaDevice);
+  int n = 0;
+  const char* source = nullptr;
+  if (it != config_.gpuNicMap.end() && !it->second.empty()) {
+    n = static_cast<int>(it->second.size());
+    source = "config.gpuNicMap";
+  } else {
+    // On AMD, the `DataDirectMode::Only` default triggers `ibv_reg_dmabuf_mr`
+    // inside `augmentWithDataDirect()`, which is not exercised on AMD's
+    // libibverbs path here. Force `Disabled` to skip the DataDirect probe.
+#ifdef __HIP_PLATFORM_AMD__
+    GpuNicDiscovery discovery(
+        config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
+#else
+    GpuNicDiscovery discovery(config_.cudaDevice, config_.ibHca);
+#endif
+    auto bestNics = discovery.getBestAffinityNics();
+    if (bestNics.empty()) {
+      throw std::runtime_error(
+          fmt::format(
+              "MultiPeerIbTransport: NIC auto-discovery returned no candidates "
+              "for GPU {}; set config.gpuNicMap or config.ibHca to expose at "
+              "least one NIC",
+              config_.cudaDevice));
+    }
+    n = static_cast<int>(bestNics.size());
+    source = "auto-discovery (best-affinity tier)";
+  }
+  if (n > kMaxNicsPerGpu) {
+    throw std::runtime_error(
+        fmt::format(
+            "MultiPeerIbTransport: {} found {} NIC(s) for GPU {} but "
+            "kMaxNicsPerGpu={}; raise kMaxNicsPerGpu or trim the source",
+            source,
+            n,
+            config_.cudaDevice,
+            kMaxNicsPerGpu));
+  }
+  numNics_ = n;
+  VLOG(1) << "MultiPeerIbTransport: numNics_=" << numNics_
+          << " (source=" << source << ")";
 }
 
 void MultiPeerIbTransportBase::openNics() {
