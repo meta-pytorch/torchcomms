@@ -15,6 +15,7 @@
 #include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
 #include "comms/uniflow/logging/Logger.h"
 
 namespace {
@@ -302,6 +303,9 @@ int main(int argc, char** argv) {
           opts.rdmaDevices));
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
+          opts.rdmaDevices));
 
   if (opts.benchmark == "__list__") {
     std::cout << "Available benchmarks:\n";
