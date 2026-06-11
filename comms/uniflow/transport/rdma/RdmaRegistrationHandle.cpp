@@ -14,8 +14,12 @@ namespace uniflow {
 RdmaRegistrationHandle::RdmaRegistrationHandle(
     std::vector<ibv_mr*> mrs,
     std::shared_ptr<IbvApi> ibvApi,
-    uint64_t domainId)
-    : mrs_(std::move(mrs)), ibvApi_(std::move(ibvApi)), domainId_(domainId) {}
+    uint64_t domainId,
+    int hostBufferNumaNode)
+    : mrs_(std::move(mrs)),
+      ibvApi_(std::move(ibvApi)),
+      domainId_(domainId),
+      hostBufferNumaNode_(hostBufferNumaNode) {}
 
 RdmaRegistrationHandle::~RdmaRegistrationHandle() {
   for (auto* mr : mrs_) {

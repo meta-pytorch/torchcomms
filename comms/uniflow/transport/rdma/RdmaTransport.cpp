@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/core/NumaUtils.h"
 #include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
@@ -1936,8 +1937,13 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     mrs.push_back(mrResult.value());
   }
 
+  // For pinned (non-ODP) MRs, ibv_reg_mr has faulted the pages, so the host
+  // buffer's NUMA node is now stable; capture it for NUMA-aware QP scheduling.
+  const int numaNode = segment.memType() == MemoryType::DRAM
+      ? detectHostNumaNode(segment.mutable_data())
+      : -1;
   return std::make_unique<RdmaRegistrationHandle>(
-      std::move(mrs), ibvApi_, domainId_);
+      std::move(mrs), ibvApi_, domainId_, numaNode);
 }
 
 Result<std::unique_ptr<RemoteRegistrationHandle>>
