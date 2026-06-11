@@ -28,6 +28,8 @@ struct BenchmarkConfig {
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"}; // "fanout", "fanin"
   int pipelineDepth{2}; // send/recv staging pipeline depth
+  size_t slabSize{0}; // 0 = use chunk-size
+  int slabNum{0}; // 0 = use pipeline-depth
 };
 
 class Benchmark {
