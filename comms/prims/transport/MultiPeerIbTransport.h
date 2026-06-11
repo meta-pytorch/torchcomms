@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -200,9 +201,11 @@ struct IbTransportExchInfoAll {
  * This is a NON-template base so its (heavy) method bodies live in
  * MultiPeerIbTransport.cc and are compiled exactly once, reused by every
  * backend with no per-backend wiring. It owns rank state + rank<->peerIndex
- * mapping and the full refcounted MR registry
- * (registerBuffer/deregisterBuffer/exchangeBuffer), plus the generic per-NIC IB
- * resources (NicResources). It NEVER calls into a backend.
+ * mapping, the full refcounted MR registry
+ * (registerBuffer/deregisterBuffer/exchangeBuffer), the generic per-NIC IB
+ * resources (NicResources), the bilateral bootstrap exchange, and the lazy
+ * materialization queue/state. It NEVER calls into a backend; the small piece
+ * of control flow that does (the connect loop) lives in the CRTP layer below.
  *
  * MR registration is generic — it resolves the allocation, exports a DMA-BUF
  * via the platform helper, and registers one MR per NIC on the base-owned PDs
@@ -254,11 +257,18 @@ class MultiPeerIbTransportBase {
   std::vector<IbgdaRemoteBuffer> exchangeBuffer(
       const IbgdaLocalBuffer& localBuf);
 
+  /** Queue a peer for lazy materialization (no network I/O). */
+  void queuePeerForMaterialization(int peerRank);
+
+  /** @return true if the peer is ready for kernel use (always true eager). */
+  bool isPeerMaterialized(int peerRank) const;
+
  protected:
   MultiPeerIbTransportBase(
       int myRank,
       int nRanks,
-      std::shared_ptr<meta::comms::IBootstrap> bootstrap);
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      MultipeerIbTransportConfig config);
 
   // Non-virtual protected dtor: the base is never owned/deleted polymorphically
   // (the dispatcher holds the concrete backend type).
@@ -274,6 +284,37 @@ class MultiPeerIbTransportBase {
     return (peerIndex < myRank_) ? peerIndex : (peerIndex + 1);
   }
 
+  // ---- shared eager-exchange scaffolding ----
+  // Collective allGather of this rank's exchange info. The backend fills the
+  // backend-specific QPN/GID/LID fields of localInfo; the base guards the rank
+  // count, places localInfo at myRank_, allGathers, and returns all ranks'
+  // info (indexed by global rank).
+  std::vector<IbTransportExchInfoAll> allGatherExchInfo(
+      const IbTransportExchInfoAll& localInfo);
+
+  // Validate every peer agrees on numNics (same-rail pairing precondition) and
+  // numQpsPerPeerPerNic. Throws std::runtime_error on mismatch.
+  void validatePeerTopology(
+      const std::vector<IbTransportExchInfoAll>& allInfo) const;
+
+  // Bilateral bootstrap exchange of a fixed-size payload with one peer. The
+  // typed wrapper is header-only (so it can instantiate with backend-private
+  // payload types); the heavy logic (lower-rank-recvs-first to avoid deadlock,
+  // honoring materializePeerTimeoutMs) lives in exchangeRawWithPeer in the .cc.
+  template <typename T>
+  T exchangeWithPeer(int peerRank, const T& localPayload, int tag) {
+    T remotePayload{};
+    exchangeRawWithPeer(
+        peerRank, &localPayload, &remotePayload, sizeof(T), tag);
+    return remotePayload;
+  }
+  void exchangeRawWithPeer(
+      int peerRank,
+      const void* localPayload,
+      void* remotePayload,
+      std::size_t bytes,
+      int tag);
+
   // Cached MR entry: one MR per (CUDA allocation, NIC), refcounted. Multiple
   // user buffers within the same allocation share one MR set.
   struct CachedMr {
@@ -285,6 +326,7 @@ class MultiPeerIbTransportBase {
   const int myRank_{-1};
   const int nRanks_{0};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+  MultipeerIbTransportConfig config_;
 
   // Number of NICs (rails) in use; set by the backend at construction.
   int numNics_{1};
@@ -304,33 +346,52 @@ class MultiPeerIbTransportBase {
   // Maps allocation base address -> cached MR covering the full allocation.
   // Ordered map enables O(log n) containment lookup via upper_bound.
   std::map<uintptr_t, CachedMr> registeredBuffers_;
+
+  // Lazy materialization state machine.
+  std::vector<int> pendingPeers_;
+  std::vector<bool> peerMaterialized_;
+  bool materializationFailed_{false};
 };
 
 /**
  * MultiPeerIbTransport<Backend> - CRTP layer over MultiPeerIbTransportBase.
  *
- * Each backend derives as
+ * Holds ONLY the small piece of control plane that must call into the concrete
+ * backend: the lazy connect loop (connectPeers) drives the backend's per-peer
+ * doMaterializePeer()/cleanupPeerOnFailure() hooks via a static `backend()`
+ * downcast (no vtable). Each backend derives as
  *   `class MultipeerIbgdaTransport : public
  * MultiPeerIbTransport<MultipeerIbgdaTransport>`.
- * The base can statically call backend-specific hooks via `backend()` with no
- * vtable. All backend-agnostic state and methods are inherited from the
- * non-template base, so they are compiled once (in MultiPeerIbTransport.cc) and
- * shared. Backend-coupled control flow (the exchange/lazy skeleton) moves up in
- * later slices and will use `backend()` hooks.
+ * All backend-agnostic state and methods are inherited from the non-template
+ * base, so they are compiled once (in MultiPeerIbTransport.cc) and shared.
  */
 template <typename Backend>
 class MultiPeerIbTransport : public MultiPeerIbTransportBase {
+ public:
+  /** Materialize one peer (queue + connect). No-op in eager mode. */
+  void materializePeer(int peerRank) {
+    queuePeerForMaterialization(peerRank);
+    connectPeers();
+  }
+
+  /** Connect all queued peers in sorted order (deadlock-safe for >2 ranks). */
+  void connectPeers();
+
  protected:
   MultiPeerIbTransport(
       int myRank,
       int nRanks,
-      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
-      : MultiPeerIbTransportBase(myRank, nRanks, std::move(bootstrap)) {}
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      MultipeerIbTransportConfig config)
+      : MultiPeerIbTransportBase(
+            myRank,
+            nRanks,
+            std::move(bootstrap),
+            std::move(config)) {}
 
   ~MultiPeerIbTransport() = default;
 
-  // CRTP downcast for static dispatch into backend hooks (used by later
-  // slices).
+  // CRTP downcast for static dispatch into backend hooks.
   Backend& backend() {
     return static_cast<Backend&>(*this);
   }
@@ -338,5 +399,42 @@ class MultiPeerIbTransport : public MultiPeerIbTransportBase {
     return static_cast<const Backend&>(*this);
   }
 };
+
+template <typename Backend>
+void MultiPeerIbTransport<Backend>::connectPeers() {
+  if (materializationFailed_) {
+    pendingPeers_.clear();
+    throw std::runtime_error(
+        "MultiPeerIbTransport: lazy peer materialization previously failed; "
+        "retry is not supported");
+  }
+  if (pendingPeers_.empty()) {
+    return;
+  }
+  // Sorted order avoids deadlock for >2 ranks (both sides connect in the same
+  // global order).
+  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+
+  std::vector<int> peers;
+  peers.swap(pendingPeers_);
+  std::vector<int> touchedPeerIndexes;
+  touchedPeerIndexes.reserve(peers.size());
+
+  try {
+    for (int peerRank : peers) {
+      if (isPeerMaterialized(peerRank)) {
+        continue;
+      }
+      touchedPeerIndexes.push_back(rankToPeerIndex(peerRank));
+      backend().doMaterializePeer(peerRank);
+    }
+  } catch (...) {
+    materializationFailed_ = true;
+    for (int peerIndex : touchedPeerIndexes) {
+      backend().cleanupPeerOnFailure(peerIndex);
+    }
+    throw;
+  }
+}
 
 } // namespace comms::prims

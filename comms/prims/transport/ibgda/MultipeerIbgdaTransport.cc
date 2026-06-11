@@ -51,9 +51,6 @@ constexpr uint32_t kCompanionQpDepth = 32;
 // Bootstrap tags for the two-phase bilateral exchange in materializePeer.
 constexpr int kTagQpExchange = 0;
 constexpr int kTagBufferExchange = 1;
-constexpr const char* kMaterializationFailedError =
-    "MultipeerIbgdaTransport: lazy peer materialization previously failed; "
-    "retry is not supported";
 
 } // namespace
 
@@ -874,8 +871,8 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     : MultiPeerIbTransport<MultipeerIbgdaTransport>(
           myRank,
           nRanks,
-          std::move(bootstrap)),
-      config_(config) {
+          std::move(bootstrap),
+          config) {
   if (config.numQpsPerPeerPerNic < 1 ||
       config.numQpsPerPeerPerNic > kMaxQpsPerPeerPerNic) {
     throw std::invalid_argument(
@@ -1174,22 +1171,11 @@ void MultipeerIbgdaTransport::exchange() {
     return;
   }
 
-  // Validate rank count for allGather-based exchange
-  if (nRanks_ > kMaxRanksForAllGather) {
-    throw std::runtime_error(
-        fmt::format(
-            "Too many ranks ({}) for allGather-based exchange, max is {}",
-            nRanks_,
-            kMaxRanksForAllGather));
-  }
-
-  // Build local exchange info for allGather
-  std::vector<IbgdaTransportExchInfoAll> allInfo(nRanks_);
-
-  // Fill in my info at my rank's slot. Per-NIC GID/LID land in nicInfo[n];
+  // Build this rank's exchange info. Per-NIC GID/LID land in nicInfo[n];
   // gidIndex + MTU are common across NICs (same fabric/HCA generation in
-  // multi-NIC platforms).
-  IbgdaTransportExchInfoAll& myInfo = allInfo[myRank_];
+  // multi-NIC platforms). The rank-count guard, allGather, and per-peer
+  // topology validation are owned by the base (MultiPeerIbTransport).
+  IbgdaTransportExchInfoAll myInfo{};
   myInfo.gidIndex = gidIndex_;
   myInfo.mtu = localMtu_;
   myInfo.numNics = numNics_;
@@ -1228,35 +1214,10 @@ void MultipeerIbgdaTransport::exchange() {
           << " performing allGather exchange (" << totalQpsPerPeer
           << " slots/peer = " << numNics_ << " NICs × " << numQps << " QPs)";
 
-  // Use allGather to exchange transport info with all ranks
-  auto result = bootstrap_
-                    ->allGather(
-                        allInfo.data(),
-                        sizeof(IbgdaTransportExchInfoAll),
-                        myRank_,
-                        nRanks_)
-                    .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "MultipeerIbgdaTransport::exchange allGather failed");
-  }
-
-  // Validate every peer's numNics matches mine — same-rail pairing relies
-  // on the symmetric (myRank+peerRank) % numNics offset, which only makes
-  // sense when both sides agree on numNics.
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    const int peerRank = peerIndexToRank(peerIndex);
-    const auto& peerInfo = allInfo[peerRank];
-    if (peerInfo.numNics != numNics_) {
-      throw std::runtime_error(
-          fmt::format(
-              "Peer rank {} reports numNics={} but my numNics={}; all ranks "
-              "must agree on numNics for same-rail pairing",
-              peerRank,
-              peerInfo.numNics,
-              numNics_));
-    }
-  }
+  // allGather (rank-count guarded) + per-peer topology validation (numNics +
+  // numQpsPerPeerPerNic) are owned by the base.
+  std::vector<IbgdaTransportExchInfoAll> allInfo = allGatherExchInfo(myInfo);
+  validatePeerTopology(allInfo);
 
   // Stash per-peer summary info (slot 0 / NIC 0) for retrospect/debug.
   // Per-slot connection info is computed inline in the connect loop below.
@@ -1264,12 +1225,6 @@ void MultipeerIbgdaTransport::exchange() {
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
     int peerRank = peerIndexToRank(peerIndex);
     const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
-
-    CHECK_EQ(peerInfo.numQpsPerPeerPerNic, numQps)
-        << "Rank " << peerRank
-        << " has numQpsPerPeerPerNic=" << peerInfo.numQpsPerPeerPerNic
-        << " but local rank " << myRank_ << " has " << numQps
-        << ". All ranks must use the same numQpsPerPeerPerNic.";
 
     // Store common connection info (from QP 0 — same GID/LID for all QPs)
     peerExchInfo_[peerIndex].qpn = peerInfo.nicInfo[0].qpnForRank[myRank_][0];
@@ -1693,22 +1648,6 @@ void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
   stateBulk_.reset();
 }
 
-bool MultipeerIbgdaTransport::isPeerMaterialized(int peerRank) const {
-  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
-    throw std::invalid_argument(
-        fmt::format(
-            "isPeerMaterialized: invalid peerRank={} (myRank={}, nRanks={})",
-            peerRank,
-            myRank_,
-            nRanks_));
-  }
-  if (!config_.ibLazyConnect) {
-    return true;
-  }
-  int peerIndex = rankToPeerIndex(peerRank);
-  return peerMaterialized_[peerIndex];
-}
-
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     int peerIndex) const {
   const int numQps = config_.numQpsPerPeerPerNic;
@@ -1813,82 +1752,6 @@ void MultipeerIbgdaTransport::allocatePeerBuffers(
   }
 }
 
-template <typename T>
-T MultipeerIbgdaTransport::exchangeWithPeer(
-    int peerRank,
-    const T& localPayload,
-    int tag) {
-  T remotePayload{};
-
-  auto timeoutUs = std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::milliseconds(config_.materializePeerTimeoutMs));
-  auto waitFuture = [&](auto&& future, const char* op) -> int {
-    try {
-      return std::move(future).get(timeoutUs);
-    } catch (const std::exception&) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} {} with peer {} timed out ({}ms)",
-              myRank_,
-              op,
-              peerRank,
-              config_.materializePeerTimeoutMs));
-    }
-  };
-
-  // Lower rank recvs first to avoid deadlock with blocking bootstrap
-  // implementations (e.g. MpiBootstrap uses blocking MPI_Send/MPI_Recv).
-  if (myRank_ < peerRank) {
-    auto recvFuture =
-        bootstrap_->recv(&remotePayload, sizeof(T), peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
-    if (recvResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              recvResult));
-    }
-    auto sendFuture = bootstrap_->send(
-        const_cast<T*>(&localPayload), sizeof(T), peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
-    if (sendResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              sendResult));
-    }
-  } else {
-    auto sendFuture = bootstrap_->send(
-        const_cast<T*>(&localPayload), sizeof(T), peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
-    if (sendResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              sendResult));
-    }
-    auto recvFuture =
-        bootstrap_->recv(&remotePayload, sizeof(T), peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
-    if (recvResult != 0) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
-              myRank_,
-              peerRank,
-              recvResult));
-    }
-  }
-
-  return remotePayload;
-}
-
 void MultipeerIbgdaTransport::connectPeerMainQps(
     int peerIndex,
     const PeerQpPayload& remotePayload) {
@@ -1962,37 +1825,6 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   }
 }
 
-void MultipeerIbgdaTransport::materializePeer(int peerRank) {
-  queuePeerForMaterialization(peerRank);
-  connectPeers();
-}
-
-void MultipeerIbgdaTransport::queuePeerForMaterialization(int peerRank) {
-  if (!config_.ibLazyConnect) {
-    return;
-  }
-  if (materializationFailed_) {
-    throw std::runtime_error(kMaterializationFailedError);
-  }
-  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
-    throw std::invalid_argument(
-        fmt::format(
-            "queuePeerForMaterialization: invalid peerRank={} (myRank={}, nRanks={})",
-            peerRank,
-            myRank_,
-            nRanks_));
-  }
-  if (isPeerMaterialized(peerRank)) {
-    return;
-  }
-  for (int p : pendingPeers_) {
-    if (p == peerRank) {
-      return;
-    }
-  }
-  pendingPeers_.push_back(peerRank);
-}
-
 void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
   int peerIndex = rankToPeerIndex(peerRank);
 
@@ -2035,39 +1867,6 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " materialized peer " << peerRank;
-}
-
-void MultipeerIbgdaTransport::connectPeers() {
-  if (materializationFailed_) {
-    pendingPeers_.clear();
-    throw std::runtime_error(kMaterializationFailedError);
-  }
-  if (pendingPeers_.empty()) {
-    return;
-  }
-  std::sort(pendingPeers_.begin(), pendingPeers_.end());
-
-  std::vector<int> peers;
-  peers.swap(pendingPeers_);
-  std::vector<int> touchedPeerIndexes;
-  touchedPeerIndexes.reserve(peers.size());
-
-  try {
-    for (int peerRank : peers) {
-      if (isPeerMaterialized(peerRank)) {
-        continue;
-      }
-      const int peerIndex = rankToPeerIndex(peerRank);
-      touchedPeerIndexes.push_back(peerIndex);
-      doMaterializePeer(peerRank);
-    }
-  } catch (...) {
-    materializationFailed_ = true;
-    for (int peerIndex : touchedPeerIndexes) {
-      cleanupPeerOnFailure(peerIndex);
-    }
-    throw;
-  }
 }
 
 } // namespace comms::prims
