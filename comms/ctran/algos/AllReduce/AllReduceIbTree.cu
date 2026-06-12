@@ -146,6 +146,82 @@ __device__ __forceinline__ TreeLaneProgressState<T> makeTreeLaneState(
   return state;
 }
 
+__device__ __forceinline__ size_t alignProtocolBytes(size_t bytes) {
+  return (bytes + 15ULL) & ~15ULL;
+}
+
+__device__ __forceinline__ size_t
+validProtocolBytes(size_t byteOffset, size_t protocolBytes, size_t dataBytes) {
+  if (byteOffset >= dataBytes) {
+    return 0;
+  }
+  const size_t remaining = dataBytes - byteOffset;
+  return protocolBytes < remaining ? protocolBytes : remaining;
+}
+
+struct IbTreeSendCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void send(
+      char* staging,
+      const char* src,
+      size_t nbytes,
+      comms::prims::ThreadGroup& group,
+      size_t byteOffset,
+      size_t dataBytes,
+      Args...) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    const size_t validBytes = validProtocolBytes(byteOffset, nbytes, dataBytes);
+    if (validBytes > 0) {
+      comms::prims::memcpy_vectorized(staging, src, validBytes, group);
+    }
+#endif
+  }
+};
+
+struct IbTreeRecvCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void recv(
+      char* dst,
+      const char* staging,
+      size_t nbytes,
+      comms::prims::ThreadGroup& group,
+      size_t byteOffset,
+      size_t dataBytes,
+      Args...) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    const size_t validBytes = validProtocolBytes(byteOffset, nbytes, dataBytes);
+    if (validBytes > 0) {
+      comms::prims::memcpy_vectorized(dst, staging, validBytes, group);
+    }
+#endif
+  }
+};
+
+template <typename T>
+struct IbTreeReduceCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void recv(
+      char* dst,
+      const char* staging,
+      size_t nbytes,
+      comms::prims::ThreadGroup& group,
+      size_t byteOffset,
+      size_t dataBytes,
+      Args...) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    const size_t validBytes = validProtocolBytes(byteOffset, nbytes, dataBytes);
+    if (validBytes == 0) {
+      return;
+    }
+    T* accum = reinterpret_cast<T*>(dst);
+    const T* staged = reinterpret_cast<const T*>(staging);
+    const size_t nelems = validBytes / sizeof(T);
+
+    tileReduce<T, kIbTileElems, kBlockSize>(accum, staged, nelems, group);
+#endif
+  }
+};
+
 template <typename T>
 __device__ __forceinline__ comms::prims::IbgdaSendRecvProgressStatus
 progressLaneSend(
@@ -155,16 +231,23 @@ progressLaneSend(
     size_t bytes,
     comms::prims::ThreadGroup& group,
     const comms::prims::Timeout& timeout) {
+  const size_t protocolBytes = alignProtocolBytes(bytes);
   if (!state.ibOpActive) {
     transport->init_send_progress(
-        group, bytes, state.activeBlocks, 0 /* max_signal_bytes */);
+        group, protocolBytes, state.activeBlocks, 0 /* max_signal_bytes */);
     state.ibOpActive = true;
   }
-  return transport->progress_send_once(
-      group, src, bytes, state.activeBlocks, 0 /* max_signal_bytes */, timeout);
+  return transport->progress_send_once<IbTreeSendCopy>(
+      group,
+      src,
+      protocolBytes,
+      state.activeBlocks,
+      0 /* max_signal_bytes */,
+      timeout,
+      bytes);
 }
 
-template <typename T, typename CopyOp = comms::prims::Memcpy>
+template <typename T, typename CopyOp = IbTreeRecvCopy>
 __device__ __forceinline__ comms::prims::IbgdaSendRecvProgressStatus
 progressLaneRecv(
     TreeLaneProgressState<T>& state,
@@ -173,13 +256,20 @@ progressLaneRecv(
     size_t bytes,
     comms::prims::ThreadGroup& group,
     const comms::prims::Timeout& timeout) {
+  const size_t protocolBytes = alignProtocolBytes(bytes);
   if (!state.ibOpActive) {
     transport->init_recv_progress(
-        group, bytes, state.activeBlocks, 0 /* max_signal_bytes */);
+        group, protocolBytes, state.activeBlocks, 0 /* max_signal_bytes */);
     state.ibOpActive = true;
   }
   return transport->progress_recv_once<CopyOp>(
-      group, dst, bytes, state.activeBlocks, 0 /* max_signal_bytes */, timeout);
+      group,
+      dst,
+      protocolBytes,
+      state.activeBlocks,
+      0 /* max_signal_bytes */,
+      timeout,
+      bytes);
 }
 
 template <typename T, int kGroupSize>
@@ -222,7 +312,7 @@ progressTreeLane(
       auto* childTransport =
           args.common.transports[state.tree.childRanks[state.childIdx]]
               .p2p_ibgda;
-      const auto status = progressLaneRecv<T, IbReduceCopy<T>>(
+      const auto status = progressLaneRecv<T, IbTreeReduceCopy<T>>(
           state, childTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
         state.ibOpActive = false;
@@ -333,24 +423,18 @@ __device__ __noinline__ void phase2IbDualTree(
   const size_t tileOffsetElems = tile.offsetBytes / sizeof(T);
   const size_t tileElems = tile.bytes / sizeof(T);
 
-  // If the whole segment has at most one element per block, lane 1 would be
-  // empty for every block. Compress transport group ids to a single lane for
-  // that tiny-message shape; otherwise keep the stable two-lane mapping.
-  const bool useSingleLane =
-      actualElems <= static_cast<size_t>(args.common.numBlocks);
-  const int activeIbLanesPerBlock =
-      useSingleLane ? 1 : ctran::allreduce::tree::kTreeLanes;
-
-  const size_t halfElems0 = useSingleLane ? tileElems : (tileElems + 1) / 2;
-  const size_t halfElems1 = useSingleLane ? 0 : tileElems - halfElems0;
+  const size_t halfElems0 = (tileElems + 1) / 2;
+  const size_t halfElems1 = tileElems - halfElems0;
   T* phase2Buf = static_cast<T*>(args.common.phase2Buf);
-  const int activeIbGroups = args.common.numBlocks * activeIbLanesPerBlock;
+  const int activeIbGroups = args.ibTransportGroups;
 
   auto lane0Group = blockGroup;
-  lane0Group.group_id = blockGroup.group_id * activeIbLanesPerBlock;
+  lane0Group.group_id =
+      blockGroup.group_id * ctran::allreduce::tree::kTreeLanes;
   lane0Group.total_groups = static_cast<uint32_t>(activeIbGroups);
   auto lane1Group = blockGroup;
-  lane1Group.group_id = blockGroup.group_id * activeIbLanesPerBlock + 1;
+  lane1Group.group_id =
+      blockGroup.group_id * ctran::allreduce::tree::kTreeLanes + 1;
   lane1Group.total_groups = static_cast<uint32_t>(activeIbGroups);
 
   auto lane0 = makeTreeLaneState<T>(

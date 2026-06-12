@@ -44,6 +44,15 @@ struct KernArgs {
   ctran::allreduce::TreeTopology tree0;
   /** Inter-node tree used for the second half of each data partition. */
   ctran::allreduce::TreeTopology tree1;
+
+  /**
+   * Stable IBGDA send/recv staging geometry for Phase 2.
+   *
+   * The CUDA launch may use fewer than `NCCL_CTRAN_MAX_NBLOCKS` blocks for
+   * small messages, but the transport staging partition must stay fixed across
+   * collective sizes because IBGDA keeps persistent per-group byte cursors.
+   */
+  int ibTransportGroups{0};
 };
 
 } // namespace ctran::allreduce::tree

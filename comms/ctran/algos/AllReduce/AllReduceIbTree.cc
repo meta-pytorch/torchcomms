@@ -252,6 +252,8 @@ commResult_t ctranAllReduceTree(
   const bool hasIbPhase = participatesInIB && nNodes > 1;
   const int numBlocks =
       fused::compute_num_blocks(totalBytes, fused::get_num_block_cap());
+  const int ibTransportGroups =
+      fused::get_num_block_cap() * ctran::allreduce::tree::kTreeLanes;
   if (hasIbPhase) {
     if (!comm->multiPeerTransport_) {
       CLOGF(
@@ -271,13 +273,12 @@ commResult_t ctranAllReduceTree(
     }
 
     const int maxIbGroups = NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS;
-    const int requiredIbGroups = numBlocks * ctran::allreduce::tree::kTreeLanes;
-    if (requiredIbGroups > maxIbGroups) {
+    if (ibTransportGroups > maxIbGroups) {
       CLOGF(
           ERR,
           "AllReduce ctree requires {} IBGDA send/recv groups, exceeding "
           "NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS={}",
-          requiredIbGroups,
+          ibTransportGroups,
           maxIbGroups);
       return commInvalidArgument;
     }
@@ -317,6 +318,7 @@ commResult_t ctranAllReduceTree(
           comm));
   kernArgs.tree0 = tree0;
   kernArgs.tree1 = tree1;
+  kernArgs.ibTransportGroups = ibTransportGroups;
 
   return fused::submit_fused_kernel(
       comm,
