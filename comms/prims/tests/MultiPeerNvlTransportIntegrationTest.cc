@@ -6,10 +6,12 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "comms/prims/tests/MultiPeerNvlTransportIntegrationTest.cuh"
+#include "comms/prims/tests/TopologyTestUtils.h"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
@@ -49,6 +51,17 @@ constexpr int kStressIterations = 50;
 // Kernel launch parameters
 constexpr int kDefaultNumBlocks = 4;
 constexpr int kDefaultBlockSize = 128;
+
+struct IbDeviceWindowBackendParam {
+  IbBackendMode mode;
+  TransportType transportType;
+  const char* name;
+};
+
+const char* ibDeviceWindowBackendName(
+    const ::testing::TestParamInfo<IbDeviceWindowBackendParam>& info) {
+  return info.param.name;
+}
 } // namespace
 
 // =============================================================================
@@ -78,13 +91,16 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
   // DeviceWindow
   TransportBundle createTransport(
       const MultiPeerNvlTransportConfig& nvlConfig,
-      const WindowConfig& wmConfig = {}) {
+      const WindowConfig& wmConfig = {},
+      IbBackendMode ibMode = IbBackendMode::kIbgda,
+      std::optional<TopologyResult> topo = std::nullopt) {
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultiPeerTransportConfig config{
         .nvlConfig = nvlConfig,
+        .ibMode = ibMode,
     };
     auto transport = std::make_unique<MultiPeerTransport>(
-        globalRank, numRanks, localRank, bootstrap, config);
+        globalRank, numRanks, localRank, bootstrap, config, std::move(topo));
     transport->exchange();
 
     auto window = std::make_unique<HostWindow>(*transport, wmConfig);
@@ -93,7 +109,181 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
     DeviceWindow dw = window->getDeviceWindow();
     return {std::move(transport), std::move(window), dw};
   }
+
+  TopologyResult makeIbOnlyTopology() const {
+    return makeTopology(globalRank, {});
+  }
+
+  void runDeviceWindowSignalWait(
+      IbBackendMode ibMode = IbBackendMode::kIbgda,
+      std::optional<TopologyResult> topo = std::nullopt,
+      std::optional<TransportType> expectedTransportType = std::nullopt,
+      const char* transportName = nullptr) {
+    if (numRanks != 2) {
+      GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+    }
+    const char* label =
+        transportName == nullptr ? "DeviceWindow" : transportName;
+
+    MultiPeerNvlTransportConfig config{
+        .dataBufferSize = kDefaultDataBufferSize,
+        .chunkSize = kDefaultChunkSize,
+        .pipelineDepth = kDefaultPipelineDepth,
+    };
+    WindowConfig wmConfig{
+        .peerSignalCount = kDefaultSignalCount,
+    };
+
+    auto [transport, window, dw] =
+        createTransport(config, wmConfig, ibMode, std::move(topo));
+
+    int peerRank = (globalRank == 0) ? 1 : 0;
+    if (expectedTransportType.has_value()) {
+      EXPECT_EQ(
+          transport->get_transport_type(peerRank), *expectedTransportType);
+    }
+
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    bool isSignaler = (globalRank == 0);
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testSignalWait(dw, peerRank, 0, isSignaler, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(result_h, 1) << label << " Signal/Wait operation failed";
+
+    XLOGF(
+        INFO,
+        "Rank {}: {} Signal/Wait test completed (isSignaler={})",
+        globalRank,
+        label,
+        isSignaler);
+  }
+
+  void runDeviceWindowPutSignalOperation(
+      IbBackendMode ibMode = IbBackendMode::kIbgda,
+      std::optional<TopologyResult> topo = std::nullopt,
+      std::optional<TransportType> expectedTransportType = std::nullopt,
+      const char* transportName = nullptr) {
+    if (numRanks != 2) {
+      GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+    }
+    const char* label =
+        transportName == nullptr ? "DeviceWindow" : transportName;
+
+    constexpr std::size_t kTransferSize = 4096;
+    MultiPeerNvlTransportConfig config{
+        .dataBufferSize = kDefaultDataBufferSize,
+        .chunkSize = kDefaultChunkSize,
+        .pipelineDepth = kDefaultPipelineDepth,
+    };
+    WindowConfig wmConfig{
+        .peerSignalCount = kDefaultSignalCount,
+    };
+
+    int peerRank = (globalRank == 0) ? 1 : 0;
+    const int testValue = 0xCD + globalRank;
+
+    DeviceBuffer windowBuffer(kTransferSize);
+    auto windowBuf_d = windowBuffer.get();
+    CUDACHECK_TEST(cudaMemset(windowBuf_d, 0, kTransferSize));
+
+    DeviceBuffer localSrcBuffer(kTransferSize);
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto localSrc_d = localSrcBuffer.get();
+    auto result_d = static_cast<int*>(resultBuffer.get());
+
+    if (globalRank == 0) {
+      test::fillBuffer(
+          static_cast<int*>(localSrc_d),
+          testValue,
+          kTransferSize / sizeof(int));
+    }
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultiPeerTransportConfig transportConfig{
+        .nvlConfig = config,
+        .ibMode = ibMode,
+    };
+    auto transport = std::make_unique<MultiPeerTransport>(
+        globalRank,
+        numRanks,
+        localRank,
+        bootstrap,
+        transportConfig,
+        std::move(topo));
+    transport->exchange();
+    if (expectedTransportType.has_value()) {
+      EXPECT_EQ(
+          transport->get_transport_type(peerRank), *expectedTransportType);
+    }
+
+    auto window = std::make_unique<HostWindow>(*transport, wmConfig);
+    window->exchange();
+    window->registerAndExchangeBuffer(windowBuf_d, kTransferSize);
+    auto srcLkeys = window->registerLocalBuffer(localSrc_d, kTransferSize);
+    if (expectedTransportType.has_value()) {
+      ASSERT_TRUE(srcLkeys.has_value())
+          << label << " local source buffer did not get IB lkeys";
+    }
+
+    DeviceWindow dw = window->getDeviceWindow();
+    LocalBufferRegistration srcBuf = srcLkeys.has_value()
+        ? LocalBufferRegistration{localSrc_d, kTransferSize, *srcLkeys}
+        : LocalBufferRegistration{localSrc_d, kTransferSize};
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    bool isWriter = (globalRank == 0);
+    constexpr int kSignalId = 0;
+
+    test::testPutOperation(
+        dw, peerRank, srcBuf, kTransferSize, kSignalId, isWriter, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(result_h, 1) << label << " Put/Signal operation failed on rank "
+                           << globalRank;
+
+    if (globalRank == 1) {
+      std::vector<int> recvHost(kTransferSize / sizeof(int));
+      CUDACHECK_TEST(cudaMemcpy(
+          recvHost.data(), windowBuf_d, kTransferSize, cudaMemcpyDeviceToHost));
+
+      const int expectedValue = 0xCD + 0;
+      std::vector<int> expected(kTransferSize / sizeof(int), expectedValue);
+      EXPECT_EQ(recvHost, expected)
+          << label << " data mismatch after put_signal";
+    }
+
+    XLOGF(
+        INFO,
+        "Rank {}: {} Put/Signal operation test completed (isWriter={})",
+        globalRank,
+        label,
+        isWriter);
+  }
 };
+
+class MultiPeerNvlTransportIbDeviceWindowTestFixture
+    : public MultiPeerNvlTransportIntegrationTestFixture,
+      public ::testing::WithParamInterface<IbDeviceWindowBackendParam> {};
 
 // =============================================================================
 // MultiPeerDeviceTransport Construction End-to-End Test
@@ -207,49 +397,7 @@ TEST_F(
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWait) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
-      .pipelineDepth = kDefaultPipelineDepth,
-  };
-  WindowConfig wmConfig{
-      .peerSignalCount = kDefaultSignalCount,
-  };
-
-  auto [transport, window, dw] = createTransport(config, wmConfig);
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-
-  DeviceBuffer resultBuffer(sizeof(int));
-  auto result_d = static_cast<int*>(resultBuffer.get());
-  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
-
-  // Rank 0 signals, Rank 1 waits
-  bool isSignaler = (globalRank == 0);
-
-  // Synchronize before starting
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  test::testSignalWait(dw, peerRank, 0, isSignaler, result_d);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  int result_h = 0;
-  CUDACHECK_TEST(
-      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
-
-  EXPECT_EQ(result_h, 1) << "Signal/Wait operation failed";
-
-  XLOGF(
-      INFO,
-      "Rank {}: Signal/Wait test completed (isSignaler={})",
-      globalRank,
-      isSignaler);
+  runDeviceWindowSignalWait();
 }
 
 // =============================================================================
@@ -1386,6 +1534,36 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, TransportAccessorTypes) {
 }
 
 // =============================================================================
+// IB DeviceWindow End-to-End Tests
+// =============================================================================
+
+TEST_P(MultiPeerNvlTransportIbDeviceWindowTestFixture, SignalWait) {
+  const auto& backend = GetParam();
+  runDeviceWindowSignalWait(
+      backend.mode, makeIbOnlyTopology(), backend.transportType, backend.name);
+}
+
+TEST_P(MultiPeerNvlTransportIbDeviceWindowTestFixture, PutSignalOperation) {
+  const auto& backend = GetParam();
+  runDeviceWindowPutSignalOperation(
+      backend.mode, makeIbOnlyTopology(), backend.transportType, backend.name);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    IbBackends,
+    MultiPeerNvlTransportIbDeviceWindowTestFixture,
+    ::testing::Values(
+        IbDeviceWindowBackendParam{
+            IbBackendMode::kIbgda,
+            TransportType::P2P_IBGDA,
+            "IBGDA"},
+        IbDeviceWindowBackendParam{
+            IbBackendMode::kIbrc,
+            TransportType::P2P_IBRC,
+            "IBRC"}),
+    ibDeviceWindowBackendName);
+
+// =============================================================================
 // signal_all() Test
 // =============================================================================
 
@@ -1697,108 +1875,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
-
-  constexpr std::size_t kTransferSize = 4096;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
-      .pipelineDepth = kDefaultPipelineDepth,
-  };
-  WindowConfig wmConfig{
-      .peerSignalCount = kDefaultSignalCount,
-  };
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  const int testValue = 0xCD + globalRank;
-
-  // Allocate per-rank window buffer (destination for put operations).
-  // The peer will write into this buffer via NVLink IPC.
-  DeviceBuffer windowBuffer(kTransferSize);
-  auto windowBuf_d = windowBuffer.get();
-  CUDACHECK_TEST(cudaMemset(windowBuf_d, 0, kTransferSize));
-
-  // Allocate local source buffer and result buffer
-  DeviceBuffer localSrcBuffer(kTransferSize);
-  DeviceBuffer resultBuffer(sizeof(int));
-  auto localSrc_d = localSrcBuffer.get();
-  auto result_d = static_cast<int*>(resultBuffer.get());
-
-  // Rank 0 (writer): fill source buffer with test pattern
-  if (globalRank == 0) {
-    test::fillBuffer(
-        static_cast<int*>(localSrc_d), testValue, kTransferSize / sizeof(int));
-  }
-  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  // Set up transport + window with buffer registrations.
-  // Cannot use createTransport() helper because we need to register buffers
-  // between exchange() and getDeviceWindow().
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerTransportConfig transportConfig{
-      .nvlConfig = config,
-  };
-  auto transport = std::make_unique<MultiPeerTransport>(
-      globalRank, numRanks, localRank, bootstrap, transportConfig);
-  transport->exchange();
-
-  auto window = std::make_unique<HostWindow>(*transport, wmConfig);
-  window->exchange();
-
-  // Register the window buffer as the exchanged destination buffer
-  // (COLLECTIVE: all ranks must call together)
-  window->registerAndExchangeBuffer(windowBuf_d, kTransferSize);
-
-  // Register the source buffer locally (NOT collective)
-  window->registerLocalBuffer(localSrc_d, kTransferSize);
-
-  // Get DeviceWindow after all registrations
-  DeviceWindow dw = window->getDeviceWindow();
-
-  // Build LocalBufferRegistration for the source buffer.
-  // For NVL-only, lkey is unused.
-  LocalBufferRegistration srcBuf{localSrc_d, kTransferSize};
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Rank 0 writes to rank 1's window buffer using offset-based put_signal
-  // Rank 1 waits for the signal
-  bool isWriter = (globalRank == 0);
-  constexpr int kSignalId = 0;
-
-  test::testPutOperation(
-      dw, peerRank, srcBuf, kTransferSize, kSignalId, isWriter, result_d);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Verify operation completed
-  int result_h = 0;
-  CUDACHECK_TEST(
-      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
-  EXPECT_EQ(result_h, 1) << "Put/Signal operation failed on rank "
-                         << globalRank;
-
-  // Verify data on receiver side
-  // Rank 1's window buffer should now contain the data written by rank 0
-  if (globalRank == 1) {
-    std::vector<int> recvHost(kTransferSize / sizeof(int));
-    CUDACHECK_TEST(cudaMemcpy(
-        recvHost.data(), windowBuf_d, kTransferSize, cudaMemcpyDeviceToHost));
-
-    const int expectedValue = 0xCD + 0; // Sender's testValue (rank 0)
-    std::vector<int> expected(kTransferSize / sizeof(int), expectedValue);
-    EXPECT_EQ(recvHost, expected) << "Data mismatch after put_signal";
-  }
-
-  XLOGF(
-      INFO,
-      "Rank {}: Put/Signal operation test completed (isWriter={})",
-      globalRank,
-      isWriter);
+  runDeviceWindowPutSignalOperation();
 }
 
 // =============================================================================

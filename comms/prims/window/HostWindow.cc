@@ -126,11 +126,12 @@ HostWindow::HostWindow(
   }
 
   // ==========================================================================
-  // Per-peer counter buffers (IBGDA-only)
+  // Per-peer counter buffers (IB-only)
   // ==========================================================================
   if (config_.peerCounterCount > 0 && nIbgdaPeers > 0) {
     auto size = nIbgdaPeers * config_.peerCounterCount * sizeof(uint64_t);
-    ibgdaPeerCounterLocalBuf_ = allocateIbgdaBuffer(size);
+    ibgdaPeerCounterLocalBuf_ =
+        transport_.allocateIbCounterBuffer(size, &ibgdaPeerCounterHostPtr_);
   }
 }
 
@@ -151,10 +152,8 @@ HostWindow::~HostWindow() {
     cudaFree(ibgdaPeerSignalLocalBuf_.ptr);
   }
   if (ibgdaPeerCounterLocalBuf_.ptr) {
-    if (ibgdaPeerCounterLocalBuf_.lkey_per_device.size > 0) {
-      transport_.localDeregisterIbgdaBuffer(ibgdaPeerCounterLocalBuf_.ptr);
-    }
-    cudaFree(ibgdaPeerCounterLocalBuf_.ptr);
+    transport_.freeIbCounterBuffer(
+        ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_);
   }
 
   // Clean up IBGDA buffer registrations
@@ -298,8 +297,8 @@ void HostWindow::exchange() {
   if (ibgdaPeerCounterLocalBuf_.ptr) {
     auto size = static_cast<int>(ibgdaPeerRanks_.size()) *
         config_.peerCounterCount * sizeof(uint64_t);
-    ibgdaPeerCounterLocalBuf_ = transport_.localRegisterIbgdaBuffer(
-        ibgdaPeerCounterLocalBuf_.ptr, size);
+    ibgdaPeerCounterLocalBuf_ =
+        transport_.registerIbCounterBuffer(ibgdaPeerCounterLocalBuf_, size);
   }
 
   if (userBuffer_ && userBufferSize_ > 0) {
@@ -448,6 +447,8 @@ DeviceWindow HostWindow::buildDeviceWindowImpl(
   if (ibgdaPeerCounterLocalBuf_.ptr) {
     dw.ibgdaPeerCounterBuf_ =
         static_cast<uint64_t*>(ibgdaPeerCounterLocalBuf_.ptr);
+    dw.ibgdaPeerCounterHostBuf_ =
+        static_cast<uint64_t*>(ibgdaPeerCounterHostPtr_);
     dw.ibgdaPeerCounterLkeys_ = ibgdaPeerCounterLocalBuf_.lkey_per_device;
   }
 

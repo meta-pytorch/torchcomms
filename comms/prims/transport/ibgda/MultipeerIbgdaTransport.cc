@@ -47,73 +47,7 @@ constexpr int kHopLimit = 255;
 // depth since they only carry WAIT + atomic operations (2 WQEs per round).
 constexpr uint32_t kCompanionQpDepth = 32;
 
-// Bootstrap tags for the two-phase bilateral exchange in materializePeer.
-constexpr int kTagQpExchange = 0;
-constexpr int kTagBufferExchange = 1;
-
 } // namespace
-
-// Wire formats for bilateral exchange in materializePeer.
-// Split into two phases: QP info first (to connect), then buffer info
-// (acts as QP-ready barrier — mirrors the eager path's two-allGather pattern).
-struct PeerQpPayload {
-  struct NicQpInfo {
-    uint8_t gid[16]{};
-    uint16_t lid{0};
-    uint32_t qpns[kMaxQpsPerPeerPerNic]{};
-  };
-  NicQpInfo nicInfo[kMaxNicsPerGpu]{};
-  int gidIndex{0};
-  int mtu{0};
-  int numNics{0};
-  int numQpsPerPeerPerNic{0};
-};
-
-struct PeerBufferPayload {
-  IbgdaBufferExchInfo recvStaging;
-  IbgdaBufferExchInfo srSignal;
-  IbgdaBufferExchInfo slotSignal;
-};
-
-struct PeerBufferSizes {
-  std::size_t staging{0};
-  std::size_t srSignal{0};
-  std::size_t srCounter{0};
-  std::size_t srState{0};
-  std::size_t slotSignal{0};
-  std::size_t slotCounter{0};
-
-  // Pointers into a contiguous allocation (set by layout())
-  void* sendStagingPtr{nullptr};
-  void* recvStagingPtr{nullptr};
-  void* srSignalPtr{nullptr};
-  void* srCounterPtr{nullptr};
-  void* srStatePtr{nullptr};
-  void* slotSignalPtr{nullptr};
-  void* slotCounterPtr{nullptr};
-
-  std::size_t total() const {
-    return staging * 2 + srSignal + srCounter + srState + slotSignal +
-        slotCounter;
-  }
-
-  void layout(void* base) {
-    char* p = static_cast<char*>(base);
-    sendStagingPtr = p;
-    p += staging;
-    recvStagingPtr = p;
-    p += staging;
-    srSignalPtr = p;
-    p += srSignal;
-    srCounterPtr = p;
-    p += srCounter;
-    srStatePtr = p;
-    p += srState;
-    slotSignalPtr = p;
-    p += slotSignal;
-    slotCounterPtr = p;
-  }
-};
 
 namespace {
 
@@ -614,46 +548,12 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
   }
 }
 
-PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
-  PeerBufferSizes sizes;
-  if (config_.sendRecv.has_value()) {
-    const auto& sr = *config_.sendRecv;
-    sizes.staging = sr.pipelineDepth * config_.dataBufferSize;
-    sizes.srSignal = 2 * sr.maxGroups * sizeof(uint64_t);
-    sizes.srCounter = sr.maxGroups * sizeof(uint64_t);
-    sizes.srState = 2 * sr.maxGroups * sizeof(IbSendRecvState::ProgressSlot);
-  }
-  sizes.slotSignal =
-      static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
-  sizes.slotCounter =
-      static_cast<std::size_t>(config_.numCounterSlots) * sizeof(uint64_t);
-  return sizes;
-}
-
 P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
   const int numQps = config_.numQpsPerPeerPerNic;
-  auto makeSendRecvState = [&]() -> IbSendRecvState {
-    if (sendRecvPeerBuffers_.empty()) {
-      return {};
-    }
-    const auto& pb = sendRecvPeerBuffers_[peerIndex];
-    return IbSendRecvState{
-        .sendStagingBuf = pb.sendStaging,
-        .recvStagingBuf = pb.remoteRecvStaging,
-        .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
-        .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
-        .localSignalBuf = pb.signal,
-        .remoteSignalBuf = pb.remoteSignal,
-        .localCounterBuf = pb.counter,
-        .state = pb.state.value_or(DeviceSpan<IbSendRecvState::ProgressSlot>()),
-        .maxGroups = config_.sendRecv->maxGroups,
-        .pipelineDepth = config_.sendRecv->pipelineDepth,
-        .dataBufferSize = config_.dataBufferSize,
-    };
-  };
-
-  P2pIbgdaTransportBuildParams params(makeSendRecvState());
+  // Build the device-side send/recv state from the shared base (delegates to
+  // the inherited sendRecvPeerBuffers_).
+  P2pIbgdaTransportBuildParams params(sendRecvStateForPeer(peerIndex));
   params.h_nicDeviceIbgdaResources.resize(numNics_);
   for (int n = 0; n < numNics_; ++n) {
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
@@ -679,12 +579,13 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   }
 
   if (config_.numSignalSlots > 0) {
-    params.remoteSignalBuf = signalRemoteViews_[peerIndex];
-    params.localSignalBuf = signalLocalViews_[peerIndex];
+    params.remoteSignalBuf = slotRemoteSignalView(peerIndex);
+    params.localSignalBuf = slotLocalSignalView(peerIndex);
     params.numSignalSlots = config_.numSignalSlots;
   }
   if (config_.numCounterSlots > 0) {
-    params.counterBuf = counterViews_[peerIndex];
+    params.counterBuf = slotCounterDeviceView(peerIndex);
+    params.discardSignalSlot = slotDiscardSignalRemoteView(peerIndex);
     params.numCounterSlots = config_.numCounterSlots;
   }
   return params;
@@ -744,10 +645,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
         nic.loopbackCompanionQps.resize(
             static_cast<size_t>(numPeers) * config.numQpsPerPeerPerNic);
       }
-      signalRemoteViews_.resize(numPeers);
-      signalLocalViews_.resize(numPeers);
-      counterViews_.resize(numPeers);
-      lazyPeerBufs_.resize(numPeers);
       peerMaterialized_.resize(numPeers, false);
     }
 
@@ -755,8 +652,17 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     allocateResources();
     registerMemory();
 
-    // Allocate tile sendrecv buffers (if configured)
-    allocate_send_recv_buffers();
+    // Allocate send/recv staging buffers (if configured). Eager mode delegates
+    // to the shared base (Device counter: NIC loopback atomic); lazy mode only
+    // sizes the inherited per-peer view vector — the shared base
+    // allocateSendRecvBufferForPeer() fills it per peer at materialization.
+    if (config_.sendRecv.has_value()) {
+      if (!config_.ibLazyConnect) {
+        allocateSendRecvBuffersEager(IbCounterStorage::Device);
+      } else {
+        sendRecvPeerBuffers_.resize(nRanks_ - 1);
+      }
+    }
   } catch (const std::exception&) {
     // Destructor won't run for a partially-constructed object, so clean up
     // all resources allocated by the init methods above.
@@ -788,8 +694,9 @@ void MultipeerIbgdaTransport::cleanup() {
   gpuAllocations_.clear();
   peerTransportsGpu_ = nullptr;
 
-  // Free tile sendrecv buffers
-  cleanup_send_recv_buffers();
+  // Free send/recv staging buffers (eager bulks + any lazy per-peer
+  // allocations) via the shared base cleanup.
+  cleanupSendRecvBuffers();
 
   // Destroy per-NIC QP groups (main + companion) and loopback responders.
   for (auto& nic : nicDoca_) {
@@ -807,32 +714,7 @@ void MultipeerIbgdaTransport::cleanup() {
     nic.loopbackCompanionQps.clear();
   }
 
-  // Deregister and free transport-owned signal/counter buffers.
-  // MRs must be deregistered BEFORE freeing (correct RDMA teardown order).
-  // On AMD: signal inboxes are host-pinned (NIC-accessible); counter is GPU
-  // device memory (sender-local, no NIC access).
-  if (signalInboxGpu_ != nullptr) {
-    deregisterBuffer(signalInboxGpu_);
-#ifdef __HIP_PLATFORM_AMD__
-    hipHostFree(signalInboxGpu_);
-#else
-    cudaFree(signalInboxGpu_);
-#endif
-    signalInboxGpu_ = nullptr;
-  }
-  signalRemoteViews_.clear();
-  signalLocalViews_.clear();
-
-  if (counterGpu_ != nullptr) {
-    deregisterBuffer(counterGpu_);
-#ifdef __HIP_PLATFORM_AMD__
-    hipFree(counterGpu_);
-#else
-    cudaFree(counterGpu_);
-#endif
-    counterGpu_ = nullptr;
-  }
-  counterViews_.clear();
+  cleanupSignalCounterResources();
 
   // Destroy user buffer MRs
   for (auto& [_, cached] : registeredBuffers_) {
@@ -1027,123 +909,10 @@ void MultipeerIbgdaTransport::exchange() {
     }
     connectPeerLoopback(peerIndex);
   }
-  // ---- Allocate transport-owned signal buffers (if configured) ----
-  if (config_.numSignalSlots > 0) {
-    // Signal inbox: one contiguous buffer with numSignalSlots per peer.
-    // Total size = numPeers * numSignalSlots * sizeof(uint64_t).
-    // Each peer writes to its own region via RDMA atomic fetch-add.
-    const std::size_t slotsPerPeer =
-        static_cast<std::size_t>(config_.numSignalSlots);
-    const std::size_t totalSignalBytes =
-        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+  allocateSignalCounterResources(
+      IbCounterStorage::Device, /*allocateDiscardSignal=*/true);
 
-#ifdef __HIP_PLATFORM_AMD__
-    // Host-pinned: on AMD, GPU-memory MR registration relies on amdgpu's
-    // peer-mem integration which is unreliable on test hosts. Host-pinned
-    // memory works with `ibv_reg_mr` (no peer_mem needed) and is GPU-
-    // accessible via mapped memory — same approach as the deleted
-    // `MultipeerIbgdaTransportAmd::sinkBuffer_`.
-    hipError_t hipErr =
-        hipHostMalloc(&signalInboxGpu_, totalSignalBytes, hipHostMallocDefault);
-    if (hipErr != hipSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate signal inbox (host-pinned): " +
-          std::string(hipGetErrorString(hipErr)));
-    }
-    std::memset(signalInboxGpu_, 0, totalSignalBytes);
-#else
-    cudaError_t cudaErr = cudaMalloc(&signalInboxGpu_, totalSignalBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate signal inbox: " +
-          std::string(cudaGetErrorString(cudaErr)));
-    }
-    cudaErr = cudaMemset(signalInboxGpu_, 0, totalSignalBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error("Failed to zero signal inbox");
-    }
-#endif
-
-    // Register and exchange signal inbox
-    auto localSignalBuf = registerBuffer(signalInboxGpu_, totalSignalBytes);
-    auto remoteSignalBufs = exchangeBuffer(localSignalBuf);
-
-    // Build per-peer views:
-    // - remoteSignalViews_[peerIndex] = remote view into peer's inbox at the
-    //   region reserved for us (offset = myPeerIndexOnPeer * slotsPerPeer)
-    // - signalLocalViews_[peerIndex] = local view into our inbox at the
-    //   region where this peer writes (offset = peerIndex * slotsPerPeer)
-    signalRemoteViews_.resize(numPeers);
-    signalLocalViews_.resize(numPeers);
-    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-      int peerRank = peerIndexToRank(peerIndex);
-      int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-      signalRemoteViews_[peerIndex] = remoteSignalBufs[peerIndex].subBuffer(
-          static_cast<std::size_t>(myPeerIndexOnPeer) * slotsPerPeer *
-          sizeof(uint64_t));
-      signalLocalViews_[peerIndex] = localSignalBuf.subBuffer(
-          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
-          sizeof(uint64_t));
-    }
-
-    VLOG(1) << "MultipeerIbgdaTransport: allocated signal inbox "
-            << totalSignalBytes << " bytes (" << config_.numSignalSlots
-            << " slots/peer, " << numPeers << " peers)";
-  }
-
-  // ---- Allocate transport-owned counter buffers (if configured) ----
-  if (config_.numCounterSlots > 0) {
-    // Counter buffer: local only, no exchange needed.
-    // Each peer's companion QP writes to its own counter region.
-    const std::size_t slotsPerPeer =
-        static_cast<std::size_t>(config_.numCounterSlots);
-    const std::size_t totalCounterBytes =
-        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
-
-#ifdef __HIP_PLATFORM_AMD__
-    // Counter is GPU-only: GPU writes via atomic_fetch_add and reads in
-    // wait_counter spin loop, no NIC-side access. Device memory (HBM,
-    // ~100ns/access) outperforms host-pinned (PCIe, ~1us/access) and
-    // dma-buf isn't needed.
-    hipError_t hipErr = hipMalloc(&counterGpu_, totalCounterBytes);
-    if (hipErr != hipSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate counter buffer: " +
-          std::string(hipGetErrorString(hipErr)));
-    }
-    hipErr = hipMemset(counterGpu_, 0, totalCounterBytes);
-    if (hipErr != hipSuccess) {
-      throw std::runtime_error("Failed to zero counter buffer");
-    }
-#else
-    cudaError_t cudaErr = cudaMalloc(&counterGpu_, totalCounterBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate counter buffer: " +
-          std::string(cudaGetErrorString(cudaErr)));
-    }
-    cudaErr = cudaMemset(counterGpu_, 0, totalCounterBytes);
-    if (cudaErr != cudaSuccess) {
-      throw std::runtime_error("Failed to zero counter buffer");
-    }
-#endif
-
-    auto localCounterBuf = registerBuffer(counterGpu_, totalCounterBytes);
-
-    // Build per-peer views (local only)
-    counterViews_.resize(numPeers);
-    for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-      counterViews_[peerIndex] = localCounterBuf.subBuffer(
-          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
-          sizeof(uint64_t));
-    }
-
-    VLOG(1) << "MultipeerIbgdaTransport: allocated counter buffer "
-            << totalCounterBytes << " bytes (" << config_.numCounterSlots
-            << " slots/peer, " << numPeers << " peers)";
-  }
-
-  exchange_send_recv_buffers();
+  exchangeSendRecvBuffersEager();
 
   // Build device transports on GPU
   std::vector<P2pIbgdaTransportBuildParams> buildParams;
@@ -1214,146 +983,10 @@ int MultipeerIbgdaTransport::numQpsPerPeerPerNic() const {
 // Send/recv buffer lifecycle
 // =============================================================================
 
-void MultipeerIbgdaTransport::allocate_send_recv_buffers() {
-  if (!config_.sendRecv.has_value()) {
-    return;
-  }
-  const auto& sr = *config_.sendRecv;
-  if (sr.pipelineDepth < 1) {
-    throw std::invalid_argument("sendRecv.pipelineDepth must be >= 1");
-  }
-  if (sr.maxGroups < 1) {
-    throw std::invalid_argument("sendRecv.maxGroups must be >= 1");
-  }
-  if (config_.dataBufferSize == 0) {
-    throw std::invalid_argument(
-        "dataBufferSize must be > 0 when sendRecv is enabled");
-  }
-  if ((config_.dataBufferSize / sr.maxGroups) < 16) {
-    throw std::invalid_argument(
-        fmt::format(
-            "dataBufferSize / maxGroups must be >= 16, got {} / {} = {}",
-            config_.dataBufferSize,
-            sr.maxGroups,
-            config_.dataBufferSize / sr.maxGroups));
-  }
-
-  const int numPeers = nRanks_ - 1;
-  auto sizes = computePeerBufferSizes();
-  const auto stagingPerPeer = sizes.staging;
-  const auto signalPerPeer = sizes.srSignal;
-  const auto counterPerPeer = sizes.srCounter;
-  const auto statePerPeer = sizes.srState;
-  const auto stateSlotsPerPeer =
-      static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
-          2 * sr.maxGroups);
-
-  auto allocateBulk = [&](std::size_t perPeer) {
-    auto buf = std::make_unique<meta::comms::DeviceBuffer>(perPeer * numPeers);
-    auto err = cudaMemset(buf->get(), 0, perPeer * numPeers);
-    if (err != cudaSuccess) {
-      throw std::runtime_error(
-          fmt::format(
-              "Failed to zero send/recv buffer: {}", cudaGetErrorString(err)));
-    }
-    return buf;
-  };
-
-  sendRecvPeerBuffers_.resize(numPeers);
-
-  if (!config_.ibLazyConnect) {
-    sendStagingBulk_ = allocateBulk(stagingPerPeer);
-    recvStagingBulk_ = allocateBulk(stagingPerPeer);
-    signalBulk_ = allocateBulk(signalPerPeer);
-    counterBulk_ = allocateBulk(counterPerPeer);
-    stateBulk_ = allocateBulk(statePerPeer);
-
-    auto sendStagingBulkReg =
-        registerBuffer(sendStagingBulk_->get(), stagingPerPeer * numPeers);
-    recvStagingBulkReg_ =
-        registerBuffer(recvStagingBulk_->get(), stagingPerPeer * numPeers);
-    signalBulkReg_ =
-        registerBuffer(signalBulk_->get(), signalPerPeer * numPeers);
-    counterBulkReg_ =
-        registerBuffer(counterBulk_->get(), counterPerPeer * numPeers);
-
-    for (int i = 0; i < numPeers; ++i) {
-      auto& pb = sendRecvPeerBuffers_[i];
-      pb.sendStaging = sendStagingBulkReg.subBuffer(i * stagingPerPeer);
-      pb.recvStaging = recvStagingBulkReg_.subBuffer(i * stagingPerPeer);
-      pb.signal = signalBulkReg_.subBuffer(i * signalPerPeer);
-      pb.counter = counterBulkReg_.subBuffer(i * counterPerPeer);
-      auto* statePtr = reinterpret_cast<IbSendRecvState::ProgressSlot*>(
-          static_cast<char*>(stateBulk_->get()) + i * statePerPeer);
-      pb.state.emplace(statePtr, stateSlotsPerPeer);
-    }
-
-    VLOG(1) << "MultipeerIbgdaTransport: eager mode — allocated tile buffers "
-            << "for " << numPeers << " peers (staging=" << stagingPerPeer
-            << "B per peer, 5 bulks)";
-  } else {
-    VLOG(1) << "MultipeerIbgdaTransport: lazy mode — per-peer allocation "
-            << "deferred to materializePeer";
-  }
-}
-
-void MultipeerIbgdaTransport::exchange_send_recv_buffers() {
-  if (!config_.sendRecv.has_value() || sendRecvPeerBuffers_.empty()) {
-    return;
-  }
-
-  const int numPeers = nRanks_ - 1;
-  const std::size_t stagingPerPeer =
-      config_.sendRecv->pipelineDepth * config_.dataBufferSize;
-
-  const std::size_t signalPerPeer =
-      2 * config_.sendRecv->maxGroups * sizeof(uint64_t);
-
-  auto recvStagingRemotes = exchangeBuffer(recvStagingBulkReg_);
-  auto signalRemotes = exchangeBuffer(signalBulkReg_);
-
-  for (int i = 0; i < numPeers; ++i) {
-    int peerRank = peerIndexToRank(i);
-    int remotePeerIndex = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-
-    sendRecvPeerBuffers_[i].remoteRecvStaging =
-        recvStagingRemotes[i].subBuffer(remotePeerIndex * stagingPerPeer);
-    sendRecvPeerBuffers_[i].remoteSignal =
-        signalRemotes[i].subBuffer(remotePeerIndex * signalPerPeer);
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: exchanged tile buffers with " << numPeers
-          << " peers";
-}
-
-void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
-  for (auto& buf : lazyPeerBufs_) {
-    if (buf) {
-      deregisterBuffer(buf->get());
-      buf.reset();
-    }
-  }
-  sendRecvPeerBuffers_.clear();
-
-  if (sendStagingBulk_) {
-    deregisterBuffer(sendStagingBulk_->get());
-  }
-  if (recvStagingBulk_) {
-    deregisterBuffer(recvStagingBulk_->get());
-  }
-  if (signalBulk_) {
-    deregisterBuffer(signalBulk_->get());
-  }
-  if (counterBulk_) {
-    deregisterBuffer(counterBulk_->get());
-  }
-
-  sendStagingBulk_.reset();
-  recvStagingBulk_.reset();
-  signalBulk_.reset();
-  counterBulk_.reset();
-  stateBulk_.reset();
-}
+// Eager send/recv staging allocation, exchange, and cleanup are now provided by
+// MultiPeerIbTransportBase (allocateSendRecvBuffersEager(Device) /
+// exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers()). The lazy per-peer
+// path below fills the inherited sendRecvPeerBuffers_ directly.
 
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     int peerIndex) const {
@@ -1384,76 +1017,6 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   return payload;
 }
 
-void MultipeerIbgdaTransport::allocatePeerBuffers(
-    int peerIndex,
-    PeerBufferPayload& payload) {
-  auto sizes = computePeerBufferSizes();
-  const std::size_t totalPerPeer = sizes.total();
-  if (totalPerPeer == 0) {
-    return;
-  }
-
-  lazyPeerBufs_[peerIndex] =
-      std::make_unique<meta::comms::DeviceBuffer>(totalPerPeer);
-  cudaError_t cudaErr =
-      cudaMemset(lazyPeerBufs_[peerIndex]->get(), 0, totalPerPeer);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error("Failed to zero per-peer buffer");
-  }
-
-  auto& peerBuf = lazyPeerBufs_[peerIndex];
-  sizes.layout(peerBuf->get());
-
-  auto reg = registerBuffer(peerBuf->get(), totalPerPeer);
-
-  auto addr = reinterpret_cast<uintptr_t>(peerBuf->get());
-  auto mrIt = registeredBuffers_.upper_bound(addr);
-  CHECK(mrIt != registeredBuffers_.begin())
-      << "materializePeer: peerBuf MR not found after registerBuffer";
-  --mrIt;
-  auto& mr = mrIt->second;
-
-  if (config_.sendRecv.has_value()) {
-    auto& pb = sendRecvPeerBuffers_[peerIndex];
-    pb.sendStaging =
-        IbgdaLocalBuffer(sizes.sendStagingPtr, reg.lkey_per_device);
-    pb.recvStaging =
-        IbgdaLocalBuffer(sizes.recvStagingPtr, reg.lkey_per_device);
-    pb.signal = IbgdaLocalBuffer(sizes.srSignalPtr, reg.lkey_per_device);
-    pb.counter = IbgdaLocalBuffer(sizes.srCounterPtr, reg.lkey_per_device);
-    auto* statePtr =
-        reinterpret_cast<IbSendRecvState::ProgressSlot*>(sizes.srStatePtr);
-    const auto stateSlots =
-        static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
-            2 * config_.sendRecv->maxGroups);
-    pb.state.emplace(statePtr, stateSlots);
-
-    payload.recvStaging.addr = reinterpret_cast<uint64_t>(sizes.recvStagingPtr);
-    payload.recvStaging.numNics = numNics_;
-    payload.srSignal.addr = reinterpret_cast<uint64_t>(sizes.srSignalPtr);
-    payload.srSignal.numNics = numNics_;
-    for (int n = 0; n < numNics_; ++n) {
-      auto rkey = HostRKey(mr.mrs[n]->rkey);
-      payload.recvStaging.rkey_per_device[n] = rkey;
-      payload.srSignal.rkey_per_device[n] = rkey;
-    }
-  }
-
-  if (config_.numSignalSlots > 0) {
-    signalLocalViews_[peerIndex] =
-        IbgdaLocalBuffer(sizes.slotSignalPtr, reg.lkey_per_device);
-    payload.slotSignal.addr = reinterpret_cast<uint64_t>(sizes.slotSignalPtr);
-    payload.slotSignal.numNics = numNics_;
-    for (int n = 0; n < numNics_; ++n) {
-      payload.slotSignal.rkey_per_device[n] = HostRKey(mr.mrs[n]->rkey);
-    }
-  }
-  if (config_.numCounterSlots > 0) {
-    counterViews_[peerIndex] =
-        IbgdaLocalBuffer(sizes.slotCounterPtr, reg.lkey_per_device);
-  }
-}
-
 void MultipeerIbgdaTransport::connectPeerMainQps(
     int peerIndex,
     const PeerQpPayload& remotePayload) {
@@ -1474,19 +1037,6 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
   }
 }
 
-void MultipeerIbgdaTransport::applyRemoteViews(
-    int peerIndex,
-    const PeerBufferPayload& remotePayload) {
-  if (config_.sendRecv.has_value()) {
-    auto& pb = sendRecvPeerBuffers_[peerIndex];
-    pb.remoteRecvStaging = remotePayload.recvStaging.toRemoteBuffer();
-    pb.remoteSignal = remotePayload.srSignal.toRemoteBuffer();
-  }
-  if (config_.numSignalSlots > 0) {
-    signalRemoteViews_[peerIndex] = remotePayload.slotSignal.toRemoteBuffer();
-  }
-}
-
 void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
@@ -1504,11 +1054,8 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
       }
     }
   }
-  auto& buf = lazyPeerBufs_[peerIndex];
-  if (buf) {
-    deregisterBuffer(buf->get());
-    buf.reset();
-  }
+  cleanupSendRecvBufferForPeer(peerIndex);
+  cleanupPeerSignalCounterResources(peerIndex);
   peerMaterialized_[peerIndex] = false;
   if (peerTransportsGpu_ != nullptr && peerTransportSize_ != 0) {
     cudaError_t err = cudaMemset(
@@ -1528,9 +1075,9 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
 
   createPeerQps(peerIndex);
 
-  // Phase 1: exchange QP info, connect QPs
+  // Phase 1: exchange QP info, connect QPs.
   auto localQp = buildLocalQpPayload(peerIndex);
-  auto remoteQp = exchangeWithPeer(peerRank, localQp, kTagQpExchange);
+  auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
 
   if (remoteQp.numNics != numNics_) {
     throw std::runtime_error(
@@ -1552,11 +1099,19 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
   connectPeerMainQps(peerIndex, remoteQp);
   connectPeerLoopback(peerIndex);
 
-  // Phase 2: exchange buffer info (acts as QP-ready barrier)
+  // Phase 2: exchange buffer info (acts as QP-ready barrier).
   PeerBufferPayload localBuf{};
-  allocatePeerBuffers(peerIndex, localBuf);
-  auto remoteBuf = exchangeWithPeer(peerRank, localBuf, kTagBufferExchange);
-  applyRemoteViews(peerIndex, remoteBuf);
+  allocateSendRecvBufferForPeer(peerIndex, localBuf, IbCounterStorage::Device);
+  allocatePeerSignalCounterResources(
+      peerIndex,
+      localBuf,
+      IbCounterStorage::Device,
+      /*allocateDiscardSignal=*/true);
+  auto remoteBuf =
+      exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
+  applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
+  applyRemoteSignalCounterResources(
+      peerIndex, remoteBuf, /*hasDiscardSignal=*/true);
 
   auto params = buildPeerTransportParams(peerIndex);
   writeDeviceTransportSlot(
