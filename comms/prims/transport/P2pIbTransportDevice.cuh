@@ -10,6 +10,220 @@
 namespace comms::prims {
 
 __device__ __forceinline__ void P2pIbTransportDevice::signal(
+    int signalId,
+    uint64_t signalVal) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->signal(signalId, signalVal);
+  } else {
+    ibgda->signal(signalId, signalVal);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::signal(
+    ThreadGroup& group,
+    int signalId,
+    uint64_t signalVal) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->signal(group, signalId, signalVal);
+  } else {
+    ibgda->signal(group, signalId, signalVal);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::put(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  } else {
+    ibgda->put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::put(
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->put(
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  } else {
+    ibgda->put(
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::put_cooperative(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int counterId,
+    uint64_t counterVal) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->put_cooperative(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  } else {
+    ibgda->put_cooperative(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
+    ThreadGroup& group,
+    int signalId,
+    uint64_t expected,
+    const Timeout& timeout) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->wait_signal(group, signalId, expected, timeout);
+  } else {
+    ibgda->wait_signal(group, signalId, expected, timeout);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
+    int signalId,
+    uint64_t expected,
+    const Timeout& timeout) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->wait_signal(signalId, expected, timeout);
+  } else {
+    ibgda->wait_signal(signalId, expected, timeout);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
+    ThreadGroup& group,
+    int counterId,
+    uint64_t expected,
+    const Timeout& timeout) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->wait_counter(group, counterId, expected, timeout);
+  } else {
+    ibgda->wait_counter(group, counterId, expected, timeout);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
+    int counterId,
+    uint64_t expected,
+    const Timeout& timeout) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->wait_counter(counterId, expected, timeout);
+  } else {
+    ibgda->wait_counter(counterId, expected, timeout);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::reset_signal(
+    ThreadGroup& group,
+    int signalId) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->reset_signal(group, signalId);
+  } else {
+    ibgda->reset_signal(group, signalId);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::reset_signal(
+    int signalId) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->reset_signal(signalId);
+  } else {
+    ibgda->reset_signal(signalId);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::reset_counter(
+    ThreadGroup& group,
+    int counterId) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->reset_counter(group, counterId);
+  } else {
+    ibgda->reset_counter(group, counterId);
+  }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::reset_counter(
+    int counterId) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->reset_counter(counterId);
+  } else {
+    ibgda->reset_counter(counterId);
+  }
+}
+
+__device__ __forceinline__ uint64_t
+P2pIbTransportDevice::read_signal(int signalId) const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->read_signal(signalId);
+  }
+  return ibgda->read_signal(signalId);
+}
+
+__device__ __forceinline__ uint64_t
+P2pIbTransportDevice::read_counter(int counterId) const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->read_counter(counterId);
+  }
+  return ibgda->read_counter(counterId);
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::signal(
     const IbgdaRemoteBuffer& signalBuf,
     uint64_t signalVal) {
   if (type == P2pIbBackendType::IBRC) {
