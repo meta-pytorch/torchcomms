@@ -47,6 +47,19 @@ class CtranTcpDm {
       CtranTcpDmRequest& req,
       void* unpackPool);
 
+  // Counter-based irecv: request is managed internally, completion
+  // increments a per-peer counter checked by checkNotify.
+  commResult_t irecvCounted(
+      int peerRank,
+      void* handle,
+      void* data,
+      size_t size,
+      void* unpackPool);
+
+  // Check if a data recv has completed for peerRank (counter-based,
+  // analogous to IB's notifyCount_ approach).
+  commResult_t checkNotify(int peerRank, bool* done);
+
   commResult_t iput(
       const void* sbuf,
       void* dbuf,
@@ -137,6 +150,14 @@ class CtranTcpDm {
   // Per-peer count of received sync bytes (for debugging).
   std::unordered_map<int, int> syncRecvCount_;
 
+  // Counter-based recv notification (analogous to IB's notifyCount_).
+  // Internally-owned requests for irecvCounted; completed in FIFO order.
+  std::unordered_map<int, std::deque<std::unique_ptr<CtranTcpDmRequest>>>
+      pendingRecvNotifies_;
+  // Per-peer count of completed data recvs, decremented by checkNotify.
+  std::unordered_map<int, int> recvNotifyCount_;
+
+  void recvNotifyProgress();
   void ctrlSyncProgress();
 
   commResult_t connectPeer(int peerRank);

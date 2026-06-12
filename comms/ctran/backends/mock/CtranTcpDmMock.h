@@ -74,9 +74,19 @@ class CtranTcpDm {
     return commInvalidUsage;
   }
 
-  // irecv operations can not proceed unless the peer has been connected.
-  // When there is no peer, irecv operations are queued and progress()
-  // has to be called to make progress on them.
+  commResult_t irecvCounted(
+      int peerRank,
+      void* handle,
+      void* data,
+      size_t size,
+      void* unpackPool) {
+    return commInvalidUsage;
+  }
+
+  commResult_t checkNotify(int peerRank, bool* done) {
+    return commInvalidUsage;
+  }
+
   commResult_t progress() {
     return commInvalidUsage;
   }
