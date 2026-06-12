@@ -426,6 +426,7 @@ commResult_t CtranTcpDm::progress() {
   std::unique_lock lock(mutex_);
 
   ctrlSyncProgress();
+  recvNotifyProgress();
 
   for (auto it = queuedRecv_.begin(); it != queuedRecv_.end();) {
     auto& recvReq = *it;
@@ -503,6 +504,55 @@ commResult_t CtranTcpDm::irecvConnected(
 
   req.track(transport.get(), request);
 
+  return commSuccess;
+}
+
+commResult_t CtranTcpDm::irecvCounted(
+    int peerRank,
+    void* handle,
+    void* data,
+    size_t size,
+    void* unpackPool) {
+  auto req = std::make_unique<CtranTcpDmRequest>();
+  auto* rawReq = req.get();
+  pendingRecvNotifies_[peerRank].push_back(std::move(req));
+
+  {
+    std::unique_lock lock(mutex_);
+    if (recvComms_.find(peerRank) == recvComms_.end()) {
+      auto recvReq = std::make_unique<RecvRequest>();
+      recvReq->peerRank = peerRank;
+      recvReq->handle = handle;
+      recvReq->data = data;
+      recvReq->size = size;
+      recvReq->req = rawReq;
+      recvReq->unpackPool = unpackPool;
+      queuedRecv_.push_back(std::move(recvReq));
+      return commSuccess;
+    }
+  }
+
+  return irecvConnected(peerRank, handle, data, size, *rawReq, unpackPool);
+}
+
+void CtranTcpDm::recvNotifyProgress() {
+  for (auto& [peerRank, pending] : pendingRecvNotifies_) {
+    while (!pending.empty() && pending.front()->isComplete()) {
+      pending.pop_front();
+      recvNotifyCount_[peerRank]++;
+    }
+  }
+}
+
+commResult_t CtranTcpDm::checkNotify(int peerRank, bool* done) {
+  recvNotifyProgress();
+  auto it = recvNotifyCount_.find(peerRank);
+  if (it != recvNotifyCount_.end() && it->second > 0) {
+    it->second--;
+    *done = true;
+  } else {
+    *done = false;
+  }
   return commSuccess;
 }
 
