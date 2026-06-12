@@ -1040,8 +1040,9 @@ commResult_t CtranMapper::allGatherCtrl(
 
   // When totalSegments > CTRAN_IPC_INLINE_SEGMENTS (2), the extra segment
   // descriptors are sent as raw CtranIpcSegDesc data packed densely into
-  // MAX_PAYLOAD_SIZE (4096 byte) packets. This reduces per-segment
-  // overhead compared to wrapping each batch in a full ControlMsg.
+  // MAX_PAYLOAD_SIZE (4096 byte) packets on IB control planes. Socket/TcpDM
+  // control planes only support ControlMsg-sized messages, so they exchange
+  // overflow descriptors in ControlMsg chunks.
   //
   // segsPerPacket = MAX_PAYLOAD_SIZE / sizeof(CtranIpcSegDesc)
   //
@@ -1052,11 +1053,17 @@ commResult_t CtranMapper::allGatherCtrl(
 
   auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
 
-  constexpr int kExtraSegsPerPacket =
+  constexpr int kRawExtraSegsPerPacket =
       MAX_PAYLOAD_SIZE / sizeof(ctran::utils::CtranIpcSegDesc);
   static_assert(
-      kExtraSegsPerPacket >= 1,
+      kRawExtraSegsPerPacket >= 1,
       "MAX_PAYLOAD_SIZE must be large enough to hold at least one CtranIpcSegDesc");
+  constexpr int kCtrlMsgExtraSegsPerPacket = CTRAN_IPC_INLINE_SEGMENTS;
+  const bool useCtrlMsgExtraPackets =
+      getCtrlBackend() != CtranMapperBackend::IB;
+  const int extraSegsPerPacket = useCtrlMsgExtraPackets
+      ? kCtrlMsgExtraSegsPerPacket
+      : kRawExtraSegsPerPacket;
 
   // Build peer list and classify backends
   std::vector<int> peerList;
@@ -1116,6 +1123,7 @@ commResult_t CtranMapper::allGatherCtrl(
   }
   std::vector<std::unique_ptr<CtranMapperRequest>> sendReqs;
   std::vector<ControlMsg> recvMsgs(numPeers);
+  std::vector<std::unique_ptr<ControlMsg>> ctrlMsgExtraSendMsgs;
 
   // Phase 1: Header Send + Overflow Send + Header Recv
 
@@ -1137,22 +1145,34 @@ commResult_t CtranMapper::allGatherCtrl(
       const auto extraInfo = computeExtraPacketInfo(
           static_cast<int>(nvlExtraSegments.size()) + CTRAN_IPC_INLINE_SEGMENTS,
           CTRAN_IPC_INLINE_SEGMENTS,
-          kExtraSegsPerPacket);
+          extraSegsPerPacket);
       for (int pktIdx = 0; pktIdx < extraInfo.numExtraPackets; pktIdx++) {
         int startIdx, count;
         computePacketSlice(
             pktIdx,
-            kExtraSegsPerPacket,
+            extraSegsPerPacket,
             extraInfo.numExtraSegments,
             startIdx,
             count);
-        size_t sendSize = count * sizeof(ctran::utils::CtranIpcSegDesc);
         sendReqs.push_back(std::make_unique<CtranMapperRequest>());
-        FB_COMMCHECK(isendCtrlMsgImpl(
-            &nvlExtraSegments[startIdx],
-            sendSize,
-            peerList[i],
-            sendReqs.back().get()));
+        if (useCtrlMsgExtraPackets) {
+          auto& msg = *ctrlMsgExtraSendMsgs.emplace_back(
+              std::make_unique<ControlMsg>(ControlMsgType::NVL_EXPORT_MEM));
+          msg.ipcDesc.desc.totalSegments = count;
+          for (int segIdx = 0; segIdx < count; segIdx++) {
+            msg.ipcDesc.desc.segments[segIdx] =
+                nvlExtraSegments[startIdx + segIdx];
+          }
+          FB_COMMCHECK(isendCtrlMsgImpl(
+              &msg, sizeof(ControlMsg), peerList[i], sendReqs.back().get()));
+        } else {
+          size_t sendSize = count * sizeof(ctran::utils::CtranIpcSegDesc);
+          FB_COMMCHECK(isendCtrlMsgImpl(
+              &nvlExtraSegments[startIdx],
+              sendSize,
+              peerList[i],
+              sendReqs.back().get()));
+        }
       }
     }
   }
@@ -1160,6 +1180,7 @@ commResult_t CtranMapper::allGatherCtrl(
   // Phase 2: Overflow Recv + Import
   std::vector<std::vector<ctran::utils::CtranIpcSegDesc>> allRecvExtraSegments(
       numPeers);
+  std::vector<std::vector<ControlMsg>> ctrlMsgExtraRecvMsgs(numPeers);
   // Flat vector of all extra recv requests for testSomeRequests
   std::vector<std::unique_ptr<CtranMapperRequest>> extraRecvReqPtrs;
 
@@ -1173,28 +1194,39 @@ commResult_t CtranMapper::allGatherCtrl(
 
       if (peerTotalSegments > CTRAN_IPC_INLINE_SEGMENTS) {
         const auto extraInfo = computeExtraPacketInfo(
-            peerTotalSegments, CTRAN_IPC_INLINE_SEGMENTS, kExtraSegsPerPacket);
+            peerTotalSegments, CTRAN_IPC_INLINE_SEGMENTS, extraSegsPerPacket);
 
         allRecvExtraSegments[i].resize(extraInfo.numExtraSegments);
+        if (useCtrlMsgExtraPackets) {
+          ctrlMsgExtraRecvMsgs[i].resize(extraInfo.numExtraPackets);
+        }
 
         // Issue all irecvs for this peer
         for (int pktIdx = 0; pktIdx < extraInfo.numExtraPackets; pktIdx++) {
           int startIdx, count;
           computePacketSlice(
               pktIdx,
-              kExtraSegsPerPacket,
+              extraSegsPerPacket,
               extraInfo.numExtraSegments,
               startIdx,
               count);
-          size_t recvSize = count * sizeof(ctran::utils::CtranIpcSegDesc);
 
           auto req = std::make_unique<CtranMapperRequest>();
           req->peer = peerList[i];
-          FB_COMMCHECK(irecvCtrlMsgImp(
-              &allRecvExtraSegments[i][startIdx],
-              recvSize,
-              peerList[i],
-              req.get()));
+          if (useCtrlMsgExtraPackets) {
+            FB_COMMCHECK(irecvCtrlMsgImp(
+                &ctrlMsgExtraRecvMsgs[i][pktIdx],
+                sizeof(ControlMsg),
+                peerList[i],
+                req.get()));
+          } else {
+            size_t recvSize = count * sizeof(ctran::utils::CtranIpcSegDesc);
+            FB_COMMCHECK(irecvCtrlMsgImp(
+                &allRecvExtraSegments[i][startIdx],
+                recvSize,
+                peerList[i],
+                req.get()));
+          }
           extraRecvReqPtrs.push_back(std::move(req));
         }
       }
@@ -1220,6 +1252,17 @@ commResult_t CtranMapper::allGatherCtrl(
         }
       }
       if (!hasPending) {
+        if (useCtrlMsgExtraPackets && !ctrlMsgExtraRecvMsgs[i].empty()) {
+          int segIdx = 0;
+          for (const auto& msg : ctrlMsgExtraRecvMsgs[i]) {
+            const int count = std::min(
+                kCtrlMsgExtraSegsPerPacket,
+                static_cast<int>(allRecvExtraSegments[i].size()) - segIdx);
+            for (int j = 0; j < count; j++) {
+              allRecvExtraSegments[i][segIdx++] = msg.ipcDesc.desc.segments[j];
+            }
+          }
+        }
         FB_COMMCHECK(this->importMem(
             peerList[i],
             recvMsgs[i],
