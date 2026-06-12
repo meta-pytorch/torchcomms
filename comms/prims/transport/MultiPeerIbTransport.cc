@@ -3,6 +3,7 @@
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -30,8 +31,12 @@ namespace comms::prims {
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     int myRank,
     int nRanks,
-    std::shared_ptr<meta::comms::IBootstrap> bootstrap)
-    : myRank_(myRank), nRanks_(nRanks), bootstrap_(std::move(bootstrap)) {
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+    MultipeerIbTransportConfig config)
+    : myRank_(myRank),
+      nRanks_(nRanks),
+      bootstrap_(std::move(bootstrap)),
+      config_(std::move(config)) {
   if (myRank_ < 0 || myRank_ >= nRanks_) {
     throw std::invalid_argument("Invalid rank");
   }
@@ -221,6 +226,175 @@ std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
   VLOG(1) << "MultiPeerIbTransport: exchanged buffer info with " << numPeers
           << " peers";
   return peerBuffers;
+}
+
+bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format(
+            "isPeerMaterialized: invalid peerRank={} (myRank={}, nRanks={})",
+            peerRank,
+            myRank_,
+            nRanks_));
+  }
+  if (!config_.ibLazyConnect) {
+    return true;
+  }
+  return peerMaterialized_[rankToPeerIndex(peerRank)];
+}
+
+void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
+  if (!config_.ibLazyConnect) {
+    return;
+  }
+  if (materializationFailed_) {
+    throw std::runtime_error(
+        "MultiPeerIbTransport: lazy peer materialization previously failed; "
+        "retry is not supported");
+  }
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format(
+            "queuePeerForMaterialization: invalid peerRank={} (myRank={}, "
+            "nRanks={})",
+            peerRank,
+            myRank_,
+            nRanks_));
+  }
+  if (isPeerMaterialized(peerRank)) {
+    return;
+  }
+  for (int p : pendingPeers_) {
+    if (p == peerRank) {
+      return;
+    }
+  }
+  pendingPeers_.push_back(peerRank);
+}
+
+std::vector<IbTransportExchInfoAll> MultiPeerIbTransportBase::allGatherExchInfo(
+    const IbTransportExchInfoAll& localInfo) {
+  if (nRanks_ > kMaxRanksForAllGather) {
+    throw std::runtime_error(
+        fmt::format(
+            "Too many ranks ({}) for allGather-based exchange, max is {}",
+            nRanks_,
+            kMaxRanksForAllGather));
+  }
+  std::vector<IbTransportExchInfoAll> allInfo(nRanks_);
+  allInfo[myRank_] = localInfo;
+  auto result =
+      bootstrap_
+          ->allGather(
+              allInfo.data(), sizeof(IbTransportExchInfoAll), myRank_, nRanks_)
+          .get();
+  if (result != 0) {
+    throw std::runtime_error(
+        "MultiPeerIbTransport::allGatherExchInfo allGather failed");
+  }
+  return allInfo;
+}
+
+void MultiPeerIbTransportBase::validatePeerTopology(
+    const std::vector<IbTransportExchInfoAll>& allInfo) const {
+  const int numPeers = nRanks_ - 1;
+  for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+    const int peerRank = peerIndexToRank(peerIndex);
+    const auto& peerInfo = allInfo[peerRank];
+    // Same-rail pairing relies on the symmetric (myRank+peerRank) % numNics
+    // offset, which only makes sense when both sides agree on numNics.
+    if (peerInfo.numNics != numNics_) {
+      throw std::runtime_error(
+          fmt::format(
+              "Peer rank {} reports numNics={} but my numNics={}; all ranks "
+              "must agree on numNics for same-rail pairing",
+              peerRank,
+              peerInfo.numNics,
+              numNics_));
+    }
+    if (peerInfo.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
+      throw std::runtime_error(
+          fmt::format(
+              "Peer rank {} reports numQpsPerPeerPerNic={} but mine is {}; all "
+              "ranks must use the same numQpsPerPeerPerNic",
+              peerRank,
+              peerInfo.numQpsPerPeerPerNic,
+              config_.numQpsPerPeerPerNic));
+    }
+  }
+}
+
+void MultiPeerIbTransportBase::exchangeRawWithPeer(
+    int peerRank,
+    const void* localPayload,
+    void* remotePayload,
+    std::size_t bytes,
+    int tag) {
+  auto timeoutUs = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::milliseconds(config_.materializePeerTimeoutMs));
+  auto waitFuture = [&](auto&& future, const char* op) -> int {
+    try {
+      return std::move(future).get(timeoutUs);
+    } catch (const std::exception&) {
+      throw std::runtime_error(
+          fmt::format(
+              "materializePeer: rank {} {} with peer {} timed out ({}ms)",
+              myRank_,
+              op,
+              peerRank,
+              config_.materializePeerTimeoutMs));
+    }
+  };
+
+  // Lower rank recvs first to avoid deadlock with blocking bootstrap
+  // implementations (e.g. MpiBootstrap uses blocking MPI_Send/MPI_Recv).
+  if (myRank_ < peerRank) {
+    auto recvFuture =
+        bootstrap_->recv(remotePayload, bytes, peerRank, /*tag=*/tag);
+    int recvResult = waitFuture(std::move(recvFuture), "recv");
+    if (recvResult != 0) {
+      throw std::runtime_error(
+          fmt::format(
+              "materializePeer: rank {} recv from peer {} failed (error {})",
+              myRank_,
+              peerRank,
+              recvResult));
+    }
+    auto sendFuture = bootstrap_->send(
+        const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
+    int sendResult = waitFuture(std::move(sendFuture), "send");
+    if (sendResult != 0) {
+      throw std::runtime_error(
+          fmt::format(
+              "materializePeer: rank {} send to peer {} failed (error {})",
+              myRank_,
+              peerRank,
+              sendResult));
+    }
+  } else {
+    auto sendFuture = bootstrap_->send(
+        const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
+    int sendResult = waitFuture(std::move(sendFuture), "send");
+    if (sendResult != 0) {
+      throw std::runtime_error(
+          fmt::format(
+              "materializePeer: rank {} send to peer {} failed (error {})",
+              myRank_,
+              peerRank,
+              sendResult));
+    }
+    auto recvFuture =
+        bootstrap_->recv(remotePayload, bytes, peerRank, /*tag=*/tag);
+    int recvResult = waitFuture(std::move(recvFuture), "recv");
+    if (recvResult != 0) {
+      throw std::runtime_error(
+          fmt::format(
+              "materializePeer: rank {} recv from peer {} failed (error {})",
+              myRank_,
+              peerRank,
+              recvResult));
+    }
+  }
 }
 
 } // namespace comms::prims

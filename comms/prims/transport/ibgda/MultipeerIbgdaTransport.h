@@ -173,54 +173,10 @@ class MultipeerIbgdaTransport
    */
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
 
-  /**
-   * Lazily materialize one peer and return after its GPU device transport slot
-   * is populated. No-op in eager mode or if the peer is already materialized.
-   *
-   * For ring-style setup where all ranks need to expose multiple peers before
-   * connecting, use queuePeerForMaterialization() followed by connectPeers().
-   *
-   * @param peerRank Global rank of the peer to materialize
-   */
-  void materializePeer(int peerRank);
-
-  /**
-   * Queue a peer for lazy materialization. No network I/O happens here.
-   * Call connectPeers() to complete all queued peers.
-   *
-   * No-op in eager mode or if the peer is already materialized.
-   *
-   * @param peerRank Global rank of the peer to queue
-   */
-  void queuePeerForMaterialization(int peerRank);
-
-  /**
-   * Connect all queued peers. In lazy mode, this MUST be called after
-   * queuePeerForMaterialization() and BEFORE fetching transport pointers for
-   * kernel launch.
-   *
-   * Processes peers in sorted rank order to avoid deadlock for >2 ranks.
-   * No-op in eager mode or if no peers are queued.
-   *
-   * Example:
-   *   transport->queuePeerForMaterialization(prev_rank);
-   *   transport->queuePeerForMaterialization(next_rank);
-   *   transport->connectPeers();
-   *   prev = transport->getP2pTransportDevice(prev_rank);
-   *   next = transport->getP2pTransportDevice(next_rank);
-   *   launchKernel<<<...>>>(prev, next);
-   */
-  void connectPeers();
-
-  /**
-   * Check whether a peer's staging buffers have been allocated and its
-   * GPU device transport slot populated. In eager mode, returns true for
-   * all valid peers after exchange().
-   *
-   * @param peerRank Global rank of the peer
-   * @return true if the peer is ready for kernel use
-   */
-  bool isPeerMaterialized(int peerRank) const;
+  // materializePeer()/queuePeerForMaterialization()/connectPeers()/
+  // isPeerMaterialized() are inherited from MultiPeerIbTransport (the lazy
+  // state machine lives in the base; this backend supplies the
+  // doMaterializePeer()/cleanupPeerOnFailure() hooks below).
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -295,21 +251,17 @@ class MultipeerIbgdaTransport
 
   PeerQpPayload buildLocalQpPayload(int peerIndex) const;
   void allocatePeerBuffers(int peerIndex, PeerBufferPayload& payload);
-  template <typename T>
-  T exchangeWithPeer(int peerRank, const T& localPayload, int tag);
   void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
   void applyRemoteViews(int peerIndex, const PeerBufferPayload& remotePayload);
   void cleanupPeerOnFailure(int peerIndex);
 
-  // The MR registry (register/deregister/exchangeBuffer + the cache) lives
-  // entirely in MultiPeerIbTransport; it registers on the base-owned
-  // nics_[*].ibvPd, which openIbDevice() fills.
+  // MultiPeerIbTransport drives the shared control plane (config, MR registry,
+  // lazy materialization, bootstrap exchangeWithPeer) and calls back into this
+  // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
+  friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
 
-  // myRank_/nRanks_/bootstrap_ are inherited (protected) from
-  // MultiPeerIbTransport.
-
-  // Configuration
-  MultipeerIbgdaTransportConfig config_;
+  // myRank_/nRanks_/bootstrap_/config_/registeredBuffers_/nics_/lazy-state are
+  // inherited (protected) from MultiPeerIbTransport.
 
   // DOCA GPU context (shared across NICs).
   doca_gpu* docaGpu_{nullptr};
@@ -396,15 +348,8 @@ class MultipeerIbgdaTransport
   // Empty in eager mode.
   std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
 
-  // Lazy mode: set to true after writeDeviceTransportSlot completes.
-  std::vector<bool> peerMaterialized_;
-
-  // Lazy mode: set after a failed connectPeers() attempt. Retrying peer
-  // materialization is unsafe because peer-side state may be asymmetric.
-  bool materializationFailed_{false};
-
-  // Queued peers awaiting connectPeers().
-  std::vector<int> pendingPeers_;
+  // Lazy state (pendingPeers_/peerMaterialized_/materializationFailed_) is
+  // inherited (protected) from MultiPeerIbTransport.
 };
 
 } // namespace comms::prims
