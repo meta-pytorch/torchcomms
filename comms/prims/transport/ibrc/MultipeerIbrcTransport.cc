@@ -133,6 +133,9 @@ uint32_t keyForIbvPostSend(uint32_t deviceOrderKey) {
 #endif
 }
 
+constexpr uint16_t kSupportedIbrcFlags =
+    IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD | IBRC_HAS_COUNTER;
+
 } // namespace
 
 MultipeerIbrcTransport::MappedAllocation::~MappedAllocation() {
@@ -342,7 +345,7 @@ bool MultipeerIbrcTransport::pollOneCmdQueueDescriptor(
   auto& state = cmdQueue.cmdStates.at(slot);
   state.seq = seq;
   state.flags = desc.flags;
-  state.counterId = desc.counter_id;
+  state.counterAddr = desc.counter_addr;
   state.counterValue = desc.counter_value;
   state.peerCompleted = false;
 
@@ -405,6 +408,13 @@ bool MultipeerIbrcTransport::drainCompletedCommands(
       return progressed;
     }
 
+    if ((state.flags & IBRC_HAS_COUNTER) != 0) {
+      __atomic_fetch_add(
+          reinterpret_cast<uint64_t*>(state.counterAddr),
+          state.counterValue,
+          __ATOMIC_RELEASE);
+    }
+
     state = IbrcCmdState{};
     ++cmdQueue.nextToComplete;
     __atomic_store_n(
@@ -422,19 +432,20 @@ void MultipeerIbrcTransport::postDescriptor(
   const bool hasSignal = (desc.flags & IBRC_HAS_SIGNAL) != 0;
   const bool hasCounter = (desc.flags & IBRC_HAS_COUNTER) != 0;
   const bool hasData = op == IbrcOp::PUT && desc.bytes > 0;
+  const uint16_t unsupportedFlags = desc.flags & ~kSupportedIbrcFlags;
 
   if (op != IbrcOp::PUT && op != IbrcOp::SIGNAL) {
     publishQueueError(peerIndex, cmdQueue, EINVAL, "unsupported descriptor op");
     return;
   }
+  if (unsupportedFlags != 0) {
+    publishQueueError(
+        peerIndex, cmdQueue, ENOTSUP, "unsupported descriptor flags");
+    return;
+  }
   if (op == IbrcOp::SIGNAL && desc.bytes != 0) {
     publishQueueError(
         peerIndex, cmdQueue, EINVAL, "SIGNAL descriptor cannot carry data");
-    return;
-  }
-  if (hasCounter) {
-    publishQueueError(
-        peerIndex, cmdQueue, ENOTSUP, "counter completion is not implemented");
     return;
   }
   if (hasSignal && (desc.flags & IBRC_SIGNAL_ADD) == 0) {
@@ -455,11 +466,31 @@ void MultipeerIbrcTransport::postDescriptor(
       peerIndex,
       static_cast<int>(cmdQueue.nic),
       static_cast<int>(cmdQueue.qpSlot));
-  if (!hasData && !hasSignal) {
+  auto& state = cmdQueue.cmdStates.at(seq & cmdQueue.device.mask);
+  if (hasCounter) {
+    if (desc.counter_addr == 0) {
+      publishQueueError(peerIndex, cmdQueue, EINVAL, "counter address is null");
+      return;
+    }
+    const auto counterAddr = static_cast<uintptr_t>(desc.counter_addr);
+    if (counterAddr % alignof(uint64_t) != 0) {
+      publishQueueError(
+          peerIndex, cmdQueue, EINVAL, "counter address is unaligned");
+      return;
+    }
+  }
+  if (!hasData && !hasSignal && !hasCounter) {
     publishQueueError(peerIndex, cmdQueue, EINVAL, "empty descriptor");
     return;
   }
-  if (hasSignal && qpResource.signalAtomicSinkMr == nullptr) {
+  if (!hasData && !hasSignal) {
+    state.peerCompleted = true;
+    drainCompletedCommands(peerIndex, cmdQueue);
+    return;
+  }
+  if (hasSignal &&
+      (qpResource.signalAtomicSinkMr == nullptr ||
+       qpResource.signalAtomicSink == nullptr)) {
     publishQueueError(peerIndex, cmdQueue, EINVAL, "missing signal sink MR");
     return;
   }

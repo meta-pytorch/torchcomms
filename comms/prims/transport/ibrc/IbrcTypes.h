@@ -44,17 +44,17 @@ struct alignas(kIbrcCacheLineBytes) IbrcDesc {
   uint64_t signal_addr;
   uint64_t signal_value;
 
+  uint64_t counter_addr;
   uint64_t counter_value;
 
   uint32_t lkey_device_order;
   uint32_t rkey_device_order;
   uint32_t signal_rkey_device_order;
-  uint32_t counter_id;
 
   uint16_t op;
   uint16_t flags;
 
-  uint8_t padding[52];
+  uint8_t padding[48];
 
   uint64_t ready_seq;
 };

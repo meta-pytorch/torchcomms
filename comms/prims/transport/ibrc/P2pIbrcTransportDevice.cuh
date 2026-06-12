@@ -90,13 +90,9 @@ class P2pIbrcTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
-    (void)counterVal;
-    if (counterBuf.ptr != nullptr) {
-      trap("P2pIbrcTransportDevice: counters are not implemented");
-    }
-
     const bool hasData = nbytes > 0;
     const bool hasSignal = signalBuf.ptr != nullptr;
+    const bool hasCounter = counterBuf.ptr != nullptr;
     if (hasData) {
       if (localBuf.ptr == nullptr || remoteBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: put data buffer is null");
@@ -125,6 +121,12 @@ class P2pIbrcTransportDevice {
         desc.signal_value = signalVal;
         desc.signal_rkey_device_order = signalBuf.rkey_per_device[nicId].value;
         desc.flags |= IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD;
+      }
+
+      if (hasCounter) {
+        desc.counter_addr = reinterpret_cast<uint64_t>(counterBuf.ptr);
+        desc.counter_value = counterVal;
+        desc.flags |= IBRC_HAS_COUNTER;
       }
 
       enqueue(queueId, desc);
