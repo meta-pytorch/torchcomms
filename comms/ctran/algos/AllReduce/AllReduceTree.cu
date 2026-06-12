@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include <cuda_fp16.h>
 
@@ -841,4 +841,4 @@ __launch_bounds__(ctran::allreduce::tree::kBlockSize, 1) void ctranKernelAllRedu
   }
 }
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

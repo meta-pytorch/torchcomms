@@ -6,14 +6,14 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 1
+ENABLE_PRIMS ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
 NCCLDIR = $(abspath ../)
 SHAREDDIR = $(abspath ${NCCLDIR}/..)
 
-# fbcode/Pipes CUDA sources include Folly headers that require C++20.
+# fbcode/prims CUDA sources include Folly headers that require C++20.
 CXXSTD ?= -std=c++20
 
 include ../makefiles/common.mk
@@ -28,9 +28,9 @@ ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
 endif
 
-ifeq ($(ENABLE_PIPES),1)
-CXXFLAGS += -DENABLE_PIPES
-NVCUFLAGS += -DENABLE_PIPES
+ifeq ($(ENABLE_PRIMS),1)
+CXXFLAGS += -DENABLE_PRIMS
+NVCUFLAGS += -DENABLE_PRIMS
 endif
 
 ##### src files
@@ -104,7 +104,7 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
 LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
-ifeq ($(ENABLE_PIPES),1)
+ifeq ($(ENABLE_PRIMS),1)
 ## CTRAN CUDA source files
 LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceTree.cu
 endif
@@ -146,6 +146,23 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
+
+ifeq ($(ENABLE_PRIMS),1)
+LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/IbverbsLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
+endif
 
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
@@ -287,8 +304,8 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PIPES),1)
-LDFLAGS    += -lpipes
+ifeq ($(ENABLE_PRIMS),1)
+LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
 endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)

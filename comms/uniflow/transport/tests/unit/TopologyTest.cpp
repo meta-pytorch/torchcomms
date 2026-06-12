@@ -1057,6 +1057,19 @@ TEST_F(TopologyNicTest, NodeNamesAreSet) {
   EXPECT_EQ(topo->getNicNode(0).name, "mlx5_0");
 }
 
+TEST_F(TopologyNicTest, NicNumaNodeLookup) {
+  // Override nic2_ to NUMA node 1 so we can verify per-NIC differentiation.
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_EQ(topo->nicNumaNode("mlx5_0"), 0);
+  EXPECT_EQ(topo->nicNumaNode("mlx5_2"), 1);
+  EXPECT_EQ(topo->nicNumaNode("missing_nic"), -1);
+}
+
 TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {
   setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
 

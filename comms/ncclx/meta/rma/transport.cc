@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // Pipes transport API implementations (non-window transport operations).
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "checks.h"
 #include "comm.h"
@@ -55,4 +55,4 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
   return ncclSuccess;
 }
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

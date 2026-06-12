@@ -482,7 +482,7 @@ ncclResult_t ncclAllToAllv(
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 __attribute__((visibility("default")))
 ncclResult_t ncclx::deviceAllToAllv(
     const void* sendbuff,
@@ -527,7 +527,7 @@ ncclResult_t ncclx::deviceAllToAllv(
     const std::unordered_map<std::string, std::string>& /*hints*/) {
   return ncclInvalidUsage;
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
 __attribute__((visibility("default")))
 ncclResult_t ncclx::alltoallvDynamic(

@@ -180,6 +180,8 @@ class XcclMock : public XcclApi {
       redOpDestroy,
       (onecclRedOp_t op, onecclComm_t comm),
       (override));
+  MOCK_METHOD(onecclResult_t, memAlloc, (void** buff, size_t size), (override));
+  MOCK_METHOD(onecclResult_t, memFree, (void* buff), (override));
   MOCK_METHOD(void, setVersionInfo, (), (override));
 
   void setupDefaultBehaviors() {
@@ -234,6 +236,9 @@ class XcclMock : public XcclApi {
     ON_CALL(*this, redOpCreatePreMulSum(_, _, _, _, _))
         .WillByDefault(Return(onecclSuccess));
     ON_CALL(*this, redOpDestroy(_, _)).WillByDefault(Return(onecclSuccess));
+
+    ON_CALL(*this, memAlloc(_, _)).WillByDefault(Return(onecclSuccess));
+    ON_CALL(*this, memFree(_)).WillByDefault(Return(onecclSuccess));
 
     ON_CALL(*this, getErrorString(_)).WillByDefault(Return("Mock XCCL Error"));
   }

@@ -1,9 +1,11 @@
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
 
 namespace torch::comms {
 
@@ -214,7 +216,7 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
 
       runAbortHooks();
 
-      abort();
+      ::abort();
     }
   }
 
@@ -236,7 +238,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
       runAbortHooks();
-      abort();
+      ::abort();
     } else {
       throw std::runtime_error("XCCL operation timed out");
     }
@@ -332,4 +334,13 @@ void TorchCommXCCL::returnEvent(xpuEvent_t&& event) {
         xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
   }
 }
+
+void TorchCommXCCL::attachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().registerComm(this);
+}
+
+void TorchCommXCCL::detachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().deregisterComm(this);
+}
+
 } // namespace torch::comms

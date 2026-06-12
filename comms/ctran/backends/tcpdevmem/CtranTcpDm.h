@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <deque>
 #include <unordered_map>
 
 #include "comms/ctran/CtranComm.h"
@@ -46,6 +47,19 @@ class CtranTcpDm {
       CtranTcpDmRequest& req,
       void* unpackPool);
 
+  // Counter-based irecv: request is managed internally, completion
+  // increments a per-peer counter checked by checkNotify.
+  commResult_t irecvCounted(
+      int peerRank,
+      void* handle,
+      void* data,
+      size_t size,
+      void* unpackPool);
+
+  // Check if a data recv has completed for peerRank (counter-based,
+  // analogous to IB's notifyCount_ approach).
+  commResult_t checkNotify(int peerRank, bool* done);
+
   commResult_t iput(
       const void* sbuf,
       void* dbuf,
@@ -58,27 +72,11 @@ class CtranTcpDm {
     return isend(peerRank, tcpdmRegElem, (void*)sbuf, len, *req);
   }
 
-  commResult_t irecvCtrlMsg(
-      [[maybe_unused]] ControlMsg& msg,
-      [[maybe_unused]] int peerRank,
-      CtranTcpDmRequest& req) {
-    // Don't share receiver's control information with the sender. Rely
-    // on the receiver buffering (TCP window) instead of explicit
-    // synchronization.
-    req.complete();
-    return commSuccess;
-  }
+  commResult_t
+  irecvCtrlMsg(ControlMsg& msg, int peerRank, CtranTcpDmRequest& req);
 
-  commResult_t isendCtrlMsg(
-      [[maybe_unused]] const ControlMsg& msg,
-      [[maybe_unused]] int peerRank,
-      CtranTcpDmRequest& req) {
-    // Don't share receiver's control information with the sender. Rely
-    // on the receiver buffering (TCP window) instead of explicit
-    // synchronization.
-    req.complete();
-    return commSuccess;
-  }
+  commResult_t
+  isendCtrlMsg(const ControlMsg& msg, int peerRank, CtranTcpDmRequest& req);
 
   void profilerStart();
   void profilerEnd();
@@ -138,6 +136,29 @@ class CtranTcpDm {
     void* unpackPool{nullptr};
   };
   std::list<std::unique_ptr<RecvRequest>> queuedRecv_;
+
+  // Lazy per-peer TCP connections for sync-only control messages.
+  // Created on-demand by ensureCtrlSocket() on first isendCtrlMsg/irecvCtrlMsg.
+  // Smaller rank initiates; larger rank's bootstrapAccept thread accepts.
+  std::unordered_map<int, ctran::bootstrap::Socket> ctrlSocks_;
+  void ensureCtrlSocket(int peerRank);
+
+  // Per-peer queue of pending sync recv requests (from irecvCtrlMsg).
+  // Completed in FIFO order as sync bytes arrive on ctrlSocks_.
+  std::unordered_map<int, std::deque<CtranTcpDmRequest*>> pendingSyncRecvs_;
+
+  // Per-peer count of received sync bytes (for debugging).
+  std::unordered_map<int, int> syncRecvCount_;
+
+  // Counter-based recv notification (analogous to IB's notifyCount_).
+  // Internally-owned requests for irecvCounted; completed in FIFO order.
+  std::unordered_map<int, std::deque<std::unique_ptr<CtranTcpDmRequest>>>
+      pendingRecvNotifies_;
+  // Per-peer count of completed data recvs, decremented by checkNotify.
+  std::unordered_map<int, int> recvNotifyCount_;
+
+  void recvNotifyProgress();
+  void ctrlSyncProgress();
 
   commResult_t connectPeer(int peerRank);
 

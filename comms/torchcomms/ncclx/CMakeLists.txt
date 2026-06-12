@@ -83,12 +83,12 @@ else()
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
 
-# Check if ENABLE_PIPES is requested via environment variable.
-# When enabled, compiles pipes device backend support into _comms_ncclx.
-# Requires NCCL built with ENABLE_PIPES=1 (pipes transport in libnccl.so).
-if("$ENV{ENABLE_PIPES}" STREQUAL "1")
-    set(TORCHCOMMS_ENABLE_PIPES ON)
-    message(STATUS "ENABLE_PIPES=1 set, building with pipes support")
+# Check if ENABLE_PRIMS is requested via environment variable.
+# When enabled, compiles prims device backend support into _comms_ncclx.
+# Requires NCCL built with ENABLE_PRIMS=1 (prims transport in libnccl.so).
+if("$ENV{ENABLE_PRIMS}" STREQUAL "1")
+    set(TORCHCOMMS_ENABLE_PRIMS ON)
+    message(STATUS "ENABLE_PRIMS=1 set, building with prims support")
     if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
         file(GLOB TORCHCOMMS_DEVICE_PIPES_SOURCE
             "comms/torchcomms/device/pipes/*.cpp")
@@ -96,9 +96,9 @@ if("$ENV{ENABLE_PIPES}" STREQUAL "1")
         set(TORCHCOMMS_DEVICE_PIPES_SOURCE "")
     endif()
 else()
-    set(TORCHCOMMS_ENABLE_PIPES OFF)
+    set(TORCHCOMMS_ENABLE_PRIMS OFF)
     set(TORCHCOMMS_DEVICE_PIPES_SOURCE "")
-    message(STATUS "ENABLE_PIPES not set, building without pipes support")
+    message(STATUS "ENABLE_PRIMS not set, building without prims support")
 endif()
 
 add_library(torchcomms_comms_ncclx MODULE
@@ -129,10 +129,10 @@ if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
         PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
 endif()
 
-# Add ENABLE_PIPES compile definition for pipes device backend
-if(TORCHCOMMS_ENABLE_PIPES)
+# Add ENABLE_PRIMS compile definition for prims device backend
+if(TORCHCOMMS_ENABLE_PRIMS)
     target_compile_definitions(torchcomms_comms_ncclx
-        PRIVATE ENABLE_PIPES=1)
+        PRIVATE ENABLE_PRIMS=1)
 endif()
 
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
@@ -150,8 +150,17 @@ if(USE_SYSTEM_LIBS)
         "-lboost_filesystem"
     )
 else()
+    set(TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS "")
+    if(TORCHCOMMS_ENABLE_PRIMS)
+        list(APPEND TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS
+            "-ldoca_gpunetio"
+            "-libverbs"
+            "-lmlx5"
+        )
+    endif()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
+        ${TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS}
         "-l:libcomms_tracing_service.a"
         "-Wl,--start-group"
         "-l:libasync.a"

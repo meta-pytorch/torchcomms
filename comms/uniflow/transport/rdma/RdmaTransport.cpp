@@ -1,7 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/core/NumaUtils.h"
 #include "comms/uniflow/drivers/DeviceAdapter.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
@@ -736,10 +738,40 @@ uint32_t RdmaTransport::postSend(
   return 0; // Signal to caller that posting failed.
 }
 
-uint32_t RdmaTransport::getQpAvail(std::vector<uint32_t>& qpAvail) {
-  uint32_t totalAvail = 0;
+uint32_t RdmaTransport::getQpAvail(
+    std::vector<uint32_t>& qpAvail,
+    int bufNuma) {
   const uint32_t kMaxWr = config_.maxWr;
+  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
+  if (numNics == 0) {
+    return 0;
+  }
+
+  // For host memory with a known NUMA node, only NICs on that node are eligible
+  // (so put/get avoids cross-socket DMA); cross-socket QPs are capped to zero
+  // capacity. Fall back to all NICs if none are NUMA-local, so a transfer can
+  // never stall.
+  bool restrictToNuma = false;
+  if (bufNuma >= 0) {
+    for (size_t q = 0; q < qpAvail.size(); ++q) {
+      if (nics_[q % numNics].numaNode == bufNuma) {
+        restrictToNuma = true;
+        break;
+      }
+    }
+    if (!restrictToNuma) {
+      UNIFLOW_LOG_DEBUG(
+          "no NUMA-local NIC for bufNuma={}, falling back to all NICs",
+          bufNuma);
+    }
+  }
+
+  uint32_t totalAvail = 0;
   for (size_t q = 0; q < qpAvail.size(); ++q) {
+    if (restrictToNuma && nics_[q % numNics].numaNode != bufNuma) {
+      qpAvail[q] = 0; // cross-socket QP — not eligible for this buffer
+      continue;
+    }
     qpAvail[q] = kMaxWr - numWrsPerQp_[q];
     totalAvail += qpAvail[q];
   }
@@ -791,15 +823,29 @@ Result<uint32_t> RdmaTransport::spray(
     size_t& idx,
     uint32_t taskId,
     Task& task) {
+  if (idx >= wrs.size()) {
+    return 0;
+  }
   const uint32_t numQps = static_cast<uint32_t>(qps_.size());
+
   const uint32_t remaining = static_cast<uint32_t>(wrs.size() - idx);
 
-  // Calculate available capacity per QP.
+  // NUMA policy is derived from the first WR's local handle. In practice each
+  // spray batch comes from a single TransferRequest (one local buffer), so
+  // this is correct. If buildSendWrs ever batches WRs from multiple buffers
+  // with different NUMA nodes into one vector, this should be split into
+  // per-NUMA-policy runs to avoid posting later WRs to the wrong NICs. But in
+  // reality, we will bind the process into one numa node. In addition, even if
+  // Wrs in spray cross different numa nodes, it will be gated by depth of the
+  // QP and the next iteration will choose the correct numa node.
+  const int bufNuma = wrs[idx].localHandle != nullptr
+      ? wrs[idx].localHandle->hostBufferNumaNode()
+      : -1;
   std::vector<uint32_t> qpAvail(numQps);
-  uint32_t totalAvail = getQpAvail(qpAvail);
+  uint32_t totalAvail = getQpAvail(qpAvail, bufNuma);
 
   if (totalAvail == 0) {
-    return 0; // All QPs full — caller should poll and retry.
+    return 0; // All eligible QPs full — caller should poll and retry.
   }
 
   // Weighted distribution: assign chunks to each QP proportional
@@ -1355,7 +1401,7 @@ Result<size_t> RdmaTransport::postSlabTransfer(
 
   size_t chunkIdx = 0;
   for (uint32_t q = 0; q < numQps; ++q) {
-    if (qpAssigned[q] == 0) {
+    if (qpAssigned[q] <= 1) {
       continue;
     }
     uint32_t localNicIdx = q % nics_.size();
@@ -1824,7 +1870,14 @@ RdmaTransportFactory::RdmaTransportFactory(
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    nicsHandle_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
+    int numaNode = sharedTopology().nicNumaNode(deviceName);
+    nicsHandle_->emplace_back(
+        targetDevice, ibvApi_, numaNode, config_.gidIndex, portNum);
+  }
+
+  if (config_.slabPoolConfig.slabNum > 0) {
+    slabPool_ = std::make_shared<RdmaSlabPool>(
+        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
   }
 }
 
@@ -1928,8 +1981,13 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     mrs.push_back(mrResult.value());
   }
 
+  // For pinned (non-ODP) MRs, ibv_reg_mr has faulted the pages, so the host
+  // buffer's NUMA node is now stable; capture it for NUMA-aware QP scheduling.
+  const int numaNode = segment.memType() == MemoryType::DRAM
+      ? detectHostNumaNode(segment.mutable_data())
+      : -1;
   return std::make_unique<RdmaRegistrationHandle>(
-      std::move(mrs), ibvApi_, domainId_);
+      std::move(mrs), ibvApi_, domainId_, numaNode);
 }
 
 Result<std::unique_ptr<RemoteRegistrationHandle>>
@@ -1974,6 +2032,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
   auto peerTopo = RdmaTopologyInfo::deserialize(peerTopology).value();
   auto config = config_;
   config.numQps = std::min(peerTopo.numQps, config.numQps);
+
   return std::make_unique<RdmaTransport>(
       ibvApi_,
       cudaApi_,
@@ -1982,7 +2041,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
       nicsHandle_,
       domainId_,
       config,
-      nullptr);
+      slabPool_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for

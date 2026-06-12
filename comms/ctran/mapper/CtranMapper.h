@@ -1105,9 +1105,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       FB_COMMCHECK(this->ctranIb->waitNotify<PerfConfig>(
           notify->peer, notify->notifyCnt));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // TODO(T239012482): enable and test TCPDM FT
-      while (!notify->tcpDmReq.isComplete()) {
+      bool done = false;
+      while (!done && !comm->testAbort()) {
         FB_COMMCHECK(this->ctranTcpDm->progress());
+        FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, &done));
       }
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
@@ -1942,14 +1943,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       kernElem->revoke();
       kernElem = nullptr;
     } else if (backend == CtranMapperBackend::TCPDM) {
-      // We are mapping two-sided communications (i.e., send/receive) to
-      // one-sided communications (i.e., iPUT/waitNotify). Due to this, we
-      // handle TCP differently. Specifically, for iPUT, TCP performs the send
-      // operation, and for waitNotify, TCP performs the receive operation.
-      // Consequently, we need to progress TCP to ensure it completes the
-      // receive operation. Once it does, it will mark tcpDmReq as complete,
-      // allowing us to exit the loop.
-
       const void* rbuff = nullptr;
       size_t len = 0;
       if (kernElem != nullptr) {
@@ -1973,12 +1966,14 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         len = regElem->len;
       }
 
-      FB_COMMCHECK(this->ctranTcpDm->irecv(
+      // Counter-based: request managed internally by CtranTcpDm.
+      // Completions are tracked via a per-peer counter, checked by
+      // checkNotify (analogous to IB's notifyCount_).
+      FB_COMMCHECK(this->ctranTcpDm->irecvCounted(
           peerRank,
           regElem->tcpRegElem,
           (void*)rbuff,
           len,
-          notify->tcpDmReq,
           this->context.unpackPool));
     }
 
@@ -2005,9 +2000,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (notify->backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(this->ctranIb->checkNotify<PerfConfig>(notify->peer, done));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // Progress TCPDM transport to post any queued irecv requests
       FB_COMMCHECK(this->ctranTcpDm->progress());
-      *done = notify->tcpDmReq.isComplete();
+      FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, done));
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
       return commInternalError;

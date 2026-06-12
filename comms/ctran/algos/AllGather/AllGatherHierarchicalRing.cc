@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include <cuda_runtime.h>
 
@@ -476,7 +476,7 @@ commResult_t ctranAllGatherHierarchicalRing(
   return commSuccess;
 }
 
-#else // !ENABLE_PIPES
+#else // !ENABLE_PRIMS
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
@@ -491,4 +491,4 @@ commResult_t ctranAllGatherHierarchicalRing(
   return commInternalError;
 }
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

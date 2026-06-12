@@ -498,7 +498,7 @@ ncclResult_t DefaultNcclxApi::commDump(
   return ::ncclCommDump(comm, map);
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 ncclResult_t DefaultNcclxApi::winCreateDeviceWin(
     NcclxWindow win,
     int signal_count,
@@ -542,7 +542,7 @@ ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
     void* ptr) {
   return ncclWinLocalDeregisterBuffer(comm, ptr);
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 ncclResult_t DefaultNcclxApi::devCommCreate(
