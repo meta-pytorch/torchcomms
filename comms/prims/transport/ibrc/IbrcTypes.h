@@ -16,6 +16,10 @@ inline constexpr uint64_t kIbrcInvalidReadySeq = ~uint64_t{0};
 // data payload plus an ATOMIC_FETCH_AND_ADD for the signal.
 inline constexpr uint32_t kIbrcMaxWrsPerDescriptor = 2;
 
+// Sentinel error_queue value for transport-level errors that are not
+// attributable to a specific command queue.
+inline constexpr uint32_t kIbrcUnknownQueue = ~uint32_t{0};
+
 // Cache-line size: aligns the IBRC POD types and separates the host-mapped
 // command-queue producer/consumer indices to avoid false-sharing across the
 // GPU<->CPU boundary.
