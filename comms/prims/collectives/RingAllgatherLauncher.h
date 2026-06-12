@@ -4,9 +4,9 @@
 
 #include <cstddef>
 
-namespace comms::prims {
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
-class P2pIbgdaTransportDevice;
+namespace comms::prims {
 
 struct RingAllgatherLaunchParams {
   int my_rank{0};
@@ -22,8 +22,8 @@ struct RingAllgatherLaunchParams {
   struct RingParams {
     int prev_rank{0};
     int next_rank{0};
-    P2pIbgdaTransportDevice* prev{nullptr};
-    P2pIbgdaTransportDevice* next{nullptr};
+    P2pIbTransportDevice prev{};
+    P2pIbTransportDevice next{};
   };
   static constexpr int kMaxRings = 4;
   RingParams rings[kMaxRings]{};

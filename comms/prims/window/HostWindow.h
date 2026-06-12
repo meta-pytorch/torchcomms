@@ -25,7 +25,7 @@ enum class TransportType : uint8_t;
 /**
  * Configuration for unified window memory allocation.
  *
- * Supports per-peer signals, IBGDA-only counters, and dedicated barriers.
+ * Supports per-peer signals, IB-only counters, and dedicated barriers.
  * All types are optional — set count to 0 to skip allocation.
  */
 struct WindowConfig {
@@ -33,7 +33,7 @@ struct WindowConfig {
   // Use for point-to-point "has rank X signaled?" wait_signal_from().
   std::size_t peerSignalCount{0};
 
-  // IBGDA-only per-peer counters: per-peer local NIC completion.
+  // IB-only per-peer counters: per-peer local NIC completion.
   std::size_t peerCounterCount{0};
 
   // Number of barrier slots (dedicated buffers, flat accumulation model).
@@ -43,7 +43,7 @@ struct WindowConfig {
 /**
  * HostWindow - Host-side RAII manager for unified signal/counter buffers
  *
- * Manages dual NVL + IBGDA signal buffers and IBGDA-only counter buffers.
+ * Manages dual NVL + IB signal buffers and IB-only counter buffers.
  * Each transport domain has physically separate backing buffers to avoid
  * cross-transport atomicity hazards (GPU atomics vs NIC RDMA atomics).
  *
@@ -58,9 +58,10 @@ struct WindowConfig {
  * - Dedicated buffers using flat accumulation model. All peers atomicAdd
  *   to one slot, O(1) wait.
  *
- * COUNTER SEMANTICS (IBGDA-only):
+ * COUNTER SEMANTICS (IB-only):
  * - Counters are local NIC completion notifications (not remote peer acks)
- * - Companion QP writes to sender's own local counter buffer
+ * - IBGDA updates them through its companion-QP path
+ * - IBRC proxy mode updates them after polling normal-QP completion
  * - NVL doesn't need counters (stores are synchronous)
  *
  * COMMUNICATOR SEMANTICS:
@@ -263,8 +264,9 @@ class HostWindow {
   std::size_t ibgdaPeerSignalInboxSize_{0};
   std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalRemoteBufsDevice_;
 
-  // --- Per-peer counters (IBGDA-only, local — no exchange) ---
+  // --- Per-peer counters (IB-only, local — no exchange) ---
   IbgdaLocalBuffer ibgdaPeerCounterLocalBuf_;
+  void* ibgdaPeerCounterHostPtr_{nullptr};
 
   // --- User data buffer (optional, auto-registered via
   //     registerAndExchangeBuffer) ---
