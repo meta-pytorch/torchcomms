@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <gtest/gtest.h>
-#include <fstream>
 #include <unistd.h>
+#include <fstream>
 
 #include "comms/ctran/commstate/Topology.h"
 

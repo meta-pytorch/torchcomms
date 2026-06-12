@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-#include <cstring>
 #include <unistd.h>
+#include <cstring>
 #include <fstream>
 
 #include "comms/ctran/commstate/Topology.h"
@@ -103,7 +103,8 @@ std::optional<TopologyResult> loadTopology(
 
   if (host.empty()) {
     char hostname[256] = {};
-    if (gethostname(hostname, sizeof(hostname) - 1) == 0 && hostname[0] != '\0') {
+    if (gethostname(hostname, sizeof(hostname) - 1) == 0 &&
+        hostname[0] != '\0') {
       host = hostname;
       CLOGF(
           WARN,
