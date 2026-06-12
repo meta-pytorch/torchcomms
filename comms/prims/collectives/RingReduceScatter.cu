@@ -23,8 +23,8 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
   auto group = make_block_group();
   auto [ring_id, ring_group] = group.partition(NumRings);
   const auto& topo = args.rings[ring_id];
-  auto& prev = *topo.prev;
-  auto& next = *topo.next;
+  auto prev = topo.prev;
+  auto next = topo.next;
 
   const int W = args.num_ranks;
   const std::size_t chunk_elems = args.chunk_elements;

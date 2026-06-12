@@ -2,7 +2,10 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+
+#include "comms/prims/transport/Transport.cuh"
 
 namespace comms::prims::test {
 
@@ -113,9 +116,9 @@ void testDeviceWindowSignalAllAggregate(
     uint64_t* results);
 
 /**
- * Test: IBGDA signal read_signal_from + read_signal
+ * Test: IB signal read_signal_from + read_signal
  *
- * Seeds a known value into the IBGDA inbox at (sourceRank, signalId),
+ * Seeds a known value into the IB inbox at (sourceRank, signalId),
  * then verifies read_signal_from() and read_signal() return the
  * correct value. Validates that the inbox layout (peerIdx * signalCount
  * + signalId) is consistent with the pre-offset remote buffer scheme.
@@ -127,12 +130,13 @@ void testIbgdaSignalRead(
     int sourceRank,
     int signalId,
     uint64_t seedValue,
-    uint64_t* results);
+    uint64_t* results,
+    TransportType ibTransportType = TransportType::P2P_IBGDA);
 
 /**
- * Test: IBGDA multi-peer aggregate read_signal
+ * Test: IB multi-peer aggregate read_signal
  *
- * Seeds per-peer values into the IBGDA inbox for a given signalId,
+ * Seeds per-peer values into the IB inbox for a given signalId,
  * then verifies read_signal() returns the correct sum across all peers.
  */
 void testIbgdaSignalAggregateRead(
@@ -142,7 +146,8 @@ void testIbgdaSignalAggregateRead(
     int signalId,
     const uint64_t* peerValues,
     int nPeers,
-    uint64_t* result);
+    uint64_t* result,
+    TransportType ibTransportType = TransportType::P2P_IBGDA);
 
 /**
  * Test: DeviceWindow offset-based NVL put()

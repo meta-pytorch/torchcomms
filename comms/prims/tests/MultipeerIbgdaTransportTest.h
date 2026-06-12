@@ -9,6 +9,8 @@
 
 namespace comms::prims {
 
+// Forward declaration - full definition in P2pIbTransportDevice.cuh
+struct P2pIbTransportDevice;
 // Forward declaration - full definition in P2pIbgdaTransportDevice.cuh
 class P2pIbgdaTransportDevice;
 
@@ -23,7 +25,7 @@ namespace comms::prims::test {
  * completion via the transport's owned signal buffer.
  */
 void testPutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -36,7 +38,7 @@ void testPutAndSignal(
  * Test kernel: Explicit cooperative put + signal (warp group, slot-index)
  */
 void testPutAndSignalGroup(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -49,7 +51,7 @@ void testPutAndSignalGroup(
  * Test kernel: Multi-warp presharded group put + signal (slot-index)
  */
 void testPutAndSignalGroupMultiWarp(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -62,7 +64,7 @@ void testPutAndSignalGroupMultiWarp(
  * Test kernel: Block-scope presharded group put + signal (slot-index)
  */
 void testPutAndSignalGroupBlock(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -75,7 +77,7 @@ void testPutAndSignalGroupBlock(
  * Test kernel: Wait for signal via slot-index on transport's local inbox
  */
 void testWaitSignal(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int signalId,
     uint64_t expectedSignal,
     int numBlocks,
@@ -85,7 +87,7 @@ void testWaitSignal(
  * Test kernel: Multiple put + signal operations in sequence (slot-index)
  */
 void testMultiplePutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t bytesPerPut,
@@ -98,7 +100,7 @@ void testMultiplePutAndSignal(
  * Test kernel: Send signal only (no data, slot-index)
  */
 void testSignalOnly(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
@@ -108,7 +110,7 @@ void testSignalOnly(
  * Test kernel: Put data without signal
  */
 void testPutOnly(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -184,7 +186,7 @@ void verifyBufferPattern(
  * Test kernel: Wait for ready signal, then put data with signal (slot-index)
  */
 void testWaitReadyThenPutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -199,7 +201,7 @@ void testWaitReadyThenPutAndSignal(
  * Test kernel: Bidirectional put and wait in single kernel (slot-index)
  */
 void testBidirectionalPutAndWait(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -214,7 +216,7 @@ void testBidirectionalPutAndWait(
  * Test kernel: All-to-all send phase (slot-index)
  */
 void testAllToAll(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
     int myRank,
@@ -227,7 +229,7 @@ void testAllToAll(
  * Test kernel: All-to-all wait phase (slot-index)
  */
 void testAllToAllWait(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     int numPeers,
     int numBlocks,
     int blockSize);
@@ -236,7 +238,7 @@ void testAllToAllWait(
  * Test kernel: Put data + signal remote + counter (slot-index)
  */
 void testPutSignalCounter(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localDataBuf,
     const IbgdaRemoteBuffer& remoteDataBuf,
     std::size_t nbytes,
@@ -251,7 +253,7 @@ void testPutSignalCounter(
  * Test kernel: Wait for local counter to reach expected value (slot-index)
  */
 void testWaitCounter(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int counterId,
     uint64_t expectedVal,
     int numBlocks,
@@ -264,19 +266,18 @@ void testWaitCounter(
  * of totalBytes, then signals. Tests that independent QPs work correctly
  * when blocks use different QPs.
  *
- * @param transports Base pointer to N contiguous P2pIbgdaTransportDevice
- * @param numQps Number of QPs (transports array length)
+ * @param transport Peer transport handle
+ * @param numQps Number of QPs configured on the transport
  * @param localBuf Local source buffer
  * @param remoteBuf Remote destination buffer
  * @param totalBytes Total bytes (split across blocks)
- * @param remoteSignalBuf Remote signal buffer
  * @param signalId Signal slot index
  * @param signalVal Signal value per block
  * @param numBlocks Grid dimension
  * @param blockSize Block dimension
  */
 void testMultiQpPutAndSignal(
-    P2pIbgdaTransportDevice* transports,
+    P2pIbTransportDevice transport,
     int numQps,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
