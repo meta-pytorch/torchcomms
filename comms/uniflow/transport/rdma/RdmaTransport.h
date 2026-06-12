@@ -423,7 +423,11 @@ class RdmaTransport : public Transport {
   bool putGetIoProcess(PutGetTransfer& entry) noexcept;
   bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;
 
-  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail);
+  /// Computes per-QP available SQ capacity. When bufNuma >= 0 (host memory with
+  /// a known NUMA node), QPs whose NIC is on a different NUMA node are capped
+  /// to zero so put/get only targets NUMA-local NICs; falls back to all NICs if
+  /// none are NUMA-local.
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail, int bufNuma = -1);
 
   uint32_t assignToQps(
       const uint32_t remaining,
@@ -509,6 +513,8 @@ class RdmaTransport : public Transport {
   Status recvDoneProgress(SendRecvTransfer& transfer, uint32_t depth);
   Result<bool>
   postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId, Task& task);
+
+  friend class GetQpAvailNumaTest;
 
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;

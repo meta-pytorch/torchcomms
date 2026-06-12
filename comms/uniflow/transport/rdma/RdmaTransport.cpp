@@ -738,10 +738,40 @@ uint32_t RdmaTransport::postSend(
   return 0; // Signal to caller that posting failed.
 }
 
-uint32_t RdmaTransport::getQpAvail(std::vector<uint32_t>& qpAvail) {
-  uint32_t totalAvail = 0;
+uint32_t RdmaTransport::getQpAvail(
+    std::vector<uint32_t>& qpAvail,
+    int bufNuma) {
   const uint32_t kMaxWr = config_.maxWr;
+  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
+  if (numNics == 0) {
+    return 0;
+  }
+
+  // For host memory with a known NUMA node, only NICs on that node are eligible
+  // (so put/get avoids cross-socket DMA); cross-socket QPs are capped to zero
+  // capacity. Fall back to all NICs if none are NUMA-local, so a transfer can
+  // never stall.
+  bool restrictToNuma = false;
+  if (bufNuma >= 0) {
+    for (size_t q = 0; q < qpAvail.size(); ++q) {
+      if (nics_[q % numNics].numaNode == bufNuma) {
+        restrictToNuma = true;
+        break;
+      }
+    }
+    if (!restrictToNuma) {
+      UNIFLOW_LOG_DEBUG(
+          "no NUMA-local NIC for bufNuma={}, falling back to all NICs",
+          bufNuma);
+    }
+  }
+
+  uint32_t totalAvail = 0;
   for (size_t q = 0; q < qpAvail.size(); ++q) {
+    if (restrictToNuma && nics_[q % numNics].numaNode != bufNuma) {
+      qpAvail[q] = 0; // cross-socket QP — not eligible for this buffer
+      continue;
+    }
     qpAvail[q] = kMaxWr - numWrsPerQp_[q];
     totalAvail += qpAvail[q];
   }
@@ -793,15 +823,29 @@ Result<uint32_t> RdmaTransport::spray(
     size_t& idx,
     uint32_t taskId,
     Task& task) {
+  if (idx >= wrs.size()) {
+    return 0;
+  }
   const uint32_t numQps = static_cast<uint32_t>(qps_.size());
+
   const uint32_t remaining = static_cast<uint32_t>(wrs.size() - idx);
 
-  // Calculate available capacity per QP.
+  // NUMA policy is derived from the first WR's local handle. In practice each
+  // spray batch comes from a single TransferRequest (one local buffer), so
+  // this is correct. If buildSendWrs ever batches WRs from multiple buffers
+  // with different NUMA nodes into one vector, this should be split into
+  // per-NUMA-policy runs to avoid posting later WRs to the wrong NICs. But in
+  // reality, we will bind the process into one numa node. In addition, even if
+  // Wrs in spray cross different numa nodes, it will be gated by depth of the
+  // QP and the next iteration will choose the correct numa node.
+  const int bufNuma = wrs[idx].localHandle != nullptr
+      ? wrs[idx].localHandle->hostBufferNumaNode()
+      : -1;
   std::vector<uint32_t> qpAvail(numQps);
-  uint32_t totalAvail = getQpAvail(qpAvail);
+  uint32_t totalAvail = getQpAvail(qpAvail, bufNuma);
 
   if (totalAvail == 0) {
-    return 0; // All QPs full — caller should poll and retry.
+    return 0; // All eligible QPs full — caller should poll and retry.
   }
 
   // Weighted distribution: assign chunks to each QP proportional
