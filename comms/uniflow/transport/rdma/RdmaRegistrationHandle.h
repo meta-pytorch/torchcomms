@@ -38,7 +38,8 @@ class RdmaRegistrationHandle : public RegistrationHandle {
   RdmaRegistrationHandle(
       std::vector<ibv_mr*> mrs,
       std::shared_ptr<IbvApi> ibvApi,
-      uint64_t domainId);
+      uint64_t domainId,
+      int bufferNumaNode = -1);
 
   ~RdmaRegistrationHandle() override;
 
@@ -75,10 +76,18 @@ class RdmaRegistrationHandle : public RegistrationHandle {
     return domainId_;
   }
 
+  /// NUMA node of the registered host buffer (-1 = unknown, device memory,
+  /// or mixed locality across NUMA nodes). Detected at registration time by
+  /// sampling pages after ibv_reg_mr has pinned (non-ODP) memory.
+  int hostBufferNumaNode() const noexcept {
+    return hostBufferNumaNode_;
+  }
+
  private:
   std::vector<ibv_mr*> mrs_;
   std::shared_ptr<IbvApi> ibvApi_;
   uint64_t domainId_;
+  int hostBufferNumaNode_{-1};
 };
 
 // ---------------------------------------------------------------------------

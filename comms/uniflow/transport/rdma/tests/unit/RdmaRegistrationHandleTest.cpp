@@ -132,6 +132,18 @@ TEST_F(RdmaRegistrationHandleTest, SerializeMultipleMrs) {
   EXPECT_EQ(rkeys[1], 0xBBu);
 }
 
+TEST_F(RdmaRegistrationHandleTest, HostNumaNodeExplicit) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42, 3);
+  EXPECT_EQ(handle.hostBufferNumaNode(), 3);
+}
+
+TEST_F(RdmaRegistrationHandleTest, HostNumaNodeDefaultIsUnknown) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42);
+  EXPECT_EQ(handle.hostBufferNumaNode(), -1);
+}
+
 TEST_F(RdmaRegistrationHandleTest, DestructorDeregsAllMrs) {
   ibv_mr mr0{};
   ibv_mr mr1{};
