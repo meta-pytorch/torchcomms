@@ -2,16 +2,12 @@
 
 #include <algorithm>
 #include <climits>
-#include <memory>
-#include <vector>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceFused.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
-#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/topo/CtranTreeBuilder.h"
-#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 

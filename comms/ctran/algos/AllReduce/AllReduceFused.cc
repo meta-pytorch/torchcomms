@@ -4,17 +4,11 @@
 
 #include <algorithm>
 #include <climits>
-#include <memory>
-#include <vector>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
-
-#if defined(ENABLE_PRIMS)
-#include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/gpe/CtranGpe.h"
-#endif
 
 namespace ctran::allreduce::fused {
 
@@ -124,18 +118,21 @@ commResult_t submit_fused_kernel(
     int numThreads,
     void* algoArgs,
     const void* kernelFnPtr) {
-  KernelConfig config(
-      KernelConfig::KernelType::ALLREDUCE, stream, kernelName, opCount);
+  (void)kernelName;
+  (void)opCount;
 
-  config.numBlocks = static_cast<unsigned int>(numBlocks);
-  config.numThreads = numThreads;
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-  config.algoArgs = algoArgs;
+  int* flag = nullptr;
+  void* devState = nullptr;
+  void* kernelArgs[] = {&flag, &devState, algoArgs};
 
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup), nullptr, config, kernelFnPtr));
+  FB_CUDACHECK(cudaLaunchKernel(
+      kernelFnPtr,
+      dim3(static_cast<unsigned int>(numBlocks), 1, 1),
+      dim3(static_cast<unsigned int>(numThreads), 1, 1),
+      kernelArgs,
+      0,
+      stream));
+  comm->ctran_->updateOpCount();
 
   return commSuccess;
 }
