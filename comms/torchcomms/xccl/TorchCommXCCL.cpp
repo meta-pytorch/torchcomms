@@ -729,42 +729,61 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
       xccl_api_->groupStart(),
       "XCCL groupStart failed in batch_op_issue");
 
-  // Issue each operation individually
+  // Issue all sends before any recvs within the group. WORKAROUND for a oneCCL
+  // grouped-P2P deadlock: group ops are replayed in enqueue order and a recv
+  // blocks in a host-side IPC handle exchange until its peer's matching send is
+  // reached, so recv-before-send on both peers (e.g. batch_isend_irecv with
+  // irecv first) deadlocks. Sends first avoids this; relative order within
+  // sends and within recvs is preserved.
   for (const auto& op : ops) {
-    if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
-      onecclResult_t result = xccl_api_->send(
-          op.tensor.data_ptr(),
-          op.tensor.numel(),
-          getXcclDataType(op.tensor),
-          op.peer,
-          xccl_comm_,
-          stream);
+    if (op.type != BatchSendRecv::P2POp::OpType::SEND) {
+      continue;
+    }
 
-      if (result != onecclSuccess) [[unlikely]] {
-        XCCL_CHECK_IGNORE(
-            xccl_api_,
-            xccl_api_->groupEnd(),
-            "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue");
-        throw XCCLException(
-            *xccl_api_, "XCCL send failed in batch_op_issue", result);
-      }
-    } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
-      onecclResult_t result = xccl_api_->recv(
-          op.tensor.data_ptr(),
-          op.tensor.numel(),
-          getXcclDataType(op.tensor),
-          op.peer,
-          xccl_comm_,
-          stream);
+    result = xccl_api_->send(
+        op.tensor.data_ptr(),
+        op.tensor.numel(),
+        getXcclDataType(op.tensor),
+        op.peer,
+        xccl_comm_,
+        stream);
 
-      if (result != onecclSuccess) [[unlikely]] {
-        XCCL_CHECK_IGNORE(
-            xccl_api_,
-            xccl_api_->groupEnd(),
-            "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue");
-        throw XCCLException(
-            *xccl_api_, "XCCL recv failed in batch_op_issue", result);
+    if (result != onecclSuccess) [[unlikely]] {
+      onecclResult_t result_cleanup =
+          xccl_api_->groupEnd(); // Clean up group on error
+      if (result_cleanup != onecclSuccess) {
+        TC_LOG(ERROR, this)
+            << "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue: "
+            << xccl_api_->getErrorString(result_cleanup);
       }
+      throw XCCLException(
+          *xccl_api_, "XCCL send failed in batch_op_issue", result);
+    }
+  }
+
+  for (const auto& op : ops) {
+    if (op.type != BatchSendRecv::P2POp::OpType::RECV) {
+      continue;
+    }
+
+    result = xccl_api_->recv(
+        op.tensor.data_ptr(),
+        op.tensor.numel(),
+        getXcclDataType(op.tensor),
+        op.peer,
+        xccl_comm_,
+        stream);
+
+    if (result != onecclSuccess) [[unlikely]] {
+      onecclResult_t result_cleanup =
+          xccl_api_->groupEnd(); // Clean up group on error
+      if (result_cleanup != onecclSuccess) {
+        TC_LOG(ERROR, this)
+            << "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue: "
+            << xccl_api_->getErrorString(result_cleanup);
+      }
+      throw XCCLException(
+          *xccl_api_, "XCCL recv failed in batch_op_issue", result);
     }
   }
 
