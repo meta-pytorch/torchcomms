@@ -25,6 +25,7 @@
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/transport/IP2pHostTransport.h"
+#include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -178,6 +179,66 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *   - peerRanks: the ranks of the peers to be connected
    */
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
+
+  bool hasTcpDmBackend() const {
+    return ctranTcpDm != nullptr;
+  }
+
+  void abortTcpDm(const char* reason) {
+    if (ctranTcpDm != nullptr) {
+      ctranTcpDm->abortOutstanding(reason);
+    }
+  }
+
+  template <typename Func>
+  void runTcpDmCollectiveAbortGuard(Func&& func, int opType, uint64_t opCount) {
+    try {
+      func();
+    } catch (const ctran::utils::Exception& e) {
+      CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount);
+      if (comm->testAbort()) {
+        abortTcpDm(e.what());
+      }
+    } catch (const std::runtime_error& e) {
+      ctran::utils::Exception ex(e.what(), commRemoteError);
+      CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, ex, opType, opCount);
+      if (comm->testAbort()) {
+        abortTcpDm(e.what());
+      }
+    }
+  }
+
+  [[noreturn]] void throwTcpDmNotifyAbort(CtranMapperNotify* notify) {
+    CLOGF(
+        WARN,
+        "CTRAN-MAPPER: TCPDM notify abort notify={} rank {} commHash {:x}",
+        notify->toString(),
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash);
+    this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
+
+    auto _abort = comm->getAbort();
+    std::string _ctx =
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        _ctx,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        fmt::format("checkNotify for peer {}", notify->peer));
+  }
+
+  [[noreturn]] void throwTcpDmRequestsAbort(size_t numRequests) {
+    auto _abort = comm->getAbort();
+    std::string _ctx =
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        _ctx,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        fmt::format("testSomeRequests with {} requests", numRequests));
+  }
 
   /* Post a send control op to associated backend.
    * Input arguments:
@@ -1110,6 +1171,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         FB_COMMCHECK(this->ctranTcpDm->progress());
         FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, &done));
       }
+      if (comm->testAbort()) {
+        this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
+      }
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
       return commInternalError;
@@ -1170,6 +1234,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
+      if (req->backend == CtranMapperBackend::TCPDM) {
+        this->ctranTcpDm->cancelQueuedRecv(&req->tcpDmReq);
+      }
       throwCommAbortException(
           fmt::format("waitRequest for peer {}", req->peer));
     }
@@ -1995,6 +2062,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t checkNotifyImpl(CtranMapperNotify* notify, bool* done) {
+    const bool isTcpDmNotify = notify->backend == CtranMapperBackend::TCPDM;
+    if (isTcpDmNotify && comm->testAbort()) {
+      throwTcpDmNotifyAbort(notify);
+    }
+
     if (notify->backend == CtranMapperBackend::NVL) {
       *done = notify->kernElem->isComplete();
     } else if (notify->backend == CtranMapperBackend::IB) {
@@ -2005,6 +2077,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
       return commInternalError;
+    }
+
+    if (isTcpDmNotify && comm->testAbort()) {
+      throwTcpDmNotifyAbort(notify);
     }
 
     if (*done) {
@@ -2022,9 +2098,23 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       std::vector<std::unique_ptr<CtranMapperRequest>>& reqs,
       std::vector<CtranMapperTimestampPoint>& tps,
       bool recordTime) {
+    const bool aborted = comm->testAbort();
+    bool cancelledTcpDmReq = false;
+
     for (auto it = reqs.begin(); it != reqs.end();) {
       auto& req = *it;
       if (req) {
+        if (cancelledTcpDmReq) {
+          it++;
+          continue;
+        }
+        if (aborted && req->backend == CtranMapperBackend::TCPDM) {
+          this->ctranTcpDm->cancelQueuedRecv(&req->tcpDmReq);
+          cancelledTcpDmReq = true;
+          it++;
+          continue;
+        }
+
         // Only icopy request doesn't have peer; expect it is not used in
         // testSomeRequests with timepoints.
         if (req->peer == -1) {
@@ -2046,6 +2136,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         // Remove completed requests
         it = reqs.erase(it);
       }
+    }
+    if (cancelledTcpDmReq) {
+      throwTcpDmRequestsAbort(reqs.size());
     }
     return commSuccess;
   }
