@@ -259,7 +259,6 @@ inline void progressSendCheckTrans(
           resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
           resource.comm->logMetaData_);
       if (isComplete) {
-        // FIXME: step might be incorrect
         CLOGF_TRACE(
             COLL,
             "progressSendCheckTrans {} done",
@@ -527,8 +526,8 @@ inline void progressRecvPostRecvBuf(
   bufSyncSResps.at(round).reset(req);
 }
 
-// Post irecv for the current round (TCPDM requires 1:1 irecv per iput).
-// Round 0, partition 0 is posted in completeHostResourceSetup.
+// Post irecv for the current round using the single leftNotify.
+// The backend tracks requests internally via counter-based notification.
 inline void progressRecvPostTcpDmIrecv(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
@@ -542,19 +541,13 @@ inline void progressRecvPostTcpDmIrecv(
   size_t chunkBytes = chunkArg.numel * algoCtx.typeSize;
   resource.recvKernElem->waitNotify.recvbuff = chunkRecvBuf;
   resource.recvKernElem->waitNotify.nbytes = chunkBytes;
-  if (round > 0 || algoCtx.partition > 0) {
-    // The TCPDM needs to call initNotify, i.e. tcpdm->irecv() in every single
-    // recv round. Reuse the initNotify mechnaisim here to post irecv().
-    // Reuse leftNotify — the ready counter guarantees the previous round's
-    // checkNotify completed before we post the next irecv.
-    FB_COMMCHECKTHROW_EX(
-        resource.comm->ctran_->mapper->initNotify(
-            args.leftRank,
-            resource.tmpRecvBufHdl,
-            resource.recvKernElem,
-            args.leftNotify.get()),
-        resource.comm->logMetaData_);
-  }
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->initNotify(
+          args.leftRank,
+          resource.tmpRecvBufHdl,
+          resource.recvKernElem,
+          args.leftNotify.get()),
+      resource.comm->logMetaData_);
 }
 
 inline void progressSend(
@@ -596,20 +589,10 @@ inline void progressRecv(
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
     std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
   // Post step: TCPDM posts irecv, IB is a no-op (data arrives via RDMA put).
-  // Serialized via ready counter (TCPDM: ready=1, IB: ready=-1 unlimited).
   if (opReadyToPost<Op::kRecvTrans>(algoCtx)) {
     if (hasTcpDmRecv(args, resource)) {
-      // TCPDM: don't post irecv if the target tmpRecvBuf slot is still being
-      // read by a previous round's recvRedCopy. IB doesn't need this because
-      // the sender-side bufSync gates writes until recvRedCopy completes.
-      int round = algoCtx.opRounds[Op::kRecvTrans].post;
-      bool slotFree = round < static_cast<int>(algoCtx.numChunks) ||
-          algoCtx.opRounds[Op::kRecvRedCopy].done >
-              round - static_cast<int>(algoCtx.numChunks);
-      if (slotFree) {
-        progressRecvPostTcpDmIrecv(args, resource, algoCtx);
-        opUpdatePost<Op::kRecvTrans>(algoCtx);
-      }
+      progressRecvPostTcpDmIrecv(args, resource, algoCtx);
+      opUpdatePost<Op::kRecvTrans>(algoCtx);
     } else {
       opUpdatePost<Op::kRecvTrans>(algoCtx);
     }
@@ -619,11 +602,6 @@ inline void progressRecv(
   if (opHasPosted<Op::kRecvTrans>(algoCtx) &&
       progressRecvCheckTrans(args, resource, algoCtx)) {
     opUpdateDone<Op::kRecvTrans>(algoCtx);
-    if (hasTcpDmRecv(args, resource)) {
-      // Allow next round's irecv to post (one in flight at a time —
-      // initNotify reuses leftNotify after checkNotify completes).
-      algoCtx.opRounds[Op::kRecvTrans].ready++;
-    }
   }
 
   // Check if any received chunk is ready to flush
@@ -641,12 +619,6 @@ inline void progressRecv(
   // Check if any received chunk is ready to reduce with local data
   if (opReadyToPost<Op::kRecvRedCopy>(algoCtx)) {
     int step = algoCtx.opRounds[Op::kRecvRedCopy].postStep.step;
-    // Combine reduce and sendCopy.
-    // ## When it is not a isRecvFwd round:
-    // - For last step, we don't need sendCopy.
-    // ## When it is a isRecvFwd round:
-    // - Combine reduce and next step's sendCopy. Consequently, need check
-    // sendBuf availability before reduce.
     if (!isRecvFwd(algoCtx, step) || progressRecvCheckSendBuf(algoCtx)) {
       progressRecvPostRedCopyKern(args, resource, algoCtx);
       opUpdatePost<Op::kRecvRedCopy>(algoCtx);
@@ -656,8 +628,10 @@ inline void progressRecv(
   // Check if any outstanding reduceCopy is done
   if (opHasPosted<Op::kRecvRedCopy>(algoCtx)) {
     if (progressRecvCheckRedCopyKern(args, resource, algoCtx)) {
-      // Post buffer-ready sync after local reduce used the data.
       progressRecvPostRecvBuf(args, resource, algoCtx, bufSyncSResps);
+      if (hasTcpDmRecv(args, resource)) {
+        algoCtx.opRounds[Op::kRecvTrans].ready++;
+      }
       opUpdateDone<Op::kRecvRedCopy>(algoCtx);
     }
   }
@@ -985,9 +959,8 @@ inline void updatePartitionCtxHost(
     updatePartitionCtx<false>(algoCtx);
   }
   if (hasTcpDmRecv(args, resource)) {
-    // TCPDM: serialize irecv posts (one at a time) since initNotify reuses
-    // leftNotify. IB uses ready=-1 to pre-post all rounds.
-    algoCtx.opRounds[Op::kRecvTrans].ready = 1;
+    // TCPDM: post numChunks irecvs upfront; back-pressure via isendCtrl.
+    algoCtx.opRounds[Op::kRecvTrans].ready = algoCtx.numChunks;
   }
 
   if (algoCtx.partition > 0) {
@@ -1020,13 +993,19 @@ inline commResult_t completeHostResourceSetup(
     ctran::allreduce::ring::HostResource& resource) {
   exchangePeerTmpBufs(comm, args);
 
-  // Forward: notifications from left on tmpRecvBuf
+  // Forward: notifications from left on tmpRecvBuf.
   args.leftNotify.reset(new CtranMapperNotify());
-  FB_COMMCHECK(comm->ctran_->mapper->initNotify(
-      args.leftRank,
-      resource.tmpRecvBufHdl,
-      resource.recvKernElem,
-      args.leftNotify.get()));
+  if (hasTcpDmRecv(args, resource)) {
+    // TCPDM: irecvs are posted from the progress loop, not here.
+    // The backend tracks completions via counter (checkRecvNotify).
+  } else {
+    // IB: single initNotify, data arrives via RDMA put.
+    FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+        args.leftRank,
+        resource.tmpRecvBufHdl,
+        resource.recvKernElem,
+        args.leftNotify.get()));
+  }
 
   size_t offsetRingTmpRecv = comm->ctran_->algo->getTmpBufOffset(
       CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
@@ -1130,6 +1109,8 @@ static commResult_t impl(
   std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncRResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> revFlushResps;
 
+  // Perftrace: create tracer on first use, create record per allreduce
+
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   while (algoCtx.partitionOffset < algoCtx.numElements) {
@@ -1224,6 +1205,8 @@ static commResult_t impl(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
+
+  // No notify cleanup needed — backend tracks requests internally.
 
   // Reset flags for next allreduce to reuse. Only clear sync status (post/
   // complete flags); do not release to pool (inuse stays true). Pool release
@@ -1478,6 +1461,9 @@ commResult_t ctranAllReduceRing(
     op->allreduce.kElemStepMap[static_cast<int>(
         ctran::allreduce::KernElemRole::kTcpDmRecv)] =
         hostResource.recvKernElem;
+
+    // leftNotify allocated in completeHostResourceSetup (GPE thread).
+    // Backend manages irecv requests internally via counter-based notification.
   }
   // rightRemBuf, rightRemKey, leftNotify init from gpe thread for EpochLock
 
