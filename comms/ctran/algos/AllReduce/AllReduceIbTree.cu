@@ -19,45 +19,8 @@
 // and live in AllReduceNvlDirect.cuh; bring them and their helpers into scope.
 using namespace ctran::allreduce::nvl;
 
-/**
- * Copy operation used by IBGDA child receives in Phase 2.
- *
- * IBGDA owns the transient recv staging ring. CTREE must consume that staging
- * inside this callback before the transport acknowledges and reuses the slot.
- */
-template <typename T>
-struct TreeIbReduceCopy {
-  template <typename... Args>
-  __device__ __forceinline__ static void recv(
-      char* dst,
-      const char* staging,
-      size_t nbytes,
-      comms::prims::ThreadGroup& group,
-      size_t /* byteOffset */,
-      Args...) {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    T* accum = reinterpret_cast<T*>(dst);
-    const T* staged = reinterpret_cast<const T*>(staging);
-    const size_t nelems = nbytes / sizeof(T);
-
-    tileReduce<
-        T,
-        ctran::allreduce::common::kIbTileElems,
-        ctran::allreduce::tree::kBlockSize>(accum, staged, nelems, group);
-#endif
-  }
-};
-
-/**
- * Convert the physical block group into the logical num-block group used by
- * cooperative Prims operations.
- */
-__device__ __forceinline__ comms::prims::ThreadGroup
-logicalDataGroup(comms::prims::ThreadGroup group, int blockId, int numBlocks) {
-  group.group_id = static_cast<uint32_t>(blockId);
-  group.total_groups = static_cast<uint32_t>(numBlocks);
-  return group;
-}
+// IbReduceCopy<T> and logicalDataGroup are shared across all fused AllReduce
+// kernels and live in AllReduceNvlDirect.cuh.
 
 enum class TreeLanePhase : uint8_t {
   ReduceLeafSend,
@@ -256,7 +219,7 @@ progressTreeLane(
       auto* childTransport =
           args.common.transports[state.tree.childRanks[state.childIdx]]
               .p2p_ibgda;
-      const auto status = progressLaneRecv<T, TreeIbReduceCopy<T>>(
+      const auto status = progressLaneRecv<T, IbReduceCopy<T>>(
           state, childTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
         state.ibOpActive = false;
