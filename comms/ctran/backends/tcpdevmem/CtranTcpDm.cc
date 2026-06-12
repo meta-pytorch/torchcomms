@@ -13,6 +13,8 @@
 #include "folly/SocketAddress.h"
 #include "folly/synchronization/CallOnce.h"
 
+#include <cerrno>
+
 namespace ctran {
 
 #define COMMCHECK_TCP(cmd)                                            \
@@ -26,6 +28,56 @@ namespace ctran {
       return commInvalidArgument;                                     \
     }                                                                 \
   } while (0)
+
+namespace {
+
+bool isPeerDisconnectErrno(int err) {
+  switch (err) {
+    case ECONNABORTED:
+    case ECONNREFUSED:
+    case ECONNRESET:
+    case ENOTCONN:
+    case EPIPE:
+    case ETIMEDOUT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+commResult_t mapBootstrapSocketError(
+    int err,
+    const char* op,
+    int rank,
+    int peerRank,
+    uint64_t commHash,
+    const std::string& commDesc) {
+  if (isPeerDisconnectErrno(err)) {
+    CLOGF(
+        WARN,
+        "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={} (treating as remote error)",
+        op,
+        peerRank,
+        rank,
+        commHash,
+        commDesc,
+        err);
+    return commRemoteError;
+  }
+
+  CLOGF(
+      ERR,
+      "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={}",
+      op,
+      peerRank,
+      rank,
+      commHash,
+      commDesc,
+      err);
+  return commInternalError;
+}
+
+} // namespace
 
 void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
@@ -164,6 +216,7 @@ void CtranTcpDm::bootstrapAccept() {
 void CtranTcpDm::bootstrapAddSendPeer(
     int peerRank,
     ::comms::tcp_devmem::CommunicatorInterface* comm) {
+  std::lock_guard lock(mutex_);
   sendComms_[peerRank] = comm;
 }
 
@@ -173,17 +226,28 @@ commResult_t CtranTcpDm::bootstrapConnect(
   commResult_t res = commSuccess;
 
   ctran::bootstrap::Socket sock;
-  FB_SYSCHECKRETURN(
-      sock.connect(
-          peerSockAddr,
-          NCCL_CLIENT_SOCKET_IFNAME,
-          std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
-          NCCL_SOCKET_RETRY_CNT),
-      commInternalError);
-  FB_SYSCHECKRETURN(sock.send(&rank_, sizeof(int)), commInternalError);
+  int err = sock.connect(
+      peerSockAddr,
+      NCCL_CLIENT_SOCKET_IFNAME,
+      std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
+      NCCL_SOCKET_RETRY_CNT);
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "connect", rank_, peerRank, commHash_, commDesc_);
+  }
+
+  err = sock.send(&rank_, sizeof(int));
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "send", rank_, peerRank, commHash_, commDesc_);
+  }
 
   ::comms::tcp_devmem::Handle handle{};
-  FB_SYSCHECKRETURN(sock.recv(&handle, sizeof(handle)), commInternalError);
+  err = sock.recv(&handle, sizeof(handle));
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "recv", rank_, peerRank, commHash_, commDesc_);
+  }
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
   COMMCHECKTHROW(
@@ -235,9 +299,8 @@ void CtranTcpDm::ensureCtrlSocket(int peerRank) {
   ctrlSocks_.emplace(peerRank, std::move(sock));
 }
 
-CtranTcpDm::CtranTcpDm(
-    [[maybe_unused]] CtranComm* comm,
-    ctran::Profiler* profiler) {
+CtranTcpDm::CtranTcpDm(CtranComm* comm, ctran::Profiler* profiler) {
+  comm_ = comm;
   cudaDev_ = comm->statex_->cudaDev();
   rank_ = comm->statex_->rank();
   nRanks_ = comm->statex_->nRanks();
@@ -270,17 +333,123 @@ CtranTcpDm::~CtranTcpDm() {
   listenSocket_.shutdown();
   listenThread_.join();
 
-  auto transport = CtranTcpDmSingleton::getTransport();
-  for (auto comm : sendComms_) {
-    transport->closeSend(comm.second);
-  }
-  for (auto comm : recvComms_) {
-    transport->closeRecv(comm.second);
+  const uint32_t closeFlags = comm_ != nullptr && comm_->testAbort()
+      ? ::comms::tcp_devmem::kCloseFlagForce
+      : 0;
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-TCPDM: destroying backend {} commHash {:x} commDesc {} aborted {} closeFlags {:#x}",
+      (void*)this,
+      commHash_,
+      commDesc_,
+      aborted_.load(),
+      closeFlags);
+  closeComms("backend destruction", closeFlags);
+  CtranTcpDmSingleton::getTransport()->shutdown(false);
+}
+
+void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      sendComms;
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      recvComms;
+  size_t queuedRecvCount = 0;
+  size_t cancelledQueuedRecvCount = 0;
+  {
+    std::lock_guard lock(mutex_);
+    queuedRecvCount = queuedRecv_.size();
+    for (auto& recvReq : queuedRecv_) {
+      if (recvReq->req != nullptr) {
+        recvReq->req->complete(::comms::tcp_devmem::Status::RemoteError);
+        ++cancelledQueuedRecvCount;
+      }
+    }
+    queuedRecv_.clear();
+    sendComms.swap(sendComms_);
+    recvComms.swap(recvComms_);
   }
 
-  // Always request shutdown; Transport self-gates on `comms_ > 0` so only
-  // the last CtranTcpDm actually tears down, while CUDA is still alive.
-  transport->shutdown(false);
+  const bool forceClose = closeFlags & ::comms::tcp_devmem::kCloseFlagForce;
+  if (forceClose) {
+    CLOGF(
+        WARN,
+        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {}",
+        (void*)this,
+        rank_,
+        commHash_,
+        commDesc_,
+        reason == nullptr ? "unknown" : reason,
+        closeFlags,
+        sendComms.size(),
+        recvComms.size(),
+        queuedRecvCount,
+        cancelledQueuedRecvCount);
+  } else {
+    CLOGF(
+        INFO,
+        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {}",
+        (void*)this,
+        rank_,
+        commHash_,
+        commDesc_,
+        reason == nullptr ? "unknown" : reason,
+        closeFlags,
+        sendComms.size(),
+        recvComms.size(),
+        queuedRecvCount,
+        cancelledQueuedRecvCount);
+  }
+
+  auto transport = CtranTcpDmSingleton::getTransport();
+  for (auto& [peerRank, comm] : sendComms) {
+    auto status = transport->closeSend(comm, closeFlags);
+    if (status != ::comms::tcp_devmem::Status::Ok) {
+      CLOGF(
+          WARN,
+          "CTRAN-TCPDM: closeSend failed for peer {} on rank {} commHash {:x} commDesc {} reason {} flags {:#x} status {}",
+          peerRank,
+          rank_,
+          commHash_,
+          commDesc_,
+          reason == nullptr ? "unknown" : reason,
+          closeFlags,
+          static_cast<int>(status));
+    }
+  }
+
+  for (auto& [peerRank, comm] : recvComms) {
+    auto status = transport->closeRecv(comm, closeFlags);
+    if (status != ::comms::tcp_devmem::Status::Ok) {
+      CLOGF(
+          WARN,
+          "CTRAN-TCPDM: closeRecv failed for peer {} on rank {} commHash {:x} commDesc {} reason {} flags {:#x} status {}",
+          peerRank,
+          rank_,
+          commHash_,
+          commDesc_,
+          reason == nullptr ? "unknown" : reason,
+          closeFlags,
+          static_cast<int>(status));
+    }
+  }
+}
+
+void CtranTcpDm::abortOutstanding(const char* reason) {
+  if (aborted_.exchange(true)) {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-TCPDM: backend {} already aborted for rank {} commHash {:x} commDesc {} reason {}",
+        (void*)this,
+        rank_,
+        commHash_,
+        commDesc_,
+        reason == nullptr ? "unknown" : reason);
+    return;
+  }
+
+  closeComms(reason, ::comms::tcp_devmem::kCloseFlagForce);
 }
 
 void CtranTcpDm::profilerStart() {
@@ -292,6 +461,9 @@ void CtranTcpDm::profilerEnd() {
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
+  if (aborted_.load()) {
+    return commRemoteError;
+  }
   for (int peerRank : peerRanks) {
     FB_COMMCHECK(connectPeer(peerRank));
   }
@@ -337,9 +509,27 @@ commResult_t CtranTcpDm::isend(
     void* data,
     size_t size,
     CtranTcpDmRequest& req) {
-  FB_COMMCHECK(connectPeer(peerRank));
+  const auto connectResult = connectPeer(peerRank);
+  if (connectResult != commSuccess) {
+    if (connectResult == commRemoteError) {
+      req.complete(::comms::tcp_devmem::Status::RemoteError);
+    }
+    return connectResult;
+  }
 
-  ::comms::tcp_devmem::CommunicatorInterface* comm = sendComms_.at(peerRank);
+  ::comms::tcp_devmem::CommunicatorInterface* comm = nullptr;
+  {
+    std::lock_guard lock(mutex_);
+    if (aborted_.load()) {
+      req.complete(::comms::tcp_devmem::Status::RemoteError);
+      return commRemoteError;
+    }
+    auto it = sendComms_.find(peerRank);
+    if (it == sendComms_.end()) {
+      return commInternalError;
+    }
+    comm = it->second;
+  }
 
   auto transport = CtranTcpDmSingleton::getTransport();
   ::comms::tcp_devmem::RequestInterface* request{nullptr};
@@ -356,8 +546,14 @@ commResult_t CtranTcpDm::isend(
 }
 
 commResult_t CtranTcpDm::connectPeer(int peerRank) {
-  if (sendComms_.find(peerRank) != sendComms_.end()) {
-    return commSuccess;
+  {
+    std::lock_guard lock(mutex_);
+    if (aborted_.load()) {
+      return commRemoteError;
+    }
+    if (sendComms_.find(peerRank) != sendComms_.end()) {
+      return commSuccess;
+    }
   }
 
   folly::SocketAddress peerAddr;
@@ -423,31 +619,58 @@ commResult_t CtranTcpDm::irecvCtrlMsg(
 }
 
 commResult_t CtranTcpDm::progress() {
-  std::unique_lock lock(mutex_);
-
   ctrlSyncProgress();
   recvNotifyProgress();
 
-  for (auto it = queuedRecv_.begin(); it != queuedRecv_.end();) {
-    auto& recvReq = *it;
+  while (true) {
+    std::unique_ptr<RecvRequest> recvReq;
+    {
+      std::unique_lock lock(mutex_);
+      if (aborted_.load()) {
+        return commRemoteError;
+      }
 
-    if (recvComms_.find(recvReq->peerRank) == recvComms_.end()) {
-      ++it;
-      continue;
+      for (auto it = queuedRecv_.begin(); it != queuedRecv_.end(); ++it) {
+        if (recvComms_.find((*it)->peerRank) == recvComms_.end()) {
+          continue;
+        }
+        recvReq = std::move(*it);
+        queuedRecv_.erase(it);
+        break;
+      }
     }
 
-    FB_COMMCHECK(irecvConnected(
+    if (recvReq == nullptr) {
+      return commSuccess;
+    }
+
+    auto result = irecvConnected(
         recvReq->peerRank,
         recvReq->handle,
         recvReq->data,
         recvReq->size,
         *recvReq->req,
-        recvReq->unpackPool));
-
-    it = queuedRecv_.erase(it);
+        recvReq->unpackPool);
+    if (result != commSuccess) {
+      recvReq->req->complete(::comms::tcp_devmem::Status::RemoteError);
+      return result;
+    }
   }
+}
 
-  return commSuccess;
+void CtranTcpDm::cancelQueuedRecv(CtranTcpDmRequest* req) {
+  std::unique_lock lock(mutex_);
+
+  for (auto it = queuedRecv_.begin(); it != queuedRecv_.end();) {
+    if ((*it)->req == req) {
+      if (req != nullptr) {
+        req->complete(::comms::tcp_devmem::Status::RemoteError);
+      }
+      it = queuedRecv_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 commResult_t CtranTcpDm::irecv(
@@ -459,6 +682,10 @@ commResult_t CtranTcpDm::irecv(
     void* unpackPool) {
   {
     std::unique_lock lock(mutex_);
+    if (aborted_.load()) {
+      req.complete(::comms::tcp_devmem::Status::RemoteError);
+      return commRemoteError;
+    }
 
     // Peer is not connected, queue this operation. We can't block
     // the irecv callers. progress() should be called periodically to
@@ -471,6 +698,7 @@ commResult_t CtranTcpDm::irecv(
       recvReq->size = size;
       recvReq->req = &req;
       recvReq->unpackPool = unpackPool;
+      req.markQueuedRecv();
       queuedRecv_.push_back(std::move(recvReq));
       return commSuccess;
     }
@@ -486,7 +714,19 @@ commResult_t CtranTcpDm::irecvConnected(
     size_t size,
     CtranTcpDmRequest& req,
     void* unpackPool) {
-  ::comms::tcp_devmem::CommunicatorInterface* comm = recvComms_.at(peerRank);
+  ::comms::tcp_devmem::CommunicatorInterface* comm = nullptr;
+  {
+    std::lock_guard lock(mutex_);
+    if (aborted_.load()) {
+      req.complete(::comms::tcp_devmem::Status::RemoteError);
+      return commRemoteError;
+    }
+    auto it = recvComms_.find(peerRank);
+    if (it == recvComms_.end()) {
+      return commInternalError;
+    }
+    comm = it->second;
+  }
   if (!comm) {
     return commInternalError;
   }
@@ -527,6 +767,7 @@ commResult_t CtranTcpDm::irecvCounted(
       recvReq->size = size;
       recvReq->req = rawReq;
       recvReq->unpackPool = unpackPool;
+      rawReq->markQueuedRecv();
       queuedRecv_.push_back(std::move(recvReq));
       return commSuccess;
     }
