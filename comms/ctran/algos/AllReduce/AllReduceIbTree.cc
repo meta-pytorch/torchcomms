@@ -15,7 +15,7 @@
 #include "comms/utils/logger/LogUtils.h"
 
 #if defined(ENABLE_PRIMS)
-#include "comms/ctran/algos/AllReduce/AllReduceTree.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceIbTree.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #endif
 
@@ -323,20 +323,20 @@ commResult_t ctranAllReduceTree(
 
   // Populate kernel args
   ctran::allreduce::tree::KernArgs kernArgs{};
-  kernArgs.sendbuff = sendbuff;
-  kernArgs.recvbuff = recvbuff;
-  kernArgs.phase2Buf = phase2Buf;
-  kernArgs.count = count;
-  kernArgs.segmentElems = segmentElems;
-  kernArgs.nNodes = nNodes;
-  kernArgs.pMin = pMin;
-  kernArgs.nLocalRanks = nLocalRanks;
-  kernArgs.localRank = localRank;
-  kernArgs.numBlocks = numBlocks;
-  kernArgs.datatype = datatype;
-  kernArgs.redOp = redOp;
-  kernArgs.transports = comm->getMultiPeerTransportsPtr();
-  if (kernArgs.transports == nullptr) {
+  kernArgs.common.sendbuff = sendbuff;
+  kernArgs.common.recvbuff = recvbuff;
+  kernArgs.common.phase2Buf = phase2Buf;
+  kernArgs.common.count = count;
+  kernArgs.common.segmentElems = segmentElems;
+  kernArgs.common.nNodes = nNodes;
+  kernArgs.common.pMin = pMin;
+  kernArgs.common.nLocalRanks = nLocalRanks;
+  kernArgs.common.localRank = localRank;
+  kernArgs.common.numBlocks = numBlocks;
+  kernArgs.common.datatype = datatype;
+  kernArgs.common.redOp = redOp;
+  kernArgs.common.transports = comm->getMultiPeerTransportsPtr();
+  if (kernArgs.common.transports == nullptr) {
     CLOGF(
         ERR,
         "AllReduce ctree: getMultiPeerTransportsPtr() returned null - "
@@ -357,7 +357,7 @@ commResult_t ctranAllReduceTree(
     return commInternalError;
   }
   for (int lr = 0; lr < nLocalRanks; lr++) {
-    kernArgs.localRankToGlobalRank[lr] = statex->localRankToRank(lr);
+    kernArgs.common.localRankToGlobalRank[lr] = statex->localRankToRank(lr);
   }
 
   KernelConfig config(
