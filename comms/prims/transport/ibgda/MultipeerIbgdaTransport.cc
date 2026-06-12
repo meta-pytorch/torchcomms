@@ -41,7 +41,6 @@ namespace comms::prims {
 
 namespace {
 
-constexpr int kDefaultGidIndex = 3; // Default GID index
 constexpr int kHopLimit = 255;
 
 // Companion QPs use the same init attributes as main QPs but with smaller
@@ -211,188 +210,26 @@ void MultipeerIbgdaTransport::initDocaGpu() {
 
   VLOG(1) << "MultipeerIbgdaTransport: DOCA GPU context created: "
           << (void*)docaGpu_;
-
-  gidIndex_ = config_.gidIndex.value_or(kDefaultGidIndex);
 }
 
 void MultipeerIbgdaTransport::openIbDevice() {
+  // Generic NIC bring-up (name resolution, open device + PD, query GID + port,
+  // MTU, link layer) is owned by the base; it fills nics_ and localMtu_ using
+  // the base-owned gidIndex_.
+  openNics();
+
+  // Backend-specific tail: per-NIC DOCA address-handle attributes. addrType is
+  // derived from NIC 0's link layer + the configured address family (same for
+  // all NICs — same fabric/HCA generation assumed), matching the prior inline
+  // behavior.
   nicDoca_.resize(numNics_);
-  nics_.resize(numNics_); // base-owned generic per-NIC resources, filled below
-  auto initResult = ibverbx::ibvInit();
-  if (!initResult) {
-    throw std::runtime_error(
-        "Failed to initialize ibverbx: " + initResult.error().errStr);
-  }
-  auto& symbols = ibverbx::ibvSymbols;
-
-  // Get all IB devices via ibverbx's dynamically loaded libibverbs symbols.
-  int numDevices = 0;
-  ibverbx::ibv_device** deviceList =
-      symbols.ibv_internal_get_device_list(&numDevices);
-  if (!deviceList || numDevices == 0) {
-    throw std::runtime_error("No IB devices found");
-  }
-
-  // Resolve nicDoca_[0..numNics_).deviceName — config override first,
-  // then topology-aware auto-discovery.
-  //
-  // Priority 1: Explicit GPU-to-NIC mapping from config (vector per GPU,
-  // entries [0..numNics_) used in order — first is preferred).
-  auto it = config_.gpuNicMap.find(config_.cudaDevice);
-  if (it != config_.gpuNicMap.end() && !it->second.empty()) {
-    const auto& names = it->second;
-    if (static_cast<int>(names.size()) < numNics_) {
-      throw std::runtime_error(
-          fmt::format(
-              "config.gpuNicMap[{}] supplies {} NIC(s) but numNics_={}; "
-              "provide at least numNics_ NIC names",
-              config_.cudaDevice,
-              names.size(),
-              numNics_));
-    }
-    for (int n = 0; n < numNics_; ++n) {
-      nics_[n].deviceName = names[n];
-    }
-    VLOG(1) << "MultipeerIbgdaTransport: using config.gpuNicMap for GPU "
-            << config_.cudaDevice << " -> " << nics_[0].deviceName
-            << (numNics_ > 1 ? " (+ " + std::to_string(numNics_ - 1) +
-                        " more for multi-NIC)"
-                             : "");
-  }
-
-  // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
-  if (nics_[0].deviceName.empty()) {
-    // On AMD, the `DataDirectMode::Only` default triggers
-    // `ibv_reg_dmabuf_mr` inside `augmentWithDataDirect()`, which is not
-    // exercised on AMD's libibverbs path here. Force `Disabled` to skip the
-    // DataDirect probe; the prior AMD-specific transport ran with the same
-    // configuration.
-#ifdef __HIP_PLATFORM_AMD__
-    auto discovery = GpuNicDiscovery(
-        config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
-#else
-    auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
-#endif
-    const auto& candidates = discovery.getCandidates();
-    if (static_cast<int>(candidates.size()) < numNics_) {
-      throw std::runtime_error(
-          fmt::format(
-              "NIC auto-discovery found {} candidate(s) for GPU {} but "
-              "numNics_={}; set config.gpuNicMap or config.ibHca to expose "
-              "additional NICs",
-              candidates.size(),
-              config_.cudaDevice,
-              numNics_));
-    }
-    for (int n = 0; n < numNics_; ++n) {
-      nics_[n].deviceName = candidates[n].name;
-    }
-    VLOG(1) << "MultipeerIbgdaTransport: auto-discovered NIC "
-            << nics_[0].deviceName << " for GPU device " << config_.cudaDevice;
-  }
-
-  // Open + setup each NIC: find by name, open ctx, alloc PD, query GID +
-  // port, create AH attributes.
-  doca_verbs_addr_type addrType = DOCA_VERBS_ADDR_TYPE_IB_NO_GRH;
+  const doca_verbs_addr_type addrType =
+      (nics_[0].linkLayer == ibverbx::IBV_LINK_LAYER_INFINIBAND)
+      ? DOCA_VERBS_ADDR_TYPE_IB_NO_GRH
+      : ((config_.addressFamily == AddressFamily::IPV4)
+             ? DOCA_VERBS_ADDR_TYPE_IPv4
+             : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
-    int nicIdx = -1;
-    for (int i = 0; i < numDevices; i++) {
-      const char* devName = symbols.ibv_internal_get_device_name(deviceList[i]);
-      if (devName && nics_[n].deviceName == devName) {
-        nicIdx = i;
-        break;
-      }
-    }
-    if (nicIdx < 0) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "Specified NIC not found: " + nics_[n].deviceName);
-    }
-    VLOG(1) << "MultipeerIbgdaTransport: NIC " << n << " = "
-            << nics_[n].deviceName << " at device-list index " << nicIdx;
-
-    nics_[n].ibvCtx = symbols.ibv_internal_open_device(deviceList[nicIdx]);
-    if (!nics_[n].ibvCtx) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "Failed to open IB device: " + nics_[n].deviceName);
-    }
-
-    nics_[n].ibvPd = symbols.ibv_internal_alloc_pd(nics_[n].ibvCtx);
-    if (!nics_[n].ibvPd) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "Failed to allocate protection domain on NIC " + nics_[n].deviceName);
-    }
-
-    if (symbols.ibv_internal_query_gid(
-            nics_[n].ibvCtx, 1, gidIndex_, &nics_[n].localGid) != 0) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "Failed to query GID at index " + std::to_string(gidIndex_) +
-          " on NIC " + nics_[n].deviceName);
-    }
-
-    auto gidStr = fmt::format(
-        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:"
-        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
-        nics_[n].localGid.raw[0],
-        nics_[n].localGid.raw[1],
-        nics_[n].localGid.raw[2],
-        nics_[n].localGid.raw[3],
-        nics_[n].localGid.raw[4],
-        nics_[n].localGid.raw[5],
-        nics_[n].localGid.raw[6],
-        nics_[n].localGid.raw[7],
-        nics_[n].localGid.raw[8],
-        nics_[n].localGid.raw[9],
-        nics_[n].localGid.raw[10],
-        nics_[n].localGid.raw[11],
-        nics_[n].localGid.raw[12],
-        nics_[n].localGid.raw[13],
-        nics_[n].localGid.raw[14],
-        nics_[n].localGid.raw[15]);
-    VLOG(1) << "MultipeerIbgdaTransport: NIC " << n << " GID[" << gidIndex_
-            << "] = " << gidStr;
-
-    ibverbx::ibv_port_attr portAttr{};
-    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) != 0) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "Failed to query port attributes on NIC " + nics_[n].deviceName);
-    }
-
-    VLOG(1) << "MultipeerIbgdaTransport: NIC " << n
-            << " port 1 state=" << portAttr.state
-            << " link_layer=" << (int)portAttr.link_layer
-            << " (1=IB, 2=Ethernet) active_mtu=" << portAttr.active_mtu;
-
-    if (portAttr.state != ibverbx::IBV_PORT_ACTIVE) {
-      symbols.ibv_internal_free_device_list(deviceList);
-      throw std::runtime_error(
-          "NIC " + nics_[n].deviceName + " port 1 is not active (state=" +
-          std::to_string(portAttr.state) + ")");
-    }
-
-    // MTU + addr type are common across NICs (same fabric/HCA generation
-    // assumed). Capture from NIC 0; cross-check the rest match.
-    if (n == 0) {
-      localMtu_ = portAttr.active_mtu;
-      if (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND) {
-        addrType = DOCA_VERBS_ADDR_TYPE_IB_NO_GRH;
-      } else {
-        addrType = (config_.addressFamily == AddressFamily::IPV4)
-            ? DOCA_VERBS_ADDR_TYPE_IPv4
-            : DOCA_VERBS_ADDR_TYPE_IPv6;
-      }
-    } else if (portAttr.active_mtu != localMtu_) {
-      LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << n << " ("
-                   << nics_[n].deviceName
-                   << ") active_mtu=" << portAttr.active_mtu
-                   << " differs from NIC 0 active_mtu=" << localMtu_
-                   << "; using NIC 0's MTU for negotiation";
-    }
-
     doca_error_t err = doca_verbs_ah_attr_create(
         reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx), &nicDoca_[n].ahAttr);
     checkDocaError(err, "Failed to create AH attributes");
@@ -408,7 +245,6 @@ void MultipeerIbgdaTransport::openIbDevice() {
     err = doca_verbs_ah_attr_set_sl(nicDoca_[n].ahAttr, config_.serviceLevel);
     checkDocaError(err, "Failed to set service level");
   }
-  symbols.ibv_internal_free_device_list(deviceList);
 }
 
 void MultipeerIbgdaTransport::allocateResources() {

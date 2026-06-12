@@ -12,9 +12,12 @@
 #include <unistd.h>
 
 #include <fmt/core.h>
+#include <folly/ScopeGuard.h>
 #include <glog/logging.h>
 
+#include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/prims/transport/rdma/NicDiscovery.h"
 // GPU DMA-BUF export for MR registration. Generic (no DOCA context): on NVIDIA
 // it is cuMemGetHandleForAddressRange via DocaHostUtils (with the CUDA driver
 // address-range lookup from CudaDriverLazy); on AMD it is the HSA path provided
@@ -27,6 +30,10 @@
 #endif
 
 namespace comms::prims {
+
+namespace {
+constexpr int kDefaultGidIndex = 3; // Default RoCE GID index
+} // namespace
 
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     int myRank,
@@ -43,6 +50,194 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
   if (nRanks_ < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
+  // RoCE GID index: config override, else the RoCEv2 default. Read by
+  // openNics() (query_gid) and by backends when building address handles.
+  gidIndex_ = config_.gidIndex.value_or(kDefaultGidIndex);
+}
+
+void MultiPeerIbTransportBase::openNics() {
+  nics_.resize(numNics_);
+  auto initResult = ibverbx::ibvInit();
+  if (!initResult) {
+    throw std::runtime_error(
+        "Failed to initialize ibverbx: " + initResult.error().errStr);
+  }
+  auto& symbols = ibverbx::ibvSymbols;
+
+  // Get all IB devices via ibverbx's dynamically loaded libibverbs symbols.
+  int numDevices = 0;
+  ibverbx::ibv_device** deviceList =
+      symbols.ibv_internal_get_device_list(&numDevices);
+  if (!deviceList || numDevices == 0) {
+    throw std::runtime_error("No IB devices found");
+  }
+
+  // Free the device list on every exit; on failure also close any ctx/PD opened
+  // for earlier NICs, so openNics() never leaks on a partial open — this covers
+  // the manual throws below and exceptions from callees (e.g. GpuNicDiscovery).
+  SCOPE_EXIT {
+    symbols.ibv_internal_free_device_list(deviceList);
+  };
+  SCOPE_FAIL {
+    for (auto& nic : nics_) {
+      if (nic.ibvPd != nullptr) {
+        symbols.ibv_internal_dealloc_pd(nic.ibvPd);
+        nic.ibvPd = nullptr;
+      }
+      if (nic.ibvCtx != nullptr) {
+        symbols.ibv_internal_close_device(nic.ibvCtx);
+        nic.ibvCtx = nullptr;
+      }
+    }
+  };
+
+  // Resolve nics_[0..numNics_).deviceName — config override first, then
+  // topology-aware auto-discovery.
+  //
+  // Priority 1: Explicit GPU-to-NIC mapping from config (entries [0..numNics_)
+  // used in order — first is preferred).
+  auto it = config_.gpuNicMap.find(config_.cudaDevice);
+  if (it != config_.gpuNicMap.end() && !it->second.empty()) {
+    const auto& names = it->second;
+    if (static_cast<int>(names.size()) < numNics_) {
+      throw std::runtime_error(
+          fmt::format(
+              "config.gpuNicMap[{}] supplies {} NIC(s) but numNics_={}; "
+              "provide at least numNics_ NIC names",
+              config_.cudaDevice,
+              names.size(),
+              numNics_));
+    }
+    for (int n = 0; n < numNics_; ++n) {
+      nics_[n].deviceName = names[n];
+    }
+    VLOG(1) << "MultiPeerIbTransport: using config.gpuNicMap for GPU "
+            << config_.cudaDevice << " -> " << nics_[0].deviceName
+            << (numNics_ > 1 ? " (+ " + std::to_string(numNics_ - 1) +
+                        " more for multi-NIC)"
+                             : "");
+  }
+
+  // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
+  if (nics_[0].deviceName.empty()) {
+    // On AMD, the `DataDirectMode::Only` default triggers `ibv_reg_dmabuf_mr`
+    // inside `augmentWithDataDirect()`, which is not exercised on AMD's
+    // libibverbs path here. Force `Disabled` to skip the DataDirect probe.
+#ifdef __HIP_PLATFORM_AMD__
+    auto discovery = GpuNicDiscovery(
+        config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
+#else
+    auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
+#endif
+    const auto& candidates = discovery.getCandidates();
+    if (static_cast<int>(candidates.size()) < numNics_) {
+      throw std::runtime_error(
+          fmt::format(
+              "NIC auto-discovery found {} candidate(s) for GPU {} but "
+              "numNics_={}; set config.gpuNicMap or config.ibHca to expose "
+              "additional NICs",
+              candidates.size(),
+              config_.cudaDevice,
+              numNics_));
+    }
+    for (int n = 0; n < numNics_; ++n) {
+      nics_[n].deviceName = candidates[n].name;
+    }
+    VLOG(1) << "MultiPeerIbTransport: auto-discovered NIC "
+            << nics_[0].deviceName << " for GPU device " << config_.cudaDevice;
+  }
+
+  // Open + setup each NIC: find by name, open ctx, alloc PD, query GID + port.
+  for (int n = 0; n < numNics_; ++n) {
+    int nicIdx = -1;
+    for (int i = 0; i < numDevices; i++) {
+      const char* devName = symbols.ibv_internal_get_device_name(deviceList[i]);
+      if (devName && nics_[n].deviceName == devName) {
+        nicIdx = i;
+        break;
+      }
+    }
+    if (nicIdx < 0) {
+      throw std::runtime_error(
+          "Specified NIC not found: " + nics_[n].deviceName);
+    }
+    VLOG(1) << "MultiPeerIbTransport: NIC " << n << " = " << nics_[n].deviceName
+            << " at device-list index " << nicIdx;
+
+    nics_[n].ibvCtx = symbols.ibv_internal_open_device(deviceList[nicIdx]);
+    if (!nics_[n].ibvCtx) {
+      throw std::runtime_error(
+          "Failed to open IB device: " + nics_[n].deviceName);
+    }
+
+    nics_[n].ibvPd = symbols.ibv_internal_alloc_pd(nics_[n].ibvCtx);
+    if (!nics_[n].ibvPd) {
+      throw std::runtime_error(
+          "Failed to allocate protection domain on NIC " + nics_[n].deviceName);
+    }
+
+    if (symbols.ibv_internal_query_gid(
+            nics_[n].ibvCtx, 1, gidIndex_, &nics_[n].localGid) != 0) {
+      throw std::runtime_error(
+          "Failed to query GID at index " + std::to_string(gidIndex_) +
+          " on NIC " + nics_[n].deviceName);
+    }
+
+    auto gidStr = fmt::format(
+        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:"
+        "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+        nics_[n].localGid.raw[0],
+        nics_[n].localGid.raw[1],
+        nics_[n].localGid.raw[2],
+        nics_[n].localGid.raw[3],
+        nics_[n].localGid.raw[4],
+        nics_[n].localGid.raw[5],
+        nics_[n].localGid.raw[6],
+        nics_[n].localGid.raw[7],
+        nics_[n].localGid.raw[8],
+        nics_[n].localGid.raw[9],
+        nics_[n].localGid.raw[10],
+        nics_[n].localGid.raw[11],
+        nics_[n].localGid.raw[12],
+        nics_[n].localGid.raw[13],
+        nics_[n].localGid.raw[14],
+        nics_[n].localGid.raw[15]);
+    VLOG(1) << "MultiPeerIbTransport: NIC " << n << " GID[" << gidIndex_
+            << "] = " << gidStr;
+
+    ibverbx::ibv_port_attr portAttr{};
+    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) != 0) {
+      throw std::runtime_error(
+          "Failed to query port attributes on NIC " + nics_[n].deviceName);
+    }
+
+    VLOG(1) << "MultiPeerIbTransport: NIC " << n
+            << " port 1 state=" << portAttr.state
+            << " link_layer=" << (int)portAttr.link_layer
+            << " (1=IB, 2=Ethernet) active_mtu=" << portAttr.active_mtu;
+
+    if (portAttr.state != ibverbx::IBV_PORT_ACTIVE) {
+      throw std::runtime_error(
+          "NIC " + nics_[n].deviceName + " port 1 is not active (state=" +
+          std::to_string(portAttr.state) + ")");
+    }
+
+    nics_[n].linkLayer = portAttr.link_layer;
+
+    // MTU is common across NICs (same fabric/HCA generation assumed). Capture
+    // from NIC 0; cross-check the rest match.
+    if (n == 0) {
+      localMtu_ = portAttr.active_mtu;
+    } else if (portAttr.active_mtu != localMtu_) {
+      LOG(WARNING) << "MultiPeerIbTransport: NIC " << n << " ("
+                   << nics_[n].deviceName
+                   << ") active_mtu=" << portAttr.active_mtu
+                   << " differs from NIC 0 active_mtu=" << localMtu_
+                   << "; using NIC 0's MTU for negotiation";
+    }
+  }
+  // Success: SCOPE_EXIT frees the device list; SCOPE_FAIL is skipped, so the
+  // opened ctx/PD are kept for the transport's lifetime.
 }
 
 IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
