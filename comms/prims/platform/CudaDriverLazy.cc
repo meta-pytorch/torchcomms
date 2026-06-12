@@ -30,6 +30,8 @@ PFN_cuMemGetAllocationPropertiesFromHandle_v10020
 PFN_cuMemRetainAllocationHandle_v11000 pfn_cuMemRetainAllocationHandle =
     nullptr;
 PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
+PFN_cuMemGetHandleForAddressRange_v11070 pfn_cuMemGetHandleForAddressRange =
+    nullptr;
 
 namespace {
 
@@ -76,6 +78,7 @@ void do_init() {
   LOAD(cuMemGetAllocationPropertiesFromHandle);
   LOAD(cuMemRetainAllocationHandle);
   LOAD(cuMemGetAddressRange);
+  LOAD(cuMemGetHandleForAddressRange);
 
 #undef LOAD
 

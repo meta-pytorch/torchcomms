@@ -24,6 +24,7 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
@@ -189,73 +190,12 @@ struct MultipeerIbgdaTransportConfig {
   uint32_t materializePeerTimeoutMs{30000};
 };
 
-/**
- * Transport connection information for RDMA QP setup.
- *
- * This struct is exchanged ONCE during the bootstrap phase to establish
- * RDMA connectivity between peers. Contains immutable connection parameters
- * that define how to reach a peer's QP.
- */
-struct IbgdaTransportExchInfo {
-  // Queue Pair Number for RDMA connection
-  uint32_t qpn{0};
-
-  // Global Identifier for RoCE routing (16 bytes)
-  uint8_t gid[16]{};
-
-  // GID index used
-  int gidIndex{0};
-
-  // Local Identifier (for IB, not used in RoCE)
-  uint16_t lid{0};
-
-  // Port active MTU. Used to negotiate path MTU: min(local, remote).
-  ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
-};
-
-/**
- * Maximum number of ranks supported for allGather-based exchange.
- * This limit exists because we use fixed-size arrays for QPN exchange.
- */
-constexpr int kMaxRanksForAllGather = 128;
-
-/**
- * Maximum number of QP sets per (peer, NIC) for multi-QP support.
- */
-constexpr int kMaxQpsPerPeerPerNic = 128;
-
-/**
- * Transport exchange info for allGather-based exchange.
- *
- * Each rank contributes this structure containing per-NIC GID/LID and the
- * per-(target_rank, q) QPN this rank uses on that NIC.
- */
-struct IbgdaTransportExchInfoAll {
-  // Per-NIC public info shared with peers (wire format). nicInfo[n] holds
-  // this rank's NIC n's GID, LID, and the QPNs it uses to connect to each
-  // (target_rank, q). Indices [numNics .. kMaxNicsPerGpu) are zero-init and
-  // never read by peers (both ranks must agree on numNics — validated at
-  // exchange time).
-  struct NicWireInfo {
-    uint8_t gid[16]{};
-    uint16_t lid{0};
-    // QPN this rank uses on this NIC to connect to (target_rank, q).
-    // qpnForRank[myRank][*] is unused (set to 0).
-    uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeerPerNic]{};
-  };
-  NicWireInfo nicInfo[kMaxNicsPerGpu]{};
-
-  // Common (shared across NICs on this rank).
-  int gidIndex{0};
-  ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
-
-  // Number of NICs (rails) used by this rank.
-  // Must match across all ranks (validated at exchange time).
-  int numNics{1};
-
-  // Number of QPs per (peer, NIC) used by this rank.
-  int numQpsPerPeerPerNic{1};
-};
+// The exchange wire structs and allGather caps (kMaxRanksForAllGather,
+// kMaxQpsPerPeerPerNic) now live in MultiPeerIbTransport.h so they are shared
+// across IB backends. Keep the historical IBGDA names as aliases so callers and
+// the .cc are unchanged.
+using IbgdaTransportExchInfo = IbTransportExchInfo;
+using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 
 /**
  * MultipeerIbgdaTransport - Host-side multi-peer RDMA transport manager
@@ -316,7 +256,8 @@ struct IbgdaTransportExchInfoAll {
  * - exchange(): COLLECTIVE operation (all ranks must call)
  * - getDeviceTransportPtr(): Local operation (after exchange completes)
  */
-class MultipeerIbgdaTransport {
+class MultipeerIbgdaTransport
+    : public MultiPeerIbTransport<MultipeerIbgdaTransport> {
  public:
   /**
    * Constructor - Initialize multi-peer IBGDA transport
@@ -445,57 +386,12 @@ class MultipeerIbgdaTransport {
    */
   P2pIbgdaTransportDevice* getP2pTransportDeviceSlot(int peerRank) const;
 
-  /**
-   * Get number of peers (nRanks - 1)
-   */
-  int numPeers() const;
+  // numPeers()/myRank()/nRanks() are inherited from MultiPeerIbTransport.
 
-  /**
-   * Get this rank's ID
-   */
-  int myRank() const;
-
-  /**
-   * Get total number of ranks
-   */
-  int nRanks() const;
-
-  /**
-   * registerBuffer - Register a user-provided buffer for RDMA access
-   *
-   * Registers the specified GPU memory buffer with the RDMA device, making it
-   * accessible for RDMA operations. The buffer must remain valid until
-   * deregisterBuffer() is called or the transport is destroyed.
-   *
-   * @param ptr Pointer to GPU memory (must be cudaMalloc'd or similar)
-   * @param size Size of the buffer in bytes
-   * @return IbgdaLocalBuffer with valid lkey for local RDMA operations
-   * @throws std::runtime_error if registration fails
-   */
-  IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size);
-
-  /**
-   * deregisterBuffer - Deregister a previously registered buffer
-   *
-   * Releases the RDMA memory registration for the specified buffer.
-   * The buffer pointer must match a previously registered buffer.
-   *
-   * @param ptr Pointer to the buffer to deregister
-   */
-  void deregisterBuffer(void* ptr);
-
-  /**
-   * exchangeBuffer - Collectively exchange buffer info with all peers
-   *
-   * COLLECTIVE OPERATION: All ranks MUST call this with their local buffer.
-   * Returns remote buffer info for all peers, indexed by peer rank.
-   *
-   * @param localBuf Local buffer that was registered with registerBuffer()
-   * @return Vector of remote buffers, one per peer (size = nRanks - 1)
-   *         Index i corresponds to peerIndexToRank(i)
-   */
-  std::vector<IbgdaRemoteBuffer> exchangeBuffer(
-      const IbgdaLocalBuffer& localBuf);
+  // registerBuffer()/deregisterBuffer()/exchangeBuffer() are inherited from
+  // MultiPeerIbTransport (the refcounted MR registry lives in the base; the
+  // backend supplies the register_mr_on_nics()/lookup_alloc_base()/
+  // deregister_mr() hooks below).
 
   /**
    * Get the number of QP sets per (peer, NIC).
@@ -503,14 +399,7 @@ class MultipeerIbgdaTransport {
    */
   int numQpsPerPeerPerNic() const;
 
-  /**
-   * Get the number of NICs (rails) actually in use after auto-detection.
-   * Resolved at construction time from `gpuNicMap` or topology discovery;
-   * see ctor doc for the resolution rules.
-   */
-  int numNics() const {
-    return numNics_;
-  }
+  // numNics() is inherited from MultiPeerIbTransport.
 
   /**
    * Get the GID index being used
@@ -535,8 +424,8 @@ class MultipeerIbgdaTransport {
       doca_gpu_verbs_qp_hl* qpHl,
       const IbgdaTransportExchInfo& peerInfo,
       int nic);
-  int rankToPeerIndex(int rank) const;
-  int peerIndexToRank(int peerIndex) const;
+  // rankToPeerIndex()/peerIndexToRank() are inherited from
+  // MultiPeerIbTransport.
 
   // Per-peer helpers shared by eager exchange() and lazy materializePeer()
   void createPeerQps(int peerIndex);
@@ -555,12 +444,12 @@ class MultipeerIbgdaTransport {
   void applyRemoteViews(int peerIndex, const PeerBufferPayload& remotePayload);
   void cleanupPeerOnFailure(int peerIndex);
 
-  // Rank information
-  const int myRank_{-1};
-  const int nRanks_{0};
+  // The MR registry (register/deregister/exchangeBuffer + the cache) lives
+  // entirely in MultiPeerIbTransport; it registers on the base-owned
+  // nics_[*].ibvPd, which openIbDevice() fills.
 
-  // Bootstrap for collective operations
-  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+  // myRank_/nRanks_/bootstrap_ are inherited (protected) from
+  // MultiPeerIbTransport.
 
   // Configuration
   MultipeerIbgdaTransportConfig config_;
@@ -568,23 +457,21 @@ class MultipeerIbgdaTransport {
   // DOCA GPU context (shared across NICs).
   doca_gpu* docaGpu_{nullptr};
 
-  // Number of NICs (rails) actually in use. <= kMaxNicsPerGpu.
+  // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDevices_.size() == numNics_ after openIbDevice().
-  int numNics_{1};
 
   // Per-NIC host-side IB verbs resources. qpGroups and loopbackCompanionQps
   // are indexed [peer * numQpsPerPeerPerNic + q].
-  struct NicHostIbgdaResources {
-    std::string deviceName;
-    ibverbx::ibv_context* ibvCtx{nullptr};
-    ibverbx::ibv_pd* ibvPd{nullptr};
+  // Backend-specific (DOCA) per-NIC state. The generic per-NIC resources
+  // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
+  // index-aligned with this vector; openIbDevice() fills both.
+  struct NicDocaResources {
     doca_verbs_ah_attr* ahAttr{nullptr};
-    ibverbx::ibv_gid localGid{};
     ibverbx::ibv_mr* sinkMr{nullptr};
     std::vector<doca_gpu_verbs_qp_group_hl*> qpGroups;
     std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
   };
-  std::vector<NicHostIbgdaResources> nicDevices_;
+  std::vector<NicDocaResources> nicDoca_;
 
   // Sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
@@ -596,22 +483,8 @@ class MultipeerIbgdaTransport {
   std::size_t sinkBufferAllocSize_{0};
   std::uint64_t sinkBufferHandle_{0};
 
-  // Cached MR entry: one MR per (CUDA allocation, NIC), refcounted.
-  // Multiple user buffers within the same cudaMalloc allocation share one
-  // MR per NIC; the MR set covers all NICs for the same physical buffer.
-  struct CachedMr {
-    std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
-    size_t allocSize{0};
-    int refs{0};
-  };
-
-  // Maps CUDA allocation base address -> cached MR covering the full
-  // allocation. Keyed by allocBase from cuMemGetAddressRange, not by user
-  // pointer. Ordered map enables O(log n) containment lookup via
-  // upper_bound — used by deregisterBuffer to find the owning allocation
-  // without calling cuMemGetAddressRange (which fails if CUDA already freed
-  // the memory).
-  std::map<uintptr_t, CachedMr> registeredBuffers_;
+  // The refcounted MR cache (CachedMr + registeredBuffers_) lives in
+  // MultiPeerIbTransport.
 
   // GPU PCIe bus ID.
   std::string gpuPciBusId_;

@@ -3,7 +3,6 @@
 #pragma once
 
 #include <cuda.h>
-#include <doca_gpunetio_host.h>
 #include <glog/logging.h>
 #include <unistd.h>
 #include <cstddef>
@@ -57,13 +56,23 @@ struct DmaBufExport {
 // Handles the full flow for cudaMalloc buffers on Grace/aarch64:
 //   1. cuMemGetAddressRange → find CUDA allocation base
 //   2. compute_dmabuf_alignment → align base/size to host page size
-//   3. doca_gpu_dmabuf_fd → export as DMA-BUF
+//   3. cuMemGetHandleForAddressRange → export as DMA-BUF fd
 //
-// Returns std::nullopt on failure (caller can fall back to ibv_reg_mr).
-// The returned DmaBufExport contains the fd and alignment info needed
-// for ibv_reg_dmabuf_mr (dmabufOffset as offset, ptr as iova).
-inline std::optional<DmaBufExport>
-export_gpu_dmabuf_aligned(doca_gpu* gpu, void* ptr, size_t size) {
+// This is the plain CUDA-driver DMA-BUF export — doca_gpu_dmabuf_fd is a thin
+// wrapper over the same cuMemGetHandleForAddressRange call — so no DOCA context
+// is needed. Returns std::nullopt on failure (caller can fall back to
+// ibv_reg_mr). The returned DmaBufExport contains the fd and alignment info
+// needed for ibv_reg_dmabuf_mr (dmabufOffset as offset, ptr as iova).
+inline std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
+    void* ptr,
+    size_t size) {
+  if (cuda_driver_lazy_init() != 0 || pfn_cuMemGetAddressRange == nullptr ||
+      pfn_cuMemGetHandleForAddressRange == nullptr) {
+    LOG(WARNING)
+        << "export_gpu_dmabuf_aligned: CUDA driver API is not available";
+    return std::nullopt;
+  }
+
   CUdeviceptr allocBase = 0;
   size_t allocSize = 0;
   CUresult cuRes =
@@ -79,11 +88,15 @@ export_gpu_dmabuf_aligned(doca_gpu* gpu, void* ptr, size_t size) {
       compute_dmabuf_alignment(allocBase, allocSize, ptr, pageSize);
 
   int fd = -1;
-  doca_error_t err = doca_gpu_dmabuf_fd(
-      gpu, alignment.alignedBase, alignment.alignedSize, &fd);
-  if (err != DOCA_SUCCESS || fd < 0) {
-    LOG(WARNING) << "export_gpu_dmabuf_aligned: doca_gpu_dmabuf_fd failed"
-                 << " err=" << err << " ptr=" << ptr
+  CUresult fdRes = pfn_cuMemGetHandleForAddressRange(
+      &fd,
+      reinterpret_cast<CUdeviceptr>(alignment.alignedBase),
+      alignment.alignedSize,
+      CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+      0);
+  if (fdRes != CUDA_SUCCESS || fd < 0) {
+    LOG(WARNING) << "export_gpu_dmabuf_aligned: cuMemGetHandleForAddressRange"
+                 << " failed err=" << fdRes << " ptr=" << ptr
                  << " alignedBase=" << alignment.alignedBase
                  << " alignedSize=" << alignment.alignedSize;
     return std::nullopt;
