@@ -20,6 +20,9 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
+
 namespace comms::prims {
 
 namespace {
@@ -454,39 +457,55 @@ std::pair<PathType, int> GpuNicDiscovery::computePathType(
   return {PathType::SYS, -1};
 }
 
-// Static methods for Data Direct detection
+namespace {
 
-bool GpuNicDiscovery::isMlx5Supported(ibv_device* device) {
-  return lazy_mlx5dv_is_supported(device) != 0;
+bool isMlx5Supported(ibverbx::ibv_device* device) {
+  if (!ibverbx::ibvInit().hasValue() ||
+      ibverbx::ibvSymbols.mlx5dv_internal_is_supported == nullptr) {
+    return false;
+  }
+  return ibverbx::ibvSymbols.mlx5dv_internal_is_supported(device);
 }
 
-bool GpuNicDiscovery::isDmaBufCapable(ibv_context* ctx) {
-  struct ibv_pd* pd = nullptr;
-  doca_error_t err = doca_verbs_wrapper_ibv_alloc_pd(ctx, &pd);
-  if (err != DOCA_SUCCESS || !pd) {
+bool isDmaBufCapable(ibverbx::ibv_context* ctx) {
+  if (!ibverbx::ibvInit().hasValue() ||
+      ibverbx::ibvSymbols.ibv_internal_reg_dmabuf_mr == nullptr) {
+    return false;
+  }
+  auto& symbols = ibverbx::ibvSymbols;
+
+  ibverbx::ibv_pd* pd = symbols.ibv_internal_alloc_pd(ctx);
+  if (pd == nullptr) {
     return false;
   }
 
   // Probe DMA-BUF support with a dummy call (fd=-1)
   // If not supported, errno will be EOPNOTSUPP or EPROTONOSUPPORT
   // If supported but invalid args, errno will be EBADF (which means supported)
-  (void)lazy_ibv_reg_dmabuf_mr(
+  errno = 0;
+  ibverbx::ibv_mr* mr = ibverbx::ibvSymbols.ibv_internal_reg_dmabuf_mr(
       pd, 0ULL /*offset*/, 0ULL /*len*/, 0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
   bool notSupported = (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
-  doca_verbs_wrapper_ibv_dealloc_pd(pd);
+  if (mr != nullptr) {
+    symbols.ibv_internal_dereg_mr(mr);
+  }
+  symbols.ibv_internal_dealloc_pd(pd);
   return !notSupported;
 }
 
-bool GpuNicDiscovery::getDataDirectSysfsPath(
-    ibv_context* ctx,
-    std::string& path) {
+bool getDataDirectSysfsPath(ibverbx::ibv_context* ctx, std::string& path) {
+  if (!ibverbx::ibvInit().hasValue() ||
+      ibverbx::ibvSymbols.mlx5dv_internal_get_data_direct_sysfs_path ==
+          nullptr) {
+    return false;
+  }
   char buf[PATH_MAX];
   // Prepend "/sys" prefix
   constexpr const char* kSysPrefix = "/sys";
   int prefixLen = strlen(kSysPrefix);
   memcpy(buf, kSysPrefix, prefixLen);
 
-  int rc = lazy_mlx5dv_get_data_direct_sysfs_path(
+  int rc = ibverbx::ibvSymbols.mlx5dv_internal_get_data_direct_sysfs_path(
       ctx, buf + prefixLen, sizeof(buf) - prefixLen);
   if (rc != 0) {
     return false;
@@ -495,25 +514,30 @@ bool GpuNicDiscovery::getDataDirectSysfsPath(
   return true;
 }
 
+} // namespace
+
 void GpuNicDiscovery::augmentWithDataDirect() {
   if (dataDirectMode_ == DataDirectMode::Disabled) {
     return;
   }
+  if (!ibverbx::ibvInit().hasValue()) {
+    spdlog::warn("NicDiscovery: ibverbx initialization failed for DD probing");
+    return;
+  }
 
   int numDevices = 0;
-  struct ibv_device** deviceList = nullptr;
-  doca_error_t docaRet =
-      doca_verbs_wrapper_ibv_get_device_list(&numDevices, &deviceList);
-  if (docaRet != DOCA_SUCCESS || !deviceList || numDevices == 0) {
+  auto& symbols = ibverbx::ibvSymbols;
+  ibverbx::ibv_device** deviceList =
+      symbols.ibv_internal_get_device_list(&numDevices);
+  if (!deviceList || numDevices == 0) {
     spdlog::warn("NicDiscovery: ibv_get_device_list() failed for DD probing");
     return;
   }
 
   // Build map of ibv_device* by name for quick lookup
-  std::unordered_map<std::string, ibv_device*> devMap;
+  std::unordered_map<std::string, ibverbx::ibv_device*> devMap;
   for (int i = 0; i < numDevices; i++) {
-    const char* devName = nullptr;
-    doca_verbs_wrapper_ibv_get_device_name(deviceList[i], &devName);
+    const char* devName = symbols.ibv_internal_get_device_name(deviceList[i]);
     if (devName) {
       devMap[devName] = deviceList[i];
     }
@@ -528,14 +552,13 @@ void GpuNicDiscovery::augmentWithDataDirect() {
       continue;
     }
 
-    ibv_device* dev = it->second;
+    ibverbx::ibv_device* dev = it->second;
     if (!isMlx5Supported(dev)) {
       continue;
     }
 
-    ibv_context* ctx = nullptr;
-    docaRet = doca_verbs_wrapper_ibv_open_device(dev, &ctx);
-    if (docaRet != DOCA_SUCCESS || !ctx) {
+    ibverbx::ibv_context* ctx = symbols.ibv_internal_open_device(dev);
+    if (ctx == nullptr) {
       continue;
     }
 
@@ -571,7 +594,7 @@ void GpuNicDiscovery::augmentWithDataDirect() {
       }
     }
 
-    doca_verbs_wrapper_ibv_close_device(ctx);
+    symbols.ibv_internal_close_device(ctx);
 
     if (!ddCapable) {
       spdlog::debug(
@@ -597,7 +620,7 @@ void GpuNicDiscovery::augmentWithDataDirect() {
     candidates_.push_back(std::move(dd));
   }
 
-  doca_verbs_wrapper_ibv_free_device_list(deviceList);
+  symbols.ibv_internal_free_device_list(deviceList);
 
   sortCandidates();
 

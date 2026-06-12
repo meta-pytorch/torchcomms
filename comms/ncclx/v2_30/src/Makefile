@@ -153,7 +153,6 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/IbverbsLazy.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc

@@ -62,7 +62,6 @@ present in `pipes_gda::PipesGdaHost`. They have `disable_amd_ci = True`.
 | Component | Target | Why NVIDIA-only |
 |---|---|---|
 | `CudaDriverLazy.{h,cc}` | `:cuda_driver_lazy` | Wraps `cuMem*` driver API symbols loaded via `cudaGetDriverEntryPoint`. |
-| `IbverbsLazy.{h,cc}` | `:ibverbs_lazy` | Pulls in DOCA's `<doca_gpunetio_dl>`. AMD path doesn't go through DOCA host. |
 | `DocaHostUtils.h` | `:doca_host_utils` | NVIDIA-only DOCA helpers. |
 
 ### AMD-only support targets (`comms/prims:` and `comms/prims/amd:`)
