@@ -2,14 +2,8 @@
 
 #pragma once
 
-#if defined(ENABLE_PRIMS)
-
 #include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
 #include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
-
-namespace comms::prims {
-struct Transport;
-}
 
 namespace ctran::allreduce::common {
 
@@ -19,6 +13,16 @@ static constexpr int kBlockSize = 640;
 static constexpr int kNvlTileElems = 15360;
 /** Elements processed by one IB tile operation in the reduction helpers. */
 static constexpr int kIbTileElems = 5120;
+
+} // namespace ctran::allreduce::common
+
+#if defined(ENABLE_PRIMS)
+
+namespace comms::prims {
+struct Transport;
+}
+
+namespace ctran::allreduce::common {
 
 /**
  * Topology-agnostic device kernel arguments shared by all fused AllReduce
@@ -32,7 +36,7 @@ static constexpr int kIbTileElems = 5120;
  * neighbors) on top by embedding this struct in its own KernArgs.
  *
  * User buffers are owned by the caller. NVL and IB receive staging are owned by
- * the Pipes transports and are consumed only inside transport copy callbacks.
+ * the Prims transports and are consumed only inside transport copy callbacks.
  */
 struct CommonKernArgs {
   /** User input buffer; may alias `recvbuff` for in-place AllReduce. */
