@@ -220,6 +220,8 @@ MultipeerIbrcTransport::~MultipeerIbrcTransport() {
 void MultipeerIbrcTransport::exchange() {
   if (!config_.ibLazyConnect) {
     exchangeAndConnectQps();
+    allocateSignalCounterResources(
+        IbCounterStorage::HostPinned, /*allocateDiscardSignal=*/false);
     allocateCmdQueuesForAllPeers();
     VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " allocated "
             << allocatedCmdQueueCount() << " command queues";
@@ -240,6 +242,7 @@ void MultipeerIbrcTransport::cleanup() {
     cleanupPeerCmdQueues(peerIndex);
     cleanupPeerQps(peerIndex);
   }
+  cleanupSignalCounterResources();
 
   auto& symbols = ibverbx::ibvSymbols;
   if (symbols.ibv_internal_dereg_mr != nullptr) {
@@ -767,12 +770,31 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
     return;
   }
 
+  IbgdaRemoteBuffer remoteSignalBuf{};
+  IbgdaLocalBuffer localSignalBuf{};
+  if (config_.numSignalSlots > 0) {
+    remoteSignalBuf = slotRemoteSignalView(peerIndex);
+    localSignalBuf = slotLocalSignalView(peerIndex);
+  }
+  IbgdaLocalBuffer counterDeviceBuf{};
+  IbgdaLocalBuffer counterHostBuf{};
+  if (config_.numCounterSlots > 0) {
+    counterDeviceBuf = slotCounterDeviceView(peerIndex);
+    counterHostBuf = slotCounterHostView(peerIndex);
+  }
+
   new (&slots[peerIndex]) P2pIbrcTransportDevice(
       DeviceSpan<IbrcCmdQueueDevice>(
           static_cast<IbrcCmdQueueDevice*>(peer.cmdQueueDevices.device),
           static_cast<uint32_t>(peer.cmdQueues.size())),
       static_cast<uint32_t>(numNics_),
-      static_cast<uint32_t>(config_.numQpsPerPeerPerNic));
+      static_cast<uint32_t>(config_.numQpsPerPeerPerNic),
+      remoteSignalBuf,
+      localSignalBuf,
+      counterDeviceBuf,
+      counterHostBuf,
+      config_.numSignalSlots,
+      config_.numCounterSlots);
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -1289,6 +1311,16 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   auto localQp = buildLocalQpPayload(peerIndex);
   auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
   connectPeerQps(peerIndex, remoteQp);
+  PeerBufferPayload localBuf{};
+  allocatePeerSignalCounterResources(
+      peerIndex,
+      localBuf,
+      IbCounterStorage::HostPinned,
+      /*allocateDiscardSignal=*/false);
+  auto remoteBuf =
+      exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
+  applyRemoteSignalCounterResources(
+      peerIndex, remoteBuf, /*hasDiscardSignal=*/false);
   allocatePeerCmdQueues(peerIndex);
   startProgressThread();
   peerMaterialized_[peerIndex] = true;
@@ -1299,6 +1331,7 @@ void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
   stopProgressThread();
   cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);
+  cleanupPeerSignalCounterResources(peerIndex);
   if (peerIndex >= 0 &&
       peerIndex < static_cast<int>(peerMaterialized_.size())) {
     peerMaterialized_[peerIndex] = false;

@@ -109,6 +109,21 @@ void checkSlotGpu(SlotGpuError err, const std::string& what) {
         fmt::format("{}: {}", what, slotGpuGetErrorString(err)));
   }
 }
+
+// Allocate via allocFn, check the GPU error, and verify the result is non-null,
+// so callers never observe a null pointer on success (clears the nullability
+// lint and centralizes the checks). Throws on any failure.
+void* checkedSlotAlloc(
+    SlotGpuError (*allocFn)(void**, std::size_t),
+    std::size_t bytes,
+    const std::string& what) {
+  void* ptr = nullptr;
+  checkSlotGpu(allocFn(&ptr, bytes), what);
+  if (ptr == nullptr) {
+    throw std::runtime_error(fmt::format("{}: allocation returned null", what));
+  }
+  return ptr;
+}
 } // namespace
 
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
@@ -561,19 +576,25 @@ MultiPeerIbTransportBase::allocateDeviceSlotAllocation(
   }
   DeviceSlotAllocation allocation;
   allocation.bytes = bytes;
+  // Free whatever was allocated if any step below throws (free is null-safe).
+  SCOPE_FAIL {
+    freeDeviceSlotAllocation(allocation);
+  };
 #ifdef __HIP_PLATFORM_AMD__
   // On AMD, GPU-memory MR registration relies on amdgpu's peer-mem
   // integration which is unreliable on test hosts; host-pinned memory
   // registers with ibv_reg_mr (no peer_mem) and is GPU-accessible.
-  checkSlotGpu(
-      slotHostPinnedAlloc(&allocation.ptr, bytes),
+  allocation.ptr = checkedSlotAlloc(
+      slotHostPinnedAlloc,
+      bytes,
       fmt::format(
           "MultiPeerIbTransport: host-pinned allocation for {}", label));
   allocation.isHostPinned = true;
   std::memset(allocation.ptr, 0, bytes);
 #else
-  checkSlotGpu(
-      slotGpuMalloc(&allocation.ptr, bytes),
+  allocation.ptr = checkedSlotAlloc(
+      slotGpuMalloc,
+      bytes,
       fmt::format("MultiPeerIbTransport: device allocation for {}", label));
   checkSlotGpu(
       slotGpuMemset(allocation.ptr, 0, bytes),
@@ -594,10 +615,16 @@ MultiPeerIbTransportBase::allocateCounterSlotAllocation(
   }
   CounterSlotAllocation allocation;
   allocation.bytes = bytes;
+  // Free whatever was allocated if any step below throws (free is null-safe).
+  SCOPE_FAIL {
+    freeCounterSlotAllocation(allocation);
+  };
   switch (storage) {
     case IbCounterStorage::Device:
-      checkSlotGpu(
-          slotGpuMalloc(&allocation.devicePtr, bytes),
+      // NIC loopback atomic target: device memory, zeroed.
+      allocation.devicePtr = checkedSlotAlloc(
+          slotGpuMalloc,
+          bytes,
           fmt::format("MultiPeerIbTransport: device allocation for {}", label));
       checkSlotGpu(
           slotGpuMemset(allocation.devicePtr, 0, bytes),
@@ -605,8 +632,11 @@ MultiPeerIbTransportBase::allocateCounterSlotAllocation(
               "MultiPeerIbTransport: zero device allocation for {}", label));
       break;
     case IbCounterStorage::HostPinned:
-      checkSlotGpu(
-          slotHostPinnedAlloc(&allocation.hostPtr, bytes),
+      // CPU-proxy counter: host-mapped memory; the device reads via the mapped
+      // device pointer.
+      allocation.hostPtr = checkedSlotAlloc(
+          slotHostPinnedAlloc,
+          bytes,
           fmt::format(
               "MultiPeerIbTransport: host-pinned allocation for {}", label));
       std::memset(allocation.hostPtr, 0, bytes);

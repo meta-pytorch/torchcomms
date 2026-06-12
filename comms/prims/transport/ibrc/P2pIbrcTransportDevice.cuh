@@ -8,6 +8,7 @@
 #include <cuda/atomic>
 #endif
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -28,29 +29,192 @@ namespace comms::prims {
 // trap.
 inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
+#if PIPES_IS_DEVICE_COMPILE
+#define IBRC_CHECK_SLOT_ID(id, count, kind)             \
+  do {                                                  \
+    if (!((id) >= 0 && (id) < (count))) {               \
+      printf(                                           \
+          "P2pIbrcTransportDevice: " kind               \
+          " id %d out of range [0, %d) at "             \
+          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n", \
+          (int)(id),                                    \
+          (int)(count),                                 \
+          __FILE__,                                     \
+          __LINE__,                                     \
+          blockIdx.x,                                   \
+          blockIdx.y,                                   \
+          blockIdx.z,                                   \
+          threadIdx.x,                                  \
+          threadIdx.y,                                  \
+          threadIdx.z);                                 \
+      PIPES_DEVICE_TRAP();                              \
+    }                                                   \
+  } while (0)
+#else
+#define IBRC_CHECK_SLOT_ID(id, count, kind) assert((id) >= 0 && (id) < (count))
+#endif
+
 /**
  * Device-side IBRC peer handle.
  *
  * IBRC uses a GPU-visible command queue per peer/QP/NIC. Device code reserves a
  * queue slot, writes an IbrcDesc, then publishes ready_seq with release
- * ordering. The CPU progress thread consumes descriptors and posts the verbs
- * work requests on the matching QP.
+ * ordering. The CPU progress thread consumes descriptors, posts the verbs work
+ * requests on the matching QP, and advances ci after polling the CQE. Optional
+ * local counters are updated by the CPU proxy after polling that CQE.
  */
 class P2pIbrcTransportDevice {
  public:
-  DeviceSpan<IbrcCmdQueueDevice> cmdQueues{};
-  uint32_t numNics{0};
-  uint32_t numQpsPerPeerPerNic{0};
-
   P2pIbrcTransportDevice() = default;
 
   __host__ __device__ P2pIbrcTransportDevice(
       DeviceSpan<IbrcCmdQueueDevice> queues,
       uint32_t nics,
-      uint32_t qpsPerPeerPerNic)
+      uint32_t qpsPerPeerPerNic,
+      IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
+      IbgdaLocalBuffer ownedLocalSignalBuf = {},
+      IbgdaLocalBuffer ownedCounterDeviceBuf = {},
+      IbgdaLocalBuffer ownedCounterHostBuf = {},
+      int numSignalSlots = 0,
+      int numCounterSlots = 0)
       : cmdQueues(queues),
         numNics(nics),
-        numQpsPerPeerPerNic(qpsPerPeerPerNic) {}
+        numQpsPerPeerPerNic(qpsPerPeerPerNic),
+        ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
+        ownedLocalSignalBuf_(ownedLocalSignalBuf),
+        ownedCounterDeviceBuf_(ownedCounterDeviceBuf),
+        ownedCounterHostBuf_(ownedCounterHostBuf),
+        numSignalSlots_(numSignalSlots),
+        numCounterSlots_(numCounterSlots) {}
+
+  __device__ void put(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1) {
+    IbgdaRemoteBuffer sigSlot =
+        (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
+    IbgdaLocalBuffer ctrSlot =
+        (counterId >= 0) ? counter_host_slot(counterId) : IbgdaLocalBuffer{};
+    put(group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        sigSlot,
+        signalVal,
+        ctrSlot,
+        counterVal);
+  }
+
+  __device__ void put(
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1) {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    put(solo,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  }
+
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1) {
+    put(group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalId,
+        signalVal,
+        counterId,
+        counterVal);
+  }
+
+  __device__ void
+  signal(ThreadGroup& group, int signalId, uint64_t signalVal = 1) {
+    signal(group, remote_signal_slot(signalId), signalVal);
+  }
+
+  __device__ void signal(int signalId, uint64_t signalVal = 1) {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    signal(solo, signalId, signalVal);
+  }
+
+  __device__ void wait_signal(
+      ThreadGroup& group,
+      int signalId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) const {
+    wait_signal(group, local_signal_slot(signalId), expected, timeout);
+  }
+
+  __device__ void wait_signal(
+      int signalId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) const {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    wait_signal(solo, signalId, expected, timeout);
+  }
+
+  __device__ void wait_counter(
+      ThreadGroup& group,
+      int counterId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) const {
+    wait_counter(group, counter_device_slot(counterId), expected, timeout);
+  }
+
+  __device__ void wait_counter(
+      int counterId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) const {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    wait_counter(solo, counterId, expected, timeout);
+  }
+
+  __device__ void reset_signal(ThreadGroup& group, int signalId) {
+    reset_signal(group, local_signal_slot(signalId));
+  }
+
+  __device__ void reset_signal(int signalId) {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    reset_signal(solo, signalId);
+  }
+
+  __device__ void reset_counter(ThreadGroup& group, int counterId) {
+    reset_counter(group, counter_device_slot(counterId));
+  }
+
+  __device__ void reset_counter(int counterId) {
+    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    reset_counter(solo, counterId);
+  }
+
+  __device__ uint64_t read_signal(int signalId) const {
+    return read_signal(local_signal_slot(signalId));
+  }
+
+  __device__ uint64_t read_counter(int counterId) const {
+    return read_counter(counter_device_slot(counterId));
+  }
 
   __device__ void signal(
       ThreadGroup& group,
@@ -182,45 +346,6 @@ class P2pIbrcTransportDevice {
       uint64_t counterVal = 1) {
     ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
     put_cooperative(
-        solo,
-        localBuf,
-        remoteBuf,
-        nbytes,
-        signalBuf,
-        signalVal,
-        counterBuf,
-        counterVal);
-  }
-
-  __device__ void put_after_system_fence(
-      ThreadGroup& group,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1,
-      const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
-    put(group,
-        localBuf,
-        remoteBuf,
-        nbytes,
-        signalBuf,
-        signalVal,
-        counterBuf,
-        counterVal);
-  }
-
-  __device__ void put_after_system_fence(
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1,
-      const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
-    put_after_system_fence(
         solo,
         localBuf,
         remoteBuf,
@@ -474,10 +599,48 @@ class P2pIbrcTransportDevice {
 #endif
   }
 
+  __device__ IbgdaRemoteBuffer remote_signal_slot(int id) const {
+    IBRC_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
+    return IbgdaRemoteBuffer(
+        static_cast<uint64_t*>(ownedRemoteSignalBuf_.ptr) + id,
+        ownedRemoteSignalBuf_.rkey_per_device);
+  }
+
+  __device__ IbgdaLocalBuffer local_signal_slot(int id) const {
+    IBRC_CHECK_SLOT_ID(id, numSignalSlots_, "signal");
+    return IbgdaLocalBuffer(
+        static_cast<uint64_t*>(ownedLocalSignalBuf_.ptr) + id,
+        ownedLocalSignalBuf_.lkey_per_device);
+  }
+
+  __device__ IbgdaLocalBuffer counter_device_slot(int id) const {
+    IBRC_CHECK_SLOT_ID(id, numCounterSlots_, "counter");
+    return IbgdaLocalBuffer(
+        static_cast<uint64_t*>(ownedCounterDeviceBuf_.ptr) + id,
+        ownedCounterDeviceBuf_.lkey_per_device);
+  }
+
+  __device__ IbgdaLocalBuffer counter_host_slot(int id) const {
+    IBRC_CHECK_SLOT_ID(id, numCounterSlots_, "counter");
+    return IbgdaLocalBuffer(
+        static_cast<uint64_t*>(ownedCounterHostBuf_.ptr) + id,
+        ownedCounterHostBuf_.lkey_per_device);
+  }
+
   __device__ __forceinline__ static void trap(const char* msg) {
     printf("%s\n", msg);
     PIPES_DEVICE_TRAP();
   }
+
+  DeviceSpan<IbrcCmdQueueDevice> cmdQueues{};
+  uint32_t numNics{0};
+  uint32_t numQpsPerPeerPerNic{0};
+  IbgdaRemoteBuffer ownedRemoteSignalBuf_{};
+  IbgdaLocalBuffer ownedLocalSignalBuf_{};
+  IbgdaLocalBuffer ownedCounterDeviceBuf_{};
+  IbgdaLocalBuffer ownedCounterHostBuf_{};
+  int numSignalSlots_{0};
+  int numCounterSlots_{0};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);

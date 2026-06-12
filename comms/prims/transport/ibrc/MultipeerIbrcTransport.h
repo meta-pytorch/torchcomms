@@ -26,10 +26,11 @@ class P2pIbrcTransportDevice;
  * host control plane can be wired in as the backend-specific pieces land.
  *
  * Per-peer RC QP exchange/connect, GPU-visible command-queue resources, the
- * host progress loop, device enqueue transport, and proxy-completion local
- * counters are implemented. The counter path follows NCCL GIN proxy style by
- * polling the normal CQ and then updating host-mapped counter memory directly,
- * instead of adding IBGDA-style companion counter QPs.
+ * host progress loop, device enqueue transport, host-side device transport
+ * construction, and proxy-completion local counters are implemented. The
+ * counter path follows NCCL GIN proxy style by polling the normal CQ and then
+ * updating host-mapped counter memory directly, instead of adding IBGDA-style
+ * companion counter QPs.
  *
  * IBRC supports both eager exchange() and lazy per-peer materialization from
  * day one: the base's lazy connect loop drives the doMaterializePeer() hook
