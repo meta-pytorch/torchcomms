@@ -821,6 +821,17 @@ void MultiPeerTransport::build_device_handle() {
         new (&transportsHost[r]) Transport(devPtr);
         break;
       }
+
+      case TransportType::P2P_IBRC: {
+        // The IBRC device-slot accessor (getP2pTransportDeviceSlot) and the
+        // P2P_IBRC peer tagging land with the device-slot wiring in the next
+        // diff, so no peer is tagged P2P_IBRC at this commit and this case is
+        // not yet reached. Construct a null IBRC handle to keep the switch
+        // exhaustive under -Werror,-Wswitch.
+        new (&transportsHost[r])
+            Transport(static_cast<P2pIbrcTransportDevice*>(nullptr));
+        break;
+      }
     }
   }
 

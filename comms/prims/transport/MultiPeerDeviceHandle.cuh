@@ -42,6 +42,7 @@ namespace comms::prims {
  *           handle.get_nvl(rank).send_group(...);
  *           break;
  *         case TransportType::P2P_IBGDA:
+ *         case TransportType::P2P_IBRC:
  *           handle.get_ib(rank).put(...);
  *           break;
  *       }
@@ -88,6 +89,17 @@ struct MultiPeerDeviceHandle {
   __device__ __forceinline__ const P2pIbgdaTransportDevice& get_ibgda(
       int rank) const {
     return *transports[rank].p2p_ib.ibgda;
+  }
+
+  /** @return Mutable reference to the IBRC transport for the given rank. */
+  __device__ __forceinline__ P2pIbrcTransportDevice& get_ibrc(int rank) {
+    return *transports[rank].p2p_ib.ibrc;
+  }
+
+  /** @return Const reference to the IBRC transport for the given rank. */
+  __device__ __forceinline__ const P2pIbrcTransportDevice& get_ibrc(
+      int rank) const {
+    return *transports[rank].p2p_ib.ibrc;
   }
 
   /** @return Backend-dispatching IB transport for the given rank. */

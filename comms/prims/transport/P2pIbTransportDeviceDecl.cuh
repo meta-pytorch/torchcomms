@@ -38,7 +38,7 @@ struct P2pIbTransportDevice {
       const P2pIbTransportDevice&) = default;
 
   // Common explicit-buffer IB device API. Backend-owned slot-index helpers and
-  // send/recv staging stay backend-specific until IBRC owns matching state.
+  // send/recv staging remain backend-specific until IBRC owns matching state.
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
