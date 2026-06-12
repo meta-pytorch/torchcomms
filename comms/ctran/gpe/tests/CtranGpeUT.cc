@@ -2246,6 +2246,7 @@ TEST_F(CtranGpeTest, PostKernelCleanupGraphWithOpGroup) {
   ctranKernelSetAllGatherArgs(
       a, expectedValPtr, commInt8, count, dummyDevState_d, &config.args);
   config.postKernelCleanup = [&cleanupRan]() { cleanupRan.store(true); };
+  config.unpackPool = reinterpret_cast<void*>(0x1234);
 
   std::vector<std::unique_ptr<OpElem>> ops;
   auto* op = new OpElem(OpElem::opType::RECV, dummyComm, dummyOpCount);
