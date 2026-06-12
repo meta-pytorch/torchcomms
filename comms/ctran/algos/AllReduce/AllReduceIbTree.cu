@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "comms/ctran/algos/AllReduce/AllReduceFusedCommon.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceFusedOrchestrator.cuh"
 #include "comms/ctran/algos/AllReduce/AllReduceIbTree.cuh"
 #include "comms/ctran/algos/AllReduce/AllReduceNvlDirect.cuh"
 #include "comms/prims/core/CopyOp.cuh"
@@ -15,12 +17,13 @@
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
-// Phase 1 (NVL ReduceScatter) and Phase 3 (NVL AllGather) are topology-agnostic
-// and live in AllReduceNvlDirect.cuh; bring them and their helpers into scope.
-using namespace ctran::allreduce::nvl;
-
-// IbReduceCopy<T> and logicalDataGroup are shared across all fused AllReduce
-// kernels and live in AllReduceNvlDirect.cuh.
+// Shared device utilities (tileReduce, IbReduceCopy, logicalDataGroup,
+// segmentTile, actualSegElems, pipelineStepBytes, ...) live in
+// AllReduceFusedCommon.cuh (ctran::allreduce::common). The NVL phases live in
+// AllReduceNvlDirect.cuh (ctran::allreduce::nvl::direct) and the
+// phase-sequencing orchestrator in AllReduceFusedOrchestrator.cuh
+// (ctran::allreduce::fused).
+using namespace ctran::allreduce::common;
 
 enum class TreeLanePhase : uint8_t {
   ReduceLeafSend,
@@ -380,24 +383,6 @@ __device__ __noinline__ void phase2IbDualTree(
   }
 }
 
-/**
- * Run the three ctree phases for one logical data tile.
- *
- * A tile is fully owned by one CUDA block. Multi-block launches only add more
- * independent tiles; the algorithm does not require inter-block coordination.
- * Phase sequencing and transition syncs live in the shared `runAllReduceFused`
- * orchestrator; Tree only supplies the dual-tree Phase 2.
- */
-template <typename T>
-__device__ __forceinline__ void runAllReduceTree(
-    const ctran::allreduce::tree::KernArgs& args,
-    comms::prims::ThreadGroup& group) {
-  runAllReduceFused<T>(
-      args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
-        phase2IbDualTree<T>(args, phaseGroup);
-      });
-}
-
 // ============================================================================
 // Main kernel: dispatches datatype then runs Phase 1, both Phase 2 tree lanes,
 // and Phase 3 for the block-owned tile.
@@ -415,9 +400,17 @@ __launch_bounds__(ctran::allreduce::tree::kBlockSize, 1) void ctranKernelAllRedu
   auto group = logicalDataGroup(blockGroup, blockId, args.common.numBlocks);
 
   if (args.common.datatype == commFloat32) {
-    runAllReduceTree<float>(args, group);
+    ctran::allreduce::fused::
+        runAllReduceFused<float, ctran::allreduce::nvl::direct::Ops>(
+            args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
+              phase2IbDualTree<float>(args, phaseGroup);
+            });
   } else if (args.common.datatype == commFloat16) {
-    runAllReduceTree<__half>(args, group);
+    ctran::allreduce::fused::
+        runAllReduceFused<__half, ctran::allreduce::nvl::direct::Ops>(
+            args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
+              phase2IbDualTree<__half>(args, phaseGroup);
+            });
   }
 }
 
