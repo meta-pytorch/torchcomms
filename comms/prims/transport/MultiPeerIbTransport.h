@@ -220,6 +220,11 @@ struct PeerBufferPayload {
   IbgdaBufferExchInfo slotDiscard;
 };
 
+enum class IbCounterStorage {
+  Device,
+  HostPinned,
+};
+
 /**
  * MultiPeerIbTransportBase - backend-agnostic host control plane shared by the
  * multi-peer IB transports (IBGDA today, IBRC next).
@@ -349,6 +354,27 @@ class MultiPeerIbTransportBase {
       std::size_t bytes,
       int tag);
 
+  void allocateSignalCounterResources(
+      IbCounterStorage counterStorage,
+      bool allocateDiscardSignal);
+  void cleanupSignalCounterResources() noexcept;
+  void cleanupPeerSignalCounterResources(int peerIndex) noexcept;
+  void allocatePeerSignalCounterResources(
+      int peerIndex,
+      PeerBufferPayload& payload,
+      IbCounterStorage counterStorage,
+      bool allocateDiscardSignal);
+  void applyRemoteSignalCounterResources(
+      int peerIndex,
+      const PeerBufferPayload& remotePayload,
+      bool hasDiscardSignal);
+
+  IbgdaRemoteBuffer slotRemoteSignalView(int peerIndex) const;
+  IbgdaLocalBuffer slotLocalSignalView(int peerIndex) const;
+  IbgdaLocalBuffer slotCounterDeviceView(int peerIndex) const;
+  IbgdaLocalBuffer slotCounterHostView(int peerIndex) const;
+  IbgdaRemoteBuffer slotDiscardSignalRemoteView(int peerIndex) const;
+
   // Cached MR entry: one MR per (CUDA allocation, NIC), refcounted. Multiple
   // user buffers within the same allocation share one MR set.
   struct CachedMr {
@@ -392,6 +418,84 @@ class MultiPeerIbTransportBase {
   std::vector<int> pendingPeers_;
   std::vector<bool> peerMaterialized_;
   bool materializationFailed_{false};
+
+ private:
+  struct DeviceSlotAllocation {
+    void* ptr{nullptr};
+    std::size_t bytes{0};
+    bool registered{false};
+    // On AMD the signal-inbox/discard buffers are host-pinned (device-memory
+    // MR registration via peer-mem is unreliable); free accordingly.
+    bool isHostPinned{false};
+
+    DeviceSlotAllocation() = default;
+    DeviceSlotAllocation(const DeviceSlotAllocation&) = delete;
+    DeviceSlotAllocation& operator=(const DeviceSlotAllocation&) = delete;
+    DeviceSlotAllocation(DeviceSlotAllocation&& other) noexcept
+        : ptr(std::exchange(other.ptr, nullptr)),
+          bytes(std::exchange(other.bytes, 0)),
+          registered(std::exchange(other.registered, false)),
+          isHostPinned(std::exchange(other.isHostPinned, false)) {}
+    DeviceSlotAllocation& operator=(DeviceSlotAllocation&& other) noexcept {
+      ptr = std::exchange(other.ptr, nullptr);
+      bytes = std::exchange(other.bytes, 0);
+      registered = std::exchange(other.registered, false);
+      isHostPinned = std::exchange(other.isHostPinned, false);
+      return *this;
+    }
+  };
+
+  struct CounterSlotAllocation {
+    void* hostPtr{nullptr};
+    void* devicePtr{nullptr};
+    std::size_t bytes{0};
+    bool registered{false};
+
+    CounterSlotAllocation() = default;
+    CounterSlotAllocation(const CounterSlotAllocation&) = delete;
+    CounterSlotAllocation& operator=(const CounterSlotAllocation&) = delete;
+    CounterSlotAllocation(CounterSlotAllocation&& other) noexcept
+        : hostPtr(std::exchange(other.hostPtr, nullptr)),
+          devicePtr(std::exchange(other.devicePtr, nullptr)),
+          bytes(std::exchange(other.bytes, 0)),
+          registered(std::exchange(other.registered, false)) {}
+    CounterSlotAllocation& operator=(CounterSlotAllocation&& other) noexcept {
+      hostPtr = std::exchange(other.hostPtr, nullptr);
+      devicePtr = std::exchange(other.devicePtr, nullptr);
+      bytes = std::exchange(other.bytes, 0);
+      registered = std::exchange(other.registered, false);
+      return *this;
+    }
+  };
+
+  void freeDeviceSlotAllocation(DeviceSlotAllocation& allocation) noexcept;
+  DeviceSlotAllocation allocateDeviceSlotAllocation(
+      std::size_t bytes,
+      const char* label);
+  void freeCounterSlotAllocation(CounterSlotAllocation& allocation) noexcept;
+  CounterSlotAllocation allocateCounterSlotAllocation(
+      IbCounterStorage storage,
+      std::size_t bytes,
+      const char* label);
+  IbgdaLocalBuffer registerSlotMemory(
+      void* registrationPtr,
+      void* devicePtr,
+      std::size_t bytes,
+      bool& registered);
+  IbgdaBufferExchInfo registeredSlotMemoryExchInfo(void* registrationPtr) const;
+
+  std::vector<IbgdaRemoteBuffer> slotRemoteSignalViews_;
+  std::vector<IbgdaLocalBuffer> slotLocalSignalViews_;
+  std::vector<IbgdaLocalBuffer> slotCounterDeviceViews_;
+  std::vector<IbgdaLocalBuffer> slotCounterHostViews_;
+  std::vector<IbgdaRemoteBuffer> slotDiscardSignalRemoteViews_;
+
+  DeviceSlotAllocation slotSignalAllocation_;
+  CounterSlotAllocation slotCounterAllocation_;
+  DeviceSlotAllocation slotDiscardSignalAllocation_;
+  std::vector<DeviceSlotAllocation> lazySlotSignalAllocations_;
+  std::vector<CounterSlotAllocation> lazySlotCounterAllocations_;
+  std::vector<DeviceSlotAllocation> lazySlotDiscardSignalAllocations_;
 };
 
 /**
