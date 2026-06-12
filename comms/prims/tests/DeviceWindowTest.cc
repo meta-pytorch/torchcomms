@@ -25,6 +25,11 @@ class DeviceWindowTestFixture : public ::testing::Test {
   }
 };
 
+const TransportType kIbDeviceWindowTestBackends[] = {
+    TransportType::P2P_IBGDA,
+    TransportType::P2P_IBRC,
+};
+
 // =============================================================================
 // Construction & Accessor Tests
 // =============================================================================
@@ -388,7 +393,7 @@ TEST_F(DeviceWindowTestFixture, SignalAllAggregate) {
 }
 
 // =============================================================================
-// IBGDA Signal Read Tests
+// IB Signal Read Tests
 // =============================================================================
 
 TEST_F(DeviceWindowTestFixture, IbgdaSignalReadFrom) {
@@ -399,26 +404,36 @@ TEST_F(DeviceWindowTestFixture, IbgdaSignalReadFrom) {
   const int signalId = 1;
   const uint64_t seedValue = 42;
 
-  DeviceBuffer resultsBuffer(2 * sizeof(uint64_t));
-  CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
-  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  for (TransportType ibTransportType : kIbDeviceWindowTestBackends) {
+    SCOPED_TRACE(transport_type_name(ibTransportType));
+    DeviceBuffer resultsBuffer(2 * sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
+    auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
 
-  test::testIbgdaSignalRead(
-      myRank, nRanks, signalCount, sourceRank, signalId, seedValue, results_d);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
+    test::testIbgdaSignalRead(
+        myRank,
+        nRanks,
+        signalCount,
+        sourceRank,
+        signalId,
+        seedValue,
+        results_d,
+        ibTransportType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  std::vector<uint64_t> results_h(2);
-  CUDACHECK_TEST(cudaMemcpy(
-      results_h.data(),
-      results_d,
-      2 * sizeof(uint64_t),
-      cudaMemcpyDeviceToHost));
+    std::vector<uint64_t> results_h(2);
+    CUDACHECK_TEST(cudaMemcpy(
+        results_h.data(),
+        results_d,
+        2 * sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
 
-  EXPECT_EQ(results_h[0], seedValue)
-      << "read_signal_from(rank=" << sourceRank << ", signal=" << signalId
-      << ") should return seeded value";
-  EXPECT_EQ(results_h[1], seedValue)
-      << "read_signal() should include the seeded value in aggregate";
+    EXPECT_EQ(results_h[0], seedValue)
+        << "read_signal_from(rank=" << sourceRank << ", signal=" << signalId
+        << ") should return seeded value";
+    EXPECT_EQ(results_h[1], seedValue)
+        << "read_signal() should include the seeded value in aggregate";
+  }
 }
 
 // Verify that different (source_rank, signal_id) pairs are isolated —
@@ -433,41 +448,58 @@ TEST_F(DeviceWindowTestFixture, IbgdaSignalSlotIsolation) {
   const int sourceRank = 0;
   const int signalId = 2;
 
-  DeviceBuffer resultsBuffer(2 * sizeof(uint64_t));
-  CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
-  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  for (TransportType ibTransportType : kIbDeviceWindowTestBackends) {
+    SCOPED_TRACE(transport_type_name(ibTransportType));
+    DeviceBuffer resultsBuffer(2 * sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
+    auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
 
-  test::testIbgdaSignalRead(
-      myRank, nRanks, signalCount, sourceRank, signalId, seedValue, results_d);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
+    test::testIbgdaSignalRead(
+        myRank,
+        nRanks,
+        signalCount,
+        sourceRank,
+        signalId,
+        seedValue,
+        results_d,
+        ibTransportType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  std::vector<uint64_t> results_h(2);
-  CUDACHECK_TEST(cudaMemcpy(
-      results_h.data(),
-      results_d,
-      2 * sizeof(uint64_t),
-      cudaMemcpyDeviceToHost));
+    std::vector<uint64_t> results_h(2);
+    CUDACHECK_TEST(cudaMemcpy(
+        results_h.data(),
+        results_d,
+        2 * sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
 
-  EXPECT_EQ(results_h[0], seedValue)
-      << "read_signal_from() should see seeded value";
+    EXPECT_EQ(results_h[0], seedValue)
+        << "read_signal_from() should see seeded value";
 
-  // Now read a DIFFERENT slot — should still be zero
-  const int otherRank = 2;
-  const int otherSignal = 3;
-  CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
+    // Now read a DIFFERENT slot — should still be zero
+    const int otherRank = 2;
+    const int otherSignal = 3;
+    CUDACHECK_TEST(cudaMemset(resultsBuffer.get(), 0, 2 * sizeof(uint64_t)));
 
-  test::testIbgdaSignalRead(
-      myRank, nRanks, signalCount, otherRank, otherSignal, 0, results_d);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
+    test::testIbgdaSignalRead(
+        myRank,
+        nRanks,
+        signalCount,
+        otherRank,
+        otherSignal,
+        0,
+        results_d,
+        ibTransportType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  CUDACHECK_TEST(cudaMemcpy(
-      results_h.data(),
-      results_d,
-      2 * sizeof(uint64_t),
-      cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        results_h.data(),
+        results_d,
+        2 * sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
 
-  EXPECT_EQ(results_h[0], 0u)
-      << "read_signal_from() on unseeded slot should be zero";
+    EXPECT_EQ(results_h[0], 0u)
+        << "read_signal_from() on unseeded slot should be zero";
+  }
 }
 
 TEST_F(DeviceWindowTestFixture, IbgdaSignalAggregateRead) {
@@ -479,26 +511,30 @@ TEST_F(DeviceWindowTestFixture, IbgdaSignalAggregateRead) {
 
   std::vector<uint64_t> peerValues = {10, 20, 30};
 
-  DeviceBuffer resultBuf(sizeof(uint64_t));
-  CUDACHECK_TEST(cudaMemset(resultBuf.get(), 0, sizeof(uint64_t)));
+  for (TransportType ibTransportType : kIbDeviceWindowTestBackends) {
+    SCOPED_TRACE(transport_type_name(ibTransportType));
+    DeviceBuffer resultBuf(sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(resultBuf.get(), 0, sizeof(uint64_t)));
 
-  test::testIbgdaSignalAggregateRead(
-      myRank,
-      nRanks,
-      signalCount,
-      signalId,
-      peerValues.data(),
-      nPeers,
-      static_cast<uint64_t*>(resultBuf.get()));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
+    test::testIbgdaSignalAggregateRead(
+        myRank,
+        nRanks,
+        signalCount,
+        signalId,
+        peerValues.data(),
+        nPeers,
+        static_cast<uint64_t*>(resultBuf.get()),
+        ibTransportType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  uint64_t result_h = 0;
-  CUDACHECK_TEST(cudaMemcpy(
-      &result_h, resultBuf.get(), sizeof(uint64_t), cudaMemcpyDeviceToHost));
+    uint64_t result_h = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &result_h, resultBuf.get(), sizeof(uint64_t), cudaMemcpyDeviceToHost));
 
-  uint64_t expectedTotal = 10 + 20 + 30;
-  EXPECT_EQ(result_h, expectedTotal)
-      << "read_signal() aggregate should sum all peers";
+    uint64_t expectedTotal = 10 + 20 + 30;
+    EXPECT_EQ(result_h, expectedTotal)
+        << "read_signal() aggregate should sum all peers";
+  }
 }
 
 // =============================================================================

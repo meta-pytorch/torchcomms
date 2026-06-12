@@ -37,7 +37,6 @@ struct MultipeerIbgdaDeviceTransport;
 struct P2pIbgdaTransportBuildParams;
 struct PeerQpPayload;
 struct PeerBufferPayload;
-struct PeerBufferSizes;
 } // namespace comms::prims
 
 namespace comms::prims {
@@ -226,9 +225,6 @@ class MultipeerIbgdaTransport
   void allocateResources();
   void registerMemory();
   void createQpGroups();
-  void allocate_send_recv_buffers();
-  void exchange_send_recv_buffers();
-  void cleanup_send_recv_buffers();
   void cleanup();
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
@@ -245,14 +241,10 @@ class MultipeerIbgdaTransport
   void connectPeerLoopback(int peerIndex);
   P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
 
-  PeerBufferSizes computePeerBufferSizes() const;
-
   void doMaterializePeer(int peerRank);
 
   PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void allocatePeerBuffers(int peerIndex, PeerBufferPayload& payload);
   void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
-  void applyRemoteViews(int peerIndex, const PeerBufferPayload& remotePayload);
   void cleanupPeerOnFailure(int peerIndex);
 
   // MultiPeerIbTransport drives the shared control plane (config, MR registry,
@@ -311,41 +303,12 @@ class MultipeerIbgdaTransport
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Slot-index signal/counter buffers.
-  // Eager mode: bulk-allocated in exchange(). Null in lazy mode.
-  void* signalInboxGpu_{nullptr};
-  void* counterGpu_{nullptr};
-  // Per-peer views into signal/counter (populated by both modes).
-  std::vector<IbgdaRemoteBuffer> signalRemoteViews_;
-  std::vector<IbgdaLocalBuffer> signalLocalViews_;
-  std::vector<IbgdaLocalBuffer> counterViews_;
-
-  // Per-peer send/recv buffer views (populated by both modes).
-  struct SendRecvPeerBuffers {
-    IbgdaLocalBuffer sendStaging;
-    IbgdaLocalBuffer recvStaging;
-    IbgdaLocalBuffer signal;
-    IbgdaLocalBuffer counter;
-    std::optional<DeviceSpan<IbSendRecvState::ProgressSlot>> state;
-    IbgdaRemoteBuffer remoteRecvStaging;
-    IbgdaRemoteBuffer remoteSignal;
-  };
-  std::vector<SendRecvPeerBuffers> sendRecvPeerBuffers_;
-
-  // Eager mode: bulk allocations for all peers. Null in lazy mode.
-  std::unique_ptr<meta::comms::DeviceBuffer> sendStagingBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> recvStagingBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> signalBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> counterBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> stateBulk_;
-  IbgdaLocalBuffer recvStagingBulkReg_;
-  IbgdaLocalBuffer signalBulkReg_;
-  IbgdaLocalBuffer counterBulkReg_;
-
-  // Lazy mode: per-peer contiguous allocation (staging + signal + counter +
-  // state + slot-index). Null for unmaterialized peers.
-  // Empty in eager mode.
-  std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
+  // Per-peer send/recv buffer views (IbSendRecvPeerBuffers) and the eager-mode
+  // bulk allocations now live in MultiPeerIbTransportBase
+  // (sendRecvPeerBuffers_). Eager allocation/exchange/cleanup delegate to the
+  // base's allocateSendRecvBuffersEager(Device)/exchangeSendRecvBuffersEager()/
+  // cleanupSendRecvBuffers(); the lazy path below fills the inherited
+  // sendRecvPeerBuffers_ directly.
 
   // Lazy state (pendingPeers_/peerMaterialized_/materializationFailed_) is
   // inherited (protected) from MultiPeerIbTransport.

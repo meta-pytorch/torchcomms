@@ -91,8 +91,10 @@ TEST_P(RingAllGatherTest, Correctness) {
   transport->connectPeers();
   for (int r = 0; r < params.num_rings; r++) {
     auto& ringParams = launchParams.rings[r];
-    ringParams.prev = transport->getP2pTransportDevice(ringParams.prev_rank);
-    ringParams.next = transport->getP2pTransportDevice(ringParams.next_rank);
+    ringParams.prev = P2pIbTransportDevice(
+        transport->getP2pTransportDevice(ringParams.prev_rank));
+    ringParams.next = P2pIbTransportDevice(
+        transport->getP2pTransportDevice(ringParams.next_rank));
   }
 
   bootstrap->barrierAll();

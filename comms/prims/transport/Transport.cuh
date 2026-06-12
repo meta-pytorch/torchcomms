@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <new>
 #include <type_traits>
+#include <utility>
 
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
@@ -23,9 +25,10 @@ static_assert(
     std::is_standard_layout_v<P2pNvlTransportDevice> &&
         std::is_trivially_destructible_v<P2pNvlTransportDevice>,
     "P2pNvlTransportDevice must be standard layout with trivial destructor");
-
-// Forward declaration for IBGDA transport (full definition in .cuh, needs CUDA)
-class P2pIbgdaTransportDevice;
+static_assert(
+    std::is_standard_layout_v<P2pIbTransportDevice> &&
+        std::is_trivially_destructible_v<P2pIbTransportDevice>,
+    "P2pIbTransportDevice must be standard layout with trivial destructor");
 
 /**
  * Transport type tag for discriminated union.
@@ -35,6 +38,7 @@ enum class TransportType : uint8_t {
   SELF,
   P2P_NVL,
   P2P_IBGDA,
+  P2P_IBRC,
 };
 
 /// Human-readable name for TransportType (host-only).
@@ -46,6 +50,8 @@ inline const char* transport_type_name(TransportType t) {
       return "P2P_NVL";
     case TransportType::P2P_IBGDA:
       return "P2P_IBGDA";
+    case TransportType::P2P_IBRC:
+      return "P2P_IBRC";
   }
   return "UNKNOWN";
 }
@@ -53,13 +59,12 @@ inline const char* transport_type_name(TransportType t) {
 /**
  * Polymorphic transport wrapper using tagged union.
  * Allows storing either self-transport (intra-GPU) or P2P NVL transport
- * (inter-GPU) in a single type for heterogeneous communication patterns.
+ * (inter-GPU) or an IB transport pointer in a single type for heterogeneous
+ * communication patterns.
  *
- * NOTE: All three transport types are lightweight handle structs containing
- * pointers to externally-managed GPU resources. Transport owns a copy of the
- * handle, NOT the underlying GPU memory — the parent transport object
- * (MultiPeerNvlTransport, MultipeerIbgdaTransport) must outlive any Transport
- * instance.
+ * NOTE: Transport handle structs contain pointers to externally-managed GPU
+ * resources. Transport owns a copy of the handle, NOT the underlying GPU
+ * memory. The parent transport object must outlive any Transport instance.
  *
  * Memory layout: [type tag (1 byte)] + [union of transport objects]
  *
@@ -74,11 +79,7 @@ struct Transport {
   union {
     P2pSelfTransportDevice self;
     P2pNvlTransportDevice p2p_nvl;
-    // Stored as pointer (not by value) because P2pIbgdaTransportDevice.cuh
-    // includes DOCA device headers with CUDA-only intrinsics (atomicCAS, __ldg,
-    // etc.) that cannot compile in .cc translation units. A forward declaration
-    // + non-owning pointer avoids pulling those headers into Transport.cuh.
-    P2pIbgdaTransportDevice* p2p_ibgda;
+    P2pIbTransportDevice p2p_ib;
   };
 
   /** Constructor for SelfTransportDevice */
@@ -89,9 +90,13 @@ struct Transport {
   __host__ __device__ explicit Transport(const P2pNvlTransportDevice& p)
       : type(TransportType::P2P_NVL), p2p_nvl(p) {}
 
-  /** Constructor for P2pIbgdaTransportDevice (non-owning pointer) */
+  /** Constructor for IBGDA device transport (non-owning pointer). */
   __host__ __device__ explicit Transport(P2pIbgdaTransportDevice* p)
-      : type(TransportType::P2P_IBGDA), p2p_ibgda(p) {}
+      : type(TransportType::P2P_IBGDA), p2p_ib(p) {}
+
+  /** Constructor for IBRC device transport (non-owning pointer). */
+  __host__ __device__ explicit Transport(P2pIbrcTransportDevice* p)
+      : type(TransportType::P2P_IBRC), p2p_ib(p) {}
 
   /**
    * Delete copy constructor and copy assignment.
@@ -110,8 +115,9 @@ struct Transport {
       new (&self) P2pSelfTransportDevice(std::move(other.self));
     } else if (type == TransportType::P2P_NVL) {
       new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-    } else if (type == TransportType::P2P_IBGDA) {
-      p2p_ibgda = other.p2p_ibgda;
+    } else if (
+        type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
+      new (&p2p_ib) P2pIbTransportDevice(other.p2p_ib);
     }
   }
 
@@ -122,7 +128,7 @@ struct Transport {
   __host__ __device__ Transport& operator=(Transport&& other) noexcept {
     if (this != &other) {
       // Destroy current union member.
-      // P2P_IBGDA is a non-owning pointer, no cleanup needed.
+      // IB transports are non-owning pointers, no cleanup needed.
       if (type == TransportType::SELF) {
         self.~P2pSelfTransportDevice();
       } else if (type == TransportType::P2P_NVL) {
@@ -135,8 +141,9 @@ struct Transport {
         new (&self) P2pSelfTransportDevice(std::move(other.self));
       } else if (type == TransportType::P2P_NVL) {
         new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-      } else if (type == TransportType::P2P_IBGDA) {
-        p2p_ibgda = other.p2p_ibgda;
+      } else if (
+          type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
+        new (&p2p_ib) P2pIbTransportDevice(other.p2p_ib);
       }
     }
     return *this;
@@ -148,7 +155,7 @@ struct Transport {
    */
   __host__ __device__ ~Transport() {
     // Union members with non-trivial destructors need explicit cleanup.
-    // P2P_IBGDA is a non-owning pointer, no cleanup needed.
+    // IB transports are non-owning pointers, no cleanup needed.
     if (type == TransportType::SELF) {
       self.~P2pSelfTransportDevice();
     } else if (type == TransportType::P2P_NVL) {

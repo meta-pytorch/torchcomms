@@ -549,12 +549,12 @@ void testDeviceWindowSignalAllAggregate(
 }
 
 // =============================================================================
-// IBGDA-Only DeviceWindow Helper
+// IB-Only DeviceWindow Helper
 // =============================================================================
 
-// Helper: build a DeviceWindow with IBGDA-only peers for unit tests.
-// The IBGDA inbox is a flat uint64_t array (no real NIC/QP needed).
-// This lets us test read_signal_from / read_signal on the IBGDA path
+// Helper: build a DeviceWindow with IB-only peers for unit tests.
+// The IB inbox is a flat uint64_t array (no real NIC/QP needed).
+// This lets us test read_signal_from / read_signal on the IB path
 // by writing known values directly into the local inbox.
 struct IbgdaOnlyDeviceWindowBuffers {
   std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalInboxBuf;
@@ -562,26 +562,45 @@ struct IbgdaOnlyDeviceWindowBuffers {
   std::unique_ptr<meta::comms::DeviceBuffer> peerIndexMapsBuf;
   std::unique_ptr<meta::comms::DeviceBuffer> transportsBuf;
 
-  DeviceWindow create(int myRank, int nRanks, int peerSignalCount) {
+  DeviceWindow create(
+      int myRank,
+      int nRanks,
+      int peerSignalCount,
+      TransportType ibTransportType) {
     int nPeers = nRanks - 1;
 
-    // Transports array: all peers are IBGDA
+    // Transports array: self plus the selected IB backend for every peer.
     transportsBuf = std::make_unique<meta::comms::DeviceBuffer>(
         std::max(1, nRanks) * sizeof(Transport));
     CUDACHECK_TEST(cudaMemset(
         transportsBuf->get(), 0, std::max(1, nRanks) * sizeof(Transport)));
     auto* transportsPtr = static_cast<Transport*>(transportsBuf->get());
     for (int i = 0; i < nRanks; ++i) {
-      TransportType type =
-          (i == myRank) ? TransportType::SELF : TransportType::P2P_IBGDA;
-      CUDACHECK_TEST(cudaMemcpy(
-          &transportsPtr[i].type,
-          &type,
-          sizeof(TransportType),
-          cudaMemcpyHostToDevice));
+      if (i == myRank) {
+        Transport hostTransport(P2pSelfTransportDevice{});
+        CUDACHECK_TEST(cudaMemcpy(
+            &transportsPtr[i],
+            &hostTransport,
+            sizeof(Transport),
+            cudaMemcpyHostToDevice));
+      } else if (ibTransportType == TransportType::P2P_IBRC) {
+        Transport hostTransport(static_cast<P2pIbrcTransportDevice*>(nullptr));
+        CUDACHECK_TEST(cudaMemcpy(
+            &transportsPtr[i],
+            &hostTransport,
+            sizeof(Transport),
+            cudaMemcpyHostToDevice));
+      } else {
+        Transport hostTransport(static_cast<P2pIbgdaTransportDevice*>(nullptr));
+        CUDACHECK_TEST(cudaMemcpy(
+            &transportsPtr[i],
+            &hostTransport,
+            sizeof(Transport),
+            cudaMemcpyHostToDevice));
+      }
     }
 
-    // IBGDA per-peer signal inbox: nPeers * peerSignalCount uint64_t slots
+    // IB per-peer signal inbox: nPeers * peerSignalCount uint64_t slots
     std::size_t inboxSlots =
         static_cast<std::size_t>(std::max(1, nPeers)) * peerSignalCount;
     ibgdaPeerSignalInboxBuf = std::make_unique<meta::comms::DeviceBuffer>(
@@ -589,7 +608,7 @@ struct IbgdaOnlyDeviceWindowBuffers {
     CUDACHECK_TEST(cudaMemset(
         ibgdaPeerSignalInboxBuf->get(), 0, inboxSlots * sizeof(uint64_t)));
 
-    // IBGDA remote bufs (dummy — no real QP, but needed for DeviceSpan)
+    // IB remote bufs (dummy — no real QP, but needed for DeviceSpan)
     ibgdaPeerSignalRemoteBufsBuf = std::make_unique<meta::comms::DeviceBuffer>(
         std::max(1, nPeers) * sizeof(IbgdaRemoteBuffer));
     CUDACHECK_TEST(cudaMemset(
@@ -597,7 +616,7 @@ struct IbgdaOnlyDeviceWindowBuffers {
         0,
         std::max(1, nPeers) * sizeof(IbgdaRemoteBuffer)));
 
-    // Pre-computed peer index maps (NVL only; IBGDA uses rank_to_peer_index())
+    // Pre-computed peer index maps (NVL only; IB uses rank_to_peer_index())
     peerIndexMapsBuf = std::make_unique<meta::comms::DeviceBuffer>(
         std::max(1, nRanks) * sizeof(int));
     {
@@ -656,9 +675,10 @@ void testIbgdaSignalRead(
     int sourceRank,
     int signalId,
     uint64_t seedValue,
-    uint64_t* results) {
+    uint64_t* results,
+    TransportType ibTransportType) {
   IbgdaOnlyDeviceWindowBuffers bufs;
-  auto dw = bufs.create(myRank, nRanks, signalCount);
+  auto dw = bufs.create(myRank, nRanks, signalCount, ibTransportType);
 
   // Seed the inbox: write seedValue at the slot for (sourceRank, signalId).
   // The skip-self peer index for sourceRank is:
@@ -693,9 +713,10 @@ void testIbgdaSignalAggregateRead(
     int signalId,
     const uint64_t* peerValues,
     int nPeers,
-    uint64_t* result) {
+    uint64_t* result,
+    TransportType ibTransportType) {
   IbgdaOnlyDeviceWindowBuffers bufs;
-  auto dw = bufs.create(myRank, nRanks, signalCount);
+  auto dw = bufs.create(myRank, nRanks, signalCount, ibTransportType);
 
   // Seed the inbox for each peer at the given signalId
   for (int i = 0; i < nPeers; ++i) {

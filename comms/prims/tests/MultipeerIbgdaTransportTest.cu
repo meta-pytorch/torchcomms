@@ -14,7 +14,7 @@ namespace comms::prims::test {
 // =============================================================================
 
 __global__ void putAndSignalKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -22,13 +22,13 @@ __global__ void putAndSignalKernel(
     uint64_t signalVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport->put(localBuf, remoteBuf, nbytes, signalId, signalVal);
-    transport->flush();
+    transport.put(localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport.flush();
   }
 }
 
 void testPutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -50,7 +50,7 @@ void testPutAndSignal(
 // =============================================================================
 
 __global__ void putAndSignalGroupKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -59,14 +59,14 @@ __global__ void putAndSignalGroupKernel(
   auto group = make_warp_group();
 
   // Explicitly shard the provided buffer across warp lanes.
-  transport->put_cooperative(
+  transport.put_cooperative(
       group, localBuf, remoteBuf, nbytes, signalId, signalVal);
 
-  transport->flush(group);
+  transport.flush(group);
 }
 
 void testPutAndSignalGroup(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -89,7 +89,7 @@ void testPutAndSignalGroup(
 // =============================================================================
 
 __global__ void putAndSignalGroupMultiWarpKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -108,13 +108,13 @@ __global__ void putAndSignalGroupMultiWarpKernel(
   IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
 
   // Each warp group does put + signal (each signal adds signalVal)
-  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
 
-  transport->flush(group);
+  transport.flush(group);
 }
 
 void testPutAndSignalGroupMultiWarp(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -137,7 +137,7 @@ void testPutAndSignalGroupMultiWarp(
 // =============================================================================
 
 __global__ void putAndSignalGroupBlockKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -156,13 +156,13 @@ __global__ void putAndSignalGroupBlockKernel(
   IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
 
   // Each block group does put + signal (each signal adds signalVal)
-  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
 
-  transport->flush(group);
+  transport.flush(group);
 }
 
 void testPutAndSignalGroupBlock(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -184,16 +184,16 @@ void testPutAndSignalGroupBlock(
 // =============================================================================
 
 __global__ void waitSignalKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int signalId,
     uint64_t expectedSignal) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    transport->wait_signal(signalId, expectedSignal);
+    transport.wait_signal(signalId, expectedSignal);
   }
 }
 
 void testWaitSignal(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int signalId,
     uint64_t expectedSignal,
     int numBlocks,
@@ -212,7 +212,7 @@ void testWaitSignal(
 // =============================================================================
 
 __global__ void multiplePutAndSignalKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t bytesPerPut,
@@ -224,14 +224,14 @@ __global__ void multiplePutAndSignalKernel(
       IbgdaLocalBuffer srcBuf = localBuf.subBuffer(i * bytesPerPut);
       IbgdaRemoteBuffer dstBuf = remoteBuf.subBuffer(i * bytesPerPut);
 
-      transport->put(srcBuf, dstBuf, bytesPerPut, signalId, 1);
-      transport->flush();
+      transport.put(srcBuf, dstBuf, bytesPerPut, signalId, 1);
+      transport.flush();
     }
   }
 }
 
 void testMultiplePutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t bytesPerPut,
@@ -253,18 +253,18 @@ void testMultiplePutAndSignal(
 // =============================================================================
 
 __global__ void signalOnlyKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport->signal(signalId, signalVal);
-    transport->flush();
+    transport.signal(signalId, signalVal);
+    transport.flush();
   }
 }
 
 void testSignalOnly(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     int signalId,
     uint64_t signalVal,
     int numBlocks,
@@ -283,19 +283,19 @@ void testSignalOnly(
 // =============================================================================
 
 __global__ void putOnlyKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport->put(localBuf, remoteBuf, nbytes);
-    transport->flush();
+    transport.put(localBuf, remoteBuf, nbytes);
+    transport.flush();
   }
 }
 
 void testPutOnly(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -535,7 +535,7 @@ void verifyBufferPattern(
 // =============================================================================
 
 __global__ void waitReadyThenPutAndSignalKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -546,16 +546,16 @@ __global__ void waitReadyThenPutAndSignalKernel(
   auto group = make_block_group();
   if (group.is_global_leader()) {
     // Wait for receiver to signal that its buffer is ready (local inbox)
-    transport->wait_signal(readySignalId, readySignalVal);
+    transport.wait_signal(readySignalId, readySignalVal);
 
     // Now put data and signal completion (remote outbox)
-    transport->put(localBuf, remoteBuf, nbytes, dataSignalId, dataSignalVal);
-    transport->flush();
+    transport.put(localBuf, remoteBuf, nbytes, dataSignalId, dataSignalVal);
+    transport.flush();
   }
 }
 
 void testWaitReadyThenPutAndSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -586,7 +586,7 @@ void testWaitReadyThenPutAndSignal(
 // =============================================================================
 
 __global__ void bidirectionalPutAndWaitKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
@@ -598,17 +598,17 @@ __global__ void bidirectionalPutAndWaitKernel(
   if (group.group_id == 0) {
     if (group.is_leader()) {
       // Send data to peer (remote outbox)
-      transport->put(localBuf, remoteBuf, nbytes, sendSignalId, sendSignalVal);
-      transport->flush();
+      transport.put(localBuf, remoteBuf, nbytes, sendSignalId, sendSignalVal);
+      transport.flush();
     } else if (group.thread_id_in_group == 1) {
       // Wait for data from peer (local inbox)
-      transport->wait_signal(recvSignalId, recvSignalVal);
+      transport.wait_signal(recvSignalId, recvSignalVal);
     }
   }
 }
 
 void testBidirectionalPutAndWait(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -639,7 +639,7 @@ void testBidirectionalPutAndWait(
 // =============================================================================
 
 __global__ void allToAllSendKernel(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
     int myRank,
@@ -648,34 +648,34 @@ __global__ void allToAllSendKernel(
   auto group = make_block_group();
   auto [peerId, perPeerGroup] = group.partition(numPeers);
 
-  P2pIbgdaTransportDevice* transport = peerTransports[peerId];
+  P2pIbTransportDevice transport = peerTransports[peerId];
 
   if (perPeerGroup.is_leader()) {
     // Send data to this peer with signal (slot 0)
-    transport->put(
+    transport.put(
         localSendBufs[peerId],
         peerRecvBufs[peerId],
         nbytes,
         0, // signalId
         1);
-    transport->flush();
+    transport.flush();
   }
 }
 
 __global__ void allToAllWaitKernel(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     int numPeers) {
   auto group = make_block_group();
   auto [peerId, perPeerGroup] = group.partition(numPeers);
 
   if (perPeerGroup.is_leader()) {
     // Wait for signal from this peer (local inbox, slot 0)
-    peerTransports[peerId]->wait_signal(0, 1);
+    peerTransports[peerId].wait_signal(0, 1);
   }
 }
 
 void testAllToAll(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     IbgdaLocalBuffer* localSendBufs,
     IbgdaRemoteBuffer* peerRecvBufs,
     int myRank,
@@ -693,7 +693,7 @@ void testAllToAll(
 }
 
 void testAllToAllWait(
-    P2pIbgdaTransportDevice** peerTransports,
+    P2pIbTransportDevice* peerTransports,
     int numPeers,
     int numBlocks,
     int blockSize) {
@@ -710,7 +710,7 @@ void testAllToAllWait(
 // =============================================================================
 
 __global__ void putSignalCounterKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localDataBuf,
     IbgdaRemoteBuffer remoteDataBuf,
     std::size_t nbytes,
@@ -720,7 +720,7 @@ __global__ void putSignalCounterKernel(
     uint64_t counterVal) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport->put(
+    transport.put(
         localDataBuf,
         remoteDataBuf,
         nbytes,
@@ -728,12 +728,12 @@ __global__ void putSignalCounterKernel(
         signalVal,
         counterId,
         counterVal);
-    transport->wait_counter(counterId, counterVal);
+    transport.wait_counter(counterId, counterVal);
   }
 }
 
 void testPutSignalCounter(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
+    P2pIbTransportDevice deviceTransportPtr,
     const IbgdaLocalBuffer& localDataBuf,
     const IbgdaRemoteBuffer& remoteDataBuf,
     std::size_t nbytes,
@@ -764,16 +764,16 @@ void testPutSignalCounter(
 // =============================================================================
 
 __global__ void waitCounterKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int counterId,
     uint64_t expectedVal) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    transport->wait_counter(counterId, expectedVal);
+    transport.wait_counter(counterId, expectedVal);
   }
 }
 
 void testWaitCounter(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int counterId,
     uint64_t expectedVal,
     int numBlocks,
@@ -797,7 +797,7 @@ void testWaitCounter(
 // multi-QP design works transparently.
 
 __global__ void multiQpPutAndSignalKernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t totalBytes,
@@ -814,14 +814,14 @@ __global__ void multiQpPutAndSignalKernel(
 
   auto group = make_block_group();
 
-  // QP selection is transparent — transport->active_qp() selects per blockIdx
-  transport->put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  // QP selection is transparent — transport.active_qp() selects per blockIdx
+  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
 
-  transport->flush(group);
+  transport.flush(group);
 }
 
 void testMultiQpPutAndSignal(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int numQps,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
