@@ -17,6 +17,8 @@ class CtranTcpDmRequest {
   }
 
   void complete() {}
+
+  void markQueuedRecv() {}
 };
 
 } // namespace ctran
