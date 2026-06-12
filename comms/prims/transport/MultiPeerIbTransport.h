@@ -230,8 +230,8 @@ class MultiPeerIbTransportBase {
   }
 
   /**
-   * @return Number of NICs (rails) in use. Resolved by the backend at
-   * construction time (see backend ctor for the resolution rules).
+   * @return Number of NICs (rails) in use. Resolved by the shared base during
+   * construction.
    */
   int numNics() const {
     return numNics_;
@@ -288,9 +288,8 @@ class MultiPeerIbTransportBase {
   // auto-discovery), open device + PD, and query GID + port (active MTU, link
   // layer, port state). Fills nics_
   // (deviceName/ibvCtx/ibvPd/localGid/linkLayer) and localMtu_ (from NIC 0),
-  // using gidIndex_. numNics_ must be set first. No backend hook — each backend
-  // builds its address handles afterwards from nics_[n].linkLayer +
-  // config_.addressFamily.
+  // using gidIndex_. No backend hook — each backend builds its address handles
+  // afterwards from nics_[n].linkLayer + config_.addressFamily.
   void openNics();
 
   // ---- shared eager-exchange scaffolding ----
@@ -337,7 +336,7 @@ class MultiPeerIbTransportBase {
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   MultipeerIbTransportConfig config_;
 
-  // Number of NICs (rails) in use; set by the backend at construction.
+  // Number of NICs (rails) in use; resolved by the base constructor.
   int numNics_{1};
 
   // Generic IB facts captured during NIC bring-up (openNics()): the RoCE GID

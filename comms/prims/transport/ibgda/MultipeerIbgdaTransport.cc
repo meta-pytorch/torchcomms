@@ -718,59 +718,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
                  << " total QPs (per NIC)";
   }
 
-  // Resolve numNics_ from the available NIC sources. No numeric knob —
-  // the count is implied by what the caller / topology actually provides:
-  //   1. config.gpuNicMap[cudaDevice] populated → use its NIC list.
-  //   2. Otherwise auto-discover via GpuNicDiscovery — every NIC at the
-  //      best-affinity tier (same pathType + bandwidth + isDataDirect as
-  //      the top candidate).
-  // No silent fallback to 1: if a GPU is wired to N best-affinity NICs,
-  // the transport must use all N. H100 (1 NIC) and GB200/GB300 (2 NICs)
-  // both get the right count automatically; an unexpected count throws
-  // with a clear hint.
-  {
-    auto it = config.gpuNicMap.find(config.cudaDevice);
-    int n = 0;
-    const char* source = nullptr;
-    if (it != config.gpuNicMap.end() && !it->second.empty()) {
-      n = static_cast<int>(it->second.size());
-      source = "config.gpuNicMap";
-    } else {
-      // See comment on the auto-discovery branch in openIbDevice for why we
-      // force DataDirectMode::Disabled on AMD (skip the DataDirect probe).
-#ifdef __HIP_PLATFORM_AMD__
-      GpuNicDiscovery discovery(
-          config.cudaDevice, config.ibHca, DataDirectMode::Disabled);
-#else
-      GpuNicDiscovery discovery(config.cudaDevice, config.ibHca);
-#endif
-      auto bestNics = discovery.getBestAffinityNics();
-      if (bestNics.empty()) {
-        throw std::runtime_error(
-            fmt::format(
-                "MultipeerIbgdaTransport: NIC auto-discovery returned no "
-                "candidates for GPU {}; set config.gpuNicMap or config.ibHca "
-                "to expose at least one NIC",
-                config.cudaDevice));
-      }
-      n = static_cast<int>(bestNics.size());
-      source = "auto-discovery (best-affinity tier)";
-    }
-    if (n > kMaxNicsPerGpu) {
-      throw std::runtime_error(
-          fmt::format(
-              "MultipeerIbgdaTransport: {} found {} NIC(s) for GPU {} but "
-              "kMaxNicsPerGpu={}; raise kMaxNicsPerGpu or trim the source",
-              source,
-              n,
-              config.cudaDevice,
-              kMaxNicsPerGpu));
-    }
-    numNics_ = n;
-    VLOG(1) << "MultipeerIbgdaTransport: numNics_=" << numNics_
-            << " (source=" << source << ")";
-  }
-
   try {
 #ifndef __HIP_PLATFORM_AMD__
     // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
