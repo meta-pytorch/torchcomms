@@ -38,6 +38,7 @@ enum class TransportType : uint8_t {
   SELF,
   P2P_NVL,
   P2P_IBGDA,
+  P2P_IBRC,
 };
 
 /// Human-readable name for TransportType (host-only).
@@ -49,6 +50,8 @@ inline const char* transport_type_name(TransportType t) {
       return "P2P_NVL";
     case TransportType::P2P_IBGDA:
       return "P2P_IBGDA";
+    case TransportType::P2P_IBRC:
+      return "P2P_IBRC";
   }
   return "UNKNOWN";
 }
@@ -91,6 +94,10 @@ struct Transport {
   __host__ __device__ explicit Transport(P2pIbgdaTransportDevice* p)
       : type(TransportType::P2P_IBGDA), p2p_ib(p) {}
 
+  /** Constructor for IBRC device transport (non-owning pointer). */
+  __host__ __device__ explicit Transport(P2pIbrcTransportDevice* p)
+      : type(TransportType::P2P_IBRC), p2p_ib(p) {}
+
   /**
    * Delete copy constructor and copy assignment.
    * Transport objects contain device pointers and IPC handles that should not
@@ -108,7 +115,8 @@ struct Transport {
       new (&self) P2pSelfTransportDevice(std::move(other.self));
     } else if (type == TransportType::P2P_NVL) {
       new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-    } else if (type == TransportType::P2P_IBGDA) {
+    } else if (
+        type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
       new (&p2p_ib) P2pIbTransportDevice(other.p2p_ib);
     }
   }
@@ -133,7 +141,8 @@ struct Transport {
         new (&self) P2pSelfTransportDevice(std::move(other.self));
       } else if (type == TransportType::P2P_NVL) {
         new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
-      } else if (type == TransportType::P2P_IBGDA) {
+      } else if (
+          type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
         new (&p2p_ib) P2pIbTransportDevice(other.p2p_ib);
       }
     }
