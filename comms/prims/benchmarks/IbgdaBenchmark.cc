@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -167,7 +168,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
 
     // Only rank 0 (sender) runs the batched benchmark
     if (globalRank == 0) {
-      launchIbgdaPutSignalWaitLocalBatch(
+      launchIbgdaPutSignalWaitCounterBatch(
           deviceTransportPtr,
           localBuf,
           remoteBuf,
@@ -337,7 +338,109 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   }
 };
 
-TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
+TEST_F(IbgdaBenchmarkFixture, PutFlush) {
+  // Measures raw RDMA Write latency as put + flush.
+  if (numRanks != 2) {
+    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  auto configs = getFullConfigs();
+
+  std::size_t maxBufferSize = 0;
+  for (const auto& config : configs) {
+    maxBufferSize = std::max(maxBufferSize, config.nBytes);
+  }
+
+  std::vector<IbgdaBenchmarkResult> results;
+
+  try {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultipeerIbgdaTransport transport(
+        globalRank, numRanks, bootstrap, transportConfig);
+    transport.exchange();
+
+    DeviceBuffer dataBuffer(maxBufferSize);
+    auto localDataBuf =
+        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
+
+    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    P2pIbgdaTransportDevice* deviceTransportPtr =
+        transport.getP2pTransportDevice(peerRank);
+
+    unsigned long long* d_totalCycles;
+    CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
+
+    XLOGF(
+        INFO,
+        "Rank {}: GPU clock rate = {:.2f} GHz",
+        globalRank,
+        clockRateGHz_);
+
+    for (const auto& config : configs) {
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      if (globalRank == 0) {
+        launchIbgdaPutFlushBatch(
+            deviceTransportPtr,
+            localDataBuf,
+            remoteDataBuf,
+            config.nBytes,
+            kIbgdaBatchIters,
+            d_totalCycles,
+            stream_);
+        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+
+        unsigned long long totalCycles;
+        CUDA_CHECK_VOID(cudaMemcpy(
+            &totalCycles,
+            d_totalCycles,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost));
+
+        IbgdaBenchmarkResult result;
+        result.testName = config.name;
+        result.messageSize = config.nBytes;
+        result.latency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+        result.bandwidth = (config.nBytes / 1e9f) / (result.latency / 1e6f);
+
+        results.push_back(result);
+
+        XLOGF(
+            INFO,
+            "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
+            globalRank,
+            config.name,
+            result.latency,
+            result.bandwidth);
+      }
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    CUDA_CHECK_VOID(cudaFree(d_totalCycles));
+
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  printResultsTable("IBGDA Put+Flush (RDMA Write)", results);
+}
+
+TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
   // Measures raw RDMA Write latency (put + counter wait via companion QP)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -373,6 +476,11 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
     // Counter buffer (local only — companion QP atomically increments via
@@ -407,7 +515,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 
       // Only rank 0 sends
       if (globalRank == 0) {
-        launchIbgdaPutWaitLocalBatch(
+        launchIbgdaPutWaitCounterBatch(
             deviceTransportPtr,
             localDataBuf,
             remoteDataBuf,
@@ -452,10 +560,10 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
   }
 
-  printResultsTable("IBGDA Put+WaitLocal (RDMA Write)", results);
+  printResultsTable("IBGDA Put+WaitCounter (RDMA Write)", results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
+TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
   // Measures RDMA Write + atomic signal latency (put + signal + counter wait)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -492,6 +600,11 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
 
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
     // Allocate and exchange signal buffer (1 signal slot)
@@ -534,7 +647,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
 
       // Only rank 0 sends
       if (globalRank == 0) {
-        launchIbgdaPutSignalWaitLocalBatch(
+        launchIbgdaPutSignalWaitCounterBatch(
             deviceTransportPtr,
             localDataBuf,
             remoteDataBuf,
@@ -582,7 +695,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
   }
 
   printResultsTable(
-      "IBGDA Put+Signal+WaitLocal (RDMA Write + Atomic)", results);
+      "IBGDA Put+Signal+WaitCounter (RDMA Write + Atomic)", results);
 }
 
 TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
@@ -723,6 +836,11 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
         transport.registerBuffer(dataBuffer.get(), maxBufferSize);
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
     // Allocate and exchange signal buffer (1 signal slot)
