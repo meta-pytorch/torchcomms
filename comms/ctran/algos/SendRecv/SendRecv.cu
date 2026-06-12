@@ -63,7 +63,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
 #ifndef CTRAN_DISABLE_TCPDM
   if (UNPACK) {
     waitUnpack(
-        args.unpack.sq[bId], &sendRecvUnpack, &flag[bId], KERNEL_TERMINATE);
+        args.unpack.sq[bId],
+        &sendRecvUnpack,
+        &flag[bId],
+        KERNEL_TERMINATE,
+        &flag[bId],
+        KERNEL_HOST_ABORT);
   }
 #endif
 
@@ -98,7 +103,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
 #ifndef CTRAN_DISABLE_TCPDM
   if (UNPACK) {
     waitUnpack(
-        args.unpack.sq[bId], &sendRecvUnpack, &flag[bId], KERNEL_TERMINATE);
+        args.unpack.sq[bId],
+        &sendRecvUnpack,
+        &flag[bId],
+        KERNEL_TERMINATE,
+        &flag[bId],
+        KERNEL_HOST_ABORT);
   }
 #endif
 
