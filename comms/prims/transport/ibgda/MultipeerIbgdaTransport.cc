@@ -47,33 +47,7 @@ constexpr int kHopLimit = 255;
 // depth since they only carry WAIT + atomic operations (2 WQEs per round).
 constexpr uint32_t kCompanionQpDepth = 32;
 
-// Bootstrap tags for the two-phase bilateral exchange in materializePeer.
-constexpr int kTagQpExchange = 0;
-constexpr int kTagBufferExchange = 1;
-
 } // namespace
-
-// Wire formats for bilateral exchange in materializePeer.
-// Split into two phases: QP info first (to connect), then buffer info
-// (acts as QP-ready barrier — mirrors the eager path's two-allGather pattern).
-struct PeerQpPayload {
-  struct NicQpInfo {
-    uint8_t gid[16]{};
-    uint16_t lid{0};
-    uint32_t qpns[kMaxQpsPerPeerPerNic]{};
-  };
-  NicQpInfo nicInfo[kMaxNicsPerGpu]{};
-  int gidIndex{0};
-  int mtu{0};
-  int numNics{0};
-  int numQpsPerPeerPerNic{0};
-};
-
-struct PeerBufferPayload {
-  IbgdaBufferExchInfo recvStaging;
-  IbgdaBufferExchInfo srSignal;
-  IbgdaBufferExchInfo slotSignal;
-};
 
 struct PeerBufferSizes {
   std::size_t staging{0};
@@ -1528,9 +1502,9 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
 
   createPeerQps(peerIndex);
 
-  // Phase 1: exchange QP info, connect QPs
+  // Phase 1: exchange QP info, connect QPs.
   auto localQp = buildLocalQpPayload(peerIndex);
-  auto remoteQp = exchangeWithPeer(peerRank, localQp, kTagQpExchange);
+  auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
 
   if (remoteQp.numNics != numNics_) {
     throw std::runtime_error(
@@ -1552,10 +1526,11 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
   connectPeerMainQps(peerIndex, remoteQp);
   connectPeerLoopback(peerIndex);
 
-  // Phase 2: exchange buffer info (acts as QP-ready barrier)
+  // Phase 2: exchange buffer info (acts as QP-ready barrier).
   PeerBufferPayload localBuf{};
   allocatePeerBuffers(peerIndex, localBuf);
-  auto remoteBuf = exchangeWithPeer(peerRank, localBuf, kTagBufferExchange);
+  auto remoteBuf =
+      exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
   applyRemoteViews(peerIndex, remoteBuf);
 
   auto params = buildPeerTransportParams(peerIndex);
