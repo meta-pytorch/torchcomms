@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <deque>
 #include <unordered_map>
 
 #include "comms/ctran/CtranComm.h"
@@ -58,27 +59,11 @@ class CtranTcpDm {
     return isend(peerRank, tcpdmRegElem, (void*)sbuf, len, *req);
   }
 
-  commResult_t irecvCtrlMsg(
-      [[maybe_unused]] ControlMsg& msg,
-      [[maybe_unused]] int peerRank,
-      CtranTcpDmRequest& req) {
-    // Don't share receiver's control information with the sender. Rely
-    // on the receiver buffering (TCP window) instead of explicit
-    // synchronization.
-    req.complete();
-    return commSuccess;
-  }
+  commResult_t
+  irecvCtrlMsg(ControlMsg& msg, int peerRank, CtranTcpDmRequest& req);
 
-  commResult_t isendCtrlMsg(
-      [[maybe_unused]] const ControlMsg& msg,
-      [[maybe_unused]] int peerRank,
-      CtranTcpDmRequest& req) {
-    // Don't share receiver's control information with the sender. Rely
-    // on the receiver buffering (TCP window) instead of explicit
-    // synchronization.
-    req.complete();
-    return commSuccess;
-  }
+  commResult_t
+  isendCtrlMsg(const ControlMsg& msg, int peerRank, CtranTcpDmRequest& req);
 
   void profilerStart();
   void profilerEnd();
@@ -138,6 +123,21 @@ class CtranTcpDm {
     void* unpackPool{nullptr};
   };
   std::list<std::unique_ptr<RecvRequest>> queuedRecv_;
+
+  // Lazy per-peer TCP connections for sync-only control messages.
+  // Created on-demand by ensureCtrlSocket() on first isendCtrlMsg/irecvCtrlMsg.
+  // Smaller rank initiates; larger rank's bootstrapAccept thread accepts.
+  std::unordered_map<int, ctran::bootstrap::Socket> ctrlSocks_;
+  void ensureCtrlSocket(int peerRank);
+
+  // Per-peer queue of pending sync recv requests (from irecvCtrlMsg).
+  // Completed in FIFO order as sync bytes arrive on ctrlSocks_.
+  std::unordered_map<int, std::deque<CtranTcpDmRequest*>> pendingSyncRecvs_;
+
+  // Per-peer count of received sync bytes (for debugging).
+  std::unordered_map<int, int> syncRecvCount_;
+
+  void ctrlSyncProgress();
 
   commResult_t connectPeer(int peerRank);
 
