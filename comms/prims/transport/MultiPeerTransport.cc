@@ -109,17 +109,16 @@ void MultiPeerTransport::initFromTopology(
     }
     // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
-    // NOTE: non-NVL peers are tagged P2P_IBGDA regardless of ibMode; the IBRC
-    // device-side type tag + tagged-union handoff land with the IBRC device
-    // transport. IBRC's exchange() currently throws before the device handle is
-    // built, so this tag is not yet observed for IBRC.
+    const auto ibTransportType = config.ibMode == IbBackendMode::kIbrc
+        ? TransportType::P2P_IBRC
+        : TransportType::P2P_IBGDA;
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
         typePerRank_.at(r) = TransportType::SELF;
       } else if (globalToNvlLocal_.count(r)) {
         typePerRank_.at(r) = TransportType::P2P_NVL;
       } else {
-        typePerRank_.at(r) = TransportType::P2P_IBGDA;
+        typePerRank_.at(r) = ibTransportType;
       }
     }
 
@@ -134,16 +133,19 @@ void MultiPeerTransport::initFromTopology(
   {
     int nvlCount = 0;
     int ibgdaCount = 0;
+    int ibrcCount = 0;
     for (int r = 0; r < nRanks_; ++r) {
       if (typePerRank_[r] == TransportType::P2P_NVL) {
         ++nvlCount;
       } else if (typePerRank_[r] == TransportType::P2P_IBGDA) {
         ++ibgdaCount;
+      } else if (typePerRank_[r] == TransportType::P2P_IBRC) {
+        ++ibrcCount;
       }
     }
     LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
               << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
-              << " IBGDA peers";
+              << " IBGDA peers, " << ibrcCount << " IBRC peers";
   }
   for (int r = 0; r < nRanks_; ++r) {
     VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
@@ -169,8 +171,7 @@ void MultiPeerTransport::initFromTopology(
 
   // Create the IB sub-transport — the universal fallback for all non-NVL peers.
   // Exactly one backend is built, selected by config.ibMode (kIbgda default;
-  // kIbrc selects the CPU-proxy skeleton backend, whose functional entry points
-  // still fail fast until the backend is implemented).
+  // kIbrc selects the CPU-proxy backend).
   if (!config.disableIb && nRanks_ > 1) {
     auto ibConfig = config.ibgdaConfig;
     ibConfig.cudaDevice = deviceId_;
@@ -214,7 +215,8 @@ void MultiPeerTransport::exchange() {
 
   VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
           << " nvl=" << (nvlTransport_ ? "yes" : "no")
-          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no");
+          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no")
+          << " ibrc=" << (ibrcTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
@@ -313,15 +315,11 @@ bool MultiPeerTransport::is_lazy_mode() const {
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
-  if (ibrcTransport_) {
-    throw std::runtime_error(
-        "MultiPeerTransport::materializePeers: IBRC lazy materialization is not implemented yet");
-  }
-
   auto materializeOn = [&](auto& ibTransport) {
     for (int peer : peers) {
       if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
-          typePerRank_[peer] == TransportType::P2P_IBGDA) {
+          (typePerRank_[peer] == TransportType::P2P_IBGDA ||
+           typePerRank_[peer] == TransportType::P2P_IBRC)) {
         ibTransport->queuePeerForMaterialization(peer);
       }
     }
@@ -329,6 +327,8 @@ void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
   };
   if (ibgdaTransport_) {
     materializeOn(ibgdaTransport_);
+  } else if (ibrcTransport_) {
+    materializeOn(ibrcTransport_);
   }
 }
 
@@ -336,8 +336,7 @@ void MultiPeerTransport::connectPeers() {
   if (ibgdaTransport_) {
     ibgdaTransport_->connectPeers();
   } else if (ibrcTransport_) {
-    throw std::runtime_error(
-        "MultiPeerTransport::connectPeers: IBRC lazy materialization is not implemented yet");
+    ibrcTransport_->connectPeers();
   }
 }
 
@@ -797,9 +796,6 @@ void MultiPeerTransport::build_device_handle() {
     throw std::runtime_error("Failed to allocate host Transport array");
   }
 
-  // Get IBGDA GPU pointers per-peer via getP2pTransportDevice()
-  // which returns device-memory addresses suitable for Transport.p2p_ibgda
-
   for (int r = 0; r < nRanks_; ++r) {
     switch (typePerRank_[r]) {
       case TransportType::SELF:
@@ -823,13 +819,10 @@ void MultiPeerTransport::build_device_handle() {
       }
 
       case TransportType::P2P_IBRC: {
-        // The IBRC device-slot accessor (getP2pTransportDeviceSlot) and the
-        // P2P_IBRC peer tagging land with the device-slot wiring in the next
-        // diff, so no peer is tagged P2P_IBRC at this commit and this case is
-        // not yet reached. Construct a null IBRC handle to keep the switch
-        // exhaustive under -Werror,-Wswitch.
-        new (&transportsHost[r])
-            Transport(static_cast<P2pIbrcTransportDevice*>(nullptr));
+        P2pIbrcTransportDevice* devPtr = ibrcTransport_
+            ? ibrcTransport_->getP2pTransportDeviceSlot(r)
+            : nullptr;
+        new (&transportsHost[r]) Transport(devPtr);
         break;
       }
     }
