@@ -13,6 +13,8 @@
 #include "folly/SocketAddress.h"
 #include "folly/synchronization/CallOnce.h"
 
+#include <cerrno>
+
 namespace ctran {
 
 #define COMMCHECK_TCP(cmd)                                            \
@@ -26,6 +28,56 @@ namespace ctran {
       return commInvalidArgument;                                     \
     }                                                                 \
   } while (0)
+
+namespace {
+
+bool isPeerDisconnectErrno(int err) {
+  switch (err) {
+    case ECONNABORTED:
+    case ECONNREFUSED:
+    case ECONNRESET:
+    case ENOTCONN:
+    case EPIPE:
+    case ETIMEDOUT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+commResult_t mapBootstrapSocketError(
+    int err,
+    const char* op,
+    int rank,
+    int peerRank,
+    uint64_t commHash,
+    const std::string& commDesc) {
+  if (isPeerDisconnectErrno(err)) {
+    CLOGF(
+        WARN,
+        "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={} (treating as remote error)",
+        op,
+        peerRank,
+        rank,
+        commHash,
+        commDesc,
+        err);
+    return commRemoteError;
+  }
+
+  CLOGF(
+      ERR,
+      "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={}",
+      op,
+      peerRank,
+      rank,
+      commHash,
+      commDesc,
+      err);
+  return commInternalError;
+}
+
+} // namespace
 
 void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
@@ -174,17 +226,28 @@ commResult_t CtranTcpDm::bootstrapConnect(
   commResult_t res = commSuccess;
 
   ctran::bootstrap::Socket sock;
-  FB_SYSCHECKRETURN(
-      sock.connect(
-          peerSockAddr,
-          NCCL_CLIENT_SOCKET_IFNAME,
-          std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
-          NCCL_SOCKET_RETRY_CNT),
-      commInternalError);
-  FB_SYSCHECKRETURN(sock.send(&rank_, sizeof(int)), commInternalError);
+  int err = sock.connect(
+      peerSockAddr,
+      NCCL_CLIENT_SOCKET_IFNAME,
+      std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
+      NCCL_SOCKET_RETRY_CNT);
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "connect", rank_, peerRank, commHash_, commDesc_);
+  }
+
+  err = sock.send(&rank_, sizeof(int));
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "send", rank_, peerRank, commHash_, commDesc_);
+  }
 
   ::comms::tcp_devmem::Handle handle{};
-  FB_SYSCHECKRETURN(sock.recv(&handle, sizeof(handle)), commInternalError);
+  err = sock.recv(&handle, sizeof(handle));
+  if (err != 0) {
+    return mapBootstrapSocketError(
+        err, "recv", rank_, peerRank, commHash_, commDesc_);
+  }
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
   COMMCHECKTHROW(
