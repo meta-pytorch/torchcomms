@@ -2,32 +2,43 @@
 
 #pragma once
 
-#if defined(ENABLE_PRIMS)
+#include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
+#include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
 
-#include "comms/ctran/algos/AllReduce/Types.h"
-#include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/ctran/algos/topo/TreeConstants.h"
-#include "comms/utils/commSpecs.h"
+namespace ctran::allreduce::common {
+
+/** CUDA threads per block used by the fused AllReduce kernels. */
+static constexpr int kBlockSize = 640;
+/** Elements processed by one NVL tile operation in the reduction helpers. */
+static constexpr int kNvlTileElems = 15360;
+/** Elements processed by one IB tile operation in the reduction helpers. */
+static constexpr int kIbTileElems = 5120;
+
+} // namespace ctran::allreduce::common
+
+#if defined(ENABLE_PRIMS)
 
 namespace comms::prims {
 struct Transport;
 }
 
-namespace ctran::allreduce::tree {
-
-/** Number of independent inter-node tree lanes in the dual-tree phase. */
-static constexpr int kTreeLanes = 2;
-
-/** CUDA threads per block used by the ctree kernel. */
-static constexpr int kBlockSize = 640;
+namespace ctran::allreduce::common {
 
 /**
- * Device kernel arguments for the Prims-backed CTRAN tree AllReduce.
+ * Topology-agnostic device kernel arguments shared by all fused AllReduce
+ * algorithms.
+ *
+ * The fused AllReduce kernels are structured as NVL ReduceScatter (Phase 1), a
+ * cross-node IB phase (Phase 2), and NVL AllGather (Phase 3). Phase 1 and Phase
+ * 3 are identical across algorithms; only Phase 2 differs (dual-tree, ring,
+ * ...). These fields are everything those shared phases and the kernel entry
+ * need. Each algorithm layers its own Phase-2 topology (e.g. dual trees or ring
+ * neighbors) on top by embedding this struct in its own KernArgs.
  *
  * User buffers are owned by the caller. NVL and IB receive staging are owned by
  * the Prims transports and are consumed only inside transport copy callbacks.
  */
-struct KernArgs {
+struct CommonKernArgs {
   /** User input buffer; may alias `recvbuff` for in-place AllReduce. */
   const void* sendbuff;
   /** User output buffer that receives the final reduced tensor. */
@@ -35,8 +46,9 @@ struct KernArgs {
   /**
    * Phase 2 working buffer.
    *
-   * Segment owners write locally reduced segments here in Phase 1, the IB tree
-   * reads and writes the same buffer in Phase 2, and Phase 3 reads from it.
+   * Segment owners write locally reduced segments here in Phase 1, the Phase 2
+   * cross-node implementation reads and writes the same buffer, and Phase 3
+   * reads from it.
    */
   void* phase2Buf;
 
@@ -65,29 +77,10 @@ struct KernArgs {
    */
   comms::prims::Transport* transports;
 
-  /** Inter-node tree used for the first half of each data partition. */
-  ctran::allreduce::TreeTopology tree0;
-  /** Inter-node tree used for the second half of each data partition. */
-  ctran::allreduce::TreeTopology tree1;
-
   /** Maps local rank index `[0, nLocalRanks)` to global communicator rank. */
   int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
 };
 
-} // namespace ctran::allreduce::tree
-
-/**
- * CUDA kernel entry point for CTRAN tree AllReduce.
- *
- * Each block owns one tile partition and runs Phase 1, both Phase 2 tree
- * lanes, and Phase 3 for that tile. Phase 2 uses one full-block work group to
- * poll and progress the two disjoint IB tree lanes cooperatively.
- * Multi-block launches are independent tiling for performance; correctness
- * does not require inter-block sync.
- */
-__global__ void ctranKernelAllReduceTree(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::allreduce::tree::KernArgs args);
+} // namespace ctran::allreduce::common
 
 #endif // ENABLE_PRIMS

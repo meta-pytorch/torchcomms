@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/AllReduce/AllReduceFused.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
@@ -15,9 +16,11 @@
 #include "comms/utils/logger/LogUtils.h"
 
 #if defined(ENABLE_PRIMS)
-#include "comms/ctran/algos/AllReduce/AllReduceTree.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceIbTree.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #endif
+
+namespace fused = ctran::allreduce::fused;
 
 namespace {
 
@@ -35,9 +38,16 @@ void populateTreeTopology(
   }
 }
 
-/** Return whether the ctree device kernel supports `datatype`. */
-bool isSupportedTreeType(commDataType_t datatype) {
-  return datatype == commFloat32 || datatype == commFloat16;
+/**
+ * Return whether `comm` is a control communicator created by nccl-tests for
+ * inter-suite synchronization. CTREE delegates these to the legacy AllReduce
+ * implementation; the helper is local because new fused algorithms must not
+ * fall back into legacy code.
+ */
+bool isNcclTestsSyncComm(CtranComm* comm) {
+  const auto& commDesc = comm->statex_->commDesc();
+  return commDesc == "nccl-tests-suite-global-sync-comm" ||
+      commDesc == "nccl-tests-suite-sync-comm";
 }
 
 /** Return the tree fanout for this run; default to NCCL-like binary trees. */
@@ -57,32 +67,6 @@ int getAllReduceTreeFanOut() {
 }
 
 #if defined(ENABLE_PRIMS)
-/** Return the topology-wide cap for CTREE logical CUDA blocks. */
-int getAllReduceTreeNumBlockCap() {
-  return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
-}
-
-/**
- * Select the number of independent data tiles for this launch.
- *
- * The algorithm is correct with one tile block. Larger values only expose more
- * tile parallelism. `NCCL_CTRAN_MAX_NBLOCKS` caps the default policy. The
- * automatic policy starts at the cap, then reduces the number of blocks while
- * the message has less than one block-threshold of work per block.
- */
-int getAllReduceTreeNumBlocks(size_t totalBytes) {
-  const int cap = getAllReduceTreeNumBlockCap();
-  const size_t perBlockThresholdBytes =
-      static_cast<size_t>(ctran::allreduce::tree::kBlockSize) * 64;
-
-  int numBlocks = cap;
-  while (numBlocks > 1 &&
-         totalBytes < static_cast<size_t>(numBlocks) * perBlockThresholdBytes) {
-    numBlocks--;
-  }
-  return numBlocks;
-}
-
 commResult_t validateAllReduceTreeIbPeer(
     const comms::prims::MultiPeerTransport& transport,
     int rank,
@@ -174,12 +158,21 @@ commResult_t ctranAllReduceTree(
     return commSuccess;
   }
 
+  if (isNcclTestsSyncComm(comm)) {
+    CLOGF(
+        DBG,
+        "AllReduce ctree delegates nccl-tests sync comm {} to ctdirect",
+        statex->commDesc());
+    return ctranAllReduceDirect(
+        sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+  }
+
   if (redOp != commSum) {
     CLOGF(ERR, "AllReduce ctree currently supports commSum only");
     return commInvalidArgument;
   }
 
-  if (!isSupportedTreeType(datatype)) {
+  if (!fused::is_supported_fused_type(datatype)) {
     CLOGF(
         ERR,
         "AllReduce ctree unsupported datatype {}",
@@ -200,12 +193,7 @@ commResult_t ctranAllReduceTree(
     return commInvalidArgument;
   }
 
-  // Compute P_min: minimum nLocalRanks across all nodes
-  int pMin = INT_MAX;
-  for (int n = 0; n < nNodes; n++) {
-    int someRankOnNode = statex->localRankToRank(0, n);
-    pMin = std::min(pMin, statex->nLocalRanks(someRankOnNode));
-  }
+  const int pMin = fused::compute_p_min(comm);
 
   const size_t segmentElems = (count + pMin - 1) / pMin;
   const bool participatesInIB = (localRank < pMin);
@@ -266,7 +254,8 @@ commResult_t ctranAllReduceTree(
   const size_t totalBytes = count * elementSize;
   const size_t segmentBytes = segmentElems * elementSize;
   const bool hasIbPhase = participatesInIB && nNodes > 1;
-  const int numBlocks = getAllReduceTreeNumBlocks(totalBytes);
+  const int numBlocks =
+      fused::compute_num_blocks(totalBytes, fused::get_num_block_cap());
   if (hasIbPhase) {
     if (!comm->multiPeerTransport_) {
       CLOGF(
@@ -298,16 +287,8 @@ commResult_t ctranAllReduceTree(
     }
   }
 
-  // phase2Buf holds the locally-reduced segment from Phase 1 and serves as
-  // the working buffer for Phase 2's reduce-up + broadcast-down. Non-owner
-  // local ranks do not dereference phase2Buf, but keep it inside the user
-  // buffer so the kernel never receives an out-of-range pointer in
-  // heterogeneous topologies.
-  void* phase2Buf = recvbuff;
-  if (participatesInIB) {
-    phase2Buf = static_cast<char*>(recvbuff) +
-        static_cast<size_t>(localRank) * segmentBytes;
-  }
+  void* phase2Buf = fused::compute_phase2_buf(
+      recvbuff, localRank, segmentBytes, participatesInIB);
 
   CLOGF(
       DBG,
@@ -321,64 +302,35 @@ commResult_t ctranAllReduceTree(
 
   auto opCount = comm->ctran_->getOpCount();
 
-  // Populate kernel args
   ctran::allreduce::tree::KernArgs kernArgs{};
-  kernArgs.sendbuff = sendbuff;
-  kernArgs.recvbuff = recvbuff;
-  kernArgs.phase2Buf = phase2Buf;
-  kernArgs.count = count;
-  kernArgs.segmentElems = segmentElems;
-  kernArgs.nNodes = nNodes;
-  kernArgs.pMin = pMin;
-  kernArgs.nLocalRanks = nLocalRanks;
-  kernArgs.localRank = localRank;
-  kernArgs.numBlocks = numBlocks;
-  kernArgs.datatype = datatype;
-  kernArgs.redOp = redOp;
-  kernArgs.transports = comm->getMultiPeerTransportsPtr();
-  if (kernArgs.transports == nullptr) {
-    CLOGF(
-        ERR,
-        "AllReduce ctree: getMultiPeerTransportsPtr() returned null - "
-        "Prims transport not initialized. Ensure ENABLE_PRIMS is defined "
-        "and multiPeerTransport is set up.");
-    return commInternalError;
-  }
+  FB_COMMCHECK(
+      fused::fill_common_kern_args(
+          kernArgs.common,
+          sendbuff,
+          recvbuff,
+          phase2Buf,
+          count,
+          segmentElems,
+          nNodes,
+          pMin,
+          nLocalRanks,
+          localRank,
+          numBlocks,
+          datatype,
+          redOp,
+          comm));
   kernArgs.tree0 = tree0;
   kernArgs.tree1 = tree1;
 
-  // Build local rank -> global rank mapping
-  if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CLOGF(
-        ERR,
-        "AllReduce ctree: nLocalRanks {} exceeds CTRAN_MAX_NVL_PEERS {}",
-        nLocalRanks,
-        CTRAN_MAX_NVL_PEERS);
-    return commInternalError;
-  }
-  for (int lr = 0; lr < nLocalRanks; lr++) {
-    kernArgs.localRankToGlobalRank[lr] = statex->localRankToRank(lr);
-  }
-
-  KernelConfig config(
-      KernelConfig::KernelType::ALLREDUCE, stream, "AllReduceTree", opCount);
-
-  config.numBlocks = static_cast<unsigned int>(numBlocks);
-  config.numThreads = ctran::allreduce::tree::kBlockSize;
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-  config.algoArgs = &kernArgs;
-
-  // Device kernel drives all NVL and IB transport progress; no host-side GPE
-  // opGroup is needed.
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      nullptr,
-      config,
-      reinterpret_cast<void*>(ctranKernelAllReduceTree)));
-
-  return commSuccess;
+  return fused::submit_fused_kernel(
+      comm,
+      stream,
+      "AllReduceTree",
+      opCount,
+      numBlocks,
+      ctran::allreduce::tree::kBlockSize,
+      &kernArgs,
+      reinterpret_cast<const void*>(ctranKernelAllReduceTree));
 #else
   CLOGF(ERR, "AllReduce ctree requires ENABLE_PRIMS");
   return commInternalError;
