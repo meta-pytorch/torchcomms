@@ -194,6 +194,32 @@ struct IbTransportExchInfoAll {
   int numQpsPerPeerPerNic{1};
 };
 
+// Bootstrap tags for the two-phase bilateral exchange in lazy materialization.
+constexpr int kIbPeerQpExchangeTag = 0;
+constexpr int kIbPeerBufferExchangeTag = 1;
+
+// Wire formats for bilateral peer materialization. Split into two phases: QP
+// info first (to connect), then buffer info (acts as QP-ready barrier).
+struct PeerQpPayload {
+  struct NicQpInfo {
+    uint8_t gid[16]{};
+    uint16_t lid{0};
+    uint32_t qpns[kMaxQpsPerPeerPerNic]{};
+  };
+  NicQpInfo nicInfo[kMaxNicsPerGpu]{};
+  int gidIndex{0};
+  int mtu{0};
+  int numNics{0};
+  int numQpsPerPeerPerNic{0};
+};
+
+struct PeerBufferPayload {
+  IbgdaBufferExchInfo recvStaging;
+  IbgdaBufferExchInfo srSignal;
+  IbgdaBufferExchInfo slotSignal;
+  IbgdaBufferExchInfo slotDiscard;
+};
+
 /**
  * MultiPeerIbTransportBase - backend-agnostic host control plane shared by the
  * multi-peer IB transports (IBGDA today, IBRC next).
