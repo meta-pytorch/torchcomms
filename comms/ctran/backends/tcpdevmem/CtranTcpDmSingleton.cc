@@ -53,9 +53,10 @@ bool CtranTcpDmSingleton::supportBondTransport() {
   return false;
 }
 
-static folly::Singleton<::comms::tcp_devmem::TransportInterface>
+static const folly::LeakySingleton<::comms::tcp_devmem::TransportInterface>
 tcpTransportPtr([]() -> ::comms::tcp_devmem::TransportInterface* {
-  if (!CtranTcpDmSingleton::supportBondTransport()) {
+  const bool bondSupported = CtranTcpDmSingleton::supportBondTransport();
+  if (!bondSupported) {
     return new ::comms::tcp_devmem::Transport();
   }
 
@@ -63,21 +64,16 @@ tcpTransportPtr([]() -> ::comms::tcp_devmem::TransportInterface* {
       NCCL_IB_HCA, NCCL_CTRAN_IB_DEVICES_PER_RANK);
   if (devs.size() && devs.front().size() == 1) {
     return new ::comms::tcp_devmem::Transport();
-  } else {
-    return new ::comms::tcp_devmem::BondTransport(devs);
   }
+
+  return new ::comms::tcp_devmem::BondTransport(devs);
 });
 
 std::shared_ptr<::comms::tcp_devmem::TransportInterface>
 CtranTcpDmSingleton::getTransport() {
-  auto ptr =
-      folly::Singleton<::comms::tcp_devmem::TransportInterface>::try_get();
-  if (!ptr) {
-    FB_ERRORTHROW_EX_NOCOMM(
-        commInternalError,
-        "TCP-DEVMEM: TransportInterface singleton is not available");
-  }
-  return ptr;
+  auto& transport = tcpTransportPtr.get();
+  return std::shared_ptr<::comms::tcp_devmem::TransportInterface>(
+      &transport, [](::comms::tcp_devmem::TransportInterface*) {});
 }
 
 } // namespace ctran
