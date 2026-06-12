@@ -347,8 +347,7 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     return ibgdaTransport_->registerBuffer(ptr, size);
   }
   if (ibrcTransport_) {
-    throw std::runtime_error(
-        "localRegisterIbgdaBuffer: IBRC buffer registration is not implemented yet");
+    return ibrcTransport_->registerBuffer(ptr, size);
   }
   throw std::runtime_error(
       "localRegisterIbgdaBuffer: IB transport not available");
@@ -358,8 +357,7 @@ void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
   if (ibgdaTransport_) {
     ibgdaTransport_->deregisterBuffer(ptr);
   } else if (ibrcTransport_) {
-    throw std::runtime_error(
-        "localDeregisterIbgdaBuffer: IBRC buffer registration is not implemented yet");
+    ibrcTransport_->deregisterBuffer(ptr);
   }
 }
 
@@ -369,8 +367,7 @@ std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
     return ibgdaTransport_->exchangeBuffer(localBuf);
   }
   if (ibrcTransport_) {
-    throw std::runtime_error(
-        "exchangeIbgdaBuffer: IBRC buffer exchange is not implemented yet");
+    return ibrcTransport_->exchangeBuffer(localBuf);
   }
   throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
 }
