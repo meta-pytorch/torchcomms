@@ -251,6 +251,12 @@ class MultiPeerTransport {
   std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
       const IbgdaLocalBuffer& localBuf);
 
+  IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
+  IbgdaLocalBuffer registerIbCounterBuffer(
+      const IbgdaLocalBuffer& buffer,
+      std::size_t size);
+  void freeIbCounterBuffer(IbgdaLocalBuffer& buffer, void*& hostPtr) noexcept;
+
   /**
    * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
    *

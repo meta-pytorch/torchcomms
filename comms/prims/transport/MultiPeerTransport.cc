@@ -375,6 +375,60 @@ std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
   throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
 }
 
+IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
+    std::size_t size,
+    void** hostPtr) {
+  *hostPtr = nullptr;
+  if (ibrcTransport_) {
+    void* host = nullptr;
+    void* device = nullptr;
+    CUDA_CHECK(cudaHostAlloc(&host, size, cudaHostAllocMapped));
+    CUDA_CHECK(cudaHostGetDevicePointer(&device, host, 0));
+    std::memset(host, 0, size);
+    *hostPtr = host;
+    return IbgdaLocalBuffer(device, NetworkLKeys{});
+  }
+  if (ibgdaTransport_) {
+    void* ptr = nullptr;
+    CUDA_CHECK(cudaMalloc(&ptr, size));
+    CUDA_CHECK(cudaMemset(ptr, 0, size));
+    return IbgdaLocalBuffer(ptr, NetworkLKeys{});
+  }
+  throw std::runtime_error(
+      "allocateIbCounterBuffer: IB transport not available");
+}
+
+IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
+    const IbgdaLocalBuffer& buffer,
+    std::size_t size) {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->registerBuffer(buffer.ptr, size);
+  }
+  if (ibrcTransport_) {
+    return buffer;
+  }
+  throw std::runtime_error(
+      "registerIbCounterBuffer: IB transport not available");
+}
+
+void MultiPeerTransport::freeIbCounterBuffer(
+    IbgdaLocalBuffer& buffer,
+    void*& hostPtr) noexcept {
+  if (buffer.ptr == nullptr) {
+    return;
+  }
+  if (buffer.lkey_per_device.size > 0 && ibgdaTransport_) {
+    ibgdaTransport_->deregisterBuffer(buffer.ptr);
+  }
+  if (hostPtr != nullptr) {
+    cudaFreeHost(hostPtr);
+    hostPtr = nullptr;
+  } else {
+    cudaFree(buffer.ptr);
+  }
+  buffer = IbgdaLocalBuffer{};
+}
+
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
     void* ptr) const {
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
