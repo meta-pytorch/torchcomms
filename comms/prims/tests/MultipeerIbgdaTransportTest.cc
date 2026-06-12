@@ -15,7 +15,9 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.h"
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -34,32 +36,199 @@ namespace comms::prims::tests {
 // Test Fixture
 // =============================================================================
 
-class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
+enum class IbTestBackend {
+  Ibgda,
+  Ibrc,
+};
+
+const char* backendName(IbTestBackend backend) {
+  switch (backend) {
+    case IbTestBackend::Ibgda:
+      return "IBGDA";
+    case IbTestBackend::Ibrc:
+      return "IBRC";
+  }
+  return "unknown";
+}
+
+std::string backendParamName(
+    const ::testing::TestParamInfo<IbTestBackend>& info) {
+  return backendName(info.param);
+}
+
+class TestIbTransport {
+ public:
+  TestIbTransport(
+      IbTestBackend backend,
+      int myRank,
+      int nRanks,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      MultipeerIbTransportConfig config)
+      : backend_(backend), config_(config) {
+    if (backend_ == IbTestBackend::Ibgda) {
+      ibgda_ = std::make_unique<MultipeerIbgdaTransport>(
+          myRank, nRanks, std::move(bootstrap), config_);
+      ibgda_->exchange();
+    } else {
+      ibrc_ = std::make_unique<MultipeerIbrcTransport>(
+          myRank, nRanks, std::move(bootstrap), config_);
+      ibrc_->exchange();
+    }
+  }
+
+  int myRank() const {
+    return ibgda_ ? ibgda_->myRank() : ibrc_->myRank();
+  }
+
+  int nRanks() const {
+    return ibgda_ ? ibgda_->nRanks() : ibrc_->nRanks();
+  }
+
+  int numPeers() const {
+    return ibgda_ ? ibgda_->numPeers() : ibrc_->numPeers();
+  }
+
+  int numNics() const {
+    return ibgda_ ? ibgda_->numNics() : ibrc_->numNics();
+  }
+
+  int numQpsPerPeerPerNic() const {
+    return config_.numQpsPerPeerPerNic;
+  }
+
+  int getGidIndex() const {
+    return ibgda_ ? ibgda_->getGidIndex() : config_.gidIndex.value_or(-1);
+  }
+
+  void* getDeviceTransportPtr() const {
+    if (ibgda_) {
+      return ibgda_->getDeviceTransportPtr();
+    }
+    return ibrc_->getP2pTransportDeviceSlot(firstPeerRank());
+  }
+
+  bool hasP2pTransportDevice(int peerRank) const {
+    if (ibgda_) {
+      return ibgda_->getP2pTransportDeviceSlot(peerRank) != nullptr;
+    }
+    return ibrc_->getP2pTransportDeviceSlot(peerRank) != nullptr;
+  }
+
+  P2pIbTransportDevice getP2pTransportDevice(int peerRank) {
+    if (ibgda_) {
+      return P2pIbTransportDevice(ibgda_->getP2pTransportDevice(peerRank));
+    }
+    if (config_.ibLazyConnect && !ibrc_->isPeerMaterialized(peerRank)) {
+      ibrc_->materializePeer(peerRank);
+    }
+    return P2pIbTransportDevice(ibrc_->getP2pTransportDeviceSlot(peerRank));
+  }
+
+  IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size) {
+    return ibgda_ ? ibgda_->registerBuffer(ptr, size)
+                  : ibrc_->registerBuffer(ptr, size);
+  }
+
+  std::vector<IbgdaRemoteBuffer> exchangeBuffer(
+      const IbgdaLocalBuffer& localBuf) {
+    return ibgda_ ? ibgda_->exchangeBuffer(localBuf)
+                  : ibrc_->exchangeBuffer(localBuf);
+  }
+
+  void queuePeerForMaterialization(int peerRank) {
+    if (ibgda_) {
+      ibgda_->queuePeerForMaterialization(peerRank);
+    } else {
+      ibrc_->queuePeerForMaterialization(peerRank);
+    }
+  }
+
+  void connectPeers() {
+    if (ibgda_) {
+      ibgda_->connectPeers();
+    } else {
+      ibrc_->connectPeers();
+    }
+  }
+
+  bool isPeerMaterialized(int peerRank) const {
+    return ibgda_ ? ibgda_->isPeerMaterialized(peerRank)
+                  : ibrc_->isPeerMaterialized(peerRank);
+  }
+
+ private:
+  int firstPeerRank() const {
+    return myRank() == 0 ? 1 : 0;
+  }
+
+  IbTestBackend backend_;
+  MultipeerIbTransportConfig config_;
+  std::unique_ptr<MultipeerIbgdaTransport> ibgda_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrc_;
+};
+
+std::unique_ptr<TestIbTransport> createTestTransport(
+    IbTestBackend backend,
+    int globalRank,
+    int numRanks,
+    int localRank,
+    int numSignalSlots = 1,
+    int numCounterSlots = 1,
+    int numQpsPerPeerPerNic = 1) {
+  MultipeerIbTransportConfig config{
+      .cudaDevice = localRank,
+      .numSignalSlots = numSignalSlots,
+      .numCounterSlots = numCounterSlots,
+      .numQpsPerPeerPerNic = numQpsPerPeerPerNic,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  return std::make_unique<TestIbTransport>(
+      backend, globalRank, numRanks, std::move(bootstrap), config);
+}
+
+class MultipeerIbTransportTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<IbTestBackend> {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
-  void TearDown() override {
-    MpiBaseTestFixture::TearDown();
+  IbTestBackend backend() const {
+    return GetParam();
   }
 
-  // Helper: Create transport with default config
-  std::unique_ptr<MultipeerIbgdaTransport> createTransport(
+  std::unique_ptr<TestIbTransport> createTransport(
       int numSignalSlots = 1,
-      int numCounterSlots = 1) {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .numSignalSlots = numSignalSlots,
-        .numCounterSlots = numCounterSlots,
-    };
+      int numCounterSlots = 1,
+      int numQpsPerPeerPerNic = 1) {
+    return createTestTransport(
+        backend(),
+        globalRank,
+        numRanks,
+        localRank,
+        numSignalSlots,
+        numCounterSlots,
+        numQpsPerPeerPerNic);
+  }
+};
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
-    return transport;
+INSTANTIATE_TEST_SUITE_P(
+    IbBackends,
+    MultipeerIbTransportTestFixture,
+    ::testing::Values(IbTestBackend::Ibgda, IbTestBackend::Ibrc),
+    backendParamName);
+
+// IBGDA-specific fixture for tests that drive `P2pIbgdaTransportDevice`
+// directly (e.g. the progress send/recv .cu test kernels), which are not yet
+// parameterized over backends.
+class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -67,7 +236,7 @@ class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
 // Basic Construction and Exchange Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, ConstructAndExchange) {
+TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
   if (numRanks < 2) {
     XLOGF(
         WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
@@ -88,7 +257,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ConstructAndExchange) {
         globalRank,
         transport->getGidIndex());
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -99,7 +269,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ConstructAndExchange) {
 // Put/Signal Basic Test - Verifies RDMA data transfer correctness
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -136,8 +306,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
         remoteDataBuf.rkey_per_device[0].value);
 
     // Get peer transport for explicit peer selection
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       // Rank 0: Sender
@@ -149,7 +318,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 
       // Perform RDMA put with signal (slot-index API)
       test::testPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -169,7 +338,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 
       // Wait for signal from sender (slot-index API on peer transport)
       test::testWaitSignal(
-          peerTransportPtr,
+          peerTransport,
           0, // signalId
           1, // expected signal
           numBlocks,
@@ -201,7 +370,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
           << " byte mismatches out of " << nbytes << " bytes";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: PutSignalBasic test completed", globalRank);
@@ -211,7 +381,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 // Group-Level Put/Signal Basic Test - Verifies explicit cooperative RDMA
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBasic) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -232,8 +402,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       test::fillBufferWithPattern(
@@ -243,7 +412,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testPutAndSignalGroup(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -260,7 +429,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      test::testWaitSignal(peerTransportPtr, 0, 1, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -287,7 +456,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
                                  << nbytes << " bytes (group put+signal)";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: PutSignalGroupBasic test completed", globalRank);
@@ -297,7 +467,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
 // Multi-Warp Group Put/Signal Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupMultiWarp) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -319,8 +489,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       test::fillBufferWithPattern(
@@ -331,7 +500,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
 
       // Each warp signals with 1, total = numWarps
       test::testPutAndSignalGroupMultiWarp(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -350,7 +519,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
 
       // Wait for accumulated signal from all warps
       test::testWaitSignal(
-          peerTransportPtr,
+          peerTransport,
           0,
           numWarps, // expected signal: 16 warps x 1
           1,
@@ -381,7 +550,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
                                  << nbytes << " bytes (multi-warp group put)";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: PutSignalGroupMultiWarp test completed", globalRank);
@@ -391,7 +561,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
 // Block-Scope Group Put/Signal Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBlock) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -412,8 +582,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       test::fillBufferWithPattern(
@@ -424,7 +593,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
 
       // Each block signals with 1, total = numBlocks
       test::testPutAndSignalGroupBlock(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -443,7 +612,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
 
       // Wait for accumulated signal from all blocks
       test::testWaitSignal(
-          peerTransportPtr,
+          peerTransport,
           0,
           numBlocks, // expected: 4 blocks x 1
           1,
@@ -474,7 +643,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
                                  << nbytes << " bytes (block-scope group put)";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: PutSignalGroupBlock test completed", globalRank);
@@ -485,6 +655,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
 // =============================================================================
 
 struct TransferSizeParams {
+  IbTestBackend backend;
   std::size_t nbytes;
   std::string name;
 };
@@ -514,30 +685,23 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
 
   XLOGF(
       INFO,
-      "Rank {}: Running transfer size test {} with {} bytes",
+      "Rank {}: Running {} transfer size test {} with {} bytes",
       globalRank,
+      backendName(params.backend),
       params.name,
       nbytes);
 
   try {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .numSignalSlots = 1,
-        .numCounterSlots = 1,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(globalRank, numRanks, bootstrap, config);
-    transport.exchange();
+    auto transport =
+        createTestTransport(params.backend, globalRank, numRanks, localRank);
 
     DeviceBuffer dataBuffer(nbytes);
-    auto localDataBuf = transport.registerBuffer(dataBuffer.get(), nbytes);
-    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport.getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       test::fillBufferWithPattern(
@@ -547,7 +711,7 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -564,7 +728,7 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      test::testWaitSignal(peerTransportPtr, 0, 1, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -587,7 +751,8 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
           << " byte mismatches out of " << nbytes << " bytes";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(params.backend)
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(
@@ -599,27 +764,76 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
 
 std::string transferSizeParamName(
     const ::testing::TestParamInfo<TransferSizeParams>& info) {
-  return info.param.name;
+  return std::string(backendName(info.param.backend)) + "_" + info.param.name;
 }
 
 INSTANTIATE_TEST_SUITE_P(
     TransferSizeVariations,
     TransferSizeTestFixture,
     ::testing::Values(
-        TransferSizeParams{.nbytes = 1024, .name = "Size_1KB"},
-        TransferSizeParams{.nbytes = 4 * 1024, .name = "Size_4KB"},
-        TransferSizeParams{.nbytes = 64 * 1024, .name = "Size_64KB"},
-        TransferSizeParams{.nbytes = 256 * 1024, .name = "Size_256KB"},
-        TransferSizeParams{.nbytes = 1024 * 1024, .name = "Size_1MB"},
-        TransferSizeParams{.nbytes = 4 * 1024 * 1024, .name = "Size_4MB"},
-        TransferSizeParams{.nbytes = 16 * 1024 * 1024, .name = "Size_16MB"}),
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 1024,
+            .name = "Size_1KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 1024,
+            .name = "Size_1KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 4 * 1024,
+            .name = "Size_4KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 4 * 1024,
+            .name = "Size_4KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 64 * 1024,
+            .name = "Size_64KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 64 * 1024,
+            .name = "Size_64KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 256 * 1024,
+            .name = "Size_256KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 256 * 1024,
+            .name = "Size_256KB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 1024 * 1024,
+            .name = "Size_1MB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 1024 * 1024,
+            .name = "Size_1MB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 4 * 1024 * 1024,
+            .name = "Size_4MB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 4 * 1024 * 1024,
+            .name = "Size_4MB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibgda,
+            .nbytes = 16 * 1024 * 1024,
+            .name = "Size_16MB"},
+        TransferSizeParams{
+            .backend = IbTestBackend::Ibrc,
+            .nbytes = 16 * 1024 * 1024,
+            .name = "Size_16MB"}),
     transferSizeParamName);
 
 // =============================================================================
 // Bidirectional Transfer Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
+TEST_P(MultipeerIbTransportTestFixture, Bidirectional) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -641,8 +855,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     DeviceBuffer errorCountBuf(sizeof(int));
     auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
@@ -661,7 +874,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
 
     if (globalRank == 0) {
       test::testPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -671,7 +884,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
-      test::testWaitSignal(peerTransportPtr, 0, 1, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -694,8 +907,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Phase 2: Rank 1 sends to Rank 0
-    // Signal value was 1, now we wait for 2 (cumulative)
+    // Phase 2: Rank 1 sends to Rank 0. Signal values are cumulative per
+    // receiving rank, so Rank 0 expects its first inbound signal here.
     if (globalRank == 1) {
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, rank1Pattern, numBlocks, blockSize);
@@ -709,22 +922,17 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
 
     if (globalRank == 1) {
       test::testPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
           0,
-          1, // cumulative: now signal = 2
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
-      test::testWaitSignal(
-          peerTransportPtr,
-          0,
-          2, // wait for cumulative signal >= 2
-          numBlocks,
-          blockSize);
+      test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -748,7 +956,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: Bidirectional test completed", globalRank);
@@ -758,7 +967,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
 // Stress Test - Multiple iterations
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
+TEST_P(MultipeerIbTransportTestFixture, StressTest) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -779,8 +988,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     int totalErrors = 0;
 
@@ -796,7 +1004,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
 
         // Signal value = iter+1 (cumulative via atomic fetch-add)
         test::testPutAndSignal(
-            peerTransportPtr,
+            peerTransport,
             localDataBuf,
             remoteDataBuf,
             nbytes,
@@ -814,8 +1022,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
         // Wait for cumulative signal >= iter+1
-        test::testWaitSignal(
-            peerTransportPtr, 0, iter + 1, numBlocks, blockSize);
+        test::testWaitSignal(peerTransport, 0, iter + 1, numBlocks, blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -850,7 +1057,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
           << "across " << numIterations << " iterations";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(
@@ -864,7 +1072,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
 // Signal Only Test - Tests sending signals without data
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
+TEST_P(MultipeerIbTransportTestFixture, SignalOnly) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -878,26 +1086,26 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
 
     int peerRank = (globalRank == 0) ? 1 : 0;
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      test::testSignalOnly(peerTransportPtr, 0, 42, numBlocks, blockSize);
+      test::testSignalOnly(peerTransport, 0, 42, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      test::testWaitSignal(peerTransportPtr, 0, 42, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 0, 42, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: SignalOnly test completed", globalRank);
@@ -907,7 +1115,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
 // Put + Signal + Counter Test - Tests companion QP counter-based completion
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalCounter) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -931,8 +1139,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
 
     // Signal and counter buffers are transport-owned
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       // Sender: fill buffer with pattern, barrier, put+signal+counter
@@ -947,7 +1154,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testPutSignalCounter(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -960,7 +1167,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
 
       // Wait for local counter to confirm NIC completion
       test::testWaitCounter(
-          peerTransportPtr,
+          peerTransport,
           0,
           1, // counterId=0, expectedVal=1
           numBlocks,
@@ -975,7 +1182,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       // Receiver: wait for signal, verify data
-      test::testWaitSignal(peerTransportPtr, 0, 1, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1001,7 +1208,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
           << "PutSignalCounter: data corruption detected";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 }
 
@@ -1318,7 +1526,7 @@ TEST_F(
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
+TEST_P(MultipeerIbTransportTestFixture, ResetSignal) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1333,15 +1541,14 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
 
     int peerRank = (globalRank == 0) ? 1 : 0;
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     for (int iter = 0; iter < numIterations; iter++) {
       if (globalRank == 0) {
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
         // Send signal
-        test::testSignalOnly(peerTransportPtr, 0, 1, numBlocks, blockSize);
+        test::testSignalOnly(peerTransport, 0, 1, numBlocks, blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1350,7 +1557,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
         // Wait for signal (always expecting 1 since we reset each iteration)
-        test::testWaitSignal(peerTransportPtr, 0, 1, numBlocks, blockSize);
+        test::testWaitSignal(peerTransport, 0, 1, numBlocks, blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1366,7 +1573,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
       }
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(
@@ -1380,7 +1588,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
 // Multiple Signal Slots Test - Tests using multiple signal IDs
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
+TEST_P(MultipeerIbTransportTestFixture, MultipleSignalSlots) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1395,15 +1603,14 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 
     int peerRank = (globalRank == 0) ? 1 : 0;
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       for (int i = 0; i < numSignals; i++) {
         test::testSignalOnly(
-            peerTransportPtr,
+            peerTransport,
             i,
             static_cast<uint64_t>(i + 1) * 10,
             numBlocks,
@@ -1417,7 +1624,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 
       for (int i = 0; i < numSignals; i++) {
         test::testWaitSignal(
-            peerTransportPtr,
+            peerTransport,
             i,
             static_cast<uint64_t>(i + 1) * 10,
             numBlocks,
@@ -1428,7 +1635,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: MultipleSignalSlots test completed", globalRank);
@@ -1438,7 +1646,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 // Put Signal Wait For Ready Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
+TEST_P(MultipeerIbTransportTestFixture, PutSignalWaitForReady) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1460,8 +1668,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       // Rank 0: Sender
@@ -1474,7 +1681,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
       // Wait for receiver's "ready" signal on local slot 0,
       // then put data + signal completion on remote slot 1
       test::testWaitReadyThenPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           localDataBuf,
           remoteDataBuf,
           nbytes,
@@ -1495,11 +1702,11 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       // Send "ready" signal to sender (remote slot 0)
-      test::testSignalOnly(peerTransportPtr, 0, 1, numBlocks, blockSize);
+      test::testSignalOnly(peerTransport, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       // Wait for "data" signal from sender (local slot 1)
-      test::testWaitSignal(peerTransportPtr, 1, 1, numBlocks, blockSize);
+      test::testWaitSignal(peerTransport, 1, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1526,7 +1733,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
           << " byte mismatches out of " << nbytes << " bytes";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: PutSignalWaitForReady test completed", globalRank);
@@ -1536,7 +1744,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
 // Bidirectional Concurrent Test
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
+TEST_P(MultipeerIbTransportTestFixture, BidirectionalConcurrent) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1563,8 +1771,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto peerRecvBuf = remoteRecvBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     test::fillBufferWithPattern(
         localSendBuf.ptr, nbytes, myPattern, numBlocks, 32);
@@ -1577,7 +1784,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
 
     // Both ranks use signal slot 0 (each peer's transport has its own outbox)
     test::testBidirectionalPutAndWait(
-        peerTransportPtr,
+        peerTransport,
         localSendBuf,
         peerRecvBuf,
         nbytes,
@@ -1608,7 +1815,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
         << " byte mismatches receiving from rank " << peerRank;
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: BidirectionalConcurrent test completed", globalRank);
@@ -1618,7 +1826,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
 // AlltoAll Test - Uses partition API for parallel peer comm
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
+TEST_P(MultipeerIbTransportTestFixture, AllToAll) {
   if (numRanks < 2) {
     XLOGF(
         WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
@@ -1644,7 +1852,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
     // Build per-peer arrays
     std::vector<IbgdaLocalBuffer> localSendBufsPerPeer(numPeers);
     std::vector<IbgdaRemoteBuffer> peerRecvBufs(numPeers);
-    std::vector<P2pIbgdaTransportDevice*> peerTransports(numPeers);
+    std::vector<P2pIbTransportDevice> peerTransports(numPeers);
 
     for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
       int peerRank = (peerIndex < globalRank) ? peerIndex : (peerIndex + 1);
@@ -1669,14 +1877,14 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     // Copy arrays to device memory
-    DeviceBuffer d_peerTransports(numPeers * sizeof(P2pIbgdaTransportDevice*));
+    DeviceBuffer d_peerTransports(numPeers * sizeof(P2pIbTransportDevice));
     DeviceBuffer d_localSendBufs(numPeers * sizeof(IbgdaLocalBuffer));
     DeviceBuffer d_peerRecvBufs(numPeers * sizeof(IbgdaRemoteBuffer));
 
     CUDACHECK_TEST(cudaMemcpy(
         d_peerTransports.get(),
         peerTransports.data(),
-        numPeers * sizeof(P2pIbgdaTransportDevice*),
+        numPeers * sizeof(P2pIbTransportDevice),
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
         d_localSendBufs.get(),
@@ -1692,7 +1900,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     test::testAllToAll(
-        static_cast<P2pIbgdaTransportDevice**>(d_peerTransports.get()),
+        static_cast<P2pIbTransportDevice*>(d_peerTransports.get()),
         static_cast<IbgdaLocalBuffer*>(d_localSendBufs.get()),
         static_cast<IbgdaRemoteBuffer*>(d_peerRecvBufs.get()),
         globalRank,
@@ -1740,7 +1948,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
         << " total byte mismatches across " << numPeers << " peers";
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(
@@ -1754,7 +1963,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
 // Multi-QP Tests
 // =============================================================================
 
-TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
+TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
   if (numRanks < 2) {
     XLOGF(
         WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
@@ -1762,14 +1971,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
   }
 
   try {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .numQpsPerPeerPerNic = 4,
-    };
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
+    auto transport = createTransport(1, 1, 4);
 
     EXPECT_EQ(transport->numQpsPerPeerPerNic(), 4);
     EXPECT_NE(transport->getDeviceTransportPtr(), nullptr);
@@ -1778,8 +1980,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
     for (int r = 0; r < numRanks; r++) {
       if (r == globalRank)
         continue;
-      P2pIbgdaTransportDevice* ptr = transport->getP2pTransportDevice(r);
-      EXPECT_NE(ptr, nullptr)
+      EXPECT_TRUE(transport->hasP2pTransportDevice(r))
           << "getP2pTransportDevice(" << r << ") returned null";
     }
 
@@ -1789,13 +1990,14 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpConstructAndExchange) {
         globalRank,
         transport->numQpsPerPeerPerNic());
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
+TEST_P(MultipeerIbTransportTestFixture, MultiQpPutSignalBasic) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1810,16 +2012,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
   const uint8_t testPattern = 0x77;
 
   try {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .numQpsPerPeerPerNic = numQps,
-        .numSignalSlots = 1,
-        .numCounterSlots = 1,
-    };
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
+    auto transport = createTransport(1, 1, numQps);
 
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
@@ -1827,8 +2020,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       test::fillBufferWithPattern(
@@ -1840,7 +2032,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
       // Multi-QP kernel: each block selects QP via blockIdx % numQps,
       // puts its chunk of data, then signals (slot-index API)
       test::testMultiQpPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           numQps,
           localDataBuf,
           remoteDataBuf,
@@ -1859,7 +2051,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       // Wait for all numBlocks signals on slot 0
-      test::testWaitSignal(peerTransportPtr, 0, numBlocks, 1, blockSize);
+      test::testWaitSignal(peerTransport, 0, numBlocks, 1, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1885,7 +2077,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
           << " QPs and " << numBlocks << " blocks";
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   XLOGF(INFO, "Rank {}: MultiQpPutSignalBasic test completed", globalRank);
@@ -1908,7 +2101,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiQpPutSignalBasic) {
 // (~46 GB/s on 400 Gb/s ConnectX-7) cannot exceed but multi-NIC (~80-92
 // GB/s expected on GB200) clears comfortably.
 
-TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
+TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1922,19 +2115,12 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
   const int blockSize = 256;
   const int peerRank = (globalRank == 0) ? 1 : 0;
 
-  std::unique_ptr<MultipeerIbgdaTransport> transport;
+  std::unique_ptr<TestIbTransport> transport;
   try {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .numQpsPerPeerPerNic = numQps,
-        .numSignalSlots = 1,
-    };
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
+    transport = createTransport(1, 1, numQps);
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
   }
 
   const int detectedNics = transport->numNics();
@@ -1958,8 +2144,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
   auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
   (void)remoteSignalBufs;
 
-  P2pIbgdaTransportDevice* peerTransportPtr =
-      transport->getP2pTransportDevice(peerRank);
+  auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
   if (globalRank == 0) {
     // Sender: warmup then timed loop.
@@ -1967,7 +2152,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
 
     for (int i = 0; i < warmupIters; ++i) {
       test::testMultiQpPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           numQps,
           localDataBuf,
           remoteDataBuf,
@@ -1984,7 +2169,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < measureIters; ++i) {
       test::testMultiQpPutAndSignal(
-          peerTransportPtr,
+          peerTransport,
           numQps,
           localDataBuf,
           remoteDataBuf,
@@ -2042,15 +2227,21 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultiNicAggregateBandwidth) {
 // Lazy Mode Tests
 // =============================================================================
 
-class LazyModeTestFixture : public MpiBaseTestFixture {
+class LazyModeTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<IbTestBackend> {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
-  std::unique_ptr<MultipeerIbgdaTransport> createLazyTransport() {
-    MultipeerIbgdaTransportConfig config{
+  IbTestBackend backend() const {
+    return GetParam();
+  }
+
+  std::unique_ptr<TestIbTransport> createLazyTransport() {
+    MultipeerIbTransportConfig config{
         .cudaDevice = localRank,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
@@ -2058,14 +2249,18 @@ class LazyModeTestFixture : public MpiBaseTestFixture {
         .materializePeerTimeoutMs = 10000,
     };
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
-    return transport;
+    return std::make_unique<TestIbTransport>(
+        backend(), globalRank, numRanks, std::move(bootstrap), config);
   }
 };
 
-TEST_F(LazyModeTestFixture, MaterializeOnAccess) {
+INSTANTIATE_TEST_SUITE_P(
+    IbBackends,
+    LazyModeTestFixture,
+    ::testing::Values(IbTestBackend::Ibgda, IbTestBackend::Ibrc),
+    backendParamName);
+
+TEST_P(LazyModeTestFixture, MaterializeOnAccess) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
@@ -2075,16 +2270,16 @@ TEST_F(LazyModeTestFixture, MaterializeOnAccess) {
 
     EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
 
-    auto* devPtr = transport->getP2pTransportDevice(peerRank);
-    EXPECT_NE(devPtr, nullptr);
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
+    (void)peerTransport;
     EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA not available: " << e.what();
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_F(LazyModeTestFixture, QueueThenConnect) {
+TEST_P(LazyModeTestFixture, QueueThenConnect) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
@@ -2098,24 +2293,18 @@ TEST_F(LazyModeTestFixture, QueueThenConnect) {
     transport->connectPeers();
     EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA not available: " << e.what();
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_F(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
+TEST_P(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires at least 2 ranks";
   }
   try {
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .ibLazyConnect = false,
-    };
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, numRanks, bootstrap, config);
-    transport->exchange();
+    auto transport =
+        createTestTransport(backend(), globalRank, numRanks, localRank);
 
     for (int peer = 0; peer < numRanks; peer++) {
       if (peer == globalRank) {
@@ -2124,7 +2313,7 @@ TEST_F(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
       EXPECT_TRUE(transport->isPeerMaterialized(peer));
     }
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA not available: " << e.what();
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
