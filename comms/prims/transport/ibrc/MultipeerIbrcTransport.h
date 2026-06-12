@@ -25,9 +25,11 @@ class P2pIbrcTransportDevice;
  * It derives from the shared CRTP base MultiPeerIbTransport<Backend> so the
  * host control plane can be wired in as the backend-specific pieces land.
  *
- * This is still incomplete: per-peer RC QP exchange/connect, GPU-visible
- * command-queue resources, the host progress loop, and the device enqueue
- * transport are implemented, but HostWindow counters are not yet ported.
+ * Per-peer RC QP exchange/connect, GPU-visible command-queue resources, the
+ * host progress loop, device enqueue transport, and proxy-completion local
+ * counters are implemented. The counter path follows NCCL GIN proxy style by
+ * polling the normal CQ and then updating host-mapped counter memory directly,
+ * instead of adding IBGDA-style companion counter QPs.
  *
  * IBRC supports both eager exchange() and lazy per-peer materialization from
  * day one: the base's lazy connect loop drives the doMaterializePeer() hook
@@ -103,8 +105,8 @@ class MultipeerIbrcTransport
 
   struct IbrcCmdState {
     uint64_t seq{kIbrcInvalidReadySeq};
+    uint64_t counterAddr{0};
     uint64_t counterValue{0};
-    uint32_t counterId{0};
     uint16_t flags{0};
     // Set when the peer-facing WR for this descriptor has completed (CQE
     // reaped), or for descriptors that post no WR. Retirement (nextToComplete/
