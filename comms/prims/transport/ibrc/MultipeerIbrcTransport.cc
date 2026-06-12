@@ -3,11 +3,19 @@
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
+#include <cuda_runtime.h>
+#endif
 
 #include <fmt/core.h>
 #include <glog/logging.h>
@@ -31,7 +39,130 @@ std::string errnoString(int err) {
       " is not implemented yet");
 }
 
+bool isPowerOfTwo(uint32_t value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+#ifdef __HIP_PLATFORM_AMD__
+using GpuError = hipError_t;
+constexpr GpuError kGpuSuccess = hipSuccess;
+
+const char* gpuGetErrorString(GpuError err) {
+  return hipGetErrorString(err);
+}
+
+GpuError gpuHostAlloc(void** ptr, std::size_t bytes) {
+  return hipHostMalloc(ptr, bytes, hipHostMallocMapped);
+}
+
+GpuError gpuHostGetDevicePointer(void** devicePtr, void* hostPtr) {
+  return hipHostGetDevicePointer(devicePtr, hostPtr, 0);
+}
+
+GpuError gpuFreeHost(void* ptr) {
+  return hipHostFree(ptr);
+}
+
+GpuError gpuSetDevice(int device) {
+  return hipSetDevice(device);
+}
+#else
+using GpuError = cudaError_t;
+constexpr GpuError kGpuSuccess = cudaSuccess;
+
+const char* gpuGetErrorString(GpuError err) {
+  return cudaGetErrorString(err);
+}
+
+GpuError gpuHostAlloc(void** ptr, std::size_t bytes) {
+  return cudaHostAlloc(ptr, bytes, cudaHostAllocMapped);
+}
+
+GpuError gpuHostGetDevicePointer(void** devicePtr, void* hostPtr) {
+  return cudaHostGetDevicePointer(devicePtr, hostPtr, 0);
+}
+
+GpuError gpuFreeHost(void* ptr) {
+  return cudaFreeHost(ptr);
+}
+
+GpuError gpuSetDevice(int device) {
+  return cudaSetDevice(device);
+}
+#endif
+
+void checkGpu(GpuError err, const std::string& what) {
+  if (err != kGpuSuccess) {
+    throw std::runtime_error(
+        fmt::format("{}: {}", what, gpuGetErrorString(err)));
+  }
+}
+
+std::size_t checkedMul(std::size_t a, std::size_t b, const char* label) {
+  if (a != 0 && b > std::numeric_limits<std::size_t>::max() / a) {
+    throw std::overflow_error(
+        fmt::format("MultipeerIbrcTransport: {} size overflow", label));
+  }
+  return a * b;
+}
+
+std::size_t checkedAdd(std::size_t a, std::size_t b, const char* label) {
+  if (b > std::numeric_limits<std::size_t>::max() - a) {
+    throw std::overflow_error(
+        fmt::format("MultipeerIbrcTransport: {} size overflow", label));
+  }
+  return a + b;
+}
+
+std::size_t alignUp(std::size_t value, std::size_t alignment) {
+  if (alignment == 0) {
+    throw std::invalid_argument(
+        "MultipeerIbrcTransport: alignment must be non-zero");
+  }
+  const std::size_t remainder = value % alignment;
+  if (remainder == 0) {
+    return value;
+  }
+  return checkedAdd(value, alignment - remainder, "aligned control block");
+}
+
 } // namespace
+
+MultipeerIbrcTransport::MappedAllocation::~MappedAllocation() {
+  reset();
+}
+
+MultipeerIbrcTransport::MappedAllocation::MappedAllocation(
+    MappedAllocation&& other) noexcept
+    : host(std::exchange(other.host, nullptr)),
+      device(std::exchange(other.device, nullptr)),
+      bytes(std::exchange(other.bytes, 0)) {}
+
+MultipeerIbrcTransport::MappedAllocation&
+MultipeerIbrcTransport::MappedAllocation::operator=(
+    MappedAllocation&& other) noexcept {
+  if (this != &other) {
+    reset();
+    host = std::exchange(other.host, nullptr);
+    device = std::exchange(other.device, nullptr);
+    bytes = std::exchange(other.bytes, 0);
+  }
+  return *this;
+}
+
+void MultipeerIbrcTransport::MappedAllocation::reset() noexcept {
+  if (host == nullptr) {
+    return;
+  }
+  const GpuError err = gpuFreeHost(host);
+  if (err != kGpuSuccess) {
+    LOG(ERROR) << "MultipeerIbrcTransport: gpuFreeHost failed for " << bytes
+               << " bytes at " << host << ": " << gpuGetErrorString(err);
+  }
+  host = nullptr;
+  device = nullptr;
+  bytes = 0;
+}
 
 MultipeerIbrcTransport::MultipeerIbrcTransport(
     int myRank,
@@ -55,7 +186,12 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   peerResources_.resize(nRanks_ - 1);
 
   try {
+    // Pin GPU work to config_.cudaDevice.
+    checkGpu(
+        gpuSetDevice(config_.cudaDevice),
+        "MultipeerIbrcTransport: set CUDA device");
     openNics();
+    initializeControlResources();
     if (config_.ibLazyConnect) {
       peerMaterialized_.resize(nRanks_ - 1, false);
     }
@@ -72,19 +208,24 @@ MultipeerIbrcTransport::~MultipeerIbrcTransport() {
 void MultipeerIbrcTransport::exchange() {
   if (!config_.ibLazyConnect) {
     exchangeAndConnectQps();
+    allocateCmdQueuesForAllPeers();
+    VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " allocated "
+            << allocatedCmdQueueCount() << " command queues";
   } else {
     VLOG(1)
         << "MultipeerIbrcTransport: rank " << myRank_
-        << " lazy exchange complete (per-peer QPs deferred to materializePeer)";
+        << " lazy exchange complete (per-peer QPs and command queues deferred "
+           "to materializePeer)";
   }
 
   throwIbrcUnimplemented("command-ring/device transport path");
 }
 
 void MultipeerIbrcTransport::cleanup() {
-  for (auto& peer : peerResources_) {
-    destroyPeerQps(peer.qpResources);
-    peer.qpsConnected = false;
+  for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
+       ++peerIndex) {
+    cleanupPeerCmdQueues(peerIndex);
+    cleanupPeerQps(peerIndex);
   }
 
   auto& symbols = ibverbx::ibvSymbols;
@@ -104,7 +245,185 @@ void MultipeerIbrcTransport::cleanup() {
   }
   registeredBuffers_.clear();
 
+  statusHostByNic_.clear();
+  statusDeviceByNic_.clear();
+  statusControl_.reset();
+
   closeNics();
+}
+
+void MultipeerIbrcTransport::initializeControlResources() {
+  if (!isPowerOfTwo(cmdQueueDepth_)) {
+    throw std::invalid_argument(
+        "MultipeerIbrcTransport: command queue depth must be a power of two");
+  }
+  if (numNics_ <= 0) {
+    throw std::invalid_argument(
+        "MultipeerIbrcTransport: numNics must be positive");
+  }
+  // The progress loop self-limits inflight work to one command-queue ring
+  // (cmdQueueDepth_ descriptors), and each descriptor posts at most
+  // kIbrcMaxWrsPerDescriptor WRs (RDMA_WRITE + ATOMIC) to its own QP. Requiring
+  // the SQ/CQ (sized to qpDepth) to cover a full ring makes overrun
+  // structurally impossible without per-post accounting.
+  const std::size_t wrsPerRing =
+      checkedMul(cmdQueueDepth_, kIbrcMaxWrsPerDescriptor, "qp depth");
+  if (config_.qpDepth < wrsPerRing) {
+    throw std::invalid_argument(
+        fmt::format(
+            "MultipeerIbrcTransport: qpDepth ({}) must be >= cmdQueueDepth ({}) "
+            "* {}",
+            config_.qpDepth,
+            cmdQueueDepth_,
+            kIbrcMaxWrsPerDescriptor));
+  }
+
+  const std::size_t statusBytes = checkedMul(
+      static_cast<std::size_t>(numNics_), sizeof(IbrcNicStatus), "NIC status");
+  statusControl_ = allocateMapped(statusBytes, "NIC status block");
+  auto* const statusHostBase = static_cast<IbrcNicStatus*>(statusControl_.host);
+  auto* const statusDeviceBase =
+      static_cast<IbrcNicStatus*>(statusControl_.device);
+  statusHostByNic_.resize(numNics_);
+  statusDeviceByNic_.resize(numNics_);
+  for (int nic = 0; nic < numNics_; ++nic) {
+    statusHostByNic_.at(nic) = statusHostBase + nic;
+    statusDeviceByNic_.at(nic) = statusDeviceBase + nic;
+  }
+
+  const std::size_t descBytes = checkedMul(
+      static_cast<std::size_t>(cmdQueueDepth_),
+      sizeof(IbrcDesc),
+      "command queue descriptor");
+  // Place pi and ci on separate cache lines (kIbrcCacheLineBytes) to avoid
+  // false-sharing across the host-mapped GPU<->CPU boundary: the GPU fetch_adds
+  // pi while the CPU writes ci on every reservation/completion.
+  cmdQueuePiOffset_ = alignUp(descBytes, kIbrcCacheLineBytes);
+  cmdQueueCiOffset_ =
+      checkedAdd(cmdQueuePiOffset_, kIbrcCacheLineBytes, "command queue pi");
+  cmdQueueControlBytes_ =
+      checkedAdd(cmdQueueCiOffset_, kIbrcCacheLineBytes, "command queue ci");
+}
+
+void MultipeerIbrcTransport::cleanupPeerCmdQueues(int peerIndex) noexcept {
+  if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
+    return;
+  }
+  auto& peer = peerResources_[peerIndex];
+  peer.cmdQueues.clear();
+  peer.cmdQueuesAllocated = false;
+}
+
+void MultipeerIbrcTransport::allocateCmdQueuesForAllPeers() {
+  for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
+       ++peerIndex) {
+    allocatePeerCmdQueues(peerIndex);
+  }
+}
+
+void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
+  if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
+    throw std::invalid_argument(
+        fmt::format("allocatePeerCmdQueues: invalid peerIndex={}", peerIndex));
+  }
+
+  auto& peer = peerResources_[peerIndex];
+  if (peer.cmdQueuesAllocated) {
+    return;
+  }
+
+  const int numQps = config_.numQpsPerPeerPerNic;
+  const std::size_t cmdQueuesPerPeer = checkedMul(
+      static_cast<std::size_t>(numNics_),
+      static_cast<std::size_t>(numQps),
+      "command queues per peer");
+  if (cmdQueuesPerPeer == 0) {
+    throw std::overflow_error(
+        "MultipeerIbrcTransport: command queues per peer must be non-zero");
+  }
+
+  std::vector<IbrcCmdQueueHost> cmdQueues;
+  cmdQueues.reserve(cmdQueuesPerPeer);
+
+  for (int q = 0; q < numQps; ++q) {
+    for (int nic = 0; nic < numNics_; ++nic) {
+      IbrcCmdQueueHost cmdQueue;
+      cmdQueue.control =
+          allocateMapped(cmdQueueControlBytes_, "command queue control block");
+      cmdQueue.cmdStates.resize(cmdQueueDepth_);
+
+      auto* const hostBase = static_cast<std::byte*>(cmdQueue.control.host);
+      auto* const deviceBase = static_cast<std::byte*>(cmdQueue.control.device);
+      cmdQueue.descsHost = reinterpret_cast<IbrcDesc*>(hostBase);
+      cmdQueue.piHost =
+          reinterpret_cast<uint64_t*>(hostBase + cmdQueuePiOffset_);
+      cmdQueue.ciHost =
+          reinterpret_cast<uint64_t*>(hostBase + cmdQueueCiOffset_);
+      cmdQueue.device.descs = reinterpret_cast<IbrcDesc*>(deviceBase);
+      cmdQueue.device.pi =
+          reinterpret_cast<uint64_t*>(deviceBase + cmdQueuePiOffset_);
+      cmdQueue.device.ci =
+          reinterpret_cast<uint64_t*>(deviceBase + cmdQueueCiOffset_);
+      cmdQueue.device.status = statusDeviceByNic_.at(nic);
+      cmdQueue.device.depth = cmdQueueDepth_;
+      cmdQueue.device.mask = cmdQueueDepth_ - 1;
+
+      cmdQueue.nic = static_cast<uint32_t>(nic);
+      cmdQueue.qpSlot = static_cast<uint32_t>(q);
+
+      for (uint32_t slot = 0; slot < cmdQueueDepth_; ++slot) {
+        cmdQueue.descsHost[slot].ready_seq = kIbrcInvalidReadySeq;
+      }
+      cmdQueues.push_back(std::move(cmdQueue));
+    }
+  }
+
+  peer.cmdQueues = std::move(cmdQueues);
+  peer.cmdQueuesAllocated = true;
+}
+
+std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
+  std::size_t count = 0;
+  for (const auto& peer : peerResources_) {
+    count = checkedAdd(count, peer.cmdQueues.size(), "allocated command queue");
+  }
+  return count;
+}
+
+MultipeerIbrcTransport::MappedAllocation MultipeerIbrcTransport::allocateMapped(
+    std::size_t bytes,
+    const char* label) {
+  if (bytes == 0) {
+    throw std::invalid_argument(
+        fmt::format("MultipeerIbrcTransport: {} size must be non-zero", label));
+  }
+
+  MappedAllocation allocation;
+  allocation.bytes = bytes;
+  checkGpu(
+      gpuHostAlloc(&allocation.host, bytes),
+      fmt::format(
+          "MultipeerIbrcTransport: mapped host allocation for {}", label));
+  if (allocation.host == nullptr) {
+    throw std::runtime_error(
+        fmt::format(
+            "MultipeerIbrcTransport: mapped host allocation returned null for {}",
+            label));
+  }
+  std::memset(allocation.host, 0, bytes);
+  checkGpu(
+      gpuHostGetDevicePointer(&allocation.device, allocation.host),
+      fmt::format(
+          "MultipeerIbrcTransport: mapped device pointer lookup for {}",
+          label));
+  if (allocation.device == nullptr) {
+    throw std::runtime_error(
+        fmt::format(
+            "MultipeerIbrcTransport: mapped device pointer returned null for {}",
+            label));
+  }
+
+  return allocation;
 }
 
 void MultipeerIbrcTransport::destroyPeerQps(
@@ -509,11 +828,13 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   auto localQp = buildLocalQpPayload(peerIndex);
   auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
   connectPeerQps(peerIndex, remoteQp);
+  allocatePeerCmdQueues(peerIndex);
 
   throwIbrcUnimplemented("lazy command-ring/device transport path");
 }
 
 void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
+  cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);
   if (peerIndex >= 0 &&
       peerIndex < static_cast<int>(peerMaterialized_.size())) {
