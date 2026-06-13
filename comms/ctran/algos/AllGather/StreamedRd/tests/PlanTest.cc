@@ -4,9 +4,11 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <set>
 #include <vector>
 
+#include "comms/ctran/algos/AllGather/StreamedRd/Common.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
 
 namespace ctran::allgather::ctsrd {
@@ -47,6 +49,31 @@ void printPlan(
     std::cout << "]\n";
   }
 }
+
+struct FakeFlushMapper {
+  bool localFlushEnabled{false};
+  int iflushCalls{0};
+
+  bool isLocalFlushEnabled() const {
+    return localFlushEnabled;
+  }
+
+  commResult_t iflush(
+      const void* /*buf*/,
+      const void* /*regHdl*/,
+      CtranMapperRequest** req) {
+    iflushCalls++;
+    *req = new CtranMapperRequest();
+    return commSuccess;
+  }
+};
+
+struct FakeFlushContext {
+  FakeFlushMapper* mapper{nullptr};
+  void* recvbuff{nullptr};
+  void* memHdl{nullptr};
+  std::vector<std::vector<std::unique_ptr<CtranMapperRequest>>> recvFlushReqs;
+};
 
 int peerAt(const int rank, const int step, const int nRanks) {
   const auto dist = nRanks / (2 << step);
@@ -359,6 +386,35 @@ TEST(PlanFwdPeersInvariantsTest, BurstStepChunkCountIsPowerOfTwo) {
     EXPECT_EQ(burst.chunks(s).front(), 0)
         << "fp=0 step " << s << ": own chunk must be at front";
   }
+}
+
+TEST(CommonFlushTest, SkipsFlushRequestWhenLocalFlushDisabled) {
+  FakeFlushMapper mapper;
+  mapper.localFlushEnabled = false;
+  FakeFlushContext ctx;
+  ctx.mapper = &mapper;
+  ctx.recvFlushReqs.resize(1);
+  CtranMapperRequest* flushReq = nullptr;
+
+  EXPECT_EQ(common::postRecvFlush(ctx, 0, &flushReq), commSuccess);
+  EXPECT_EQ(flushReq, nullptr);
+  EXPECT_EQ(mapper.iflushCalls, 0);
+  EXPECT_TRUE(ctx.recvFlushReqs.at(0).empty());
+}
+
+TEST(CommonFlushTest, StoresFlushRequestWhenLocalFlushEnabled) {
+  FakeFlushMapper mapper;
+  mapper.localFlushEnabled = true;
+  FakeFlushContext ctx;
+  ctx.mapper = &mapper;
+  ctx.recvFlushReqs.resize(1);
+  CtranMapperRequest* flushReq = nullptr;
+
+  EXPECT_EQ(common::postRecvFlush(ctx, 0, &flushReq), commSuccess);
+  ASSERT_NE(flushReq, nullptr);
+  EXPECT_EQ(mapper.iflushCalls, 1);
+  ASSERT_EQ(ctx.recvFlushReqs.at(0).size(), 1);
+  EXPECT_EQ(ctx.recvFlushReqs.at(0).front().get(), flushReq);
 }
 
 } // namespace
