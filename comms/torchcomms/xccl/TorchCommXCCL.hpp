@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <glog/logging.h>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 #include "comms/torchcomms/TorchComm.hpp"
@@ -46,6 +47,25 @@ class XCCLException : public std::exception {
   std::string message_;
   onecclResult_t result_;
 };
+
+#define XCCL_CHECK(xccl_api, call, err_str)            \
+  do {                                                 \
+    onecclResult_t status = call;                      \
+    if (status != onecclSuccess) {                     \
+      throw XCCLException(*xccl_api, err_str, status); \
+    }                                                  \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define XCCL_CHECK_IGNORE(xccl_api, call, err_str)                         \
+  do {                                                                     \
+    onecclResult_t status = call;                                          \
+    if (status != onecclSuccess) {                                         \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << xccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
+  } while (0)
 
 class TorchCommXCCL : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommXCCL> {

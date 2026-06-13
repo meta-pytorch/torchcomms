@@ -77,6 +77,18 @@ class AbortTest(unittest.TestCase):
         comm.abort()
         comm.finalize()
 
+    def test_is_aborted(self):
+        """is_aborted() reflects the communicator state across abort()."""
+        comm = self._create_reconfigurable_comm("abort_is_aborted_state", 1)
+
+        self.assertTrue(comm.is_abort_supported())
+        self.assertFalse(comm.is_aborted())
+
+        comm.abort()
+        self.assertTrue(comm.is_aborted())
+
+        comm.finalize()
+
 
 if __name__ == "__main__":
     unittest.main()

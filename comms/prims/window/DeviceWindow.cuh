@@ -13,10 +13,11 @@
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 #ifdef __CUDACC__
-#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/P2pIbTransportDevice.cuh"
 #else
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
+struct P2pIbTransportDevice;
 } // namespace comms::prims
 #endif
 
@@ -443,11 +444,9 @@ class DeviceWindow {
       // Remote buffer is pre-offset to "my row" in the peer's inbox
       // (computed once at exchange time in HostWindow), so signal_id
       // is the only offset needed here.
-      handle_.get_ibgda(target_rank)
-          .signal(
-              ibgdaPeerSignalRemoteBufs_[ibgdaIdx].subBuffer(
-                  signal_id * sizeof(uint64_t)),
-              value);
+      auto signalBuf = ibgdaPeerSignalRemoteBufs_[ibgdaIdx].subBuffer(
+          signal_id * sizeof(uint64_t));
+      handle_.get_ib(target_rank).signal(signalBuf, value);
     }
   }
 
@@ -511,10 +510,9 @@ class DeviceWindow {
         nvlPeerSignalSpans_[nvlIdx][signal_id].signal(op, value);
       } else {
         DEVICE_WINDOW_CHECK_IBGDA_SIGNAL_ADD(op);
-        handle_.get_ibgda(r).signal(
-            ibgdaPeerSignalRemoteBufs_[peer_index].subBuffer(
-                signal_id * sizeof(uint64_t)),
-            value);
+        auto signalBuf = ibgdaPeerSignalRemoteBufs_[peer_index].subBuffer(
+            signal_id * sizeof(uint64_t));
+        handle_.get_ib(r).signal(signalBuf, value);
       }
     }
     group.sync();
@@ -713,18 +711,18 @@ class DeviceWindow {
   }
 
   // ===========================================================================
-  // Counter Operations (IBGDA-only)
+  // Counter Operations (IB-only)
   // ===========================================================================
 
   /**
-   * wait_counter - Wait for an IBGDA peer's NIC completion counter to
-   *                satisfy a comparison.
+   * wait_counter - Wait for an IB peer's NIC completion counter to satisfy a
+   *                comparison.
    *
    * Thread-level API: any single thread may call this independently.
-   * The counter buffer is written by the NIC via companion-QP loopback
-   * RDMA atomics, tracking data-transfer completions.
+   * IBGDA updates the counter through its companion-QP path; IBRC proxy mode
+   * updates it after the proxy observes normal-QP completion.
    *
-   * @param peer_rank   IBGDA peer rank (traps if not an IBGDA peer).
+   * @param peer_rank   IB peer rank.
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
@@ -738,15 +736,14 @@ class DeviceWindow {
       const Timeout& timeout = Timeout()) {
     DEVICE_WINDOW_CHECK_RANK(peer_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(peer_rank, handle_.myRank);
-    // Counter operations are IBGDA-only; no-op for NVL peers
+    // Counter operations are IB-only; no-op for NVL peers
     if (handle_.get_type(peer_rank) == TransportType::P2P_NVL) {
       return;
     }
-    int ibgdaIdx = rank_to_peer_index(peer_rank);
-    int slot = ibgdaIdx * peerCounterCount_ + counter_id;
-    // volatile: bypass L1 to read from L2 where RDMA atomics land
-    volatile uint64_t* ctr = &ibgdaPeerCounterBuf_[slot];
-    while (!compare(*ctr, cmp, value)) {
+    int ibPeerIdx = rank_to_peer_index(peer_rank);
+    auto counterSlotBuf = counter_slot_for_access(ibPeerIdx, counter_id);
+    auto ib = handle_.get_ib(peer_rank);
+    while (!compare(ib.read_counter(counterSlotBuf), cmp, value)) {
       TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
           timeout,
           "DeviceWindow::wait_counter(peer_rank=%d,"
@@ -759,16 +756,15 @@ class DeviceWindow {
   }
 
   /**
-   * wait_counter (group overload) - Wait for an IBGDA peer's NIC
-   *                                 completion counter with group
-   *                                 coordination.
+   * wait_counter (group overload) - Wait for an IB peer's NIC completion
+   *                                 counter with group coordination.
    *
    * Group-level API: all threads in the group must call this together.
    * Only the group leader polls; other threads block at the trailing
    * group.sync().
    *
    * @param group       ThreadGroup for group coordination.
-   * @param peer_rank   IBGDA peer rank (traps if not an IBGDA peer).
+   * @param peer_rank   IB peer rank.
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
@@ -788,12 +784,11 @@ class DeviceWindow {
   }
 
   /**
-   * read_counter - Non-blocking read of an IBGDA peer's NIC completion
-   *                counter.
+   * read_counter - Non-blocking read of an IB peer's NIC completion counter.
    *
    * Thread-level API: any single thread may call this independently.
    *
-   * @param peer_rank   IBGDA peer rank (traps if not an IBGDA peer).
+   * @param peer_rank   IB peer rank.
    * @param counter_id  Counter slot index.
    * @return            Current counter value.
    */
@@ -801,37 +796,33 @@ class DeviceWindow {
   read_counter(int peer_rank, int counter_id) {
     DEVICE_WINDOW_CHECK_RANK(peer_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(peer_rank, handle_.myRank);
-    // Counter operations are IBGDA-only; return 0 for NVL peers
+    // Counter operations are IB-only; return 0 for NVL peers
     if (handle_.get_type(peer_rank) == TransportType::P2P_NVL) {
       return 0;
     }
-    int ibgdaIdx = rank_to_peer_index(peer_rank);
-    // volatile: bypass L1 to read from L2 where RDMA atomics land
-    volatile uint64_t* ctr =
-        &ibgdaPeerCounterBuf_[ibgdaIdx * peerCounterCount_ + counter_id];
-    return *ctr;
+    int ibPeerIdx = rank_to_peer_index(peer_rank);
+    return handle_.get_ib(peer_rank).read_counter(
+        counter_slot_for_access(ibPeerIdx, counter_id));
   }
 
   /**
-   * reset_counter - Reset an IBGDA peer's NIC completion counter to 0.
+   * reset_counter - Reset an IB peer's NIC completion counter to 0.
    *
    * Thread-level API: any single thread may call this independently.
    *
-   * @param peer_rank   IBGDA peer rank (traps if not an IBGDA peer).
+   * @param peer_rank   IB peer rank.
    * @param counter_id  Counter slot index.
    */
   __device__ __forceinline__ void reset_counter(int peer_rank, int counter_id) {
     DEVICE_WINDOW_CHECK_RANK(peer_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(peer_rank, handle_.myRank);
-    // Counter operations are IBGDA-only; no-op for NVL peers
+    // Counter operations are IB-only; no-op for NVL peers
     if (handle_.get_type(peer_rank) == TransportType::P2P_NVL) {
       return;
     }
-    int ibgdaIdx = rank_to_peer_index(peer_rank);
-    // volatile: ensure the store is not optimized away by the compiler
-    volatile uint64_t* ctr =
-        &ibgdaPeerCounterBuf_[ibgdaIdx * peerCounterCount_ + counter_id];
-    *ctr = 0;
+    int ibPeerIdx = rank_to_peer_index(peer_rank);
+    handle_.get_ib(peer_rank).reset_counter(
+        counter_slot_for_access(ibPeerIdx, counter_id));
   }
 
   // ===========================================================================
@@ -919,10 +910,9 @@ class DeviceWindow {
         int nvlIdx = rankToNvlPeerIndex_[r];
         nvlBarrierPeerPtrs_[nvlIdx][barrier_id].signal(SignalOp::SIGNAL_ADD, 1);
       } else {
-        handle_.get_ibgda(r).signal(
-            ibgdaBarrierRemoteBufs_[peer_index].subBuffer(
-                barrier_id * sizeof(uint64_t)),
-            1);
+        auto signalBuf = ibgdaBarrierRemoteBufs_[peer_index].subBuffer(
+            barrier_id * sizeof(uint64_t));
+        handle_.get_ib(r).signal(signalBuf, 1);
       }
     }
     group.sync();
@@ -949,11 +939,9 @@ class DeviceWindow {
         nvlBarrierPeerPtrs_[nvlIdx][barrier_id].signal(SignalOp::SIGNAL_ADD, 1);
       } else {
         int ibgdaIdx = rank_to_peer_index(target_rank);
-        handle_.get_ibgda(target_rank)
-            .signal(
-                ibgdaBarrierRemoteBufs_[ibgdaIdx].subBuffer(
-                    barrier_id * sizeof(uint64_t)),
-                1);
+        auto signalBuf = ibgdaBarrierRemoteBufs_[ibgdaIdx].subBuffer(
+            barrier_id * sizeof(uint64_t));
+        handle_.get_ib(target_rank).signal(signalBuf, 1);
       }
     }
     group.sync();
@@ -1047,7 +1035,7 @@ class DeviceWindow {
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
-      handle_.get_ibgda(target_rank)
+      handle_.get_ib(target_rank)
           .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
     }
   }
@@ -1101,17 +1089,16 @@ class DeviceWindow {
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
-      handle_.get_ibgda(target_rank)
+      auto signalBuf = ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
+          signalId * sizeof(uint64_t));
+      handle_.get_ib(target_rank)
           .put(
               group,
               localBuf,
               remoteBuf.subBuffer(dst_offset),
               nbytes,
-              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
-                  signalId * sizeof(uint64_t)),
-              signalVal,
-              {},
-              1);
+              signalBuf,
+              signalVal);
     }
   }
   // ===========================================================================
@@ -1123,8 +1110,8 @@ class DeviceWindow {
    *
    * Group-level API: all threads in the group must call this together.
    * Same as put_signal(), but also increments the local counter for
-   * the target peer via companion-QP loopback RDMA atomic (IBGDA) or
-   * is silently ignored (NVL, same as NCCLDeviceBackend LSA path).
+   * the target peer after the IB transport observes local completion. NVL
+   * silently ignores the counter, same as NCCLDeviceBackend LSA path.
    *
    * @param group        ThreadGroup for group coordination.
    * @param target_rank  Rank to put to (must not be self).
@@ -1168,18 +1155,19 @@ class DeviceWindow {
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkeys_);
-      int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
-      handle_.get_ibgda(target_rank)
+      auto signalBuf = ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
+          signalId * sizeof(uint64_t));
+      auto counterSlotBuf =
+          counter_slot_for_put(target_rank, ibgdaPeerIdx, counterId);
+      handle_.get_ib(target_rank)
           .put(
               group,
               localBuf,
               remoteBuf.subBuffer(dst_offset),
               nbytes,
-              ibgdaPeerSignalRemoteBufs_[ibgdaPeerIdx].subBuffer(
-                  signalId * sizeof(uint64_t)),
+              signalBuf,
               signalVal,
-              counterBuf.subBuffer(counterSlot * sizeof(uint64_t)),
+              counterSlotBuf,
               counterVal);
     }
   }
@@ -1192,9 +1180,9 @@ class DeviceWindow {
    * put_counter - Offset-based one-sided write + counter (no signal).
    *
    * Group-level API: all threads in the group must call this together.
-   * Same as put(), but also increments the local counter for the target
-   * peer via companion-QP loopback RDMA atomic (IBGDA) or is silently
-   * ignored (NVL, same as NCCLDeviceBackend LSA path).
+   * Same as put(), but also increments the local counter for the target peer
+   * after the IB transport observes local completion. NVL silently ignores the
+   * counter, same as NCCLDeviceBackend LSA path.
    *
    * @param group        ThreadGroup for group coordination.
    * @param target_rank  Rank to put to (must not be self).
@@ -1231,9 +1219,9 @@ class DeviceWindow {
       IbgdaRemoteBuffer remoteBuf(
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
-      IbgdaLocalBuffer counterBuf(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkeys_);
-      int counterSlot = ibgdaPeerIdx * peerCounterCount_ + counterId;
-      handle_.get_ibgda(target_rank)
+      auto counterSlotBuf =
+          counter_slot_for_put(target_rank, ibgdaPeerIdx, counterId);
+      handle_.get_ib(target_rank)
           .put(
               group,
               localBuf,
@@ -1241,7 +1229,7 @@ class DeviceWindow {
               nbytes,
               {},
               1,
-              counterBuf.subBuffer(counterSlot * sizeof(uint64_t)),
+              counterSlotBuf,
               counterVal);
     }
   }
@@ -1281,6 +1269,24 @@ class DeviceWindow {
     return false;
   }
 
+  __device__ __forceinline__ IbgdaLocalBuffer
+  counter_slot_for_access(int ibPeerIdx, int counterId) const {
+    return IbgdaLocalBuffer(ibgdaPeerCounterBuf_, ibgdaPeerCounterLkeys_)
+        .subBuffer(
+            (ibPeerIdx * peerCounterCount_ + counterId) * sizeof(uint64_t));
+  }
+
+  __device__ __forceinline__ IbgdaLocalBuffer
+  counter_slot_for_put(int targetRank, int ibPeerIdx, int counterId) const {
+    auto* base = handle_.get_type(targetRank) == TransportType::P2P_IBRC &&
+            ibgdaPeerCounterHostBuf_ != nullptr
+        ? ibgdaPeerCounterHostBuf_
+        : ibgdaPeerCounterBuf_;
+    return IbgdaLocalBuffer(base, ibgdaPeerCounterLkeys_)
+        .subBuffer(
+            (ibPeerIdx * peerCounterCount_ + counterId) * sizeof(uint64_t));
+  }
+
 #endif // __CUDACC__
 
   // Transport handle (provides get_type, get_nvl, get_ibgda, myRank, nRanks)
@@ -1303,9 +1309,10 @@ class DeviceWindow {
   uint64_t* ibgdaPeerSignalInbox_{nullptr};
   DeviceSpan<IbgdaRemoteBuffer> ibgdaPeerSignalRemoteBufs_;
 
-  // --- Per-peer counter buffers (IBGDA-only, local) ---
+  // --- Per-peer counter buffers (IB-only, local) ---
   int peerCounterCount_{0};
   uint64_t* ibgdaPeerCounterBuf_{nullptr};
+  uint64_t* ibgdaPeerCounterHostBuf_{nullptr};
   NetworkLKeys ibgdaPeerCounterLkeys_{};
 
   // --- Barrier buffers (flat, per-peer-type) ---

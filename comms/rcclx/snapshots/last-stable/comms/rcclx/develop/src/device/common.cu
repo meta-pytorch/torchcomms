@@ -8,12 +8,14 @@
 #include "collectives.h"
 #include "common.h"
 
+#ifndef RCCL_DEVICE_LINKER
 __shared__ ncclShmemData ncclShmem;
 #if __CUDA_ARCH__ < 700
   __shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize()*(NCCL_MAX_NTHREADS/WARP_SIZE)/sizeof(ulong2)];
 #endif
+#endif
 
-#ifdef USE_INDIRECT_FUNCTION_CALL
+#if defined(USE_INDIRECT_FUNCTION_CALL) || defined(RCCL_DEVICE_LINKER)
 __device__ void ncclDevFunc_Nop();
 #else
 __device__ __attribute__((noinline)) void ncclDevFunc_Nop();

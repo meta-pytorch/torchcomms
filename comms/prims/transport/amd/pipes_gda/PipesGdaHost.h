@@ -393,8 +393,9 @@ struct DmaBufExport {
   DmaBufAlignment alignment;
 };
 
-std::optional<DmaBufExport>
-export_gpu_dmabuf_aligned(pipes_gda_gpu* gpu, void* ptr, std::size_t size);
+std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
+    void* ptr,
+    std::size_t size);
 
 } // namespace comms::prims
 

@@ -211,6 +211,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           config.ibgdaConfig.dataBufferSize);
     }
 
+    if (NCCL_CTRAN_PIPES_IB_MODE == NCCL_CTRAN_PIPES_IB_MODE::ibrc) {
+      config.ibMode = comms::prims::IbBackendMode::kIbrc;
+    }
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
     config.topoConfig.p2pDisable = NCCL_P2P_DISABLE ||
         NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;

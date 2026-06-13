@@ -22,8 +22,10 @@
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/IbTransportConfig.h"
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 
@@ -36,6 +38,9 @@ struct MultiPeerDeviceHandle;
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
+
+  // Selects the IB backend for non-NVL peers. Default remains IBGDA.
+  IbBackendMode ibMode{IbBackendMode::kIbgda};
 
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
@@ -246,6 +251,12 @@ class MultiPeerTransport {
   std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
       const IbgdaLocalBuffer& localBuf);
 
+  IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
+  IbgdaLocalBuffer registerIbCounterBuffer(
+      const IbgdaLocalBuffer& buffer,
+      std::size_t size);
+  void freeIbCounterBuffer(IbgdaLocalBuffer& buffer, void*& hostPtr) noexcept;
+
   /**
    * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
    *
@@ -292,7 +303,11 @@ class MultiPeerTransport {
   // --- Sub-transports ---
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
+  // Exactly one IB backend is constructed, selected by MultiPeerTransportConfig
+  // ::ibMode (kIbgda by default, kIbrc selects the CPU-proxy skeleton backend).
+  // IBRC functional entry points fail fast until the backend is implemented.
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};

@@ -109,13 +109,16 @@ void MultiPeerTransport::initFromTopology(
     }
     // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
+    const auto ibTransportType = config.ibMode == IbBackendMode::kIbrc
+        ? TransportType::P2P_IBRC
+        : TransportType::P2P_IBGDA;
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
         typePerRank_.at(r) = TransportType::SELF;
       } else if (globalToNvlLocal_.count(r)) {
         typePerRank_.at(r) = TransportType::P2P_NVL;
       } else {
-        typePerRank_.at(r) = TransportType::P2P_IBGDA;
+        typePerRank_.at(r) = ibTransportType;
       }
     }
 
@@ -130,16 +133,19 @@ void MultiPeerTransport::initFromTopology(
   {
     int nvlCount = 0;
     int ibgdaCount = 0;
+    int ibrcCount = 0;
     for (int r = 0; r < nRanks_; ++r) {
       if (typePerRank_[r] == TransportType::P2P_NVL) {
         ++nvlCount;
       } else if (typePerRank_[r] == TransportType::P2P_IBGDA) {
         ++ibgdaCount;
+      } else if (typePerRank_[r] == TransportType::P2P_IBRC) {
+        ++ibrcCount;
       }
     }
     LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
               << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
-              << " IBGDA peers";
+              << " IBGDA peers, " << ibrcCount << " IBRC peers";
   }
   for (int r = 0; r < nRanks_; ++r) {
     VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
@@ -163,16 +169,25 @@ void MultiPeerTransport::initFromTopology(
             << " nvlLocalRank=" << nvlLocalRank_;
   }
 
-  // Always create IBGDA transport — it is the universal fallback for all peers.
-  // NVL is preferred when available, but IBGDA covers every non-self rank.
+  // Create the IB sub-transport — the universal fallback for all non-NVL peers.
+  // Exactly one backend is built, selected by config.ibMode (kIbgda default;
+  // kIbrc selects the CPU-proxy backend).
   if (!config.disableIb && nRanks_ > 1) {
-    auto ibgdaConfig = config.ibgdaConfig;
-    ibgdaConfig.cudaDevice = deviceId_;
-    ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
-        myRank_, nRanks_, bootstrap_, ibgdaConfig);
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_
-            << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
-            << " peers";
+    auto ibConfig = config.ibgdaConfig;
+    ibConfig.cudaDevice = deviceId_;
+    if (config.ibMode == IbBackendMode::kIbrc) {
+      ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBRC sub-transport for " << ibgdaPeerRanks_.size()
+              << " peers";
+    } else {
+      ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+          myRank_, nRanks_, bootstrap_, ibConfig);
+      VLOG(1) << "MultiPeerTransport: rank " << myRank_
+              << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
+              << " peers";
+    }
   }
 }
 
@@ -200,13 +215,17 @@ void MultiPeerTransport::exchange() {
 
   VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
           << " nvl=" << (nvlTransport_ ? "yes" : "no")
-          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no");
+          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no")
+          << " ibrc=" << (ibrcTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
   }
   if (ibgdaTransport_) {
     ibgdaTransport_->exchange();
+  }
+  if (ibrcTransport_) {
+    ibrcTransport_->exchange();
   }
 
   build_device_handle();
@@ -296,46 +315,115 @@ bool MultiPeerTransport::is_lazy_mode() const {
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
-  if (ibgdaTransport_) {
+  auto materializeOn = [&](auto& ibTransport) {
     for (int peer : peers) {
       if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
-          typePerRank_[peer] == TransportType::P2P_IBGDA) {
-        ibgdaTransport_->queuePeerForMaterialization(peer);
+          (typePerRank_[peer] == TransportType::P2P_IBGDA ||
+           typePerRank_[peer] == TransportType::P2P_IBRC)) {
+        ibTransport->queuePeerForMaterialization(peer);
       }
     }
-    ibgdaTransport_->connectPeers();
+    ibTransport->connectPeers();
+  };
+  if (ibgdaTransport_) {
+    materializeOn(ibgdaTransport_);
+  } else if (ibrcTransport_) {
+    materializeOn(ibrcTransport_);
   }
 }
 
 void MultiPeerTransport::connectPeers() {
   if (ibgdaTransport_) {
     ibgdaTransport_->connectPeers();
+  } else if (ibrcTransport_) {
+    ibrcTransport_->connectPeers();
   }
 }
 
 IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     void* ptr,
     size_t size) {
-  if (!ibgdaTransport_) {
-    throw std::runtime_error(
-        "localRegisterIbgdaBuffer: IBGDA transport not available");
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->registerBuffer(ptr, size);
   }
-  return ibgdaTransport_->registerBuffer(ptr, size);
+  if (ibrcTransport_) {
+    return ibrcTransport_->registerBuffer(ptr, size);
+  }
+  throw std::runtime_error(
+      "localRegisterIbgdaBuffer: IB transport not available");
 }
 
 void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
   if (ibgdaTransport_) {
     ibgdaTransport_->deregisterBuffer(ptr);
+  } else if (ibrcTransport_) {
+    ibrcTransport_->deregisterBuffer(ptr);
   }
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
     const IbgdaLocalBuffer& localBuf) {
-  if (!ibgdaTransport_) {
-    throw std::runtime_error(
-        "exchangeIbgdaBuffer: IBGDA transport not available");
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->exchangeBuffer(localBuf);
   }
-  return ibgdaTransport_->exchangeBuffer(localBuf);
+  if (ibrcTransport_) {
+    return ibrcTransport_->exchangeBuffer(localBuf);
+  }
+  throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
+}
+
+IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
+    std::size_t size,
+    void** hostPtr) {
+  *hostPtr = nullptr;
+  if (ibrcTransport_) {
+    void* host = nullptr;
+    void* device = nullptr;
+    CUDA_CHECK(cudaHostAlloc(&host, size, cudaHostAllocMapped));
+    CUDA_CHECK(cudaHostGetDevicePointer(&device, host, 0));
+    std::memset(host, 0, size);
+    *hostPtr = host;
+    return IbgdaLocalBuffer(device, NetworkLKeys{});
+  }
+  if (ibgdaTransport_) {
+    void* ptr = nullptr;
+    CUDA_CHECK(cudaMalloc(&ptr, size));
+    CUDA_CHECK(cudaMemset(ptr, 0, size));
+    return IbgdaLocalBuffer(ptr, NetworkLKeys{});
+  }
+  throw std::runtime_error(
+      "allocateIbCounterBuffer: IB transport not available");
+}
+
+IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
+    const IbgdaLocalBuffer& buffer,
+    std::size_t size) {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->registerBuffer(buffer.ptr, size);
+  }
+  if (ibrcTransport_) {
+    return buffer;
+  }
+  throw std::runtime_error(
+      "registerIbCounterBuffer: IB transport not available");
+}
+
+void MultiPeerTransport::freeIbCounterBuffer(
+    IbgdaLocalBuffer& buffer,
+    void*& hostPtr) noexcept {
+  if (buffer.ptr == nullptr) {
+    return;
+  }
+  if (buffer.lkey_per_device.size > 0 && ibgdaTransport_) {
+    ibgdaTransport_->deregisterBuffer(buffer.ptr);
+  }
+  if (hostPtr != nullptr) {
+    cudaFreeHost(hostPtr);
+    hostPtr = nullptr;
+  } else {
+    cudaFree(buffer.ptr);
+  }
+  buffer = IbgdaLocalBuffer{};
 }
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
@@ -759,9 +847,6 @@ void MultiPeerTransport::build_device_handle() {
     throw std::runtime_error("Failed to allocate host Transport array");
   }
 
-  // Get IBGDA GPU pointers per-peer via getP2pTransportDevice()
-  // which returns device-memory addresses suitable for Transport.p2p_ibgda
-
   for (int r = 0; r < nRanks_; ++r) {
     switch (typePerRank_[r]) {
       case TransportType::SELF:
@@ -779,6 +864,14 @@ void MultiPeerTransport::build_device_handle() {
       case TransportType::P2P_IBGDA: {
         P2pIbgdaTransportDevice* devPtr = ibgdaTransport_
             ? ibgdaTransport_->getP2pTransportDeviceSlot(r)
+            : nullptr;
+        new (&transportsHost[r]) Transport(devPtr);
+        break;
+      }
+
+      case TransportType::P2P_IBRC: {
+        P2pIbrcTransportDevice* devPtr = ibrcTransport_
+            ? ibrcTransport_->getP2pTransportDeviceSlot(r)
             : nullptr;
         new (&transportsHost[r]) Transport(devPtr);
         break;

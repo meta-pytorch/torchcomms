@@ -1888,6 +1888,15 @@ cvars:
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
+ - name        : NCCL_CTRAN_PIPES_IB_MODE
+   type        : enum
+   default     : ibgda
+   choices     : ibgda, ibrc
+   description : |-
+     Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
+     ibgda - use GPU-posted IBGDA.
+     ibrc - use CPU-posted IBRC.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
