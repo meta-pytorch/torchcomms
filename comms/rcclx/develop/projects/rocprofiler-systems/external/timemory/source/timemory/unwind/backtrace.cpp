@@ -72,7 +72,7 @@ update_file_maps()
         if(!_loc.empty() && filepath::exists(_loc))
         {
             auto _add_file = [&_files](const auto& _val) {
-                if(_files.find(_val) == _files.end())
+                if(!_files.contains(_val))
                 {
                     std::stringstream _msg{};
                     _msg << "Reading '" << _val << "'...";
