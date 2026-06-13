@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -23,8 +24,12 @@
 // address-range lookup from CudaDriverLazy); on AMD it is the HSA path provided
 // through DocaCompat.
 #ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+
 #include "comms/prims/transport/amd/DocaCompat.h"
 #else
+#include <cuda_runtime.h>
+
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
 #endif
@@ -33,6 +38,77 @@ namespace comms::prims {
 
 namespace {
 constexpr int kDefaultGidIndex = 3; // Default RoCE GID index
+
+#ifdef __HIP_PLATFORM_AMD__
+using SlotGpuError = hipError_t;
+constexpr SlotGpuError kSlotGpuSuccess = hipSuccess;
+
+const char* slotGpuGetErrorString(SlotGpuError err) {
+  return hipGetErrorString(err);
+}
+
+SlotGpuError slotGpuMalloc(void** ptr, std::size_t bytes) {
+  return hipMalloc(ptr, bytes);
+}
+
+SlotGpuError slotGpuFree(void* ptr) {
+  return hipFree(ptr);
+}
+
+SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
+  return hipMemset(ptr, value, bytes);
+}
+
+SlotGpuError slotHostPinnedAlloc(void** ptr, std::size_t bytes) {
+  return hipHostMalloc(ptr, bytes, hipHostMallocMapped);
+}
+
+SlotGpuError slotHostGetDevicePointer(void** devicePtr, void* hostPtr) {
+  return hipHostGetDevicePointer(devicePtr, hostPtr, 0);
+}
+
+SlotGpuError slotHostFree(void* ptr) {
+  return hipHostFree(ptr);
+}
+#else
+using SlotGpuError = cudaError_t;
+constexpr SlotGpuError kSlotGpuSuccess = cudaSuccess;
+
+const char* slotGpuGetErrorString(SlotGpuError err) {
+  return cudaGetErrorString(err);
+}
+
+SlotGpuError slotGpuMalloc(void** ptr, std::size_t bytes) {
+  return cudaMalloc(ptr, bytes);
+}
+
+SlotGpuError slotGpuFree(void* ptr) {
+  return cudaFree(ptr);
+}
+
+SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
+  return cudaMemset(ptr, value, bytes);
+}
+
+SlotGpuError slotHostPinnedAlloc(void** ptr, std::size_t bytes) {
+  return cudaHostAlloc(ptr, bytes, cudaHostAllocMapped);
+}
+
+SlotGpuError slotHostGetDevicePointer(void** devicePtr, void* hostPtr) {
+  return cudaHostGetDevicePointer(devicePtr, hostPtr, 0);
+}
+
+SlotGpuError slotHostFree(void* ptr) {
+  return cudaFreeHost(ptr);
+}
+#endif
+
+void checkSlotGpu(SlotGpuError err, const std::string& what) {
+  if (err != kSlotGpuSuccess) {
+    throw std::runtime_error(
+        fmt::format("{}: {}", what, slotGpuGetErrorString(err)));
+  }
+}
 } // namespace
 
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
@@ -473,6 +549,451 @@ std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
   VLOG(1) << "MultiPeerIbTransport: exchanged buffer info with " << numPeers
           << " peers";
   return peerBuffers;
+}
+
+MultiPeerIbTransportBase::DeviceSlotAllocation
+MultiPeerIbTransportBase::allocateDeviceSlotAllocation(
+    std::size_t bytes,
+    const char* label) {
+  if (bytes == 0) {
+    throw std::invalid_argument(
+        fmt::format("MultiPeerIbTransport: {} size must be non-zero", label));
+  }
+  DeviceSlotAllocation allocation;
+  allocation.bytes = bytes;
+#ifdef __HIP_PLATFORM_AMD__
+  // On AMD, GPU-memory MR registration relies on amdgpu's peer-mem
+  // integration which is unreliable on test hosts; host-pinned memory
+  // registers with ibv_reg_mr (no peer_mem) and is GPU-accessible.
+  checkSlotGpu(
+      slotHostPinnedAlloc(&allocation.ptr, bytes),
+      fmt::format(
+          "MultiPeerIbTransport: host-pinned allocation for {}", label));
+  allocation.isHostPinned = true;
+  std::memset(allocation.ptr, 0, bytes);
+#else
+  checkSlotGpu(
+      slotGpuMalloc(&allocation.ptr, bytes),
+      fmt::format("MultiPeerIbTransport: device allocation for {}", label));
+  checkSlotGpu(
+      slotGpuMemset(allocation.ptr, 0, bytes),
+      fmt::format(
+          "MultiPeerIbTransport: zero device allocation for {}", label));
+#endif
+  return allocation;
+}
+
+MultiPeerIbTransportBase::CounterSlotAllocation
+MultiPeerIbTransportBase::allocateCounterSlotAllocation(
+    IbCounterStorage storage,
+    std::size_t bytes,
+    const char* label) {
+  if (bytes == 0) {
+    throw std::invalid_argument(
+        fmt::format("MultiPeerIbTransport: {} size must be non-zero", label));
+  }
+  CounterSlotAllocation allocation;
+  allocation.bytes = bytes;
+  switch (storage) {
+    case IbCounterStorage::Device:
+      checkSlotGpu(
+          slotGpuMalloc(&allocation.devicePtr, bytes),
+          fmt::format("MultiPeerIbTransport: device allocation for {}", label));
+      checkSlotGpu(
+          slotGpuMemset(allocation.devicePtr, 0, bytes),
+          fmt::format(
+              "MultiPeerIbTransport: zero device allocation for {}", label));
+      break;
+    case IbCounterStorage::HostPinned:
+      checkSlotGpu(
+          slotHostPinnedAlloc(&allocation.hostPtr, bytes),
+          fmt::format(
+              "MultiPeerIbTransport: host-pinned allocation for {}", label));
+      std::memset(allocation.hostPtr, 0, bytes);
+      checkSlotGpu(
+          slotHostGetDevicePointer(&allocation.devicePtr, allocation.hostPtr),
+          fmt::format(
+              "MultiPeerIbTransport: host-pinned device pointer lookup for {}",
+              label));
+      break;
+  }
+  return allocation;
+}
+
+IbgdaLocalBuffer MultiPeerIbTransportBase::registerSlotMemory(
+    void* registrationPtr,
+    void* devicePtr,
+    std::size_t bytes,
+    bool& registered) {
+  if (registrationPtr == nullptr || devicePtr == nullptr || bytes == 0) {
+    throw std::invalid_argument(
+        "MultiPeerIbTransport: invalid slot memory registration");
+  }
+  if (!registered) {
+    (void)registerBuffer(registrationPtr, bytes);
+    registered = true;
+  }
+
+  NetworkLKeys keys(numNics_);
+  const auto addr = reinterpret_cast<uintptr_t>(registrationPtr);
+  auto it = registeredBuffers_.upper_bound(addr);
+  CHECK(it != registeredBuffers_.begin())
+      << "slot allocation MR not found after registration";
+  --it;
+  CHECK(addr < it->first + it->second.allocSize)
+      << "slot allocation MR does not cover registration pointer";
+  for (int n = 0; n < numNics_; ++n) {
+    keys[n] = NetworkLKey(HostLKey(it->second.mrs[n]->lkey));
+  }
+  return IbgdaLocalBuffer(devicePtr, keys);
+}
+
+IbgdaBufferExchInfo MultiPeerIbTransportBase::registeredSlotMemoryExchInfo(
+    void* registrationPtr) const {
+  if (registrationPtr == nullptr) {
+    throw std::invalid_argument(
+        "MultiPeerIbTransport: invalid slot memory exchange info");
+  }
+  const auto addr = reinterpret_cast<uintptr_t>(registrationPtr);
+  auto it = registeredBuffers_.upper_bound(addr);
+  CHECK(it != registeredBuffers_.begin())
+      << "slot allocation MR not found after registration";
+  --it;
+  CHECK(addr < it->first + it->second.allocSize)
+      << "slot allocation MR does not cover registration pointer";
+
+  IbgdaBufferExchInfo info;
+  info.addr = reinterpret_cast<uint64_t>(registrationPtr);
+  info.numNics = numNics_;
+  for (int n = 0; n < numNics_; ++n) {
+    info.rkey_per_device[n] = HostRKey(it->second.mrs[n]->rkey);
+  }
+  return info;
+}
+
+void MultiPeerIbTransportBase::freeDeviceSlotAllocation(
+    DeviceSlotAllocation& allocation) noexcept {
+  if (allocation.ptr == nullptr) {
+    return;
+  }
+
+  if (allocation.registered) {
+    try {
+      deregisterBuffer(allocation.ptr);
+    } catch (const std::exception& ex) {
+      LOG(WARNING) << "MultiPeerIbTransport: failed to deregister device slot "
+                   << "allocation: " << ex.what();
+    }
+    allocation.registered = false;
+  }
+
+  SlotGpuError err = allocation.isHostPinned ? slotHostFree(allocation.ptr)
+                                             : slotGpuFree(allocation.ptr);
+  if (err != kSlotGpuSuccess) {
+    LOG(WARNING) << "MultiPeerIbTransport: failed to free device slot "
+                 << "allocation: " << slotGpuGetErrorString(err);
+  }
+  allocation = DeviceSlotAllocation{};
+}
+
+void MultiPeerIbTransportBase::freeCounterSlotAllocation(
+    CounterSlotAllocation& allocation) noexcept {
+  if (allocation.devicePtr == nullptr && allocation.hostPtr == nullptr) {
+    return;
+  }
+
+  if (allocation.registered && allocation.devicePtr != nullptr) {
+    try {
+      void* registerPtr = allocation.hostPtr != nullptr ? allocation.hostPtr
+                                                        : allocation.devicePtr;
+      deregisterBuffer(registerPtr);
+    } catch (const std::exception& ex) {
+      LOG(WARNING) << "MultiPeerIbTransport: failed to deregister slot "
+                   << "allocation: " << ex.what();
+    }
+    allocation.registered = false;
+  }
+
+  SlotGpuError err = kSlotGpuSuccess;
+  if (allocation.hostPtr != nullptr) {
+    err = slotHostFree(allocation.hostPtr);
+  } else if (allocation.devicePtr != nullptr) {
+    err = slotGpuFree(allocation.devicePtr);
+  }
+  if (err != kSlotGpuSuccess) {
+    LOG(WARNING) << "MultiPeerIbTransport: failed to free counter slot "
+                 << "allocation: " << slotGpuGetErrorString(err);
+  }
+  allocation = CounterSlotAllocation{};
+}
+
+void MultiPeerIbTransportBase::allocateSignalCounterResources(
+    IbCounterStorage counterStorage,
+    bool allocateDiscardSignal) {
+  cleanupSignalCounterResources();
+
+  const int numPeers = nRanks_ - 1;
+  slotRemoteSignalViews_.assign(numPeers, IbgdaRemoteBuffer{});
+  slotLocalSignalViews_.assign(numPeers, IbgdaLocalBuffer{});
+  slotCounterDeviceViews_.assign(numPeers, IbgdaLocalBuffer{});
+  slotCounterHostViews_.assign(numPeers, IbgdaLocalBuffer{});
+  slotDiscardSignalRemoteViews_.assign(numPeers, IbgdaRemoteBuffer{});
+
+  if (config_.numSignalSlots > 0) {
+    const auto slotsPerPeer = static_cast<std::size_t>(config_.numSignalSlots);
+    const std::size_t totalSignalBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+    slotSignalAllocation_ =
+        allocateDeviceSlotAllocation(totalSignalBytes, "slot signal buffer");
+    auto localSignalBuf = registerSlotMemory(
+        slotSignalAllocation_.ptr,
+        slotSignalAllocation_.ptr,
+        slotSignalAllocation_.bytes,
+        slotSignalAllocation_.registered);
+    auto remoteSignalBufs = exchangeBuffer(localSignalBuf);
+    for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+      const int peerRank = peerIndexToRank(peerIndex);
+      const int myPeerIndexOnPeer =
+          (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      slotRemoteSignalViews_[peerIndex] = remoteSignalBufs[peerIndex].subBuffer(
+          static_cast<std::size_t>(myPeerIndexOnPeer) * slotsPerPeer *
+          sizeof(uint64_t));
+      slotLocalSignalViews_[peerIndex] = localSignalBuf.subBuffer(
+          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+          sizeof(uint64_t));
+    }
+  }
+
+  if (config_.numCounterSlots > 0) {
+    const auto slotsPerPeer = static_cast<std::size_t>(config_.numCounterSlots);
+    const std::size_t totalCounterBytes =
+        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
+    slotCounterAllocation_ = allocateCounterSlotAllocation(
+        counterStorage, totalCounterBytes, "slot counter buffer");
+    if (counterStorage == IbCounterStorage::HostPinned) {
+      IbgdaLocalBuffer deviceCounterBuf(
+          slotCounterAllocation_.devicePtr, NetworkLKeys{});
+      IbgdaLocalBuffer hostCounterBuf(
+          slotCounterAllocation_.hostPtr, NetworkLKeys{});
+      for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+        const auto offset = static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+            sizeof(uint64_t);
+        slotCounterDeviceViews_[peerIndex] = deviceCounterBuf.subBuffer(offset);
+        slotCounterHostViews_[peerIndex] = hostCounterBuf.subBuffer(offset);
+      }
+    } else {
+      auto localCounterBuf = registerSlotMemory(
+          slotCounterAllocation_.devicePtr,
+          slotCounterAllocation_.devicePtr,
+          slotCounterAllocation_.bytes,
+          slotCounterAllocation_.registered);
+      for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+        const auto offset = static_cast<std::size_t>(peerIndex) * slotsPerPeer *
+            sizeof(uint64_t);
+        slotCounterDeviceViews_[peerIndex] = localCounterBuf.subBuffer(offset);
+        slotCounterHostViews_[peerIndex] = localCounterBuf.subBuffer(offset);
+      }
+    }
+  }
+
+  if (allocateDiscardSignal && config_.numCounterSlots > 0) {
+    const std::size_t totalDiscardBytes =
+        static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
+    slotDiscardSignalAllocation_ = allocateDeviceSlotAllocation(
+        totalDiscardBytes, "slot discard-signal buffer");
+    auto localDiscardBuf = registerSlotMemory(
+        slotDiscardSignalAllocation_.ptr,
+        slotDiscardSignalAllocation_.ptr,
+        slotDiscardSignalAllocation_.bytes,
+        slotDiscardSignalAllocation_.registered);
+    auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
+    for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+      const int peerRank = peerIndexToRank(peerIndex);
+      const int myPeerIndexOnPeer =
+          (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+      slotDiscardSignalRemoteViews_[peerIndex] =
+          remoteDiscardBufs[peerIndex].subBuffer(
+              static_cast<std::size_t>(myPeerIndexOnPeer) * sizeof(uint64_t));
+    }
+  }
+}
+
+void MultiPeerIbTransportBase::cleanupSignalCounterResources() noexcept {
+  freeDeviceSlotAllocation(slotSignalAllocation_);
+  freeCounterSlotAllocation(slotCounterAllocation_);
+  freeDeviceSlotAllocation(slotDiscardSignalAllocation_);
+  for (auto& allocation : lazySlotSignalAllocations_) {
+    freeDeviceSlotAllocation(allocation);
+  }
+  for (auto& allocation : lazySlotCounterAllocations_) {
+    freeCounterSlotAllocation(allocation);
+  }
+  for (auto& allocation : lazySlotDiscardSignalAllocations_) {
+    freeDeviceSlotAllocation(allocation);
+  }
+  lazySlotSignalAllocations_.clear();
+  lazySlotCounterAllocations_.clear();
+  lazySlotDiscardSignalAllocations_.clear();
+  slotRemoteSignalViews_.clear();
+  slotLocalSignalViews_.clear();
+  slotCounterDeviceViews_.clear();
+  slotCounterHostViews_.clear();
+  slotDiscardSignalRemoteViews_.clear();
+}
+
+void MultiPeerIbTransportBase::cleanupPeerSignalCounterResources(
+    int peerIndex) noexcept {
+  if (peerIndex < 0 || peerIndex >= nRanks_ - 1) {
+    return;
+  }
+  if (peerIndex < static_cast<int>(lazySlotSignalAllocations_.size())) {
+    freeDeviceSlotAllocation(lazySlotSignalAllocations_[peerIndex]);
+  }
+  if (peerIndex < static_cast<int>(lazySlotCounterAllocations_.size())) {
+    freeCounterSlotAllocation(lazySlotCounterAllocations_[peerIndex]);
+  }
+  if (peerIndex < static_cast<int>(lazySlotDiscardSignalAllocations_.size())) {
+    freeDeviceSlotAllocation(lazySlotDiscardSignalAllocations_[peerIndex]);
+  }
+  if (peerIndex < static_cast<int>(slotRemoteSignalViews_.size())) {
+    slotRemoteSignalViews_[peerIndex] = IbgdaRemoteBuffer{};
+  }
+  if (peerIndex < static_cast<int>(slotLocalSignalViews_.size())) {
+    slotLocalSignalViews_[peerIndex] = IbgdaLocalBuffer{};
+  }
+  if (peerIndex < static_cast<int>(slotCounterDeviceViews_.size())) {
+    slotCounterDeviceViews_[peerIndex] = IbgdaLocalBuffer{};
+  }
+  if (peerIndex < static_cast<int>(slotCounterHostViews_.size())) {
+    slotCounterHostViews_[peerIndex] = IbgdaLocalBuffer{};
+  }
+  if (peerIndex < static_cast<int>(slotDiscardSignalRemoteViews_.size())) {
+    slotDiscardSignalRemoteViews_[peerIndex] = IbgdaRemoteBuffer{};
+  }
+}
+
+void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
+    int peerIndex,
+    PeerBufferPayload& payload,
+    IbCounterStorage counterStorage,
+    bool allocateDiscardSignal) {
+  const int numPeers = nRanks_ - 1;
+  if (peerIndex < 0 || peerIndex >= numPeers) {
+    throw std::invalid_argument(
+        fmt::format(
+            "allocatePeerSignalCounterResources: invalid peerIndex={}",
+            peerIndex));
+  }
+
+  slotRemoteSignalViews_.resize(numPeers);
+  slotLocalSignalViews_.resize(numPeers);
+  slotCounterDeviceViews_.resize(numPeers);
+  slotCounterHostViews_.resize(numPeers);
+  slotDiscardSignalRemoteViews_.resize(numPeers);
+  lazySlotSignalAllocations_.resize(numPeers);
+  lazySlotCounterAllocations_.resize(numPeers);
+  lazySlotDiscardSignalAllocations_.resize(numPeers);
+
+  if (config_.numSignalSlots > 0) {
+    const std::size_t signalBytes =
+        static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
+    freeDeviceSlotAllocation(lazySlotSignalAllocations_[peerIndex]);
+    auto allocation =
+        allocateDeviceSlotAllocation(signalBytes, "lazy slot signal buffer");
+    auto localSignalBuf = registerSlotMemory(
+        allocation.ptr,
+        allocation.ptr,
+        allocation.bytes,
+        allocation.registered);
+    payload.slotSignal = registeredSlotMemoryExchInfo(allocation.ptr);
+    slotLocalSignalViews_[peerIndex] = localSignalBuf;
+    lazySlotSignalAllocations_[peerIndex] = std::move(allocation);
+  }
+
+  if (config_.numCounterSlots > 0) {
+    const std::size_t counterBytes =
+        static_cast<std::size_t>(config_.numCounterSlots) * sizeof(uint64_t);
+    freeCounterSlotAllocation(lazySlotCounterAllocations_[peerIndex]);
+    auto allocation = allocateCounterSlotAllocation(
+        counterStorage, counterBytes, "lazy slot counter buffer");
+    if (counterStorage == IbCounterStorage::HostPinned) {
+      slotCounterDeviceViews_[peerIndex] =
+          IbgdaLocalBuffer(allocation.devicePtr, NetworkLKeys{});
+      slotCounterHostViews_[peerIndex] =
+          IbgdaLocalBuffer(allocation.hostPtr, NetworkLKeys{});
+      lazySlotCounterAllocations_[peerIndex] = std::move(allocation);
+    } else {
+      auto localCounterBuf = registerSlotMemory(
+          allocation.devicePtr,
+          allocation.devicePtr,
+          allocation.bytes,
+          allocation.registered);
+      slotCounterDeviceViews_[peerIndex] = localCounterBuf;
+      slotCounterHostViews_[peerIndex] = localCounterBuf;
+      lazySlotCounterAllocations_[peerIndex] = std::move(allocation);
+    }
+  }
+
+  if (allocateDiscardSignal && config_.numCounterSlots > 0) {
+    freeDeviceSlotAllocation(lazySlotDiscardSignalAllocations_[peerIndex]);
+    auto allocation = allocateDeviceSlotAllocation(
+        sizeof(uint64_t), "lazy slot discard-signal buffer");
+    (void)registerSlotMemory(
+        allocation.ptr,
+        allocation.ptr,
+        allocation.bytes,
+        allocation.registered);
+    payload.slotDiscard = registeredSlotMemoryExchInfo(allocation.ptr);
+    lazySlotDiscardSignalAllocations_[peerIndex] = std::move(allocation);
+  }
+}
+
+void MultiPeerIbTransportBase::applyRemoteSignalCounterResources(
+    int peerIndex,
+    const PeerBufferPayload& remotePayload,
+    bool hasDiscardSignal) {
+  const int numPeers = nRanks_ - 1;
+  if (peerIndex < 0 || peerIndex >= numPeers) {
+    throw std::invalid_argument(
+        fmt::format(
+            "applyRemoteSignalCounterResources: invalid peerIndex={}",
+            peerIndex));
+  }
+  slotRemoteSignalViews_.resize(numPeers);
+  slotDiscardSignalRemoteViews_.resize(numPeers);
+  if (config_.numSignalSlots > 0) {
+    slotRemoteSignalViews_[peerIndex] =
+        remotePayload.slotSignal.toRemoteBuffer();
+  }
+  if (hasDiscardSignal && config_.numCounterSlots > 0) {
+    slotDiscardSignalRemoteViews_[peerIndex] =
+        remotePayload.slotDiscard.toRemoteBuffer();
+  }
+}
+
+IbgdaRemoteBuffer MultiPeerIbTransportBase::slotRemoteSignalView(
+    int peerIndex) const {
+  return slotRemoteSignalViews_.at(peerIndex);
+}
+
+IbgdaLocalBuffer MultiPeerIbTransportBase::slotLocalSignalView(
+    int peerIndex) const {
+  return slotLocalSignalViews_.at(peerIndex);
+}
+
+IbgdaLocalBuffer MultiPeerIbTransportBase::slotCounterDeviceView(
+    int peerIndex) const {
+  return slotCounterDeviceViews_.at(peerIndex);
+}
+
+IbgdaLocalBuffer MultiPeerIbTransportBase::slotCounterHostView(
+    int peerIndex) const {
+  return slotCounterHostViews_.at(peerIndex);
+}
+
+IbgdaRemoteBuffer MultiPeerIbTransportBase::slotDiscardSignalRemoteView(
+    int peerIndex) const {
+  return slotDiscardSignalRemoteViews_.at(peerIndex);
 }
 
 bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
