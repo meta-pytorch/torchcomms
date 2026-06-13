@@ -2,12 +2,15 @@
 
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 
+#include <endian.h>
+
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -126,6 +129,14 @@ std::size_t alignUp(std::size_t value, std::size_t alignment) {
   return checkedAdd(value, alignment - remainder, "aligned control block");
 }
 
+uint32_t keyForIbvPostSend(uint32_t deviceOrderKey) {
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
+  return deviceOrderKey;
+#else
+  return be32toh(deviceOrderKey);
+#endif
+}
+
 } // namespace
 
 MultipeerIbrcTransport::MappedAllocation::~MappedAllocation() {
@@ -222,6 +233,8 @@ void MultipeerIbrcTransport::exchange() {
 }
 
 void MultipeerIbrcTransport::cleanup() {
+  stopProgressThread();
+
   for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
        ++peerIndex) {
     cleanupPeerCmdQueues(peerIndex);
@@ -250,6 +263,301 @@ void MultipeerIbrcTransport::cleanup() {
   statusControl_.reset();
 
   closeNics();
+}
+
+void MultipeerIbrcTransport::startProgressThread() {
+  if (progressThread_.joinable()) {
+    return;
+  }
+  stopProgress_.store(false, std::memory_order_release);
+  progressThread_ = std::thread([this] { progressLoop(); });
+}
+
+void MultipeerIbrcTransport::stopProgressThread() noexcept {
+  stopProgress_.store(true, std::memory_order_release);
+  if (!progressThread_.joinable()) {
+    return;
+  }
+  try {
+    progressThread_.join();
+  } catch (const std::exception& ex) {
+    LOG(ERROR) << "MultipeerIbrcTransport: failed to join progress thread: "
+               << ex.what();
+  }
+}
+
+void MultipeerIbrcTransport::progressLoop() noexcept {
+  while (!stopProgress_.load(std::memory_order_acquire)) {
+    bool progressed = false;
+    try {
+      progressed = progressOnce();
+    } catch (const std::exception& ex) {
+      LOG(ERROR) << "MultipeerIbrcTransport: progress thread failed: "
+                 << ex.what();
+      publishTransportError(EIO, "progress error");
+      return;
+    } catch (...) {
+      LOG(ERROR) << "MultipeerIbrcTransport: progress thread failed";
+      publishTransportError(EIO, "progress error");
+      return;
+    }
+
+    if (!progressed) {
+      std::this_thread::yield();
+    }
+  }
+}
+
+bool MultipeerIbrcTransport::progressOnce() {
+  bool progressed = false;
+  for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
+       ++peerIndex) {
+    auto& peer = peerResources_[peerIndex];
+    for (auto& cmdQueue : peer.cmdQueues) {
+      progressed |= pollCmdQueueCompletions(peerIndex, cmdQueue);
+      progressed |= pollOneCmdQueueDescriptor(peerIndex, cmdQueue);
+    }
+  }
+  return progressed;
+}
+
+bool MultipeerIbrcTransport::pollOneCmdQueueDescriptor(
+    int peerIndex,
+    IbrcCmdQueueHost& cmdQueue) {
+  const uint64_t seq = cmdQueue.nextToPoll;
+  if (__atomic_load_n(cmdQueue.piHost, __ATOMIC_ACQUIRE) <= seq) {
+    return false;
+  }
+
+  const uint32_t slot = static_cast<uint32_t>(seq & cmdQueue.device.mask);
+  IbrcDesc& descSlot = cmdQueue.descsHost[slot];
+  if (__atomic_load_n(&descSlot.ready_seq, __ATOMIC_ACQUIRE) != seq) {
+    return false;
+  }
+
+  IbrcDesc desc = descSlot;
+  auto& state = cmdQueue.cmdStates.at(slot);
+  state.seq = seq;
+  state.flags = desc.flags;
+  state.counterId = desc.counter_id;
+  state.counterValue = desc.counter_value;
+  state.peerCompleted = false;
+
+  __atomic_store_n(&descSlot.ready_seq, kIbrcInvalidReadySeq, __ATOMIC_RELEASE);
+  postDescriptor(peerIndex, cmdQueue, desc, seq);
+  cmdQueue.nextToPoll = seq + 1;
+  return true;
+}
+
+bool MultipeerIbrcTransport::pollCmdQueueCompletions(
+    int peerIndex,
+    IbrcCmdQueueHost& cmdQueue) {
+  auto& qpResource = qpResourceAt(
+      peerIndex,
+      static_cast<int>(cmdQueue.nic),
+      static_cast<int>(cmdQueue.qpSlot));
+  bool progressed = false;
+
+  ibverbx::ibv_wc completions[kIbrcCqPollBatch]{};
+  const int n = qpResource.cq->context->ops.poll_cq(
+      qpResource.cq, static_cast<int>(kIbrcCqPollBatch), completions);
+  if (n < 0) {
+    publishQueueError(
+        peerIndex, cmdQueue, errno == 0 ? EIO : errno, "ibv_poll_cq failed");
+    return false;
+  }
+
+  for (int i = 0; i < n; ++i) {
+    const auto& wc = completions[i];
+    if (wc.status != ibverbx::IBV_WC_SUCCESS) {
+      publishQueueError(
+          peerIndex, cmdQueue, static_cast<uint32_t>(wc.status), "CQE error");
+      continue;
+    }
+
+    // Mark the descriptor's peer-facing WR complete; retirement (advancing
+    // nextToComplete / publishing ci) happens strictly in seq order in
+    // drainCompletedCommands(), so a no-WR descriptor can never retire ahead
+    // of an in-flight peer WR at a lower seq.
+    auto& state = cmdQueue.cmdStates.at(wc.wr_id & cmdQueue.device.mask);
+    if (state.seq != wc.wr_id) {
+      publishQueueError(peerIndex, cmdQueue, EPROTO, "stale CQE state");
+      continue;
+    }
+    state.peerCompleted = true;
+    progressed = true;
+  }
+
+  return drainCompletedCommands(peerIndex, cmdQueue) || progressed;
+}
+
+bool MultipeerIbrcTransport::drainCompletedCommands(
+    int peerIndex,
+    IbrcCmdQueueHost& cmdQueue) {
+  bool progressed = false;
+  while (true) {
+    auto& state =
+        cmdQueue.cmdStates.at(cmdQueue.nextToComplete & cmdQueue.device.mask);
+    if (state.seq != cmdQueue.nextToComplete || !state.peerCompleted) {
+      return progressed;
+    }
+
+    state = IbrcCmdState{};
+    ++cmdQueue.nextToComplete;
+    __atomic_store_n(
+        cmdQueue.ciHost, cmdQueue.nextToComplete, __ATOMIC_RELEASE);
+    progressed = true;
+  }
+}
+
+void MultipeerIbrcTransport::postDescriptor(
+    int peerIndex,
+    IbrcCmdQueueHost& cmdQueue,
+    const IbrcDesc& desc,
+    uint64_t seq) {
+  const auto op = static_cast<IbrcOp>(desc.op);
+  const bool hasSignal = (desc.flags & IBRC_HAS_SIGNAL) != 0;
+  const bool hasCounter = (desc.flags & IBRC_HAS_COUNTER) != 0;
+  const bool hasData = op == IbrcOp::PUT && desc.bytes > 0;
+
+  if (op != IbrcOp::PUT && op != IbrcOp::SIGNAL) {
+    publishQueueError(peerIndex, cmdQueue, EINVAL, "unsupported descriptor op");
+    return;
+  }
+  if (op == IbrcOp::SIGNAL && desc.bytes != 0) {
+    publishQueueError(
+        peerIndex, cmdQueue, EINVAL, "SIGNAL descriptor cannot carry data");
+    return;
+  }
+  if (hasCounter) {
+    publishQueueError(
+        peerIndex, cmdQueue, ENOTSUP, "counter completion is not implemented");
+    return;
+  }
+  if (hasSignal && (desc.flags & IBRC_SIGNAL_ADD) == 0) {
+    publishQueueError(
+        peerIndex, cmdQueue, ENOTSUP, "only signal add is supported");
+    return;
+  }
+  if (desc.bytes > std::numeric_limits<uint32_t>::max()) {
+    publishQueueError(
+        peerIndex,
+        cmdQueue,
+        EMSGSIZE,
+        "descriptor bytes exceed verbs SGE size");
+    return;
+  }
+
+  auto& qpResource = qpResourceAt(
+      peerIndex,
+      static_cast<int>(cmdQueue.nic),
+      static_cast<int>(cmdQueue.qpSlot));
+  if (!hasData && !hasSignal) {
+    publishQueueError(peerIndex, cmdQueue, EINVAL, "empty descriptor");
+    return;
+  }
+  if (hasSignal && qpResource.signalAtomicSinkMr == nullptr) {
+    publishQueueError(peerIndex, cmdQueue, EINVAL, "missing signal sink MR");
+    return;
+  }
+
+  ibverbx::ibv_sge dataSge{};
+  ibverbx::ibv_send_wr dataWr{};
+  ibverbx::ibv_sge signalSge{};
+  ibverbx::ibv_send_wr signalWr{};
+  ibverbx::ibv_send_wr* firstWr = nullptr;
+  ibverbx::ibv_send_wr* finalWr = nullptr;
+
+  if (hasData) {
+    dataSge.addr = desc.local_addr;
+    dataSge.length = static_cast<uint32_t>(desc.bytes);
+    dataSge.lkey = keyForIbvPostSend(desc.lkey_device_order);
+
+    dataWr.wr_id = seq;
+    dataWr.sg_list = &dataSge;
+    dataWr.num_sge = 1;
+    dataWr.opcode = ibverbx::IBV_WR_RDMA_WRITE;
+    dataWr.send_flags = hasSignal ? 0 : ibverbx::IBV_SEND_SIGNALED;
+    dataWr.wr.rdma.remote_addr = desc.remote_addr;
+    dataWr.wr.rdma.rkey = keyForIbvPostSend(desc.rkey_device_order);
+    firstWr = &dataWr;
+    finalWr = &dataWr;
+  }
+
+  if (hasSignal) {
+    signalSge.addr =
+        reinterpret_cast<uint64_t>(qpResource.signalAtomicSink.get());
+    signalSge.length = sizeof(uint64_t);
+    signalSge.lkey = qpResource.signalAtomicSinkMr->lkey;
+
+    signalWr.wr_id = seq;
+    signalWr.sg_list = &signalSge;
+    signalWr.num_sge = 1;
+    signalWr.opcode = ibverbx::IBV_WR_ATOMIC_FETCH_AND_ADD;
+    signalWr.send_flags = ibverbx::IBV_SEND_SIGNALED | ibverbx::IBV_SEND_FENCE;
+    signalWr.wr.atomic.remote_addr = desc.signal_addr;
+    signalWr.wr.atomic.compare_add = desc.signal_value;
+    signalWr.wr.atomic.rkey = keyForIbvPostSend(desc.signal_rkey_device_order);
+
+    if (firstWr == nullptr) {
+      firstWr = &signalWr;
+    } else {
+      finalWr->next = &signalWr;
+    }
+  }
+
+  ibverbx::ibv_send_wr* badWr = nullptr;
+  const int rc =
+      qpResource.qp->context->ops.post_send(qpResource.qp, firstWr, &badWr);
+  if (rc != 0) {
+    publishQueueError(
+        peerIndex,
+        cmdQueue,
+        rc > 0 ? rc : (errno == 0 ? EIO : errno),
+        "ibv_post_send failed");
+  }
+}
+
+void MultipeerIbrcTransport::publishQueueError(
+    int peerIndex,
+    const IbrcCmdQueueHost& cmdQueue,
+    uint32_t errorCode,
+    const char* reason) noexcept {
+  const int peerRank = peerIndex < myRank_ ? peerIndex : peerIndex + 1;
+  const auto queueIndex = static_cast<uint32_t>(
+      ((static_cast<uint64_t>(peerIndex) *
+            static_cast<uint64_t>(config_.numQpsPerPeerPerNic) +
+        static_cast<uint64_t>(cmdQueue.qpSlot)) *
+       static_cast<uint64_t>(numNics_)) +
+      static_cast<uint64_t>(cmdQueue.nic));
+
+  LOG(ERROR) << "MultipeerIbrcTransport: " << reason << " peerRank=" << peerRank
+             << " queue=" << queueIndex << " nic=" << cmdQueue.nic
+             << " qpSlot=" << cmdQueue.qpSlot << " code=" << errorCode;
+  for (auto* status : statusHostByNic_) {
+    if (status == nullptr) {
+      continue;
+    }
+    __atomic_store_n(&status->error_queue, queueIndex, __ATOMIC_RELAXED);
+    __atomic_store_n(&status->error_code, errorCode, __ATOMIC_RELAXED);
+    __atomic_store_n(&status->error, 1, __ATOMIC_RELEASE);
+  }
+  stopProgress_.store(true, std::memory_order_release);
+}
+
+void MultipeerIbrcTransport::publishTransportError(
+    uint32_t errorCode,
+    const char* reason) noexcept {
+  LOG(ERROR) << "MultipeerIbrcTransport: " << reason << " code=" << errorCode;
+  for (auto* status : statusHostByNic_) {
+    if (status == nullptr) {
+      continue;
+    }
+    __atomic_store_n(&status->error_queue, kIbrcUnknownQueue, __ATOMIC_RELAXED);
+    __atomic_store_n(&status->error_code, errorCode, __ATOMIC_RELAXED);
+    __atomic_store_n(&status->error, 1, __ATOMIC_RELEASE);
+  }
+  stopProgress_.store(true, std::memory_order_release);
 }
 
 void MultipeerIbrcTransport::initializeControlResources() {
@@ -441,6 +749,19 @@ void MultipeerIbrcTransport::destroyPeerQps(
     }
   }
   for (auto& qpResource : qpResources) {
+    if (qpResource.signalAtomicSinkMr != nullptr &&
+        symbols.ibv_internal_dereg_mr != nullptr) {
+      int rc = symbols.ibv_internal_dereg_mr(qpResource.signalAtomicSinkMr);
+      if (rc != 0) {
+        LOG(WARNING) << "Failed to deregister IBRC signal sink MR nic="
+                     << qpResource.nic << " qpSlot=" << qpResource.qpSlot
+                     << ": rc=" << rc;
+      }
+      qpResource.signalAtomicSinkMr = nullptr;
+    }
+    qpResource.signalAtomicSink.reset();
+  }
+  for (auto& qpResource : qpResources) {
     if (qpResource.cq != nullptr &&
         symbols.ibv_internal_destroy_cq != nullptr) {
       int rc = symbols.ibv_internal_destroy_cq(qpResource.cq);
@@ -529,7 +850,7 @@ void MultipeerIbrcTransport::createPeerQps(int peerIndex) {
         qpResource.cq = cq;
         qpResource.nic = nic;
         qpResource.qpSlot = q;
-        qpResources.push_back(qpResource);
+        qpResources.push_back(std::move(qpResource));
         auto& createdQpResource = qpResources.back();
 
         ibverbx::ibv_qp_init_attr initAttr{};
@@ -558,6 +879,30 @@ void MultipeerIbrcTransport::createPeerQps(int peerIndex) {
                   savedErrno,
                   errnoString(savedErrno)));
         }
+
+        auto signalAtomicSink = std::make_unique<uint64_t>(0);
+        if (symbols.ibv_internal_reg_mr == nullptr) {
+          throw std::runtime_error("ibv_reg_mr is unavailable");
+        }
+        errno = 0;
+        createdQpResource.signalAtomicSinkMr = symbols.ibv_internal_reg_mr(
+            nics_[nic].ibvPd,
+            signalAtomicSink.get(),
+            sizeof(uint64_t),
+            ibverbx::IBV_ACCESS_LOCAL_WRITE);
+        if (createdQpResource.signalAtomicSinkMr == nullptr) {
+          const int savedErrno = errno;
+          throw std::runtime_error(
+              fmt::format(
+                  "Failed to register IBRC signal sink MR for peerIndex={} "
+                  "nic={} qpSlot={}: errno={} ({})",
+                  peerIndex,
+                  nic,
+                  q,
+                  savedErrno,
+                  errnoString(savedErrno)));
+        }
+        createdQpResource.signalAtomicSink = std::move(signalAtomicSink);
       }
     }
   } catch (const std::exception&) {

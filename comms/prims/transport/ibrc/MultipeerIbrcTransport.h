@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -21,9 +23,9 @@ namespace comms::prims {
  * It derives from the shared CRTP base MultiPeerIbTransport<Backend> so the
  * host control plane can be wired in as the backend-specific pieces land.
  *
- * This is still incomplete: per-peer RC QP exchange/connect and GPU-visible
- * command-queue resources are implemented, but the CPU progress thread,
- * device transport, and HostWindow counter plumbing are not yet ported. The
+ * This is still incomplete: per-peer RC QP exchange/connect, GPU-visible
+ * command-queue resources, and the host progress loop are implemented, but the
+ * device transport and HostWindow counter plumbing are not yet ported. The
  * common (inherited) API works; the backend is selectable
  * (NCCL_CTRAN_PIPES_IB_MODE=ibrc), but exchange() still throws after QPs and
  * command queues are ready until the remaining data path lands.
@@ -70,6 +72,8 @@ class MultipeerIbrcTransport
   struct PeerQpResource {
     ibverbx::ibv_cq* cq{nullptr};
     ibverbx::ibv_qp* qp{nullptr};
+    ibverbx::ibv_mr* signalAtomicSinkMr{nullptr};
+    std::unique_ptr<uint64_t> signalAtomicSink;
     int nic{0};
     int qpSlot{0};
   };
@@ -96,6 +100,10 @@ class MultipeerIbrcTransport
     uint64_t counterValue{0};
     uint32_t counterId{0};
     uint16_t flags{0};
+    // Set when the peer-facing WR for this descriptor has completed (CQE
+    // reaped), or for descriptors that post no WR. Retirement (nextToComplete/
+    // ci advance) happens strictly in seq order in drainCompletedCommands().
+    bool peerCompleted{false};
   };
 
   struct IbrcCmdQueueHost {
@@ -124,6 +132,27 @@ class MultipeerIbrcTransport
   void cleanupPeerQps(int peerIndex) noexcept;
   void destroyPeerQps(std::vector<PeerQpResource>& qpResources) noexcept;
   void closeNics() noexcept;
+
+  void startProgressThread();
+  void stopProgressThread() noexcept;
+  void progressLoop() noexcept;
+  bool progressOnce();
+  bool pollOneCmdQueueDescriptor(int peerIndex, IbrcCmdQueueHost& cmdQueue);
+  bool pollCmdQueueCompletions(int peerIndex, IbrcCmdQueueHost& cmdQueue);
+  bool drainCompletedCommands(int peerIndex, IbrcCmdQueueHost& cmdQueue);
+  void postDescriptor(
+      int peerIndex,
+      IbrcCmdQueueHost& cmdQueue,
+      const IbrcDesc& desc,
+      uint64_t seq);
+  void publishQueueError(
+      int peerIndex,
+      const IbrcCmdQueueHost& cmdQueue,
+      uint32_t errorCode,
+      const char* reason) noexcept;
+  // Publish a transport-level error to every NIC status block, independent of
+  // any specific command queue, so all device wait paths observe the failure.
+  void publishTransportError(uint32_t errorCode, const char* reason) noexcept;
 
   void allocateCmdQueuesForAllPeers();
   void allocatePeerCmdQueues(int peerIndex);
@@ -155,6 +184,8 @@ class MultipeerIbrcTransport
   std::size_t cmdQueuePiOffset_{0};
   std::size_t cmdQueueCiOffset_{0};
   std::size_t cmdQueueControlBytes_{0};
+  std::atomic<bool> stopProgress_{false};
+  std::thread progressThread_;
 };
 
 } // namespace comms::prims
