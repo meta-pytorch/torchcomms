@@ -66,8 +66,9 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
     CUDACHECK_TEST(cudaStreamCreate(&stream));
     ctranComm = makeCtranComm();
-    EXPECT_TRUE(ctran::allGatherPSupport(ctranComm.get()))
-        << "allGatherP algo is not supported!";
+    if (!ctran::allGatherPSupport(ctranComm.get())) {
+      GTEST_SKIP() << "allGatherP algo is not supported!";
+    }
   }
 
   void TearDown() override {

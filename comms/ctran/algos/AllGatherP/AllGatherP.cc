@@ -143,8 +143,12 @@ bool allGatherPSupport(CtranComm* comm) {
   const auto myRank = statex->rank();
   // Check if all remote peers are supported by ctran
   for (auto rank = 0; rank < statex->nRanks(); rank++) {
-    if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
-        rank != myRank) {
+    if (rank == myRank) {
+      continue;
+    }
+    auto backend = mapper->getBackend(rank);
+    if (backend == CtranMapperBackend::UNSET ||
+        backend == CtranMapperBackend::TCPDM) {
       return false;
     }
   }
@@ -186,6 +190,15 @@ commResult_t allGatherPInit(
         (void*)recvbuff,
         maxRecvSize);
     return commInternalError;
+  }
+
+  std::string supportReason;
+  auto supportRc = mapper->validateAllGatherPHandle(recvHdl, &supportReason);
+  if (supportRc != commSuccess) {
+    FB_ERRORRETURN(
+        supportRc,
+        "Persistent AllGather is not supported on this communicator: {}",
+        supportReason);
   }
 
   // Set up persistent arguments

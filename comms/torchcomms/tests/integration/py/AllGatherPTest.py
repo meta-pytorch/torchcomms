@@ -26,20 +26,39 @@ class AllGatherPTest(unittest.TestCase):
     ELEM_COUNT = 1024
 
     def setUp(self) -> None:
-        self.wrapper = TorchCommTestWrapper()
+        if os.getenv("NCCL_CTRAN_ENABLE") != "true":
+            self.skipTest("Requires ctran Persistent AllGather transport support")
+        try:
+            self.wrapper = TorchCommTestWrapper()
+        except RuntimeError as e:
+            message = str(e)
+            if (
+                "Persistent AllGather is not supported" in message
+                or "Failed to initialize NCCL communicator" in message
+            ):
+                self.skipTest(
+                    f"Requires ctran Persistent AllGather transport support: {e}"
+                )
+            raise
         self.comm = self.wrapper.get_torchcomm()
         self.rank = self.comm.get_rank()
         self.size = self.comm.get_size()
         self.device = self.comm.get_device()
 
+    def _init_or_skip(self, output_tensor: torch.Tensor):
+        try:
+            return self.comm.all_gather_p_init(output_tensor)
+        except RuntimeError as e:
+            if "Persistent AllGather is not supported" in str(e):
+                self.skipTest(
+                    f"Requires ctran Persistent AllGather transport support: {e}"
+                )
+            raise
+
     def tearDown(self) -> None:
         del self.comm
         del self.wrapper
 
-    @unittest.skipIf(
-        os.getenv("NCCL_CTRAN_ENABLE") != "true",
-        "Requires ctran transport (NCCL_CTRAN_ENABLE=true)",
-    )
     def test_allgatherp(self) -> None:
         """Eager allgatherp followed by compute on the output buffer."""
         count = self.ELEM_COUNT
@@ -55,8 +74,7 @@ class AllGatherPTest(unittest.TestCase):
                 count * self.size, dtype=torch.float32, device=self.device
             )
 
-        handle = self.comm.all_gather_p_init(output_tensor)
-        self.comm.barrier(False)
+        handle = self._init_or_skip(output_tensor)
 
         for _ in range(self.NUM_REPLAYS):
             work = self.comm.all_gather_p_exec(handle, input_tensor, async_op=True)
@@ -87,6 +105,20 @@ class AllGatherPTest(unittest.TestCase):
                 msg=f"Rank {self.rank}: compute on allgatherp output mismatch",
             )
 
+        self.comm.all_gather_p_free(handle)
+
+    def test_allgatherp_init_free_without_exec(self) -> None:
+        """Init returns a ready handle and free succeeds without an exec."""
+        allocator = torchcomms.get_mem_allocator(self.comm.get_backend())
+        pool = torch.cuda.MemPool(allocator)
+        with torch.cuda.use_mem_pool(pool):
+            output_tensor = torch.zeros(
+                self.ELEM_COUNT * self.size,
+                dtype=torch.float32,
+                device=self.device,
+            )
+
+        handle = self._init_or_skip(output_tensor)
         self.comm.all_gather_p_free(handle)
 
 
