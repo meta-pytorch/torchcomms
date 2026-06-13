@@ -15,6 +15,8 @@
 
 namespace comms::prims {
 
+class P2pIbrcTransportDevice;
+
 /**
  * MultipeerIbrcTransport - CPU-proxy IBRC backend.
  *
@@ -24,11 +26,8 @@ namespace comms::prims {
  * host control plane can be wired in as the backend-specific pieces land.
  *
  * This is still incomplete: per-peer RC QP exchange/connect, GPU-visible
- * command-queue resources, and the host progress loop are implemented, but the
- * device transport and HostWindow counter plumbing are not yet ported. The
- * common (inherited) API works; the backend is selectable
- * (NCCL_CTRAN_PIPES_IB_MODE=ibrc), but exchange() still throws after QPs and
- * command queues are ready until the remaining data path lands.
+ * command-queue resources, the host progress loop, and the device enqueue
+ * transport are implemented, but HostWindow counters are not yet ported.
  *
  * IBRC supports both eager exchange() and lazy per-peer materialization from
  * day one: the base's lazy connect loop drives the doMaterializePeer() hook
@@ -61,6 +60,13 @@ class MultipeerIbrcTransport
   // MultiPeerIbTransport(Base). Buffer registration/exchange and lazy
   // materialization are intentionally blocked by MultiPeerTransport until the
   // IBRC backend initializes the required resources.
+
+  P2pIbrcTransportDevice* getP2pTransportDeviceSlot(int peerRank) const;
+
+  // Per-peer device handle accessor used by Ring/SendRecv algorithms (the
+  // counterpart of IBGDA's getP2pTransportDevice). IBRC builds all slots
+  // eagerly, so this returns the slot pointer directly.
+  P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank) const;
 
  private:
   // Lazy per-peer materialization hook. The shared base owns queueing,
@@ -122,6 +128,7 @@ class MultipeerIbrcTransport
   struct PeerResources {
     std::vector<PeerQpResource> qpResources;
     std::vector<IbrcCmdQueueHost> cmdQueues;
+    MappedAllocation cmdQueueDevices;
     bool qpsConnected{false};
     bool cmdQueuesAllocated{false};
   };
@@ -156,6 +163,8 @@ class MultipeerIbrcTransport
 
   void allocateCmdQueuesForAllPeers();
   void allocatePeerCmdQueues(int peerIndex);
+  void initializeDeviceTransportSlots();
+  void updatePeerDeviceTransport(int peerIndex) noexcept;
   std::size_t allocatedCmdQueueCount() const;
   MappedAllocation allocateMapped(std::size_t bytes, const char* label);
 
@@ -177,7 +186,12 @@ class MultipeerIbrcTransport
   friend class MultiPeerIbTransport<MultipeerIbrcTransport>;
 
   std::vector<PeerResources> peerResources_;
+  // Per-peer publish flag (release in allocatePeerCmdQueues, acquire in
+  // progressOnce) so the progress thread never reads a half-moved cmdQueues.
+  // Separate array: std::atomic can't live in the movable PeerResources vector.
+  std::unique_ptr<std::atomic<bool>[]> peerQueuesPublished_;
   MappedAllocation statusControl_;
+  MappedAllocation p2pTransportDevices_;
   std::vector<IbrcNicStatus*> statusHostByNic_;
   std::vector<IbrcNicStatus*> statusDeviceByNic_;
   uint32_t cmdQueueDepth_{kIbrcDefaultCmdQueueDepth};

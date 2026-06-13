@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -24,6 +25,7 @@
 #include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/prims/transport/ibrc/P2pIbrcTransportDevice.cuh"
 
 namespace comms::prims {
 
@@ -34,12 +36,6 @@ constexpr uint8_t kDefaultIbHopLimit = 255;
 
 std::string errnoString(int err) {
   return std::strerror(err);
-}
-
-[[noreturn]] void throwIbrcUnimplemented(const char* what) {
-  throw std::runtime_error(
-      std::string("MultipeerIbrcTransport: ") + what +
-      " is not implemented yet");
 }
 
 bool isPowerOfTwo(uint32_t value) {
@@ -195,6 +191,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   }
 
   peerResources_.resize(nRanks_ - 1);
+  peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
 
   try {
     // Pin GPU work to config_.cudaDevice.
@@ -203,6 +200,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
         "MultipeerIbrcTransport: set CUDA device");
     openNics();
     initializeControlResources();
+    initializeDeviceTransportSlots();
     if (config_.ibLazyConnect) {
       peerMaterialized_.resize(nRanks_ - 1, false);
     }
@@ -222,14 +220,13 @@ void MultipeerIbrcTransport::exchange() {
     allocateCmdQueuesForAllPeers();
     VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " allocated "
             << allocatedCmdQueueCount() << " command queues";
+    startProgressThread();
   } else {
     VLOG(1)
         << "MultipeerIbrcTransport: rank " << myRank_
         << " lazy exchange complete (per-peer QPs and command queues deferred "
            "to materializePeer)";
   }
-
-  throwIbrcUnimplemented("command-ring/device transport path");
 }
 
 void MultipeerIbrcTransport::cleanup() {
@@ -261,6 +258,7 @@ void MultipeerIbrcTransport::cleanup() {
   statusHostByNic_.clear();
   statusDeviceByNic_.clear();
   statusControl_.reset();
+  p2pTransportDevices_.reset();
 
   closeNics();
 }
@@ -312,6 +310,11 @@ bool MultipeerIbrcTransport::progressOnce() {
   bool progressed = false;
   for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
        ++peerIndex) {
+    // Acquire pairs with the release in allocatePeerCmdQueues: skip peers whose
+    // cmdQueues is not fully built (avoids racing a lazy move-assignment).
+    if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+      continue;
+    }
     auto& peer = peerResources_[peerIndex];
     for (auto& cmdQueue : peer.cmdQueues) {
       progressed |= pollCmdQueueCompletions(peerIndex, cmdQueue);
@@ -617,9 +620,15 @@ void MultipeerIbrcTransport::cleanupPeerCmdQueues(int peerIndex) noexcept {
   if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
     return;
   }
+  // Unpublish before clearing so progressOnce can't walk a half-cleared vector.
+  peerQueuesPublished_[peerIndex].store(false, std::memory_order_release);
   auto& peer = peerResources_[peerIndex];
   peer.cmdQueues.clear();
+  peer.cmdQueueDevices.reset();
   peer.cmdQueuesAllocated = false;
+  if (p2pTransportDevices_.host != nullptr) {
+    updatePeerDeviceTransport(peerIndex);
+  }
 }
 
 void MultipeerIbrcTransport::allocateCmdQueuesForAllPeers() {
@@ -652,6 +661,8 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
 
   std::vector<IbrcCmdQueueHost> cmdQueues;
   cmdQueues.reserve(cmdQueuesPerPeer);
+  std::vector<IbrcCmdQueueDevice> deviceCmdQueues;
+  deviceCmdQueues.reserve(cmdQueuesPerPeer);
 
   for (int q = 0; q < numQps; ++q) {
     for (int nic = 0; nic < numNics_; ++nic) {
@@ -682,12 +693,55 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
       for (uint32_t slot = 0; slot < cmdQueueDepth_; ++slot) {
         cmdQueue.descsHost[slot].ready_seq = kIbrcInvalidReadySeq;
       }
+      deviceCmdQueues.push_back(cmdQueue.device);
       cmdQueues.push_back(std::move(cmdQueue));
     }
   }
 
+  peer.cmdQueueDevices = allocateMapped(
+      deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice),
+      "per-peer command queue device descriptors");
+  std::memcpy(
+      peer.cmdQueueDevices.host,
+      deviceCmdQueues.data(),
+      deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice));
   peer.cmdQueues = std::move(cmdQueues);
   peer.cmdQueuesAllocated = true;
+  updatePeerDeviceTransport(peerIndex);
+  // Publish last (release): progressOnce may now iterate this peer's cmdQueues.
+  peerQueuesPublished_[peerIndex].store(true, std::memory_order_release);
+}
+
+void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
+  const std::size_t numPeers = static_cast<std::size_t>(nRanks_ - 1);
+  p2pTransportDevices_ = allocateMapped(
+      numPeers * sizeof(P2pIbrcTransportDevice),
+      "P2pIbrcTransportDevice slots");
+  auto* slots = static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.host);
+  for (std::size_t peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
+    new (&slots[peerIndex]) P2pIbrcTransportDevice();
+  }
+}
+
+void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
+  if (p2pTransportDevices_.host == nullptr || peerIndex < 0 ||
+      peerIndex >= static_cast<int>(peerResources_.size())) {
+    return;
+  }
+
+  auto* slots = static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.host);
+  auto& peer = peerResources_[peerIndex];
+  if (!peer.cmdQueuesAllocated || peer.cmdQueueDevices.device == nullptr) {
+    new (&slots[peerIndex]) P2pIbrcTransportDevice();
+    return;
+  }
+
+  new (&slots[peerIndex]) P2pIbrcTransportDevice(
+      DeviceSpan<IbrcCmdQueueDevice>(
+          static_cast<IbrcCmdQueueDevice*>(peer.cmdQueueDevices.device),
+          static_cast<uint32_t>(peer.cmdQueues.size())),
+      static_cast<uint32_t>(numNics_),
+      static_cast<uint32_t>(config_.numQpsPerPeerPerNic));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -1165,6 +1219,37 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
   }
 }
 
+P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
+    int peerRank) const {
+  if (config_.ibLazyConnect) {
+    LOG_FIRST_N(WARNING, 1)
+        << "MultipeerIbrcTransport: lazy mode is enabled but Transport[] "
+        << "array is being built with possibly unmaterialized IBRC slots. "
+        << "Call get_device_handle(peers) before kernels access lazy peers.";
+  }
+  if (p2pTransportDevices_.device == nullptr) {
+    throw std::runtime_error(
+        "getP2pTransportDeviceSlot: IBRC device transport slots are not initialized");
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  return static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.device) +
+      peerIndex;
+}
+
+P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
+    int peerRank) const {
+  // IBRC builds every peer slot eagerly in initializeDeviceTransportSlots(), so
+  // the per-peer accessor is just slot pointer arithmetic (no materialization,
+  // hence no lazy warning unlike getP2pTransportDeviceSlot()).
+  if (p2pTransportDevices_.device == nullptr) {
+    throw std::runtime_error(
+        "getP2pTransportDevice: IBRC device transport slots are not initialized");
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  return static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.device) +
+      peerIndex;
+}
+
 void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   const int peerIndex = rankToPeerIndex(peerRank);
 
@@ -1174,11 +1259,13 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
   connectPeerQps(peerIndex, remoteQp);
   allocatePeerCmdQueues(peerIndex);
-
-  throwIbrcUnimplemented("lazy command-ring/device transport path");
+  startProgressThread();
+  peerMaterialized_[peerIndex] = true;
 }
 
 void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
+  // Quiesce progress before teardown; next doMaterializePeer restarts it.
+  stopProgressThread();
   cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);
   if (peerIndex >= 0 &&
