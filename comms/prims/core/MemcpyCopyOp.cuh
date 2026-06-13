@@ -10,6 +10,16 @@
 namespace comms::prims {
 
 struct Memcpy {
+  // Fixed-size CopyOp policy: the transport reserves exactly `chunkSize`
+  // per sub-chunk and emits exactly `nbytes`. See AnsCompress (CopyOp.cuh)
+  // for the variable-size counterpart that overrides these.
+  static constexpr bool kVariableSize = false;
+  static constexpr std::size_t kActivationThreshold = 0;
+  __host__ __device__ __forceinline__ static constexpr std::size_t
+  worst_case_chunk_stride(std::size_t chunkSize) {
+    return chunkSize;
+  }
+
   template <typename... Args>
   __device__ __forceinline__ static void send(
       char* staging,
