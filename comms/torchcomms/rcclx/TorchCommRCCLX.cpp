@@ -305,22 +305,28 @@ void TorchCommRCCLX::finalize() {
   stream_work_queues_.clear();
 
   if (comm_state_ == CommState::TIMEOUT) {
+    cleanupAllGatherPHandles();
     abortRcclxComm();
     throw std::runtime_error("Work timed out during finalize");
   } else if (
       comm_state_ == CommState::ERROR &&
       comm_state_on_entry != CommState::ERROR) {
+    cleanupAllGatherPHandles();
     ncclResult_t asyncErr;
     RCCLX_CHECK(
         rcclx_api_,
         nccl_comm_,
         rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr),
         "failed to get async error");
+    TC_LOG(ERROR, this) << "AllGatherP/RCCLX finalize observed async error: "
+                        << rcclx_api_->getErrorString(asyncErr);
     RCCLXException RCCLXException(
         *rcclx_api_, "RCCLX Async Error", asyncErr, nccl_comm_);
     abortRcclxComm();
     throw RCCLXException;
   }
+
+  cleanupAllGatherPHandles();
 
   // Clear the completed works queue
   std::queue<c10::intrusive_ptr<TorchWorkRCCLX>> empty;
@@ -1910,20 +1916,18 @@ TorchCommBackend::AllGatherPHandle TorchCommRCCLX::all_gather_p_init(
   size_t maxRecvCount = output.numel();
   size_t bufferSize = maxRecvCount * output.element_size();
 
-  // Register the output buffer with NCCL before calling allGatherInit
-  // AllGatherP requires pre-registered memory
   void* dataPtr = output.data_ptr();
-  void* regHandle = nullptr;
+  bool releaseManagedRegistrationOnError = false;
 
-  // Check if already registered, if not register it
   auto it = memoryRegistrationHandles_.find(dataPtr);
   if (it == memoryRegistrationHandles_.end()) {
-    RCCLX_CHECK(
-        rcclx_api_,
-        nccl_comm_,
-        rcclx_api_->commRegister(nccl_comm_, dataPtr, bufferSize, &regHandle),
-        "RCCLX commRegister failed for AllGatherP output buffer");
-    memoryRegistrationHandles_.emplace(dataPtr, RegistrationHandle(regHandle));
+    register_address(AddressWithLen{dataPtr, bufferSize});
+    it = memoryRegistrationHandles_.find(dataPtr);
+    it->second.allGatherPRefCount = 1;
+    releaseManagedRegistrationOnError = true;
+  } else if (it->second.allGatherPRefCount > 0) {
+    it->second.allGatherPRefCount++;
+    releaseManagedRegistrationOnError = true;
   }
 
   // Convert hints from options
@@ -1934,18 +1938,58 @@ TorchCommBackend::AllGatherPHandle TorchCommRCCLX::all_gather_p_init(
 
   void* request = nullptr;
 
-  RCCLX_CHECK(
-      rcclx_api_,
-      nccl_comm_,
-      rcclx_api_->allGatherInit(
-          dataPtr,
-          maxRecvCount,
-          rcclxHints,
-          getNcclDataType(output),
-          nccl_comm_,
-          internal_stream_,
-          &request),
-      "RCCLX allGatherInit failed");
+  try {
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->allGatherInit(
+            dataPtr,
+            maxRecvCount,
+            rcclxHints,
+            getNcclDataType(output),
+            nccl_comm_,
+            internal_stream_,
+            &request),
+        "RCCLX allGatherInit failed");
+
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->streamSynchronize(internal_stream_),
+        "RCCLX allGatherInit stream synchronize failed");
+
+    ncclResult_t asyncErr;
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error after RCCLX allGatherInit");
+    if (asyncErr != ncclSuccess) {
+      TC_LOG(ERROR, this) << "AllGatherP/RCCLX init observed async error: "
+                          << rcclx_api_->getErrorString(asyncErr);
+      comm_state_ = CommState::ERROR;
+      checkAndAbortIfTimedOutOrError();
+    }
+  } catch (...) {
+    if (request != nullptr) {
+      RCCLX_CHECK_IGNORE(
+          rcclx_api_,
+          rcclx_api_->pFree(request),
+          "RCCLX pFree failed during init rollback");
+    }
+    if (releaseManagedRegistrationOnError) {
+      auto regIt = memoryRegistrationHandles_.find(dataPtr);
+      if (regIt != memoryRegistrationHandles_.end() &&
+          regIt->second.allGatherPRefCount > 0) {
+        if (--regIt->second.allGatherPRefCount == 0) {
+          (void)rcclx_api_->commDeregister(nccl_comm_, regIt->second.regHandle);
+          memoryRegistrationHandles_.erase(regIt);
+        }
+      }
+    }
+    throw;
+  }
+
+  allGatherPHandleStates_.emplace(request, AllGatherPHandleState{dataPtr});
 
   return request;
 }
@@ -1983,13 +2027,53 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_p_exec(
   return work;
 }
 
-void TorchCommRCCLX::all_gather_p_free(AllGatherPHandle handle) {
+void TorchCommRCCLX::cleanupAllGatherPHandle(AllGatherPHandle handle) {
   if (handle == nullptr) {
+    return;
+  }
+
+  auto stateIt = allGatherPHandleStates_.find(handle);
+  if (stateIt == allGatherPHandleStates_.end()) {
     return;
   }
 
   RCCLX_CHECK_IGNORE(
       rcclx_api_, rcclx_api_->pFree(handle), "RCCLX pFree failed");
+
+  const auto outputAddr = stateIt->second.outputAddr;
+  auto regIt = memoryRegistrationHandles_.find(outputAddr);
+  if (regIt != memoryRegistrationHandles_.end() &&
+      regIt->second.allGatherPRefCount > 0) {
+    if (--regIt->second.allGatherPRefCount == 0) {
+      if (nccl_comm_ != nullptr) {
+        RCCLX_CHECK_IGNORE(
+            rcclx_api_,
+            rcclx_api_->commDeregister(nccl_comm_, regIt->second.regHandle),
+            "Failed to deregister RCCLX AllGatherP output buffer");
+      }
+      memoryRegistrationHandles_.erase(regIt);
+    }
+  }
+  allGatherPHandleStates_.erase(stateIt);
+}
+
+void TorchCommRCCLX::cleanupAllGatherPHandles() {
+  std::vector<AllGatherPHandle> handles;
+  handles.reserve(allGatherPHandleStates_.size());
+  for (const auto& [handle, _] : allGatherPHandleStates_) {
+    handles.push_back(handle);
+  }
+  for (auto handle : handles) {
+    cleanupAllGatherPHandle(handle);
+  }
+}
+
+void TorchCommRCCLX::all_gather_p_free(AllGatherPHandle handle) {
+  if (handle == nullptr) {
+    return;
+  }
+  checkInitialized();
+  cleanupAllGatherPHandle(handle);
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(

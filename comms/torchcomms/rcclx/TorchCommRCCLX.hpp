@@ -352,12 +352,15 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   struct RegistrationHandle {
     void* regHandle;
+    size_t allGatherPRefCount{0};
 
     explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
 
     RegistrationHandle(RegistrationHandle&& other) noexcept
-        : regHandle{other.regHandle} {
+        : regHandle{other.regHandle},
+          allGatherPRefCount{other.allGatherPRefCount} {
       other.regHandle = nullptr;
+      other.allGatherPRefCount = 0;
     }
 
     RegistrationHandle(const RegistrationHandle&) = delete;
@@ -366,7 +369,9 @@ class TorchCommRCCLX : public TorchCommBackend,
     RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
       if (this != &other) {
         regHandle = other.regHandle;
+        allGatherPRefCount = other.allGatherPRefCount;
         other.regHandle = nullptr;
+        other.allGatherPRefCount = 0;
       }
       return *this;
     }
@@ -390,6 +395,8 @@ class TorchCommRCCLX : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void garbageCollectWorkQueues();
+  void cleanupAllGatherPHandle(AllGatherPHandle handle);
+  void cleanupAllGatherPHandles();
 
   void enqueueWork(
       const c10::intrusive_ptr<TorchWorkRCCLX>& work,
@@ -422,6 +429,11 @@ class TorchCommRCCLX : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  struct AllGatherPHandleState {
+    void* outputAddr{nullptr};
+  };
+  std::unordered_map<void*, AllGatherPHandleState> allGatherPHandleStates_;
 
   // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
   c10::intrusive_ptr<c10d::Store> reconfigure_store_;
