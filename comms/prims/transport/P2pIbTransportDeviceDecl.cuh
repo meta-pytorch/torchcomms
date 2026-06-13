@@ -37,8 +37,76 @@ struct P2pIbTransportDevice {
   IBGDA_HOST_DEVICE P2pIbTransportDevice& operator=(
       const P2pIbTransportDevice&) = default;
 
-  // Common explicit-buffer IB device API. Backend-owned slot-index helpers and
-  // send/recv staging remain backend-specific until IBRC owns matching state.
+  // Common slot-index IB device API.
+  __device__ void signal(int signalId, uint64_t signalVal = 1);
+
+  __device__ void
+  signal(ThreadGroup& group, int signalId, uint64_t signalVal = 1);
+
+  __device__ void put(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1);
+
+  __device__ void put(
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1);
+
+  __device__ void put_cooperative(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      int signalId = -1,
+      uint64_t signalVal = 1,
+      int counterId = -1,
+      uint64_t counterVal = 1);
+
+  __device__ void wait_signal(
+      ThreadGroup& group,
+      int signalId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void wait_signal(
+      int signalId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void wait_counter(
+      ThreadGroup& group,
+      int counterId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void wait_counter(
+      int counterId,
+      uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void reset_signal(ThreadGroup& group, int signalId);
+
+  __device__ void reset_signal(int signalId);
+
+  __device__ void reset_counter(ThreadGroup& group, int counterId);
+
+  __device__ void reset_counter(int counterId);
+
+  __device__ uint64_t read_signal(int signalId) const;
+
+  __device__ uint64_t read_counter(int counterId) const;
+
+  // Common explicit-buffer IB device API.
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
@@ -53,7 +121,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf = {},
+      const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
@@ -62,7 +130,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf = {},
+      const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
@@ -72,7 +140,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf = {},
+      const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
@@ -81,7 +149,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer& signalBuf = {},
+      const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
