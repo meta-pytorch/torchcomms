@@ -92,6 +92,18 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
+      .def_property_readonly(
+          "factor",
+          [](const ReduceOp& self) -> py::object {
+            const auto& f = self.factor();
+            if (!f.has_value()) {
+              return py::none();
+            }
+            return std::visit(
+                [](const auto& v) -> py::object { return py::cast(v); },
+                f.value());
+          },
+          "Get the PREMUL_SUM factor (None for non-PREMUL_SUM ops).")
       .def_static(
           "PREMUL_SUM",
           &ReduceOp::make_nccl_premul_sum,
