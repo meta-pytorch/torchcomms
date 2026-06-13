@@ -342,7 +342,10 @@ void TorchCommNCCL::abortNcclComm() {
         "NCCL Abort failed");
     nccl_comm_ = nullptr;
   }
-  if (options_.abort_process_on_timeout_or_error) {
+  // Never abort the process in reconfigurable mode: callers fall back to
+  // revoke + throw so the failure can be handled by reconfiguring.
+  if (options_.abort_process_on_timeout_or_error &&
+      !options_.enable_reconfigure) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
     runAbortHooks();
     ::abort();
@@ -350,16 +353,34 @@ void TorchCommNCCL::abortNcclComm() {
 }
 
 void TorchCommNCCL::revokeNcclComm() {
+  // Idempotent: the timeout watchdog and a synchronous collective may both
+  // observe the same timeout and attempt a revoke. Run the teardown (abort
+  // hooks, memory hook detach, commRevoke) at most once per communicator
+  // generation. revoked_ is reset on reconfigure.
+  if (revoked_.exchange(true)) {
+    return;
+  }
   TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
   runAbortHooks();
   detachMemoryHook();
   if (nccl_comm_) {
-    NCCL_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commRevoke(nccl_comm_),
-        "NCCL Revoke failed");
+    // Best-effort: this may run on the timeout watchdog thread, so log instead
+    // of throwing on failure (the communicator is already being torn down).
+    NCCL_CHECK_IGNORE(
+        nccl_api_, nccl_api_->commRevoke(nccl_comm_), "NCCL Revoke failed");
   }
+}
+
+bool TorchCommNCCL::isAbortSupported() const {
+  return true;
+}
+
+bool TorchCommNCCL::isAborted() const {
+  // A non-NORMAL state means the communicator hit a timeout or error (set by
+  // the timeout watchdog, a synchronous collective, or abort()). Reading the
+  // atomic issues no CUDA/NCCL calls, so this is safe to poll during CUDA graph
+  // replay, where per-operation work handles are unavailable.
+  return comm_state_.load() != CommState::NORMAL;
 }
 
 int TorchCommNCCL::getRank() const {
