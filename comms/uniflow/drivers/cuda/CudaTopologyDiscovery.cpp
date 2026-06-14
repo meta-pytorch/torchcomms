@@ -1016,7 +1016,7 @@ CudaTopologyDiscovery::CudaTopologyDiscovery(
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<SysfsApi> sysfsApi)
     : cudaApi_(cudaApi ? std::move(cudaApi) : std::make_shared<CudaApi>()),
-      nvmlApi_(nvmlApi ? std::move(nvmlApi) : std::make_shared<NvmlApi>()),
+      nvmlApi_(nvmlApi ? std::move(nvmlApi) : createNvmlApi()),
       ibvApi_(ibvApi ? std::move(ibvApi) : std::make_shared<IbvApi>()),
       sysfsApi_(sysfsApi ? std::move(sysfsApi) : std::make_shared<SysfsApi>()) {
 }
