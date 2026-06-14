@@ -33,6 +33,13 @@ struct KernArgs {
   /** Shared topology-agnostic kernel arguments (Phase 1 / Phase 3 + entry). */
   ctran::allreduce::common::CommonKernArgs common;
 
+  /**
+   * Per-NVL-variant device-state slot. Empty for NvlDirect; the orchestrator
+   * dispatches the NVL phases through `nvl::direct::Ops`.
+   * `[[no_unique_address]]` keeps `sizeof(KernArgs)` unchanged while empty.
+   */
+  [[no_unique_address]] ctran::allreduce::nvl::direct::ExtraArgs nvl;
+
   /** Inter-node tree used for the first half of each data partition. */
   ctran::allreduce::TreeTopology tree0;
   /** Inter-node tree used for the second half of each data partition. */
