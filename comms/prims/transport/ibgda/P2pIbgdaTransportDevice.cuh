@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 // On NVIDIA, pull in the DOCA verbs headers + the Meta-internal
 // `DocaVerbsUtils.cuh` wrapper that defines `comms::prims::doca_fence`.
@@ -35,6 +36,20 @@
 namespace comms::prims {
 
 struct Memcpy;
+
+namespace detail {
+// Query whether a CopyOp policy is variable-size (e.g. AnsCompress, which
+// produces a data-dependent compressed payload and needs the per-sub-chunk
+// transport protocol). Policies that don't declare `kVariableSize` (Memcpy,
+// TileReduce, MemcpyAndSelfCopy, …) are treated as fixed-size.
+template <typename C, typename = void>
+struct copyop_variable_size : std::false_type {};
+template <typename C>
+struct copyop_variable_size<C, std::void_t<decltype(C::kVariableSize)>>
+    : std::bool_constant<C::kVariableSize> {};
+template <typename C>
+inline constexpr bool copyop_variable_size_v = copyop_variable_size<C>::value;
+} // namespace detail
 
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
@@ -2110,8 +2125,15 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
 
+    // Compressed (variable-size) CopyOps require 512-byte-aligned slot and
+    // sub-chunk strides (nvcompdx alignment + worst-case expansion headroom);
+    // fixed-size CopyOps (Memcpy) keep the original 16-byte alignment so their
+    // behavior is byte-identical to before compression support was added.
+    constexpr std::size_t kAlignMask =
+        detail::copyop_variable_size_v<CopyOp> ? ~511ULL : ~15ULL;
+
     const std::size_t perBlockSlot =
-        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / effActive) & kAlignMask;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
@@ -2125,7 +2147,7 @@ class P2pIbgdaTransportDevice {
 
     std::size_t chunkSize =
         (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
-        ? (max_signal_bytes & ~15ULL)
+        ? (max_signal_bytes & kAlignMask)
         : perBlockSlot;
     if (chunkSize == 0) {
       chunkSize = perBlockSlot;
@@ -2145,82 +2167,194 @@ class P2pIbgdaTransportDevice {
       state.activeNextByte = 0;
     }
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
-      const uint64_t streamStart = baseByte + dataOff;
-      const std::size_t pipelineOff =
-          static_cast<std::size_t>(streamStart % pipelineBytes);
-      const int slot = static_cast<int>(pipelineOff / perBlockSlot);
-      const std::size_t slotOff = slot * dataBufferSize;
-      const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
-      const std::size_t slotRemaining = perBlockSlot - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
-      std::size_t bytesThis =
-          chunkSize < dataRemaining ? chunkSize : dataRemaining;
-      bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
-      const std::size_t stagingOff =
-          slotOff + groupId * perBlockSlot + chunkOff;
-      const uint64_t streamEnd = streamStart + bytesThis;
+    if constexpr (detail::copyop_variable_size_v<CopyOp>) {
+      // Variable-size (compressed) path (from D104788730, re-expressed on
+      // stable's progress-state buffers). A compressed sub-chunk cannot be
+      // split across a slot boundary and its on-wire size is data-dependent,
+      // so the staging ring and the SLOT_FREE/NIC_DONE protocol are counted in
+      // *sub-chunks* (not bytes): each slot holds exactly chunksPerSlot
+      // worst-case-stride sub-chunks and signal/counter increments are 1 per
+      // sub-chunk. The data cursor (src) advances by chunkSize. Here
+      // state.nextStep tracks the cumulative sub-chunk count for this stream.
+      const std::size_t chunkStride =
+          CopyOp::worst_case_chunk_stride(chunkSize);
+      if (chunkStride > perBlockSlot) {
+        if (group.is_leader()) {
+          printf(
+              "[PIPES] FATAL: send perBlockSlot=%llu < chunkStride=%llu "
+              "(dataBufferSize=%llu, active_blocks=%d, chunkSize=%llu). "
+              "Increase ibgdaConfig.dataBufferSize so each block's slot "
+              "fits at least one worst-case-expanded sub-chunk.\n",
+              (unsigned long long)perBlockSlot,
+              (unsigned long long)chunkStride,
+              (unsigned long long)sendRecvState_.dataBufferSize,
+              effActive,
+              (unsigned long long)chunkSize);
+        }
+        PIPES_DEVICE_TRAP();
+      }
+      const int64_t chunksPerSlot =
+          static_cast<int64_t>(perBlockSlot / chunkStride);
+      const int64_t pipelineChunks =
+          static_cast<int64_t>(pipelineDepth) * chunksPerSlot;
+      const int64_t baseStep = static_cast<int64_t>(baseByte);
+      const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
 
-      // (1) Wait for NIC to finish with this slot's local sendStaging.
-      if (streamEnd > pipelineBytes) {
-        wait_counter(
+      for (std::size_t s = 0; s < totalChunks; ++s) {
+        const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
+        const int64_t slotStep = chunkStep / chunksPerSlot;
+        const int64_t subStep = chunkStep % chunksPerSlot;
+        const int slot = static_cast<int>(slotStep % pipelineDepth);
+        const std::size_t slotOff = slot * dataBufferSize;
+        const std::size_t chunkOff =
+            static_cast<std::size_t>(subStep) * chunkStride;
+        const std::size_t stagingOff =
+            slotOff + groupId * perBlockSlot + chunkOff;
+        const std::size_t dataOff = s * chunkSize;
+        const std::size_t bytesThis =
+            (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
+
+        // (1) Wait for the NIC to finish with this slot's sendStaging.
+        if (chunkStep >= pipelineChunks) {
+          wait_counter(
+              group,
+              sendRecvState_.localCounterBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+              timeout);
+        }
+
+        // (2) Cooperative compress: src -> local sendStaging via CopyOp.
+        //     `copyResult` is the number of bytes actually written into the
+        //     staging slot (compressed-region size for AnsCompress); the
+        //     leader uses it below to size the RDMA put (D105856901).
+        const std::size_t copyResult = CopyOp::send(
+            sendRecvState_.sendStagingPtr + stagingOff,
+            static_cast<const char*>(src) + dataOff,
+            bytesThis,
             group,
-            sendRecvState_.localCounterBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            streamEnd - pipelineBytes,
-            timeout);
+            dataOff,
+            args...);
+        group.sync();
+
+        // (3) Backpressure: wait for receiver to free this sub-chunk.
+        if (chunkStep >= pipelineChunks) {
+          wait_signal(
+              group,
+              sendRecvState_.localSignalBuf.subBuffer(
+                  (maxGroups + groupId) * sizeof(uint64_t)),
+              static_cast<uint64_t>(chunkStep - pipelineChunks + 1),
+              timeout);
+        }
+
+        // (4) Leader shrinks the RDMA put to the CopyOp-returned size
+        //     (clamped to chunkStride so we never put past this sub-chunk's
+        //     slot region). Signal/counter increment by 1 (per sub-chunk).
+        __threadfence_system();
+        group.sync();
+        if (group.is_leader()) {
+          const std::size_t putBytes =
+              copyResult <= chunkStride ? copyResult : chunkStride;
+          ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+          put(solo,
+              sendRecvState_.sendStagingBuf.subBuffer(stagingOff),
+              sendRecvState_.recvStagingBuf.subBuffer(stagingOff),
+              putBytes,
+              sendRecvState_.remoteSignalBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              1ULL,
+              sendRecvState_.localCounterBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              1ULL);
+        }
+        group.sync();
       }
 
-      // (2) Cooperative copy: src → local sendStaging via CopyOp.
-      CopyOp::send(
-          sendRecvState_.sendStagingPtr + stagingOff,
-          static_cast<const char*>(src) + dataOff,
-          bytesThis,
-          group,
-          dataOff,
-          args...);
-      group.sync();
-
-      // (3) Backpressure: wait for receiver to free this byte range's
-      //     recvStaging offset. Symmetric with DATA_READY.
-      if (streamEnd > pipelineBytes) {
-        wait_signal(
-            group,
-            sendRecvState_.localSignalBuf.subBuffer(
-                (maxGroups + groupId) * sizeof(uint64_t)),
-            streamEnd - pipelineBytes,
-            timeout);
-      }
-
-      // (4) threadfence_system + leader-only single-WQE RDMA put with
-      //     fused signal+counter. All threads fence to ensure memcpy
-      //     stores are visible to the NIC before the leader posts the WQE.
-      __threadfence_system();
-      group.sync();
       if (group.is_leader()) {
-        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
-        put(solo,
-            sendRecvState_.sendStagingBuf.subBuffer(stagingOff),
-            sendRecvState_.recvStagingBuf.subBuffer(stagingOff),
-            bytesThis,
-            sendRecvState_.remoteSignalBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            bytesThis,
-            sendRecvState_.localCounterBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            bytesThis);
+        state.nextStep = baseStep + static_cast<int64_t>(totalChunks);
+        state.activeStage = detail::IbSendRecvProgressStage::Done;
+        state.activeBaseStep = 0;
+        state.activeNextByte = 0;
       }
       group.sync();
-      dataOff += bytesThis;
-    }
+    } else {
+      for (std::size_t dataOff = 0; dataOff < nbytes;) {
+        const uint64_t streamStart = baseByte + dataOff;
+        const std::size_t pipelineOff =
+            static_cast<std::size_t>(streamStart % pipelineBytes);
+        const int slot = static_cast<int>(pipelineOff / perBlockSlot);
+        const std::size_t slotOff = slot * dataBufferSize;
+        const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
+        const std::size_t slotRemaining = perBlockSlot - chunkOff;
+        const std::size_t dataRemaining = nbytes - dataOff;
+        std::size_t bytesThis =
+            chunkSize < dataRemaining ? chunkSize : dataRemaining;
+        bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
+        const std::size_t stagingOff =
+            slotOff + groupId * perBlockSlot + chunkOff;
+        const uint64_t streamEnd = streamStart + bytesThis;
 
-    if (group.is_leader()) {
-      state.nextStep = static_cast<int64_t>(baseByte + nbytes);
-      state.activeStage = detail::IbSendRecvProgressStage::Done;
-      state.activeBaseStep = 0;
-      state.activeNextByte = 0;
+        // (1) Wait for NIC to finish with this slot's local sendStaging.
+        if (streamEnd > pipelineBytes) {
+          wait_counter(
+              group,
+              sendRecvState_.localCounterBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              streamEnd - pipelineBytes,
+              timeout);
+        }
+
+        // (2) Cooperative copy: src → local sendStaging via CopyOp.
+        CopyOp::send(
+            sendRecvState_.sendStagingPtr + stagingOff,
+            static_cast<const char*>(src) + dataOff,
+            bytesThis,
+            group,
+            dataOff,
+            args...);
+        group.sync();
+
+        // (3) Backpressure: wait for receiver to free this byte range's
+        //     recvStaging offset. Symmetric with DATA_READY.
+        if (streamEnd > pipelineBytes) {
+          wait_signal(
+              group,
+              sendRecvState_.localSignalBuf.subBuffer(
+                  (maxGroups + groupId) * sizeof(uint64_t)),
+              streamEnd - pipelineBytes,
+              timeout);
+        }
+
+        // (4) threadfence_system + leader-only single-WQE RDMA put with
+        //     fused signal+counter. All threads fence to ensure memcpy
+        //     stores are visible to the NIC before the leader posts the WQE.
+        __threadfence_system();
+        group.sync();
+        if (group.is_leader()) {
+          ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+          put(solo,
+              sendRecvState_.sendStagingBuf.subBuffer(stagingOff),
+              sendRecvState_.recvStagingBuf.subBuffer(stagingOff),
+              bytesThis,
+              sendRecvState_.remoteSignalBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              bytesThis,
+              sendRecvState_.localCounterBuf.subBuffer(
+                  groupId * sizeof(uint64_t)),
+              bytesThis);
+        }
+        group.sync();
+        dataOff += bytesThis;
+      }
+
+      if (group.is_leader()) {
+        state.nextStep = static_cast<int64_t>(baseByte + nbytes);
+        state.activeStage = detail::IbSendRecvProgressStage::Done;
+        state.activeBaseStep = 0;
+        state.activeNextByte = 0;
+      }
+      group.sync();
     }
-    group.sync();
 #endif
   }
 
@@ -2296,8 +2430,13 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
 
+    // See send(): compressed CopyOps use 512-byte alignment; Memcpy keeps the
+    // original 16-byte alignment (byte-identical behavior).
+    constexpr std::size_t kAlignMask =
+        detail::copyop_variable_size_v<CopyOp> ? ~511ULL : ~15ULL;
+
     const std::size_t perBlockSlot =
-        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / effActive) & kAlignMask;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
@@ -2311,7 +2450,7 @@ class P2pIbgdaTransportDevice {
 
     std::size_t chunkSize =
         (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
-        ? (max_signal_bytes & ~15ULL)
+        ? (max_signal_bytes & kAlignMask)
         : perBlockSlot;
     if (chunkSize == 0) {
       chunkSize = perBlockSlot;
@@ -2331,56 +2470,129 @@ class P2pIbgdaTransportDevice {
       state.activeNextByte = 0;
     }
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
-      const uint64_t streamStart = baseByte + dataOff;
-      const std::size_t pipelineOff =
-          static_cast<std::size_t>(streamStart % pipelineBytes);
-      const int slot = static_cast<int>(pipelineOff / perBlockSlot);
-      const std::size_t slotOff = slot * dataBufferSize;
-      const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
-      const std::size_t slotRemaining = perBlockSlot - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
-      std::size_t bytesThis =
-          chunkSize < dataRemaining ? chunkSize : dataRemaining;
-      bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
-      const std::size_t stagingOff =
-          slotOff + groupId * perBlockSlot + chunkOff;
-      const uint64_t streamEnd = streamStart + bytesThis;
+    if constexpr (detail::copyop_variable_size_v<CopyOp>) {
+      // Variable-size (compressed) path — mirror of send(): the staging ring
+      // and DATA_READY/SLOT_FREE protocol are counted in sub-chunks. CopyOp
+      // (AnsCompress) reads its own in-staging size header to decompress;
+      // the receiver only needs the deterministic sub-chunk geometry.
+      const std::size_t chunkStride =
+          CopyOp::worst_case_chunk_stride(chunkSize);
+      if (chunkStride > perBlockSlot) {
+        if (group.is_leader()) {
+          printf(
+              "[PIPES] FATAL: recv perBlockSlot=%llu < chunkStride=%llu "
+              "(dataBufferSize=%llu, active_blocks=%d, chunkSize=%llu).\n",
+              (unsigned long long)perBlockSlot,
+              (unsigned long long)chunkStride,
+              (unsigned long long)sendRecvState_.dataBufferSize,
+              effActive,
+              (unsigned long long)chunkSize);
+        }
+        PIPES_DEVICE_TRAP();
+      }
+      const int64_t chunksPerSlot =
+          static_cast<int64_t>(perBlockSlot / chunkStride);
+      const int64_t baseStep = static_cast<int64_t>(baseByte);
+      const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
 
-      // (1) Wait for sender's DATA_READY signal.
-      wait_signal(
-          group,
-          sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
-          streamEnd,
-          timeout);
+      for (std::size_t s = 0; s < totalChunks; ++s) {
+        const int64_t chunkStep = baseStep + static_cast<int64_t>(s);
+        const int64_t slotStep = chunkStep / chunksPerSlot;
+        const int64_t subStep = chunkStep % chunksPerSlot;
+        const int slot = static_cast<int>(slotStep % pipelineDepth);
+        const std::size_t slotOff = slot * dataBufferSize;
+        const std::size_t chunkOff =
+            static_cast<std::size_t>(subStep) * chunkStride;
+        const std::size_t stagingOff =
+            slotOff + groupId * perBlockSlot + chunkOff;
+        const std::size_t dataOff = s * chunkSize;
+        const std::size_t bytesThis =
+            (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
-      // (2) Cooperative copy: local recvStaging → dst via CopyOp.
-      CopyOp::recv(
-          static_cast<char*>(dst) + dataOff,
-          sendRecvState_.recvStagingPtr + stagingOff,
-          bytesThis,
-          group,
-          dataOff,
-          args...);
+        // (1) Wait for sender's DATA_READY (cumulative sub-chunk count).
+        wait_signal(
+            group,
+            sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+            static_cast<uint64_t>(chunkStep + 1),
+            timeout);
+
+        // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
+        CopyOp::recv(
+            static_cast<char*>(dst) + dataOff,
+            sendRecvState_.recvStagingPtr + stagingOff,
+            bytesThis,
+            group,
+            dataOff,
+            args...);
+        group.sync();
+
+        // (3) Signal SLOT_FREE to sender (increment by 1 per sub-chunk).
+        signal(
+            group,
+            sendRecvState_.remoteSignalBuf.subBuffer(
+                (maxGroups + groupId) * sizeof(uint64_t)),
+            1ULL);
+      }
+
+      if (group.is_leader()) {
+        state.nextStep = baseStep + static_cast<int64_t>(totalChunks);
+        state.activeStage = detail::IbSendRecvProgressStage::Done;
+        state.activeBaseStep = 0;
+        state.activeNextByte = 0;
+      }
       group.sync();
+    } else {
+      for (std::size_t dataOff = 0; dataOff < nbytes;) {
+        const uint64_t streamStart = baseByte + dataOff;
+        const std::size_t pipelineOff =
+            static_cast<std::size_t>(streamStart % pipelineBytes);
+        const int slot = static_cast<int>(pipelineOff / perBlockSlot);
+        const std::size_t slotOff = slot * dataBufferSize;
+        const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
+        const std::size_t slotRemaining = perBlockSlot - chunkOff;
+        const std::size_t dataRemaining = nbytes - dataOff;
+        std::size_t bytesThis =
+            chunkSize < dataRemaining ? chunkSize : dataRemaining;
+        bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
+        const std::size_t stagingOff =
+            slotOff + groupId * perBlockSlot + chunkOff;
+        const uint64_t streamEnd = streamStart + bytesThis;
 
-      // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
-      //     threshold before reusing remote recvStaging at the same offset.
-      signal(
-          group,
-          sendRecvState_.remoteSignalBuf.subBuffer(
-              (maxGroups + groupId) * sizeof(uint64_t)),
-          bytesThis);
-      dataOff += bytesThis;
-    }
+        // (1) Wait for sender's DATA_READY signal.
+        wait_signal(
+            group,
+            sendRecvState_.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+            streamEnd,
+            timeout);
 
-    if (group.is_leader()) {
-      state.nextStep = static_cast<int64_t>(baseByte + nbytes);
-      state.activeStage = detail::IbSendRecvProgressStage::Done;
-      state.activeBaseStep = 0;
-      state.activeNextByte = 0;
+        // (2) Cooperative copy: local recvStaging → dst via CopyOp.
+        CopyOp::recv(
+            static_cast<char*>(dst) + dataOff,
+            sendRecvState_.recvStagingPtr + stagingOff,
+            bytesThis,
+            group,
+            dataOff,
+            args...);
+        group.sync();
+
+        // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
+        //     threshold before reusing remote recvStaging at the same offset.
+        signal(
+            group,
+            sendRecvState_.remoteSignalBuf.subBuffer(
+                (maxGroups + groupId) * sizeof(uint64_t)),
+            bytesThis);
+        dataOff += bytesThis;
+      }
+
+      if (group.is_leader()) {
+        state.nextStep = static_cast<int64_t>(baseByte + nbytes);
+        state.activeStage = detail::IbSendRecvProgressStage::Done;
+        state.activeBaseStep = 0;
+        state.activeNextByte = 0;
+      }
+      group.sync();
     }
-    group.sync();
 #endif
   }
 
