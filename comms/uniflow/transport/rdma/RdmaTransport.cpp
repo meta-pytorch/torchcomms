@@ -1922,7 +1922,13 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       // link is available.
       auto dmaBufStatus = cudaDriverApi_->cuMemGetHandleForAddressRange(
           &fdGuard.fd,
+#if defined(__HIP_PLATFORM_AMD__)
+          // hipDeviceptr_t is a pointer type on AMD (it is an integer on CUDA),
+          // so an integer address needs a reinterpret_cast there.
+          reinterpret_cast<CUdeviceptr>(alignedAddr),
+#else
           static_cast<CUdeviceptr>(alignedAddr),
+#endif
           dmaBufLen,
           CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
           flags);

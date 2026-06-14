@@ -48,7 +48,10 @@ Status CudaApi::deviceEnablePeerAccess(int peerDevice) {
   auto err = cudaDeviceEnablePeerAccess(peerDevice, 0);
   // cudaErrorPeerAccessAlreadyEnabled is not an error for us.
   if (err == cudaErrorPeerAccessAlreadyEnabled) {
-    cudaGetLastError(); // Clear the error.
+    // Clear the error. Cast to void: cudaGetLastError() is not nodiscard, but
+    // its hipified twin hipGetLastError() is, so discard explicitly to keep
+    // the single source compiling under -Werror on both platforms.
+    (void)cudaGetLastError();
     return Ok();
   }
   CUDA_RETURN_ERR(err, "cudaDeviceEnablePeerAccess", ErrCode::DriverError);
@@ -177,7 +180,8 @@ Result<bool> CudaApi::eventQuery(cudaEvent_t event) {
   }
   if (err == cudaErrorNotReady) {
     // Not an error — clear the sticky error and report not-ready.
-    cudaGetLastError();
+    // Cast to void: hipGetLastError() is nodiscard on AMD (see above).
+    (void)cudaGetLastError();
     return false;
   }
   CUDA_RETURN_ERR(err, "cudaEventQuery", ErrCode::DriverError);

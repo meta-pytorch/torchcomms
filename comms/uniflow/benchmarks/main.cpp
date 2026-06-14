@@ -12,12 +12,17 @@
 #include "comms/uniflow/benchmarks/Bootstrap.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/Reporter.h"
+#include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
+#include "comms/uniflow/logging/Logger.h"
+// ConnectionSetup/NVLink/NcclSendRecv/SendRecv benchmarks are NVIDIA-only
+// (NVLink/NCCL transports, or not yet wired for the AMD/hipify build) and are
+// compiled out on AMD.
+#ifndef __HIP_PLATFORM_AMD__
 #include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
-#include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
-#include "comms/uniflow/logging/Logger.h"
+#endif
 
 namespace {
 
@@ -345,17 +350,19 @@ int main(int argc, char** argv) {
 
   uniflow::benchmark::BenchmarkRunner runner;
   runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
-  runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
+#ifndef __HIP_PLATFORM_AMD__
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
   runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
+  runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
           opts.rdmaDevices));
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
+#endif
 
   if (opts.benchmark == "__list__") {
     std::cout << "Available benchmarks:\n";
