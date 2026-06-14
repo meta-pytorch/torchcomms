@@ -326,6 +326,26 @@ void runTestPutCooperativePartitioningBlock(bool* d_success) {
 }
 
 // =============================================================================
+// trace_ibgda_event test kernel
+// =============================================================================
+
+__global__ void testTraceIbgdaEvent(PipesTraceHandle trace) {
+#if PIPES_IS_DEVICE_COMPILE
+  trace_ibgda_event(
+      trace,
+      /*self_rank=*/7,
+      PipesTraceEventType::kIbSendBegin,
+      /*step=*/0x12345678,
+      /*group_id=*/0x4321);
+#endif
+}
+
+void runTestTraceIbgdaEvent(PipesTraceHandle trace) {
+  testTraceIbgdaEvent<<<1, 1>>>(trace);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
 // wait_signal timeout test kernels
 // =============================================================================
 
