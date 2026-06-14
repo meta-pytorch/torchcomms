@@ -2701,7 +2701,7 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctree
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
@@ -2709,6 +2709,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
      ctree - Ctran-based tree algorithm (Pipes-native)
+     cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
