@@ -3,8 +3,13 @@
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
-#include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+
+// RDMA is the GPU transport on AMD as well as NVIDIA. NVLink is NVIDIA-only
+// (NVML-backed topology, fabric/FD IPC) and is compiled out on AMD/HIP.
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#ifndef __HIP_PLATFORM_AMD__
+#include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+#endif
 
 #include <cstring>
 
@@ -30,10 +35,12 @@ std::vector<std::string> MultiTransportFactory::selectNics() {
 
 Status MultiTransportFactory::supported(TransportType type) {
   switch (type) {
-    case TransportType::NVLink:
-      return NVLinkTransportFactory::supported();
     case TransportType::RDMA:
       return RdmaTransportFactory::supported();
+#ifndef __HIP_PLATFORM_AMD__
+    case TransportType::NVLink:
+      return NVLinkTransportFactory::supported();
+#endif
     case TransportType::TCP:
       return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
     case TransportType::Mock:
@@ -92,12 +99,14 @@ MultiTransportFactory::MultiTransportFactory(int deviceId, NicFilter nicFilter)
   CHECK_THROW_EXCEPTION(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
-  // cuda device
+#ifndef __HIP_PLATFORM_AMD__
+  // NVLink is NVIDIA-only.
   if (deviceId_ >= 0) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
   }
+#endif
 
   auto nics = selectNics();
   if (!nics.empty()) {

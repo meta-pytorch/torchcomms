@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "comms/uniflow/Result.h"
 #include "comms/uniflow/drivers/nvml/NvmlCore.h"
 
@@ -95,5 +97,12 @@ class NvmlApi {
   /// Get the confidential compute status of the system
   virtual Status nvmlSystemGetConfComputeStatus(NvmlCCStatus* state);
 };
+
+/// Create the NVML wrapper for the platform this binary was built for. NVIDIA
+/// builds return the real (dlopen-backed) NvmlApi; AMD builds return a no-op
+/// stub that reports every query as unsupported (NVML has no HIP analog). The
+/// definition lives in the build-selected translation unit (NvmlApi.cpp /
+/// NvmlApiStub.cpp), mirroring createCudaApi().
+std::shared_ptr<NvmlApi> createNvmlApi();
 
 } // namespace uniflow
