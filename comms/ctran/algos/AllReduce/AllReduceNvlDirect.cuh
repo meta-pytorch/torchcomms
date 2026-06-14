@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/ctran/algos/AllReduce/AllReduceV2Types.h"
+#include "comms/ctran/algos/AllReduce/AllReduceFusedTypes.h"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
@@ -260,7 +260,7 @@ __device__ __noinline__ void phase1ReduceScatter(
   const size_t pipelineWindow = nvlPipelineWindow(args, group);
   PIPES_DEVICE_CHECK_MSG(
       pipelineWindow != 0,
-      "ctree Phase 1 NVL reduce-scatter pipeline window is zero");
+      "Phase 1 NVL reduce-scatter pipeline window is zero");
 
   const size_t maxTileBytes = maxOwnerTileBytes<T>(args, group);
   char* myDst = phase2Buf + myTile.offsetBytes;
@@ -345,8 +345,7 @@ __device__ __noinline__ void phase3AllGather(
 
   const size_t pipelineWindow = nvlPipelineWindow(args, group);
   PIPES_DEVICE_CHECK_MSG(
-      pipelineWindow != 0,
-      "ctree Phase 3 NVL all-gather pipeline window is zero");
+      pipelineWindow != 0, "Phase 3 NVL all-gather pipeline window is zero");
 
   const size_t maxTileBytes = maxOwnerTileBytes<T>(args, group);
   SegmentTile myTile{};
@@ -440,6 +439,50 @@ __device__ __forceinline__ void runAllReduceFused(
     phase3AllGather<T>(args, group);
   }
 }
+
+// ============================================================================
+// Shared device utilities for fused AllReduce kernels
+// ============================================================================
+
+/**
+ * Convert the physical block group into the logical num-block group used by
+ * cooperative Pipes operations.
+ */
+__device__ __forceinline__ comms::prims::ThreadGroup
+logicalDataGroup(comms::prims::ThreadGroup group, int blockId, int numBlocks) {
+  group.group_id = static_cast<uint32_t>(blockId);
+  group.total_groups = static_cast<uint32_t>(numBlocks);
+  return group;
+}
+
+/**
+ * Copy operation used by IBGDA receives in Phase 2.
+ *
+ * IBGDA owns the transient recv staging ring. The fused kernel must consume
+ * that staging inside this callback before the transport acknowledges and
+ * reuses the slot. The operation reduces the staged data into the local
+ * accumulator using tile-based vectorized reduction.
+ */
+template <typename T>
+struct IbReduceCopy {
+  template <typename... Args>
+  __device__ __forceinline__ static void recv(
+      char* dst,
+      const char* staging,
+      size_t nbytes,
+      comms::prims::ThreadGroup& group,
+      size_t /* byteOffset */,
+      Args...) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    T* accum = reinterpret_cast<T*>(dst);
+    const T* staged = reinterpret_cast<const T*>(staging);
+    const size_t nelems = nbytes / sizeof(T);
+
+    tileReduce<T, common::kIbTileElems, common::kBlockSize>(
+        accum, staged, nelems, group);
+#endif
+  }
+};
 
 } // namespace ctran::allreduce::nvl
 
