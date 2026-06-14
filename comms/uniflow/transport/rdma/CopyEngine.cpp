@@ -3,9 +3,23 @@
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
+#include <cstdint>
 #include <cstring>
 
 namespace uniflow {
+
+namespace {
+// On NVIDIA CUdeviceptr is an integer handle, so a device address (uint64_t)
+// converts with static_cast. After hipification CUdeviceptr is hipDeviceptr_t
+// (a pointer), which requires reinterpret_cast from the integer address.
+inline CUdeviceptr toDevicePtr(uint64_t addr) {
+#if defined(__HIP_PLATFORM_AMD__)
+  return reinterpret_cast<CUdeviceptr>(addr);
+#else
+  return static_cast<CUdeviceptr>(addr);
+#endif
+}
+} // namespace
 
 CopyEngine::CopyEngine(
     MemoryType memType,
@@ -26,7 +40,7 @@ void CopyEngine::copyToSlab(RdmaSlab& slab, const void* src, size_t len) {
         slab.ptr(), src, len, cudaMemcpyDeviceToHost, *stream_);
     cudaDriverApi_->streamWriteValue64(
         *stream_,
-        static_cast<CUdeviceptr>(slab.stateDeviceAddr()),
+        toDevicePtr(slab.stateDeviceAddr()),
         1,
         CU_STREAM_WRITE_VALUE_DEFAULT);
   } else {
@@ -41,7 +55,7 @@ void CopyEngine::copyFromSlab(void* dst, RdmaSlab& slab, size_t len) {
         dst, slab.ptr(), len, cudaMemcpyHostToDevice, *stream_);
     cudaDriverApi_->streamWriteValue64(
         *stream_,
-        static_cast<CUdeviceptr>(slab.stateDeviceAddr()),
+        toDevicePtr(slab.stateDeviceAddr()),
         1,
         CU_STREAM_WRITE_VALUE_DEFAULT);
   } else {
