@@ -422,24 +422,17 @@ __device__ __noinline__ void phase2IbDualTree(
  *
  * A tile is fully owned by one CUDA block. Multi-block launches only add more
  * independent tiles; the algorithm does not require inter-block coordination.
+ * Phase sequencing and transition syncs live in the shared `runAllReduceFused`
+ * orchestrator; Tree only supplies the dual-tree Phase 2.
  */
 template <typename T>
 __device__ __forceinline__ void runAllReduceTree(
     const ctran::allreduce::tree::KernArgs& args,
     comms::prims::ThreadGroup& group) {
-  phase1ReduceScatter<T>(args.common, group);
-  if (args.common.nLocalRanks > 1) {
-    group.sync();
-  }
-  if (args.common.nNodes > 1) {
-    phase2IbDualTree<T>(args, group);
-    if (args.common.nLocalRanks > 1) {
-      group.sync();
-    }
-  }
-  if (args.common.nLocalRanks > 1) {
-    phase3AllGather<T>(args.common, group);
-  }
+  runAllReduceFused<T>(
+      args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
+        phase2IbDualTree<T>(args, phaseGroup);
+      });
 }
 
 // ============================================================================
