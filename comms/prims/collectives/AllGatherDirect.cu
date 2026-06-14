@@ -315,13 +315,15 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
         const std::size_t window =
             remaining < ib_window ? remaining : ib_window;
 
-        next.template send<MemcpyAndSelfCopy>(
+        next.template sendWithTrace<MemcpyAndSelfCopy>(
             group,
             send_src + chunk_off,
             window,
             args.ib_num_blocks,
             args.ib_signaling_data_size,
             timeout,
+            args.trace,
+            static_cast<uint8_t>(args.ib_rank),
             own_dst + chunk_off);
 
         int fwd_current_rank = args.ib_rank;
@@ -334,22 +336,26 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
               off + chunk_off;
 
           if (step < W - 2) {
-            prev.forward(
+            prev.forwardWithTrace(
                 group,
                 dst,
                 next,
                 window,
                 args.ib_num_blocks,
                 args.ib_signaling_data_size,
-                timeout);
+                timeout,
+                args.trace,
+                static_cast<uint8_t>(args.ib_rank));
           } else {
-            prev.recv(
+            prev.recvWithTrace(
                 group,
                 dst,
                 window,
                 args.ib_num_blocks,
                 args.ib_signaling_data_size,
-                timeout);
+                timeout,
+                args.trace,
+                static_cast<uint8_t>(args.ib_rank));
           }
         }
       }
@@ -359,12 +365,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
           args.ready_counters,
           static_cast<std::size_t>(args.ib_rank) * total_chunks + chunk,
           args.ready_sequence);
-      trace_hierarchical_allgather(
-          args.trace,
-          group,
-          PipesTraceEventType::kHierAgIbChunkReady,
-          chunk,
-          args.ib_rank);
 
       int fwd_ready_rank = args.ib_rank;
       for (int step = 0; step < W - 1; step++) {
@@ -374,13 +374,13 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             args.ready_counters,
             static_cast<std::size_t>(fwd_ready_rank) * total_chunks + chunk,
             args.ready_sequence);
-        trace_hierarchical_allgather(
-            args.trace,
-            group,
-            PipesTraceEventType::kHierAgIbChunkReady,
-            chunk,
-            fwd_ready_rank);
       }
+      trace_hierarchical_allgather(
+          args.trace,
+          group,
+          PipesTraceEventType::kHierAgIbChunkReady,
+          chunk,
+          args.ib_rank);
     }
     return;
   }
