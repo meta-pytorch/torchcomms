@@ -31,6 +31,18 @@ const char* pipesTraceEventTypeName(uint8_t type) {
       return "hier_ag_nvl_chunk_ready";
     case Type::kHierAgNvlTaskDone:
       return "hier_ag_nvl_task_done";
+    case Type::kIbSendBegin:
+      return "ib_send_begin";
+    case Type::kIbSendEnd:
+      return "ib_send_end";
+    case Type::kIbRecvBegin:
+      return "ib_recv_begin";
+    case Type::kIbRecvEnd:
+      return "ib_recv_end";
+    case Type::kIbForwardBegin:
+      return "ib_forward_begin";
+    case Type::kIbForwardEnd:
+      return "ib_forward_end";
   }
   return "unknown";
 }
@@ -119,7 +131,12 @@ PipesTraceHandle PipesTrace::deviceHandle() const {
   if (buffer_ == nullptr) {
     return {};
   }
-  return buffer_->deviceHandle();
+  auto handle = buffer_->deviceHandle();
+  return PipesTraceHandle{
+      .ring = reinterpret_cast<PipesTraceEntry*>(handle.ring),
+      .writeIndex = handle.writeIndex,
+      .mask = handle.mask,
+      .shift = handle.shift};
 }
 
 void PipesTrace::drain() {
