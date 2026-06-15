@@ -1438,6 +1438,17 @@ timeout is unset.
           py::arg("timeout"),
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "set_hints",
+          &TorchComm::setHints,
+          R"(
+Set communicator-level key-value hints.
+
+Backends can use these as mutable fallbacks for operations whose per-call
+hints are unset. Mutable across CUDA-graph replays without recapture.
+          )",
+          py::arg("hints"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_device_transport",
           &TorchComm::get_device_transport,
           R"(

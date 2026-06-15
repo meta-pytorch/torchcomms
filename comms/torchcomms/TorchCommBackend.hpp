@@ -301,6 +301,19 @@ class TorchCommBackend {
   }
 
   /**
+   * Set communicator-level key-value hints.
+   *
+   * Backends can use these as mutable fallbacks for operations whose per-call
+   * hints are unset. Mutable across CUDA-graph replays without recapture.
+   */
+  virtual void setHints(
+      std::unordered_map<std::string, std::string> /*hints*/) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: setHints not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
+  /**
    * Check if the backend is fully initialized and ready for collective
    * operations. In dynamic regime, the backend transitions to initialized
    * state after a successful reconfigure().

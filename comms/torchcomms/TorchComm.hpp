@@ -258,6 +258,14 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   void setTimeout(std::chrono::milliseconds timeout);
 
+  /**
+   * Set communicator-level key-value hints.
+   *
+   * Backends can use these as mutable fallbacks for operations whose per-call
+   * hints are unset. Mutable across CUDA-graph replays without recapture.
+   */
+  void setHints(std::unordered_map<std::string, std::string> hints);
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
