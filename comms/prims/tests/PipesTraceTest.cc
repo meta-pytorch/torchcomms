@@ -19,12 +19,23 @@
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 
 using comms::prims::PipesTrace;
+using comms::prims::PipesTraceEntry;
 using comms::prims::PipesTraceEvent;
+using comms::prims::PipesTraceHandle;
 
 namespace {
 
 constexpr auto kPollInterval = std::chrono::milliseconds{1};
 constexpr auto kWaitTimeout = std::chrono::seconds{10};
+
+template <typename DeviceHandle>
+PipesTraceHandle toPipesTraceHandle(const DeviceHandle& handle) {
+  return PipesTraceHandle{
+      .ring = reinterpret_cast<PipesTraceEntry*>(handle.ring),
+      .writeIndex = handle.writeIndex,
+      .mask = handle.mask,
+      .shift = handle.shift};
+}
 
 class MappedSpinFlag {
  public:
@@ -194,7 +205,7 @@ TEST_F(PipesTraceCudaTest, WriteAndReadEvents) {
   constexpr int kNumEvents = 10;
   Buffer buf(64);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   comms::prims::test::launchWriteEvents(handle, kNumEvents, stream_);
   ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
@@ -222,7 +233,7 @@ TEST_F(PipesTraceCudaTest, EventsVisibleBeforeKernelCompletes) {
   constexpr int kNumEvents = 10;
   Buffer buf(64);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   MappedSpinFlag releaseFlag(stream_);
   ASSERT_EQ(releaseFlag.init(), cudaSuccess);
@@ -337,7 +348,7 @@ TEST_F(PipesTraceCudaTest, MultipleKernelLaunches) {
 
   Buffer buf(256);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   constexpr int kLaunches = 5;
   constexpr int kEventsPerLaunch = 10;
@@ -365,7 +376,7 @@ TEST_F(PipesTraceCudaTest, GraphCaptureAndReplay) {
   constexpr int kNumEvents = 10;
   Buffer buf(256);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t instance = nullptr;
@@ -413,7 +424,7 @@ TEST_F(PipesTraceCudaTest, GraphMultipleReplays) {
   constexpr int kReplays = 10;
   Buffer buf(256);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t instance = nullptr;
@@ -521,7 +532,7 @@ TEST_F(PipesTraceCudaTest, MultiBlockWriteAndRead) {
 
   Buffer buf(256);
   ASSERT_TRUE(buf.valid());
-  auto handle = buf.deviceHandle();
+  auto handle = toPipesTraceHandle(buf.deviceHandle());
 
   comms::prims::test::launchWriteEventsMultiBlock(
       handle, kNumBlocks, kEventsPerBlock, stream_);

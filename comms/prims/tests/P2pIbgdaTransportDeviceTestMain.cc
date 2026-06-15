@@ -21,6 +21,8 @@
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/utils/CudaRAII.h"
 #endif
@@ -269,6 +271,42 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, PutCooperativePartitioningBlock) {
     runTestPutCooperativePartitioningBlock(d_success);
   });
 }
+
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(P2pIbgdaTransportDeviceTestFixture, TraceIbgdaEventWritesEvent) {
+  cudaDeviceProp props{};
+  CUDACHECK_TEST(cudaGetDeviceProperties(&props, 0));
+  if (props.major < 9) {
+    GTEST_SKIP() << "HRDWRingBuffer trace writes require sm_90+";
+  }
+
+  ::hrdw_ring_buffer::HRDWRingBuffer<PipesTraceEvent> traceBuffer(8);
+  ASSERT_TRUE(traceBuffer.valid());
+
+  auto deviceHandle = traceBuffer.deviceHandle();
+  runTestTraceIbgdaEvent(
+      PipesTraceHandle{
+          .ring = reinterpret_cast<PipesTraceEntry*>(deviceHandle.ring),
+          .writeIndex = deviceHandle.writeIndex,
+          .mask = deviceHandle.mask,
+          .shift = deviceHandle.shift});
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<PipesTraceEvent> events;
+  ::hrdw_ring_buffer::HRDWRingBufferReader<PipesTraceEvent> reader(traceBuffer);
+  const auto result = reader.poll(
+      [&](const auto& entry, uint64_t) { events.push_back(entry.data); });
+
+  EXPECT_EQ(result.entriesLost, 0u);
+  ASSERT_EQ(result.entriesRead, 1u);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].step, 0x12345678u);
+  EXPECT_EQ(events[0].detail, 0x4321u);
+  EXPECT_EQ(
+      events[0].type, static_cast<uint8_t>(PipesTraceEventType::kIbSendBegin));
+  EXPECT_EQ(events[0].rank, 7u);
+}
+#endif // !__HIP_PLATFORM_AMD__
 
 // =============================================================================
 // wait_signal Timeout Tests

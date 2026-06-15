@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims::tests {
@@ -70,6 +71,9 @@ void runTestBroadcast64DoubleSafety(bool* d_success);
 
 // Test put_cooperative partitioning logic with block-sized groups
 void runTestPutCooperativePartitioningBlock(bool* d_success);
+
+// Test trace_ibgda_event writes the expected trace payload.
+void runTestTraceIbgdaEvent(PipesTraceHandle trace);
 
 // =============================================================================
 // wait_signal timeout tests
