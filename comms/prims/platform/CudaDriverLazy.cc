@@ -38,15 +38,21 @@ namespace {
 std::once_flag init_flag;
 int init_result = -1;
 
-int load_sym(const char* name, void** ptr) {
-  cudaDriverEntryPointQueryResult status;
+int load_sym(const char* name, void** ptr, int version) {
+  cudaDriverEntryPointQueryResult status = cudaDriverEntryPointSymbolNotFound;
+#if CUDART_VERSION >= 13000
+  auto res = cudaGetDriverEntryPointByVersion(
+      name, ptr, version, cudaEnableDefault, &status);
+#else
   auto res = cudaGetDriverEntryPoint(name, ptr, cudaEnableDefault, &status);
+#endif
   if (res != cudaSuccess || status != cudaDriverEntryPointSuccess) {
     fprintf(
         stderr,
-        "prims: failed to resolve CUDA driver symbol %s "
+        "prims: failed to resolve CUDA driver symbol %s version %d "
         "(cudaError=%d, status=%d)\n",
         name,
+        version,
         static_cast<int>(res),
         static_cast<int>(status));
     return -1;
@@ -55,30 +61,31 @@ int load_sym(const char* name, void** ptr) {
 }
 
 void do_init() {
-#define LOAD(symbol)                                                     \
-  if (load_sym(#symbol, reinterpret_cast<void**>(&pfn_##symbol)) != 0) { \
-    init_result = -1;                                                    \
-    return;                                                              \
+#define LOAD(symbol, version)                                                \
+  if (load_sym(#symbol, reinterpret_cast<void**>(&pfn_##symbol), version) != \
+      0) {                                                                   \
+    init_result = -1;                                                        \
+    return;                                                                  \
   }
 
-  LOAD(cuDeviceGet);
-  LOAD(cuDeviceGetAttribute);
-  LOAD(cuCtxGetCurrent);
-  LOAD(cuGetErrorString);
-  LOAD(cuMemCreate);
-  LOAD(cuMemRelease);
-  LOAD(cuMemAddressReserve);
-  LOAD(cuMemAddressFree);
-  LOAD(cuMemMap);
-  LOAD(cuMemUnmap);
-  LOAD(cuMemSetAccess);
-  LOAD(cuMemGetAllocationGranularity);
-  LOAD(cuMemExportToShareableHandle);
-  LOAD(cuMemImportFromShareableHandle);
-  LOAD(cuMemGetAllocationPropertiesFromHandle);
-  LOAD(cuMemRetainAllocationHandle);
-  LOAD(cuMemGetAddressRange);
-  LOAD(cuMemGetHandleForAddressRange);
+  LOAD(cuDeviceGet, 2000);
+  LOAD(cuDeviceGetAttribute, 2000);
+  LOAD(cuCtxGetCurrent, 4000);
+  LOAD(cuGetErrorString, 6000);
+  LOAD(cuMemCreate, 10020);
+  LOAD(cuMemRelease, 10020);
+  LOAD(cuMemAddressReserve, 10020);
+  LOAD(cuMemAddressFree, 10020);
+  LOAD(cuMemMap, 10020);
+  LOAD(cuMemUnmap, 10020);
+  LOAD(cuMemSetAccess, 10020);
+  LOAD(cuMemGetAllocationGranularity, 10020);
+  LOAD(cuMemExportToShareableHandle, 10020);
+  LOAD(cuMemImportFromShareableHandle, 10020);
+  LOAD(cuMemGetAllocationPropertiesFromHandle, 10020);
+  LOAD(cuMemRetainAllocationHandle, 11000);
+  LOAD(cuMemGetAddressRange, 3020);
+  LOAD(cuMemGetHandleForAddressRange, 11070);
 
 #undef LOAD
 
