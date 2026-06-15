@@ -127,3 +127,6 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         finally:
             # Must not raise even though both sub-backends share the comm.
             dist.destroy_process_group()
+
+if __name__ == "__main__":
+    unittest.main()

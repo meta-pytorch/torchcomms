@@ -693,14 +693,11 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
   std::vector<at::Tensor> output_tensors;
 
   for (const auto& op : ops) {
+    ensureTensorContiguous(op.tensor);
     if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
-      at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
-      input_tensors.push_back(tensor);
+      input_tensors.push_back(op.tensor);
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
-      at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
-      output_tensors.push_back(tensor);
+      output_tensors.push_back(op.tensor);
     } else {
       throw std::runtime_error("Unknown op type in batch_op_issue");
     }
@@ -740,7 +737,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
       continue;
     }
 
-    result = xccl_api_->send(
+    auto result = xccl_api_->send(
         op.tensor.data_ptr(),
         op.tensor.numel(),
         getXcclDataType(op.tensor),
@@ -749,13 +746,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
         stream);
 
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // Clean up group on error
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(), // Clean up group on error
+          "XCCL groupEnd failed during error cleanup after send failure in batch_op_issue");
       throw XCCLException(
           *xccl_api_, "XCCL send failed in batch_op_issue", result);
     }
@@ -766,7 +760,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
       continue;
     }
 
-    result = xccl_api_->recv(
+    auto result = xccl_api_->recv(
         op.tensor.data_ptr(),
         op.tensor.numel(),
         getXcclDataType(op.tensor),
@@ -775,13 +769,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
         stream);
 
     if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // Clean up group on error
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR, this)
-            << "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
+      XCCL_CHECK_IGNORE(
+          xccl_api_,
+          xccl_api_->groupEnd(), // Clean up group on error
+          "XCCL groupEnd failed during error cleanup after recv failure in batch_op_issue");
       throw XCCLException(
           *xccl_api_, "XCCL recv failed in batch_op_issue", result);
     }
