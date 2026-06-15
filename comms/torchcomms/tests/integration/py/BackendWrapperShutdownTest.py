@@ -72,10 +72,8 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         # ``torch.device("cuda")`` with no index when ``TEST_DEVICE=cuda``
         # is set, so resolve the index explicitly from LOCAL_RANK / rank.
         device = get_device(os.environ["TEST_BACKEND"], rank)
-        if device.type == "cuda":
-            if device.index is None:
-                device = torch.device(f"cuda:{_local_rank()}")
-            torch.cuda.set_device(device)
+        if torch.accelerator.is_available():
+            torch.accelerator.set_device_index(_local_rank())
         dist.config.use_torchcomms = True
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
         torch.set_default_device(device)
@@ -129,3 +127,7 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         finally:
             # Must not raise even though both sub-backends share the comm.
             dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    unittest.main()
