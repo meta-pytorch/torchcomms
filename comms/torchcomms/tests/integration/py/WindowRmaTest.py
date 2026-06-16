@@ -273,6 +273,21 @@ class WindowRmaTest(unittest.TestCase):
         del win
         torch.cuda.synchronize()
 
+    def _asymmetric_window_lifecycle_test(self):
+        """Test window lifecycle with different buffer sizes per rank."""
+        num_elements = 1024 * (self.rank + 1)
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+
+        expected_size = num_elements * buf.element_size()
+        self.assertEqual(win.get_size(), expected_size)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
     @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
