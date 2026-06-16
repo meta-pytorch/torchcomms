@@ -8,7 +8,10 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
+#include "comms/ctran/profiler/DefaultGpeProfilerReporter.h"
+#include "comms/ctran/profiler/GpeProfiler.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
@@ -350,17 +353,60 @@ std::string KernelConfig::toString() {
   return ss.str();
 }
 
-CtranGpe::CtranGpe(int cudaDev, CtranComm* comm) {
+CtranGpe::CtranGpe(
+    int cudaDev,
+    CtranComm* comm,
+    std::unique_ptr<ctran::IGpeProfilerReporter> reporter) {
   this->pimpl = std::make_unique<Impl>();
   this->pimpl->comm = comm;
   this->pimpl->cudaDev = cudaDev;
   this->pimpl->gpe = this;
+  // The cvar is the kill-switch at this integration layer. When false,
+  // the reporter is nulled regardless of caller injection — production
+  // operators always control whether Scuba rows flow. The profiler still
+  // exists and tracks internal state so gpeProfiler_->debugString() keeps
+  // populating the abort ERR line on stderr.
+  if (!NCCL_CTRAN_GPE_PROFILING_ENABLE) {
+    reporter.reset();
+  } else if (!reporter) {
+    reporter = std::make_unique<ctran::DefaultGpeProfilerReporter>();
+  }
+  this->pimpl->gpeProfiler_ = std::make_unique<ctran::GpeProfiler>(
+      &comm->logMetaData_,
+      comm->statex_->rank(),
+      comm->statex_->commHash(),
+      NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT,
+      std::move(reporter),
+      comm->getAbort());
   this->pimpl->start();
 }
 
 CtranGpe::~CtranGpe() {
   this->pimpl->terminate();
 }
+
+namespace {
+inline size_t getMsgSizeFromOpGroup(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
+  if (opGroup.empty()) {
+    return 0;
+  }
+  const auto& op = *opGroup.front();
+  switch (op.type) {
+    case OpElem::ALLGATHER:
+      return op.allgather.sendcount * commTypeSize(op.allgather.datatype);
+    case OpElem::ALLREDUCE:
+      return op.allreduce.count * commTypeSize(op.allreduce.datatype);
+    case OpElem::REDUCESCATTER:
+      return op.reducescatter.recvcount *
+          commTypeSize(op.reducescatter.datatype);
+    case OpElem::ALLTOALL:
+      return op.alltoall.count * commTypeSize(op.alltoall.datatype);
+    default:
+      return 0;
+  }
+}
+} // namespace
 
 commResult_t CtranGpe::submit(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
@@ -370,7 +416,9 @@ commResult_t CtranGpe::submit(
     std::optional<std::chrono::milliseconds> timeout,
     PreLaunchGraphPrepareFn graphPrepareFn) {
   this->pimpl->comm->recordAlgoStat(
-      kernelTypeToOpName(kernelConfig.type), kernelConfig.algoName);
+      kernelTypeToOpName(kernelConfig.type),
+      kernelConfig.algoName,
+      getMsgSizeFromOpGroup(opGroup));
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),
@@ -469,4 +517,8 @@ commResult_t CtranGpe::allocGpeKernelSyncs(
     std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs) {
   return ::allocGpeKernelSyncs(
       this->pimpl->gpeKernelSyncPool.get(), count, nworkers, gpeKernelSyncs);
+}
+
+::GpeKernelSyncPool* CtranGpe::gpeKernelSyncPool() {
+  return this->pimpl->gpeKernelSyncPool.get();
 }

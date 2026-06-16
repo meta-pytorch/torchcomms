@@ -1,3 +1,9 @@
+# WARNING: do not add new dependencies here without consulting the PyTorch
+# Distributed oncall first. Any dependencies here must synced to the PyTorch
+# package index. Adding a new dependency without corresponding changes to the
+# PyTorch package index will break pip install.
+#
+# Development and test time dependencies should be added to dev-requirements.txt
+# instead.
 torch
-pyyaml
 packaging

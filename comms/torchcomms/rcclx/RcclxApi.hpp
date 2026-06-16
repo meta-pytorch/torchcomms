@@ -49,6 +49,8 @@ class RcclxApi {
 
   [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commRevoke(ncclComm_t comm) = 0;
+
   [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
@@ -57,6 +59,26 @@ class RcclxApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) = 0;
 
@@ -240,6 +262,19 @@ class RcclxApi {
   // Memory allocation for NCCL-managed buffers
   virtual ncclResult_t memAlloc(void** ptr, size_t size) = 0;
   virtual ncclResult_t memFree(void* ptr) = 0;
+
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  virtual ncclResult_t shardedRelayMultiGroupAllReduce(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* counts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) = 0;
 };
 
 /**
@@ -271,6 +306,8 @@ class DefaultRcclxApi : public RcclxApi {
 
   [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
 
+  [[nodiscard]] ncclResult_t commRevoke(ncclComm_t comm) override;
+
   [[nodiscard]] ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) override;
@@ -279,6 +316,26 @@ class DefaultRcclxApi : public RcclxApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) override;
+
+  [[nodiscard]] ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) override;
+
+  [[nodiscard]] ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) override;
+
+  [[nodiscard]] ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
 
@@ -457,6 +514,19 @@ class DefaultRcclxApi : public RcclxApi {
   // Memory allocation for NCCL-managed buffers
   ncclResult_t memAlloc(void** ptr, size_t size) override;
   ncclResult_t memFree(void* ptr) override;
+
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  ncclResult_t shardedRelayMultiGroupAllReduce(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* counts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) override;
 };
 
 } // namespace torch::comms

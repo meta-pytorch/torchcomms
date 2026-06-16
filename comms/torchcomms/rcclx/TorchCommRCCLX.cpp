@@ -6,6 +6,9 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
+#include <variant>
+#include <vector>
 
 #include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h> // @manual
@@ -26,6 +29,7 @@ using c10::hip::HIPCachingAllocator::TraceEntry;
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLXBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "rccl.h" // @manual
 
@@ -103,6 +107,7 @@ void TorchCommRCCLX::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
+  TC_LOG(INFO, this) << "Initializing TorchCommRCCLX for device: " << device;
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -114,7 +119,6 @@ void TorchCommRCCLX::init(
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommRCCLX already finalized");
   }
-  init_state_ = InitializationState::INITIALIZED;
 
   // Initialize default RCCLX API implementation if not already set
   if (!rcclx_api_) {
@@ -124,6 +128,14 @@ void TorchCommRCCLX::init(
   // Initialize default HIP API implementation if not already set
   if (!hip_api_) {
     hip_api_ = std::make_unique<DefaultHipApi>();
+  }
+
+  if (options.enable_reconfigure) {
+    options_.enable_reconfigure = true;
+    reconfigure_store_ = options_.store;
+    TC_LOG(INFO, this)
+        << "TorchCommRCCLX dynamic regime enabled, deferring initialization";
+    return;
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
@@ -136,6 +148,15 @@ void TorchCommRCCLX::init(
     }
   }
 
+  initRcclxResources();
+
+  init_state_ = InitializationState::INITIALIZED;
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+
+  TC_LOG(INFO, this) << "TorchCommRCCLX initialized for rank: " << rank_;
+}
+
+void TorchCommRCCLX::initRcclxResources() {
   // Set HIP device and verify it's accessible
   HIP_CHECK(
       hip_api_,
@@ -176,26 +197,33 @@ void TorchCommRCCLX::init(
     stream_priority = greatestPriority;
   }
 
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->streamCreateWithPriority(
-          &internal_stream_, hipStreamNonBlocking, stream_priority),
-      fmt::format(
-          "Failed to create internal CUDA stream on device {}",
-          device_.index()));
+  // Create internal stream if not already created
+  if (!internal_stream_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->streamCreateWithPriority(
+            &internal_stream_, hipStreamNonBlocking, stream_priority),
+        fmt::format(
+            "Failed to create internal CUDA stream on device {}",
+            device_.index()));
+  }
 
   // Create dependency event for stream synchronization
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->eventCreate(&dependency_event_),
-      fmt::format(
-          "Failed to create dependency event on device {}", device_.index()));
+  if (!dependency_event_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->eventCreate(&dependency_event_),
+        fmt::format(
+            "Failed to create dependency event on device {}", device_.index()));
+  }
 
   // Allocate CUDA buffer for barrier operations
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->malloc(&barrier_buffer_, sizeof(float)),
-      "Failed to allocate barrier buffer");
+  if (!barrier_buffer_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->malloc(&barrier_buffer_, sizeof(float)),
+        "Failed to allocate barrier buffer");
+  }
 
   max_event_pool_size_ =
       options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
@@ -222,13 +250,25 @@ void TorchCommRCCLX::init(
       rcclx_api_->commCount(nccl_comm_, &comm_size_),
       "RCCLX Count failed");
 
-  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
-
   // Start timeout watchdog thread
-  timeout_thread_ = std::thread(&TorchCommRCCLX::timeoutWatchdog, this);
+  if (!shutdown_) {
+    timeout_thread_ = std::thread(&TorchCommRCCLX::timeoutWatchdog, this);
+  }
 
   // Register comm with CachingAllocator
   attachMemoryHook();
+}
+
+// getInitHandle() and reconfigure() are implemented in
+// TorchCommRCCLXReconfigure.cpp
+
+void TorchCommRCCLX::abort() {
+  if (options_.enable_reconfigure) {
+    revokeRcclxComm();
+  } else {
+    abortRcclxComm();
+  }
+  comm_state_ = CommState::ERROR;
 }
 
 void TorchCommRCCLX::finalize() {
@@ -238,6 +278,8 @@ void TorchCommRCCLX::finalize() {
     throw std::runtime_error("TorchCommRCCLX already finalized");
   }
   init_state_ = InitializationState::FINALIZED;
+
+  auto comm_state_on_entry = comm_state_.load();
 
   // Signal shutdown to timeout watchdog
   shutdown_ = true;
@@ -265,7 +307,9 @@ void TorchCommRCCLX::finalize() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortRcclxComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (comm_state_ == CommState::ERROR) {
+  } else if (
+      comm_state_ == CommState::ERROR &&
+      comm_state_on_entry != CommState::ERROR) {
     ncclResult_t asyncErr;
     RCCLX_CHECK(
         rcclx_api_,
@@ -343,6 +387,18 @@ void TorchCommRCCLX::abortRcclxComm() {
         rcclx_api_->commAbort(nccl_comm_),
         "RCCLX Abort failed");
     nccl_comm_ = nullptr;
+  }
+}
+
+void TorchCommRCCLX::revokeRcclxComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  if (nccl_comm_) {
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commRevoke(nccl_comm_),
+        "RCCLX Revoke failed");
   }
 }
 
@@ -662,6 +718,150 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_reduce(
   work->recordEnd();
 
   // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork>
+TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
+    std::vector<at::Tensor>& tensors,
+    const ReduceOp& op,
+    const std::vector<std::vector<int64_t>>& all_active_ranks,
+    const std::vector<int64_t>& per_group_counts,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  int nGroups = static_cast<int>(tensors.size());
+  if (nGroups == 0) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_reduce: tensors list cannot be empty");
+  }
+  if (all_active_ranks.size() != static_cast<size_t>(nGroups)) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_reduce: all_active_ranks size must match tensors size");
+  }
+  if (per_group_counts.size() != static_cast<size_t>(nGroups)) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_reduce: per_group_counts size must match tensors size");
+  }
+
+  // Verify all groups have the same number of active ranks (needed to compute
+  // the minimum valid helper-buffer size in the validation loop below).
+  int nActiveRanksPerGroup = static_cast<int>(all_active_ranks[0].size());
+  for (int g = 1; g < nGroups; g++) {
+    if (static_cast<int>(all_active_ranks[g].size()) != nActiveRanksPerGroup) {
+      throw std::runtime_error(
+          "sharded_relay_multi_group_all_reduce: all groups must have the same number of active ranks");
+    }
+  }
+
+  // Verify tensors are contiguous and meet the minimum required size.
+  // Active ranks need the full per_group_counts[g] elements.
+  // Helper ranks need nActiveRanksPerGroup * chunkSize elements (two-slot
+  // passthrough buffer: slot a holds data from active rank a, forwarded
+  // to the other active without local compute).
+  // Cap minRequired at per_group_counts[g] so the active rank's buffer (which
+  // is exactly per_group_counts[g]) always passes, including the edge case
+  // where count < numChunks * CACHE_LINE_SIZE and chunkSize falls back to
+  // count.
+  int numChunks = (comm_size_ - nActiveRanksPerGroup) + 1;
+  for (int g = 0; g < nGroups; g++) {
+    if (per_group_counts[g] == 0) {
+      continue;
+    }
+    ensureTensorContiguous(tensors[g]);
+    size_t chunkSize = static_cast<size_t>(per_group_counts[g]) /
+        static_cast<size_t>(numChunks);
+    chunkSize = (chunkSize / 128) * 128; // CHUNK_ALIGN_ELEMENTS (128 elements)
+    if (chunkSize == 0) {
+      chunkSize = static_cast<size_t>(per_group_counts[g]);
+    }
+    // For the fallback case (chunkSize == count), nActiveRanks * chunkSize >
+    // count which would incorrectly reject the active rank's full-sized buffer.
+    // Cap at count.
+    size_t minRequired = std::min(
+        static_cast<size_t>(per_group_counts[g]),
+        static_cast<size_t>(nActiveRanksPerGroup) * chunkSize);
+    if (static_cast<size_t>(tensors[g].numel()) < minRequired) {
+      throw std::runtime_error(
+          "sharded_relay_multi_group_all_reduce: tensor[" + std::to_string(g) +
+          "] has " + std::to_string(tensors[g].numel()) +
+          " elements, minimum required is " + std::to_string(minRequired) +
+          " (nActiveRanks=" + std::to_string(nActiveRanksPerGroup) +
+          " x chunkSize=" + std::to_string(chunkSize) + ")");
+    }
+  }
+
+  TracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "sharded_relay_multi_group_all_reduce",
+      rank_,
+      tensors,
+      tensors);
+  hipStream_t stream = getOperationStream(async_op);
+  auto work = createWork(stream, options_.timeout, tensors);
+
+  work->recordStart("sharded_relay_multi_group_all_reduce");
+
+  // Build arrays of buffer pointers for the C API
+  std::vector<const void*> sendBuffs(nGroups);
+  std::vector<void*> recvBuffs(nGroups);
+  for (int g = 0; g < nGroups; g++) {
+    sendBuffs[g] = tensors[g].data_ptr();
+    recvBuffs[g] = tensors[g].data_ptr(); // In-place operation
+  }
+
+  // Convert int64_t vectors to int arrays for the C API
+  std::vector<std::vector<int>> active_ranks_int(nGroups);
+  std::vector<const int*> allActiveRanksPtr(nGroups);
+  for (int g = 0; g < nGroups; g++) {
+    active_ranks_int[g].assign(
+        all_active_ranks[g].begin(), all_active_ranks[g].end());
+    allActiveRanksPtr[g] = active_ranks_int[g].data();
+  }
+
+  // Convert per_group_counts to size_t array
+  std::vector<size_t> counts(nGroups);
+  for (int g = 0; g < nGroups; g++) {
+    counts[g] = static_cast<size_t>(per_group_counts[g]);
+  }
+
+  // Derive dtype from the first group with count > 0.  All non-zero groups
+  // share the same dtype; count-0 groups hold a float32 placeholder and must
+  // be excluded so we don't pass the wrong ncclDataType_t to the kernel.
+  int firstNonZeroGroup = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (per_group_counts[g] > 0) {
+      firstNonZeroGroup = g;
+      break;
+    }
+  }
+  auto dataType = getNcclDataType(tensors[firstNonZeroGroup]);
+  ncclResult_t result = rcclx_api_->shardedRelayMultiGroupAllReduce(
+      sendBuffs.data(),
+      recvBuffs.data(),
+      counts.data(),
+      dataType,
+      getNcclReduceOp(op, nccl_comm_, dataType),
+      nccl_comm_,
+      stream,
+      allActiveRanksPtr.data(),
+      nActiveRanksPerGroup,
+      nGroups);
+
+  if (result != ncclSuccess) {
+    throw RCCLXException(
+        *rcclx_api_,
+        "RCCLX Sharded Relay Multi-Group AllReduce failed",
+        result,
+        nccl_comm_);
+  }
+
+  work->recordEnd();
+
   enqueueWork(work, stream);
 
   return work;
@@ -1834,7 +2034,8 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(
               "Current rank {} is not included in the provided ranks list",
               rank_));
     }
-    // Set color to the lowest rank in the group and calculate new rank
+
+    // Set color to the lowest rank in the group
     color = *std::min_element(ranks.begin(), ranks.end());
     new_rank = static_cast<int>(std::distance(ranks.begin(), it));
   }

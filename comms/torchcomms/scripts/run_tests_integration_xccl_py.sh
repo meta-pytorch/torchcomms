@@ -20,16 +20,23 @@ run_tests () {
         AllToAllSingleTest.py
         AllToAllTest.py
         AllToAllvSingleTest.py
+        BackendWrapperAllGatherAliasedTest.py
+        BackendWrapperCoalescingTest.py
+        BackendWrapperShutdownTest.py
         BarrierTest.py
         BatchSendRecvTest.py
         BroadcastTest.py
+        C10dBatchIsendIrecvTest.py
         C10dTorchCommTest.py
         DDPCommTest.py
         DeviceMeshTest.py
         DPTPCommTest.py
         FinalizeWarningTest.py
         FSDPCommTest.py
+        FullgraphCompileAutogradTest.py
+        FullgraphCompileTest.py
         GatherTest.py
+        MemPoolTest.py
         MultiCommTest.py
         ObjColTest.py
         OptionsTest.py
@@ -41,6 +48,7 @@ run_tests () {
         ScatterTest.py
         SplitTest.py
         TPCommTest.py
+        WaitBlockingTest.py
     )
 
     for test_file in "${tests[@]}"; do
@@ -49,10 +57,11 @@ run_tests () {
 
     cd -
     cd "$(dirname "$0")/../hooks/fr/tests/py"
+    torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s FlightRecorderFinalizeOpIdTest.py
     torchrun --nnodes 1 --nproc_per_node "${NPROC_PER_NODE}" -m pytest -v -s FlightRecorderTest.py
 }
 
 # XCCL
-export TEST_BACKEND=xccl
+export TEST_BACKEND="xccl"
 export TEST_DEVICE="xpu"
 run_tests

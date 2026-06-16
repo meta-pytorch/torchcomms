@@ -5,7 +5,10 @@
 
 #include <cstddef>
 #include <memory>
+#include <unordered_map>
 #include <vector>
+
+#include <folly/Synchronized.h>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranAux.h"
@@ -21,6 +24,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/transport/IP2pHostTransport.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -43,7 +47,11 @@ const std::string getReqTypeStr(CtranMapperRequest::ReqType type);
 
 class CtranMapper : public ctran::regcache::IpcExportClient {
  public:
-  CtranMapper(CtranComm* comm);
+  // `profiler` may be null when the comm has profiling disabled. When
+  // non-null, it is forwarded to the underlying CtranTcpDm so the
+  // transport can register its hooks during construction (avoiding a
+  // separate post-construction wiring pass).
+  CtranMapper(CtranComm* comm, ctran::Profiler* profiler = nullptr);
   ~CtranMapper();
 
   // Allow caller to mapper to mark the mapper object is being destroyed.
@@ -633,6 +641,38 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  /* Drain pending NIC PCIe writes into GPU HBM after RDMA receives complete
+   * and before host or stream-side work reads the just-received buffer. On
+   * split-path topologies, PCIe write ordering does not necessarily extend to
+   * GPU memory visibility, so callers that need immediate GPU-side visibility
+   * should issue a flush and wait for it to complete.
+   */
+  template <typename PerfConfig = DefaultPerfCollConfig>
+  inline commResult_t flush(const void* buf, const void* regHdl) {
+    if (this->ctranIb) {
+      auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
+          const_cast<void*>(regHdl));
+      if (!regElem) {
+        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        return commSuccess;
+      }
+
+      CtranIbRequest ibReq;
+      {
+        auto regLk = regElem->stateMnger.rlock();
+        FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, &ibReq));
+      }
+      while (!ibReq.isComplete() && !comm->testAbort()) {
+        FB_COMMCHECK(this->ctranIb->progress<PerfConfig>());
+      }
+
+      if (comm->testAbort()) {
+        throwCommAbortException("flush");
+      }
+    }
+    return commSuccess;
+  }
+
   /* Initialize the notify instance for receiving remote notification from a
    * peer rank. The backend of flag is determined based on the peer's backend
    * and the local receive buffer. NVL-based notify instance will be initialized
@@ -878,6 +918,30 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   CtranSocket* ctranSockPtr();
 
+  /* Get (lazily construct + cache) the per-peer host-side P2P
+   * transport.
+   *
+   * Each peer is bound to exactly one mode for the lifetime of its
+   * cached transport instance. The first call for a (peerRank, mode)
+   * pair constructs the matching derived class
+   * (ctran::transport::ib::HostZcTransport for kZeroCopy,
+   * ctran::transport::ib::HostCbTransport for
+   * kCopyBased); subsequent calls return the cached instance. Calling
+   * with a different mode for a peer that already has a cached entry
+   * triggers an FB_CHECKABORT — algorithm code is responsible for
+   * picking one mode per peer.
+   *
+   * Returns nullptr if no IB backend is available on this mapper
+   * (e.g., NVL-only setups).
+   *
+   * The cache is cleared early in setAtDestruction() so that the CB
+   * transport's borrowed GpeKernelSync entries are returned to the
+   * gpe-owned pool while gpe is still alive.
+   */
+  ctran::transport::IP2pHostTransport* getP2pTransport(
+      int peerRank,
+      ctran::transport::HostTransportMode mode);
+
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
@@ -937,6 +1001,19 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
  private:
+  [[noreturn]] inline void throwCommAbortException(
+      const std::string& abortContext) {
+    auto commAbort = comm->getAbort();
+    std::string message =
+        commAbort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        message,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        abortContext);
+  }
+
   inline commResult_t checkComplete(CtranMapperRequest* req, bool* isComplete) {
     if (req->isComplete()) {
       *isComplete = true;
@@ -1028,9 +1105,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       FB_COMMCHECK(this->ctranIb->waitNotify<PerfConfig>(
           notify->peer, notify->notifyCnt));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // TODO(T239012482): enable and test TCPDM FT
-      while (!notify->tcpDmReq.isComplete()) {
+      bool done = false;
+      while (!done && !comm->testAbort()) {
         FB_COMMCHECK(this->ctranTcpDm->progress());
+        FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, &done));
       }
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
@@ -1072,6 +1150,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t testRequestImpl(
       CtranMapperRequest* req,
       bool* isComplete) {
+    FB_COMMCHECK(this->checkComplete(req, isComplete));
+    if (*isComplete) {
+      return commSuccess;
+    }
+
     FB_COMMCHECK(this->progress<PerfConfig>());
     FB_COMMCHECK(this->checkComplete(req, isComplete));
 
@@ -1087,14 +1170,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      auto _abort = comm->getAbort();
-      std::string _ctx =
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
-      throw ctran::utils::Exception(
-          _ctx,
-          commRemoteError,
-          comm->logMetaData_.rank,
-          comm->logMetaData_.commHash,
+      throwCommAbortException(
           fmt::format("waitRequest for peer {}", req->peer));
     }
 
@@ -1867,33 +1943,37 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       kernElem->revoke();
       kernElem = nullptr;
     } else if (backend == CtranMapperBackend::TCPDM) {
-      // We are mapping two-sided communications (i.e., send/receive) to
-      // one-sided communications (i.e., iPUT/waitNotify). Due to this, we
-      // handle TCP differently. Specifically, for iPUT, TCP performs the send
-      // operation, and for waitNotify, TCP performs the receive operation.
-      // Consequently, we need to progress TCP to ensure it completes the
-      // receive operation. Once it does, it will mark tcpDmReq as complete,
-      // allowing us to exit the loop.
-
-      if (kernElem == nullptr) {
-        CLOGF(ERR, "TCP Device Memory requires kernElem in the notifier");
-        return commInternalError;
+      const void* rbuff = nullptr;
+      size_t len = 0;
+      if (kernElem != nullptr) {
+        rbuff = kernElem->waitNotify.recvbuff;
+        len = kernElem->waitNotify.nbytes;
+        if (rbuff == nullptr || len == 0) {
+          CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
+          return commInternalError;
+        }
+      } else {
+        const DevMemType type = regElem->getType();
+        if (type != kHostUnregistered && type != kHostPinned) {
+          CLOGF(
+              ERR,
+              "TCP Device Memory requires kernElem in the notifier "
+              "(memType {})",
+              devMemTypeStr(type));
+          return commInternalError;
+        }
+        rbuff = regElem->buf;
+        len = regElem->len;
       }
 
-      const void* rbuff = kernElem->waitNotify.recvbuff;
-      size_t len = kernElem->waitNotify.nbytes;
-
-      if (rbuff == nullptr || len == 0) {
-        CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
-        return commInternalError;
-      }
-
-      FB_COMMCHECK(this->ctranTcpDm->irecv(
+      // Counter-based: request managed internally by CtranTcpDm.
+      // Completions are tracked via a per-peer counter, checked by
+      // checkNotify (analogous to IB's notifyCount_).
+      FB_COMMCHECK(this->ctranTcpDm->irecvCounted(
           peerRank,
           regElem->tcpRegElem,
           (void*)rbuff,
           len,
-          notify->tcpDmReq,
           this->context.unpackPool));
     }
 
@@ -1920,9 +2000,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (notify->backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(this->ctranIb->checkNotify<PerfConfig>(notify->peer, done));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // Progress TCPDM transport to post any queued irecv requests
       FB_COMMCHECK(this->ctranTcpDm->progress());
-      *done = notify->tcpDmReq.isComplete();
+      FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, done));
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
       return commInternalError;
@@ -2032,6 +2111,24 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::unique_ptr<class CtranNvl> ctranNvl{nullptr};
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
+
+  // Per-peer cache of host-side P2P transports. Keyed by peerRank.
+  // The value is constructed lazily by getP2pTransport(peer, mode).
+  // Lifetime: cleared explicitly in setAtDestruction() before
+  // ctranIb / gpe are torn down (so cached transports release any
+  // borrowed pool entries while their pool is still alive). Declared
+  // after ctranIb so member-destruction order is also safe as a
+  // defensive backstop.
+  //
+  // Thread-safety: wrapped in folly::Synchronized because
+  // getP2pTransport() may be called concurrently from algorithm
+  // threads. Borrowed raw pointers handed out by getP2pTransport()
+  // remain valid after the lock is dropped — the map only grows;
+  // entries are never erased or rewritten except during teardown.
+  folly::Synchronized<std::unordered_map<
+      int,
+      std::unique_ptr<ctran::transport::IP2pHostTransport>>>
+      p2pHostTransports_;
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.

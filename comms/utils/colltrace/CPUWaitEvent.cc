@@ -3,7 +3,7 @@
 #include "comms/utils/colltrace/CPUWaitEvent.h"
 #include <folly/Unit.h>
 
-#include "comms/utils/colltrace/PrecisionClock.h"
+#include "comms/utils/PrecisionClock.h"
 
 namespace meta::comms::colltrace {
 

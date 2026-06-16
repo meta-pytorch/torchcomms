@@ -15,6 +15,11 @@ using ctran::algos::GpeKernelSync;
 
 extern __global__ void
 GpeKernelSyncKernel(GpeKernelSync* sync, int* data, int numElem, int nSteps);
+extern __global__ void GpeKernelSyncWithResetKernel(
+    GpeKernelSync* sync,
+    int* data,
+    int numElem,
+    int nSteps);
 extern __global__ void GpeKernelSyncResetKernel(
     GpeKernelSync* sync,
     const int nworkers);
@@ -145,6 +150,107 @@ INSTANTIATE_TEST_SUITE_P(
           : "ResetFromDevice";
       return std::to_string(std::get<0>(info.param)) + "numWorkers_" +
           resetTypeStr;
+    });
+
+// =============================================================================
+// waitPostWithReset tests — exercises GpeKernelSyncDev::waitPostWithReset,
+// which is identical to waitPost except that after observing postFlag >= step,
+// it resets postFlag back to GpeKernelSync::kUnset. This lets producers reuse
+// the same sync slot across iterations without a separate reset step.
+//
+// We verify two things:
+//   1. End-to-end correctness — the kernel still observes each posted step
+//      and finishes the data update before complete() (same payload check as
+//      the existing kernelSync test).
+//   2. Reset behaviour — after the host observes isComplete(i), the device
+//      side has stored kUnset back into postFlag[worker], so all workers'
+//      postFlag must equal kUnset (= -1) between iterations.
+
+class CtranGpeKernelSyncWithResetTestParamFixture
+    : public CtranGpeKernelSyncTest,
+      public ::testing::WithParamInterface<int> {};
+
+TEST_P(CtranGpeKernelSyncWithResetTestParamFixture, kernelSyncWithReset) {
+  const int nWorkers = GetParam();
+
+  int numElem = 8192;
+  int niter = 10;
+  void* ptr = nullptr;
+  ASSERT_EQ(
+      cudaHostAlloc(
+          &ptr,
+          sizeof(GpeKernelSync) + sizeof(int) * numElem * 3,
+          cudaHostAllocDefault),
+      cudaSuccess);
+
+  GpeKernelSync* sync = reinterpret_cast<GpeKernelSync*>(ptr);
+  int* data = reinterpret_cast<int*>(
+      reinterpret_cast<char*>(ptr) + sizeof(GpeKernelSync));
+  for (int e = 0; e < numElem; ++e) {
+    data[e] = e;
+  }
+  new (sync) GpeKernelSync(nWorkers);
+
+  std::array<void*, 4> kernArgs;
+  kernArgs.at(0) = &sync;
+  kernArgs.at(1) = &data;
+  kernArgs.at(2) = &numElem;
+  kernArgs.at(3) = &niter;
+  dim3 grid = {(unsigned int)nWorkers, 1, 1};
+  dim3 blocks = {128, 1, 1};
+  ASSERT_EQ(
+      cudaFuncSetAttribute(
+          (const void*)GpeKernelSyncWithResetKernel,
+          cudaFuncAttributeMaxDynamicSharedMemorySize,
+          sizeof(CtranAlgoDeviceState)),
+      cudaSuccess);
+  ASSERT_EQ(
+      cudaLaunchKernel(
+          (const void*)GpeKernelSyncWithResetKernel,
+          grid,
+          blocks,
+          kernArgs.data(),
+          sizeof(CtranAlgoDeviceState),
+          0),
+      cudaSuccess);
+
+  for (int i = 0; i < niter; ++i) {
+    for (int e = 0; e < numElem; ++e) {
+      data[e] += i;
+    }
+
+    sync->post(i);
+
+    while (!sync->isComplete(i)) {
+      std::this_thread::yield();
+    }
+
+    // Verify payload correctness — the kernel must have observed our post,
+    // applied its work, and signalled complete.
+    for (int e = 0; e < numElem; ++e) {
+      ASSERT_EQ(data[e], e + i * (i + 1)) << " at " << e << " iteration " << i;
+    }
+
+    // Verify reset behaviour — after isComplete(i) returns true, each
+    // worker's waitPostWithReset has already stored kUnset back into
+    // postFlag (the reset happens before complete() in the kernel).
+    for (int w = 0; w < nWorkers; ++w) {
+      volatile int* flag = &sync->postFlag[w];
+      ASSERT_EQ(*flag, GpeKernelSync::kUnset)
+          << "postFlag[" << w << "] not reset after iteration " << i;
+    }
+  }
+
+  ASSERT_EQ(cudaFreeHost(ptr), cudaSuccess);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranGpeKernelSyncWithResetTestParamFixture,
+    ::testing::Values(1, 2, 4, 8, 16, 32, 64),
+    [&](const testing::TestParamInfo<
+        CtranGpeKernelSyncWithResetTestParamFixture::ParamType>& info) {
+      return std::to_string(info.param) + "numWorkers";
     });
 
 // =============================================================================

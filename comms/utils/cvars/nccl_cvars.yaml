@@ -86,6 +86,17 @@ cvars:
       to e.g. "scuba:nccl_profiler_gpe".
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Kill-switch for ctran::GpeProfiler's per-tracepoint Scuba flush
+     (table nccl_profiler_gpe). When false (default), CtranGpe nulls the
+     reporter regardless of caller injection — no Scuba rows are emitted.
+     The profiler still tracks per-iteration state internally so the
+     consolidated abort ERR line on stderr (gpeProfiler_->debugString())
+     keeps producing per-phase latencies. Set true to enable Scuba flush.
+
  - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
    type        : int
    default     : 1000
@@ -1152,11 +1163,12 @@ cvars:
 
  - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
    type        : uint64_t
-   default     : 4194304
+   default     : 0
    description : |-
-     Logical chunk size, in bytes, used by the experimental overlapped
-     cthierarchical_ring AllGather kernel for IB-ready notification and
-     NVLink fanout scheduling.
+     Override for the logical chunk size, in bytes, used by the experimental
+     overlapped cthierarchical_ring AllGather kernel for IB-ready notification
+     and NVLink fanout scheduling. When zero, ctran selects a chunk size from
+     {512KiB, 1MiB, 2MiB, 4MiB, 8MiB} based on the send message size.
 
  - name        : NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE
    type        : uint64_t
@@ -1517,6 +1529,24 @@ cvars:
      number of pipeline stages used for data transfer operations between
      NVLink peers.
 
+ - name        : NCCL_CTRAN_P2P_HOST_IB_PIPELINE_DEPTH
+   type        : int
+   default     : 8
+   description : |-
+     Pipeline depth for the host-side IB copy-based P2P transport
+     (HostCbTransport). This controls the number of in-flight staging slots
+     per peer. Must not exceed ctran::transport::ib::kMaxPipelineDepth
+     (defined in comms/ctran/transport/ib/HostCbTransport.h). Default matches
+     kMaxPipelineDepth.
+
+ - name        : NCCL_CTRAN_P2P_HOST_IB_CHUNK_SIZE
+   type        : size_t
+   default     : 524288
+   description : |-
+     Per-chunk staging-buffer size in bytes for the host-side IB copy-based
+     P2P transport (HostCbTransport). Each of the pipelineDepth staging
+     slots is this size on both send and recv sides. Default is 512 KiB.
+
  - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t
    default     : 33554432
@@ -1611,6 +1641,15 @@ cvars:
      NICs report max_cqe ~4M which causes the driver to allocate ~256MB
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
+
+ - name        : NCCL_CTRAN_NET_FORCE_FLUSH
+   type        : int
+   default     : 0
+   description : |-
+     Enable PCIe flush support (RDMA READ) for CTRAN network receives. On
+     platforms where the NIC-PCIe-GPU topology does not guarantee immediate
+     GPU visibility for DMA writes, the flush drains pending writes before
+     received data is forwarded or read by GPU copy engines/kernels.
 
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
@@ -1787,13 +1826,27 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
    description : |-
      Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
-     compact per-phase events to an HRDW ring buffer and the host logs them
-     after the collective stream reaches the kernel.
+     compact per-phase events to an HRDW ring buffer and a host background
+     thread polls the buffer on an interval, so breadcrumbs are logged while
+     the kernel is still running (including when it hangs).
 
  - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
    type        : uint64_t
@@ -1801,6 +1854,15 @@ cvars:
    description : |-
      Number of HRDW ring-buffer entries reserved per communicator for
      NCCL_CTRAN_PIPES_TRACE_ENABLE.
+
+ - name        : NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS
+   type        : uint64_t
+   default     : 50
+   description : |-
+     Interval in milliseconds at which the host background thread polls the
+     HRDW ring buffer for NCCL_CTRAN_PIPES_TRACE_ENABLE. Smaller values reduce
+     the chance of losing events to ring wraparound on high-rate kernels at the
+     cost of more frequent polling; a final drain always runs on teardown.
 
  - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
    type        : uint64_t
@@ -1825,6 +1887,15 @@ cvars:
      IBGDA transport is never constructed and all non-self peers are assumed
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
+
+ - name        : NCCL_CTRAN_PIPES_IB_MODE
+   type        : enum
+   default     : ibgda
+   choices     : ibgda, ibrc
+   description : |-
+     Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
+     ibgda - use GPU-posted IBGDA.
+     ibrc - use CPU-posted IBRC.
 
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
@@ -2630,13 +2701,15 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     ctree - Ctran-based tree algorithm (Pipes-native)
+     cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
@@ -3128,7 +3201,7 @@ cvars:
 
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
-   default     : HIGH
+   default     : NORMAL
    choices     : CRITICAL, HIGH, NORMAL, LOW
    description : |-
      Minimum log priority level for MCCL Scuba logging. Only logs at or above
@@ -3145,11 +3218,15 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Enable ctran transport profiling for MCCL. When true, MCCL overrides
-     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
-     Profiler is created and algo profiling data flows to the
-     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
-     false to disable ctran profiling from the MCCL level.
+     Enable ctran transport profiling for MCCL. When true (and the rank
+     passes MCCL_FILTER_PROFILER_LOGGING_BY_RANKS), MCCL sets
+     comm_->config_.enableProfiler and injects BOTH
+     McclAlgoProfilerReporter and McclGpeProfilerReporter into
+     ctranInit. Algo rows land in mccl_operation_trace with
+     mcclop="ALGO_PROFILING"; GPE per-tracepoint rows land in the same
+     table with mcclop="GPE_PROFILING". Set to false to disable both
+     reporters from the MCCL level (CTRAN-side defaults for the GPE
+     profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist

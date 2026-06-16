@@ -39,7 +39,10 @@ elseif(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 100)  # GB200 default
 endif()
 
-project(hrdw_ring_buffer_pyext LANGUAGES CXX CUDA)
+# `C` is required so the optional fbclock.c pull-in below has a working
+# compile rule — without it, CMake silently drops the .c source from the
+# target and the resulting .so has an undefined `fbclock_gettime_utc`.
+project(hrdw_ring_buffer_pyext LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,16 +53,40 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+# Abseil supplies LOG / CHECK_NE (absl/log/log.h + absl/log/check.h)
+# and absl::Cleanup (absl/cleanup/cleanup.h). We use abseil instead of
+# glog so the feedstock build (which packages `libabseil` via
+# conda/feedstock/libabseil) and the fbcode buck build share one code
+# path, and folly is not required anywhere in this dep chain.
+find_package(absl REQUIRED)
 
-set(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
+# Normalize so `if(EXISTS ...)` below stats a clean path — CMake doesn't
+# collapse `..` segments before the stat, so an unnormalized ROOT can
+# make the fbclock.c probe silently miss.
+get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
 # Build the extension. The .cpp holds the pybind11 module definition;
-# the .cu holds the explicit template instantiation of
-# launchRingBufferWrite that the bindings call into. Merging both into
-# the same module makes the .so self-contained at runtime.
+# the .cu (_native_kernels.cu) holds the explicit template instantiation
+# of launchRingBufferWrite that the bindings call into. GpuClockCalibration
+# splits across a .cc (host-side: toWallClock / refresh / tryRefresh) and
+# a .cu (device-side: the single-thread launchReadGlobaltimer kernel),
+# both required for refresh() to read GPU globaltimer. EnvUtils.cc backs
+# the inline env-var reads. PrecisionClock.cc provides
+# `meta::comms::precisionNow()` that `GpuClockCalibration.cc` calls
+# unconditionally — `PrecisionClock.cc` itself self-degrades to
+# `std::chrono::system_clock::now()` when fbclock isn't on the include
+# path (which it isn't in the feedstock build).
+#
+# Merging all of these into the same module keeps the .so self-contained
+# at runtime — no separate libraries to load and no external link deps
+# on the host side beyond CUDA, libatomic, and abseil.
 pybind11_add_module(_native
     _native.cpp
     _native_kernels.cu
+    GpuClockCalibration.cc
+    GpuClockCalibration.cu
+    ../EnvUtils.cc
+    ../PrecisionClock.cc
 )
 
 target_include_directories(_native PRIVATE "${ROOT}")
@@ -69,7 +96,28 @@ target_include_directories(_native PRIVATE "${ROOT}")
 # without -march=...+lse2, x86_64 without -mcx16). Device-scope poll
 # uses cudaMemcpy so doesn't strictly need libatomic, but the System
 # scope does and both compile into the same .so.
-target_link_libraries(_native PRIVATE CUDA::cudart atomic)
+target_link_libraries(_native PRIVATE
+    CUDA::cudart
+    atomic
+    absl::cleanup
+    absl::check
+    absl::log
+)
+
+# fbclock self-detection. `PrecisionClock.cc` gates its
+# `fbclock_init` / `fbclock_gettime_utc` path on
+# `__has_include("time/fbclock/fbclock.h")`. When that header IS on
+# the include path (e.g. the in-fbcode `lx build_observability_deps`
+# pass that puts all of `${ROOT}` reachable), pull `fbclock.c` in too
+# and link librt so the symbols actually resolve at runtime. The
+# conda feedstock build only stages `fbcode/comms/utils` via
+# `local_source_tree`, so `fbclock.h` is unreachable there and
+# PrecisionClock.cc transparently falls through to
+# `std::chrono::system_clock::now()`.
+if(EXISTS "${ROOT}/time/fbclock/fbclock.c")
+    target_sources(_native PRIVATE "${ROOT}/time/fbclock/fbclock.c")
+    target_link_libraries(_native PRIVATE rt)
+endif()
 
 # nvcc needs to know to forward C++20 to the host compiler.
 target_compile_options(_native PRIVATE

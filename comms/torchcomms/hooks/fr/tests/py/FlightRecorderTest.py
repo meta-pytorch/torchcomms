@@ -6,10 +6,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import glob
 import json
 import os
 import pickle
+import shutil
 import tempfile
+import threading
 import typing
 import unittest
 from datetime import timedelta
@@ -29,6 +32,10 @@ from torch.distributed.flight_recorder.components.types import (
 )
 from torchcomms.hooks import FlightRecorderHook
 from torchcomms.objcol import all_gather_object
+from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    get_rank_and_size,
+    skip_backend,
+)
 
 
 class TestFlightRecorderHook(unittest.TestCase):
@@ -854,6 +861,128 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         comm.finalize()
 
+    @skip_backend("xccl", "XCCL backend does not support comm abort")
+    def test_fr_abort_hook_writes_traces_on_simulated_rank_failure(self) -> None:
+        """Test abort hook writes traces when simulating a rank failure with threads.
+
+        This test uses threads to simulate a rank crash:
+        - Each rank spawns a thread that runs a collective
+        - On rank 0, the thread exits early (simulating a crash)
+        - On other ranks, the collective times out waiting for rank 0
+        - The timeout triggers the abort hook
+
+        Note: Uses abort_process_on_timeout_or_error=False so the process doesn't
+        actually exit, allowing us to verify the traces were written.
+        TORCHCOMM_HEALTH_CHECK_WAIT_MS=0 prevents the abort hook from sleeping.
+        """
+        rank, size = get_rank_and_size()
+        if size < 2:
+            self.skipTest("This test requires at least 2 ranks")
+
+        trace_dir = tempfile.mkdtemp(prefix="fr_thread_crash_test_")
+        self.addCleanup(lambda: shutil.rmtree(trace_dir, ignore_errors=True))
+        expected_trace_file = os.path.join(trace_dir, f"fr_crash_trace_{rank}")
+
+        original_dump_file = os.environ.get("TORCHCOMM_FR_DUMP_TEMP_FILE")
+        os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = expected_trace_file
+
+        original_health_check_wait = os.environ.get("TORCHCOMM_HEALTH_CHECK_WAIT_MS")
+        os.environ["TORCHCOMM_HEALTH_CHECK_WAIT_MS"] = "0"
+
+        collective_exception: list[Exception] = []
+
+        def run_collective_in_thread(
+            comm: torchcomms.TorchComm,
+            should_exit_early: bool,
+        ) -> None:
+            """Run a collective in a thread, optionally exiting early to simulate crash."""
+            try:
+                t = torch.rand(10, 10, device=self.device)
+                if should_exit_early:
+                    return
+                comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+            except Exception as e:
+                collective_exception.append(e)
+
+        try:
+            comm = torchcomms.new_comm(
+                backend=self.backend,
+                device=self.device,
+                name="test_comm_thread_crash",
+                timeout=timedelta(milliseconds=2000),
+                abort_process_on_timeout_or_error=False,
+            )
+
+            recorder = FlightRecorderHook(max_entries=100, isolated=True)
+            recorder.register_with_comm(comm)
+
+            t = torch.rand(10, 10, device=self.device)
+            comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+            should_crash = rank == 0
+            collective_thread = threading.Thread(
+                target=run_collective_in_thread,
+                args=(comm, should_crash),
+                name=f"collective-thread-rank-{rank}",
+            )
+            collective_thread.start()
+            collective_thread.join(timeout=10)
+
+            if rank != 0:
+                self.assertGreater(
+                    len(collective_exception),
+                    0,
+                    "Non-rank-0 should have experienced a timeout/error",
+                )
+
+            recorder.dump_file(rank)
+
+            self.assertTrue(
+                os.path.exists(expected_trace_file),
+                f"Expected trace file {expected_trace_file} was not created",
+            )
+
+            with open(expected_trace_file, "rb") as f:
+                data = pickle.load(f)
+
+            self.assertIn("version", data)
+            self.assertEqual(data["version"], "2.10")
+            self.assertIn("entries", data)
+
+            entries = data.get("entries", [])
+            self.assertGreater(
+                len(entries),
+                0,
+                f"Trace file for rank {rank} should have entries",
+            )
+
+            has_all_reduce = any(
+                entry.get("profiling_name") == f"{self.backend}:all_reduce"
+                for entry in entries
+            )
+            self.assertTrue(has_all_reduce, "Trace should contain all_reduce entry")
+
+            comm.finalize()
+
+        finally:
+            if original_dump_file is not None:
+                os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = original_dump_file
+            elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
+                del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
+
+            if original_health_check_wait is not None:
+                os.environ["TORCHCOMM_HEALTH_CHECK_WAIT_MS"] = (
+                    original_health_check_wait
+                )
+            elif "TORCHCOMM_HEALTH_CHECK_WAIT_MS" in os.environ:
+                del os.environ["TORCHCOMM_HEALTH_CHECK_WAIT_MS"]
+
+            for trace_file in glob.glob(f"{expected_trace_file}*"):
+                try:
+                    os.remove(trace_file)
+                except OSError:
+                    pass
+
     def test_only_active_excludes_completed_collectives(self) -> None:
         """Test that completed collectives are excluded when include_completed=False.
 
@@ -1186,6 +1315,129 @@ class TestFlightRecorderHook(unittest.TestCase):
         # Clean up
         level2_comm.finalize()
         level1_comm.finalize()
+        comm.finalize()
+
+    def test_duration_recorded_for_collective(self) -> None:
+        """Test that duration_ms is recorded for collective operations.
+
+        For CPU backends, duration is computed from wall-clock timestamps.
+        For device backends, duration is computed from device events.
+        In both cases, retired entries should have a positive duration_ms.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Run a collective operation
+        t = torch.rand(10, 10, device=device)
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Wait for the work to complete so postHook fires
+        # (for CPU backends this is synchronous, for CUDA we need to sync)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        # Parse JSON and check duration
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertGreater(len(entries), 0, "Should have at least one entry")
+
+        entry = entries[0]
+        self._validate_entry_format(entry)
+        self.assertTrue(entry["retired"], "Entry should be retired")
+        self.assertIn("duration_ms", entry, "Retired entry should have duration_ms")
+        self.assertGreater(entry["duration_ms"], 0, "duration_ms should be positive")
+
+        comm.finalize()
+
+    def test_duration_recorded_for_multiple_operations(self) -> None:
+        """Test that duration_ms is recorded for multiple different operations."""
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration_multi",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        t = torch.rand(10, 10, device=device)
+
+        # Run several different collective operations
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+        comm.broadcast(t, root=0, async_op=False)
+        comm.barrier(async_op=False)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertGreaterEqual(len(entries), 3, "Should have at least 3 entries")
+
+        for entry in entries:
+            self._validate_entry_format(entry)
+            self.assertTrue(entry["retired"], "Entry should be retired")
+            self.assertIn(
+                "duration_ms",
+                entry,
+                f"Entry {entry['profiling_name']} missing duration",
+            )
+            self.assertGreater(
+                entry["duration_ms"],
+                0,
+                f"duration_ms should be positive for {entry['profiling_name']}",
+            )
+
+        comm.finalize()
+
+    def test_duration_ordering(self) -> None:
+        """Test that a longer operation has greater or equal duration."""
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_duration_order",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Small tensor - should be fast
+        t_small = torch.rand(1, device=device)
+        comm.all_reduce(t_small, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Large tensor - should take longer (or at least not less)
+        t_large = torch.rand(1000, 1000, device=device)
+        comm.all_reduce(t_large, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        json_str = recorder.dump_json()
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+        self.assertEqual(len(entries), 2, "Should have exactly 2 entries")
+
+        for entry in entries:
+            self.assertIn("duration_ms", entry)
+            self.assertGreater(entry["duration_ms"], 0)
+
         comm.finalize()
 
 

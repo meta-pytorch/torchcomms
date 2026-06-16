@@ -85,13 +85,15 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .localRank = comm->localRank,
               .node = comm->rankToNode ? comm->rankToNode[comm->rank] : 0,
               .nLocalRanks = comm->localRanks,
-              .nNodes = comm->nNodes},
+              .nNodes = comm->nNodes,
+              .cliqueSize = comm->clique.size},
       .topoInfo = getTopoInfoFromNcclComm(comm),
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace,
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
-          comm->logMetaData.commHash)};
+          comm->logMetaData.commHash),
+      .algoStats = comm->algoStats};
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {

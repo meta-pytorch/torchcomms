@@ -8,6 +8,7 @@
 
 #include <thread>
 #include <execinfo.h>
+#include <unistd.h>
 #ifdef ENABLE_OPENMP
 #include <omp.h>
 #endif
@@ -129,7 +130,7 @@ namespace RcclUnitTesting
       case CHILD_DESTROY_COMMS   : status = DestroyComms();         break;
       case CHILD_DESTROY_GRAPHS  : status = DestroyGraphs();        break;
       case CHILD_STOP            : goto stop;
-      default: exit(0);
+      default: _exit(0);
       }
 
       // Send back acknowledgement to parent
@@ -152,7 +153,10 @@ namespace RcclUnitTesting
     close(this->childReadFd);
     close(this->childWriteFd);
 
-    exit(0);
+    // Forked child of a multithreaded folly binary: _exit() skips atexit
+    // handlers / static destructors that would hang on folly singleton
+    // teardown post-fork and abort after a timeout.
+    _exit(0);
   }
 
   ErrCode TestBedChild::GetUniqueId(std::vector<char>& retValBuf)

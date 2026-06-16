@@ -20,10 +20,18 @@
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/ctran/profiler/IGpeProfilerReporter.h"
+#include "comms/ctran/utils/PinnedHostPool.h"
 #include "comms/ctran/window/CtranWin.h"
 
 typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);
+
+// Pinned-host pool of GpeKernelSync slots. Declared here so consumers
+// (notably the host-IB CB transport) can hold a borrowed pool pointer
+// without pulling in CtranGpeImpl.h. Mirrored exactly in
+// CtranGpeImpl.h:209 — both must alias the same instantiation.
+using GpeKernelSyncPool = PinnedHostPool<ctran::algos::GpeKernelSync>;
 
 namespace ctran {
 using PersistentObj =
@@ -365,7 +373,16 @@ struct fmt::formatter<KernelConfig::KernelType> : fmt::formatter<int> {
 
 class CtranGpe {
  public:
-  CtranGpe(int cudaDev, CtranComm* comm);
+  // Optional reporter injection for tests. The cvar
+  // NCCL_CTRAN_GPE_PROFILING_ENABLE gates whether any reporter is wired
+  // through to the profiler at all: when false (default), the reporter
+  // is nulled regardless of what's passed here. When true, a passed
+  // reporter is used as-is, and nullptr is replaced with the production
+  // DefaultGpeProfilerReporter (Scuba flush).
+  CtranGpe(
+      int cudaDev,
+      CtranComm* comm,
+      std::unique_ptr<ctran::IGpeProfilerReporter> reporter = nullptr);
   ~CtranGpe();
 
   // Submit device mem communication. A kernel will be launched and host side
@@ -416,6 +433,14 @@ class CtranGpe {
       size_t count,
       int nworkers,
       std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs);
+
+  // Borrowed pointer to the underlying pool of pinned-host GpeKernelSync
+  // objects. Used by the host-IB CB transport (HostCbTransport) to
+  // pop slot-syncs at construction and reset() them in its destructor.
+  // Lifetime: pool is owned by CtranGpe; must outlive every consumer.
+  // The mapper enforces this by clearing its per-peer host-transport
+  // cache in setAtDestruction() before gpe is torn down.
+  GpeKernelSyncPool* gpeKernelSyncPool();
 
  private:
   class Impl;

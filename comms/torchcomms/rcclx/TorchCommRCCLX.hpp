@@ -90,6 +90,15 @@ class TorchCommRCCLX : public TorchCommBackend,
   int getRank() const override;
   int getSize() const override;
 
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
+
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
@@ -179,6 +188,16 @@ class TorchCommRCCLX : public TorchCommBackend,
       bool async_op,
       const BarrierOptions& options = {}) override;
 
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  // Executes multiple allreduce groups in lockstep phases to eliminate XGMI
+  // contention
+  c10::intrusive_ptr<TorchWork> sharded_relay_multi_group_all_reduce(
+      std::vector<at::Tensor>& tensors,
+      const ReduceOp& op,
+      const std::vector<std::vector<int64_t>>& all_active_ranks,
+      const std::vector<int64_t>& per_group_counts,
+      bool async_op);
+
   // Scatter and Gather Operations
   c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
@@ -246,6 +265,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclxComm();
+  void revokeRcclxComm();
 
   enum class CommState {
     NORMAL,
@@ -381,6 +401,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
+  void initRcclxResources();
 
   // Member variables
   ncclComm_t nccl_comm_{};
@@ -401,6 +422,9 @@ class TorchCommRCCLX : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   // RCCLX API abstraction
   std::shared_ptr<RcclxApi> rcclx_api_;
@@ -427,6 +451,10 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   bool high_priority_stream_{false};
   std::string name_;
+  // UUID of the current communicator quorum, set at end of reconfigure().
+  // Embedded in getInitHandle() so findQuorum() can identify which ranks
+  // shared the same previous communicator.
+  int64_t uuid_{-1};
 };
 
 } // namespace torch::comms

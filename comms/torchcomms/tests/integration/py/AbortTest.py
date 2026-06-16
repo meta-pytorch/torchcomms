@@ -14,7 +14,7 @@ from torch.distributed import TCPStore
 class AbortTest(unittest.TestCase):
     """Test the abort() API for TorchComm."""
 
-    SUPPORTED_BACKENDS = {"nccl", "ncclx"}
+    SUPPORTED_BACKENDS = {"nccl", "ncclx", "rccl", "rcclx"}
 
     _shared_store = None
 
@@ -75,6 +75,18 @@ class AbortTest(unittest.TestCase):
         comm = self._create_reconfigurable_comm("abort_error_state", 0)
 
         comm.abort()
+        comm.finalize()
+
+    def test_is_aborted(self):
+        """is_aborted() reflects the communicator state across abort()."""
+        comm = self._create_reconfigurable_comm("abort_is_aborted_state", 1)
+
+        self.assertTrue(comm.is_abort_supported())
+        self.assertFalse(comm.is_aborted())
+
+        comm.abort()
+        self.assertTrue(comm.is_aborted())
+
         comm.finalize()
 
 

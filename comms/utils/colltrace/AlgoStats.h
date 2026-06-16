@@ -1,9 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
-#include <utility>
 
 #include <folly/Synchronized.h>
 #include <folly/container/F14Map.h>
@@ -12,12 +13,14 @@
 namespace meta::comms::colltrace {
 
 // Result of algorithm statistics dump, per communicator.
+// Map: op -> algo -> msgSize -> count
 struct AlgoStatDump {
   uint64_t commHash{0};
   std::string commDesc;
-  // Map: collective name -> algorithm name -> call count
-  std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>
-      counts;
+  std::unordered_map<
+      std::string,
+      std::unordered_map<std::string, std::map<std::size_t, int64_t>>>
+      entries;
 };
 
 // Thread-safe algorithm statistics tracker.
@@ -29,9 +32,18 @@ class AlgoStats {
   AlgoStats(uint64_t commHash, const std::string& commDesc)
       : commHash_(commHash), commDesc_(commDesc) {}
 
-  // Record a collective execution with the given algorithm.
+  // Get or create a shared AlgoStats instance for a communicator.
+  // Both baseline and ctran record into the same instance keyed by commHash.
+  static std::shared_ptr<AlgoStats> getOrCreate(
+      uint64_t commHash,
+      const std::string& commDesc);
+
+  // Record a collective execution with the given algorithm and message size.
   // Thread-safe: can be called concurrently from multiple threads.
-  void record(const std::string& opName, const std::string& algoName);
+  void record(
+      const std::string& opName,
+      const std::string& algoName,
+      const std::size_t msgSize = 0);
 
   // Get aggregated counts with communicator info.
   AlgoStatDump dump() const;
@@ -43,11 +55,11 @@ class AlgoStats {
   uint64_t commHash_{0};
   std::string commDesc_;
 
-  // Key: (opName, algoName), Value: count
-  using AlgoKey = std::pair<std::string, std::string>;
+  using AlgoKey = std::tuple<std::string, std::string, std::size_t>;
   struct AlgoKeyHash {
     std::size_t operator()(const AlgoKey& key) const noexcept {
-      return folly::hash::hash_combine(key.first, key.second);
+      return folly::hash::hash_combine(
+          std::get<0>(key), std::get<1>(key), std::get<2>(key));
     }
   };
 

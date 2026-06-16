@@ -1,6 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/core/NumaUtils.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
@@ -221,6 +224,8 @@ RdmaTransport::RdmaTransport(
   CHECK_THROW_EXCEPTION(
       config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
 
+  deviceAdapter_ = createDeviceAdapter(cudaApi_);
+
   const uint32_t numNics =
       std::min(config_.numQps, static_cast<uint32_t>(nicsHandle_->size()));
   nics_ = std::span<NicResources>(nicsHandle_->data(), numNics);
@@ -252,8 +257,7 @@ TransportInfo RdmaTransport::bind() {
   // CTS and Notify are separate regions so bidirectional send/recv is safe.
   const size_t ctrlSize = ctrlBufferSize();
   info_.ctrl.length = static_cast<uint32_t>(ctrlSize);
-  auto ctrlAllocResult = cudaApi_->hostAlloc(
-      ctrlSize, cudaHostAllocMapped | cudaHostAllocPortable);
+  auto ctrlAllocResult = deviceAdapter_->pinnedHostAlloc(ctrlSize);
   if (!ctrlAllocResult) {
     UNIFLOW_LOG_ERROR("bind: failed to allocate ctrl buffer");
     state_ = TransportState::Error;
@@ -734,10 +738,40 @@ uint32_t RdmaTransport::postSend(
   return 0; // Signal to caller that posting failed.
 }
 
-uint32_t RdmaTransport::getQpAvail(std::vector<uint32_t>& qpAvail) {
-  uint32_t totalAvail = 0;
+uint32_t RdmaTransport::getQpAvail(
+    std::vector<uint32_t>& qpAvail,
+    int bufNuma) {
   const uint32_t kMaxWr = config_.maxWr;
+  const uint32_t numNics = static_cast<uint32_t>(nics_.size());
+  if (numNics == 0) {
+    return 0;
+  }
+
+  // For host memory with a known NUMA node, only NICs on that node are eligible
+  // (so put/get avoids cross-socket DMA); cross-socket QPs are capped to zero
+  // capacity. Fall back to all NICs if none are NUMA-local, so a transfer can
+  // never stall.
+  bool restrictToNuma = false;
+  if (bufNuma >= 0) {
+    for (size_t q = 0; q < qpAvail.size(); ++q) {
+      if (nics_[q % numNics].numaNode == bufNuma) {
+        restrictToNuma = true;
+        break;
+      }
+    }
+    if (!restrictToNuma) {
+      UNIFLOW_LOG_DEBUG(
+          "no NUMA-local NIC for bufNuma={}, falling back to all NICs",
+          bufNuma);
+    }
+  }
+
+  uint32_t totalAvail = 0;
   for (size_t q = 0; q < qpAvail.size(); ++q) {
+    if (restrictToNuma && nics_[q % numNics].numaNode != bufNuma) {
+      qpAvail[q] = 0; // cross-socket QP — not eligible for this buffer
+      continue;
+    }
     qpAvail[q] = kMaxWr - numWrsPerQp_[q];
     totalAvail += qpAvail[q];
   }
@@ -789,15 +823,29 @@ Result<uint32_t> RdmaTransport::spray(
     size_t& idx,
     uint32_t taskId,
     Task& task) {
+  if (idx >= wrs.size()) {
+    return 0;
+  }
   const uint32_t numQps = static_cast<uint32_t>(qps_.size());
+
   const uint32_t remaining = static_cast<uint32_t>(wrs.size() - idx);
 
-  // Calculate available capacity per QP.
+  // NUMA policy is derived from the first WR's local handle. In practice each
+  // spray batch comes from a single TransferRequest (one local buffer), so
+  // this is correct. If buildSendWrs ever batches WRs from multiple buffers
+  // with different NUMA nodes into one vector, this should be split into
+  // per-NUMA-policy runs to avoid posting later WRs to the wrong NICs. But in
+  // reality, we will bind the process into one numa node. In addition, even if
+  // Wrs in spray cross different numa nodes, it will be gated by depth of the
+  // QP and the next iteration will choose the correct numa node.
+  const int bufNuma = wrs[idx].localHandle != nullptr
+      ? wrs[idx].localHandle->hostBufferNumaNode()
+      : -1;
   std::vector<uint32_t> qpAvail(numQps);
-  uint32_t totalAvail = getQpAvail(qpAvail);
+  uint32_t totalAvail = getQpAvail(qpAvail, bufNuma);
 
   if (totalAvail == 0) {
-    return 0; // All QPs full — caller should poll and retry.
+    return 0; // All eligible QPs full — caller should poll and retry.
   }
 
   // Weighted distribution: assign chunks to each QP proportional
@@ -848,38 +896,6 @@ Result<uint32_t> RdmaTransport::spray(
   }
 
   return Result<uint32_t>(totalPosted);
-}
-
-size_t RdmaTransport::outstandingWrs() const {
-  size_t total = 0;
-  for (uint32_t count : numWrsPerQp_) {
-    total += count;
-  }
-  return total;
-}
-
-size_t RdmaTransport::admissionBudgetWrs() const {
-  const size_t totalCapacity = static_cast<size_t>(config_.maxWr) * qps_.size();
-  return std::max<size_t>(1, totalCapacity / 2);
-}
-
-bool RdmaTransport::canStartTransfer(const PutGetTransfer& transfer) const {
-  if (transfer.idx != 0) {
-    return true;
-  }
-
-  const size_t outstanding = outstandingWrs();
-  if (outstanding == 0) {
-    return true;
-  }
-
-  const size_t transferWrs = transfer.sendWrs->size();
-  const size_t budget = admissionBudgetWrs();
-  if (transferWrs > budget) {
-    return false;
-  }
-
-  return outstanding + transferWrs <= budget;
 }
 
 // ---------------------------------------------------------------------------
@@ -947,10 +963,6 @@ bool RdmaTransport::putGetIoProcess(PutGetTransfer& entry) noexcept {
     pendingCompletions_.push_back({entry.taskId, std::move(entry.task)});
     pendingTransfers_.pop_front();
     return true;
-  }
-
-  if (!canStartTransfer(entry)) {
-    return false;
   }
 
   auto postResult = spray(*entry.sendWrs, entry.idx, entry.taskId, *entry.task);
@@ -1389,7 +1401,7 @@ Result<size_t> RdmaTransport::postSlabTransfer(
 
   size_t chunkIdx = 0;
   for (uint32_t q = 0; q < numQps; ++q) {
-    if (qpAssigned[q] == 0) {
+    if (qpAssigned[q] <= 1) {
       continue;
     }
     uint32_t localNicIdx = q % nics_.size();
@@ -1729,7 +1741,7 @@ void RdmaTransport::shutdown() {
   ctrlMrs_.clear();
 
   if (ctrlBuffer_) {
-    cudaApi_->hostFree(ctrlBuffer_);
+    deviceAdapter_->pinnedHostFree(ctrlBuffer_);
     ctrlBuffer_ = nullptr;
   }
 
@@ -1858,7 +1870,14 @@ RdmaTransportFactory::RdmaTransportFactory(
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    nicsHandle_->emplace_back(targetDevice, ibvApi_, config_.gidIndex, portNum);
+    int numaNode = sharedTopology().nicNumaNode(deviceName);
+    nicsHandle_->emplace_back(
+        targetDevice, ibvApi_, numaNode, config_.gidIndex, portNum);
+  }
+
+  if (config_.slabPoolConfig.slabNum > 0) {
+    slabPool_ = std::make_shared<RdmaSlabPool>(
+        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
   }
 }
 
@@ -1883,7 +1902,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     }
   } fdGuard;
 
-  // For cuMemGetHandleForAddressRange, the address must be page-aligned.
+  // dma buffers must be page aligned, the address must be page-aligned.
   // Align down to page boundary and track the offset for regDmabufMr.
   uint64_t dmaBufOffset = 0;
   uintptr_t addr = reinterpret_cast<uintptr_t>(segment.mutable_data());
@@ -1901,15 +1920,36 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       int flags = 0;
       // TODO: set CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE if data direct
       // link is available.
-      if (!cudaDriverApi_->cuMemGetHandleForAddressRange(
-              &fdGuard.fd,
-              static_cast<CUdeviceptr>(alignedAddr),
-              dmaBufLen,
-              CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-              flags)) {
-        // TODO: WARNING LOG without exit, fallback to ibv_reg_mr.
+      auto dmaBufStatus = cudaDriverApi_->cuMemGetHandleForAddressRange(
+          &fdGuard.fd,
+          static_cast<CUdeviceptr>(alignedAddr),
+          dmaBufLen,
+          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+          flags);
+      if (!dmaBufStatus) {
+        fdGuard.fd = -1;
+        // DMA-BUF is the preferred GPU Direct RDMA registration path, but it
+        // is an optimization over a valid VRAM allocation rather than the only
+        // correctness path. Some CUDA allocation modes or driver states cannot
+        // export a DMA-BUF for an otherwise usable segment; fall back to normal
+        // MR registration so non-GDR-capable paths can still make progress.
+        UNIFLOW_LOG_WARN(
+            "cuMemGetHandleForAddressRange failed for VRAM segment "
+            "(addr=0x{:x}, len={}, device={}): {}. "
+            "Falling back to ibv_reg_mr; this may disable GPU Direct RDMA. "
+            "For PyTorch expandable-segment allocations, "
+            "TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC=1 can restore DMA-BUF export.",
+            addr,
+            dmaBufLen,
+            segment.deviceId(),
+            dmaBufStatus.error().message());
       }
     }
+  }
+  const bool useRegMrFallback =
+      segment.memType() == MemoryType::VRAM && fdGuard.fd < 0;
+  if (useRegMrFallback) {
+    dmaBufFallbackCount_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Register with every NIC's protection domain so the region is usable
@@ -1941,8 +1981,13 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     mrs.push_back(mrResult.value());
   }
 
+  // For pinned (non-ODP) MRs, ibv_reg_mr has faulted the pages, so the host
+  // buffer's NUMA node is now stable; capture it for NUMA-aware QP scheduling.
+  const int numaNode = segment.memType() == MemoryType::DRAM
+      ? detectHostNumaNode(segment.mutable_data())
+      : -1;
   return std::make_unique<RdmaRegistrationHandle>(
-      std::move(mrs), ibvApi_, domainId_);
+      std::move(mrs), ibvApi_, domainId_, numaNode);
 }
 
 Result<std::unique_ptr<RemoteRegistrationHandle>>
@@ -1987,6 +2032,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
   auto peerTopo = RdmaTopologyInfo::deserialize(peerTopology).value();
   auto config = config_;
   config.numQps = std::min(peerTopo.numQps, config.numQps);
+
   return std::make_unique<RdmaTransport>(
       ibvApi_,
       cudaApi_,
@@ -1995,7 +2041,7 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
       nicsHandle_,
       domainId_,
       config,
-      nullptr);
+      slabPool_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for

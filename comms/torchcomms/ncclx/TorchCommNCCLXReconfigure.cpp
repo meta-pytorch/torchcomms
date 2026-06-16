@@ -263,6 +263,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
   if (quorum.ranks.empty()) {
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
+    revoked_ = false;
 
     CUDA_CHECK(
         cuda_api_,
@@ -379,10 +380,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
     nccl_comm_ = current;
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
+    revoked_ = false;
     initNcclxResources();
   } else {
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
+    revoked_ = false;
 
     int quorumSize = static_cast<int>(quorum.ranks.size());
     auto store = connectStore(

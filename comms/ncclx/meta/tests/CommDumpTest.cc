@@ -151,6 +151,8 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump["localRanks"], std::to_string(this->comm->localRanks));
   EXPECT_EQ(dump.count("nNodes"), 1);
   EXPECT_EQ(dump["nNodes"], std::to_string(this->comm->nNodes));
+  EXPECT_EQ(dump.count("cliqueSize"), 1);
+  EXPECT_EQ(dump["cliqueSize"], std::to_string(this->comm->clique.size));
 
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
@@ -943,6 +945,49 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
     auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
+}
+
+TEST_F(CommDumpTest, AlgoStatInCommDump) {
+  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
+  auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
+  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace", "algostat"});
+  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
+
+  ncclx::test::NcclCommRAII comm{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+
+  constexpr int numColls = 5;
+  this->initData(this->globalRank);
+  for (int i = 0; i < numColls; i++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        this->dataBuf,
+        this->dataBuf,
+        this->dataCount,
+        ncclInt,
+        ncclSum,
+        comm,
+        this->stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
+
+  std::unordered_map<std::string, std::string> dump;
+  auto res = ncclCommDump(comm, dump);
+  ASSERT_EQ(res, ncclSuccess);
+
+  ASSERT_EQ(dump.count("algoStat"), 1);
+  auto algoStatObj = folly::parseJson(dump["algoStat"]);
+  ASSERT_TRUE(algoStatObj.count("AllReduce"));
+
+  int totalCalls = 0;
+  for (const auto& [algoName, sizeMap] : algoStatObj["AllReduce"].items()) {
+    ASSERT_TRUE(sizeMap.isObject());
+    for (const auto& [sizeStr, count] : sizeMap.items()) {
+      EXPECT_GT(count.asInt(), 0);
+      EXPECT_GT(folly::to<size_t>(sizeStr.asString()), 0);
+      totalCalls += count.asInt();
+    }
+  }
+  EXPECT_EQ(totalCalls, numColls);
 }
 
 TEST_F(CommDumpTest, DISABLED_DumpWhileCommsInDestruct) {

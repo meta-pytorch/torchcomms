@@ -1,6 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#include <sys/socket.h>
+#include <thread>
+
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
@@ -106,24 +110,42 @@ void CtranTcpDm::bootstrapAccept() {
     FB_SYSCHECKTHROW_EX(
         socket.recv(&peerRank, sizeof(int)), rank_, commHash_, commDesc_);
 
+    auto transport = CtranTcpDmSingleton::getTransport();
+
+    // Negative rank = ctrl socket connection (bufSync)
+    if (peerRank < 0) {
+      int actualPeer = -(peerRank + 1);
+      int ctrlFd = socket.getFd();
+      std::lock_guard lock(mutex_);
+      ctrlSocks_.emplace(actualPeer, std::move(socket));
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-TCPDM: ctrl socket accepted from peer {} fd={}",
+          actualPeer,
+          ctrlFd);
+      continue;
+    }
+
     ::comms::tcp_devmem::Handle handle{};
     ::comms::tcp_devmem::ListenerInterface* listenComm{};
-    COMMCHECKTHROW(transport_->listen(netdev_, &handle, &listenComm));
+    COMMCHECKTHROW(transport->listen(netdev_, &handle, &listenComm));
 
     FB_SYSCHECKTHROW_EX(
         socket.send(&handle, sizeof(handle)), rank_, commHash_, commDesc_);
 
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
-    COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));
-    COMMCHECKTHROW(transport_->closeListen(listenComm));
+    COMMCHECKTHROW(transport->accept(listenComm, &recvComm));
+    COMMCHECKTHROW(transport->closeListen(listenComm));
+    recvComm->setCommStats(&profilerCtx_.commStats);
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "CTRAN-TC: Established connection: commHash {:x}, commDesc {}, "
-        "rank {}, peer {}",
+        "CTRAN-TCPDM: Established data connection: commHash {:x}, "
+        "commDesc {}, rank {}, peer {}",
         commHash_,
         commDesc_,
         rank_,
@@ -164,15 +186,18 @@ commResult_t CtranTcpDm::bootstrapConnect(
   FB_SYSCHECKRETURN(sock.recv(&handle, sizeof(handle)), commInternalError);
 
   ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
-  COMMCHECKTHROW(transport_->connect(netdev_, &handle, &sendComm));
+  COMMCHECKTHROW(
+      CtranTcpDmSingleton::getTransport()->connect(
+          netdev_, &handle, &sendComm));
+  sendComm->setCommStats(&profilerCtx_.commStats);
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-TCPDM: Established connection: commHash {:x}, commDesc {}, pimpl {}, "
-      "rank {}, peer {}",
+      "CTRAN-TCPDM: Established data connection: commHash {:x}, "
+      "commDesc {}, pimpl {}, rank {}, peer {}",
       commHash_,
       commDesc_,
       (void*)this,
@@ -182,19 +207,55 @@ commResult_t CtranTcpDm::bootstrapConnect(
   return res;
 }
 
-CtranTcpDm::CtranTcpDm([[maybe_unused]] CtranComm* comm) {
-  transport_ = CtranTcpDmSingleton::getTransport();
+void CtranTcpDm::ensureCtrlSocket(int peerRank) {
+  {
+    std::lock_guard lock(mutex_);
+    if (ctrlSocks_.count(peerRank)) {
+      return;
+    }
+  }
 
+  folly::SocketAddress peerAddr;
+  peerAddr.setFromSockaddr(
+      reinterpret_cast<sockaddr_in6*>(&allListenSocketAddrs_[peerRank]));
+  ctran::bootstrap::Socket sock;
+  FB_SYSCHECKTHROW_EX(
+      sock.connect(
+          peerAddr,
+          NCCL_CLIENT_SOCKET_IFNAME,
+          std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
+          NCCL_SOCKET_RETRY_CNT),
+      rank_,
+      commHash_,
+      commDesc_);
+  int marker = -(rank_ + 1);
+  FB_SYSCHECKTHROW_EX(
+      sock.send(&marker, sizeof(int)), rank_, commHash_, commDesc_);
+  std::lock_guard lock(mutex_);
+  ctrlSocks_.emplace(peerRank, std::move(sock));
+}
+
+CtranTcpDm::CtranTcpDm(
+    [[maybe_unused]] CtranComm* comm,
+    ctran::Profiler* profiler) {
   cudaDev_ = comm->statex_->cudaDev();
   rank_ = comm->statex_->rank();
   nRanks_ = comm->statex_->nRanks();
   commHash_ = comm->statex_->commHash();
   commDesc_ = comm->statex_->commDesc();
-  netdev_ = transport_->getDeviceFor(cudaDev_);
 
-  transport_->open(netdev_);
+  auto transport = CtranTcpDmSingleton::getTransport();
+  netdev_ = transport->getDeviceFor(cudaDev_);
+  transport->open(netdev_);
+
+  profilerCtx_.cuDev = cudaDev_;
+  profilerCtx_.rank = rank_;
+  profilerCtx_.nRanks = nRanks_;
+  profilerCtx_.commHash = commHash_;
 
   bootstrapPrepare(comm->bootstrap_.get());
+
+  registerProfilerHooks(profiler);
 
   CLOGF_SUBSYS(
       INFO,
@@ -209,12 +270,25 @@ CtranTcpDm::~CtranTcpDm() {
   listenSocket_.shutdown();
   listenThread_.join();
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   for (auto comm : sendComms_) {
-    transport_->closeSend(comm.second);
+    transport->closeSend(comm.second);
   }
   for (auto comm : recvComms_) {
-    transport_->closeRecv(comm.second);
+    transport->closeRecv(comm.second);
   }
+
+  // Always request shutdown; Transport self-gates on `comms_ > 0` so only
+  // the last CtranTcpDm actually tears down, while CUDA is still alive.
+  transport->shutdown(false);
+}
+
+void CtranTcpDm::profilerStart() {
+  CtranTcpDmSingleton::getTransport()->profilerStart(profilerCtx_);
+}
+
+void CtranTcpDm::profilerEnd() {
+  CtranTcpDmSingleton::getTransport()->profilerEnd(profilerCtx_);
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -267,15 +341,16 @@ commResult_t CtranTcpDm::isend(
 
   ::comms::tcp_devmem::CommunicatorInterface* comm = sendComms_.at(peerRank);
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   ::comms::tcp_devmem::RequestInterface* request{nullptr};
-  COMMCHECK_TCP(transport_->queueRequest(
+  COMMCHECK_TCP(transport->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Send,
       data,
       size,
       handle,
       &request));
-  req.track(transport_.get(), request);
+  req.track(transport.get(), request);
 
   return commSuccess;
 }
@@ -291,8 +366,67 @@ commResult_t CtranTcpDm::connectPeer(int peerRank) {
   return bootstrapConnect(peerRank, peerAddr);
 }
 
+void CtranTcpDm::ctrlSyncProgress() {
+  for (auto& [peerRank, sock] : ctrlSocks_) {
+    auto& pending = pendingSyncRecvs_[peerRank];
+    while (!pending.empty()) {
+      uint8_t sync;
+      int ret = ::recv(sock.getFd(), &sync, sizeof(sync), MSG_DONTWAIT);
+      if (ret <= 0) {
+        break;
+      }
+      syncRecvCount_[peerRank]++;
+      pending.front()->complete();
+      pending.pop_front();
+      CLOGF_SUBSYS(
+          INFO,
+          COLL,
+          "CTRAN-TCPDM: ctrlSyncProgress completed sync from peer {}, total={}, remaining={}, fd={}",
+          peerRank,
+          syncRecvCount_[peerRank],
+          pending.size(),
+          sock.getFd());
+    }
+  }
+}
+
+commResult_t CtranTcpDm::isendCtrlMsg(
+    const ControlMsg& msg,
+    int peerRank,
+    CtranTcpDmRequest& req) {
+  // only allow sync messages to be sent on the ctrl socket
+  if (msg.type != ControlMsgType::SYNC) {
+    req.complete();
+    return commSuccess;
+  }
+  // only sendeer can do lazy connect to avoid deadlock.
+  ensureCtrlSocket(peerRank);
+  std::lock_guard lock(mutex_);
+  auto& sock = ctrlSocks_.at(peerRank);
+  uint8_t sync = 1;
+  sock.send(&sync, sizeof(sync));
+  req.complete();
+  return commSuccess;
+}
+
+commResult_t CtranTcpDm::irecvCtrlMsg(
+    ControlMsg& msg,
+    int peerRank,
+    CtranTcpDmRequest& req) {
+  if (msg.type != ControlMsgType::SYNC) {
+    req.complete();
+    return commSuccess;
+  }
+  std::lock_guard lock(mutex_);
+  pendingSyncRecvs_[peerRank].push_back(&req);
+  return commSuccess;
+}
+
 commResult_t CtranTcpDm::progress() {
   std::unique_lock lock(mutex_);
+
+  ctrlSyncProgress();
+  recvNotifyProgress();
 
   for (auto it = queuedRecv_.begin(); it != queuedRecv_.end();) {
     auto& recvReq = *it;
@@ -357,8 +491,9 @@ commResult_t CtranTcpDm::irecvConnected(
     return commInternalError;
   }
 
+  auto transport = CtranTcpDmSingleton::getTransport();
   ::comms::tcp_devmem::RequestInterface* request{nullptr};
-  COMMCHECK_TCP(transport_->queueRequest(
+  COMMCHECK_TCP(transport->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Recv,
       data,
@@ -367,20 +502,83 @@ commResult_t CtranTcpDm::irecvConnected(
       &request,
       unpackPool));
 
-  req.track(transport_.get(), request);
+  req.track(transport.get(), request);
 
+  return commSuccess;
+}
+
+commResult_t CtranTcpDm::irecvCounted(
+    int peerRank,
+    void* handle,
+    void* data,
+    size_t size,
+    void* unpackPool) {
+  auto req = std::make_unique<CtranTcpDmRequest>();
+  auto* rawReq = req.get();
+  pendingRecvNotifies_[peerRank].push_back(std::move(req));
+
+  {
+    std::unique_lock lock(mutex_);
+    if (recvComms_.find(peerRank) == recvComms_.end()) {
+      auto recvReq = std::make_unique<RecvRequest>();
+      recvReq->peerRank = peerRank;
+      recvReq->handle = handle;
+      recvReq->data = data;
+      recvReq->size = size;
+      recvReq->req = rawReq;
+      recvReq->unpackPool = unpackPool;
+      queuedRecv_.push_back(std::move(recvReq));
+      return commSuccess;
+    }
+  }
+
+  return irecvConnected(peerRank, handle, data, size, *rawReq, unpackPool);
+}
+
+void CtranTcpDm::recvNotifyProgress() {
+  for (auto& [peerRank, pending] : pendingRecvNotifies_) {
+    while (!pending.empty() && pending.front()->isComplete()) {
+      pending.pop_front();
+      recvNotifyCount_[peerRank]++;
+    }
+  }
+}
+
+commResult_t CtranTcpDm::checkNotify(int peerRank, bool* done) {
+  recvNotifyProgress();
+  auto it = recvNotifyCount_.find(peerRank);
+  if (it != recvNotifyCount_.end() && it->second > 0) {
+    it->second--;
+    *done = true;
+  } else {
+    *done = false;
+  }
   return commSuccess;
 }
 
 commResult_t
 CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
-  COMMCHECK_TCP(transport_->prepareUnpackConsumer(netdev_, sqs, blocks, pool));
+  COMMCHECK_TCP(
+      CtranTcpDmSingleton::getTransport()->prepareUnpackConsumer(
+          netdev_, sqs, blocks, pool));
   return commSuccess;
 }
 
 commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
-  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
+  COMMCHECK_TCP(
+      CtranTcpDmSingleton::getTransport()->teardownUnpackConsumer(
+          netdev_, pool));
   return commSuccess;
+}
+
+void CtranTcpDm::registerProfilerHooks(ctran::Profiler* profiler) {
+  if (!profiler) {
+    return;
+  }
+  profiler->registerStartHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerStart(); });
+  profiler->registerEndHook(
+      ProfilerEvent::ALGO_TOTAL, [this]() { profilerEnd(); });
 }
 
 } // namespace ctran

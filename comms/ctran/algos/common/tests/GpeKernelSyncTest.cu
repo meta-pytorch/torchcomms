@@ -27,3 +27,20 @@ GpeKernelSyncKernel(GpeKernelSync* sync, int* data, int numElem, int nSteps) {
     GpeKernelSyncDev::complete(sync, workerId, i);
   }
 }
+
+__global__ void GpeKernelSyncWithResetKernel(
+    GpeKernelSync* sync,
+    int* data,
+    int numElem,
+    int nSteps) {
+  const auto workerId = blockIdx.x;
+  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  for (auto i = 0; i < nSteps; i++) {
+    GpeKernelSyncDev::waitPostWithReset(sync, workerId, i);
+    for (auto e = gtIdx; e < numElem; e += gridDim.x * blockDim.x) {
+      data[e] += i;
+    }
+    GpeKernelSyncDev::complete(sync, workerId, i);
+  }
+}

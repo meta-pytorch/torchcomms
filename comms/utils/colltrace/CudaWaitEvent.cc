@@ -11,9 +11,9 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CudaEventPool.h"
-#include "comms/utils/colltrace/PrecisionClock.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
 
 namespace meta::comms::colltrace {

@@ -42,6 +42,19 @@ waitPost(GpeKernelSync* sync, const int workerId, const int step) {
 }
 
 __device__ __forceinline__ void
+waitPostWithReset(GpeKernelSync* sync, const int workerId, const int step) {
+  if (threadIdx.x == 0) {
+    int val;
+    do {
+      val = comms::device::ld_acquire_sys_global(&sync->postFlag[workerId]);
+    } while (step > val);
+    comms::device::st_release_sys_global(
+        &sync->postFlag[workerId], ctran::algos::GpeKernelSync::kUnset);
+  }
+  __syncthreads();
+}
+
+__device__ __forceinline__ void
 waitPostWarp(GpeKernelSync* sync, const int workerId, const int step) {
   const auto laneId = threadIdx.x & (comms::device::kWarpSize - 1);
   if (laneId == 0) {

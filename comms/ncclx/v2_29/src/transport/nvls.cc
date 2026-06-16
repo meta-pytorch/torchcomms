@@ -15,6 +15,7 @@
 #include "register.h"
 #include "transport.h"
 #include "register_inline.h"
+#include "meta/nvls/NvlsBindWatchdog.h"
 
 #include "comms/utils/logger/Logger.h"
 #include "comms/ctran/memory/Utils.h"
@@ -290,7 +291,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   // Bind physical memory to the Multicast group
   // NB: It will block until all ranks have been added to the Group
   // This is where we normally see issues if the system NVLS/Multicast support is broken
-  err = CUPFN(cuMulticastBindMem(*mcHandle, 0/*mcOffset*/, *ucHandle, 0/*memOffset*/, ucsize, 0/*flags*/));
+  err = ncclx::nvls::multicastBindMemWithWatchdog(comm, size, ucsize, mcsize, *mcHandle, *ucHandle);
   if (err != CUDA_SUCCESS) {
     const char *errStr;                                                 \
     (void) pfn_cuGetErrorString(err, &errStr);                          \

@@ -1,6 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/rcclx/RcclxApi.hpp"
+#include <stdexcept>
+
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 
@@ -47,6 +50,18 @@ ncclResult_t DefaultRcclxApi::commAbort(ncclComm_t comm) {
   return ncclCommAbort(comm);
 }
 
+ncclResult_t DefaultRcclxApi::commRevoke(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommRevoke(comm, 0);
+#else
+  (void)comm;
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommRevoke API";
+  return ncclInvalidUsage;
+#endif
+}
+
 ncclResult_t DefaultRcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
@@ -62,6 +77,68 @@ ncclResult_t DefaultRcclxApi::commSplit(
     ncclConfig_t* config) {
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommSplit(comm, color, key, newcomm, config);
+}
+
+ncclResult_t DefaultRcclxApi::commShrink(
+    ncclComm_t comm,
+    int* excludeRanksList,
+    int excludeRanksCount,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config,
+    int shrinkFlags) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+  return ncclCommShrink(
+      comm, excludeRanksList, excludeRanksCount, newcomm, config, shrinkFlags);
+#else
+  (void)comm;
+  (void)excludeRanksList;
+  (void)excludeRanksCount;
+  (void)newcomm;
+  (void)config;
+  (void)shrinkFlags;
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommShrink API";
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultRcclxApi::commGetUniqueId(
+    ncclComm_t comm,
+    ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGetUniqueId(comm, uniqueId);
+#else
+  (void)comm;
+  (void)uniqueId;
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGetUniqueId API";
+  return ncclInvalidUsage;
+#endif
+}
+
+ncclResult_t DefaultRcclxApi::commGrow(
+    ncclComm_t comm,
+    int nRanks,
+    const ncclUniqueId* uniqueId,
+    int rank,
+    ncclComm_t* newcomm,
+    ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+  return ncclCommGrow(comm, nRanks, uniqueId, rank, newcomm, config);
+#else
+  (void)comm;
+  (void)nRanks;
+  (void)uniqueId;
+  (void)rank;
+  (void)newcomm;
+  (void)config;
+  TC_LOG(ERROR) << "RCCL version " << NCCL_VERSION_CODE
+                << " does not support ncclCommGrow API";
+  return ncclInvalidUsage;
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::commRegister(
@@ -328,34 +405,25 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
-ncclResult_t DefaultRcclxApi::allGatherInit(
-    void* recvbuff,
-    size_t maxRecvCount,
-    const RcclxHints& hints,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    hipStream_t stream,
-    void** request) {
-  // Convert RcclxHints to ncclx::Hints
-  ncclx::Hints ncclxHints;
-  for (const auto& [key, value] : hints) {
-    ncclxHints.set(key, value);
-  }
-  return ncclx::allGatherInit(
-      recvbuff, maxRecvCount, ncclxHints, datatype, comm, stream, request);
-}
-
-ncclResult_t DefaultRcclxApi::allGatherExec(
-    const void* sendbuff,
-    size_t count,
-    ncclDataType_t datatype,
-    void* request) {
-  return ncclx::allGatherExec(sendbuff, count, datatype, request);
-}
-
-ncclResult_t DefaultRcclxApi::pFree(void* request) {
-  return ncclx::pFree(request);
-}
+// NOTE: The following methods that depend on rcclx-dev-only symbols
+// (`ncclx::Hints`, `ncclx::allGatherInit`, `ncclx::allGatherExec`,
+// `ncclx::pFree`, `ncclShardedRelayMultiGroupAllReduce`) are intentionally
+// NOT defined here. Their definitions live in two parallel translation
+// units selected at BUCK level via `select()` on the active rccl
+// constraint (see `comms/torchcomms/rcclx/BUCK`):
+//
+//   * RcclxApiShardedRelay.cpp     — real implementation, linked when
+//                                    building against rcclx-dev
+//   * RcclxApiShardedRelayStub.cpp — `ncclInternalError` stubs, linked when
+//                                    building against rcclx-stable /
+//                                    rcclx-last-stable / rccl-dev (whose
+//                                    snapshots don't yet expose the new
+//                                    sharded-relay APIs)
+//
+//     - DefaultRcclxApi::allGatherInit
+//     - DefaultRcclxApi::allGatherExec
+//     - DefaultRcclxApi::pFree
+//     - DefaultRcclxApi::shardedRelayMultiGroupAllReduce
 
 ncclResult_t DefaultRcclxApi::memAlloc(void** ptr, size_t size) {
   return ncclMemAlloc(ptr, size);

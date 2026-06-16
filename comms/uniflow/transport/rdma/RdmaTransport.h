@@ -10,7 +10,9 @@
 #include <unordered_map>
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
@@ -57,6 +59,7 @@ struct RdmaTransportConfig {
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
   uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
+  RdmaSlabPoolConfig slabPoolConfig{.slabNum = 0}; /* Disabled by default. */
 };
 
 /*
@@ -420,7 +423,11 @@ class RdmaTransport : public Transport {
   bool putGetIoProcess(PutGetTransfer& entry) noexcept;
   bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;
 
-  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail);
+  /// Computes per-QP available SQ capacity. When bufNuma >= 0 (host memory with
+  /// a known NUMA node), QPs whose NIC is on a different NUMA node are capped
+  /// to zero so put/get only targets NUMA-local NICs; falls back to all NICs if
+  /// none are NUMA-local.
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail, int bufNuma = -1);
 
   uint32_t assignToQps(
       const uint32_t remaining,
@@ -443,18 +450,6 @@ class RdmaTransport : public Transport {
   /// ensuring pollCompletions will decrement it back to zero.
   Result<uint32_t>
   spray(std::vector<SendWr>& wrs, size_t& idx, uint32_t taskId, Task& task);
-
-  /// Returns whether a pending transfer may begin posting without exceeding
-  /// the transport's conservative SQ admission budget.
-  bool canStartTransfer(const PutGetTransfer& transfer) const;
-
-  /// Conservative global WR budget used to admit complete transfers. A single
-  /// transfer larger than this budget may still start when no other WRs are
-  /// outstanding, so very large messages continue to make progress.
-  size_t admissionBudgetWrs() const;
-
-  /// Total WRs currently outstanding across all QPs.
-  size_t outstandingWrs() const;
 
   /// Posts a chain of WRs to a single QP. On partial failure, posts a
   /// flush WR so the HCA generates a CQE for the consumed unsignaled WRs.
@@ -519,9 +514,12 @@ class RdmaTransport : public Transport {
   Result<bool>
   postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId, Task& task);
 
+  friend class GetQpAvailNumaTest;
+
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   EventBase* evb_{nullptr};
 
   std::string name_;
@@ -668,17 +666,24 @@ class RdmaTransportFactory : public TransportFactory {
   /* Return the topology information */
   std::vector<uint8_t> getTopology() override;
 
+  uint64_t dmaBufFallbackCount() const {
+    return dmaBufFallbackCount_.load(std::memory_order_relaxed);
+  }
+
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
   std::shared_ptr<IbvApi> ibvApi_;
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   std::shared_ptr<CudaApi> cudaApi_;
+
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   size_t pageSize_{0};
+  std::atomic<uint64_t> dmaBufFallbackCount_{0};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   const RdmaTransportConfig config_;
+  std::shared_ptr<RdmaSlabPool> slabPool_;
 };
 
 } // namespace uniflow

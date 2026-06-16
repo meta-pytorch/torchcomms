@@ -11,6 +11,7 @@
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/utils/Utils.hpp>
 #include <torch/csrc/profiler/combined_traceback.h>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <optional>
@@ -236,8 +237,8 @@ class FlightRecorder {
       std::string profiling_name,
       const std::vector<at::Tensor>& inputs,
       const std::vector<at::Tensor>& outputs,
-      c10::Event* start,
-      c10::Event* end,
+      std::unique_ptr<c10::Event> start,
+      std::unique_ptr<c10::Event> end,
       std::chrono::milliseconds timeout_ms,
       std::shared_ptr<ProcessGroupStatus> pg_status);
 
@@ -249,17 +250,18 @@ class FlightRecorder {
 
   std::vector<Entry> dump_entries();
 
-  /*
-  Mark an Event as completed and free its events.
-  This is called by the watchdog thread, and is asynchronous from the
-  perspective of the main thread.
-  compute_duration defaults to true since retire_id is only called in the
-  watchdog thread, which is currently a place we call cuda APIs which may hang,
-  but care should be taken to avoid computing duration in any function that must
-  never hang. (timing must also be enabled for compute_duration - see
-  TORCH_NCCL_ENABLE_TIMING).
-  */
-  void retire_id(std::optional<size_t> id, bool compute_duration = true);
+  // Stores start/end events per op_id for GPU-accurate timing.
+  struct EventPair {
+    std::unique_ptr<c10::Event> start;
+    std::unique_ptr<c10::Event> end;
+  };
+
+  // Record end event on the device stream, retire the entry, and cleanup
+  // stored events. Acquires mutex_ internally.
+  void retire_id(
+      std::optional<size_t> id,
+      const at::Device& device,
+      bool compute_duration = true);
 
   void reset_all();
 
@@ -282,6 +284,24 @@ class FlightRecorder {
    * Get the current number of entries.
    */
   size_t size() const;
+
+  /**
+   * Set the global rank for this process.
+   * Called during registerWithComm with the global rank derived from
+   * `comm->getRanks()[comm->getRank()]`, which yields the same value
+   * for every registered communicator (world comm or sub-PG). The
+   * dump_file handler uses this rank to name the per-rank trace file.
+   */
+  void setRank(int rank) {
+    rank_.store(rank, std::memory_order_relaxed);
+  }
+
+  /**
+   * Get the global rank, or -1 if not yet set.
+   */
+  int getRank() const {
+    return rank_.load(std::memory_order_relaxed);
+  }
 
  private:
   // Returns the entry with the given id and reset_epoch, if it exists.
@@ -314,6 +334,7 @@ class FlightRecorder {
 
   bool enabled_ = false;
   bool capture_cpp_stack_ = false;
+  std::atomic<int> rank_{-1};
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   size_t max_entries_ = 0;
@@ -329,6 +350,9 @@ class FlightRecorder {
   std::string comm_lib_version_;
   // Map from op_id to (id_, reset_epoch_) to pass correct values when retiring
   std::unordered_map<size_t, std::pair<size_t, size_t>> op_id_to_id_and_epoch_;
+
+  // Pending events for GPU-accurate timing, keyed by op_id.
+  std::unordered_map<size_t, EventPair> pending_events_;
 };
 
 // ============================================================================
@@ -418,14 +442,17 @@ class FlightRecorderHook
       const std::string& comm_name,
       size_t pg_id,
       const std::string& pg_desc,
+      const at::Device& device,
       size_t op_id,
       const PreHookArgs& args);
 
-  void onPostHook(size_t op_id, const PostHookArgs& args);
+  void
+  onPostHook(const at::Device& device, size_t op_id, const PostHookArgs& args);
 
   FlightRecorder* recorder_;
   bool owns_recorder_{false}; // True when using isolated instance
 
+  // Track registered communicators
   struct CommRegistration {
     std::weak_ptr<TorchComm> comm;
     size_t pg_id;

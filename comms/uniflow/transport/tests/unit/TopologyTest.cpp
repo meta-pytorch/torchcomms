@@ -2,6 +2,8 @@
 
 #include "comms/uniflow/transport/Topology.h"
 
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
+#include "comms/uniflow/drivers/cuda/CudaTopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/drivers/nvml/mock/MockNvmlApi.h"
@@ -134,6 +136,7 @@ class TopologyTest : public ::testing::Test {
 
   void setupGpus(int count) {
     ON_CALL(*nvml_, deviceCount()).WillByDefault(Return(Result<int>(count)));
+    ON_CALL(*cuda_, getDeviceCount()).WillByDefault(Return(Result<int>(count)));
     for (int i = 0; i < count; ++i) {
       NvmlApi::DeviceInfo info;
       info.handle =
@@ -151,13 +154,31 @@ class TopologyTest : public ::testing::Test {
             return Ok();
           });
 
+      // Resolve NVML handle by PCI bus ID (matches discoverGpus logic).
+      ON_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _))
+          .WillByDefault([](const char*, nvmlDevice_t* dev) {
+            // Return a non-null handle for any valid PCI bus ID.
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            *dev = reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(1));
+            return Ok();
+          });
+
+      ON_CALL(*nvml_, nvmlDeviceGetCudaComputeCapability(_, _, _))
+          .WillByDefault([](nvmlDevice_t, int* major, int* minor) {
+            *major = 9;
+            *minor = 0;
+            return Ok();
+          });
+
       ON_CALL(*cuda_, deviceCanAccessPeer(i, _))
           .WillByDefault(Return(Result<bool>(true)));
     }
   }
 
   std::unique_ptr<Topology> createTopology() {
-    return std::unique_ptr<Topology>(new Topology(cuda_, nvml_, ibv_, sysfs_));
+    auto topo = std::make_unique<Topology>();
+    CudaTopologyDiscovery(cuda_, nvml_, ibv_, sysfs_).discover(*topo);
+    return topo;
   }
 
   std::shared_ptr<NiceMock<MockCudaApi>> cuda_;
@@ -205,10 +226,88 @@ TEST_F(TopologyTest, DiscoverWithTwoGpusCreatesNodes) {
   EXPECT_EQ(std::get<TopoNode::GpuData>(gpu1.data).cudaDeviceId, 1);
 }
 
+TEST_F(TopologyTest, DiscoverMapsReorderedCudaOrdinalsToNvmlByPciBusId) {
+  ON_CALL(*cuda_, getDeviceCount()).WillByDefault(Return(Result<int>(2)));
+  ON_CALL(*cuda_, deviceCanAccessPeer(_, _))
+      .WillByDefault(Return(Result<bool>(true)));
+
+  ON_CALL(*cuda_, getDevicePCIBusId(_, _, 0))
+      .WillByDefault([](char* buf, int len, int) {
+        strncpy(buf, "0000:19:00.0", len);
+        return Ok();
+      });
+  ON_CALL(*cuda_, getDevicePCIBusId(_, _, 1))
+      .WillByDefault([](char* buf, int len, int) {
+        strncpy(buf, "0000:09:00.0", len);
+        return Ok();
+      });
+
+  // CUDA ordinal order can differ from physical NVML index order when
+  // CUDA_VISIBLE_DEVICES filters or reorders GPUs. Discovery must enrich each
+  // CUDA-visible GPU through its PCI bus ID instead of assuming ordinal == NVML
+  // index.
+  EXPECT_CALL(*nvml_, deviceCount()).Times(Exactly(0));
+  EXPECT_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _))
+      .Times(Exactly(2))
+      .WillRepeatedly([](const char* busId, nvmlDevice_t* dev) -> Status {
+        if (strcmp(busId, "0000:19:00.0") == 0) {
+          // NOLINTNEXTLINE(performance-no-int-to-ptr)
+          *dev = reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(19));
+          return Ok();
+        }
+        if (strcmp(busId, "0000:09:00.0") == 0) {
+          // NOLINTNEXTLINE(performance-no-int-to-ptr)
+          *dev = reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(9));
+          return Ok();
+        }
+        return Err(ErrCode::InvalidArgument, "unexpected PCI bus ID");
+      });
+  EXPECT_CALL(*nvml_, nvmlDeviceGetCudaComputeCapability(_, _, _))
+      .Times(Exactly(2))
+      .WillRepeatedly([](nvmlDevice_t dev, int* major, int* minor) {
+        auto handle = reinterpret_cast<uintptr_t>(dev);
+        *major = handle == 19 ? 9 : 8;
+        *minor = 0;
+        return Ok();
+      });
+
+  auto topo = createTopology();
+
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->gpuCount(), 2u);
+  const auto& cudaOrdinal0 =
+      std::get<TopoNode::GpuData>(topo->getGpuNode(0).data);
+  EXPECT_EQ(cudaOrdinal0.cudaDeviceId, 0);
+  EXPECT_EQ(cudaOrdinal0.bdf, "0000:19:00.0");
+  EXPECT_EQ(cudaOrdinal0.sm, 90);
+
+  const auto& cudaOrdinal1 =
+      std::get<TopoNode::GpuData>(topo->getGpuNode(1).data);
+  EXPECT_EQ(cudaOrdinal1.cudaDeviceId, 1);
+  EXPECT_EQ(cudaOrdinal1.bdf, "0000:09:00.0");
+  EXPECT_EQ(cudaOrdinal1.sm, 80);
+}
+
 TEST_F(TopologyTest, DiscoverContinuesWhenNvmlFails) {
-  EXPECT_CALL(*nvml_, deviceCount())
+  setupGpus(1);
+
+  // GPU enumeration is driven by CUDA_VISIBLE_DEVICES-aware CUDA APIs. NVML is
+  // only used to enrich each CUDA-visible GPU with NVLink/C2C details, so an
+  // NVML handle lookup failure must not discard the CUDA-visible GPU.
+  EXPECT_CALL(*nvml_, deviceCount()).Times(Exactly(0));
+  EXPECT_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _))
       .WillOnce(Return(Err(ErrCode::DriverError, "nvml failed")));
-  // CUDA should not be called if NVML fails first.
+  EXPECT_CALL(*cuda_, getDevicePCIBusId(_, _, 0)).Times(Exactly(1));
+  auto topo = createTopology();
+  // NVML failure is non-fatal; topology is still available with the
+  // CUDA-visible GPU and without NVML-derived link metadata.
+  EXPECT_TRUE(topo->available());
+  EXPECT_EQ(topo->gpuCount(), 1u);
+}
+
+TEST_F(TopologyTest, DiscoverContinuesWhenCudaDeviceCountFails) {
+  EXPECT_CALL(*cuda_, getDeviceCount())
+      .WillOnce(Return(Err(ErrCode::DriverError, "cuda failed")));
   EXPECT_CALL(*cuda_, getDevicePCIBusId(_, _, _)).Times(Exactly(0));
   auto topo = createTopology();
   // GPU failure is non-fatal; topology is still available with zero GPUs.
@@ -956,6 +1055,19 @@ TEST_F(TopologyNicTest, NodeNamesAreSet) {
   EXPECT_EQ(topo->getGpuNode(0).name, "cuda:0");
   EXPECT_EQ(topo->getCpuNode(0).name, "cpu:0");
   EXPECT_EQ(topo->getNicNode(0).name, "mlx5_0");
+}
+
+TEST_F(TopologyNicTest, NicNumaNodeLookup) {
+  // Override nic2_ to NUMA node 1 so we can verify per-NIC differentiation.
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_EQ(topo->nicNumaNode("mlx5_0"), 0);
+  EXPECT_EQ(topo->nicNumaNode("mlx5_2"), 1);
+  EXPECT_EQ(topo->nicNumaNode("missing_nic"), -1);
 }
 
 TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {

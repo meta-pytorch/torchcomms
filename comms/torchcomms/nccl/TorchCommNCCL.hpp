@@ -92,6 +92,10 @@ class TorchCommNCCL : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  // Returns the underlying host ncclComm_t as an opaque integer pointer.
+  // Mirrors TorchCommNCCLX::getCommPtr; used to wire this comm into PyTorch's
+  // symmetric-memory registry from Python (see get_nccl_comm_ptr binding).
+  int64_t getCommPtr() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -214,6 +218,8 @@ class TorchCommNCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
   void abort() override;
+  bool isAbortSupported() const override;
+  bool isAborted() const override;
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
@@ -234,6 +240,23 @@ class TorchCommNCCL : public TorchCommBackend,
   void setNcclApi(std::shared_ptr<NcclApi> api) {
     nccl_api_ = std::move(api);
   }
+
+  // Construct a fully initialized 2-rank sibling communicator for the
+  // pair (this->getRank(), peer_rank). Only the two participating ranks
+  // need to call this — bootstrap happens out of band through a
+  // PrefixStore (prefix = `name`) so no global collective coordination
+  // is required. Inside the returned comm, the lower-numbered global
+  // rank is local rank 0 and the higher is local rank 1. The caller
+  // must supply a `name` that is unique across pair-comm allocations
+  // for this {min,max} pair, otherwise the PrefixStore key for the
+  // ncclUniqueId will collide with an earlier (or concurrent) attempt.
+  // LazyBackend takes care of that — it owns the per-pair counter.
+  //
+  // Defined in TorchCommNCCLLazy.cpp alongside the nccl-lazy
+  // registration so all of the per-pair plumbing lives in one place.
+  std::shared_ptr<TorchCommNCCL> createPairComm(
+      int peer_rank,
+      const std::string& name);
 
   // Method to override the CUDA API implementation for testing
   void setCudaApi(std::shared_ptr<CudaApi> api) {
@@ -272,6 +295,12 @@ class TorchCommNCCL : public TorchCommBackend,
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
+
+  // Set once the communicator has been revoked (the graceful abort path used in
+  // reconfigurable mode). Guards revokeNcclComm() so its teardown runs at most
+  // once per communicator generation, even when both the timeout watchdog and a
+  // synchronous collective observe the same failure. Reset on reconfigure.
+  std::atomic<bool> revoked_{false};
 
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
@@ -390,7 +419,11 @@ class TorchCommNCCL : public TorchCommBackend,
   ncclResult_t ensureSegmentWindow(const void* ptr);
 
  private:
-  // Constructor for split communicators
+  // Constructor that takes ownership of an already-built ncclComm,
+  // skipping the bootstrap path entirely. Used internally by split()
+  // and createPairComm() to plug a raw communicator into a fresh
+  // TorchCommNCCL before calling init() to wire up streams, events,
+  // hooks, and the watchdog.
   explicit TorchCommNCCL(const ncclComm_t nccl_comm);
 
   // Private utility methods
