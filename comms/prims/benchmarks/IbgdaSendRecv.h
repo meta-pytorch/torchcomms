@@ -80,6 +80,27 @@ void launch_ibgda_recv(
     Timeout timeout = Timeout());
 
 /**
+ * Drain outstanding bidirectional send/recv transport work for benchmark
+ * measurement and safe teardown.
+ */
+void launch_ibgda_drain_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    int activeBlocks,
+    std::size_t totalBytes,
+    int iterations,
+    cudaStream_t stream,
+    Timeout timeout = Timeout());
+
+/**
+ * Reset benchmark-owned send/recv transport state after outstanding work has
+ * been drained.
+ */
+void launch_ibgda_reset_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    int maxGroups,
+    cudaStream_t stream);
+
+/**
  * Snapshot the transport send/recv byte cursors into device memory.
  *
  * @param transport  GPU-resident P2pIbgdaTransportDevice pointer

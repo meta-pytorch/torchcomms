@@ -1556,9 +1556,10 @@ class P2pIbgdaTransportDevice {
   //                      perBlockSlot. Otherwise:
   //                        chunkSize = floor16(min(perBlockSlot,
   //                                             max_signal_bytes))
-  //   state[].nextStep = persistent byte cursor. DATA_READY, SLOT_FREE, and
-  //                      NIC_DONE counters also advance by bytes, which keeps
-  //                      cursor state independent of max_signal_bytes.
+  //   state[].nextStep = persistent 16-byte-aligned protocol cursor.
+  //                      DATA_READY, SLOT_FREE, and NIC_DONE counters also
+  //                      advance by protocol bytes, which keeps cursor state
+  //                      independent of max_signal_bytes.
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
@@ -1631,11 +1632,11 @@ class P2pIbgdaTransportDevice {
    * `Done`, so callers can use the same loop shape for empty and non-empty
    * transfers.
    *
-   * The transport-owned state slot stores the shared persistent byte cursor and
-   * only the active async stage, `activeNextByte`, and reserved stream base.
-   * Immutable geometry such as `nbytes`, active block count, and chunk sizing
-   * is intentionally kept out of HBM-backed state and recomputed by each
-   * progress call from its arguments.
+   * The transport-owned state slot stores the shared persistent protocol byte
+   * cursor and only the active async stage, `activeNextByte`, and reserved
+   * stream base. Immutable geometry such as `nbytes`, active block count, and
+   * chunk sizing is intentionally kept out of HBM-backed state and recomputed
+   * by each progress call from its arguments.
    *
    * The progress state is a property of this transport, indexed by
    * `group.group_id` and direction. A caller may have one send and one recv in
@@ -1646,10 +1647,11 @@ class P2pIbgdaTransportDevice {
   /**
    * Initialize transport-owned state for one pipelined send operation.
    *
-   * The transport reserves the sender-side byte stream for `group.group_id`
-   * and starts the internal state in the sender state machine unless
-   * `nbytes == 0`. It does not capture the source pointer; callers pass the
-   * pointer to each `progress_send_once()` call.
+   * The transport reserves the sender-side protocol byte stream for
+   * `group.group_id` and starts the internal state in the sender state machine
+   * unless `nbytes == 0`. Non-empty payload byte counts are rounded up to the
+   * 16-byte wire granularity internally. It does not capture the source
+   * pointer; callers pass the pointer to each `progress_send_once()` call.
    *
    * The send progress slot for this group must be idle. Re-initializing a
    * group while a previous send is outstanding traps with a diagnostic instead
@@ -1667,7 +1669,8 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group that will execute all later progress calls.
    * @param nbytes Number of user-buffer bytes to send for this group.
-   * @param active_blocks Number of participating groups, or 0 for maxGroups.
+   * @param active_blocks Number of participating transport lanes, or 0 for
+   *                      maxGroups.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
   __device__ __forceinline__ void init_send_progress(
@@ -1688,9 +1691,10 @@ class P2pIbgdaTransportDevice {
       return;
     }
     // Validate the transfer before reserving the transport byte cursor.
-    (void)make_progress_geometry(
+    const ProgressGeometry geometry = make_progress_geometry(
         group, nbytes, active_blocks, max_signal_bytes, "init_send_progress");
-    state.activeBaseStep = reserve_progress_step(group, progressIndex, nbytes);
+    state.activeBaseStep =
+        reserve_progress_step(group, progressIndex, geometry.protocolBytes);
     store_progress_state(group, progressIndex, state);
 #endif
   }
@@ -1698,10 +1702,12 @@ class P2pIbgdaTransportDevice {
   /**
    * Initialize transport-owned state for one pipelined recv operation.
    *
-   * The transport reserves the receiver-side byte stream for `group.group_id`
-   * and starts the internal state in the receiver state machine unless
-   * `nbytes == 0`. It does not capture the destination pointer; callers pass
-   * the pointer to each `progress_recv_once()` call.
+   * The transport reserves the receiver-side protocol byte stream for
+   * `group.group_id` and starts the internal state in the receiver state
+   * machine unless `nbytes == 0`. Non-empty payload byte counts are rounded up
+   * to the 16-byte wire granularity internally. It does not capture the
+   * destination pointer; callers pass the pointer to each
+   * `progress_recv_once()` call.
    *
    * The recv progress slot for this group must be idle. Re-initializing a
    * group while a previous recv is outstanding traps with a diagnostic instead
@@ -1718,7 +1724,8 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group that will execute all later progress calls.
    * @param nbytes Number of user-buffer bytes to receive for this group.
-   * @param active_blocks Number of participating groups, or 0 for maxGroups.
+   * @param active_blocks Number of participating transport lanes, or 0 for
+   *                      maxGroups.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
   __device__ __forceinline__ void init_recv_progress(
@@ -1739,9 +1746,10 @@ class P2pIbgdaTransportDevice {
       return;
     }
     // Validate the transfer before reserving the transport byte cursor.
-    (void)make_progress_geometry(
+    const ProgressGeometry geometry = make_progress_geometry(
         group, nbytes, active_blocks, max_signal_bytes, "init_recv_progress");
-    state.activeBaseStep = reserve_progress_step(group, progressIndex, nbytes);
+    state.activeBaseStep =
+        reserve_progress_step(group, progressIndex, geometry.protocolBytes);
     store_progress_state(group, progressIndex, state);
 #endif
   }
@@ -1761,7 +1769,9 @@ class P2pIbgdaTransportDevice {
    * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
    * range, and finally issues an RDMA put that piggybacks DATA_READY and
    * records NIC_DONE in the local counter. Returning `Done` means the reserved
-   * byte range has completed.
+   * protocol byte range has completed. For unaligned payload sizes, the final
+   * WQE may include transport-private padding; `CopyOp` is invoked only for
+   * valid payload bytes.
    *
    * `CopyOp` must expose `send(dst, src, bytes, group, dataOffset, args...)`.
    * The default `Memcpy` copies bytes cooperatively across the supplied
@@ -1800,13 +1810,13 @@ class P2pIbgdaTransportDevice {
     }
     const ProgressGeometry progress_params = make_progress_geometry(
         group, nbytes, active_blocks, max_signal_bytes, "progress_send_once");
-    if (state.activeNextByte >= progress_params.nbytes) {
+    if (state.activeNextByte >= progress_params.protocolBytes) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: progress_send_once nextByte=%llu >= nbytes=%llu "
-            "without Done stage\n",
+            "[PIPES] FATAL: progress_send_once nextByte=%llu >= "
+            "protocolBytes=%llu without Done stage\n",
             static_cast<unsigned long long>(state.activeNextByte),
-            static_cast<unsigned long long>(progress_params.nbytes));
+            static_cast<unsigned long long>(progress_params.protocolBytes));
       }
       PIPES_DEVICE_TRAP();
     }
@@ -1843,13 +1853,17 @@ class P2pIbgdaTransportDevice {
         }
       }
 
-      CopyOp::send(
-          sendRecvState_.sendStagingPtr + chunk.stagingOff,
-          static_cast<const char*>(src) + chunk.dataOff,
-          chunk.bytes,
-          group,
-          chunk.dataOff,
-          args...);
+      const std::size_t validBytes = valid_payload_bytes(
+          chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
+      if (validBytes > 0) {
+        CopyOp::send(
+            sendRecvState_.sendStagingPtr + chunk.stagingOff,
+            static_cast<const char*>(src) + chunk.dataOff,
+            validBytes,
+            group,
+            chunk.dataOff,
+            args...);
+      }
       group.sync();
       transition_progress_stage(
           group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
@@ -1905,7 +1919,7 @@ class P2pIbgdaTransportDevice {
       group.sync();
 
       state.activeNextByte += chunk.bytes;
-      if (state.activeNextByte >= progress_params.nbytes) {
+      if (state.activeNextByte >= progress_params.protocolBytes) {
         transition_progress_stage(
             group, state, detail::IbSendRecvProgressStage::Done);
         store_progress_state(group, progressIndex, state);
@@ -1941,7 +1955,9 @@ class P2pIbgdaTransportDevice {
    * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
    * transport-owned recv-staging into the caller's destination through
    * `CopyOp::recv`, then signals SLOT_FREE back to the sender. Returning `Done`
-   * means the reserved byte range has completed.
+   * means the reserved protocol byte range has completed. For unaligned
+   * payload sizes, the final WQE may include transport-private padding;
+   * `CopyOp` is invoked only for valid payload bytes.
    *
    * `CopyOp` must expose `recv(dst, src, bytes, group, dataOffset, args...)`.
    * The default `Memcpy` copies bytes cooperatively across the supplied
@@ -1980,13 +1996,13 @@ class P2pIbgdaTransportDevice {
     }
     const ProgressGeometry progress_params = make_progress_geometry(
         group, nbytes, active_blocks, max_signal_bytes, "progress_recv_once");
-    if (state.activeNextByte >= progress_params.nbytes) {
+    if (state.activeNextByte >= progress_params.protocolBytes) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: progress_recv_once nextByte=%llu >= nbytes=%llu "
-            "without Done stage\n",
+            "[PIPES] FATAL: progress_recv_once nextByte=%llu >= "
+            "protocolBytes=%llu without Done stage\n",
             static_cast<unsigned long long>(state.activeNextByte),
-            static_cast<unsigned long long>(progress_params.nbytes));
+            static_cast<unsigned long long>(progress_params.protocolBytes));
       }
       PIPES_DEVICE_TRAP();
     }
@@ -2015,13 +2031,17 @@ class P2pIbgdaTransportDevice {
       return IbgdaSendRecvProgressStatus::Waiting;
     }
 
-    CopyOp::recv(
-        static_cast<char*>(dst) + chunk.dataOff,
-        sendRecvState_.recvStagingPtr + chunk.stagingOff,
-        chunk.bytes,
-        group,
-        chunk.dataOff,
-        args...);
+    const std::size_t validBytes = valid_payload_bytes(
+        chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
+    if (validBytes > 0) {
+      CopyOp::recv(
+          static_cast<char*>(dst) + chunk.dataOff,
+          sendRecvState_.recvStagingPtr + chunk.stagingOff,
+          validBytes,
+          group,
+          chunk.dataOff,
+          args...);
+    }
     group.sync();
 
     signal(
@@ -2032,7 +2052,7 @@ class P2pIbgdaTransportDevice {
         chunk.bytes);
 
     state.activeNextByte += chunk.bytes;
-    if (state.activeNextByte >= progress_params.nbytes) {
+    if (state.activeNextByte >= progress_params.protocolBytes) {
       transition_progress_stage(
           group, state, detail::IbSendRecvProgressStage::Done);
       store_progress_state(group, progressIndex, state);
@@ -2076,9 +2096,10 @@ class P2pIbgdaTransportDevice {
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).
    * @param src             Source data for this block's tile.
-   * @param nbytes          Bytes to send for this group. Internally consumed
-   *                        in perBlockSlot-sized pieces, or smaller sub-chunks
-   *                        when max_signal_bytes is set.
+   * @param nbytes          Payload bytes to send for this group. The internal
+   *                        protocol byte count is rounded up to 16 bytes and
+   *                        consumed in perBlockSlot-sized pieces, or smaller
+   *                        sub-chunks when max_signal_bytes is set.
    * @param active_blocks   Number of block-groups sharing each logical slot in
    *                        this call. 0 means use maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
@@ -2139,6 +2160,7 @@ class P2pIbgdaTransportDevice {
     if (nbytes == 0) {
       return;
     }
+    const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
     const int effActive =
@@ -2207,7 +2229,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(groupId));
     }
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
@@ -2215,7 +2237,7 @@ class P2pIbgdaTransportDevice {
       const std::size_t slotOff = slot * dataBufferSize;
       const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
       const std::size_t slotRemaining = perBlockSlot - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t bytesThis =
           chunkSize < dataRemaining ? chunkSize : dataRemaining;
       bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
@@ -2234,13 +2256,17 @@ class P2pIbgdaTransportDevice {
       }
 
       // (2) Cooperative copy: src → local sendStaging via CopyOp.
-      CopyOp::send(
-          sendRecvState_.sendStagingPtr + stagingOff,
-          static_cast<const char*>(src) + dataOff,
-          bytesThis,
-          group,
-          dataOff,
-          args...);
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, bytesThis, nbytes);
+      if (validBytes > 0) {
+        CopyOp::send(
+            sendRecvState_.sendStagingPtr + stagingOff,
+            static_cast<const char*>(src) + dataOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
       group.sync();
 
       // (3) Backpressure: wait for receiver to free this byte range's
@@ -2277,7 +2303,7 @@ class P2pIbgdaTransportDevice {
     }
 
     if (group.is_leader()) {
-      state.nextStep = static_cast<int64_t>(baseByte + nbytes);
+      state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
       state.activeStage = detail::IbSendRecvProgressStage::Done;
       state.activeBaseStep = 0;
       state.activeNextByte = 0;
@@ -2310,9 +2336,10 @@ class P2pIbgdaTransportDevice {
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does signal ops).
    * @param dst             Destination for this block's tile.
-   * @param nbytes          Bytes to receive for this group. Internally
-   *                        consumed in perBlockSlot-sized pieces, or smaller
-   *                        sub-chunks when max_signal_bytes is set.
+   * @param nbytes          Payload bytes to receive for this group. The
+   *                        internal protocol byte count is rounded up to 16
+   *                        bytes and consumed in perBlockSlot-sized pieces, or
+   *                        smaller sub-chunks when max_signal_bytes is set.
    * @param active_blocks   Number of block-groups sharing each logical slot in
    *                        this call. 0 means use maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
@@ -2374,6 +2401,7 @@ class P2pIbgdaTransportDevice {
     if (nbytes == 0) {
       return;
     }
+    const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
     const int effActive =
@@ -2442,7 +2470,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(groupId));
     }
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
@@ -2450,7 +2478,7 @@ class P2pIbgdaTransportDevice {
       const std::size_t slotOff = slot * dataBufferSize;
       const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
       const std::size_t slotRemaining = perBlockSlot - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t bytesThis =
           chunkSize < dataRemaining ? chunkSize : dataRemaining;
       bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
@@ -2466,13 +2494,17 @@ class P2pIbgdaTransportDevice {
           timeout);
 
       // (2) Cooperative copy: local recvStaging → dst via CopyOp.
-      CopyOp::recv(
-          static_cast<char*>(dst) + dataOff,
-          sendRecvState_.recvStagingPtr + stagingOff,
-          bytesThis,
-          group,
-          dataOff,
-          args...);
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, bytesThis, nbytes);
+      if (validBytes > 0) {
+        CopyOp::recv(
+            static_cast<char*>(dst) + dataOff,
+            sendRecvState_.recvStagingPtr + stagingOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
       group.sync();
 
       // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
@@ -2486,7 +2518,7 @@ class P2pIbgdaTransportDevice {
     }
 
     if (group.is_leader()) {
-      state.nextStep = static_cast<int64_t>(baseByte + nbytes);
+      state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
       state.activeStage = detail::IbSendRecvProgressStage::Done;
       state.activeBaseStep = 0;
       state.activeNextByte = 0;
@@ -2552,7 +2584,8 @@ class P2pIbgdaTransportDevice {
    * @param dst             Application destination (may be nullptr if
    *                        CopyOp handles it, e.g. reduce-scatter).
    * @param fwd             Forward transport (sends to next peer in ring).
-   * @param nbytes          Bytes to receive and forward.
+   * @param nbytes          Payload bytes to receive and forward. The internal
+   *                        protocol byte count is rounded up to 16 bytes.
    * @param active_blocks   Number of block-groups sharing the slot. 0 =
    * maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
@@ -2603,6 +2636,7 @@ class P2pIbgdaTransportDevice {
     if (nbytes == 0) {
       return;
     }
+    const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
 
@@ -2706,7 +2740,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(groupId));
     }
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       // --- Recv side offsets ---
       const uint64_t recvStreamStart = recvBaseByte + dataOff;
       const std::size_t recvPipelineOff =
@@ -2730,7 +2764,7 @@ class P2pIbgdaTransportDevice {
           fwdSlotOff + groupId * fwdPerBlockSlot + fwdChunkOff;
       const std::size_t recvSlotRemaining = recvPerBlockSlot - recvChunkOff;
       const std::size_t fwdSlotRemaining = fwdPerBlockSlot - fwdChunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t bytesThis =
           recvChunkSize < fwdChunkSize ? recvChunkSize : fwdChunkSize;
       bytesThis = bytesThis < dataRemaining ? bytesThis : dataRemaining;
@@ -2757,14 +2791,18 @@ class P2pIbgdaTransportDevice {
       }
 
       // (3) CopyOp::forward — transform recv staging → dst + fwd staging.
-      CopyOp::forward(
-          dst ? static_cast<char*>(dst) + dataOff : nullptr,
-          fwd.sendRecvState_.sendStagingPtr + fwdStagingOff,
-          sendRecvState_.recvStagingPtr + recvStagingOff,
-          bytesThis,
-          group,
-          dataOff,
-          args...);
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, bytesThis, nbytes);
+      if (validBytes > 0) {
+        CopyOp::forward(
+            dst ? static_cast<char*>(dst) + dataOff : nullptr,
+            fwd.sendRecvState_.sendStagingPtr + fwdStagingOff,
+            sendRecvState_.recvStagingPtr + recvStagingOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
       group.sync();
 
       // (4) Signal SLOT_FREE to sender (this transport).
@@ -2810,11 +2848,12 @@ class P2pIbgdaTransportDevice {
 
     // Update shared byte cursors for both recv and fwd sides.
     if (group.is_leader()) {
-      recvSlotState.nextStep = static_cast<int64_t>(recvBaseByte + nbytes);
+      recvSlotState.nextStep =
+          static_cast<int64_t>(recvBaseByte + protocolBytes);
       recvSlotState.activeStage = detail::IbSendRecvProgressStage::Done;
       recvSlotState.activeBaseStep = 0;
       recvSlotState.activeNextByte = 0;
-      fwdSlotState.nextStep = static_cast<int64_t>(fwdBaseByte + nbytes);
+      fwdSlotState.nextStep = static_cast<int64_t>(fwdBaseByte + protocolBytes);
       fwdSlotState.activeStage = detail::IbSendRecvProgressStage::Done;
       fwdSlotState.activeBaseStep = 0;
       fwdSlotState.activeNextByte = 0;
@@ -2861,10 +2900,13 @@ class P2pIbgdaTransportDevice {
    * Physical staging range for the next resumable progress step.
    *
    * `stagingOff` is an offset into the transport-owned send/recv staging
-   * buffers. `dataOff` is the matching offset into the caller's user buffer.
-   * `bytes` never crosses a per-block staging partition or the requested byte
-   * count. `streamEnd` is the absolute protocol byte value after this chunk and
-   * is used as the DATA_READY, SLOT_FREE, and NIC_DONE readiness threshold.
+   * buffers. `dataOff` is the matching protocol offset into the caller's user
+   * buffer.
+   * `bytes` never crosses a per-block staging partition or the reserved
+   * protocol byte count. `streamEnd` is the absolute protocol byte value after
+   * this chunk and is used as the DATA_READY, SLOT_FREE, and NIC_DONE
+   * readiness threshold. `dataOff` is a protocol offset; callers mask it
+   * against the payload byte count before invoking user-buffer copy callbacks.
    */
   struct ProgressChunk {
     std::size_t stagingOff;
@@ -2883,10 +2925,33 @@ class P2pIbgdaTransportDevice {
    */
   struct ProgressGeometry {
     int groupId;
-    std::size_t nbytes;
+    std::size_t payloadBytes;
+    std::size_t protocolBytes;
     std::size_t perBlockSlot;
     std::size_t chunkSize;
   };
+
+  /**
+   * Stateful send/recv cursors advance in 16-byte protocol quanta. That keeps
+   * the staging stream on the same granularity as the vectorized local staging
+   * copies while preserving caller-facing payload byte counts; padding is
+   * transport-private and is never exposed to CopyOp callbacks.
+   */
+  __device__ __forceinline__ static std::size_t align_protocol_bytes(
+      std::size_t nbytes) {
+    return (nbytes + 15ULL) & ~15ULL;
+  }
+
+  __device__ __forceinline__ static std::size_t valid_payload_bytes(
+      std::size_t byteOffset,
+      std::size_t chunkBytes,
+      std::size_t payloadBytes) {
+    if (byteOffset >= payloadBytes) {
+      return 0;
+    }
+    const std::size_t remaining = payloadBytes - byteOffset;
+    return chunkBytes < remaining ? chunkBytes : remaining;
+  }
 
   /**
    * Return the internal send progress slot index for `group`.
@@ -3043,7 +3108,8 @@ class P2pIbgdaTransportDevice {
    *
    * The public init methods handle zero-byte operations before calling this
    * helper. A progress call should only see zero bytes when its state is
-   * already `Done`.
+   * already `Done`. Non-empty payload byte counts are rounded up to 16-byte
+   * protocol counts here; copy callbacks still see only valid payload bytes.
    */
   __device__ __forceinline__ ProgressGeometry make_progress_geometry(
       ThreadGroup& group,
@@ -3099,6 +3165,7 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
 
+    const std::size_t protocolBytes = align_protocol_bytes(nbytes);
     std::size_t chunkSize =
         (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
         ? (max_signal_bytes & ~15ULL)
@@ -3108,7 +3175,8 @@ class P2pIbgdaTransportDevice {
     }
     return ProgressGeometry{
         .groupId = groupId,
-        .nbytes = nbytes,
+        .payloadBytes = nbytes,
+        .protocolBytes = protocolBytes,
         .perBlockSlot = perBlockSlot,
         .chunkSize = chunkSize,
     };
@@ -3248,7 +3316,8 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Map the state's logical byte cursor to the next staging-ring chunk.
+   * Map the state's logical protocol byte cursor to the next staging-ring
+   * chunk.
    *
    * The transport stores each logical slot as `dataBufferSize` bytes, split
    * into geometry-specific per-group partitions. The protocol cursor advances
@@ -3256,9 +3325,10 @@ class P2pIbgdaTransportDevice {
    * `perBlockSlot * pipelineDepth` to pick the ring slot and per-group offset.
    *
    * The returned chunk is clipped by three boundaries: the configured
-   * sub-chunk size, remaining user bytes, and remaining bytes in the current
-   * per-block staging partition. This keeps every progress call bounded and
-   * prevents a single RDMA put or recv copy from spanning two staging slots.
+   * sub-chunk size, remaining protocol bytes, and remaining bytes in the
+   * current per-block staging partition. This keeps every progress call
+   * bounded and prevents a single RDMA put or recv copy from spanning two
+   * staging slots.
    */
   __device__ __forceinline__ ProgressChunk next_chunk(
       const IbSendRecvState::ProgressSlot& state,
@@ -3275,7 +3345,8 @@ class P2pIbgdaTransportDevice {
     const std::size_t chunkOff =
         pipelineOff - static_cast<std::size_t>(slot) * geometry.perBlockSlot;
     const std::size_t slotRemaining = geometry.perBlockSlot - chunkOff;
-    const std::size_t dataRemaining = geometry.nbytes - state.activeNextByte;
+    const std::size_t dataRemaining =
+        geometry.protocolBytes - state.activeNextByte;
     std::size_t bytes =
         geometry.chunkSize < dataRemaining ? geometry.chunkSize : dataRemaining;
     bytes = bytes < slotRemaining ? bytes : slotRemaining;

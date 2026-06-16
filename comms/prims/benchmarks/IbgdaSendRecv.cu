@@ -11,6 +11,38 @@
 
 namespace comms::prims::benchmark {
 
+namespace {
+
+__device__ __forceinline__ std::size_t benchmark_align_protocol_bytes(
+    std::size_t nbytes) {
+  return (nbytes + 15ULL) & ~15ULL;
+}
+
+__device__ __forceinline__ std::size_t
+protocol_bytes_for_tiled_group_per_launch(
+    std::size_t totalBytes,
+    int activeBlocks,
+    std::size_t slotSize,
+    int groupId) {
+  const std::size_t sectionBytes = min(slotSize, totalBytes);
+  if (sectionBytes == 0) {
+    return 0;
+  }
+
+  const std::size_t totalSections = totalBytes / sectionBytes;
+  const std::size_t tileElements =
+      (((sectionBytes + activeBlocks - 1) / activeBlocks) + 15ULL) & ~15ULL;
+  const std::size_t tileOffset = groupId * tileElements;
+  if (tileOffset >= sectionBytes) {
+    return 0;
+  }
+
+  const std::size_t tileBytes = min(tileElements, sectionBytes - tileOffset);
+  return totalSections * benchmark_align_protocol_bytes(tileBytes);
+}
+
+} // namespace
+
 __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
     char* src,
@@ -205,6 +237,102 @@ void launch_ibgda_recv(
     Timeout timeout) {
   ibgda_recv_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    int activeBlocks,
+    std::size_t totalBytes,
+    int iterations,
+    Timeout timeout) {
+  auto group = make_block_group();
+  if (group.group_id >= static_cast<uint32_t>(activeBlocks)) {
+    return;
+  }
+
+  const int groupId = static_cast<int>(group.group_id);
+  const auto& state = transport->send_recv_state();
+  const std::size_t expectedBytes =
+      protocol_bytes_for_tiled_group_per_launch(
+          totalBytes, activeBlocks, state.dataBufferSize, groupId) *
+      iterations;
+  if (expectedBytes == 0) {
+    return;
+  }
+  transport->wait_counter(
+      group,
+      state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)),
+      expectedBytes,
+      timeout);
+  transport->wait_signal(
+      group,
+      state.localSignalBuf.subBuffer(
+          (state.maxGroups + groupId) * sizeof(uint64_t)),
+      expectedBytes,
+      timeout);
+}
+
+void launch_ibgda_drain_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    int activeBlocks,
+    std::size_t totalBytes,
+    int iterations,
+    cudaStream_t stream,
+    Timeout timeout) {
+  if (totalBytes == 0 || iterations == 0) {
+    return;
+  }
+  ibgda_drain_send_recv_kernel<<<activeBlocks, 512, 0, stream>>>(
+      transport, activeBlocks, totalBytes, iterations, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[PIPES] Drain launch failed: %s\n", cudaGetErrorString(err));
+  }
+}
+
+__global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    int maxGroups) {
+  const auto& state = transport->send_recv_state();
+  const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const auto stride = blockDim.x * gridDim.x;
+
+  auto* signalSlots = static_cast<uint64_t*>(state.localSignalBuf.ptr);
+  auto* counterSlots = static_cast<uint64_t*>(state.localCounterBuf.ptr);
+
+  for (auto slot = idx; slot < static_cast<uint32_t>(2 * maxGroups);
+       slot += stride) {
+    if (signalSlots != nullptr) {
+      signalSlots[slot] = 0;
+    }
+    if (slot < state.state.size()) {
+      state.state[slot] = IbSendRecvState::ProgressSlot{};
+    }
+  }
+
+  for (auto slot = idx; slot < static_cast<uint32_t>(maxGroups);
+       slot += stride) {
+    if (counterSlots != nullptr) {
+      counterSlots[slot] = 0;
+    }
+  }
+}
+
+void launch_ibgda_reset_send_recv(
+    P2pIbgdaTransportDevice* transport,
+    int maxGroups,
+    cudaStream_t stream) {
+  if (maxGroups == 0) {
+    return;
+  }
+  constexpr int kThreads = 256;
+  const int blocks = (2 * maxGroups + kThreads - 1) / kThreads;
+  ibgda_reset_send_recv_kernel<<<blocks, kThreads, 0, stream>>>(
+      transport, maxGroups);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[PIPES] Reset launch failed: %s\n", cudaGetErrorString(err));
+  }
 }
 
 __global__ void ibgda_snapshot_step_state_kernel(
