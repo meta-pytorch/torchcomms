@@ -300,7 +300,7 @@ struct RdmaRemoteBuffer {
  *     write(), read(), waitForWrite(), connect()
  *
  *   commTimeout — operation exceeded its timeout duration:
- *     write()
+ *     write(), read(), waitForWrite()
  *
  *   commInternalError — IB / transport-level failure:
  *     write(), read(), waitForWrite()
@@ -383,7 +383,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * [Remote Op] Check the arrival of incoming put transfer from the remote
    * rank.
    */
-  folly::SemiFuture<commResult_t> waitForWrite();
+  folly::SemiFuture<commResult_t> waitForWrite(
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   /*
    * [Remote Op] Transfer data from remote buffer on the peer rank to local
@@ -391,7 +392,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
    */
   folly::SemiFuture<commResult_t> read(
       RdmaMemory::MutableView& localBuffer,
-      const RdmaRemoteBuffer& remoteBuffer);
+      const RdmaRemoteBuffer& remoteBuffer,
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   /*
    * Mock type for testing RDMA transport error scenarios
