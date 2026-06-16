@@ -67,6 +67,44 @@ def _bidirectional(
     dist.barrier()
 
 
+def _hooks(rank: int, device: torch.device, numel: int, num_blocks: int) -> None:
+    """Prove the CuTe elementwise transform hook runs during the transfer."""
+    from comms.dsl import nvl_rendezvous
+    from comms.dsl.cute import recv, send
+    from comms.dsl.cute.hooks import addone_consume, scale2_produce
+
+    src = torch.arange(numel, dtype=torch.float32, device=device)
+
+    pg = dist.group.WORLD
+    assert pg is not None
+
+    # transform on send (scale by 2): recv == 2 * src
+    t = nvl_rendezvous(pg, device, per_peer_bytes=numel * _FP32_BYTES)
+    if rank == 0:
+        send(t, src.clone(), peer=1, produce=scale2_produce, num_blocks=num_blocks)
+    else:
+        out = torch.empty(numel, dtype=torch.float32, device=device)
+        recv(t, out, peer=0, num_blocks=num_blocks)
+        torch.cuda.synchronize()
+        assert torch.equal(out, src * 2), (
+            "cute send-side transform (scale2) not applied"
+        )
+    dist.barrier()
+
+    # transform on recv (add 1): recv == src + 1
+    t2 = nvl_rendezvous(pg, device, per_peer_bytes=numel * _FP32_BYTES)
+    if rank == 0:
+        send(t2, src.clone(), peer=1, num_blocks=num_blocks)
+    else:
+        out = torch.empty(numel, dtype=torch.float32, device=device)
+        recv(t2, out, peer=0, consume=addone_consume, num_blocks=num_blocks)
+        torch.cuda.synchronize()
+        assert torch.equal(out, src + 1), (
+            "cute recv-side transform (addone) not applied"
+        )
+    dist.barrier()
+
+
 def _worker(rank: int, world_size: int, port: int) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
@@ -77,6 +115,7 @@ def _worker(rank: int, world_size: int, port: int) -> None:
     # CuTe minimal path requires numel divisible by the CTA thread count (128).
     _directional(rank, device, numel=8192, num_blocks=8)
     _bidirectional(rank, device, numel=4096, num_blocks=8)
+    _hooks(rank, device, numel=8192, num_blocks=8)
 
     dist.barrier()
     dist.destroy_process_group()

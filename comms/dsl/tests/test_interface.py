@@ -184,6 +184,64 @@ class TritonInterfaceTest(unittest.TestCase):
         self.assertEqual(self._arg_names(hooks.copy_consume), ["ctx", "regs"])
         self.assertIsNotNone(Ctx)
 
+    def test_hooks_present(self) -> None:
+        from comms.dsl.triton import hooks
+        from triton.runtime.jit import JITFunction
+
+        for name in (
+            "copy_produce",
+            "copy_consume",
+            "scale2_produce",
+            "addone_consume",
+        ):
+            self.assertIsInstance(getattr(hooks, name), JITFunction)
+
+    def test_launch_send_recv_hook_defaults(self) -> None:
+        # The host launchers expose the hook seam as keyword-only params that
+        # default to the identity copy hooks.
+        from comms.dsl.triton import launch
+        from comms.dsl.triton.hooks import copy_consume, copy_produce
+
+        send_params = inspect.signature(launch.send).parameters
+        recv_params = inspect.signature(launch.recv).parameters
+        self.assertIs(send_params["produce"].default, copy_produce)
+        self.assertIs(recv_params["consume"].default, copy_consume)
+
+    def test_sendrecv_routes_hooks(self) -> None:
+        # sendrecv routes produce -> send leg, consume -> recv leg, defaults
+        # recv_peer to send_peer, and forwards the remaining launch kwargs to
+        # both legs. Patch the leg launchers so this runs GPU-free.
+        from unittest import mock
+
+        from comms.dsl.triton import launch
+
+        produce = object()
+        consume = object()
+        transport = cast(Any, object())
+        send_buf = cast(Any, object())
+        recv_buf = cast(Any, object())
+
+        with (
+            mock.patch.object(launch, "send") as send_mock,
+            mock.patch.object(launch, "recv") as recv_mock,
+        ):
+            launch.sendrecv(
+                transport,
+                send_buf,
+                recv_buf,
+                send_peer=3,
+                produce=produce,
+                consume=consume,
+                num_blocks=2,
+            )
+
+        send_mock.assert_called_once_with(
+            transport, send_buf, 3, produce=produce, num_blocks=2
+        )
+        recv_mock.assert_called_once_with(
+            transport, recv_buf, 3, consume=consume, num_blocks=2
+        )
+
 
 class CuteInterfaceTest(unittest.TestCase):
     def test_cute_ctx_fields(self) -> None:
@@ -217,8 +275,20 @@ class CuteInterfaceTest(unittest.TestCase):
             params = list(inspect.signature(fn).parameters)
             self.assertIn("transport", params)
             self.assertIn("peer", params)
+        for fn in (send, recv):
+            params = list(inspect.signature(fn).parameters)
+            self.assertIn("transport", params)
+            self.assertIn("peer", params)
+        self.assertIn("produce", inspect.signature(send).parameters)
+        self.assertIn("consume", inspect.signature(recv).parameters)
         # sendrecv routes the disjoint hooks explicitly (produce->send,
         # consume->recv), so both are accepted keyword-only params.
         sr_params = list(inspect.signature(sendrecv).parameters)
         self.assertIn("produce", sr_params)
         self.assertIn("consume", sr_params)
+
+        # Example CuTe hooks exist in the unified produce(ctx)/consume(ctx) form.
+        from comms.dsl.cute import hooks as cute_hooks
+
+        self.assertTrue(callable(cute_hooks.scale2_produce))
+        self.assertTrue(callable(cute_hooks.addone_consume))
