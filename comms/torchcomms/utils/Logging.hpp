@@ -2,9 +2,8 @@
 
 #pragma once
 
-#include <fmt/core.h>
 #include <glog/logging.h>
-
+#include <fmt/format.h>
 #include "comms/torchcomms/TorchCommBackend.hpp"
 
 inline std::string getCommNamePrefix(torch::comms::TorchCommBackend* comm) {
