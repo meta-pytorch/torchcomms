@@ -368,6 +368,35 @@ class WindowRmaTest(unittest.TestCase):
         del win
         torch.cuda.synchronize()
 
+    def _window_wait_signal_test(self):
+        """Test signal/wait_signal pairing: each rank signals the next and waits on the previous."""
+        num_elements = 1024
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+
+        dst_rank = (self.rank + 1) % self.num_ranks
+        src_rank = (self.rank - 1 + self.num_ranks) % self.num_ranks
+
+        signal_work = win.signal(dst_rank, False)
+        self.assertIsNotNone(signal_work)
+        signal_work.wait()
+        wait_work = win.wait_signal(src_rank, False)
+        self.assertIsNotNone(wait_work)
+        wait_work.wait()
+
+        async_signal_work = win.signal(dst_rank, True)
+        self.assertIsNotNone(async_signal_work)
+        async_signal_work.wait()
+        async_wait_work = win.wait_signal(src_rank, True)
+        self.assertIsNotNone(async_wait_work)
+        async_wait_work.wait()
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
     @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
