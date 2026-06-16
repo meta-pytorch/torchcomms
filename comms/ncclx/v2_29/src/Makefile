@@ -79,6 +79,7 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tuner/*.cc)
 
 #### Start of fbcode source files
 ## Trainer Context for getting/setting trainer steps.
