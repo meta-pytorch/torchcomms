@@ -125,6 +125,30 @@ std::vector<T> makeReduceScatterInput(int rank, size_t count, int numRanks) {
 }
 
 template <typename T>
+std::vector<T> makeReduceInput(int rank, size_t count, int root) {
+  std::vector<T> input(count);
+  for (size_t i = 0; i < count; ++i) {
+    input[i] = makeDeviceInput<T>(rank, i, root);
+  }
+  return input;
+}
+
+template <typename T>
+std::vector<ExpectedValue>
+reduceExpected(size_t count, int numRanks, int root) {
+  std::vector<ExpectedValue> expected(count);
+  for (size_t i = 0; i < count; ++i) {
+    for (int rank = 0; rank < numRanks; ++rank) {
+      const double value = referenceInput<T>(rank, i, root);
+      expected[i].value += value;
+      expected[i].sumAbsInputs += std::abs(value);
+      expected[i].numInputs++;
+    }
+  }
+  return expected;
+}
+
+template <typename T>
 std::vector<ExpectedValue>
 reduceScatterExpected(size_t count, int numRanks, int outputRank) {
   std::vector<ExpectedValue> expected(count);
