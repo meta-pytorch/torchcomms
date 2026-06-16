@@ -105,7 +105,29 @@ inline commResult_t nvlCeBcast(
           dsts.at(i), srcs.at(i), sizes.at(i), cudaMemcpyDefault, stream));
     }
   } else {
-#if CUDART_VERSION >= 12080
+#if defined(__HIP_PLATFORM_AMD__)
+    // AMD: hipMemcpyBatchAsync is a 9-arg form with explicit attrs array,
+    // attrsIdxs, numAttrs, and failIdx pointer (matches RCCL ce_coll.cc).
+    // Requires Meta-patched libamdhip64.so.7.0.70002 (built via
+    // -m ovr_config//third-party/rocm/constraints:7.0.2.2). Use hip*
+    // identifiers directly since hipify does not rewrite header content
+    // reached transitively from the hipify-gen'd .cc translation unit.
+    hipMemcpyAttributes attr = {};
+    attr.srcAccessOrder = hipMemcpySrcAccessOrderStream;
+    attr.flags = hipMemcpyFlagPreferOverlapWithCompute;
+    std::vector<size_t> attrIdxs(numOps, 0);
+    size_t failIdx = 0;
+    FB_CUDACHECK(hipMemcpyBatchAsync(
+        dsts.data(),
+        srcs.data(),
+        sizes.data(),
+        numOps,
+        &attr,
+        attrIdxs.data(),
+        /*numAttrs=*/1,
+        &failIdx,
+        stream));
+#elif CUDART_VERSION >= 12080
     cudaMemcpyAttributes attr = {};
     attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
     attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
