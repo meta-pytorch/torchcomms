@@ -57,20 +57,35 @@ void initEnvironment() {
 
 // RDMA port and addressing
 constexpr uint8_t kPortNum = 1; // Standard IB port number
-constexpr int kGidIndex = 3; // RoCEv2 GID index (Ethernet)
 
 // QP capacity
 constexpr int kTotalQps = 1; // 1 for H100; increase for GB200
 constexpr int kMaxMsgCntPerQp = 4; // Single-buffer protocol headroom
 constexpr int kMaxSge = 1; // One scatter-gather entry per WR
 
-// QP transport — aligned with NCCL_IB_* cvar defaults
-constexpr uint8_t kTimeout = 20; // ACK timeout (~4.2 s)
-constexpr uint8_t kRetryCnt = 7; // Transport retries (7 = infinite)
-constexpr uint8_t kRnrRetryCnt = 7; // RNR retries (7 = infinite)
+// QP transport — hardcoded defaults for params without NCCL cvars
+constexpr uint8_t kRnrRetryCnt = 7; // RNR retries (7 = max, no cvar)
 constexpr uint8_t kMinRnrTimer = 12; // RNR NAK timer
 constexpr uint8_t kMaxRdAtomic = 1; // Outstanding RDMA read/atomic
 constexpr uint8_t kHopLimit = 255; // GRH hop limit
+constexpr int kDefaultGidIndex = 3; // RoCEv2 GID index fallback
+
+// Read QP transport config from NCCL cvars. Centralizes all cvar reads so QP
+// setup call sites don't scatter IB policy. Ensures cvars are initialized
+// first so this can be called from the constructor's member initializer list,
+// before the constructor body runs.
+torch::comms::QpTransportConfig makeQpTransportConfig() {
+  initEnvironment();
+  return torch::comms::QpTransportConfig{
+      .timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT),
+      .retryCnt = static_cast<uint8_t>(NCCL_IB_RETRY_CNT),
+      .gidIndex = static_cast<uint8_t>(
+          NCCL_IB_GID_INDEX >= 0 ? NCCL_IB_GID_INDEX : kDefaultGidIndex),
+      .trafficClass = static_cast<uint8_t>(NCCL_IB_TC),
+      .sl = static_cast<uint8_t>(NCCL_IB_SL),
+      .pkeyIndex = static_cast<uint16_t>(NCCL_IB_PKEY),
+  };
+}
 
 // Value the client writes to the server's readyToSendFlag_ via RDMA_WRITE
 // to signal that it has finished copying data out of its staging buffer.
@@ -297,9 +312,10 @@ StagedRdmaTransportBase::StagedRdmaTransportBase(
     int cudaDev,
     folly::EventBase* evb,
     StagedTransferConfig config)
-    : cudaDev_(cudaDev), config_(config), evb_(evb) {
-  initEnvironment();
-}
+    : cudaDev_(cudaDev),
+      config_(config),
+      evb_(evb),
+      qpConfig_(makeQpTransportConfig()) {}
 
 StagedRdmaTransportBase::~StagedRdmaTransportBase() {
   if (stream_) {
@@ -411,7 +427,7 @@ void StagedRdmaTransportBase::initIbResources() {
   initQpAttr.qp_access_flags = static_cast<ibv_access_flags>(
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
       IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC);
-  initQpAttr.pkey_index = 0;
+  initQpAttr.pkey_index = qpConfig_.pkeyIndex;
   initQpAttr.port_num = kPortNum;
 
   auto initResult = vqp_->modifyVirtualQp(
@@ -456,10 +472,10 @@ void StagedRdmaTransportBase::connectQp(const std::string& peerConnInfo) {
   rtrAttr.ah_attr.grh.dgid.global.subnet_prefix = peer.subnetPrefix;
   rtrAttr.ah_attr.grh.dgid.global.interface_id = peer.interfaceId;
   rtrAttr.ah_attr.grh.flow_label = 0;
-  rtrAttr.ah_attr.grh.sgid_index = kGidIndex;
+  rtrAttr.ah_attr.grh.sgid_index = qpConfig_.gidIndex;
   rtrAttr.ah_attr.grh.hop_limit = kHopLimit;
-  rtrAttr.ah_attr.grh.traffic_class = 0;
-  rtrAttr.ah_attr.sl = 0;
+  rtrAttr.ah_attr.grh.traffic_class = qpConfig_.trafficClass;
+  rtrAttr.ah_attr.sl = qpConfig_.sl;
   rtrAttr.ah_attr.src_path_bits = 0;
   rtrAttr.ah_attr.port_num = peer.port;
 
@@ -476,8 +492,8 @@ void StagedRdmaTransportBase::connectQp(const std::string& peerConnInfo) {
   // Transition QP: RTR → RTS
   ibv_qp_attr rtsAttr = {};
   rtsAttr.qp_state = IBV_QPS_RTS;
-  rtsAttr.timeout = kTimeout;
-  rtsAttr.retry_cnt = kRetryCnt;
+  rtsAttr.timeout = qpConfig_.timeout;
+  rtsAttr.retry_cnt = qpConfig_.retryCnt;
   rtsAttr.rnr_retry = kRnrRetryCnt;
   rtsAttr.sq_psn = 0;
   rtsAttr.max_rd_atomic = kMaxRdAtomic;
@@ -496,7 +512,7 @@ std::string StagedRdmaTransportBase::serializeConnInfo(
     const StagingRendezvousInfo& localStaging) {
   auto busCard = vqp_->getVirtualQpBusinessCard();
 
-  auto maybeGid = device_->queryGid(kPortNum, kGidIndex);
+  auto maybeGid = device_->queryGid(kPortNum, qpConfig_.gidIndex);
   if (!maybeGid) {
     throw std::runtime_error("Failed to query GID: " + maybeGid.error().errStr);
   }
