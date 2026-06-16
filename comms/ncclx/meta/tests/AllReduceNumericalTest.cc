@@ -1,0 +1,218 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// Numerical canaries for NCCL AllReduce. These tests are intended to catch NCCL
+// upgrade regressions by comparing forced-algorithm results against an
+// independently computed FP64 host reference.
+
+#include <comm.h>
+#include <cuda_bf16.h>
+#include <folly/init/Init.h>
+#include <gtest/gtest.h>
+#include <nccl.h>
+#include <stdlib.h>
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <vector>
+
+#include "comms/ncclx/meta/algoconf/AlgoStrConv.h"
+#include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#include "comms/ncclx/meta/tests/ReductionNumericalTestUtils.h"
+#include "comms/ncclx/meta/tests/VerifyAlgoStatsUtil.h"
+#include "comms/testinfra/TestUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/NcclxConfig.h"
+
+namespace {
+
+enum class AllReduceNumericalAlgo {
+  Ring,
+  Tree,
+  CtranDirect,
+};
+
+struct AllReduceNumericalParam {
+  AllReduceNumericalAlgo algo;
+  size_t count;
+  ncclDataType_t datatype;
+
+  std::string name() const {
+    std::string algoName;
+    switch (algo) {
+      case AllReduceNumericalAlgo::Ring:
+        algoName = "Ring";
+        break;
+      case AllReduceNumericalAlgo::Tree:
+        algoName = "Tree";
+        break;
+      case AllReduceNumericalAlgo::CtranDirect:
+        algoName = "CtranDirect";
+        break;
+    }
+
+    const std::string dtypeName =
+        datatype == ncclFloat32 ? "Float32" : "Bfloat16";
+    return algoName + "_" + dtypeName + "_" +
+        ncclx::test::numerics::countName(count);
+  }
+};
+
+class AllReduceNumericalTest
+    : public NcclxBaseTestFixture,
+      public ::testing::WithParamInterface<AllReduceNumericalParam> {
+ public:
+  void SetUp() override {
+    NcclxBaseTestFixture::SetUp({
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1"},
+    });
+    ncclAlgoStats_.enable();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+    CUDACHECK_TEST(cudaStreamCreate(&stream_));
+  }
+
+  void TearDown() override {
+    CUDACHECK_TEST(cudaStreamDestroy(stream_));
+    NcclxBaseTestFixture::TearDown();
+  }
+
+ protected:
+  template <typename T>
+  void run(const AllReduceNumericalParam& param) {
+    ncclx::Hints hints;
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+    std::optional<SysEnvRAII> ncclAlgoGuard;
+    if (param.algo == AllReduceNumericalAlgo::Ring) {
+      hints.set("allreduceAlgo", "orig");
+      ncclAlgoGuard.emplace("NCCL_ALGO", "RING");
+    } else if (param.algo == AllReduceNumericalAlgo::Tree) {
+      hints.set("allreduceAlgo", "orig");
+      ncclAlgoGuard.emplace("NCCL_ALGO", "TREE");
+    } else {
+      hints.set(
+          "allreduceAlgo",
+          ncclx::algoconf::algoValToStr(NCCL_ALLREDUCE_ALGO::ctdirect));
+    }
+    config.hints = &hints;
+
+    ncclx::test::NcclCommRAII comm{
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
+    if (param.algo == AllReduceNumericalAlgo::CtranDirect) {
+      EXPECT_EQ(
+          NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo),
+          NCCL_ALLREDUCE_ALGO::ctdirect);
+      ASSERT_NE(comm->ctranComm_, nullptr);
+    }
+
+    T* sendBuf = nullptr;
+    T* recvBuf = nullptr;
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, param.count * sizeof(T)));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, param.count * sizeof(T)));
+
+    const auto hostInput =
+        ncclx::test::numerics::makeAllReduceInput<T>(globalRank, param.count);
+    CUDACHECK_TEST(cudaMemcpyAsync(
+        sendBuf,
+        hostInput.data(),
+        param.count * sizeof(T),
+        cudaMemcpyDefault,
+        stream_));
+
+    void* sendHandle = nullptr;
+    void* recvHandle = nullptr;
+    NCCLCHECK_TEST(
+        ncclCommRegister(comm, sendBuf, param.count * sizeof(T), &sendHandle));
+    NCCLCHECK_TEST(
+        ncclCommRegister(comm, recvBuf, param.count * sizeof(T), &recvHandle));
+
+    const auto result = ncclAllReduce(
+        sendBuf, recvBuf, param.count, param.datatype, ncclSum, comm, stream_);
+    ASSERT_EQ(result, ncclSuccess);
+    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+
+    const auto expected =
+        ncclx::test::numerics::allReduceExpected<T>(param.count, numRanks);
+    const size_t mismatches = ncclx::test::numerics::countMismatches(
+        recvBuf, expected, stream_, globalRank, param.name());
+    EXPECT_EQ(mismatches, 0) << param.name() << " rank=" << globalRank;
+
+    if (param.algo == AllReduceNumericalAlgo::Ring) {
+      ncclAlgoStats_.verify(comm, "AllReduce", "RING");
+    } else if (param.algo == AllReduceNumericalAlgo::Tree) {
+      ncclAlgoStats_.verify(comm, "AllReduce", "TREE");
+    }
+
+    NCCLCHECK_TEST(ncclCommDeregister(comm, sendHandle));
+    NCCLCHECK_TEST(ncclCommDeregister(comm, recvHandle));
+    NCCLCHECK_TEST(ncclMemFree(sendBuf));
+    NCCLCHECK_TEST(ncclMemFree(recvBuf));
+  }
+
+  cudaStream_t stream_{nullptr};
+  ncclx::test::VerifyAlgoStatsHelper ncclAlgoStats_;
+};
+
+TEST_P(AllReduceNumericalTest, MatchesFp64Reference) {
+  const auto& param = GetParam();
+  if (param.datatype == ncclFloat32) {
+    run<float>(param);
+  } else if (param.datatype == ncclBfloat16) {
+    run<__nv_bfloat16>(param);
+  } else {
+    FAIL() << "Unhandled datatype in " << param.name();
+  }
+}
+
+const auto kAllReduceNumericalParams = ::testing::Values(
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 1,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 1024,
+        .datatype = ncclBfloat16},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Tree,
+        .count = 1,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Tree,
+        .count = 8193,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Tree,
+        .count = 1024,
+        .datatype = ncclBfloat16},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::CtranDirect,
+        .count = 1024,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::CtranDirect,
+        .count = 4099,
+        .datatype = ncclBfloat16});
+
+INSTANTIATE_TEST_SUITE_P(
+    AllReduce,
+    AllReduceNumericalTest,
+    kAllReduceNumericalParams,
+    [](const ::testing::TestParamInfo<AllReduceNumericalParam>& info) {
+      return info.param.name();
+    });
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+  ::testing::InitGoogleTest(&argc, argv);
+  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  folly::Init init(&argc, &argv);
+  return RUN_ALL_TESTS();
+}
