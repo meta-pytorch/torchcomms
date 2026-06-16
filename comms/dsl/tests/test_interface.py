@@ -14,6 +14,11 @@ import inspect
 import unittest
 from typing import Any, cast
 
+from comms.dsl.cute import ib_ops as cute_ib_ops
+
+# Pure-Python cute submodules (no cutlass); importable GPU-free thanks to the
+# lazy cute/__init__.py, so they are safe to import at module scope.
+from comms.dsl.cute.ctx import Ctx as CuteCtx
 from torch.utils._triton import has_triton
 
 
@@ -181,10 +186,39 @@ class TritonInterfaceTest(unittest.TestCase):
 
 
 class CuteInterfaceTest(unittest.TestCase):
-    def test_cute_stubs_reserved(self) -> None:
-        from comms.dsl.cute import recv, send
+    def test_cute_ctx_fields(self) -> None:
+        ctx = CuteCtx(part=1, atom=2)
+        self.assertEqual(ctx.part, 1)
+        self.assertEqual(ctx.atom, 2)
 
+    def test_cute_ib_ops_reserved(self) -> None:
+        # The four reserved IB transport ops must raise NotImplementedError until
+        # the IB stack wires them.
         with self.assertRaises(NotImplementedError):
-            send(None, None, 1)
+            cute_ib_ops.put(None, None, None)
         with self.assertRaises(NotImplementedError):
-            recv(None, None, 1)
+            cute_ib_ops.get(None, None)
+        with self.assertRaises(NotImplementedError):
+            cute_ib_ops.signal(None, None)
+        with self.assertRaises(NotImplementedError):
+            cute_ib_ops.wait(None, None)
+
+    def test_cute_backend_host_api(self) -> None:
+        # The CuTe backend consumes the SAME host contract (transport + peer) as
+        # Triton — only the device kernel differs. Importing it requires the
+        # cutlass DSL, which may be unavailable in a GPU-less sandbox, so skip
+        # rather than fail there.
+        try:
+            from comms.dsl.cute import recv, send, sendrecv
+        except Exception as e:  # cutlass import / CUDA init may fail GPU-free
+            self.skipTest(f"cutlass DSL not importable: {e}")
+
+        for fn in (send, recv):
+            params = list(inspect.signature(fn).parameters)
+            self.assertIn("transport", params)
+            self.assertIn("peer", params)
+        # sendrecv routes the disjoint hooks explicitly (produce->send,
+        # consume->recv), so both are accepted keyword-only params.
+        sr_params = list(inspect.signature(sendrecv).parameters)
+        self.assertIn("produce", sr_params)
+        self.assertIn("consume", sr_params)
