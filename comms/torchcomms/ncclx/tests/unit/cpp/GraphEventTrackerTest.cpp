@@ -1235,9 +1235,11 @@ TEST_F(
     ColltraceGraphTracing_DisablesGraphTimeoutMonitoring) {
   resetGraphTimeoutMonitoringCacheForTest();
 
+  ::setenv("NCCL_COLLTRACE", "trace", 1);
   ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
   EXPECT_FALSE(isGraphTimeoutMonitoringEnabled());
 
+  ::unsetenv("NCCL_COLLTRACE");
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   resetGraphTimeoutMonitoringCacheForTest();
 }
@@ -1247,9 +1249,58 @@ TEST_F(
     ColltraceGraphTracing_MonitoringEnabledWhenNotSet) {
   resetGraphTimeoutMonitoringCacheForTest();
 
+  ::unsetenv("NCCL_COLLTRACE");
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
 
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+// NCCL_COLLTRACE_TRACE_CUDA_GRAPH only disables monitoring when colltrace is
+// actually active (NCCL_COLLTRACE=trace|verbose). With NCCL_COLLTRACE unset the
+// colltrace watchdog plugin is not running, so monitoring must stay enabled.
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_MonitoringEnabledWhenColltraceUnset) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+// NCCL_COLLTRACE set to a value other than trace/verbose does not activate the
+// colltrace watchdog plugin, so monitoring stays enabled.
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_MonitoringEnabledWhenColltraceNotTraceOrVerbose) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::setenv("NCCL_COLLTRACE", "1", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+// NCCL_COLLTRACE=verbose also activates the colltrace watchdog plugin, so
+// monitoring is disabled just like the trace case.
+TEST_F(
+    GraphEventTrackerTest,
+    ColltraceGraphTracing_VerboseDisablesGraphTimeoutMonitoring) {
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  ::setenv("NCCL_COLLTRACE", "verbose", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_FALSE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   resetGraphTimeoutMonitoringCacheForTest();
 }
 
@@ -1277,6 +1328,7 @@ TEST_F(
   nccl_mock_->setupDefaultBehaviors();
 
   auto options = createAbortModeOptions();
+  ::setenv("NCCL_COLLTRACE", "trace", 1);
   ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
   comm->init(*device_, "test_colltrace_graph_no_events", options);
 
@@ -1309,6 +1361,7 @@ TEST_F(
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
 
   switchToReplayMode();
+  ::unsetenv("NCCL_COLLTRACE");
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   resetGraphTimeoutMonitoringCacheForTest();
   setupFinalizeExpectations(*comm);
@@ -1322,6 +1375,7 @@ TEST_F(GraphEventTrackerTest, ColltraceGraphTracing_CheckGraphEventsReturnsOK) {
   nccl_mock_->setupDefaultBehaviors();
 
   auto options = createAbortModeOptions();
+  ::setenv("NCCL_COLLTRACE", "trace", 1);
   ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
   comm->init(*device_, "test_colltrace_graph_check_ok", options);
 
@@ -1353,6 +1407,7 @@ TEST_F(GraphEventTrackerTest, ColltraceGraphTracing_CheckGraphEventsReturnsOK) {
 
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
 
+  ::unsetenv("NCCL_COLLTRACE");
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   resetGraphTimeoutMonitoringCacheForTest();
   setupFinalizeExpectations(*comm);
@@ -1368,6 +1423,20 @@ TEST_F(
       tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds{5000}));
 }
 
+// Regression: with NCCL_COLLTRACE unset the colltrace watchdog is never created
+// (this path short-circuits), so it must not be relied on to replace the
+// GraphEventTracker timeout monitoring.
+TEST_F(
+    GraphEventTrackerTest,
+    TryEnableColltraceWatchdog_ReturnsFalseWhenColltraceUnset) {
+  ::unsetenv("NCCL_COLLTRACE");
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  EXPECT_FALSE(
+      tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds{5000}));
+
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+}
+
 TEST_F(
     GraphEventTrackerTest,
     TryEnableColltraceWatchdog_ReturnsFalseWhenMonitoringExplicitlyDisabled) {
@@ -1378,6 +1447,74 @@ TEST_F(
 
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   ::unsetenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+}
+
+// --- NCCL_COLLTRACE stringlist parsing in isGraphTimeoutMonitoringEnabled ---
+// NCCL_COLLTRACE is a comma-separated stringlist. Graph-timeout monitoring is
+// handed to colltrace (GraphEventTracker disabled) iff a "trace"/"verbose"
+// token is present AND NCCL_COLLTRACE_TRACE_CUDA_GRAPH is set — consistent with
+// CollTraceWrapper::newCollTraceInit. Otherwise GraphEventTracker must remain
+// active so a watchdog always covers graph-captured collectives.
+
+TEST_F(
+    GraphEventTrackerTest,
+    GraphTimeoutMonitoring_DisabledForMultiTokenTrace) {
+  // "trace,algostat" starts the colltrace worker + watchdog, so colltrace owns
+  // graph-timeout detection and GraphEventTracker monitoring is disabled.
+  ::setenv("NCCL_COLLTRACE", "trace,algostat", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  EXPECT_FALSE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(GraphEventTrackerTest, GraphTimeoutMonitoring_KeptForAlgostatOnly) {
+  // "algostat" alone does NOT start the colltrace worker/watchdog, so
+  // GraphEventTracker must stay active even though cudagraph tracing is asked.
+  ::setenv("NCCL_COLLTRACE", "algostat", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(GraphEventTrackerTest, GraphTimeoutMonitoring_KeptForEmptyColltrace) {
+  // Regression for the observed MAST hang: NCCL_COLLTRACE blanked while
+  // cudagraph tracing is requested. No colltrace watchdog is installed, so
+  // GraphEventTracker must remain the graph-collective watchdog.
+  ::setenv("NCCL_COLLTRACE", "", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
+}
+
+TEST_F(
+    GraphEventTrackerTest,
+    GraphTimeoutMonitoring_KeptForWrongCaseColltrace) {
+  // Token matching is case-sensitive (mirrors CollTraceWrapper); "Trace" does
+  // not enable colltrace, so GraphEventTracker must stay active.
+  ::setenv("NCCL_COLLTRACE", "Trace", 1);
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  resetGraphTimeoutMonitoringCacheForTest();
+
+  EXPECT_TRUE(isGraphTimeoutMonitoringEnabled());
+
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+  resetGraphTimeoutMonitoringCacheForTest();
 }
 
 } // namespace torch::comms::test

@@ -61,6 +61,26 @@ class VerifyAlgoStatsHelper {
       const std::string& collective,
       const std::string& unexpectedAlgoSubstr) const;
 
+  // Verify that EVERY recorded algorithm (callCount > 0) for the collective
+  // contains `expectedSubstr`, and that there is at least one such record.
+  // @param comm The NCCL communicator to query stats from
+  // @param collective The collective name (e.g., "ReduceScatter", "AllReduce")
+  // @param expectedSubstr Substring every recorded algorithm name must contain
+  void verifyExact(
+      ncclComm_t comm,
+      const std::string& collective,
+      const std::string& expectedSubstr) const;
+
+  // Compares the full algo-stats maps (algorithm names AND call counts) between
+  // two comms for complete equality.
+  // @param expected The reference comm (e.g. the no-tuner default)
+  // @param actual The comm under test (e.g. with a non-matching rule)
+  // @param collective The collective name (e.g., "ReduceScatter", "AllReduce")
+  void verifyEqual(
+      ncclComm_t expected,
+      ncclComm_t actual,
+      const std::string& collective) const;
+
  private:
   std::optional<EnvRAII<std::vector<std::string>>> colltraceGuard_;
 };

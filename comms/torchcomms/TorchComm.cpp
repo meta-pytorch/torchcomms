@@ -520,6 +520,10 @@ void TorchComm::setTimeout(std::chrono::milliseconds timeout) {
   impl_->setTimeout(timeout);
 }
 
+void TorchComm::setHints(std::unordered_map<std::string, std::string> hints) {
+  impl_->setHints(std::move(hints));
+}
+
 int64_t TorchComm::get_device_transport() {
   return impl_->get_device_transport();
 }
