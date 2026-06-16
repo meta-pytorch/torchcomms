@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 #include <folly/logging/xlog.h>
-#include <nccl.h>
+#include <nccl.h> // @manual=//comms/ncclx:nccl
 
 namespace comms::prims::benchmark {
 
