@@ -113,6 +113,33 @@ std::vector<ExpectedValue> allReduceExpected(size_t count, int numRanks) {
 }
 
 template <typename T>
+std::vector<T> makeReduceScatterInput(int rank, size_t count, int numRanks) {
+  std::vector<T> input(count * numRanks);
+  for (int chunk = 0; chunk < numRanks; ++chunk) {
+    for (size_t i = 0; i < count; ++i) {
+      input[static_cast<size_t>(chunk) * count + i] =
+          makeDeviceInput<T>(rank, i, chunk);
+    }
+  }
+  return input;
+}
+
+template <typename T>
+std::vector<ExpectedValue>
+reduceScatterExpected(size_t count, int numRanks, int outputRank) {
+  std::vector<ExpectedValue> expected(count);
+  for (size_t i = 0; i < count; ++i) {
+    for (int rank = 0; rank < numRanks; ++rank) {
+      const double value = referenceInput<T>(rank, i, outputRank);
+      expected[i].value += value;
+      expected[i].sumAbsInputs += std::abs(value);
+      expected[i].numInputs++;
+    }
+  }
+  return expected;
+}
+
+template <typename T>
 size_t countMismatches(
     const T* deviceBuffer,
     const std::vector<ExpectedValue>& expected,
