@@ -382,6 +382,11 @@ class __attribute__((visibility("default"))) RdmaTransport {
   /*
    * [Remote Op] Check the arrival of incoming put transfer from the remote
    * rank.
+   *
+   * @param timeout Optional timeout duration for the waitForWrite operation.
+   *                When specified, the operation will complete with commTimeout
+   *                if the remote write does not arrive within this duration.
+   *                If not specified (nullopt), the wait continues indefinitely.
    */
   folly::SemiFuture<commResult_t> waitForWrite(
       std::optional<std::chrono::milliseconds> timeout = std::nullopt);
@@ -389,6 +394,11 @@ class __attribute__((visibility("default"))) RdmaTransport {
   /*
    * [Remote Op] Transfer data from remote buffer on the peer rank to local
    * buffer via RDMA.
+   *
+   * @param timeout Optional timeout duration for the read operation. When
+   *                specified, the operation will complete with commTimeout if
+   *                the RDMA read does not finish within this duration. If not
+   *                specified (nullopt), the read waits indefinitely.
    */
   folly::SemiFuture<commResult_t> read(
       RdmaMemory::MutableView& localBuffer,
