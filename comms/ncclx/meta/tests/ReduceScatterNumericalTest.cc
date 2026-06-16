@@ -198,7 +198,23 @@ const auto kReduceScatterNumericalParams = ::testing::Values(
     ReduceScatterNumericalParam{
         .algo = ReduceScatterNumericalAlgo::CtranDirect,
         .count = 4099,
-        .datatype = ncclBfloat16});
+        .datatype = ncclBfloat16}
+#ifdef REDUCTION_NUMERICAL_LARGE_TEST
+    ,
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::Ring,
+        .count = 65536,
+        .datatype = ncclFloat32},
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::Pat,
+        .count = 65536,
+        .datatype = ncclFloat32},
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::CtranDirect,
+        .count = 32768,
+        .datatype = ncclBfloat16}
+#endif
+);
 
 INSTANTIATE_TEST_SUITE_P(
     ReduceScatter,

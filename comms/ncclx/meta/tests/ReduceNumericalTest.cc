@@ -198,7 +198,19 @@ const auto kReduceNumericalParams = ::testing::Values(
     ReduceNumericalParam{
         .algo = ReduceNumericalAlgo::CtranUnsupported,
         .count = 1024,
-        .datatype = ncclFloat32});
+        .datatype = ncclFloat32}
+#ifdef REDUCTION_NUMERICAL_LARGE_TEST
+    ,
+    ReduceNumericalParam{
+        .algo = ReduceNumericalAlgo::Ring,
+        .count = 262144,
+        .datatype = ncclFloat32},
+    ReduceNumericalParam{
+        .algo = ReduceNumericalAlgo::Ring,
+        .count = 65536,
+        .datatype = ncclBfloat16}
+#endif
+);
 
 INSTANTIATE_TEST_SUITE_P(
     Reduce,
