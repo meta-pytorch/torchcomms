@@ -41,18 +41,18 @@ __device__ __forceinline__ void runAllReduceFused(
     const common::CommonKernArgs& args,
     comms::prims::ThreadGroup& group,
     IbAllReduce&& ibAllReduce) {
-  NvlOps::template nvlReduceScatter<T>(args, group);
+  NvlOps::template nvlReduceScatter<T>(args, group); // Phase 1
   if (args.nLocalRanks > 1) {
     group.sync();
   }
   if (args.nNodes > 1) {
-    ibAllReduce(group);
+    ibAllReduce(group); // Phase 2
     if (args.nLocalRanks > 1) {
       group.sync();
     }
   }
   if (args.nLocalRanks > 1) {
-    NvlOps::template nvlAllGather<T>(args, group);
+    NvlOps::template nvlAllGather<T>(args, group); // Phase 3
   }
 }
 
