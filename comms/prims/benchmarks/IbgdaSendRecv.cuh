@@ -29,6 +29,17 @@ __global__ void ibgda_send_recv_kernel(
     std::size_t maxSignalBytes,
     Timeout timeout);
 
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void ibgda_progress_send_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout);
+#endif
+
 __global__ void ibgda_send_recv_two_call_kernel(
     P2pIbgdaTransportDevice* transport,
     char* src,
@@ -63,5 +74,31 @@ __global__ void ibgda_recv_kernel(
     int numBlocks,
     std::size_t maxSignalBytes,
     Timeout timeout);
+
+#ifndef __HIP_PLATFORM_AMD__
+/**
+ * Unidirectional progress send kernel. All blocks send.
+ * Grid: numBlocks. Block: 512 threads.
+ */
+__global__ void ibgda_progress_send_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout);
+
+/**
+ * Unidirectional progress recv kernel. All blocks receive.
+ * Grid: numBlocks. Block: 512 threads.
+ */
+__global__ void ibgda_progress_recv_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout);
+#endif
 
 } // namespace comms::prims::benchmark
