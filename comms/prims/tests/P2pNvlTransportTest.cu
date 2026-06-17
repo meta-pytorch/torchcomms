@@ -183,6 +183,7 @@ __device__ void wait_for_second_call_signal(
   if (!enabled) {
     return;
   }
+  const size_t protocolBytes = (bytesPerCall + 15ULL) & ~15ULL;
   const size_t perBlockSlotSize =
       (p2p.options().dataBufferSize / activeBlocks) & ~15ULL;
   const size_t chunkSize =
@@ -190,8 +191,8 @@ __device__ void wait_for_second_call_signal(
       ? (maxSignalBytes & ~15ULL)
       : perBlockSlotSize;
   const size_t effectiveChunk = chunkSize > 0 ? chunkSize : perBlockSlotSize;
-  const uint64_t secondCallStarted = bytesPerCall +
-      (bytesPerCall < effectiveChunk ? bytesPerCall : effectiveChunk);
+  const uint64_t secondCallStarted = protocolBytes +
+      (protocolBytes < effectiveChunk ? protocolBytes : effectiveChunk);
   p2p.tile_state().local_signals[blockId].wait_until(
       group, CmpOp::CMP_GE, secondCallStarted, timeout);
 }
@@ -485,25 +486,31 @@ __global__ void testPrepareTileStagingKernel(
   uint64_t baseByte = 0;
   for (int call = 0; call < numCalls; ++call) {
     const char pattern = static_cast<char>(0x30 + sourceRank * 0x20 + call);
-    for (size_t dataOff = 0; dataOff < bytesPerCall;) {
+    const size_t protocolBytes = (bytesPerCall + 15ULL) & ~15ULL;
+    for (size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const size_t pipelineOff =
           static_cast<size_t>(streamStart % pipelineBytes);
       const size_t slot = pipelineOff / perBlockSlotSize;
       const size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
       const size_t slotRemaining = perBlockSlotSize - chunkOff;
-      const size_t dataRemaining = bytesPerCall - dataOff;
+      const size_t dataRemaining = protocolBytes - dataOff;
       size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < slotRemaining ? copyBytes : slotRemaining;
+      size_t validBytes = 0;
+      if (dataOff < bytesPerCall) {
+        const size_t remaining = bytesPerCall - dataOff;
+        validBytes = copyBytes < remaining ? copyBytes : remaining;
+      }
       const size_t bufferOff = slot * slotSize + stagingOff + chunkOff;
-      for (size_t idx = group.thread_id_in_group; idx < copyBytes;
+      for (size_t idx = group.thread_id_in_group; idx < validBytes;
            idx += group.group_size) {
         staging[bufferOff + idx] = pattern;
       }
       dataOff += copyBytes;
     }
-    baseByte += bytesPerCall;
+    baseByte += protocolBytes;
   }
 
   group.sync();
@@ -540,25 +547,31 @@ __global__ void testPrepareTileTwoCallStagingKernel(
   for (int call = 0; call < 2; ++call) {
     const size_t callBytes = call == 0 ? firstCallBytes : secondCallBytes;
     const char pattern = static_cast<char>(0x30 + sourceRank * 0x20 + call);
-    for (size_t dataOff = 0; dataOff < callBytes;) {
+    const size_t protocolBytes = (callBytes + 15ULL) & ~15ULL;
+    for (size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const size_t pipelineOff =
           static_cast<size_t>(streamStart % pipelineBytes);
       const size_t slot = pipelineOff / perBlockSlotSize;
       const size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
       const size_t slotRemaining = perBlockSlotSize - chunkOff;
-      const size_t dataRemaining = callBytes - dataOff;
+      const size_t dataRemaining = protocolBytes - dataOff;
       size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < slotRemaining ? copyBytes : slotRemaining;
+      size_t validBytes = 0;
+      if (dataOff < callBytes) {
+        const size_t remaining = callBytes - dataOff;
+        validBytes = copyBytes < remaining ? copyBytes : remaining;
+      }
       const size_t bufferOff = slot * slotSize + stagingOff + chunkOff;
-      for (size_t idx = group.thread_id_in_group; idx < copyBytes;
+      for (size_t idx = group.thread_id_in_group; idx < validBytes;
            idx += group.group_size) {
         staging[bufferOff + idx] = pattern;
       }
       dataOff += copyBytes;
     }
-    baseByte += callBytes;
+    baseByte += protocolBytes;
   }
 
   group.sync();
