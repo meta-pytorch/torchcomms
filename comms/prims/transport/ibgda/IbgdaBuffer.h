@@ -452,8 +452,9 @@ enum class IbSendRecvProgressStage : uint8_t {
  *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
  *     is further subdivided into signaled sub-chunks:
  *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
- *     state[].nextStep counts bytes, not sub-chunks, so max_signal_bytes may
- *     change between calls as long as active_blocks is unchanged.
+ *     state[].nextStep counts 16-byte-aligned protocol bytes, not sub-chunks,
+ *     so max_signal_bytes may change between calls as long as active_blocks is
+ *     unchanged.
  *
  *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — DATA_READY (sender -> receiver)
@@ -466,9 +467,10 @@ enum class IbSendRecvProgressStage : uint8_t {
  *     [0, maxGroups)             — sender state slots
  *     [maxGroups, 2*maxGroups)   — receiver state slots
  *
- *     nextStep is the persistent byte cursor used by both blocking and async
- *     send/recv APIs. The active* fields describe at most one outstanding
- *     async progress operation or blocking call in that direction/group.
+ *     nextStep is the persistent protocol-byte cursor used by both blocking
+ *     and async send/recv APIs. The active* fields describe at most one
+ *     outstanding async progress operation or blocking call in that
+ *     direction/group.
  *     Static transfer geometry is passed to init/progress calls and computed
  *     in registers.
  */
@@ -499,7 +501,7 @@ struct IbSendRecvState {
   IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
-  DeviceSpan<ProgressSlot> state; ///< Per-direction byte cursors + async state
+  DeviceSpan<ProgressSlot> state; ///< Protocol cursors + async state
   int maxGroups{0}; ///< Layout size for signal/state arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes

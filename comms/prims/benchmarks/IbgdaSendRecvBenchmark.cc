@@ -6,8 +6,11 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
@@ -19,11 +22,54 @@ using meta::comms::BenchmarkEnvironment;
 using meta::comms::BenchmarkTestFixture;
 using meta::comms::DeviceBuffer;
 
+#define ASSERT_CUDA_SUCCESS(cmd)                                    \
+  do {                                                              \
+    cudaError_t ret;                                                \
+    ASSERT_EQ(cudaSuccess, ret = (cmd)) << cudaGetErrorString(ret); \
+  } while (0)
+
 namespace comms::prims::benchmark {
 
 using SendRecvConfig = MultipeerIbgdaTransportConfig::SendRecvConfig;
 
 namespace {
+
+constexpr std::size_t alignProtocolBytes(std::size_t nbytes) {
+  return (nbytes + 15ULL) & ~15ULL;
+}
+
+struct SendRecvBenchmarkGeometry {
+  int activeBlocks;
+  int maxGroups;
+  const char* label;
+};
+
+constexpr std::array<SendRecvBenchmarkGeometry, 2> kSendRecvBenchmarkGeometries{
+    {{1, 2, "activeBlocks=1/maxGroups=2"},
+     {2, 2, "activeBlocks=2/maxGroups=2"}}};
+
+std::string formatMessageSize(std::size_t nbytes) {
+  if (nbytes >= (1ULL << 30)) {
+    return fmt::format("{}GB", nbytes >> 30);
+  }
+  if (nbytes >= (1ULL << 20)) {
+    return fmt::format("{}MB", nbytes >> 20);
+  }
+  if (nbytes >= (1ULL << 10)) {
+    return fmt::format("{}KB", nbytes >> 10);
+  }
+  return fmt::format("{}B", nbytes);
+}
+
+std::vector<std::size_t> makePowerOfTwoMessageSizes(
+    std::size_t firstBytes,
+    std::size_t lastBytes) {
+  std::vector<std::size_t> messageSizes;
+  for (std::size_t sz = firstBytes; sz <= lastBytes; sz <<= 1) {
+    messageSizes.push_back(sz);
+  }
+  return messageSizes;
+}
 
 std::vector<int64_t> snapshotStepState(
     P2pIbgdaTransportDevice* transport,
@@ -108,16 +154,188 @@ class IbgdaSendRecvTest : public BenchmarkTestFixture {
  protected:
   void SetUp() override {
     BenchmarkTestFixture::SetUp();
-    cudaSetDevice(localRank);
-    cudaStreamCreate(&stream_);
+    ASSERT_CUDA_SUCCESS(cudaSetDevice(localRank));
+    ASSERT_CUDA_SUCCESS(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
-    cudaStreamDestroy(stream_);
+    if (stream_ != nullptr) {
+      ASSERT_CUDA_SUCCESS(cudaStreamDestroy(stream_));
+    }
     BenchmarkTestFixture::TearDown();
   }
 
   cudaStream_t stream_{};
+
+  void runBidirectionalBandwidth(
+      std::size_t firstMessageBytes,
+      const char* benchmarkLabel) {
+    if (worldSize != 2) {
+      XLOGF(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
+      return;
+    }
+
+    constexpr std::size_t kSlotSize = 8 * 1024 * 1024; // 8MB
+    constexpr int kPipelineDepth = 2;
+    constexpr int kWarmupIters = 5;
+    constexpr int kBenchIters = 20;
+
+    std::vector<std::size_t> messageSizes =
+        makePowerOfTwoMessageSizes(firstMessageBytes, 4ULL << 30);
+
+    int peerRank = (globalRank == 0) ? 1 : 0;
+    std::size_t maxBytes = messageSizes.back();
+
+    cudaEvent_t start, stop;
+    ASSERT_CUDA_SUCCESS(cudaEventCreate(&start));
+    ASSERT_CUDA_SUCCESS(cudaEventCreate(&stop));
+
+    for (const auto& geometry : kSendRecvBenchmarkGeometries) {
+      MultipeerIbgdaTransportConfig transportConfig{
+          .cudaDevice = localRank,
+          .dataBufferSize = kSlotSize,
+          .sendRecv =
+              SendRecvConfig{
+                  .maxGroups = geometry.maxGroups,
+                  .pipelineDepth = kPipelineDepth,
+              },
+      };
+
+      MultipeerIbgdaTransport transport(
+          globalRank, worldSize, bootstrap, transportConfig);
+      transport.exchange();
+
+      DeviceBuffer sendBuf(maxBytes);
+      DeviceBuffer recvBuf(maxBytes);
+      ASSERT_CUDA_SUCCESS(cudaMemset(sendBuf.get(), 0xAA, maxBytes));
+      ASSERT_CUDA_SUCCESS(cudaMemset(recvBuf.get(), 0, maxBytes));
+      ASSERT_CUDA_SUCCESS(cudaDeviceSynchronize());
+      auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
+
+      if (globalRank == 0) {
+        XLOGF(INFO, "");
+        XLOGF(
+            INFO,
+            "================================================================");
+        XLOGF(
+            INFO,
+            "  IBGDA Tile SendRecv Bandwidth {} ({})",
+            benchmarkLabel,
+            geometry.label);
+        XLOGF(
+            INFO,
+            "  activeBlocks={}, maxGroups={}, slotSize={}MB, pipelineDepth={}, range={}..4GB",
+            geometry.activeBlocks,
+            geometry.maxGroups,
+            kSlotSize / (1024 * 1024),
+            kPipelineDepth,
+            formatMessageSize(firstMessageBytes));
+        XLOGF(
+            INFO,
+            "================================================================");
+        XLOGF(
+            INFO,
+            "{:>10s}  {:>10s}  {:>12s}  {:>12s}",
+            "MsgSize",
+            "Sections",
+            "BaseMod",
+            "BW (GB/s)");
+        XLOGF(
+            INFO,
+            "------------------------------------------------------------");
+      }
+
+      for (auto nBytes : messageSizes) {
+        const std::size_t baseMod = 0;
+
+        launch_ibgda_reset_send_recv(
+            deviceTransport, geometry.maxGroups, stream_);
+        ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+        bootstrap->barrierAll();
+
+        // Warmup
+        for (int i = 0; i < kWarmupIters; ++i) {
+          launch_ibgda_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+          ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+          bootstrap->barrierAll();
+        }
+        launch_ibgda_drain_send_recv(
+            deviceTransport,
+            geometry.activeBlocks,
+            nBytes,
+            kWarmupIters,
+            stream_);
+        ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+        launch_ibgda_reset_send_recv(
+            deviceTransport, geometry.maxGroups, stream_);
+        ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+
+        bootstrap->barrierAll();
+
+        // Benchmark
+        ASSERT_CUDA_SUCCESS(cudaEventRecord(start, stream_));
+        for (int i = 0; i < kBenchIters; ++i) {
+          launch_ibgda_send_recv(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+        }
+        launch_ibgda_drain_send_recv(
+            deviceTransport,
+            geometry.activeBlocks,
+            nBytes,
+            kBenchIters,
+            stream_);
+        ASSERT_CUDA_SUCCESS(cudaEventRecord(stop, stream_));
+        ASSERT_CUDA_SUCCESS(cudaEventSynchronize(stop));
+
+        bootstrap->barrierAll();
+
+        float totalMs = 0;
+        ASSERT_CUDA_SUCCESS(cudaEventElapsedTime(&totalMs, start, stop));
+        float avgMs = totalMs / kBenchIters;
+
+        float bwGBs = (2.0f * nBytes / 1e9f) / (avgMs / 1000.0f);
+        std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
+
+        if (globalRank == 0) {
+          std::string sizeStr = formatMessageSize(nBytes);
+          XLOGF(
+              INFO,
+              "{:>10s}  {:>10d}  {:>12d}  {:>12.2f}",
+              sizeStr,
+              numSections,
+              baseMod,
+              bwGBs);
+        }
+
+        launch_ibgda_reset_send_recv(
+            deviceTransport, geometry.maxGroups, stream_);
+        ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+        bootstrap->barrierAll();
+      }
+
+      if (globalRank == 0) {
+        XLOGF(
+            INFO,
+            "================================================================");
+      }
+
+      bootstrap->barrierAll();
+    }
+
+    ASSERT_CUDA_SUCCESS(cudaEventDestroy(start));
+    ASSERT_CUDA_SUCCESS(cudaEventDestroy(stop));
+  }
 };
 
 TEST_F(IbgdaSendRecvTest, Correctness) {
@@ -152,9 +370,9 @@ TEST_F(IbgdaSendRecvTest, Correctness) {
   DeviceBuffer recvBuf(kDataBytes);
 
   uint8_t fillPattern = 0xA0 + globalRank;
-  cudaMemset(sendBuf.get(), fillPattern, kDataBytes);
-  cudaMemset(recvBuf.get(), 0, kDataBytes);
-  cudaDeviceSynchronize();
+  ASSERT_CUDA_SUCCESS(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
+  ASSERT_CUDA_SUCCESS(cudaMemset(recvBuf.get(), 0, kDataBytes));
+  ASSERT_CUDA_SUCCESS(cudaDeviceSynchronize());
 
   bootstrap->barrierAll();
 
@@ -176,7 +394,8 @@ TEST_F(IbgdaSendRecvTest, Correctness) {
 
   uint8_t expectedPattern = 0xA0 + peerRank;
   std::vector<uint8_t> hostBuf(kDataBytes);
-  cudaMemcpy(hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost);
+  ASSERT_CUDA_SUCCESS(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
 
   bool correct = true;
   for (std::size_t i = 0; i < kDataBytes; i++) {
@@ -201,6 +420,64 @@ TEST_F(IbgdaSendRecvTest, Correctness) {
         globalRank,
         kDataBytes);
   }
+}
+
+TEST_F(IbgdaSendRecvTest, UnalignedPayloadAdvancesAlignedProtocol) {
+  if (worldSize != 2) {
+    XLOGF(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
+    return;
+  }
+
+  constexpr std::size_t kDataBytes = 100;
+  constexpr int kNumBlocks = 1;
+  constexpr std::size_t kSlotSize = 1024;
+  constexpr int kPipelineDepth = 2;
+  constexpr int kMaxBlocks = kNumBlocks;
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultipeerIbgdaTransportConfig transportConfig{
+      .cudaDevice = localRank,
+      .dataBufferSize = kSlotSize,
+      .sendRecv =
+          SendRecvConfig{
+              .maxGroups = kMaxBlocks,
+              .pipelineDepth = kPipelineDepth,
+          },
+  };
+
+  MultipeerIbgdaTransport transport(
+      globalRank, worldSize, bootstrap, transportConfig);
+  transport.exchange();
+
+  DeviceBuffer sendBuf(kDataBytes);
+  DeviceBuffer recvBuf(kDataBytes);
+
+  const uint8_t fillPattern = static_cast<uint8_t>(0x70 + globalRank);
+  ASSERT_EQ(cudaMemset(sendBuf.get(), fillPattern, kDataBytes), cudaSuccess);
+  ASSERT_EQ(cudaMemset(recvBuf.get(), 0, kDataBytes), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  bootstrap->barrierAll();
+
+  auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
+  launch_ibgda_send_recv(
+      deviceTransport,
+      static_cast<char*>(sendBuf.get()),
+      static_cast<char*>(recvBuf.get()),
+      kDataBytes,
+      kNumBlocks,
+      stream_);
+
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  bootstrap->barrierAll();
+
+  expectUniformBuffer(
+      recvBuf, kDataBytes, static_cast<uint8_t>(0x70 + peerRank), globalRank);
+  expectStepState(
+      snapshotStepState(deviceTransport, kMaxBlocks, stream_),
+      kMaxBlocks,
+      alignProtocolBytes(kDataBytes));
 }
 
 TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossKernelLaunches) {
@@ -457,134 +734,12 @@ TEST_F(IbgdaSendRecvTest, StepStatePersistsAcrossCudaGraphReplays) {
   ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
 }
 
-TEST_F(IbgdaSendRecvTest, Bandwidth) {
-  if (worldSize != 2) {
-    XLOGF(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
-    return;
-  }
+TEST_F(IbgdaSendRecvTest, BandwidthFrom4B) {
+  runBidirectionalBandwidth(4, "(from 4B)");
+}
 
-  constexpr int kNumBlocks = 2;
-  constexpr std::size_t kSlotSize = 8 * 1024 * 1024; // 8MB
-  constexpr int kPipelineDepth = 2;
-  constexpr int kMaxBlocks = kNumBlocks;
-  constexpr int kWarmupIters = 5;
-  constexpr int kBenchIters = 20;
-
-  // Message sizes: 1MB to 4GB
-  std::vector<std::size_t> messageSizes;
-  for (std::size_t sz = 1ULL << 20; sz <= 4ULL << 30; sz <<= 1) {
-    messageSizes.push_back(sz);
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  std::size_t maxBytes = messageSizes.back();
-
-  MultipeerIbgdaTransportConfig transportConfig{
-      .cudaDevice = localRank,
-      .dataBufferSize = kSlotSize,
-      .sendRecv =
-          SendRecvConfig{
-              .maxGroups = kMaxBlocks,
-              .pipelineDepth = kPipelineDepth,
-          },
-  };
-
-  MultipeerIbgdaTransport transport(
-      globalRank, worldSize, bootstrap, transportConfig);
-  transport.exchange();
-
-  DeviceBuffer sendBuf(maxBytes);
-  DeviceBuffer recvBuf(maxBytes);
-  cudaMemset(sendBuf.get(), 0xAA, maxBytes);
-  cudaMemset(recvBuf.get(), 0, maxBytes);
-  cudaDeviceSynchronize();
-
-  auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
-
-  cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-
-  if (globalRank == 0) {
-    XLOGF(INFO, "");
-    XLOGF(
-        INFO,
-        "================================================================");
-    XLOGF(INFO, "  IBGDA Tile SendRecv Bandwidth");
-    XLOGF(
-        INFO,
-        "  numBlocks={}, slotSize={}MB, pipelineDepth={}",
-        kNumBlocks,
-        kSlotSize / (1024 * 1024),
-        kPipelineDepth);
-    XLOGF(
-        INFO,
-        "================================================================");
-    XLOGF(
-        INFO, "{:>10s}  {:>10s}  {:>12s}", "MsgSize", "Sections", "BW (GB/s)");
-    XLOGF(INFO, "----------------------------------------------");
-  }
-
-  for (auto nBytes : messageSizes) {
-    bootstrap->barrierAll();
-
-    // Warmup
-    for (int i = 0; i < kWarmupIters; ++i) {
-      launch_ibgda_send_recv(
-          deviceTransport,
-          static_cast<char*>(sendBuf.get()),
-          static_cast<char*>(recvBuf.get()),
-          nBytes,
-          kNumBlocks,
-          stream_);
-      cudaStreamSynchronize(stream_);
-      bootstrap->barrierAll();
-    }
-
-    bootstrap->barrierAll();
-
-    // Benchmark
-    cudaEventRecord(start, stream_);
-    for (int i = 0; i < kBenchIters; ++i) {
-      launch_ibgda_send_recv(
-          deviceTransport,
-          static_cast<char*>(sendBuf.get()),
-          static_cast<char*>(recvBuf.get()),
-          nBytes,
-          kNumBlocks,
-          stream_);
-    }
-    cudaEventRecord(stop, stream_);
-    cudaEventSynchronize(stop);
-
-    bootstrap->barrierAll();
-
-    float totalMs = 0;
-    cudaEventElapsedTime(&totalMs, start, stop);
-    float avgMs = totalMs / kBenchIters;
-
-    float bwGBs = (2.0f * nBytes / 1e9f) / (avgMs / 1000.0f);
-    std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
-
-    if (globalRank == 0) {
-      std::string sizeStr;
-      if (nBytes >= 1ULL << 30) {
-        sizeStr = fmt::format("{}GB", nBytes >> 30);
-      } else {
-        sizeStr = fmt::format("{}MB", nBytes >> 20);
-      }
-      XLOGF(INFO, "{:>10s}  {:>10d}  {:>12.2f}", sizeStr, numSections, bwGBs);
-    }
-  }
-
-  if (globalRank == 0) {
-    XLOGF(
-        INFO,
-        "================================================================");
-  }
-
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+TEST_F(IbgdaSendRecvTest, BandwidthFrom1MB) {
+  runBidirectionalBandwidth(1ULL << 20, "(from 1MB)");
 }
 
 TEST_F(IbgdaSendRecvTest, UnidirectionalBandwidth) {
@@ -593,150 +748,159 @@ TEST_F(IbgdaSendRecvTest, UnidirectionalBandwidth) {
     return;
   }
 
-  constexpr int kNumBlocks = 2;
   constexpr std::size_t kSlotSize = 8 * 1024 * 1024; // 8MB
   constexpr int kPipelineDepth = 2;
-  constexpr int kMaxBlocks = kNumBlocks;
   constexpr int kWarmupIters = 5;
   constexpr int kBenchIters = 20;
 
   std::vector<std::size_t> messageSizes;
-  for (std::size_t sz = 1ULL << 20; sz <= 4ULL << 30; sz <<= 1) {
+  for (std::size_t sz = 4; sz <= 4ULL << 30; sz <<= 1) {
     messageSizes.push_back(sz);
   }
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   std::size_t maxBytes = messageSizes.back();
 
-  MultipeerIbgdaTransportConfig transportConfig{
-      .cudaDevice = localRank,
-      .dataBufferSize = kSlotSize,
-      .sendRecv =
-          SendRecvConfig{
-              .maxGroups = kMaxBlocks,
-              .pipelineDepth = kPipelineDepth,
-          },
-  };
-
-  MultipeerIbgdaTransport transport(
-      globalRank, worldSize, bootstrap, transportConfig);
-  transport.exchange();
-
-  DeviceBuffer sendBuf(maxBytes);
-  DeviceBuffer recvBuf(maxBytes);
-  cudaMemset(sendBuf.get(), 0xAA, maxBytes);
-  cudaMemset(recvBuf.get(), 0, maxBytes);
-  cudaDeviceSynchronize();
-
-  auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
-
   cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
+  ASSERT_CUDA_SUCCESS(cudaEventCreate(&start));
+  ASSERT_CUDA_SUCCESS(cudaEventCreate(&stop));
 
-  if (globalRank == 0) {
-    XLOGF(INFO, "");
-    XLOGF(
-        INFO,
-        "================================================================");
-    XLOGF(INFO, "  IBGDA Tile Unidirectional Bandwidth (rank 0 → rank 1)");
-    XLOGF(
-        INFO,
-        "  numBlocks={}, slotSize={}MB, pipelineDepth={}",
-        kNumBlocks,
-        kSlotSize / (1024 * 1024),
-        kPipelineDepth);
-    XLOGF(
-        INFO,
-        "================================================================");
-    XLOGF(
-        INFO, "{:>10s}  {:>10s}  {:>12s}", "MsgSize", "Sections", "BW (GB/s)");
-    XLOGF(INFO, "----------------------------------------------");
-  }
+  for (const auto& geometry : kSendRecvBenchmarkGeometries) {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+        .dataBufferSize = kSlotSize,
+        .sendRecv =
+            SendRecvConfig{
+                .maxGroups = geometry.maxGroups,
+                .pipelineDepth = kPipelineDepth,
+            },
+    };
 
-  for (auto nBytes : messageSizes) {
-    bootstrap->barrierAll();
+    MultipeerIbgdaTransport transport(
+        globalRank, worldSize, bootstrap, transportConfig);
+    transport.exchange();
 
-    // Warmup
-    for (int i = 0; i < kWarmupIters; ++i) {
-      if (globalRank == 0) {
-        launch_ibgda_send(
-            deviceTransport,
-            static_cast<char*>(sendBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      } else {
-        launch_ibgda_recv(
-            deviceTransport,
-            static_cast<char*>(recvBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      }
-      cudaStreamSynchronize(stream_);
-      bootstrap->barrierAll();
-    }
+    DeviceBuffer sendBuf(maxBytes);
+    DeviceBuffer recvBuf(maxBytes);
+    ASSERT_CUDA_SUCCESS(cudaMemset(sendBuf.get(), 0xAA, maxBytes));
+    ASSERT_CUDA_SUCCESS(cudaMemset(recvBuf.get(), 0, maxBytes));
+    ASSERT_CUDA_SUCCESS(cudaDeviceSynchronize());
 
-    bootstrap->barrierAll();
-
-    // Benchmark
-    cudaEventRecord(start, stream_);
-    for (int i = 0; i < kBenchIters; ++i) {
-      if (globalRank == 0) {
-        launch_ibgda_send(
-            deviceTransport,
-            static_cast<char*>(sendBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      } else {
-        launch_ibgda_recv(
-            deviceTransport,
-            static_cast<char*>(recvBuf.get()),
-            nBytes,
-            kNumBlocks,
-            stream_);
-      }
-    }
-    cudaEventRecord(stop, stream_);
-    cudaEventSynchronize(stop);
-
-    bootstrap->barrierAll();
-
-    float totalMs = 0;
-    cudaEventElapsedTime(&totalMs, start, stop);
-    float avgMs = totalMs / kBenchIters;
-
-    // Unidirectional: only one direction
-    float bwGBs = (nBytes / 1e9f) / (avgMs / 1000.0f);
-    std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
+    auto* deviceTransport = transport.getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      std::string sizeStr;
-      if (nBytes >= 1ULL << 30) {
-        sizeStr = fmt::format("{}GB", nBytes >> 30);
-      } else {
-        sizeStr = fmt::format("{}MB", nBytes >> 20);
-      }
-      XLOGF(INFO, "{:>10s}  {:>10d}  {:>12.2f}", sizeStr, numSections, bwGBs);
+      XLOGF(INFO, "");
+      XLOGF(
+          INFO,
+          "================================================================");
+      XLOGF(
+          INFO,
+          "  IBGDA Tile Unidirectional Bandwidth ({}, rank 0 -> rank 1)",
+          geometry.label);
+      XLOGF(
+          INFO,
+          "  activeBlocks={}, maxGroups={}, slotSize={}MB, pipelineDepth={}",
+          geometry.activeBlocks,
+          geometry.maxGroups,
+          kSlotSize / (1024 * 1024),
+          kPipelineDepth);
+      XLOGF(
+          INFO,
+          "================================================================");
+      XLOGF(
+          INFO,
+          "{:>10s}  {:>10s}  {:>12s}",
+          "MsgSize",
+          "Sections",
+          "BW (GB/s)");
+      XLOGF(INFO, "----------------------------------------------");
     }
+
+    for (auto nBytes : messageSizes) {
+      bootstrap->barrierAll();
+
+      // Warmup
+      for (int i = 0; i < kWarmupIters; ++i) {
+        if (globalRank == 0) {
+          launch_ibgda_send(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+        } else {
+          launch_ibgda_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+        }
+        ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(stream_));
+        bootstrap->barrierAll();
+      }
+
+      bootstrap->barrierAll();
+
+      // Benchmark
+      ASSERT_CUDA_SUCCESS(cudaEventRecord(start, stream_));
+      for (int i = 0; i < kBenchIters; ++i) {
+        if (globalRank == 0) {
+          launch_ibgda_send(
+              deviceTransport,
+              static_cast<char*>(sendBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+        } else {
+          launch_ibgda_recv(
+              deviceTransport,
+              static_cast<char*>(recvBuf.get()),
+              nBytes,
+              geometry.activeBlocks,
+              stream_);
+        }
+      }
+      ASSERT_CUDA_SUCCESS(cudaEventRecord(stop, stream_));
+      ASSERT_CUDA_SUCCESS(cudaEventSynchronize(stop));
+
+      bootstrap->barrierAll();
+
+      float totalMs = 0;
+      ASSERT_CUDA_SUCCESS(cudaEventElapsedTime(&totalMs, start, stop));
+      float avgMs = totalMs / kBenchIters;
+
+      // Unidirectional: only one direction
+      float bwGBs = (nBytes / 1e9f) / (avgMs / 1000.0f);
+      std::size_t numSections = (nBytes + kSlotSize - 1) / kSlotSize;
+
+      if (globalRank == 0) {
+        std::string sizeStr = formatMessageSize(nBytes);
+        XLOGF(INFO, "{:>10s}  {:>10d}  {:>12.2f}", sizeStr, numSections, bwGBs);
+      }
+    }
+
+    if (globalRank == 0) {
+      XLOGF(
+          INFO,
+          "================================================================");
+    }
+
+    bootstrap->barrierAll();
   }
 
-  if (globalRank == 0) {
-    XLOGF(
-        INFO,
-        "================================================================");
-  }
-
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+  ASSERT_CUDA_SUCCESS(cudaEventDestroy(start));
+  ASSERT_CUDA_SUCCESS(cudaEventDestroy(stop));
 }
 
 } // namespace comms::prims::benchmark
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
+  if (const char* localRank = std::getenv("LOCAL_RANK")) {
+    cudaError_t ret = cudaSetDevice(std::atoi(localRank));
+    CHECK_EQ(ret, cudaSuccess) << cudaGetErrorString(ret);
+  }
   folly::Init init(&argc, &argv);
   if (!meta::comms::isTcpEnvironment()) {
     ::testing::AddGlobalTestEnvironment(new BenchmarkEnvironment());
