@@ -219,7 +219,23 @@ const auto kAllReduceNumericalParams = ::testing::Values(
     AllReduceNumericalParam{
         .algo = AllReduceNumericalAlgo::CtranDirect,
         .count = 4099,
-        .datatype = ncclBfloat16});
+        .datatype = ncclBfloat16}
+#ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
+    ,
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 262144,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Tree,
+        .count = 262144,
+        .datatype = ncclFloat32},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::CtranDirect,
+        .count = 65536,
+        .datatype = ncclBfloat16}
+#endif
+);
 
 INSTANTIATE_TEST_SUITE_P(
     AllReduce,
