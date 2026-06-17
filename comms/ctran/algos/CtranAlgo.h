@@ -240,6 +240,8 @@ class CtranPersistentRequest {
     ALLTOALL_P,
     ALLTOALLV_DEDUP,
     ALLGATHER_P_WIN,
+    ALLTOALL_P_WIN,
+    BROADCAST_P_WIN,
   };
 
   Type type;

@@ -162,6 +162,16 @@ struct CtranWin {
     return allGatherPSupported(comm);
   }
 
+  static bool allToAllWinSupported(CtranComm* comm);
+  bool allToAllWinSupported() const {
+    return allToAllWinSupported(comm);
+  }
+
+  static bool broadcastWinSupported(CtranComm* comm);
+  bool broadcastWinSupported() const {
+    return broadcastWinSupported(comm);
+  }
+
  private:
   DevMemType bufType_{DevMemType::kCumem};
   // whether allocate window data buffer or provided by users

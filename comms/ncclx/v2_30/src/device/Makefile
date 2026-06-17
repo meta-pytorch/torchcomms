@@ -136,6 +136,7 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Atomic.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
 SRCS += all_reduce_sparse_block.cu
 
