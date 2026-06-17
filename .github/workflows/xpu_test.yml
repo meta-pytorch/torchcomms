@@ -46,7 +46,7 @@ jobs:
         run: |
           echo "ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}" >> $GITHUB_ENV
           timeout 30 xpu-smi discovery || true
-          xpu-smi topology -m
+          xpu-smi topology -m || true
 
       - name: Runner health check GPU count
         if: always()
