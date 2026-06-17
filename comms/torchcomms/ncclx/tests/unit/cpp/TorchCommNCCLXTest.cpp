@@ -575,7 +575,7 @@ TEST_F(TorchCommNCCLXTest, Getters) {
   comm->finalize();
 }
 
-TEST_F(TorchCommNCCLXTest, HighPriorityStreamCreation) {
+TEST_F(TorchCommNCCLXTest, IsHighPriorityStreamCreation) {
   // Default priority for stream creation.
   {
     setupRankAndSize(0, 2); // rank 0, size 2
@@ -612,7 +612,7 @@ TEST_F(TorchCommNCCLXTest, HighPriorityStreamCreation) {
     setupRankAndSize(0, 2); // rank 0, size 2
 
     auto options = CommOptions();
-    options.hints[std::string(kHintHighPriorityStream)] = "true";
+    options.hints[std::string(kHintIsHighPriorityStream)] = "true";
     options.store = store_;
     auto comm = createMockedTorchComm();
 

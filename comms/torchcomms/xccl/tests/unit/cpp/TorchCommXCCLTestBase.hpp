@@ -78,8 +78,8 @@ class TorchCommXCCLTest : public ::testing::Test {
       return dependency_event_.value();
     }
 
-    bool testGetHighPriorityStream() const {
-      return high_priority_stream_;
+    bool testGetIsHighPriorityStream() const {
+      return is_high_priority_stream_;
     }
 
     size_t testGetMaxEventPoolSize() const {

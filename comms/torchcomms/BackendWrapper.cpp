@@ -710,7 +710,7 @@ c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
     commOpts.abort_process_on_timeout_or_error =
         backendOpts->abort_process_on_timeout_or_error;
     commOpts.timeout = backendOpts->timeout;
-    commOpts.high_priority_stream = backendOpts->high_priority_stream;
+    commOpts.is_high_priority_stream = backendOpts->is_high_priority_stream;
     commOpts.store = backendOpts->store;
     commOpts.hints = backendOpts->hints;
   }

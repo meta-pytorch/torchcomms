@@ -32,7 +32,7 @@ TEST_F(HintParsingTest, DefaultConfigValues) {
   const auto options = createOptions();
   comm->init(*device_, "test_defaults", options);
 
-  EXPECT_FALSE(comm->testGetHighPriorityStream());
+  EXPECT_FALSE(comm->testGetIsHighPriorityStream());
   EXPECT_EQ(comm->testGetMaxEventPoolSize(), 1000);
   EXPECT_EQ(comm->testGetGarbageCollectIntervalMs(), 100);
   EXPECT_TRUE(comm->testGetEnableCudaGraphSupport());
@@ -102,7 +102,7 @@ TEST_F(HintParsingTest, AllHintsCombined) {
   cuda_mock_->setupDefaultBehaviors();
   nccl_mock_->setupDefaultBehaviors();
 
-  // high_priority_stream hint triggers getStreamPriorityRange call
+  // is_high_priority_stream hint triggers getStreamPriorityRange call
   ON_CALL(*cuda_mock_, getStreamPriorityRange(_, _))
       .WillByDefault(DoAll(
           SetArgPointee<0>(0), SetArgPointee<1>(-10), Return(cudaSuccess)));
@@ -111,11 +111,11 @@ TEST_F(HintParsingTest, AllHintsCombined) {
   options.hints["max_event_pool_size"] = "2000";
   options.hints["garbage_collect_interval_ms"] = "50";
   options.hints["enable_cuda_graph_support"] = "false";
-  options.hints["high_priority_stream"] = "true";
+  options.hints["is_high_priority_stream"] = "true";
   options.hints["graph_timeout_check_interval_ms"] = "3000";
   comm->init(*device_, "test_all_hints", options);
 
-  EXPECT_TRUE(comm->testGetHighPriorityStream());
+  EXPECT_TRUE(comm->testGetIsHighPriorityStream());
   EXPECT_EQ(comm->testGetMaxEventPoolSize(), 2000);
   EXPECT_EQ(comm->testGetGarbageCollectIntervalMs(), 50);
   EXPECT_FALSE(comm->testGetEnableCudaGraphSupport());

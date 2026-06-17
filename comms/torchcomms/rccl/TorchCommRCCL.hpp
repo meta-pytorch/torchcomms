@@ -28,7 +28,8 @@
 namespace torch::comms {
 
 // Hint key names for RCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
@@ -418,7 +419,7 @@ class TorchCommRCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
+  bool is_high_priority_stream_{false};
   std::string name_;
   // UUID of the current communicator quorum, set at end of reconfigure().
   // Embedded in getInitHandle() so findQuorum() can identify which ranks
