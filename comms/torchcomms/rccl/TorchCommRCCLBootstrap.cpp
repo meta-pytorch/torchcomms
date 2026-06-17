@@ -10,6 +10,7 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
+#include "comms/utils/RankUtils.h"
 
 namespace torch::comms {
 
@@ -54,15 +55,36 @@ TorchCommRCCLBootstrap::TorchCommRCCLBootstrap(
       [](unsigned char c) { return std::tolower(c); });
 
   if (device_.index() == -1) {
-    int device_count;
+    int device_count{0};
     HIP_CHECK(
         hip_api_,
         hip_api_->getDeviceCount(&device_count),
-        "Failed to get CUDA device count");
+        "Failed to get HIP device count");
+    if (device_count <= 0) {
+      throw std::invalid_argument(
+          "No HIP devices found; please check your ROCm installation");
+    }
 
-    device_ = c10::Device(c10::kHIP, rank_ % device_count);
-    TC_LOG(INFO, nullptr) << "User did not provide device ID; using device Hip:"
-                          << device_.index();
+    auto local_rank = RankUtils::getLocalRank();
+    int resolved_device = rank_ % device_count;
+    if (local_rank.has_value()) {
+      if (local_rank.value() < 0 || local_rank.value() >= device_count) {
+        throw std::invalid_argument(
+            fmt::format(
+                "LOCAL_RANK {} is out of range for {} visible HIP devices",
+                local_rank.value(),
+                device_count));
+      }
+      resolved_device = static_cast<int>(local_rank.value());
+    }
+
+    device_ = c10::Device(c10::kHIP, resolved_device);
+    TC_LOG(INFO, nullptr)
+        << "User did not provide device ID; using device hip:"
+        << device_.index()
+        << (local_rank.has_value()
+                ? fmt::format(" from local rank {}", local_rank.value())
+                : fmt::format(" from global rank {}", rank_));
   }
 
   HIP_CHECK(
@@ -198,7 +220,6 @@ ncclComm_t TorchCommRCCLBootstrap::createNcclComm(const std::string& name) {
 
   // TODO: add logging on failures and successes
   // TODO: use scalable init
-  // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #ifdef NCCL_COMM_DESCRIPTION
   // The string only needs to be valid for the duration of the

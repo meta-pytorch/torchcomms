@@ -28,6 +28,7 @@ endif()
 add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
+    comms/utils/RankUtils.cc
 )
 set_target_properties(torchcomms_comms_nccl PROPERTIES
     PREFIX ""
