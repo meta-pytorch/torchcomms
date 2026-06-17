@@ -36,23 +36,42 @@ constexpr size_t kHierarchicalAgOverlapChunk8MiB = 8 * 1024 * 1024;
 // At/above this message size we target more (smaller) chunks to deepen the
 // IB/NVL pipeline overlap. Below it, fewer chunks are better because the band
 // is critical-path bound (more chunks regress 4..16MB — see EXP2/EXP4).
-constexpr size_t kHierarchicalAgLargeMsgThreshold = 32 * 1024 * 1024;
+// Set to 16MiB so the 16MiB direct/star size uses divisor 16 (=> 1MiB chunk,
+// 2x pipeline-window margin, deadlock-safe) rather than divisor 8 (=> 2MiB
+// chunk == window edge). The only ring size whose divisor changes is the
+// [16MiB,32MiB) range (none benched; 32MiB already used divisor 16 under the
+// prior 32MiB threshold, so it stays byte-identical).
+constexpr size_t kHierarchicalAgLargeMsgThreshold = 16 * 1024 * 1024;
 // At/above this (very large) size we deepen the pipeline further (divisor 32 =>
 // ~32 chunks), matching the >=256MiB regime that already reaches NCCL parity.
-// Byte-identical for >=256MiB (chunk caps at 8MiB under either divisor), so
-// only 64MiB/128MiB change vs the 32MiB-threshold divisor.
-constexpr size_t kHierarchicalAgVeryLargeMsgThreshold = 64 * 1024 * 1024;
+// Set to 32MiB so the 32MiB direct/star size uses divisor 32 (=> 1MiB chunk,
+// pipeline_window(32)=2MiB => 2x deadlock margin) rather than divisor 16 (=>
+// 2MiB chunk == window edge, unsafe on the direct path). 64MiB/128MiB already
+// used divisor 32 under the prior 64MiB threshold, so they stay byte-identical;
+// the only size whose divisor changes is 32MiB (16->32), which now also takes
+// the direct/star path (see kHierarchicalAgDirectMaxBytes).
+constexpr size_t kHierarchicalAgVeryLargeMsgThreshold = 32 * 1024 * 1024;
 // At/below this message size the inter-node IB phase uses a direct/star
 // exchange (one parallel hop to every other node) instead of the W-1-hop
 // store-and-forward ring, cutting the latency-bound critical path. Bandwidth is
 // identical to the ring (each node still egresses W-1 slices), so this only
 // helps the latency-bound small/mid band and never hurts the bandwidth-bound
-// large sizes. Gated small so each chunk <= the IB pipeline window, which keeps
-// the post-all-sends-then-recv schedule deadlock-free (send backpressure then
-// references only already-drained data, exactly as the ring relies on). At this
-// bound the heuristic chunk is <=512KiB (sendBytes/8), well within the 8MiB IB
-// pipeline window, so every send stays single-window.
-constexpr size_t kHierarchicalAgDirectMaxBytes = 4 * 1024 * 1024;
+// large sizes. Gated so each chunk <= the IB pipeline window, which keeps the
+// post-all-sends-then-recv schedule deadlock-free (send backpressure then
+// references only already-drained data, exactly as the ring relies on). The
+// decomposition scales ib_num_blocks up to 32 for the largest direct sizes,
+// where pipeline_window(32) = (32MiB/32)&~15 * depth2 = 2MiB. At this 32MiB
+// bound the heuristic chunk is 1MiB: 8MiB uses divisor 8 (=> 1MiB chunk),
+// 16MiB uses divisor 16 (=> 1MiB chunk, via kHierarchicalAgLargeMsgThreshold)
+// and 32MiB uses divisor 32 (=> 1MiB chunk, via
+// kHierarchicalAgVeryLargeMsgThreshold), so every send stays single-window with
+// a 2x margin (1MiB chunk < 2MiB window). PROFILE-16MiB and PROFILE-32MiB both
+// showed the ring path there is IB-exchange bound (16MiB: 48% IB + 45%
+// NVL-idle-waiting-on-IB; 32MiB: 56% IB + 35% idle; NVL data movement <=9% in
+// both), NOT bandwidth-bound, so the decomposed direct/star path (parallel
+// per-(chunk,peer) sends, no W-1-hop serial relay) wins exactly as it did at
+// 8MiB (WIN#8, +36%) and 16MiB (WIN#10, +25%).
+constexpr size_t kHierarchicalAgDirectMaxBytes = 32 * 1024 * 1024;
 
 // At/above this size the direct/star path uses the finer IB->NVL handoff
 // (publish each column ready as soon as its data lands rather than batching all
@@ -560,6 +579,23 @@ commResult_t ctranAllGatherHierarchicalRing(
         directIbBlocks = kHierAgDirectIbBlocksCap;
       }
       overlapParams.ib_num_blocks = static_cast<int>(directIbBlocks);
+      // The NVL consumer grid-strides over ib_size * totalChunks (==
+      // nNodes * totalChunks) (chunk, ib_src) broadcast tasks -- the same count
+      // as the decomposed IB tasks. With the default nvl_num_blocks (16) those
+      // tasks serialize 2:1 at 1..8MiB while the (up to) 32 IB blocks finish in
+      // a single wave: PROFILE-2MB after the (chunk x peer) IB decomposition
+      // shows NVL distribute 45% + rendezvous starvation 38% now dominate (IB
+      // only 17%). Scale nvl_num_blocks the same way so each (chunk, ib_src)
+      // broadcast gets its own block and starts the instant its IB column lands
+      // instead of stalling behind a slower column in a serial group. Only
+      // raises the count (never below the configured default), so sizes whose
+      // NVL task count <= the default and all non-direct sizes stay
+      // byte-identical.
+      size_t directNvlBlocks = directIbBlocks;
+      if (directNvlBlocks < static_cast<size_t>(nvlNumBlocks)) {
+        directNvlBlocks = static_cast<size_t>(nvlNumBlocks);
+      }
+      overlapParams.nvl_num_blocks = static_cast<int>(directNvlBlocks);
     }
     const size_t readyCounters = static_cast<size_t>(nNodes) * totalChunks;
     FB_COMMCHECK(
