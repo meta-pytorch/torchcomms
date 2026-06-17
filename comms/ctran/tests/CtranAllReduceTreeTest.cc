@@ -424,7 +424,7 @@ INSTANTIATE_TEST_SUITE_P(
     NVL_ONLY,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
-        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     nvlTestName);
@@ -547,7 +547,7 @@ INSTANTIATE_TEST_SUITE_P(
     IB_ONLY,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
-        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     ibTestName);
@@ -586,7 +586,7 @@ INSTANTIATE_TEST_SUITE_P(
     HYBRID,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
-        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     hybridTestName);
