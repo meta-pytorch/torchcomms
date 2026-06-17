@@ -889,6 +889,14 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/benchmarks/.*")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/collectives/.*")
 # Exclude rdma files — they depend on spdlog which is not available in this build.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/rdma/.*")
+# Exclude the ibrc transport and the MultiPeerIbTransport CRTP base. They are
+# the last remaining piece of the multi-peer IB stack (ibgda/rdma/amd are already
+# excluded above) and instantiate comms::prims::GpuNicDiscovery, whose definition
+# lives in the excluded comms/prims/transport/rdma/NicDiscovery.cc (needs spdlog).
+# Leaving them in produces an undefined vtable for GpuNicDiscovery in librccl at
+# load time. No other compiled source references them.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/ibrc/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerIbTransport\\.")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/window/.*")
 # Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
@@ -1399,6 +1407,11 @@ target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop/meta/ctran)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran/utils)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
+# comms/prims/transport/amd/ is excluded from sources (not hipified), but its
+# headers (HipDeviceCompat.h, nic/NicConfig.h) are included by compiled
+# transport/ibrc code via bare paths, so put the original source dir on the
+# include path. See the EXCLUDE for comms/prims/transport/amd/.* above.
+target_include_directories(rccl PRIVATE ${FBCODE_DIR}/comms/prims/transport/amd)
 
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})
