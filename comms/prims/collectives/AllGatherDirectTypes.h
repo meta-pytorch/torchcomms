@@ -74,6 +74,16 @@ struct HierarchicalAllgatherOverlapArgs {
   // is unused (self).
   bool use_direct{false};
   P2pIbgdaTransportDevice* ib_peers[kHierarchicalAgMaxNodes]{};
+  // Finer IB->NVL handoff for the direct/star path: when set, the own column is
+  // published ready immediately after the local memcpy (before the sends) and
+  // each peer column is published the moment its recv lands, instead of
+  // batching all W publishes after the whole IB exchange. This lets the NVL
+  // consumer start broadcasting the own column overlapping the IB phase and
+  // begin each peer column as it arrives. Same total publishes (W); only timing
+  // moves earlier. Host gates this to sendBytes >= 1MiB (the chunks there are
+  // big enough that the NVL overlap outweighs the per-peer publish barriers; at
+  // 256KiB/512KiB the tiny chunks made it a net loss, so they stay batched).
+  bool use_finer_nvl_handoff{false};
   PipesTraceHandle trace{};
 };
 

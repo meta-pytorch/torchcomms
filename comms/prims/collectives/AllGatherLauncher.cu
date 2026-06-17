@@ -135,6 +135,7 @@ void launch_hierarchical_allgather_overlap(
   args.recvbuf = params.recvbuf;
   args.ib_ring = params.ib_ring;
   args.use_direct = params.use_direct;
+  args.use_finer_nvl_handoff = params.use_finer_nvl_handoff;
   // ib_peers is only populated/used on the direct/star path, which the host
   // gates to ib_size <= kHierarchicalAgMaxNodes. Guard the copy so a ring-mode
   // launch with ib_size > kHierarchicalAgMaxNodes does not read/write past the

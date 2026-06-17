@@ -54,6 +54,14 @@ constexpr size_t kHierarchicalAgVeryLargeMsgThreshold = 64 * 1024 * 1024;
 // pipeline window, so every send stays single-window.
 constexpr size_t kHierarchicalAgDirectMaxBytes = 4 * 1024 * 1024;
 
+// At/above this size the direct/star path uses the finer IB->NVL handoff
+// (publish each column ready as soon as its data lands rather than batching all
+// publishes after the IB exchange), letting the NVL broadcast overlap the IB
+// phase. Below it (256KiB/512KiB) the chunks are too small for the overlap to
+// pay for the per-peer publish barriers, so those sizes keep the batched
+// handoff (byte-identical to the shipped behavior).
+constexpr size_t kHierarchicalAgFinerNvlMinBytes = 1 * 1024 * 1024;
+
 bool rangesOverlap(
     uintptr_t lhs,
     size_t lhsBytes,
@@ -502,6 +510,8 @@ commResult_t ctranAllGatherHierarchicalRing(
     // same nvl_rank on every other node. See kHierarchicalAgDirectMaxBytes.
     overlapParams.use_direct = (sendBytes <= kHierarchicalAgDirectMaxBytes) &&
         (nNodes <= comms::prims::kHierarchicalAgMaxNodes);
+    overlapParams.use_finer_nvl_handoff = overlapParams.use_direct &&
+        (sendBytes >= kHierarchicalAgFinerNvlMinBytes);
     if (overlapParams.use_direct) {
       for (int peerNode = 0; peerNode < nNodes; ++peerNode) {
         if (peerNode == node) {
@@ -515,6 +525,42 @@ commResult_t ctranAllGatherHierarchicalRing(
 
     const size_t totalChunks =
         (sendBytes + overlapParams.chunk_bytes - 1) / overlapParams.chunk_bytes;
+    // Cap the decomposed direct/star IB block count. Two transport invariants
+    // must hold on this path: (1) the staging slot is keyed by chunk index (the
+    // sub-block group_id), which must be < active_blocks (== ib_num_blocks);
+    // and (2) the IBGDA send/recv state is sized for
+    // NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS, so active_blocks must not exceed it
+    // (else the transport device-traps). Bound the cap by BOTH 32 and
+    // MAX_GROUPS, and use it for BOTH the totalChunks fallback and the final
+    // clamp. The default chunk heuristic + default MAX_GROUPS (128) keep this
+    // byte-identical; a small NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES override
+    // (totalChunks > cap) or a small MAX_GROUPS instead falls back to the
+    // (chunk-count-agnostic) ring rather than trapping.
+    const size_t kHierAgDirectIbBlocksCap =
+        NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS < 32
+        ? static_cast<size_t>(NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS)
+        : 32;
+    if (overlapParams.use_direct && totalChunks > kHierAgDirectIbBlocksCap) {
+      overlapParams.use_direct = false;
+      overlapParams.use_finer_nvl_handoff = false;
+    }
+    // Decomposed direct/star exchange: the overlap kernel distributes the
+    // ib_size * totalChunks (chunk, peer) transfers across the IB blocks. Scale
+    // ib_num_blocks so each task can run on its own block (the W-1 peer sends
+    // and recvs of a chunk then run concurrently instead of serially). Capped
+    // to bound the grid; only the direct (small/mid) band is affected, so
+    // messages above the direct gate keep the configured block count and stay
+    // byte-identical.
+    if (overlapParams.use_direct) {
+      size_t directIbBlocks = totalChunks * static_cast<size_t>(nNodes);
+      if (directIbBlocks < static_cast<size_t>(numBlocks)) {
+        directIbBlocks = static_cast<size_t>(numBlocks);
+      }
+      if (directIbBlocks > kHierAgDirectIbBlocksCap) {
+        directIbBlocks = kHierAgDirectIbBlocksCap;
+      }
+      overlapParams.ib_num_blocks = static_cast<int>(directIbBlocks);
+    }
     const size_t readyCounters = static_cast<size_t>(nNodes) * totalChunks;
     FB_COMMCHECK(
         ensureReadyCounterCapacity(comm, readyCounters, overlapParams.stream));
