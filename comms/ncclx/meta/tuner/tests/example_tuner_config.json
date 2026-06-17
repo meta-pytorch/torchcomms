@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "filter": { "collective": "allreduce", "bytes": "[0,1048576]" },
+      "config": { "algorithm": "ring", "protocol": "ll128" }
+    },
+    {
+      "filter": { "collective": "allgather", "bytes": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
+      "config": { "algorithm": "tree", "protocol": "simple", "channels": 4 }
+    },
+    {
+      "filter": { "collective": "allreduce", "bytes": "(1048576,)" },
+      "config": { "algorithm": "ring", "protocol": "simple", "chunkSize": 524288 }
+    },
+    {
+      "filter": { "collective": "reducescatter", "bytes": "(1048576,)", "nNodes": "(1,)" },
+      "config": { "algorithm": "ring", "protocol": "simple" }
+    }
+  ]
+}
