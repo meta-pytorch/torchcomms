@@ -307,6 +307,10 @@ void launch_ibgda_send(
     Timeout timeout) {
   ibgda_send_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[PIPES] send kernel launch failed: %s\n", cudaGetErrorString(err));
+  }
 }
 
 void launch_ibgda_recv(
@@ -319,6 +323,10 @@ void launch_ibgda_recv(
     Timeout timeout) {
   ibgda_recv_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[PIPES] recv kernel launch failed: %s\n", cudaGetErrorString(err));
+  }
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
@@ -493,6 +501,12 @@ void launch_ibgda_progress_send(
 #else
   ibgda_progress_send_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress send kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
 #endif
 }
 
@@ -516,6 +530,12 @@ void launch_ibgda_progress_recv(
 #else
   ibgda_progress_recv_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress recv kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
 #endif
 }
 
