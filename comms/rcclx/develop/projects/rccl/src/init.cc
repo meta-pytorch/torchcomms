@@ -886,8 +886,10 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
       0,
       sizeof(struct ncclLowPrecisionBufferPool));
 
-  // Only pre-allocate low precision buffer pool if RCCL_LOW_PRECISION_ENABLE=1
-  if (isLowPrecisionFp8E4M3Enabled()) {
+  // Pre-allocate the low precision buffer pool if low precision is enabled
+  // globally or for any individual collective, or if RCCL_LOW_PRECISION_ENABLE_INIT
+  // forces it (so the per-collective LP switches can be toggled at runtime).
+  if (isAnyLowPrecisionFp8E4M3Enabled() || isLowPrecisionInitEnabled()) {
     // Pre-allocate low precision buffer pool for 2G elements support (8 GPU
     // single node)
     NCCLCHECK(ncclInitLowPrecisionBufferPoolForComm(comm, ndev));
