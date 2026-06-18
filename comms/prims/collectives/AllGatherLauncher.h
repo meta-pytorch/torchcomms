@@ -70,6 +70,11 @@ struct HierarchicalAllgatherOverlapLaunchParams {
   cudaStream_t stream{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
+  bool use_direct{false};
+  P2pIbgdaTransportDevice* ib_peers[kHierarchicalAgMaxNodes]{};
+  // Finer IB->NVL handoff for the direct/star path (see
+  // AllGatherDirectTypes.h).
+  bool use_finer_nvl_handoff{false};
   PipesTraceHandle trace{};
 };
 
