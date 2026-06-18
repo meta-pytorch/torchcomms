@@ -13,6 +13,11 @@ namespace comms::prims {
 
 class P2pIbgdaTransportDevice;
 
+// Max number of inter-node (IB) peers addressable by the direct/star small-
+// message path. The testbed is 4 nodes; this is sized generously and the host
+// falls back to the ring when nNodes exceeds it.
+inline constexpr int kHierarchicalAgMaxNodes = 32;
+
 struct DirectAllgatherNvlArgs {
   int my_rank{0};
   int num_ranks{0};
@@ -62,6 +67,23 @@ struct HierarchicalAllgatherOverlapArgs {
   char* recvbuf{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
+  // Direct/star inter-node IB phase for small messages: when use_direct is set,
+  // each rank sends its own slice directly to the same nvl_rank on every other
+  // node (ib_peers[node]) and receives theirs, replacing the W-1 sequential
+  // store-and-forward ring hops with a single parallel hop. ib_peers[ib_rank]
+  // is unused (self).
+  bool use_direct{false};
+  P2pIbgdaTransportDevice* ib_peers[kHierarchicalAgMaxNodes]{};
+  // Finer IB->NVL handoff for the direct/star path: when set, the own column is
+  // published ready immediately after the local memcpy (before the sends) and
+  // each peer column is published the moment its recv lands, instead of
+  // batching all W publishes after the whole IB exchange. This lets the NVL
+  // consumer start broadcasting the own column overlapping the IB phase and
+  // begin each peer column as it arrives. Same total publishes (W); only timing
+  // moves earlier. Host gates this to sendBytes >= 1MiB (the chunks there are
+  // big enough that the NVL overlap outweighs the per-peer publish barriers; at
+  // 256KiB/512KiB the tiny chunks made it a net loss, so they stay batched).
+  bool use_finer_nvl_handoff{false};
   PipesTraceHandle trace{};
 };
 
