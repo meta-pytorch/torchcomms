@@ -24,6 +24,11 @@ constexpr int kNotifyBit = 31;
 constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
 constexpr int kPollCqBatchSize = 32;
 
+// Scatter-gather constants
+constexpr int kMaxSgBuffersPerWr =
+    32; // Max scatter-gather elements per work request (must be <= the
+        // physical QP's cap.max_send_sge; vendor/HCA-dependent)
+
 enum class LoadBalancingScheme { SPRAY = 0, DQPLB = 1 };
 
 struct Error {
