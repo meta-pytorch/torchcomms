@@ -42,6 +42,27 @@ int compute_num_blocks(size_t totalBytes, int cap) {
   return numBlocks;
 }
 
+int compute_num_blocks_ring(size_t segmentBytes, int cap) {
+  // Size-aware tier on Phase-2 owner-segment bytes. The hierarchical ring does
+  // 2(W-1) serialized IB steps per pipeline window; fewer blocks at
+  // small/medium sizes amortize per-WQE overhead, while large segments use the
+  // cap. Keyed on segmentBytes (not totalBytes) because Phase 2 operates per
+  // owner segment (segmentBytes ~= totalBytes/pMin in HYBRID). Tiers are a
+  // starting point and should be re-confirmed against a post-redesign block
+  // sweep. The per-block threshold and reduction loop live in
+  // compute_num_blocks (single source of truth); this just caps the tier
+  // ceiling before delegating.
+  int tier;
+  if (segmentBytes <= (1ull << 20)) { // <= 1 MB
+    tier = 4;
+  } else if (segmentBytes <= (32ull << 20)) { // <= 32 MB
+    tier = 8;
+  } else {
+    tier = 16;
+  }
+  return compute_num_blocks(segmentBytes, std::min(cap, tier));
+}
+
 void* compute_phase2_buf(
     void* recvbuff,
     int localRank,
