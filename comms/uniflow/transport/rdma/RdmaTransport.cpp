@@ -1879,6 +1879,11 @@ RdmaTransportFactory::RdmaTransportFactory(
     slabPool_ = std::make_shared<RdmaSlabPool>(
         config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
   }
+
+  if (config_.slabPoolConfig.slabNum > 0) {
+    slabPool_ = std::make_shared<RdmaSlabPool>(
+        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
+  }
 }
 
 Result<std::unique_ptr<RegistrationHandle>>
