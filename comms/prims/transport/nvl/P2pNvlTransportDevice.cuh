@@ -101,8 +101,9 @@ struct NvlinkTransportTileState {
   // Persistent byte cursors:
   //   [0, tile_max_groups) tracks send progress per tile group.
   //   [tile_max_groups, 2 * tile_max_groups) tracks recv progress.
-  // The byte cursor is independent of max_signal_bytes, so callers may change
-  // signal granularity between calls as long as active_blocks is unchanged.
+  // The byte cursor advances in 16-byte protocol quanta and is independent of
+  // max_signal_bytes, so callers may change signal granularity between calls
+  // as long as active_blocks is unchanged.
   DeviceSpan<int64_t> step_state;
   int tile_max_groups{0};
   DeviceSpan<SignalState> local_signals;
@@ -1490,7 +1491,8 @@ class P2pNvlTransportDevice {
     const uint64_t baseByte =
         static_cast<uint64_t>(tile_state_.step_state[groupId]);
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
@@ -1498,7 +1500,7 @@ class P2pNvlTransportDevice {
       const std::size_t slotOff = slot * slotSize;
       const std::size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
       const std::size_t slotRemaining = perBlockSlotSize - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < slotRemaining ? copyBytes : slotRemaining;
@@ -1509,11 +1511,13 @@ class P2pNvlTransportDevice {
             group, CmpOp::CMP_GE, streamEnd - pipelineBytes, timeout);
       }
 
-      if (copyBytes > 0) {
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, copyBytes, nbytes);
+      if (validBytes > 0) {
         memcpy_vectorized(
             stagBuf + slotOff + stagingOff + chunkOff,
             srcPtr + dataOff,
-            copyBytes,
+            validBytes,
             group);
       }
 
@@ -1526,7 +1530,8 @@ class P2pNvlTransportDevice {
     }
 
     if (group.is_leader()) {
-      tile_state_.step_state[groupId] = static_cast<int64_t>(baseByte + nbytes);
+      tile_state_.step_state[groupId] =
+          static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
@@ -1599,7 +1604,8 @@ class P2pNvlTransportDevice {
     const uint64_t baseByte =
         static_cast<uint64_t>(tile_state_.step_state[max_groups + groupId]);
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
@@ -1607,7 +1613,7 @@ class P2pNvlTransportDevice {
       const std::size_t slotOff = slot * slotSize;
       const std::size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
       const std::size_t slotRemaining = perBlockSlotSize - chunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < slotRemaining ? copyBytes : slotRemaining;
@@ -1616,11 +1622,13 @@ class P2pNvlTransportDevice {
       tile_state_.local_signals[tailSignalId].wait_until(
           group, CmpOp::CMP_GE, streamEnd, timeout);
 
-      if (copyBytes > 0) {
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, copyBytes, nbytes);
+      if (validBytes > 0) {
         CopyOp::recv(
             dstPtr + dataOff,
             stagBuf + slotOff + stagingOff + chunkOff,
-            copyBytes,
+            validBytes,
             group,
             dataOff,
             args...);
@@ -1629,7 +1637,7 @@ class P2pNvlTransportDevice {
       group.sync();
       if (group.is_leader()) {
         if (chunkOff + copyBytes == perBlockSlotSize ||
-            dataOff + copyBytes == nbytes) {
+            dataOff + copyBytes == protocolBytes) {
           tile_state_.remote_signals[headSignalId].signal(
               SignalOp::SIGNAL_SET, streamEnd);
         }
@@ -1639,7 +1647,7 @@ class P2pNvlTransportDevice {
 
     if (group.is_leader()) {
       tile_state_.step_state[max_groups + groupId] =
-          static_cast<int64_t>(baseByte + nbytes);
+          static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
@@ -1753,7 +1761,8 @@ class P2pNvlTransportDevice {
     const uint64_t sendBaseByte =
         static_cast<uint64_t>(successor.tile_state_.step_state[groupId]);
 
-    for (std::size_t dataOff = 0; dataOff < nbytes;) {
+    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
+    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t recvStreamStart = recvBaseByte + dataOff;
       const std::size_t recvPipelineOff =
           static_cast<std::size_t>(recvStreamStart % pipelineBytes);
@@ -1770,7 +1779,7 @@ class P2pNvlTransportDevice {
           sendPipelineOff - sendSlot * perBlockSlotSize;
       const std::size_t recvSlotRemaining = perBlockSlotSize - recvChunkOff;
       const std::size_t sendSlotRemaining = perBlockSlotSize - sendChunkOff;
-      const std::size_t dataRemaining = nbytes - dataOff;
+      const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < recvSlotRemaining ? copyBytes : recvSlotRemaining;
@@ -1791,12 +1800,14 @@ class P2pNvlTransportDevice {
 
       // 3. Dual-dst copy: predecessor staging → local user buf +
       //    successor remote staging
-      if (copyBytes > 0) {
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, copyBytes, nbytes);
+      if (validBytes > 0) {
         CopyOp::forward(
             dstPtr ? dstPtr + dataOff : nullptr,
             sendBuf + sendSlotOff + stagingOff + sendChunkOff,
             recvBuf + recvSlotOff + stagingOff + recvChunkOff,
-            copyBytes,
+            validBytes,
             group,
             dataOff,
             args...);
@@ -1811,7 +1822,7 @@ class P2pNvlTransportDevice {
         // 5. ACK predecessor that buffer is free (recv semantic: only at
         //    slot boundaries).
         if (recvChunkOff + copyBytes == perBlockSlotSize ||
-            dataOff + copyBytes == nbytes) {
+            dataOff + copyBytes == protocolBytes) {
           tile_state_.remote_signals[headSignalId].signal(
               SignalOp::SIGNAL_SET, recvStreamEnd);
         }
@@ -1821,9 +1832,9 @@ class P2pNvlTransportDevice {
 
     if (group.is_leader()) {
       tile_state_.step_state[max_groups + groupId] =
-          static_cast<int64_t>(recvBaseByte + nbytes);
+          static_cast<int64_t>(recvBaseByte + protocolBytes);
       successor.tile_state_.step_state[groupId] =
-          static_cast<int64_t>(sendBaseByte + nbytes);
+          static_cast<int64_t>(sendBaseByte + protocolBytes);
     }
     group.sync();
 #endif
@@ -2061,6 +2072,22 @@ class P2pNvlTransportDevice {
   }
 
  private:
+  __device__ __forceinline__ static std::size_t align_tile_protocol_bytes(
+      std::size_t nbytes) {
+    return (nbytes + 15ULL) & ~15ULL;
+  }
+
+  __device__ __forceinline__ static std::size_t valid_payload_bytes(
+      std::size_t byteOffset,
+      std::size_t chunkBytes,
+      std::size_t payloadBytes) {
+    if (byteOffset >= payloadBytes) {
+      return 0;
+    }
+    const std::size_t remaining = payloadBytes - byteOffset;
+    return chunkBytes < remaining ? chunkBytes : remaining;
+  }
+
   const int myRank_{-1};
   const int peerRank_{-1};
   const P2pNvlTransportOptions options_{};

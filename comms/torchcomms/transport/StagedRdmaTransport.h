@@ -126,6 +126,19 @@ struct ScatterGatherDescriptor {
   }
 };
 
+// QP transport parameters sourced from NCCL_IB_* cvars. Read once at
+// transport construction and held constant for the object's lifetime so all
+// QP setup steps (INIT/RTR/RTS, GID query) see consistent IB policy even if
+// the environment changes afterwards. Constructed via makeQpTransportConfig().
+struct QpTransportConfig {
+  uint8_t timeout;
+  uint8_t retryCnt;
+  uint8_t gidIndex;
+  uint8_t trafficClass;
+  uint8_t sl;
+  uint16_t pkeyIndex;
+};
+
 // Base class for staged RDMA transports. Holds shared IB resources and
 // provides protected helpers for IB setup and QP connection.
 //
@@ -204,6 +217,12 @@ class StagedRdmaTransportBase {
   // Serialize local connection info (business card + GID/port/MTU + staging)
   // into a JSON string for exchange with the peer.
   std::string serializeConnInfo(const StagingRendezvousInfo& localStaging);
+
+ private:
+  // QP transport config read once from NCCL cvars in the constructor and held
+  // constant for the object's lifetime. Single source of truth for all QP
+  // setup call sites to avoid divergence.
+  const QpTransportConfig qpConfig_;
 };
 
 // Server-side staged RDMA transport. Sends data to the client via chunked

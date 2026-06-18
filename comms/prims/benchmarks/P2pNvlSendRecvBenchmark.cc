@@ -672,39 +672,22 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
     });
   };
 
+  std::vector<std::size_t> benchmarkSizes;
+  for (std::size_t sizeBytes = 4; sizeBytes <= 1024ULL * 1024 * 1024;
+       sizeBytes <<= 1) {
+    benchmarkSizes.push_back(sizeBytes);
+  }
+
   // === BLOCK-BASED CONFIGURATIONS ===
-  addNcclConfig(4 * 1024, "4K", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024, "8K", SyncScope::BLOCK, "Block");
-  addNcclConfig(16 * 1024, "16K", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024, "64K", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block");
+  for (std::size_t sizeBytes : benchmarkSizes) {
+    addNcclConfig(sizeBytes, formatSize(sizeBytes), SyncScope::BLOCK, "Block");
+  }
 
   // === CLUSTER-BASED CONFIGURATIONS ===
-  addNcclConfig(4 * 1024, "4K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024, "8K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(16 * 1024, "16K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024, "64K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster");
+  for (std::size_t sizeBytes : benchmarkSizes) {
+    addNcclConfig(
+        sizeBytes, formatSize(sizeBytes), SyncScope::CLUSTER, "Cluster");
+  }
 
   std::vector<BenchmarkResult> results;
 
@@ -773,25 +756,11 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   std::vector<BenchmarkConfig> configs;
 
   // NCCL-like bidirectional configs at all message sizes
-  std::vector<std::pair<std::size_t, std::string>> bidiSizes = {
-      {8 * 1024, "8K"},
-      {16 * 1024, "16K"},
-      {64 * 1024, "64K"},
-      {128 * 1024, "128K"},
-      {256 * 1024, "256K"},
-      {512 * 1024, "512K"},
-      {1024 * 1024, "1M"},
-      {2 * 1024 * 1024, "2M"},
-      {4 * 1024 * 1024, "4M"},
-      {8 * 1024 * 1024, "8M"},
-      {16 * 1024 * 1024, "16M"},
-      {32 * 1024 * 1024, "32M"},
-      {64 * 1024 * 1024, "64M"},
-      {128 * 1024 * 1024, "128M"},
-      {256 * 1024 * 1024, "256M"},
-      {512 * 1024 * 1024, "512M"},
-      {1024 * 1024 * 1024, "1G"},
-  };
+  std::vector<std::pair<std::size_t, std::string>> bidiSizes;
+  for (std::size_t sizeBytes = 4; sizeBytes <= 1024ULL * 1024 * 1024;
+       sizeBytes <<= 1) {
+    bidiSizes.emplace_back(sizeBytes, formatSize(sizeBytes));
+  }
   for (const auto& [sz, nm] : bidiSizes) {
     configs.push_back({
         .nBytes = sz,
@@ -821,25 +790,11 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
     });
   };
 
-  std::vector<std::pair<std::size_t, std::string>> tileSizes = {
-      {8 * 1024, "8K"},
-      {16 * 1024, "16K"},
-      {64 * 1024, "64K"},
-      {128 * 1024, "128K"},
-      {256 * 1024, "256K"},
-      {512 * 1024, "512K"},
-      {1 * 1024 * 1024, "1M"},
-      {2 * 1024 * 1024, "2M"},
-      {4 * 1024 * 1024, "4M"},
-      {8 * 1024 * 1024, "8M"},
-      {16 * 1024 * 1024, "16M"},
-      {32 * 1024 * 1024, "32M"},
-      {64 * 1024 * 1024, "64M"},
-      {128 * 1024 * 1024, "128M"},
-      {256 * 1024 * 1024, "256M"},
-      {512 * 1024 * 1024, "512M"},
-      {1024 * 1024 * 1024, "1G"},
-  };
+  std::vector<std::pair<std::size_t, std::string>> tileSizes;
+  for (std::size_t sizeBytes = 4; sizeBytes <= 1024ULL * 1024 * 1024;
+       sizeBytes <<= 1) {
+    tileSizes.emplace_back(sizeBytes, formatSize(sizeBytes));
+  }
   for (const auto& [sz, nm] : tileSizes) {
     addTileConfig(sz, "Tile_" + nm);
   }

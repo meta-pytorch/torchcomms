@@ -202,6 +202,21 @@ commResult_t AlgoImpl::execPipeline(
   // the remote address
   if (nLocalRanks > 1) {
     FB_COMMCHECK(waitInit());
+
+    // Pipeline broadcasts intra-node only via nvlCeBcast (no IB fallback), so
+    // bail cleanly here -- before any GPE work -- if a local peer is non-NVL,
+    // rather than failing inside nvlCeBcast. Mirrors nvlCeBcast's own check.
+    for (int r = 1; r < nLocalRanks; r++) {
+      const auto localPeer = (statex->localRank() + r) % nLocalRanks;
+      const auto peer = statex->localRankToRank(localPeer);
+      if (pArgs.remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
+        FB_ERRORRETURN(
+            commInvalidUsage,
+            "AllGatherP pipeline requires an NVL backend for all local peers; "
+            "peer {} has a non-NVL backend",
+            peer);
+      }
+    }
   }
 
   auto config = KernelConfig(

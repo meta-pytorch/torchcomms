@@ -640,6 +640,19 @@ static unsigned char multiCallPattern(int rank, int call) {
   return static_cast<unsigned char>(0x30 + rank * 0x20 + call);
 }
 
+static size_t alignTileProtocolBytes(size_t nbytes) {
+  return (nbytes + 15ULL) & ~15ULL;
+}
+
+static size_t
+validPayloadBytes(size_t byteOffset, size_t chunkBytes, size_t payloadBytes) {
+  if (byteOffset >= payloadBytes) {
+    return 0;
+  }
+  const size_t remaining = payloadBytes - byteOffset;
+  return chunkBytes < remaining ? chunkBytes : remaining;
+}
+
 static std::vector<char> makeTwoCallPatternBuffer(
     size_t firstCallBytes,
     size_t secondCallBytes,
@@ -713,21 +726,24 @@ static void expectPersistentTwoCallStagingPattern(
     uint64_t baseByte = 0;
     for (int call = 0; call < 2; ++call) {
       const unsigned char expected = multiCallPattern(sourceRank, call);
-      for (size_t dataOff = 0; dataOff < callBytes[call];) {
+      const size_t protocolBytes = alignTileProtocolBytes(callBytes[call]);
+      for (size_t dataOff = 0; dataOff < protocolBytes;) {
         const uint64_t streamStart = baseByte + dataOff;
         const size_t pipelineOff =
             static_cast<size_t>(streamStart % pipelineBytes);
         const size_t slot = pipelineOff / perBlockSlotSize;
         const size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
         const size_t slotRemaining = perBlockSlotSize - chunkOff;
-        const size_t dataRemaining = callBytes[call] - dataOff;
+        const size_t dataRemaining = protocolBytes - dataOff;
         size_t chunkBytes =
             effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
         chunkBytes = chunkBytes < slotRemaining ? chunkBytes : slotRemaining;
+        const size_t validBytes =
+            validPayloadBytes(dataOff, chunkBytes, callBytes[call]);
         const size_t offset =
             slot * slotSize + block * perBlockSlotSize + chunkOff;
 
-        for (size_t i = 0; i < chunkBytes; ++i) {
+        for (size_t i = 0; i < validBytes; ++i) {
           EXPECT_EQ(static_cast<unsigned char>(data[offset + i]), expected)
               << label << ": block=" << block << " call=" << call
               << " dataOff=" << dataOff << " byte=" << i;
@@ -737,7 +753,7 @@ static void expectPersistentTwoCallStagingPattern(
         }
         dataOff += chunkBytes;
       }
-      baseByte += callBytes[call];
+      baseByte += protocolBytes;
     }
   }
 }
@@ -844,6 +860,10 @@ class LocalTileHarness {
 
   DeviceBuffer& stagingBuffer() {
     return stagingBuf_;
+  }
+
+  DeviceBuffer& stepStateBuffer() {
+    return stepStateBuf_;
   }
 
   size_t stagingBytes() const {
@@ -1195,6 +1215,223 @@ TEST_F(
       numBlocks,
       0,
       "tile recv persistent cursor");
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    TileUnalignedPayloadAdvancesAlignedProtocol) {
+  const int numBlocks = 1;
+  const int threadCount = 256;
+  const size_t perBlockSlotSize = 256;
+  const size_t firstCallBytes = 100;
+  const size_t secondCallBytes = 100;
+  const size_t maxSignalBytes = 64;
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  const size_t totalBytes = tileBytes * numBlocks;
+  const size_t expectedStep = alignTileProtocolBytes(firstCallBytes) +
+      alignTileProtocolBytes(secondCallBytes);
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .chunkSize = maxSignalBytes,
+      .pipelineDepth = 2,
+  };
+
+  LocalTileHarness sendHarness(options, numBlocks);
+  const std::vector<char> hostSend =
+      makeTwoCallPatternBuffer(firstCallBytes, secondCallBytes, numBlocks, 0);
+  DeviceBuffer sendBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), hostSend.data(), totalBytes, cudaMemcpyHostToDevice));
+
+  auto sendOnlyP2p = sendHarness.stagingDevice();
+  TiledBuffer<char> sendTiles(
+      static_cast<char*>(sendBuf.get()), totalBytes, numBlocks);
+
+  test::testTileTwoCallSendOnly(
+      sendOnlyP2p,
+      sendTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostStaging(sendHarness.stagingBytes());
+  CUDACHECK_TEST(cudaMemcpy(
+      hostStaging.data(),
+      sendHarness.stagingBuffer().get(),
+      sendHarness.stagingBytes(),
+      cudaMemcpyDeviceToHost));
+  expectPersistentTwoCallStagingPattern(
+      hostStaging,
+      options.dataBufferSize,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      options.pipelineDepth,
+      numBlocks,
+      0,
+      "tile send unaligned protocol staging");
+  for (size_t i = firstCallBytes; i < alignTileProtocolBytes(firstCallBytes);
+       ++i) {
+    EXPECT_EQ(static_cast<unsigned char>(hostStaging[i]), 0)
+        << "padding byte " << i
+        << " between unaligned calls should stay transport-private";
+  }
+
+  std::vector<int64_t> sendStepState(numBlocks * 2);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendStepState.data(),
+      sendHarness.stepStateBuffer().get(),
+      sendStepState.size() * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(sendStepState[0], static_cast<int64_t>(expectedStep));
+
+  LocalTileHarness loopbackHarness(options, numBlocks);
+  DeviceBuffer recvBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+  auto loopbackP2p = loopbackHarness.loopbackDevice();
+  TiledBuffer<char> recvTiles(
+      static_cast<char*>(recvBuf.get()), totalBytes, numBlocks);
+
+  test::testTileTwoCallVariableSignalSendRecv(
+      loopbackP2p,
+      sendTiles,
+      recvTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      maxSignalBytes,
+      true,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostRecv(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostRecv.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  expectTwoCallPattern(
+      hostRecv,
+      firstCallBytes,
+      secondCallBytes,
+      numBlocks,
+      0,
+      "tile sendrecv unaligned protocol");
+
+  std::vector<int64_t> loopbackStepState(numBlocks * 2);
+  CUDACHECK_TEST(cudaMemcpy(
+      loopbackStepState.data(),
+      loopbackHarness.stepStateBuffer().get(),
+      loopbackStepState.size() * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(loopbackStepState[0], static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(loopbackStepState[numBlocks], static_cast<int64_t>(expectedStep));
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    TileForwardUnalignedPayloadAdvancesAlignedProtocol) {
+  const int numBlocks = 1;
+  const int threadCount = 256;
+  const size_t perBlockSlotSize = 256;
+  const size_t firstCallBytes = 100;
+  const size_t secondCallBytes = 100;
+  const size_t maxSignalBytes = 64;
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  const size_t totalBytes = tileBytes * numBlocks;
+  const size_t expectedStep = alignTileProtocolBytes(firstCallBytes) +
+      alignTileProtocolBytes(secondCallBytes);
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .chunkSize = maxSignalBytes,
+      .pipelineDepth = 2,
+  };
+  LocalTileHarness predHarness(options, numBlocks);
+  LocalTileHarness succHarness(options, numBlocks);
+
+  auto pred = predHarness.device(predHarness.staging(), nullptr);
+  auto succ = succHarness.device(nullptr, succHarness.staging());
+
+  test::testPrepareTileTwoCallStaging(
+      pred,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      0,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  DeviceBuffer dstBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0, totalBytes));
+  TiledBuffer<char> dstTiles(
+      static_cast<char*>(dstBuf.get()), totalBytes, numBlocks);
+
+  test::testTileTwoCallForward(
+      pred,
+      succ,
+      dstTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<char> hostDst(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostDst.data(), dstBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  expectTwoCallPattern(
+      hostDst,
+      firstCallBytes,
+      secondCallBytes,
+      numBlocks,
+      0,
+      "tile forward unaligned protocol dst");
+
+  std::vector<char> hostSuccStaging(succHarness.stagingBytes());
+  CUDACHECK_TEST(cudaMemcpy(
+      hostSuccStaging.data(),
+      succHarness.stagingBuffer().get(),
+      succHarness.stagingBytes(),
+      cudaMemcpyDeviceToHost));
+  expectPersistentTwoCallStagingPattern(
+      hostSuccStaging,
+      options.dataBufferSize,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      options.pipelineDepth,
+      numBlocks,
+      0,
+      "tile forward unaligned protocol successor staging");
+  for (size_t i = firstCallBytes; i < alignTileProtocolBytes(firstCallBytes);
+       ++i) {
+    EXPECT_EQ(static_cast<unsigned char>(hostSuccStaging[i]), 0)
+        << "forward padding byte " << i
+        << " between unaligned calls should stay transport-private";
+  }
+
+  std::vector<int64_t> predStepState(numBlocks * 2);
+  CUDACHECK_TEST(cudaMemcpy(
+      predStepState.data(),
+      predHarness.stepStateBuffer().get(),
+      predStepState.size() * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(predStepState[0], 0);
+  EXPECT_EQ(predStepState[numBlocks], static_cast<int64_t>(expectedStep));
+
+  std::vector<int64_t> succStepState(numBlocks * 2);
+  CUDACHECK_TEST(cudaMemcpy(
+      succStepState.data(),
+      succHarness.stepStateBuffer().get(),
+      succStepState.size() * sizeof(int64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(succStepState[0], static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(succStepState[numBlocks], 0);
 }
 
 TEST_F(
