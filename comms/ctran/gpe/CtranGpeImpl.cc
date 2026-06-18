@@ -858,15 +858,28 @@ void CtranGpe::Impl::gpeThreadFn() {
                     "collective skipped: communicator aborted",
                     commRemoteError));
           }
+          if (mapper != nullptr && mapper->hasTcpDmBackend()) {
+            mapper->abortTcpDm("collective skipped: communicator aborted");
+          }
         } else if (!cmd->coll.opGroup.empty() /* skip when opGroup is empty, i.e,. we are only here for post-kernel cmd destruction/cleanup */) {
-          CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
-              comm,
-              {
-                FB_COMMCHECKTHROW_EX(
-                    cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
-              },
-              static_cast<int>(cmd->coll.opGroup.front()->type),
-              cmd->coll.opGroup.front()->opCount);
+          if (mapper != nullptr && mapper->hasTcpDmBackend()) {
+            mapper->runTcpDmCollectiveAbortGuard(
+                [&] {
+                  FB_COMMCHECKTHROW_EX(
+                      cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+                },
+                static_cast<int>(cmd->coll.opGroup.front()->type),
+                cmd->coll.opGroup.front()->opCount);
+          } else {
+            CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+                comm,
+                {
+                  FB_COMMCHECKTHROW_EX(
+                      cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+                },
+                static_cast<int>(cmd->coll.opGroup.front()->type),
+                cmd->coll.opGroup.front()->opCount);
+          }
         }
 
         if (cmd->persistent) {

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <unordered_map>
 
@@ -86,6 +87,10 @@ class CtranTcpDm {
   // has to be called to make progress on them.
   commResult_t progress();
 
+  void cancelQueuedRecv(CtranTcpDmRequest* req);
+
+  void abortOutstanding(const char* reason);
+
   // Export the location of GPU kernel consumer queues.
   // Returns the allocated pool via the out parameter pool.
   commResult_t
@@ -114,12 +119,14 @@ class CtranTcpDm {
   std::vector<sockaddr_storage> allListenSocketAddrs_{};
   std::thread listenThread_;
 
+  CtranComm* comm_{nullptr};
   int cudaDev_{-1};
   int rank_{-1};
   int nRanks_{-1};
   uint64_t commHash_{0};
   std::string commDesc_;
   ::comms::tcp_devmem::NetDevInterface* netdev_{nullptr};
+  std::atomic<bool> aborted_{false};
 
   std::mutex mutex_;
   std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
@@ -161,6 +168,7 @@ class CtranTcpDm {
   void ctrlSyncProgress();
 
   commResult_t connectPeer(int peerRank);
+  void closeComms(const char* reason, uint32_t closeFlags);
 
   void bootstrapPrepare(meta::comms::IBootstrap* bootstrap);
   void bootstrapAddRecvPeer(
