@@ -80,7 +80,9 @@ struct BenchmarkBuffers {
     auto freeOne = [this](void* p) {
       if (p) {
         if (useGpu) {
-          cudaFree(p);
+          // hipFree is [[nodiscard]] on HIP (cudaFree is not); we are in a
+          // best-effort noexcept release path, so discard the status.
+          (void)cudaFree(p);
         } else {
           std::free(p);
         }
@@ -116,7 +118,7 @@ allocateBuffers(size_t maxSize, int cudaDevice, int rank, int numBuffers) {
         UNIFLOW_LOG_ERROR(
             "RdmaBandwidthBenchmark: cudaMemset failed: {}",
             cudaGetErrorString(ret));
-        cudaFree(*out);
+        (void)cudaFree(*out);
         *out = nullptr;
         return false;
       }
