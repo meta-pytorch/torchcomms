@@ -18,6 +18,4 @@ def test_coroutine_decorator(self):
         self.assertEqual(value, await c(10))
 
     import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(_())
-    loop.close()
+    asyncio.run(_())
