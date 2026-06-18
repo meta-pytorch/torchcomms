@@ -3785,3 +3785,37 @@ cvars:
    type        : int64_t
    default     : -1
    description : Maximum number of P2P peers (added in NCCL 2.30). Uses NCCL_CONFIG_UNDEF_INT as default.
+
+ - name        : NCCLX_TUNER_CONFIG_FILE
+   type        : string
+   default     : ""
+   description : |-
+     Absolute path to a CSV or JSON file (.json extension -> JSON, otherwise
+     CSV) that overrides NCCL core algorithm/protocol/chunkSize selection per
+     (collective, message-size range, topology). When empty, the built-in
+     tuner is disabled and NCCL's default cost-model selection is used.
+     When set, this built-in tuner takes precedence over any external
+     NCCL_TUNER_PLUGIN.
+
+ - name        : NCCLX_TUNER_IGNORE_CONFIG_ERRORS
+   type        : bool
+   default     : false
+   description : |-
+     Controls how the built-in tuner reacts to a malformed NCCLX_TUNER_CONFIG_FILE.
+     When false (default), any tuner config parse error (file cannot be opened,
+     malformed JSON, missing/non-array "rules", an unknown collective/algorithm/
+     protocol, an invalid interval, a present-but-invalid numeric, or a bad JSON
+     value type) fails communicator initialization. When true, parse errors are
+     logged and the offending rule is skipped (or the whole file is ignored) and
+     init continues with the remaining valid rules. An empty/unset
+     NCCLX_TUNER_CONFIG_FILE means the tuner is simply disabled and is never an
+     error regardless of this setting.
+
+ - name        : NCCLX_META_TUNER_LOG_MISMATCH
+   type        : bool
+   default     : false
+   description : |-
+     When true, the built-in meta tuner logs (at INFO, subsys TUNING) the reason
+     a tuning rule did NOT match a collective -- which field disqualified it and
+     the rule's expected value vs the actual value. Useful for debugging why a
+     config rule is not taking effect. Default false (no mismatch logging).
