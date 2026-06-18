@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -169,6 +170,18 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
     }
   }
 
+  static void
+  expectDeviceBytePattern(const void* ptr, size_t bytes, uint8_t expected) {
+    if (bytes == 0) {
+      return;
+    }
+    std::vector<uint8_t> host(bytes);
+    CUDACHECK_TEST(cudaMemcpy(host.data(), ptr, bytes, cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < bytes; ++i) {
+      ASSERT_EQ(host[i], expected) << "guard byte mismatch at offset " << i;
+    }
+  }
+
   /**
    * Configure CTRAN AllReduce and Pipes before constructing the communicator.
    */
@@ -189,7 +202,8 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       enum NCCL_ALLREDUCE_ALGO algo,
       commDataType_t datatype,
       size_t count,
-      bool inPlace) {
+      bool inPlace,
+      size_t bufferOffsetBytes = 0) {
     // Check support before the zero-count no-op so disabled algorithms skip
     // consistently with non-empty cases.
     if (!ctranAllReduceSupport(ctranComm.get(), algo)) {
@@ -213,12 +227,20 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       return;
     }
 
+    constexpr uint8_t kGuardPattern = 0xA5;
     const size_t bytes = count * commTypeSize(datatype);
-    DeviceBuffer sendbuf = makeDeviceBuffer(bytes);
-    DeviceBuffer recvbuf = inPlace ? nullptr : makeDeviceBuffer(bytes);
+    const size_t allocBytes = bytes + bufferOffsetBytes;
+    DeviceBuffer sendbuf = makeDeviceBuffer(allocBytes);
+    DeviceBuffer recvbuf = inPlace ? nullptr : makeDeviceBuffer(allocBytes);
     DeviceBuffer expectedBuf = makeDeviceBuffer(bytes);
-    void* const sendPtr = sendbuf.get();
-    void* const recvPtr = inPlace ? sendPtr : recvbuf.get();
+    CUDACHECK_TEST(cudaMemset(sendbuf.get(), kGuardPattern, allocBytes));
+    if (!inPlace) {
+      CUDACHECK_TEST(cudaMemset(recvbuf.get(), kGuardPattern, allocBytes));
+    }
+    void* const sendPtr = static_cast<char*>(sendbuf.get()) + bufferOffsetBytes;
+    void* const recvPtr = inPlace
+        ? sendPtr
+        : static_cast<char*>(recvbuf.get()) + bufferOffsetBytes;
 
     // Initialize expected: sum of initData across all ranks
     launchInitExpected(
@@ -272,6 +294,12 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
           computeRawBitsChecksumForType(resultBuf, datatype, count, testStream);
     }
 
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+    expectDeviceBytePattern(sendbuf.get(), bufferOffsetBytes, kGuardPattern);
+    if (!inPlace) {
+      expectDeviceBytePattern(recvbuf.get(), bufferOffsetBytes, kGuardPattern);
+    }
+
     for (int repeat = 1; repeat < kDeterminismRepeats; ++repeat) {
       ASSERT_EQ(checksums[0], checksums[repeat])
           << "non-deterministic AllReduce output checksum for count=" << count
@@ -281,6 +309,17 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
     }
 
     verifyGpeLeak(ctranComm->ctran_.get());
+  }
+
+  void runCorrectnessSweep(
+      enum NCCL_ALLREDUCE_ALGO algo,
+      commDataType_t datatype,
+      const std::vector<size_t>& counts,
+      bool inPlace,
+      size_t bufferOffsetBytes = 0) {
+    for (size_t count : counts) {
+      runCorrectnessTest(algo, datatype, count, inPlace, bufferOffsetBytes);
+    }
   }
 
  protected:
@@ -329,6 +368,10 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
 
 using AllReduceParam =
     std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, size_t, bool>;
+using AllReduceMixedOrderParam =
+    std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, bool>;
+using AllReduceOffsetParam =
+    std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, size_t, bool>;
 
 const std::vector<size_t>& allReduceElementCounts() {
   static const std::vector<size_t> counts{
@@ -367,6 +410,25 @@ const std::vector<commDataType_t>& allReduceDataTypes() {
   return datatypes;
 }
 
+const std::vector<size_t>& allReduceMixedOrderElementCounts() {
+  static const std::vector<size_t> counts{
+      1,
+      1048576 + 7,
+      7,
+      65536,
+      16,
+      1048576 - 7,
+  };
+  return counts;
+}
+
+const std::vector<size_t>& allReduceOffsetElementOffsets() {
+  static const std::vector<size_t> offsets{
+      1,
+  };
+  return offsets;
+}
+
 std::string dataTypeTestName(commDataType_t datatype) {
   switch (datatype) {
     case commFloat32:
@@ -388,16 +450,66 @@ std::string allReduceTestName(
       (inPlace ? "InPlace" : "OutOfPlace");
 }
 
+std::string allReduceMixedOrderTestName(
+    enum NCCL_ALLREDUCE_ALGO algo,
+    commDataType_t datatype,
+    bool inPlace) {
+  return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
+      "_MixedOrder_" + (inPlace ? "InPlace" : "OutOfPlace");
+}
+
+std::string allReduceOffsetTestName(
+    enum NCCL_ALLREDUCE_ALGO algo,
+    commDataType_t datatype,
+    size_t offsetElements,
+    bool inPlace) {
+  return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
+      "_100B_Offset" + std::to_string(offsetElements) + "Element_" +
+      (inPlace ? "InPlace" : "OutOfPlace");
+}
+
+inline std::string mixedOrderTestName(
+    const testing::TestParamInfo<AllReduceMixedOrderParam>& info) {
+  auto [algo, datatype, inPlace] = info.param;
+  return allReduceMixedOrderTestName(algo, datatype, inPlace);
+}
+
+inline std::string offsetTestName(
+    const testing::TestParamInfo<AllReduceOffsetParam>& info) {
+  auto [algo, datatype, offsetElements, inPlace] = info.param;
+  return allReduceOffsetTestName(algo, datatype, offsetElements, inPlace);
+}
+
 #if defined(CTRAN_ALLREDUCE_TEST_NVL_ONLY)
 /**
  * NVL-only topology test using the default local topology.
  */
 class NVL_ONLY : public CtranAllReduceTest,
                  public ::testing::WithParamInterface<AllReduceParam> {};
+class NVL_ONLY_MIXED_ORDER
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {};
+class NVL_ONLY_OFFSET
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceOffsetParam> {};
 
 TEST_P(NVL_ONLY, Correctness) {
   auto [algo, datatype, count, inPlace] = GetParam();
   runCorrectnessTest(algo, datatype, count, inPlace);
+}
+
+TEST_P(NVL_ONLY_MIXED_ORDER, Correctness) {
+  auto [algo, datatype, inPlace] = GetParam();
+  runCorrectnessSweep(
+      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
+}
+
+TEST_P(NVL_ONLY_OFFSET, Correctness) {
+  auto [algo, datatype, offsetElements, inPlace] = GetParam();
+  const size_t typeBytes = commTypeSize(datatype);
+  const size_t count = 100 / typeBytes;
+  const size_t offsetBytes = offsetElements * typeBytes;
+  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
 }
 
 inline std::string nvlTestName(
@@ -415,6 +527,25 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     nvlTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    NVL_ONLY_MIXED_ORDER,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::Bool()),
+    mixedOrderTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    NVL_ONLY_OFFSET,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
+        ::testing::Bool()),
+    offsetTestName);
 #endif
 
 #if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY)
@@ -442,6 +573,46 @@ TEST_P(IB_ONLY, Correctness) {
   runCorrectnessTest(algo, datatype, count, inPlace);
 }
 
+class IB_ONLY_MIXED_ORDER
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {
+ public:
+  ctran::CtranEnvs envOverrides() const override {
+    auto envs = CtranAllReduceTest::envOverrides();
+    envs.emplace_back("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal");
+    envs.emplace_back("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1");
+    envs.emplace_back("NCCL_P2P_DISABLE", "1");
+    return envs;
+  }
+};
+
+class IB_ONLY_OFFSET
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceOffsetParam> {
+ public:
+  ctran::CtranEnvs envOverrides() const override {
+    auto envs = CtranAllReduceTest::envOverrides();
+    envs.emplace_back("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal");
+    envs.emplace_back("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1");
+    envs.emplace_back("NCCL_P2P_DISABLE", "1");
+    return envs;
+  }
+};
+
+TEST_P(IB_ONLY_MIXED_ORDER, Correctness) {
+  auto [algo, datatype, inPlace] = GetParam();
+  runCorrectnessSweep(
+      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
+}
+
+TEST_P(IB_ONLY_OFFSET, Correctness) {
+  auto [algo, datatype, offsetElements, inPlace] = GetParam();
+  const size_t typeBytes = commTypeSize(datatype);
+  const size_t count = 100 / typeBytes;
+  const size_t offsetBytes = offsetElements * typeBytes;
+  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
+}
+
 inline std::string ibTestName(
     const testing::TestParamInfo<IB_ONLY::ParamType>& info) {
   auto [algo, datatype, count, inPlace] = info.param;
@@ -457,6 +628,25 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     ibTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    IB_ONLY_MIXED_ORDER,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::Bool()),
+    mixedOrderTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    IB_ONLY_OFFSET,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
+        ::testing::Bool()),
+    offsetTestName);
 #endif
 
 #if defined(CTRAN_ALLREDUCE_TEST_HYBRID)
@@ -465,10 +655,30 @@ INSTANTIATE_TEST_SUITE_P(
  */
 class HYBRID : public CtranAllReduceTest,
                public ::testing::WithParamInterface<AllReduceParam> {};
+class HYBRID_MIXED_ORDER
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {};
+class HYBRID_OFFSET
+    : public CtranAllReduceTest,
+      public ::testing::WithParamInterface<AllReduceOffsetParam> {};
 
 TEST_P(HYBRID, Correctness) {
   auto [algo, datatype, count, inPlace] = GetParam();
   runCorrectnessTest(algo, datatype, count, inPlace);
+}
+
+TEST_P(HYBRID_MIXED_ORDER, Correctness) {
+  auto [algo, datatype, inPlace] = GetParam();
+  runCorrectnessSweep(
+      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
+}
+
+TEST_P(HYBRID_OFFSET, Correctness) {
+  auto [algo, datatype, offsetElements, inPlace] = GetParam();
+  const size_t typeBytes = commTypeSize(datatype);
+  const size_t count = 100 / typeBytes;
+  const size_t offsetBytes = offsetElements * typeBytes;
+  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
 }
 
 inline std::string hybridTestName(
@@ -486,6 +696,25 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     hybridTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    HYBRID_MIXED_ORDER,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::Bool()),
+    mixedOrderTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduce,
+    HYBRID_OFFSET,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
+        ::testing::Bool()),
+    offsetTestName);
 #endif
 
 int main(int argc, char* argv[]) {
