@@ -64,7 +64,14 @@ __device__ __forceinline__ void _progressRecv(
       StrideInfos strideInfos{};
       setupUnpackStrides(strideInfos, GET_ALGO_NUM(sq->header.flags));
       unpack(
-          sq, &allReduceRingUnpack, strideInfos, &sq->header.flags, 0, false);
+          sq,
+          &allReduceRingUnpack,
+          strideInfos,
+          &sq->header.flags,
+          0,
+          nullptr,
+          0,
+          false);
     }
   }
 #endif
