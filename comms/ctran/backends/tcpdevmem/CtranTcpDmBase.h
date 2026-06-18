@@ -18,6 +18,9 @@ class CtranTcpDmRequest {
     if (request_ == nullptr) {
       // Pending irecv where sender has not been connected yet or send/recv
       // control.
+      if (done_ && status_ != ::comms::tcp_devmem::Status::Ok) {
+        COMMCHECKTHROW(status_);
+      }
       return done_;
     }
 
@@ -44,14 +47,23 @@ class CtranTcpDmRequest {
     return done_;
   }
 
-  void complete() {
+  void complete(
+      ::comms::tcp_devmem::Status status = ::comms::tcp_devmem::Status::Ok) {
+    status_ = status;
     done_ = true;
+  }
+
+  void markQueuedRecv() {
+    done_ = false;
+    status_ = ::comms::tcp_devmem::Status::Ok;
+    request_ = nullptr;
   }
 
   void track(
       ::comms::tcp_devmem::TransportInterface* transport,
       ::comms::tcp_devmem::RequestInterface* request) {
     done_ = false;
+    status_ = ::comms::tcp_devmem::Status::Ok;
     transport_ = transport;
     request_ = request;
   }
@@ -59,6 +71,7 @@ class CtranTcpDmRequest {
  private:
   ::comms::tcp_devmem::RequestInterface* request_{nullptr};
   ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
+  ::comms::tcp_devmem::Status status_{::comms::tcp_devmem::Status::Ok};
   bool done_{false};
 };
 
