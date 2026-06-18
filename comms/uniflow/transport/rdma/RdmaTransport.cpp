@@ -4,6 +4,7 @@
 #include "comms/uniflow/core/NumaUtils.h"
 #include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
+#include "comms/uniflow/drivers/cuda/CudaDevicePtr.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
@@ -1922,7 +1923,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       // link is available.
       auto dmaBufStatus = cudaDriverApi_->cuMemGetHandleForAddressRange(
           &fdGuard.fd,
-          static_cast<CUdeviceptr>(alignedAddr),
+          toDevicePtr(alignedAddr),
           dmaBufLen,
           CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
           flags);

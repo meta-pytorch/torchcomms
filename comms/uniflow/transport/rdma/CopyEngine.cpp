@@ -1,6 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
+
+#include "comms/uniflow/drivers/cuda/CudaDevicePtr.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include <cstring>
@@ -26,7 +28,7 @@ void CopyEngine::copyToSlab(RdmaSlab& slab, const void* src, size_t len) {
         slab.ptr(), src, len, cudaMemcpyDeviceToHost, *stream_);
     cudaDriverApi_->streamWriteValue64(
         *stream_,
-        static_cast<CUdeviceptr>(slab.stateDeviceAddr()),
+        toDevicePtr(slab.stateDeviceAddr()),
         1,
         CU_STREAM_WRITE_VALUE_DEFAULT);
   } else {
@@ -41,7 +43,7 @@ void CopyEngine::copyFromSlab(void* dst, RdmaSlab& slab, size_t len) {
         dst, slab.ptr(), len, cudaMemcpyHostToDevice, *stream_);
     cudaDriverApi_->streamWriteValue64(
         *stream_,
-        static_cast<CUdeviceptr>(slab.stateDeviceAddr()),
+        toDevicePtr(slab.stateDeviceAddr()),
         1,
         CU_STREAM_WRITE_VALUE_DEFAULT);
   } else {
