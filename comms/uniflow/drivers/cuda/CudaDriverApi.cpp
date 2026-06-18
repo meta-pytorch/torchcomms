@@ -3,30 +3,56 @@
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/Constants.h"
 
+// NVIDIA loads the CUDA driver entry points dynamically via PFN typedefs from
+// <cudaTypedefs.h> + cudaGetDriverEntryPoint. HIP has no versioned PFN
+// typedefs and exposes the driver (hip*) functions directly, so the AMD build
+// (hipified: cu* -> hip*) calls them directly. The divergence is confined to
+// the symbol-loading machinery below; the per-method bodies are shared via the
+// CU_PFN()/CU_CALL() indirection.
+#ifndef __HIP_PLATFORM_AMD__
 #include <cudaTypedefs.h>
+#endif
 #include <cuda_runtime.h>
+
+#if defined(__HIP_PLATFORM_AMD__)
+// For the AMD GPUDirect-RDMA (ib_peer_mem / amdkfd) sysfs + kallsyms probe.
+#include <unistd.h>
+#include <cstdio>
+#include <cstring>
+#endif
 
 #include <mutex>
 #include <string>
 
 namespace uniflow {
 
+#ifndef __HIP_PLATFORM_AMD__
 constexpr int CUDA_DRIVER_MIN_VERSION = 12040;
 
 static_assert(
     CUDA_VERSION >= CUDA_DRIVER_MIN_VERSION,
     "CudaDriverApi requires CUDA 12.4 or later");
+#endif
 
-// ---------------------------------------------------------------------------
-// Function pointer declarations using PFN types from <cudaTypedefs.h>
-// ---------------------------------------------------------------------------
-
-#define DECLARE_CUDA_PFN(symbol, version) \
-  PFN_##symbol##_v##version pfn_##symbol = nullptr
+// On NVIDIA, CU_PFN(name) resolves to the dynamically loaded pfn_<name>; on AMD
+// (hipified) it resolves to the driver function itself, called directly.
+#if defined(__HIP_PLATFORM_AMD__)
+#define CU_PFN(name) name
+#else
+#define CU_PFN(name) pfn_##name
+#endif
 
 namespace {
 
 // NOLINTBEGIN(facebook-avoid-non-const-global-variables)
+
+#ifndef __HIP_PLATFORM_AMD__
+// ---------------------------------------------------------------------------
+// Function pointer declarations using PFN types from <cudaTypedefs.h> (NVIDIA)
+// ---------------------------------------------------------------------------
+
+#define DECLARE_CUDA_PFN(symbol, version) \
+  PFN_##symbol##_v##version pfn_##symbol = nullptr
 
 // --- Error ---
 DECLARE_CUDA_PFN(cuGetErrorString, 6000);
@@ -55,6 +81,7 @@ DECLARE_CUDA_PFN(cuMemGetAddressRange, 3020);
 DECLARE_CUDA_PFN(cuStreamWriteValue64, 11070);
 
 #undef DECLARE_CUDA_PFN
+#endif // !__HIP_PLATFORM_AMD__
 
 std::once_flag g_initFlag;
 Status g_initStatus{Ok()};
@@ -71,20 +98,26 @@ Status cuRetToStatus(CUresult ret, const char* funcName) {
   }
   std::string msg = funcName;
   msg += "() failed, ret = ";
-  msg += std::to_string(ret);
-  if (pfn_cuGetErrorString != nullptr) {
-    const char* errStr = nullptr;
-    if (pfn_cuGetErrorString(ret, &errStr) == CUDA_SUCCESS &&
-        errStr != nullptr) {
-      msg += ": ";
-      msg += errStr;
-    }
+  msg += std::to_string(static_cast<int>(ret));
+  const char* errStr = nullptr;
+#if defined(__HIP_PLATFORM_AMD__)
+  if (cuGetErrorString(ret, &errStr) == CUDA_SUCCESS && errStr != nullptr) {
+    msg += ": ";
+    msg += errStr;
   }
+#else
+  if (pfn_cuGetErrorString != nullptr &&
+      pfn_cuGetErrorString(ret, &errStr) == CUDA_SUCCESS && errStr != nullptr) {
+    msg += ": ";
+    msg += errStr;
+  }
+#endif
   return Err(ErrCode::DriverError, std::move(msg));
 }
 
+#ifndef __HIP_PLATFORM_AMD__
 // ---------------------------------------------------------------------------
-// Symbol loading via cudaGetDriverEntryPoint
+// Symbol loading via cudaGetDriverEntryPoint (NVIDIA only)
 // ---------------------------------------------------------------------------
 
 #if CUDART_VERSION >= 13000
@@ -140,25 +173,29 @@ Status cuRetToStatus(CUresult ret, const char* funcName) {
   (pfn_##name == nullptr                                      \
        ? Err(ErrCode::DriverError, #name " symbol not found") \
        : cuRetToStatus(pfn_##name(__VA_ARGS__), #name))
+#endif // !__HIP_PLATFORM_AMD__
 
 void checkCuMemSupported(int cudaDev) {
+#ifndef __HIP_PLATFORM_AMD__
   if (pfn_cuMemCreate == nullptr) {
     g_isCuMemSupported = false;
-  } else {
-    CUdevice currentDev;
-    if (pfn_cuDeviceGet(&currentDev, cudaDev) != CUDA_SUCCESS) {
-      g_isCuMemSupported = false;
-    } else {
-      int flag = 0;
-      auto ret = pfn_cuDeviceGetAttribute(
-          &flag,
-          CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED,
-          currentDev);
-      g_isCuMemSupported = (ret == CUDA_SUCCESS && flag != 0);
-    }
+    return;
   }
+#endif
+  CUdevice currentDev;
+  if (CU_PFN(cuDeviceGet)(&currentDev, cudaDev) != CUDA_SUCCESS) {
+    g_isCuMemSupported = false;
+    return;
+  }
+  int flag = 0;
+  auto ret = CU_PFN(cuDeviceGetAttribute)(
+      &flag,
+      CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED,
+      currentDev);
+  g_isCuMemSupported = (ret == CUDA_SUCCESS && flag != 0);
 }
 
+#ifndef __HIP_PLATFORM_AMD__
 void probeCuMemHandleType() {
   CUdevice cuDevice;
   const int deviceId = 0;
@@ -357,6 +394,67 @@ void doInit() {
 
 #undef LOAD_SYM
 
+#else // __HIP_PLATFORM_AMD__
+
+// Detect GPUDirect-RDMA (peer-mem) support on AMD. There is no HIP query for
+// this, so we probe the same signals as rccl/ctran (see
+// comms/ctran/utils/HipGdrCheck.h): the amdkfd peer-mem sysfs version node, and
+// the `ib_register_peer_memory_client` symbol in /proc/kallsyms as a fallback
+// for native-OS ib_peer modules. Used to decide whether VRAM can be registered
+// via dma-buf; callers fall back to plain ibv_reg_mr when this returns false.
+bool amdGpuDirectRdmaSupported() {
+  static const char* kMemoryPeersPaths[] = {
+      "/sys/kernel/mm/memory_peers/amdkfd/version",
+      "/sys/kernel/memory_peers/amdkfd/version",
+      "/sys/memory_peers/amdkfd/version",
+  };
+  for (const char* path : kMemoryPeersPaths) {
+    if (access(path, F_OK) == 0) {
+      return true;
+    }
+  }
+
+  // Fallback: look for the native ib_peer_mem registration symbol.
+  FILE* fp = std::fopen("/proc/kallsyms", "r");
+  if (fp == nullptr) {
+    return false;
+  }
+  char buf[256];
+  bool found = false;
+  while (std::fgets(buf, sizeof(buf), fp) != nullptr) {
+    if (std::strstr(buf, "ib_register_peer_memory_client") != nullptr) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(fp);
+  return found;
+}
+
+// AMD driver entry points (hip*) are linked directly, so there is no PFN
+// loading. Init initializes the driver, probes cuMem (VMM) support, and detects
+// GPUDirect-RDMA via the peer-mem probe above. The NVIDIA-only fabric handle
+// path does not apply — AMD uses POSIX-FD / dma-buf sharing.
+void doInit() {
+  int cudaDev;
+  auto ret = cudaGetDevice(&cudaDev); // Initialize the driver
+  if (ret != cudaSuccess) {
+    g_initStatus = Err(ErrCode::DriverError, "cudaGetDevice failed");
+    return;
+  }
+
+  checkCuMemSupported(cudaDev);
+
+  const bool gdrSupported = amdGpuDirectRdmaSupported();
+  for (int i = 0; i < kMaxDevices; i++) {
+    g_isDmaBufSupported[i] = gdrSupported;
+  }
+
+  g_initStatus = Ok();
+}
+
+#endif // __HIP_PLATFORM_AMD__
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -371,6 +469,13 @@ void doInit() {
     }                               \
   } while (0)
 
+#if defined(__HIP_PLATFORM_AMD__)
+#define CU_CALL(name, ...)                            \
+  do {                                                \
+    CU_ENSURE_INIT();                                 \
+    return cuRetToStatus(::name(__VA_ARGS__), #name); \
+  } while (0)
+#else
 #define CU_CALL(name, ...)                                         \
   do {                                                             \
     CU_ENSURE_INIT();                                              \
@@ -379,6 +484,7 @@ void doInit() {
     }                                                              \
     return cuRetToStatus(pfn_##name(__VA_ARGS__), #name);          \
   } while (0)
+#endif
 
 Status CudaDriverApi::init() {
   std::call_once(g_initFlag, doInit);
@@ -498,7 +604,17 @@ Status CudaDriverApi::cuMemGetHandleForAddressRange(
     size_t size,
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
+#if defined(__HIP_PLATFORM_AMD__)
+  // hipify-perl does not map cuMemGetHandleForAddressRange, so call the HIP
+  // dma-buf fd export directly (GPUDirect RDMA path). CU_ENSURE_INIT() mirrors
+  // the CU_CALL path; the global symbol is qualified to avoid the member name.
+  CU_ENSURE_INIT();
+  return cuRetToStatus(
+      ::hipMemGetHandleForAddressRange(handle, dptr, size, handleType, flags),
+      "hipMemGetHandleForAddressRange");
+#else
   CU_CALL(cuMemGetHandleForAddressRange, handle, dptr, size, handleType, flags);
+#endif
 }
 
 // --- Stream memory ops ---
