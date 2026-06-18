@@ -548,9 +548,7 @@ class DisaggAccuracyTest:
         try:
             self._model_path = self._download_model()
             gpu_baseline, gpu_prefill, gpu_decode = self._assign_gpus()
-            host_ip = (
-                self._topo.detect_ip() if not self._topo.is_same_node else "127.0.0.1"
-            )
+            host_ip = "127.0.0.1"
             self._log_header()
 
             baseline_outputs = self._run_baseline_phase(gpu_baseline)

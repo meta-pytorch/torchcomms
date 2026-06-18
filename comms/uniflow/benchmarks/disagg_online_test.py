@@ -11,6 +11,7 @@ except ImportError:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Keep the historical entry point name while sharing the maintained runner.
     accuracy_main(argv)
 
 
