@@ -155,7 +155,7 @@ class CommOptions {
  public:
   bool abort_process_on_timeout_or_error{true};
   std::chrono::milliseconds timeout{kDefaultTimeout};
-  bool high_priority_stream{false};
+  bool is_high_priority_stream{false};
   c10::intrusive_ptr<c10d::Store> store{nullptr};
   /**
    * If true, enables reconfigure() for fault tolerance.

@@ -318,14 +318,14 @@ void TorchCommXCCL::init(
           std::to_string(device_.index()));
 
   // Read hints and store them
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  is_high_priority_stream_ =
+      options_.getHint<bool>(kHintIsHighPriorityStream, false);
 
   // Create internal stream
   int stream_priority = 0;
 
   // Check for high priority stream hint
-  if (high_priority_stream_) {
+  if (is_high_priority_stream_) {
     stream_priority = -1;
   }
 

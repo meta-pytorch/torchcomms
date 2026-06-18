@@ -27,7 +27,8 @@
 namespace torch::comms {
 
 // Hint key names for XCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
@@ -277,7 +278,7 @@ class TorchCommXCCL : public TorchCommBackend,
       dependency_event_; // Pre-allocated event for stream dependencies
 
   size_t max_event_pool_size_{};
-  bool high_priority_stream_{false};
+  bool is_high_priority_stream_{false};
 
  private:
   // Helper that automatically cleans up premul sums.

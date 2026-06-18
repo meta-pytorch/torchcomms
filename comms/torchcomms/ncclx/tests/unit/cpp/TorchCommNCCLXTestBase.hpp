@@ -89,8 +89,8 @@ class TorchCommNCCLXTest : public ::testing::Test {
     }
 
     // Hint parsing test accessors
-    bool testGetHighPriorityStream() const {
-      return high_priority_stream_;
+    bool testGetIsHighPriorityStream() const {
+      return is_high_priority_stream_;
     }
 
     size_t testGetMaxEventPoolSize() const {
