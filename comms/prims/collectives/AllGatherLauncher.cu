@@ -134,6 +134,16 @@ void launch_hierarchical_allgather_overlap(
   args.sendbuf = params.sendbuf;
   args.recvbuf = params.recvbuf;
   args.ib_ring = params.ib_ring;
+  args.use_direct = params.use_direct;
+  // ib_peers is only populated/used on the direct/star path, which the host
+  // gates to ib_size <= kHierarchicalAgMaxNodes. Guard the copy so a ring-mode
+  // launch with ib_size > kHierarchicalAgMaxNodes does not read/write past the
+  // fixed-size ib_peers arrays.
+  if (params.use_direct) {
+    for (int node = 0; node < params.ib_size; ++node) {
+      args.ib_peers[node] = params.ib_peers[node];
+    }
+  }
   args.trace = params.trace;
   for (int peer = 0; peer < params.nvl_size; ++peer) {
     if (peer == params.nvl_rank) {
