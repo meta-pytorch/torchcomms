@@ -299,6 +299,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       case NCCL_ALLREDUCE_ALGO::ctree:
         return ctranAllReduceTree(
             sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
+      case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+        return ctranAllReduceHierarchicalRing(
+            sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
       default:
         return commInvalidArgument;
     }
@@ -415,6 +418,16 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     nvlTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    NVL_ONLY,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    nvlTestName);
 #endif
 
 #if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY)
@@ -442,6 +455,77 @@ TEST_P(IB_ONLY, Correctness) {
   runCorrectnessTest(algo, datatype, count, inPlace);
 }
 
+// Locks in the intentional no-fallback contract: cthierarchical_ring rejects
+// unsupported reduction ops and datatypes with commInvalidArgument rather than
+// silently mis-reducing or falling back (see AllReduceIbRing.cc). Runs its
+// assertions exactly once: on the hierring fp32 count==1 out-of-place param at
+// numRanks > 1. globalRank/numRanks are fixture members (see
+// runCorrectnessTest).
+TEST_P(IB_ONLY, HierRingRejectsUnsupported) {
+  const auto algo = std::get<0>(GetParam());
+  const auto datatype = std::get<1>(GetParam());
+  const auto count = std::get<2>(GetParam());
+  const auto inPlace = std::get<3>(GetParam());
+  if (algo != NCCL_ALLREDUCE_ALGO::cthierarchical_ring || count != 1 ||
+      datatype != commFloat32 || inPlace) {
+    GTEST_SKIP()
+        << "negative-path check runs once on hierring fp32 count==1 OOP";
+  }
+  // The (datatype, redOp) guards are only reachable at numRanks > 1; at
+  // numRanks==1 the function returns commSuccess via the memcpy short-circuit
+  // before the guards (e.g. on the IB_ONLY_1x1 target). numRanks is a fixture
+  // member.
+  if (numRanks < 2) {
+    GTEST_SKIP() << "negative-path check requires numRanks > 1";
+  }
+
+  // Guards return commInvalidArgument before dereferencing buffers, so null
+  // buffers are safe here (mirrors the zero-element no-op case above) -- no raw
+  // CUDA allocation needed.
+
+  // Unsupported reduction op (fp32 + commProd) -> explicit invalid argument.
+  EXPECT_EQ(
+      runAllReduce(
+          NCCL_ALLREDUCE_ALGO::cthierarchical_ring,
+          /*sendbuf=*/nullptr,
+          /*recvbuf=*/nullptr,
+          count,
+          commFloat32,
+          commProd,
+          ctranComm.get(),
+          testStream,
+          /*timeout=*/std::nullopt),
+      commInvalidArgument)
+      << "rank=" << globalRank << " expected commProd to be rejected";
+
+  // Unsupported datatype (commFloat64 + commSum) -> explicit invalid argument.
+  // commFloat64 stays unsupported even after fp16 lands in Part 2.
+  EXPECT_EQ(
+      runAllReduce(
+          NCCL_ALLREDUCE_ALGO::cthierarchical_ring,
+          /*sendbuf=*/nullptr,
+          /*recvbuf=*/nullptr,
+          count,
+          commFloat64,
+          commSum,
+          ctranComm.get(),
+          testStream,
+          /*timeout=*/std::nullopt),
+      commInvalidArgument)
+      << "rank=" << globalRank << " expected commFloat64 to be rejected";
+}
+
+// NOTE: the host-side IB-transport guards in ctranAllReduceHierarchicalRing
+// (null multiPeerTransport_, lazy-connect mode, and non-P2P_IBGDA ring
+// neighbor) are intentionally NOT exercised here -- they are defensive guards
+// against misconfiguration. None is cleanly reachable from this distributed
+// fixture: a lazy-connect comm (NCCL_CTRAN_IBGDA_LAZY_CONNECT=1) crashes during
+// CtranComm teardown with unmaterialized peers (a separate comm-lifecycle issue
+// unrelated to this algo), and forcing an IBRC/socket-only or null-transport
+// ring neighbor is impractical in this harness. The guards are simple
+// host-side type/null checks that return commInvalidArgument before the kernel
+// dereferences transports[...].p2p_ib.ibgda; see AllReduceIbRing.cc.
+
 inline std::string ibTestName(
     const testing::TestParamInfo<IB_ONLY::ParamType>& info) {
   auto [algo, datatype, count, inPlace] = info.param;
@@ -454,6 +538,16 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    ibTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    IB_ONLY,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     ibTestName);
@@ -483,6 +577,16 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::ValuesIn(allReduceElementCounts()),
+        ::testing::Bool()),
+    hybridTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    HierRing,
+    HYBRID,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
     hybridTestName);
