@@ -110,3 +110,10 @@ ncclResult_t destroyCtranComm(ncclComm* comm) {
   }
   return ncclSuccess;
 }
+
+CtranComm* getCtranCommFromNcclComm(ncclComm* ncclComm) {
+  if (ncclComm && ncclComm->ctranComm_) {
+    return ncclComm->ctranComm_.get();
+  }
+  return nullptr;
+}
