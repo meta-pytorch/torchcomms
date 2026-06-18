@@ -1060,7 +1060,7 @@ class CtranIb {
           continueWhileLoop = true;
         }
 
-        if (enableLocalFlush) {
+        if (enableLocalFlush_) {
           CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
             auto& vc = localVc;
             // First check if it is a local flush CQE
@@ -1117,7 +1117,7 @@ class CtranIb {
   uint64_t commHash{0};
   std::string commDesc;
   CommLogData ncclLogData;
-  bool enableLocalFlush{true};
+  bool enableLocalFlush_{true};
   BootstrapMode bootstrapMode{BootstrapMode::kDefaultServer};
 
   std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;
