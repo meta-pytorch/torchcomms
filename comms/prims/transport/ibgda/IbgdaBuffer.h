@@ -418,12 +418,26 @@ struct IbgdaBufferExchInfo {
 namespace detail {
 
 /**
- * Internal stage for one transport-owned resumable send/recv operation.
+ * Internal stage for one transport-owned resumable send/recv/forward operation.
  *
  * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
  * Send operations use `WaitNicDone` and `WaitSlotFree`; recv operations use
  * `WaitDataReady`. Blocking send/recv temporarily use `Busy` to make
  * same-direction overlap fail explicitly instead of sharing a cursor.
+ *
+ * Resumable `forward` (`init_forward_progress`/`progress_forward_once`) bridges
+ * two transports — `this` (the prev/recv side) and `fwd` (the next/send side).
+ * Its combined yield-point stage is stored **only in the prev-recv slot's**
+ * `activeStage` and takes the `Fwd*` values below (the three wait points plus
+ * `Done`). The `Fwd*` stages are durable yield points only: the non-idempotent
+ * side effects (the fused `CopyOp::forward`, the prev SLOT_FREE signal, and the
+ * fwd RDMA put) run *during* a transition and the new stage is persisted only
+ * *after* them, so a re-entry never replays a side effect. The **next-send
+ * slot** stays `Busy` for the whole forward (a non-resumable ownership marker,
+ * exactly as the blocking `forward`/`send`/`recv` use it) and is cleared to
+ * `Done` only when the entire forward completes. The send/recv progress
+ * validators/transition table deliberately reject every `Fwd*` value, and the
+ * forward path uses its own dedicated validator/transition table.
  */
 enum class IbSendRecvProgressStage : uint8_t {
   Done,
@@ -431,6 +445,12 @@ enum class IbSendRecvProgressStage : uint8_t {
   WaitSlotFree,
   WaitDataReady,
   Busy,
+  // Resumable-forward yield points (prev-recv slot only). Appended after the
+  // existing values so the on-HBM encoding of Done/Wait*/Busy is unchanged.
+  FwdWaitDataReady, // step 1: waiting on prev DATA_READY (no side effect yet)
+  FwdWaitNicDone, // step 2: DATA_READY cleared; waiting on fwd NIC_DONE
+  FwdWaitSlotFree, // steps 3-4 done (reduce + prev SLOT_FREE); waiting fwd
+                   // SLOT_FREE before the put
 };
 
 } // namespace detail

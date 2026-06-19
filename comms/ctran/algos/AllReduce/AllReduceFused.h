@@ -18,6 +18,7 @@ bool is_supported_fused_type(commDataType_t datatype);
 int compute_p_min(CtranComm* comm);
 int get_num_block_cap();
 int compute_num_blocks(size_t totalBytes, int cap);
+int compute_num_blocks_ring(size_t segmentBytes, int cap);
 
 void* compute_phase2_buf(
     void* recvbuff,

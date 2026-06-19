@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
+#include <memory>
+#include <vector>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/Checks.h"
@@ -40,6 +43,45 @@ int compute_num_blocks(size_t totalBytes, int cap) {
     numBlocks--;
   }
   return numBlocks;
+}
+
+int compute_num_blocks_ring(size_t segmentBytes, int cap) {
+  // Measurement-only override (env NCCL_CTRAN_ALLREDUCE_RING_FORCE_NBLOCKS,
+  // unset/<=0 = disabled). When > 0, force exactly that many blocks,
+  // cap-bounded, bypassing BOTH the size-tier below AND compute_num_blocks's
+  // small-size reduction (routing a forced value through compute_num_blocks
+  // would collapse e.g. 32 -> 1 at 64K, defeating a block sweep). Read via
+  // getenv rather than a CVAR: this is a debug/retuning knob (used to derive
+  // and re-confirm the tiers below), and a CVAR would force a cvars-wide
+  // recompile. Production behavior is unchanged when unset.
+  if (const char* forcedEnv =
+          std::getenv("NCCL_CTRAN_ALLREDUCE_RING_FORCE_NBLOCKS")) {
+    const int forced = std::atoi(forcedEnv);
+    if (forced > 0) {
+      return std::min(cap, forced);
+    }
+  }
+  // Size-aware tier on Phase-2 owner-segment bytes. The hierarchical ring does
+  // 2(W-1) serialized IB steps per pipeline window; fewer blocks at
+  // small/medium sizes amortize per-WQE overhead, while large segments use the
+  // cap. Keyed on segmentBytes (not totalBytes) because Phase 2 operates per
+  // owner segment (segmentBytes ~= totalBytes/pMin in HYBRID). Tiers validated
+  // by a force-NBLOCKS busbw sweep (8xH100, nolocal/IB_ONLY, W=8, fp32, OOP):
+  // nb=4 best at 64K-1M, nb=8 best at 4M-16M, nb=16 best at >=64M (nb=32 gives
+  // no further gain), and over-blocking regresses (e.g. at 16M nb=8=25 vs
+  // nb=16=19 GB/s). Caveats: H100/fp32/nolocal only; HYBRID (pMin>1), fp16, and
+  // block-count x W not swept. The per-block threshold and reduction loop live
+  // in compute_num_blocks (single source of truth); this just caps the tier
+  // ceiling before delegating.
+  int tier;
+  if (segmentBytes <= (1ull << 20)) { // <= 1 MB
+    tier = 4;
+  } else if (segmentBytes <= (32ull << 20)) { // <= 32 MB
+    tier = 8;
+  } else {
+    tier = 16;
+  }
+  return compute_num_blocks(segmentBytes, std::min(cap, tier));
 }
 
 void* compute_phase2_buf(

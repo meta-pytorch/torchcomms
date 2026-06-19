@@ -94,4 +94,31 @@ void runTestWaitSignalNoTimeout(
     uint32_t timeout_ms,
     bool* d_success);
 
+// =============================================================================
+// Resumable-forward (init_forward_progress / progress_forward_once) unit tests
+// =============================================================================
+
+#ifndef __HIP_PLATFORM_AMD__
+// Drive a single no-NIC resumable-forward scenario over caller-provided device
+// buffers (two transport handles with populated IbSendRecvState, empty NIC
+// span). scenario: 0 = zero-byte init -> Done; 1 = init state layout; 2 =
+// DATA_READY yield (recvSignal[0] must be preset just below the chunk's
+// streamEnd). Writes false to *d_success on any mismatch.
+void runTestForwardProgressNoQp(
+    IbSendRecvState::ProgressSlot* recvState,
+    uint64_t* recvSignal,
+    uint64_t* recvCounter,
+    char* recvStaging,
+    IbSendRecvState::ProgressSlot* fwdState,
+    uint64_t* fwdSignal,
+    uint64_t* fwdCounter,
+    char* fwdStaging,
+    int maxGroups,
+    int pipelineDepth,
+    std::size_t dataBufferSize,
+    int scenario,
+    std::size_t nbytes,
+    bool* d_success);
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests

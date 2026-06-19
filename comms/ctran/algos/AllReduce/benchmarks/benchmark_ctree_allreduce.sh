@@ -23,7 +23,8 @@ Usage: benchmark_ctree_allreduce.sh [options]
 Options:
   --world-sizes CSV   World sizes to run locally (default: 1,2,3,4,5,6,7,8)
   --topologies CSV    NVL_ONLY,IB_ONLY, or both (default: NVL_ONLY,IB_ONLY)
-  --algorithms CSV    nccl,nccl_tree,nccl_tree_simple,ctree (default: nccl_tree,nccl_tree_simple,ctree)
+  --algorithms CSV    nccl,nccl_tree,nccl_tree_simple,ctree,cthierarchical_ring (default: nccl_tree,nccl_tree_simple,ctree)
+                      (despite the script name, it is multi-algorithm)
   --arch NAME         auto,h100,gb200,gb300 (default: auto)
   --min-bytes VALUE   nccl_allreduce_perf -b value (default: 4)
   --max-bytes VALUE   nccl_allreduce_perf -e value (default: 1G)
@@ -113,6 +114,13 @@ build_perf_binary() {
   )
   if [[ "$arch" == "gb200" || "$arch" == "gb300" ]]; then
     build_flags+=(-c fbcode.platform010-aarch64_clang=17)
+  fi
+  if [[ -n "${USE_MCCL_ADAPTER:-}" ]]; then
+    # Link the MCCL adapter so the binary exercises the LOCAL comms/ctran
+    # AllReduce code (e.g. cthierarchical_ring and the measurement-only
+    # NCCL_CTRAN_ALLREDUCE_RING_FORCE_NBLOCKS override) instead of the pinned
+    # use_ncclx=stable build. Required when sweeping uncommitted kernel changes.
+    build_flags+=(-c hpc_comms.nccl_testonly_override=nccl_adapter -c nccl.enable_profapi=True)
   fi
   if ! buck2 build "${build_flags[@]}" \
     "$BUCK_TARGET" --show-full-json-output >"$json_file"; then
@@ -226,12 +234,27 @@ run_one() {
     fi
   fi
 
-  if [[ "$algorithm" == "ctree" ]]; then
+  # ctree and cthierarchical_ring share the same CTran selection env; the
+  # algorithm name is the NCCL_ALLREDUCE_ALGO CVAR token for both.
+  if [[ "$algorithm" == "ctree" || "$algorithm" == "cthierarchical_ring" ]]; then
     envs+=("NCCL_CTRAN_ENABLE=1")
-    envs+=("NCCL_ALLREDUCE_ALGO=ctree")
+    envs+=("NCCL_ALLREDUCE_ALGO=${algorithm}")
     envs+=("NCCL_CTRAN_USE_PIPES=1")
     envs+=("NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE=${NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE:-33554432}")
     envs+=("NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1")
+  fi
+
+  # Forward optional ring-tuning knobs (only when set in the caller's env) so a
+  # parameter sweep can vary block count / pipeline / QP depth without further
+  # script edits. Applies to cthierarchical_ring only.
+  if [[ "$algorithm" == "cthierarchical_ring" ]]; then
+    local knob
+    for knob in NCCL_CTRAN_ALLREDUCE_RING_FORCE_NBLOCKS NCCL_CTRAN_MAX_NBLOCKS \
+      NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH NCCL_CTRAN_IBGDA_QP_DEPTH; do
+      if [[ -n "${!knob:-}" ]]; then
+        envs+=("${knob}=${!knob}")
+      fi
+    done
   fi
 
   local -a mpi_envs=()
@@ -246,12 +269,21 @@ run_one() {
     echo "== ${algorithm} ${topology} np=${np} arch=${arch} size=${min_bytes}..${max_bytes} =="
   fi
 
+  # cthierarchical_ring is fp32/sum-only; its support gate does NOT check
+  # dtype/op, so a non-fp32/non-sum run passes the gate then hard-fails inside
+  # ctranAllReduceHierarchicalRing. Pin -d float -o sum (-c 1 = explicit check).
+  # Leave ctree/nccl* on binary defaults to preserve current behavior.
+  local -a dtype_args=()
+  if [[ "$algorithm" == "cthierarchical_ring" ]]; then
+    dtype_args+=("-d" "float" "-o" "sum" "-c" "1")
+  fi
+
   local -a cmd=(
     env "${envs[@]}" "$MPI_BIN" --allow-run-as-root --bind-to none
     --mca btl "^openib" -np "$np" -host "localhost:${np}"
     "${mpi_envs[@]}"
     "$perf_bin" -b "$min_bytes" -e "$max_bytes" -f "$FACTOR" -g 1
-    -n "$ITERS" -w "$WARMUP"
+    -n "$ITERS" -w "$WARMUP" ${dtype_args[@]+"${dtype_args[@]}"}
   )
 
   print_command "${cmd[@]}"
@@ -277,7 +309,7 @@ main() {
 
   local -a algorithm_values
   read_csv_values "$ALGORITHMS" algorithm_values
-  validate_csv_values "algorithm" algorithm_values nccl nccl_tree nccl_tree_simple ctree
+  validate_csv_values "algorithm" algorithm_values nccl nccl_tree nccl_tree_simple ctree cthierarchical_ring
 
   local arch
   arch="$(detect_arch)"

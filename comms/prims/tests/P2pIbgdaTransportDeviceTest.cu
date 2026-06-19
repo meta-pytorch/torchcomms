@@ -416,4 +416,229 @@ void runTestWaitSignalNoTimeout(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+// =============================================================================
+// Resumable-forward (init_forward_progress / progress_forward_once) unit tests
+//
+// These exercise ONLY the no-NIC paths: zero-byte init, init state layout, and
+// the first DATA_READY yield (which returns before any signal/put). The
+// NIC-touching paths (CopyOp::forward, prev SLOT_FREE signal, fwd put, and the
+// NIC_DONE/SLOT_FREE backpressure waits — which only arise once the pipeline
+// fills) require real QPs and are covered by the distributed
+// recv_forward_chain_test. Guarded NVIDIA-only because progress_forward_once
+// carries a dependent `static_assert(sizeof(CopyOp)==0)` on AMD.
+// =============================================================================
+#ifndef __HIP_PLATFORM_AMD__
+namespace {
+
+// Build a transport handle over caller-provided device buffers, with a
+// populated IbSendRecvState but an empty NIC span (no QPs).
+__device__ __forceinline__ P2pIbgdaTransportDevice makeUnitForwardTransport(
+    IbSendRecvState::ProgressSlot* state,
+    uint64_t* signalBuf,
+    uint64_t* counterBuf,
+    char* sendStaging,
+    char* recvStaging,
+    int maxGroups,
+    int pipelineDepth,
+    std::size_t dataBufferSize) {
+  // Aggregate (designated) init: DeviceSpan has a const data member, so its
+  // copy-assignment is deleted — `s.state = ...` won't compile; set every field
+  // at construction instead. Designators are in declaration order.
+  IbSendRecvState s = {
+      .sendStagingPtr = sendStaging,
+      .recvStagingPtr = recvStaging,
+      .localSignalBuf = IbgdaLocalBuffer(signalBuf, NetworkLKeys{}),
+      .localCounterBuf = IbgdaLocalBuffer(counterBuf, NetworkLKeys{}),
+      .state = DeviceSpan<IbSendRecvState::ProgressSlot>(
+          state, static_cast<uint32_t>(2 * maxGroups)),
+      .maxGroups = maxGroups,
+      .pipelineDepth = pipelineDepth,
+      .dataBufferSize = dataBufferSize,
+  };
+  return P2pIbgdaTransportDevice(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      IbgdaLocalBuffer{},
+      IbgdaLocalBuffer{},
+      /*numSignalSlots=*/0,
+      /*numCounterSlots=*/0,
+      s);
+}
+
+} // namespace
+
+// scenario: 0 = zero-byte init -> Done; 1 = init state layout; 2 = DATA_READY
+// yield (recvSignal[groupId] preset just below the chunk's streamEnd by host).
+__global__ void testForwardProgressNoQp(
+    IbSendRecvState::ProgressSlot* recvState,
+    uint64_t* recvSignal,
+    uint64_t* recvCounter,
+    char* recvStaging,
+    IbSendRecvState::ProgressSlot* fwdState,
+    uint64_t* fwdSignal,
+    uint64_t* fwdCounter,
+    char* fwdStaging,
+    int maxGroups,
+    int pipelineDepth,
+    std::size_t dataBufferSize,
+    int scenario,
+    std::size_t nbytes,
+    bool* success) {
+  auto group = make_block_group();
+  P2pIbgdaTransportDevice self = makeUnitForwardTransport(
+      recvState,
+      recvSignal,
+      recvCounter,
+      /*sendStaging=*/recvStaging,
+      /*recvStaging=*/recvStaging,
+      maxGroups,
+      pipelineDepth,
+      dataBufferSize);
+  P2pIbgdaTransportDevice fwd = makeUnitForwardTransport(
+      fwdState,
+      fwdSignal,
+      fwdCounter,
+      /*sendStaging=*/fwdStaging,
+      /*recvStaging=*/fwdStaging,
+      maxGroups,
+      pipelineDepth,
+      dataBufferSize);
+
+  // Self's recv slot index and fwd's send slot index for group_id 0.
+  const int recvSlotIdx = maxGroups; // recv base + group_id(0)
+  const int sendSlotIdx = 0; // send base + group_id(0)
+
+  if (scenario == 0) {
+    self.init_forward_progress(group, fwd, /*nbytes=*/0, maxGroups);
+    group.sync();
+    IbgdaSendRecvProgressStatus st = self.progress_forward_once(
+        group, nullptr, fwd, /*nbytes=*/0, maxGroups);
+    if (group.is_leader()) {
+      if (recvState[recvSlotIdx].activeStage !=
+          detail::IbSendRecvProgressStage::Done) {
+        *success = false;
+      }
+      if (fwdState[sendSlotIdx].activeStage !=
+          detail::IbSendRecvProgressStage::Done) {
+        *success = false;
+      }
+      if (st != IbgdaSendRecvProgressStatus::Done) {
+        *success = false;
+      }
+    }
+  } else if (scenario == 1) {
+    self.init_forward_progress(group, fwd, nbytes, maxGroups);
+    group.sync();
+    if (group.is_leader()) {
+      const auto& rs = recvState[recvSlotIdx];
+      const auto& fs = fwdState[sendSlotIdx];
+      if (rs.activeStage != detail::IbSendRecvProgressStage::FwdWaitDataReady) {
+        *success = false;
+      }
+      if (rs.activeNextByte != 0 || rs.activeBaseStep != 0) {
+        *success = false;
+      }
+      if (rs.nextStep != static_cast<int64_t>(nbytes)) {
+        *success = false; // recv cursor reserved at init
+      }
+      if (fs.activeStage != detail::IbSendRecvProgressStage::Busy) {
+        *success = false;
+      }
+      if (fs.activeNextByte != 0 || fs.activeBaseStep != 0) {
+        *success = false;
+      }
+      if (fs.nextStep != static_cast<int64_t>(nbytes)) {
+        *success = false; // send cursor reserved at init (lockstep base)
+      }
+    }
+  } else if (scenario == 2) {
+    // scenario 2: DATA_READY not yet at the chunk's streamEnd -> Waiting, no
+    // side effect, stage unchanged.
+    self.init_forward_progress(group, fwd, nbytes, maxGroups);
+    group.sync();
+    IbgdaSendRecvProgressStatus st =
+        self.progress_forward_once(group, nullptr, fwd, nbytes, maxGroups);
+    if (group.is_leader()) {
+      if (st != IbgdaSendRecvProgressStatus::Waiting) {
+        *success = false;
+      }
+      if (recvState[recvSlotIdx].activeStage !=
+          detail::IbSendRecvProgressStage::FwdWaitDataReady) {
+        *success = false;
+      }
+      if (recvState[recvSlotIdx].activeNextByte != 0) {
+        *success = false;
+      }
+    }
+  } else {
+    // scenario 3: DATA_READY satisfied (recvSignal preset >= streamEnd) but fwd
+    // NIC_DONE not ready -> the call advances FwdWaitDataReady ->
+    // FwdWaitNicDone (a side-effect-free transition) and returns Progressed
+    // with the new stage persisted. To make the NIC_DONE wait actually run on
+    // the first chunk (otherwise skipped while the pipeline is not full),
+    // pre-advance the fwd send slot's reserved base so fwdStreamEnd >
+    // fwdPipelineBytes. No NIC: the counter/signal reads are plain memory; the
+    // call returns before any put.
+    const std::size_t perBlockSlot =
+        (dataBufferSize / maxGroups) & ~static_cast<std::size_t>(15);
+    const std::size_t fwdPipelineBytes =
+        perBlockSlot * static_cast<std::size_t>(pipelineDepth);
+    if (group.is_leader()) {
+      fwdState[sendSlotIdx].nextStep =
+          static_cast<int64_t>(8 * fwdPipelineBytes);
+    }
+    group.sync();
+    self.init_forward_progress(group, fwd, nbytes, maxGroups);
+    group.sync();
+    IbgdaSendRecvProgressStatus st =
+        self.progress_forward_once(group, nullptr, fwd, nbytes, maxGroups);
+    if (group.is_leader()) {
+      if (st != IbgdaSendRecvProgressStatus::Progressed) {
+        *success = false;
+      }
+      if (recvState[recvSlotIdx].activeStage !=
+          detail::IbSendRecvProgressStage::FwdWaitNicDone) {
+        *success = false;
+      }
+      if (recvState[recvSlotIdx].activeNextByte != 0) {
+        *success = false;
+      }
+    }
+  }
+}
+
+void runTestForwardProgressNoQp(
+    IbSendRecvState::ProgressSlot* recvState,
+    uint64_t* recvSignal,
+    uint64_t* recvCounter,
+    char* recvStaging,
+    IbSendRecvState::ProgressSlot* fwdState,
+    uint64_t* fwdSignal,
+    uint64_t* fwdCounter,
+    char* fwdStaging,
+    int maxGroups,
+    int pipelineDepth,
+    std::size_t dataBufferSize,
+    int scenario,
+    std::size_t nbytes,
+    bool* d_success) {
+  testForwardProgressNoQp<<<1, 128>>>(
+      recvState,
+      recvSignal,
+      recvCounter,
+      recvStaging,
+      fwdState,
+      fwdSignal,
+      fwdCounter,
+      fwdStaging,
+      maxGroups,
+      pipelineDepth,
+      dataBufferSize,
+      scenario,
+      nbytes,
+      d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests

@@ -392,6 +392,128 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
 
 #endif // !__HIP_PLATFORM_AMD__
 
+// =============================================================================
+// Resumable-forward (init_forward_progress / progress_forward_once) unit tests
+//
+// No-NIC coverage only: zero-byte init, init state layout, and the first
+// DATA_READY yield. The NIC-touching reduce/signal/put paths and the
+// NIC_DONE/SLOT_FREE backpressure waits need real QPs and live in the
+// distributed recv_forward_chain_test (ForwardWithCopyProgress / etc.).
+// =============================================================================
+#ifndef __HIP_PLATFORM_AMD__
+namespace {
+
+// maxGroups=1, pipelineDepth=2, dataBufferSize=256 => perBlockSlot=256, so a
+// single 128-byte chunk has streamEnd=128 (< pipelineBytes=512: the
+// backpressure waits are skipped, keeping every path no-NIC).
+void runForwardNoQpScenario(int scenario, std::size_t nbytes) {
+  using ProgressSlot = IbSendRecvState::ProgressSlot;
+  constexpr int kMaxGroups = 1;
+  constexpr int kPipelineDepth = 2;
+  constexpr std::size_t kDataBufferSize = 256;
+  const std::size_t kStateBytes = 2 * kMaxGroups * sizeof(ProgressSlot);
+  const std::size_t kSignalBytes = 2 * kMaxGroups * sizeof(uint64_t);
+  const std::size_t kCounterBytes = kMaxGroups * sizeof(uint64_t);
+  const std::size_t kStagingBytes = kPipelineDepth * kDataBufferSize;
+
+  DeviceBuffer recvStateBuf(kStateBytes);
+  DeviceBuffer recvSignalBuf(kSignalBytes);
+  DeviceBuffer recvCounterBuf(kCounterBytes);
+  DeviceBuffer recvStagingBuf(kStagingBytes);
+  DeviceBuffer fwdStateBuf(kStateBytes);
+  DeviceBuffer fwdSignalBuf(kSignalBytes);
+  DeviceBuffer fwdCounterBuf(kCounterBytes);
+  DeviceBuffer fwdStagingBuf(kStagingBytes);
+
+  // Zero everything: zeroed ProgressSlot => activeStage Done (idle), nextStep
+  // 0.
+  CUDACHECK_TEST(cudaMemset(recvStateBuf.get(), 0, kStateBytes));
+  CUDACHECK_TEST(cudaMemset(recvSignalBuf.get(), 0, kSignalBytes));
+  CUDACHECK_TEST(cudaMemset(recvCounterBuf.get(), 0, kCounterBytes));
+  CUDACHECK_TEST(cudaMemset(recvStagingBuf.get(), 0, kStagingBytes));
+  CUDACHECK_TEST(cudaMemset(fwdStateBuf.get(), 0, kStateBytes));
+  CUDACHECK_TEST(cudaMemset(fwdSignalBuf.get(), 0, kSignalBytes));
+  CUDACHECK_TEST(cudaMemset(fwdCounterBuf.get(), 0, kCounterBytes));
+  CUDACHECK_TEST(cudaMemset(fwdStagingBuf.get(), 0, kStagingBytes));
+
+  // scenario 2: preset DATA_READY (recv signal slot group_id 0) just below the
+  // chunk's streamEnd (== nbytes for a single sub-pipeline chunk) so the first
+  // progress call yields Waiting without touching a NIC.
+  if (scenario == 2) {
+    const uint64_t dataReady = static_cast<uint64_t>(nbytes) - 1;
+    CUDACHECK_TEST(cudaMemcpy(
+        recvSignalBuf.get(),
+        &dataReady,
+        sizeof(uint64_t),
+        cudaMemcpyHostToDevice));
+  } else if (scenario == 3) {
+    // DATA_READY satisfied (>= streamEnd == nbytes for the first chunk) so the
+    // call clears DATA_READY and reaches the (unsatisfied) NIC_DONE wait.
+    const uint64_t dataReady = static_cast<uint64_t>(nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        recvSignalBuf.get(),
+        &dataReady,
+        sizeof(uint64_t),
+        cudaMemcpyHostToDevice));
+  }
+
+  DeviceBuffer successBuf(sizeof(bool));
+  auto* d_success = static_cast<bool*>(successBuf.get());
+  bool initSuccess = true;
+  CUDACHECK_TEST(cudaMemcpy(
+      d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
+
+  runTestForwardProgressNoQp(
+      static_cast<ProgressSlot*>(recvStateBuf.get()),
+      static_cast<uint64_t*>(recvSignalBuf.get()),
+      static_cast<uint64_t*>(recvCounterBuf.get()),
+      static_cast<char*>(recvStagingBuf.get()),
+      static_cast<ProgressSlot*>(fwdStateBuf.get()),
+      static_cast<uint64_t*>(fwdSignalBuf.get()),
+      static_cast<uint64_t*>(fwdCounterBuf.get()),
+      static_cast<char*>(fwdStagingBuf.get()),
+      kMaxGroups,
+      kPipelineDepth,
+      kDataBufferSize,
+      scenario,
+      nbytes,
+      d_success);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  bool success = false;
+  CUDACHECK_TEST(
+      cudaMemcpy(&success, d_success, sizeof(bool), cudaMemcpyDeviceToHost));
+  EXPECT_TRUE(success);
+}
+
+} // namespace
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressZeroByteInit) {
+  // Zero-byte init marks both slots Done; progress returns Done immediately.
+  runForwardNoQpScenario(/*scenario=*/0, /*nbytes=*/0);
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressInitState) {
+  // init reserves both byte cursors, sets prev-recv slot FwdWaitDataReady and
+  // next-send slot Busy, with lockstep zero activeNextByte/activeBaseStep.
+  runForwardNoQpScenario(/*scenario=*/1, /*nbytes=*/128);
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressDataReadyYield) {
+  // DATA_READY below the chunk streamEnd => Waiting, no side effect, stage
+  // unchanged (also validates the recv-side geometry / streamEnd computation).
+  runForwardNoQpScenario(/*scenario=*/2, /*nbytes=*/128);
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressNicDoneYield) {
+  // DATA_READY satisfied but fwd NIC_DONE not ready => the call transitions
+  // FwdWaitDataReady -> FwdWaitNicDone and returns Progressed (not Waiting),
+  // with the new stage persisted. Asserts the return-status contract for a
+  // side-effect-free transition without needing a NIC.
+  runForwardNoQpScenario(/*scenario=*/3, /*nbytes=*/128);
+}
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests
 
 int main(int argc, char** argv) {
