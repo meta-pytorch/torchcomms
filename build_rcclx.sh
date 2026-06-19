@@ -25,7 +25,7 @@ function do_cmake_build() {
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_CXX_STANDARD=20 \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
-    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1" \
+    -DCMAKE_CXX_FLAGS="-DFMT_HEADER_ONLY=1 ${CXXFLAGS:-}" \
     $extra_flags \
     -S "${source_dir}"
   ninja
@@ -393,8 +393,18 @@ export LDFLAGS="${LDFLAGS:-} -Wl,--version-script=/tmp/rccl_hide_gflags.lds"
 mkdir -p "$BUILDDIR"
 pushd "${NCCL_HOME}"
 export ROCM_PATH="${ROCM_PATH:-/usr/local/fbcode/platform010/lib/rocm-7.0}"
-export CXX="${CXX:-$ROCM_PATH/lib/llvm/bin/amdclang++}"
-export CC="${CC:-$ROCM_PATH/lib/llvm/bin/amdclang}"
+# RCCL's CMakeLists (projects/rccl/CMakeLists.txt) requires CMAKE_CXX_COMPILER to
+# be amdclang++/clang++/hipcc. Drop the conda-activated host compiler
+# (x86_64-conda-linux-gnu-c++/-gcc) that leaks in on local builds and trips the
+# "RCCL can be built only with hipcc or amdclang++" check. Any other env-provided
+# CXX/CC -- including the remote build harness's injected ROCm toolchain -- is
+# honored exactly as before.
+case "$(basename "${CXX:-}")" in
+  *-conda-linux-gnu-c++|"") export CXX="$ROCM_PATH/lib/llvm/bin/amdclang++" ;;
+esac
+case "$(basename "${CC:-}")" in
+  *-conda-linux-gnu-cc|*-conda-linux-gnu-gcc|"") export CC="$ROCM_PATH/lib/llvm/bin/amdclang" ;;
+esac
 
 
 function build_rccl {

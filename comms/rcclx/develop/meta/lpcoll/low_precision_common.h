@@ -13,10 +13,57 @@
 #include "low_precision_kernels.h"
 #include "low_precision_utility.h"
 
-// Helper function to check if low precision FP8 E4M3 is enabled
+// Returns true if the named environment variable is set to "1".
+inline bool isLowPrecisionEnvFlagSet(const char* envName) {
+  const char* value = getenv(envName);
+  return (value && strcmp(value, "1") == 0);
+}
+
+// Global switch: enables FP8 E4M3 low precision for ALL collectives.
 inline bool isLowPrecisionFp8E4M3Enabled() {
-  const char* lowPrecisionEnable = getenv("RCCL_LOW_PRECISION_ENABLE");
-  return (lowPrecisionEnable && strcmp(lowPrecisionEnable, "1") == 0);
+  return isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE");
+}
+
+// Forces the per-comm low precision buffer pool to be pre-allocated at comm
+// init regardless of whether any LP collective is currently enabled. The pool
+// must exist before any LP collective runs (e.g. it cannot be allocated during
+// CUDA graph capture), so setting this lets the per-collective LP switches be
+// toggled dynamically at runtime without restarting the job.
+inline bool isLowPrecisionInitEnabled() {
+  return isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE_INIT");
+}
+
+// Per-collective switches. A collective uses low precision if the global
+// switch (RCCL_LOW_PRECISION_ENABLE) OR its dedicated switch is set.
+inline bool isLowPrecisionFp8E4M3AllGatherEnabled() {
+  return isLowPrecisionFp8E4M3Enabled() ||
+      isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE_ALLGATHER");
+}
+
+inline bool isLowPrecisionFp8E4M3AllReduceEnabled() {
+  return isLowPrecisionFp8E4M3Enabled() ||
+      isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE_ALLREDUCE");
+}
+
+inline bool isLowPrecisionFp8E4M3ReduceScatterEnabled() {
+  return isLowPrecisionFp8E4M3Enabled() ||
+      isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE_REDUCESCATTER");
+}
+
+inline bool isLowPrecisionFp8E4M3AllToAllEnabled() {
+  return isLowPrecisionFp8E4M3Enabled() ||
+      isLowPrecisionEnvFlagSet("RCCL_LOW_PRECISION_ENABLE_ALLTOALL");
+}
+
+// True if low precision is enabled for the whole comm (global switch) or for
+// any individual collective. Used to decide whether the per-comm low precision
+// buffer pool must be pre-allocated at init time (required for CUDA graph
+// compatibility, since the pool cannot be allocated during graph capture).
+inline bool isAnyLowPrecisionFp8E4M3Enabled() {
+  return isLowPrecisionFp8E4M3AllGatherEnabled() ||
+      isLowPrecisionFp8E4M3AllReduceEnabled() ||
+      isLowPrecisionFp8E4M3ReduceScatterEnabled() ||
+      isLowPrecisionFp8E4M3AllToAllEnabled();
 }
 
 /**

@@ -443,7 +443,7 @@ arguments:
 
 **Backend-Specific Hints:**
 
-- **"high_priority_stream"**: Set to "true" to enable high priority CUDA stream
+- **"is_high_priority_stream"**: Set to "true" to enable high priority CUDA stream
   for NCCL operations (default: not set, equivalent to false)
 
 #### Communicator Options
@@ -597,7 +597,7 @@ comm = torchcomms.new_comm(
     timeout=torch.timedelta(seconds=60),
     abort_process_on_timeout_or_error=False,
     hints={
-        "high_priority_stream": "true",
+        "is_high_priority_stream": "true",
         "backend_option": "value"
     },
 )

@@ -1120,7 +1120,7 @@ Args:
          const std::string& name,
          std::optional<bool> abort_process_on_timeout_or_error,
          std::optional<std::chrono::milliseconds> timeout,
-         std::optional<bool> high_priority_stream,
+         std::optional<bool> is_high_priority_stream,
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
          bool enable_reconfigure,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
@@ -1146,8 +1146,8 @@ Args:
           if (timeout) {
             opts.timeout = *timeout;
           }
-          if (high_priority_stream) {
-            opts.high_priority_stream = *high_priority_stream;
+          if (is_high_priority_stream) {
+            opts.is_high_priority_stream = *is_high_priority_stream;
           }
           if (store) {
             opts.store = *store;
@@ -1182,7 +1182,7 @@ Args:
   name (str): The name of the communicator. This must be unique within the process.
   abort_process_on_timeout_or_error (bool): Whether to abort process on timeout or error.
   timeout (timedelta): Timeout for initialization.
-  high_priority_stream (bool): Whether to use high priority stream.
+  is_high_priority_stream (bool): Whether to use high priority stream.
   store (torch.distributed.Store): Store used to initialize the communicator between processes.
   enable_reconfigure (bool): If True, enables reconfigure() for fault tolerance.
       With reconfigure enabled, the communicator is not initialized until
@@ -1194,7 +1194,7 @@ Args:
       py::arg("name"),
       py::arg("abort_process_on_timeout_or_error") = std::nullopt,
       py::arg("timeout") = std::nullopt,
-      py::arg("high_priority_stream") = std::nullopt,
+      py::arg("is_high_priority_stream") = std::nullopt,
       py::arg("store") = nullptr,
       py::arg("enable_reconfigure") = false,
       py::arg("hints") = std::nullopt);

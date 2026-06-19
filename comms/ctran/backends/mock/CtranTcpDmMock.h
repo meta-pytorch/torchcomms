@@ -91,6 +91,10 @@ class CtranTcpDm {
     return commInvalidUsage;
   }
 
+  void abortOutstanding(const char* /*reason*/) {}
+
+  void cancelQueuedRecv(CtranTcpDmRequest* /*req*/) {}
+
   // Export the location of GPU kernel consumer queues.
   commResult_t
   prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool = nullptr) {

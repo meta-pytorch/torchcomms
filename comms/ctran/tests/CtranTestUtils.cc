@@ -23,7 +23,9 @@
 
 namespace ctran {
 
-std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(
+    int devId,
+    bool abortEnabled) {
   CUDACHECK_TEST(cudaSetDevice(devId));
 
   CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
@@ -33,7 +35,8 @@ std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
   std::string commDesc = fmt::format("DummyCtranTestComm-{}", 0);
 
-  auto result = createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc);
+  auto result =
+      createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc, abortEnabled);
 
   // Create a TestCtranCommRAII that also holds the bootstrap
   auto raii = std::make_unique<TestCtranCommRAII>(std::move(result.ctranComm));

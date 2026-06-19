@@ -22,23 +22,23 @@ TEST_F(HintParsingTest, DefaultConfigValues) {
   const auto options = createOptions();
   comm->init(*device_, "test_defaults", options);
 
-  EXPECT_FALSE(comm->testGetHighPriorityStream());
+  EXPECT_FALSE(comm->testGetIsHighPriorityStream());
   EXPECT_EQ(comm->testGetMaxEventPoolSize(), 1000);
 
   comm->finalize();
 }
 
-TEST_F(HintParsingTest, HighPriorityStreamHint) {
+TEST_F(HintParsingTest, IsHighPriorityStreamHint) {
   setupRankAndSize(0, 2);
   xpu_mock_->setupDefaultBehaviors();
   xccl_mock_->setupDefaultBehaviors();
 
   auto comm = createMockedTorchComm();
   auto options = createOptions();
-  options.hints["high_priority_stream"] = "true";
+  options.hints["is_high_priority_stream"] = "true";
   comm->init(*device_, "test_high_priority", options);
 
-  EXPECT_TRUE(comm->testGetHighPriorityStream());
+  EXPECT_TRUE(comm->testGetIsHighPriorityStream());
 
   comm->finalize();
 }
@@ -65,11 +65,11 @@ TEST_F(HintParsingTest, AllHintsCombined) {
 
   auto comm = createMockedTorchComm();
   auto options = createOptions();
-  options.hints["high_priority_stream"] = "true";
+  options.hints["is_high_priority_stream"] = "true";
   options.hints["max_event_pool_size"] = "2000";
   comm->init(*device_, "test_all_hints", options);
 
-  EXPECT_TRUE(comm->testGetHighPriorityStream());
+  EXPECT_TRUE(comm->testGetIsHighPriorityStream());
   EXPECT_EQ(comm->testGetMaxEventPoolSize(), 2000);
 
   comm->finalize();
@@ -87,7 +87,7 @@ TEST_F(HintParsingTest, UnknownHintsIgnored) {
   comm->init(*device_, "test_unknown_hints", options);
 
   // Defaults unchanged
-  EXPECT_FALSE(comm->testGetHighPriorityStream());
+  EXPECT_FALSE(comm->testGetIsHighPriorityStream());
   EXPECT_EQ(comm->testGetMaxEventPoolSize(), 1000);
 
   comm->finalize();
