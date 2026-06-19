@@ -106,45 +106,52 @@ static commResult_t putSignalImpl(
       reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
       targetDispNbytes);
 
-  // Get registration handle for local send buffer
+  // Skip data transfer if count is 0 (signal-only, e.g. ready barrier)
   void* localMemHdl = nullptr;
   bool localReg = false;
-  FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      op->putsignal.sendbuff, putSize, &localMemHdl, &localReg));
+  if (putSize > 0) {
+    // Get registration handle for local send buffer
+    FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
+        op->putsignal.sendbuff, putSize, &localMemHdl, &localReg));
 
-  CLOGF_TRACE(
-      COLL,
-      "putSignalImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}, signalAddr {} signalVal {}",
-      op->putsignal.sendbuff,
-      dstPtr,
-      win->remWinInfo[peerRank].dataAddr,
-      targetDispNbytes,
-      putSize,
-      (void*)op->putsignal.signalAddr,
-      op->putsignal.signalVal);
+    CLOGF_TRACE(
+        COLL,
+        "putSignalImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}, signalAddr {}",
+        op->putsignal.sendbuff,
+        dstPtr,
+        win->remWinInfo[peerRank].dataAddr,
+        targetDispNbytes,
+        putSize,
+        (void*)op->putsignal.signalAddr);
 
-  CtranMapperRequest* req = nullptr;
+    CtranMapperRequest* req = nullptr;
 
-  FB_COMMCHECK(comm->ctran_->mapper->iput(
-      op->putsignal.sendbuff,
-      dstPtr,
-      putSize,
-      peerRank,
-      CtranMapperConfig{
-          .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
-      },
-      &req));
+    FB_COMMCHECK(comm->ctran_->mapper->iput(
+        op->putsignal.sendbuff,
+        dstPtr,
+        putSize,
+        peerRank,
+        CtranMapperConfig{
+            .memHdl_ = localMemHdl,
+            .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
+        },
+        &req));
 
-  auto putReq = std::unique_ptr<CtranMapperRequest>(req);
-  FB_COMMCHECK(comm->ctran_->mapper->waitRequest(putReq.get()));
+    auto putReq = std::unique_ptr<CtranMapperRequest>(req);
+    FB_COMMCHECK(comm->ctran_->mapper->waitRequest(putReq.get()));
+  }
 
   CtranMapperRequest signalReq = CtranMapperRequest();
   if (op->putsignal.signalAddr != nullptr) {
+    // The kernel has already incremented the per-peer counter
+    // (KernelWaitGpeTerminate serializes kernel and GPE). Acquire pairs
+    // with the kernel's system-scope release.
+    uint64_t signalVal =
+        __atomic_load_n(op->putsignal.signalCounter, __ATOMIC_ACQUIRE);
     // flush the iput to make sure the signal is sent after the data
     FB_COMMCHECK(comm->ctran_->mapper->atomicSet(
         op->putsignal.signalAddr,
-        op->putsignal.signalVal,
+        signalVal,
         peerRank,
         CtranMapperConfig{
             .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
@@ -176,15 +183,17 @@ static commResult_t signalImpl(
 
   CLOGF_TRACE(
       COLL,
-      "signalImpl: peer {} signalAddr {} signalVal {}",
+      "signalImpl: peer {} signalAddr {}",
       op->signal.peerRank,
-      (void*)op->signal.signalAddr,
-      op->signal.signalVal);
+      (void*)op->signal.signalAddr);
+
+  uint64_t signalVal =
+      __atomic_load_n(op->signal.signalCounter, __ATOMIC_ACQUIRE);
 
   CtranMapperRequest signalReq = CtranMapperRequest();
   FB_COMMCHECK(comm->ctran_->mapper->atomicSet(
       op->signal.signalAddr,
-      op->signal.signalVal,
+      signalVal,
       peerRank,
       CtranMapperConfig{
           .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
@@ -202,16 +211,16 @@ static commResult_t waitSignalSpinningKernelImpl(
   const std::atomic<uint64_t>* addr =
       reinterpret_cast<const std::atomic<uint64_t>*>(op->waitsignal.signalAddr);
   CtranAlgoRMALogger logger("ctranWaitSignal", op->opCount, -1, win, comm);
+  // The kernel increments the wait counter before KernelStartGpe,
+  // so this load always observes the post-increment value.
+  uint64_t cmpVal =
+      __atomic_load_n(op->waitsignal.signalCounter, __ATOMIC_ACQUIRE);
   CLOGF_TRACE(
       COLL,
       "waitSignalSpinningKernelImpl: signalAddr {}, cmpVal={}",
       (void*)const_cast<uint64_t*>(op->waitsignal.signalAddr),
-      op->waitsignal.cmpVal);
-  // Spin-wait until the signal is received.
-  // Only a 'greater or equal (GE)' (>=) comparison is required in this design,
-  // because signals are monotonically increasing and we only care about
-  // reaching or passing the target value.
-  while (std::atomic_load(addr) < op->waitsignal.cmpVal) {
+      cmpVal);
+  while (std::atomic_load(addr) < cmpVal) {
     std::this_thread::yield();
   };
 
@@ -251,9 +260,7 @@ commResult_t ctranPutSignal(
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
-  uint64_t signalVal = 0;
   if (signal) {
-    signalVal = win->ctranNextSignalVal(peer);
     signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
   }
 
@@ -266,17 +273,21 @@ commResult_t ctranPutSignal(
 
   // Use direct copy if peer is on the same host and has NVL enabled.
   // Otherwise, do put & signal via network
-  CtranKernelPutSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+  bool isNvl = statex->node(peer) == statex->node() && win->nvlEnabled(peer);
+  // The kernel always increments the per-peer signal counter to get a
+  // monotonically increasing value. KernelWaitGpeTerminate serializes
+  // kernel execution with GPE processing, so the GPE thread always sees
+  // the correct counter value for the current op.
+  CtranKernelPutSignalArgs kernArgs = {
+      .signalAddr = nullptr,
+      .signalCounter = signal ? &win->signalCounters[peer] : nullptr,
+      .signalCounterSystemScope = !isNvl};
+  if (isNvl) {
     // Single-node direct cudaMemcpy
     if (count > 0) {
       void* dstPtr = reinterpret_cast<void*>(
           reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
           targetDispNbytes);
-      // CollTrace tracing logic for local + no signal case. In this case the
-      // put will not trigger gpe->submit, so we need to record manually in the
-      // algo. In other cases, this handle would be a no-op and the tracing
-      // will take place in the gpe function.
       auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
           comm, opGroup, config, !signal);
       colltraceHandle->trigger(
@@ -288,16 +299,12 @@ commResult_t ctranPutSignal(
       colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     }
     if (signal) {
-      // Use atomic_store to signal the remote peer
       kernArgs.signalAddr = signalAddr;
-      kernArgs.signalVal = signalVal;
     } else {
-      // No signal, just return
       return commSuccess;
     }
   } else {
     // X-node put & signal via network
-    // Create an op for GPE thread to complete put and signal
     struct OpElem* op =
         new struct OpElem(OpElem::opType::PUTSIGNAL, comm, putOpCount);
     op->putsignal.sendbuff = originBuff;
@@ -305,7 +312,7 @@ commResult_t ctranPutSignal(
     op->putsignal.count = count;
     op->putsignal.datatype = datatype;
     op->putsignal.signalAddr = signalAddr;
-    op->putsignal.signalVal = signalVal;
+    op->putsignal.signalCounter = &win->signalCounters[peer];
     op->putsignal.peerRank = peer;
     op->putsignal.win = win;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
@@ -325,10 +332,10 @@ commResult_t ctranPutSignal(
   return commSuccess;
 }
 
-// Hardware-accelerated wait using CUDA Driver API directly
-// Returns commSuccess if hardware wait was used, otherwise returns error to
-// fallback This avoids GPU spinning kernel overhead by using hardware memory
-// polling
+// Hardware-accelerated wait. Increments the wait counter internally so
+// the counter only advances when we know the HW path will be attempted.
+// Returns commInvalidUsage if HW wait is unavailable (caller can fall
+// back to spinning kernel without double-increment risk).
 static commResult_t
 waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
 #if CUDART_VERSION >= 11070
@@ -336,61 +343,23 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
     return commInvalidUsage;
   }
 
-  // Get the signal address
   const uint64_t* signalAddr = win->winSignalPtr + peer;
-  // Get the expected compare value
-  uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
+  // Peek at the next expected value without incrementing. Only commit the
+  // counter advance after confirming the HW wait was enqueued successfully,
+  // so the spinning-kernel fallback won't double-increment.
+  uint64_t cmpVal =
+      __atomic_load_n(&win->waitCounters[peer], __ATOMIC_RELAXED) + 1;
 
-  cudaStreamCaptureStatus captureStatus{};
-  cudaStreamGetCaptureInfo(stream, &captureStatus, nullptr);
-
-  CUresult result;
-
-  if (captureStatus == cudaStreamCaptureStatusActive) {
-    if (!ctran::utils::canUseCuStreamBatchMemOp()) {
-      return commInvalidUsage;
-    }
-
-    // During CUDA graph capture, use cuStreamBatchMemOp to atomically
-    // wait for the signal and then reset it to 0.  The reset prepares
-    // the slot for the next graph replay.
-    //
-    // This follows the pattern established by NCCL's CE collective path
-    // in ncclMemOpSync() (comms/ncclx/v2_29/src/ce_coll.cc lines 212-222),
-    // which batches waits + resets in a single cuStreamBatchMemOp during
-    // graph capture.  The batch is atomic on the stream — the wait
-    // completes before the reset runs, and no remote signal for the next
-    // replay can interleave.
-    CUstreamBatchMemOpParams ops[2] = {};
-
-    // wait for signal GEQ cmpVal
-    ops[0].waitValue.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
-    ops[0].waitValue.address = (CUdeviceptr)signalAddr;
-    ops[0].waitValue.value64 = cmpVal;
-    ops[0].waitValue.flags = CU_STREAM_WAIT_VALUE_GEQ;
-
-    // reset signal to 0
-    ops[1].writeValue.operation = CU_STREAM_MEM_OP_WRITE_VALUE_64;
-    ops[1].writeValue.address = (CUdeviceptr)signalAddr;
-    ops[1].writeValue.value64 = 0;
-    ops[1].writeValue.flags = CU_STREAM_WRITE_VALUE_DEFAULT;
-
-    result = FB_CUPFN(cuStreamBatchMemOp)((CUstream)stream, 2, ops, 0);
-  } else {
-    result = FB_CUPFN(cuStreamWaitValue64)(
-        (CUstream)stream,
-        (CUdeviceptr)signalAddr,
-        cmpVal,
-        CU_STREAM_WAIT_VALUE_GEQ);
-  }
+  CUresult result = FB_CUPFN(cuStreamWaitValue64)(
+      (CUstream)stream,
+      (CUdeviceptr)signalAddr,
+      cmpVal,
+      CU_STREAM_WAIT_VALUE_GEQ);
 
   if (result != CUDA_SUCCESS) {
     const char* errStr = nullptr;
     FB_CUPFN(cuGetErrorString)(result, &errStr);
 
-    // Only fallback on NOT_SUPPORTED - this is safe (hardware doesn't support)
-    // Other errors (e.g., INVALID_VALUE) may indicate prior async failures
-    // that could cause the spinning kernel to hang, so propagate them
     if (result == CUDA_ERROR_NOT_SUPPORTED) {
       CLOGF(
           WARN,
@@ -399,8 +368,6 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
       return commInvalidUsage;
     }
 
-    // Propagate other errors - do not fallback as they may indicate
-    // stream corruption from prior async operations
     CLOGF(
         ERR,
         "CTRAN RMA: Hardware wait failed with error ({}), not falling back",
@@ -408,20 +375,22 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
     return commInternalError;
   }
 
+  // HW wait enqueued — commit the counter increment
+  win->nextWaitCounter(peer);
   return commSuccess;
 #else
-  // CUDA < 11.7 doesn't support cuStreamWaitValue64
   return commInvalidUsage;
 #endif
 }
 
+// Spinning kernel wait. The kernel always increments the per-peer wait
+// counter to derive the compare value — no capture-mode branching needed.
 commResult_t waitSignalSpinningKernel(
     int peer,
     CtranWin* win,
     cudaStream_t stream,
     uint64_t waitOpCount) {
   CtranComm* comm = win->comm;
-  auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
 
   const uint64_t* signalAddr = win->winSignalPtr + peer;
 
@@ -435,22 +404,17 @@ commResult_t waitSignalSpinningKernel(
 
   CtranKernelWaitSignalArgs kernArgs = {
       .signalAddr = nullptr,
-      .cmpVal = waitSignalVal,
+      .signalCounter = &win->waitCounters[peer],
   };
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
   if (win->isGpuMem()) {
-    // if GPU memory, use kernel to atomic wait on the local signal value update
-    // from remote rank, either from NVL or IB
     kernArgs.signalAddr = const_cast<uint64_t*>(signalAddr);
-    kernArgs.cmpVal = waitSignalVal;
   } else {
-    // if CPU memory, GPE thread to atomic wait for update from remote rank via
-    // IB.
     struct OpElem* op =
         new struct OpElem(OpElem::opType::WAITSIGNAL, comm, waitOpCount);
     op->waitsignal.win = win;
     op->waitsignal.signalAddr = signalAddr;
-    op->waitsignal.cmpVal = waitSignalVal;
+    op->waitsignal.signalCounter = &win->waitCounters[peer];
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
@@ -469,7 +433,8 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       win->updateOpCount(peer, window::OpCountType::kSignal);
   auto statex = comm->statex_.get();
 
-  auto signalVal = win->ctranNextSignalVal(peer);
+  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
+
   CTRAN_RMA_INFO(
       "ctranSignal",
       sigOpCount,
@@ -484,8 +449,6 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       comm,
       stream);
 
-  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
-
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::SIGNAL, stream, "Signal", sigOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
@@ -493,18 +456,19 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
 
-  // Use cuda atomic store if peer is on the same host and has NVL enabled.
-  // Otherwise, do signal via IB in GPE thread
-  CtranKernelSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
+  bool isSigNvl = statex->node(peer) == statex->node() && win->nvlEnabled(peer);
+  CtranKernelSignalArgs kernArgs = {
+      .signalAddr = nullptr,
+      .signalCounter = &win->signalCounters[peer],
+      .signalCounterSystemScope = !isSigNvl};
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
+  if (isSigNvl) {
     kernArgs.signalAddr = signalAddr;
-    kernArgs.signalVal = signalVal;
   } else {
     struct OpElem* op =
         new struct OpElem(OpElem::opType::SIGNAL, comm, sigOpCount);
     op->signal.signalAddr = signalAddr;
-    op->signal.signalVal = signalVal;
+    op->signal.signalCounter = &win->signalCounters[peer];
     op->signal.peerRank = peer;
     op->signal.win = win;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
@@ -545,44 +509,42 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
       comm,
       stream);
 
-  // Only try hardware wait for GPU memory windows
+  // For eager GPU-memory, try hardware-accelerated wait first.
+  // waitSignalDriverApi increments the counter internally, only after
+  // confirming HW support — so commInvalidUsage means the counter
+  // was NOT incremented and we can safely fall back.
   if (win->isGpuMem()) {
-    // Try hardware-accelerated wait first (zero GPU overhead!)
+    cudaStreamCaptureStatus captureStatus{};
+    cudaStreamGetCaptureInfo(stream, &captureStatus, nullptr);
+    if (captureStatus != cudaStreamCaptureStatusActive) {
+      auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
+          comm,
+          {},
+          KernelConfig{
+              KernelConfig::KernelType::WAITSIGNAL,
+              stream,
+              "WaitSignal",
+              waitOpCount},
+          true);
+      colltraceHandle->trigger(
+          CollTraceHandleTriggerState::BeforeEnqueueKernel);
 
-    // CollTrace tracing logic for hardware-accelerated case. In this case the
-    // wait will not trigger gpe->submit, so we need to record manually in the
-    // algo. In other cases, this handle would be a no-op and the tracing
-    // will take place in the gpe function.
-    auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
-        comm,
-        {},
-        KernelConfig{
-            KernelConfig::KernelType::WAITSIGNAL,
-            stream,
-            "WaitSignal",
-            waitOpCount},
-        true);
-    colltraceHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+      commResult_t hwResult = waitSignalDriverApi(peer, win, stream);
 
-    commResult_t hwResult = waitSignalDriverApi(peer, win, stream);
+      colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
 
-    colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+      if (hwResult == commSuccess) {
+        CLOGF_TRACE(
+            COLL,
+            "CTRAN RMA: WaitSignal successful using hardware acceleration");
+        return commSuccess;
+      }
 
-    if (hwResult == commSuccess) {
-      CLOGF_TRACE(
-          COLL, "CTRAN RMA: WaitSignal successful using hardware acceleration");
-      return commSuccess;
-    }
-
-    // Only fallback on commInvalidUsage (CUDA_ERROR_NOT_SUPPORTED)
-    // Other errors (commInternalError) are propagated to avoid masking
-    // potential stream corruption from prior async operations
-    if (hwResult != commInvalidUsage) {
-      return hwResult;
+      if (hwResult != commInvalidUsage) {
+        return hwResult;
+      }
     }
   }
-
-  // Fallback to spinning kernel implementation
   CLOGF(
       INFO,
       "CTRAN RMA: WaitSignal falling back to spinning kernel (peer={})",
