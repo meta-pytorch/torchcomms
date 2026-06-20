@@ -47,8 +47,19 @@ constexpr int kGb300CudaArch = 1030;
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
 
 bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
+#if defined(USE_ROCM)
+  // AMD GPUs always require local flush.
+  // https://ontrack.amd.com/browse/FBA-633
+  return true;
+#else
+  // Turn on flush by default for NVidia GPUs older than H100 and for GB300.
+  // Multi-NIC topologies with cross-NIC DMA ordering hazards must opt in via
+  // NCCL_CTRAN_NET_FORCE_FLUSH=1.
+  // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
+  // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology detection.
   return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch ||
       NCCL_CTRAN_NET_FORCE_FLUSH;
+#endif
 }
 
 commResult_t checkEpochLock(CtranIb* ctranIb) {
@@ -321,35 +332,16 @@ CtranIb::CtranIb(
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
     std::optional<int> maxNumCqe)
     : comm(comm) {
-  // enableLocalFlush: whether to support local flush. If true, CtranIb
-  // will enable resource required for local flush.
-  bool enableLocalFlush_ = false;
-  if (enableLocalFlush.has_value()) {
-    // Honor user specified value
-    enableLocalFlush_ = enableLocalFlush.value();
-  } else {
-#if defined(USE_ROCM)
-    // AMD GPUs always require local flush
-    // https://ontrack.amd.com/browse/FBA-633
-    enableLocalFlush_ = true;
-#else
-    // Turn on flush by default for NVidia GPUs older than H100 and for GB300.
-    // Multi-NIC topologies with cross-NIC DMA ordering hazards must opt in via
-    // NCCL_CTRAN_NET_FORCE_FLUSH=1.
-    // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
-    // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology
-    // detection.
-    enableLocalFlush_ =
-        CtranIb::shouldEnableLocalFlushByDefault(comm->statex_->cudaArch());
-#endif
-  }
   init(
       comm,
       comm->statex_->rank(),
       comm->statex_->cudaDev(),
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
-      enableLocalFlush_,
+      // Honor a caller-specified value; otherwise use the platform default.
+      enableLocalFlush.has_value()
+          ? *enableLocalFlush
+          : shouldEnableLocalFlushByDefault(comm->statex_->cudaArch()),
       BootstrapMode::kDefaultServer,
       std::nullopt,
       ::ctran::utils::createAbort(/*enabled=*/false),
@@ -361,7 +353,7 @@ CtranIb::CtranIb(
       "CTRAN-IB: Initialized {} from comm {} enableLocalFlush {}",
       (void*)this,
       (void*)comm,
-      this->enableLocalFlush);
+      this->enableLocalFlush_);
 }
 
 CtranIb::CtranIb(
@@ -400,7 +392,7 @@ CtranIb::CtranIb(
       cudaDev,
       commHash,
       commDesc,
-      this->enableLocalFlush);
+      this->enableLocalFlush_);
 }
 
 void CtranIb::init(
@@ -428,7 +420,7 @@ void CtranIb::init(
       .commDesc = commDesc,
       .rank = rank,
       .nRanks = comm ? comm->statex_->nRanks() : 1};
-  this->enableLocalFlush = enableLocalFlush;
+  this->enableLocalFlush_ = enableLocalFlush;
   this->bootstrapMode = bootstrapMode;
   this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
   this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
@@ -907,7 +899,7 @@ commResult_t CtranIb::iflush(
     CtranIbRequest* req) {
   FB_COMMCHECK(checkEpochLock(this));
 
-  if (enableLocalFlush) {
+  if (enableLocalFlush_) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
       auto& vc = localVc;
       return vc->iflush(dbuf, localRegHdl, req);
