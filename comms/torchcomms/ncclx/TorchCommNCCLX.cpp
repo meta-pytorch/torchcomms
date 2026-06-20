@@ -443,11 +443,13 @@ void TorchCommNCCLX::finalize() {
 
   // Update comm_state_ based on the work status
   if (work_status == TorchWorkNCCLX::WorkStatus::TIMEDOUT) {
+    cleanupAllGatherPHandles();
     TC_LOG(INFO, this) << "Aborting NCCL comm due to timeout";
     comm_state_ = CommState::TIMEOUT;
     abortNcclComm();
     throw std::runtime_error("Work timed out during finalize");
   } else if (work_status == TorchWorkNCCLX::WorkStatus::ERROR) {
+    cleanupAllGatherPHandles();
     TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
@@ -456,11 +458,15 @@ void TorchCommNCCLX::finalize() {
         nccl_comm_,
         nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
         "failed to get async error");
+    TC_LOG(ERROR, this) << "AllGatherP/NCCLX finalize observed async error: "
+                        << nccl_api_->getErrorString(asyncErr);
     NCCLXException ncclException(
         *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     throw ncclException;
   }
+
+  cleanupAllGatherPHandles();
 
   // Clean up event pool
   {
@@ -1200,36 +1206,79 @@ TorchCommBackend::AllGatherPHandle TorchCommNCCLX::all_gather_p_init(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
+  checkTensorDevice(output);
 
   size_t maxRecvCount = output.numel();
   size_t bufferSize = maxRecvCount * output.element_size();
 
-  // Register the output buffer if not already registered
   void* dataPtr = output.data_ptr();
+  bool releaseManagedRegistrationOnError = false;
   auto it = memoryRegistrationHandles_.find(dataPtr);
   if (it == memoryRegistrationHandles_.end()) {
-    void* regHandle = nullptr;
-    NCCLX_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commRegister(nccl_comm_, dataPtr, bufferSize, &regHandle),
-        "NCCLX commRegister failed for AllGatherP output buffer");
-    memoryRegistrationHandles_.emplace(dataPtr, RegistrationHandle(regHandle));
+    register_address(AddressWithLen{dataPtr, bufferSize});
+    it = memoryRegistrationHandles_.find(dataPtr);
+    it->second.allGatherPRefCount = 1;
+    releaseManagedRegistrationOnError = true;
+  } else if (it->second.allGatherPRefCount > 0) {
+    it->second.allGatherPRefCount++;
+    releaseManagedRegistrationOnError = true;
   }
 
   void* request = nullptr;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->allGatherInit(
-          dataPtr,
-          maxRecvCount,
-          options.hints,
-          getNcclDataType(output),
-          nccl_comm_,
-          getInternalStream(),
-          &request),
-      "NCCLX allGatherInit failed");
+  try {
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->allGatherInit(
+            dataPtr,
+            maxRecvCount,
+            options.hints,
+            getNcclDataType(output),
+            nccl_comm_,
+            getInternalStream(),
+            &request),
+        "NCCLX allGatherInit failed");
+
+    // allGatherInit queues async control-path work on the internal stream.
+    // Return the handle only once that init work is ready.
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->streamSynchronize(getInternalStream()),
+        "NCCLX allGatherInit stream synchronize failed");
+
+    ncclResult_t asyncErr;
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error after NCCLX allGatherInit");
+    if (asyncErr != ncclSuccess) {
+      TC_LOG(ERROR, this) << "AllGatherP/NCCLX init observed async error: "
+                          << nccl_api_->getErrorString(asyncErr);
+      comm_state_ = CommState::ERROR;
+      checkAndAbortIfTimedOutOrError();
+    }
+  } catch (...) {
+    if (request != nullptr) {
+      NCCLX_CHECK_IGNORE(
+          nccl_api_,
+          nccl_api_->pFree(request),
+          "NCCLX pFree failed during init rollback");
+    }
+    if (releaseManagedRegistrationOnError) {
+      auto regIt = memoryRegistrationHandles_.find(dataPtr);
+      if (regIt != memoryRegistrationHandles_.end() &&
+          regIt->second.allGatherPRefCount > 0) {
+        if (--regIt->second.allGatherPRefCount == 0) {
+          (void)nccl_api_->commDeregister(nccl_comm_, regIt->second.regHandle);
+          memoryRegistrationHandles_.erase(regIt);
+        }
+      }
+    }
+    throw;
+  }
+
+  allGatherPHandleStates_.emplace(request, AllGatherPHandleState{dataPtr});
 
   return request;
 }
@@ -1267,11 +1316,52 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_p_exec(
   return work;
 }
 
+void TorchCommNCCLX::cleanupAllGatherPHandle(AllGatherPHandle handle) {
+  if (handle == nullptr) {
+    return;
+  }
+
+  auto stateIt = allGatherPHandleStates_.find(handle);
+  if (stateIt == allGatherPHandleStates_.end()) {
+    return;
+  }
+
+  NCCLX_CHECK_IGNORE(nccl_api_, nccl_api_->pFree(handle), "NCCLX pFree failed");
+
+  const auto outputAddr = stateIt->second.outputAddr;
+  auto regIt = memoryRegistrationHandles_.find(outputAddr);
+  if (regIt != memoryRegistrationHandles_.end() &&
+      regIt->second.allGatherPRefCount > 0) {
+    if (--regIt->second.allGatherPRefCount == 0) {
+      if (nccl_comm_ != nullptr) {
+        NCCLX_CHECK_IGNORE(
+            nccl_api_,
+            nccl_api_->commDeregister(nccl_comm_, regIt->second.regHandle),
+            "Failed to deregister NCCLX AllGatherP output buffer");
+      }
+      memoryRegistrationHandles_.erase(regIt);
+    }
+  }
+  allGatherPHandleStates_.erase(stateIt);
+}
+
+void TorchCommNCCLX::cleanupAllGatherPHandles() {
+  std::vector<AllGatherPHandle> handles;
+  handles.reserve(allGatherPHandleStates_.size());
+  for (const auto& [handle, _] : allGatherPHandleStates_) {
+    handles.push_back(handle);
+  }
+  for (auto handle : handles) {
+    cleanupAllGatherPHandle(handle);
+  }
+}
+
 void TorchCommNCCLX::all_gather_p_free(AllGatherPHandle handle) {
   if (handle == nullptr) {
     return;
   }
-  NCCLX_CHECK_IGNORE(nccl_api_, nccl_api_->pFree(handle), "NCCLX pFree failed");
+  checkInitialized();
+  cleanupAllGatherPHandle(handle);
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
@@ -2317,6 +2407,45 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   new_torchcomm->init(device_, commDesc, options);
 
   return new_torchcomm;
+}
+
+void TorchCommNCCLX::register_address(
+    const TorchCommNCCLX::AddressWithLen& addr) {
+  if (nccl_comm_ == nullptr) {
+    return;
+  }
+
+  if (memoryRegistrationHandles_.find(addr.addr) !=
+      memoryRegistrationHandles_.end()) {
+    throw std::runtime_error("Memory already registered with NCCLX");
+  }
+
+  void* handle = nullptr;
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
+      "Failed to register memory with NCCLX");
+  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+}
+
+void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
+  if (nccl_comm_ == nullptr) {
+    return;
+  }
+
+  auto it = memoryRegistrationHandles_.find(addr.addr);
+  if (it == memoryRegistrationHandles_.end()) {
+    return;
+  }
+
+  void* handle = it->second.regHandle;
+  NCCLX_CHECK(
+      nccl_api_,
+      nccl_comm_,
+      nccl_api_->commDeregister(nccl_comm_, handle),
+      "Failed to deregister memory with NCCLX");
+  memoryRegistrationHandles_.erase(it);
 }
 
 void TorchCommNCCLX::global_register_address(
