@@ -317,6 +317,13 @@ CollectiveMetadata getCollectiveMetadata(
           .opCount = opCount,
       };
     }
+    case KernelConfig::KernelType::FETCHADD: {
+      return CollectiveMetadata{
+          .opName = "FetchAdd",
+          .algoName = kernelConfig.algoName,
+          .opCount = opCount,
+      };
+    }
     // Skip P2P kernel types. We intentionally don't use default so that
     // whenever ctran adds a new kernel type, we will get a compile error
     case KernelConfig::KernelType::SEND:
