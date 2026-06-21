@@ -215,6 +215,10 @@ class RdmaMemory : folly::MoveOnly {
     return remoteKey_;
   }
 
+  bool reusedRegistration() const {
+    return cacheReg_;
+  }
+
   int getDevice() const {
     return cudaDev_;
   }

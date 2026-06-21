@@ -305,6 +305,16 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
   EXPECT_FALSE(memory.contains(buffer_, bufferSize_ + 1));
 }
 
+TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(firstMemory.reusedRegistration());
+
+  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_TRUE(secondMemory.reusedRegistration());
+  EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
+  EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+}
+
 TEST_F(RdmaMemoryTest, ViewCreation) {
   RdmaMemory memory(buffer_, bufferSize_, cudaDev_);
 
