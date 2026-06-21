@@ -120,7 +120,7 @@ commResult_t LocalVirtualConn::iflush(
     wr.opcode = ibverbx::IBV_WR_RDMA_READ;
     wr.send_flags = ibverbx::IBV_SEND_SIGNALED;
 
-    ibverbx::ibv_send_wr bad_wr{};
+    ibverbx::ibv_send_wr* bad_wr{nullptr};
     auto maybeSend = ibvQps_[device].postSend(&wr, &bad_wr);
     FOLLY_EXPECTED_CHECK(maybeSend);
     CLOGF_SUBSYS(
