@@ -38,15 +38,21 @@ initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
       IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
 }
 
-folly::Expected<folly::Unit, Error>
-rtrQp(const RemoteQpInfo& remoteQpInfo, IbvQp& ibvQp, uint8_t trafficClass) {
+folly::Expected<folly::Unit, Error> rtrQp(
+    const RemoteQpInfo& remoteQpInfo,
+    IbvQp& ibvQp,
+    uint8_t trafficClass,
+    uint8_t gid_index,
+    uint8_t ib_sl,
+    uint32_t psn,
+    uint8_t maxRdAtomic) {
   ibv_qp_attr qpAttr;
 
   memset(&qpAttr, 0, sizeof(ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTR;
   qpAttr.path_mtu = remoteQpInfo.mtu;
-  qpAttr.rq_psn = 0;
-  qpAttr.max_dest_rd_atomic = 1;
+  qpAttr.rq_psn = psn;
+  qpAttr.max_dest_rd_atomic = maxRdAtomic;
   qpAttr.min_rnr_timer = 12;
 
   if (remoteQpInfo.linkLayer == IBV_LINK_LAYER_ETHERNET) {
@@ -54,14 +60,14 @@ rtrQp(const RemoteQpInfo& remoteQpInfo, IbvQp& ibvQp, uint8_t trafficClass) {
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = remoteQpInfo.u.eth.spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = remoteQpInfo.u.eth.iid;
     qpAttr.ah_attr.grh.flow_label = 0;
-    qpAttr.ah_attr.grh.sgid_index = NCCL_IB_GID_INDEX;
+    qpAttr.ah_attr.grh.sgid_index = gid_index; // NCCL_IB_GID_INDEX;
     qpAttr.ah_attr.grh.hop_limit = 255;
     qpAttr.ah_attr.grh.traffic_class = trafficClass;
   } else {
     qpAttr.ah_attr.is_global = 0;
     qpAttr.ah_attr.dlid = remoteQpInfo.u.ib.lid;
   }
-  qpAttr.ah_attr.sl = NCCL_IB_SL;
+  qpAttr.ah_attr.sl = ib_sl; // NCCL_IB_SL;
   qpAttr.ah_attr.src_path_bits = 0;
   qpAttr.ah_attr.port_num = remoteQpInfo.port;
 
@@ -73,15 +79,20 @@ rtrQp(const RemoteQpInfo& remoteQpInfo, IbvQp& ibvQp, uint8_t trafficClass) {
           IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
 }
 
-folly::Expected<folly::Unit, Error> rtsQp(IbvQp& ibvQp) {
+folly::Expected<folly::Unit, Error> rtsQp(
+    IbvQp& ibvQp,
+    uint8_t timeout,
+    uint8_t retryCnt,
+    uint32_t psn,
+    uint8_t maxRdAtomic) {
   ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTS;
-  qpAttr.timeout = NCCL_IB_TIMEOUT;
-  qpAttr.retry_cnt = NCCL_IB_RETRY_CNT;
+  qpAttr.timeout = timeout; // NCCL_IB_TIMEOUT;
+  qpAttr.retry_cnt = retryCnt; // NCCL_IB_RETRY_CNT;
   qpAttr.rnr_retry = 7;
-  qpAttr.sq_psn = 0;
-  qpAttr.max_rd_atomic = 1;
+  qpAttr.sq_psn = psn;
+  qpAttr.max_rd_atomic = maxRdAtomic;
 
   return ibvQp.modifyQp(
       &qpAttr,
