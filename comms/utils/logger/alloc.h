@@ -17,4 +17,5 @@ void logMemoryEvent(
     std::optional<int64_t> bytes = std::nullopt,
     std::optional<int> numSegments = std::nullopt,
     std::optional<int64_t> durationUs = std::nullopt,
+    const std::optional<std::string>& memType = std::nullopt,
     bool isRegMemEvent = false);

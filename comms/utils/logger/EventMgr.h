@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/NcclScubaSample.h"
@@ -125,6 +126,7 @@ class MemoryEvent : public LoggerEvent {
       std::optional<int64_t> bytes = std::nullopt,
       std::optional<int> numSegments = std::nullopt,
       std::optional<int64_t> durationUs = std::nullopt,
+      std::optional<std::string> memType = std::nullopt,
       bool isRegMemEvent = false)
       : commHash(logMetaData.commHash),
         commDesc(logMetaData.commDesc),
@@ -136,6 +138,7 @@ class MemoryEvent : public LoggerEvent {
         bytes(bytes),
         numSegments(numSegments),
         durationUs(durationUs),
+        memType(std::move(memType)),
         isRegMemEvent(isRegMemEvent) {
     iteration = ncclxGetIteration();
   }
@@ -172,6 +175,7 @@ class MemoryEvent : public LoggerEvent {
   std::optional<int64_t> bytes;
   std::optional<int> numSegments;
   std::optional<int64_t> durationUs;
+  std::optional<std::string> memType;
   bool isRegMemEvent = false;
 };
 
