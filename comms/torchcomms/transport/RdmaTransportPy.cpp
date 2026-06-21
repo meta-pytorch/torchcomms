@@ -11,6 +11,7 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/transport/RdmaTransport.h"
+#include "comms/torchcomms/transport/RdmaTransportCCA.hpp"
 
 using namespace torch::comms;
 
@@ -129,4 +130,11 @@ PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
         return RdmaRemoteBuffer{
             const_cast<void*>(self.data()), self.length(), self.remoteKey()};
       });
+
+  m.def(
+      "attach_rdma_memory_hook",
+      &torch::comms::attachRdmaMemoryHook,
+      "Install the CUDA caching-allocator hook that registers allocator "
+      "segments with RegCache for the RDMA transport. Idempotent: only the "
+      "first call installs the hook.");
 }
