@@ -2,54 +2,46 @@
 # pyre-unsafe
 
 import torch
-import torchcomms
 from torchcomms.tests.perf.py.perf_test_helpers import (
-    PerfParams,
-    PerfResult,
+    BenchRecord,
+    CommAdapter,
+    log_perf_header,
+    log_perf_result,
     PerfTimer,
-    print_perf_header,
-    print_perf_result,
     sync_device,
 )
 
 
 def run_barrier_perf(
-    comm: torchcomms.TorchComm,
-    params: PerfParams,
+    comm: CommAdapter,
+    record: BenchRecord,
     device: torch.device,
 ) -> None:
     rank = comm.get_rank()
     num_ranks = comm.get_size()
-
-    if rank == 0:
-        mode = "Asynchronous" if params.async_op else "Synchronous"
-        print(f"\n=== {mode} Barrier Performance ===")
-    print_perf_header(rank)
+    params = record.params
+    config = record.config
 
     # Barrier has no message size, run once
     # Warmup
     for _ in range(params.warmup_iterations):
-        work = comm.barrier(params.async_op)
-        if params.async_op:
-            work.wait()
+        comm.run_collective("barrier", async_op=params.async_op)
 
     # Synchronize all ranks before measurement
-    comm.barrier(False)
+    comm.run_collective("barrier", async_op=False)
 
     # Measure
     timer = PerfTimer()
-    sync_device(device)
+    sync_device()
     timer.start()
 
     for i in range(params.measure_iterations):
-        work = comm.barrier(params.async_op)
-        if params.async_op:
-            work.wait()
+        comm.run_collective("barrier", async_op=params.async_op)
 
-        if params.iteration_window > 0 and (i + 1) % params.iteration_window == 0:
-            sync_device(device)
+        if params.sync_interval > 0 and (i + 1) % params.sync_interval == 0:
+            sync_device()
 
-    sync_device(device)
+    sync_device()
     timer.stop()
 
     # Calculate statistics
@@ -57,15 +49,10 @@ def run_barrier_perf(
     avg_time = total / params.measure_iterations
 
     # Barrier has no data transfer, so bus bandwidth is 0
-    result = PerfResult(
-        message_size_bytes=0,
-        num_ranks=num_ranks,
-        iterations=params.measure_iterations,
-        total_time_us=total,
-        avg_time_us=avg_time,
-        min_time_us=avg_time,
-        max_time_us=avg_time,
-        bus_bw_gbps=0.0,
-    )
+    record.metrics.total_time_us = total
+    record.metrics.avg_time_us = avg_time
+    record.metrics.min_time_us = avg_time
+    record.metrics.max_time_us = avg_time
+    record.metrics.bus_bw_gbps = 0.0
 
-    print_perf_result(result, rank)
+    log_perf_result(record, rank)
