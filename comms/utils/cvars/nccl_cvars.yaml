@@ -1985,7 +1985,7 @@ cvars:
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
-   choices     : ib, nvl, socket, tcpdm
+   choices     : ib, nvl, socket, tcpdm, external
    description : |-
      Backends to enable for ctran
      ib - RoCE/IB backend

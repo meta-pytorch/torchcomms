@@ -1027,6 +1027,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         return "SOCKET";
       case CtranMapperBackend::TCPDM:
         return "TCPDM";
+      case CtranMapperBackend::EXTERNAL:
+        return "EXTERNAL";
       default:
         return "UNKNOWN";
     }
