@@ -2426,17 +2426,26 @@ def alloc_conf_key(pytorch_cuda_alloc_conf: str) -> str:
 def print_summary(package: str, results: Sequence[JobResult]) -> None:
     logger.info("\nSummary")
     logger.info("Package: %s", package)
+    parser = BenchmarkLogParser()
     for result in results:
-        status = "PASS" if result.passed else "FAIL"
+        summary = parser.parse(result.log_lines)
+        comparison_status = "USABLE" if result.passed else "UNUSABLE"
+        runtime_status = "CLEAN" if not summary.fatal_runtime_errors else "ISSUES"
         logger.info(
-            "status=%s layout=%s connector=%s tp=%d state=%s app_uri=%s",
-            status,
+            "comparison=%s runtime=%s layout=%s connector=%s tp=%d state=%s app_uri=%s",
+            comparison_status,
+            runtime_status,
             result.spec.layout.upper(),
             result.spec.connector_class,
             result.spec.tp,
             result.state,
             result.app_uri,
         )
+        if summary.post_result_runtime_errors:
+            logger.info(
+                "  post_result_runtime_errors=%d",
+                len(summary.post_result_runtime_errors),
+            )
         for line in result.log_lines:
             logger.info("  %s", line)
 

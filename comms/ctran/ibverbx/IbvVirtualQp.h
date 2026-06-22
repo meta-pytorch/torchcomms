@@ -381,7 +381,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendSingleQp(
     }
   }
 
-  ibv_send_wr badWr{};
+  ibv_send_wr* badWr{nullptr};
   auto maybePost = physicalQps_.at(0).postSend(&sendWr, &badWr);
   if (maybePost.hasError()) {
     return folly::makeUnexpected(maybePost.error());
@@ -666,7 +666,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
       auto [sendWr, sendSge] = buildPhysicalSendWr(*pending, deviceId, fragLen);
       sendWr.sg_list = &sendSge;
 
-      ibv_send_wr badWr{};
+      ibv_send_wr* badWr{nullptr};
       auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
       if (maybePost.hasError()) {
         return folly::makeUnexpected(maybePost.error());
@@ -791,7 +791,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
   sendWr.wr.rdma.rkey = pending->deviceKeys.at(notifyDeviceId).rkey;
   sendWr.imm_data = pending->immData;
 
-  ibv_send_wr badWr{};
+  ibv_send_wr* badWr{nullptr};
   auto maybePost = notifyQp_->postSend(&sendWr, &badWr);
   if (maybePost.hasError()) {
     return folly::makeUnexpected(maybePost.error());

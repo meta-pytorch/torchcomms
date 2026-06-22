@@ -81,9 +81,17 @@ LocalVirtualConn::LocalVirtualConn(
 
     remoteQpInfo.qpn = ibvQps_[device].qp()->qp_num;
     FOLLY_EXPECTED_CHECKTHROW_EX(
-        rtrQp(remoteQpInfo, ibvQps_[device], NCCL_IB_TC), commLogData_);
+        rtrQp(
+            remoteQpInfo,
+            ibvQps_[device],
+            NCCL_IB_TC,
+            NCCL_IB_GID_INDEX,
+            NCCL_IB_SL),
+        commLogData_);
 
-    FOLLY_EXPECTED_CHECKTHROW_EX(rtsQp(ibvQps_[device]), commLogData_);
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        rtsQp(ibvQps_[device], NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT),
+        commLogData_);
 
     CLOGF_SUBSYS(
         INFO,
@@ -112,7 +120,7 @@ commResult_t LocalVirtualConn::iflush(
     wr.opcode = ibverbx::IBV_WR_RDMA_READ;
     wr.send_flags = ibverbx::IBV_SEND_SIGNALED;
 
-    ibverbx::ibv_send_wr bad_wr{};
+    ibverbx::ibv_send_wr* bad_wr{nullptr};
     auto maybeSend = ibvQps_[device].postSend(&wr, &bad_wr);
     FOLLY_EXPECTED_CHECK(maybeSend);
     CLOGF_SUBSYS(

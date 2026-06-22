@@ -407,6 +407,7 @@ commResult_t ctran::RegCache::globalDeregister(
   // Free each segment
   size_t totalSegmentsFreed = 0;
   size_t totalRegElemsFreed = 0;
+  std::optional<DevMemType> firstFreedType;
   for (auto segHdl : segHdls) {
     bool freed = false;
     bool ncclManaged = false;
@@ -415,6 +416,9 @@ commResult_t ctran::RegCache::globalDeregister(
 
     if (freed) {
       totalSegmentsFreed++;
+    }
+    if (!firstFreedType.has_value() && !regElemsFreed.empty()) {
+      firstFreedType = regElemsFreed.front()->getType();
     }
     totalRegElemsFreed += regElemsFreed.size();
   }
@@ -432,7 +436,10 @@ commResult_t ctran::RegCache::globalDeregister(
         totalSegmentsFreed,
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - timerBegin)
-            .count());
+            .count(),
+        firstFreedType.has_value()
+            ? std::optional<std::string>(devMemTypeStr(firstFreedType.value()))
+            : std::nullopt);
   }
 
   return commSuccess;
@@ -899,6 +906,7 @@ commResult_t ctran::RegCache::regRangeCached(
   size_t lenToReg = 0;
   void* ptrToReg = nullptr;
   size_t numSegmentsToReg = 0;
+  std::optional<DevMemType> regMemType;
 
   {
     // Global lock:
@@ -947,6 +955,7 @@ commResult_t ctran::RegCache::regRangeCached(
       // range.
       ptrToReg = const_cast<void*>(segments.at(0)->range.buf);
       numSegmentsToReg = segments.size();
+      regMemType = segments.at(0)->getType();
 
       // Use helper to perform backend registration and update maps
       FB_COMMCHECK(registerSegmentsTogether(
@@ -976,7 +985,10 @@ commResult_t ctran::RegCache::regRangeCached(
       numSegmentsToReg,
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - timerBegin)
-          .count());
+          .count(),
+      regMemType.has_value()
+          ? std::optional<std::string>(devMemTypeStr(regMemType.value()))
+          : std::nullopt);
 
   profiler.wlock()->record(ctran::regcache::EventType::kRegMemEvent, dur);
   return commSuccess;
@@ -1189,7 +1201,8 @@ commResult_t ctran::RegCache::regRange(
         ranges.size(),
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - timerBegin)
-            .count());
+            .count(),
+        devMemTypeStr(ranges.at(0).type));
   }
 
   return commSuccess;
@@ -1337,6 +1350,7 @@ commResult_t ctran::RegCache::regAll() {
   size_t totalLenRegistered = 0;
   size_t totalSegmentsRegistered = 0;
   size_t numContiguousRegions = 0;
+  std::optional<DevMemType> regMemType;
 
   {
     // Global lock:
@@ -1376,6 +1390,7 @@ commResult_t ctran::RegCache::regAll() {
     SetCudaDevRAII setCudaDev(cudaDev);
 
     numContiguousRegions = contiguousRegions.size();
+    regMemType = contiguousRegions.front().front()->getType();
 
     // Register each contiguous region separately using the helper
     for (size_t regionIdx = 0; regionIdx < contiguousRegions.size();
@@ -1435,7 +1450,10 @@ commResult_t ctran::RegCache::regAll() {
         totalSegmentsRegistered,
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - timerBegin)
-            .count());
+            .count(),
+        regMemType.has_value()
+            ? std::optional<std::string>(devMemTypeStr(regMemType.value()))
+            : std::nullopt);
   }
 
   CLOGF_TRACE(

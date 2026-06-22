@@ -1898,10 +1898,11 @@ class CtranIbVirtualConn {
   static constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
   ibverbx::ibv_sge sendCtrlSg_{}, recvCtrlSg_{}, sendPutSg_{}, sendGetSg_{},
       fetchAddSg_{}, amoSetSg_{};
-  ibverbx::ibv_send_wr sendCtrlWr_{}, badSendCtrlWr_{}, sendNotifyWr_{},
-      badSendNotifyWr_{}, sendPutWr_{}, badSendPutWr_{}, sendGetWr_{},
-      badSendGetWr_{}, fetchAddWr_{}, badFetchAddWr_{}, amoSetWr_{},
-      badAmoSetWr_{};
+  ibverbx::ibv_send_wr sendCtrlWr_{}, sendNotifyWr_{}, sendPutWr_{},
+      sendGetWr_{}, fetchAddWr_{}, amoSetWr_{};
+  ibverbx::ibv_send_wr *badSendPutWr_{nullptr}, *badSendCtrlWr_{nullptr},
+      *badSendGetWr_{nullptr}, *badAmoSetWr_{nullptr},
+      *badSendNotifyWr_{nullptr}, *badFetchAddWr_{nullptr};
   ibverbx::ibv_recv_wr recvCtrlWr_{}, badRecvCtrlWr_{}, recvNotifyWr_{},
       badRecvNotifyWr_{};
 
