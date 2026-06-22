@@ -25,9 +25,9 @@ namespace comms::prims {
  *   - CachedMr.mrs
  *
  * Increase this constant only if a future platform supports > 2 NICs per
- * GPU. At that point, also audit the IBGDA wire format
+ * GPU. At that point, also audit the IB wire format
  * (IbgdaTransportExchInfoAll size scales with kMaxNicsPerGpu ×
- * kMaxQpsPerPeerPerNic × kMaxRanksForAllGather).
+ * kMaxEagerExchangeQpsPerPeerPerNic × kMaxRanksForAllGather).
  *
  * Lives in its own minimal header (no doca/ibverbs deps) so lightweight
  * device-side headers like IbgdaBuffer.h can include it without dragging

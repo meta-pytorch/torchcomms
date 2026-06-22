@@ -37,7 +37,7 @@ HostWindow::HostWindow(
       nRanks_(transport.n_ranks()),
       config_(config),
       nvlPeerRanks_(transport.nvl_peer_ranks()),
-      ibgdaPeerRanks_(transport.ibgda_peer_ranks()),
+      ibgdaPeerRanks_(transport.ib_peer_ranks()),
       nvlLocalRank_(transport.nvl_local_rank()),
       nvlNRanks_(transport.nvl_n_ranks()),
       userBuffer_(userBuffer),

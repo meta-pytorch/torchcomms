@@ -127,27 +127,61 @@ struct NicDeviceIbgdaResources {
   }
 };
 
+inline constexpr int kIbgdaMaxQpLanesPerBlock = 64;
+
+struct IbgdaBlockQpState {
+  uint32_t put_rr{0};
+  uint64_t pending_flush_lanes_mask{0};
+  uint64_t last_flush_wqe[kIbgdaMaxQpLanesPerBlock]{};
+};
+
 /**
  * P2pIbgdaTransportDevice - Device-side per-peer RDMA transport handle
  *
  * Every method has two overloads:
  *   Group-scope: put(group, ...) — all threads in group must call.
- *     QP selection: single QP for now (multi-QP via group.group_id % numQps
- *     will be added in a follow-up diff).
+ *     QP selection is owned by the physical CUDA block. The block
+ *     round-robins put operations across NIC-first QP lanes and preserves
+ *     signal/flush ordering for operations issued by the same block_id.
  *     Data transfer uses the exact buffer span supplied by the caller.
  *     Threads in the group coordinate the operation; callers that want the
  *     transport to shard a larger buffer should use put_cooperative().
- *     Signal/counter/fence are leader-only with group.sync().
+ *     Signal/counter/flush are leader-only with group.sync().
  *
  *   Thread-scope: put(...) — single thread calls.
- *     QP selection: always QP 0.
- *     Implemented as thin wrapper: creates solo ThreadGroup, forwards.
+ *     QP selection uses the caller's physical blockIdx.x. Implemented as a
+ *     thin wrapper: creates a solo ThreadGroup with block_id=blockIdx.x, then
+ *     forwards to the group-scope implementation.
  *
- * CRITICAL: Do not mix scope families in an ordered sequence.
- *   put(group,...) -> signal(0) is BROKEN (different QPs, FENCE invalid).
- *   put(group,...) -> signal(group,0) is CORRECT (same QP).
+ * CRITICAL: Do not rely on scope-family mixing for synchronization.
+ *   Thread-scope wrappers do not synchronize with other threads in the block.
+ *   put(group,...) -> signal(group,0) does not by itself order prior puts
+ *   issued on other QP lanes. Call fence(group) or flush(group) before a
+ *   standalone signal when the signal is meant to announce completion of prior
+ *   puts.
  *
- * Signal is always fenced (NIC completes prior WQEs before signal).
+ * CRITICAL: Same-block warp-scope batching is not a supported ordering
+ * contract in this implementation. The block_id owns one logical ordered
+ * stream. If multiple independent warps use the same block_id, this transport
+ * does not infer cross-warp order for a later signal() or flush(); the caller
+ * must use a CTA-level barrier or another protocol-level synchronization
+ * before issuing the covering signal/flush. In particular, do not rely on:
+ *
+ *   warp0: put(A); put(B); signal(S);
+ *   warp1: put(C); put(D); signal(S);
+ *
+ * to mean that either signal covers both warps' puts. Each warp only has its
+ * own program order, and the relative order between the warps is unspecified.
+ * A fused put+signal from multiple warps is only self-ordered for each
+ * operation's own put before its own signal; it is not a cross-warp batch
+ * completion signal. Full warp-specialized concurrent issue needs future
+ * per-QP-lane reservation/ordering state.
+ *
+ * Signal WQEs use the IB FENCE bit, which orders the signal after prior WQEs
+ * on the same QP only. A fused put(..., signal) posts the put and signal on
+ * the same QP, so the signal covers that put. A standalone signal uses the
+ * block's control lane and does not cover earlier round-robined puts unless
+ * the caller explicitly calls fence()/flush() first.
  * put() returns void — completion via wait_signal/wait_counter/flush.
  *
  * Two API layers:
@@ -167,18 +201,17 @@ class P2pIbgdaTransportDevice {
    * Construct a per-peer device transport handle.
    *
    * Each P2p instance owns one peer's NICs. Each NicDeviceIbgdaResources
-   * carries its own primary and companion QPs and a sink lkey. The host-side
-   * builder is responsible for peer-rotating the NicDeviceIbgdaResources[]
-   * order so that `nic_qp_for_group(g)`'s nic_id (= g % nicDevices.size())
-   * produces balanced thread-per-peer scatter when nicDevices.size() > 1.
+   * carries its main and companion QPs plus a sink lkey. Lane selection is
+   * block-owned: each physical CUDA block round-robins its puts across
+   * numNics * qpsPerBlockPerNic lanes, using NIC-first lane ordinals.
    *
    * Single-NIC usage: pass a 1-element nicDevices span. All ops fall through
    * to NIC 0.
    *
    * @param nicDevices          GPU span of per-NIC bundles (length =
    *                              numNics). Each NicDeviceIbgdaResources owns
-   *                              numQpsPerPeerPerNic primary + companion QP
-   *                              pointers and the per-NIC sink lkey.
+   *                              maxGroups * qpsPerBlockPerNic main QPs and
+   *                              maxGroups companion QPs.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
    *                              targets the peer's local signal inbox.
    *                              Used by the slot-index signal API.
@@ -205,6 +238,9 @@ class P2pIbgdaTransportDevice {
       IbgdaLocalBuffer ownedCounterBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
+      int maxGroups = 0,
+      int qpsPerBlockPerNic = 1,
+      DeviceSpan<IbgdaBlockQpState> blockQpState = {},
       IbSendRecvState sendRecvState = {})
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
@@ -212,6 +248,9 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_(ownedCounterBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
+        maxGroups_(maxGroups),
+        qpsPerBlockPerNic_(qpsPerBlockPerNic),
+        blockQpState_(blockQpState),
         sendRecvState_(sendRecvState) {}
 
   // =========================================================================
@@ -294,7 +333,8 @@ class P2pIbgdaTransportDevice {
 
   /**
    * put (thread-scope, slot-index) - Single-thread variant of slot-index put.
-   * Caller is responsible for gating to one thread. Uses QP 0.
+   * Caller is responsible for gating to one thread. Uses the caller's physical
+   * block-owned QP resources.
    * Args match the group-scope overload.
    */
   __device__ void put(
@@ -305,7 +345,7 @@ class P2pIbgdaTransportDevice {
       uint64_t signalVal = 1,
       int counterId = -1,
       uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     put(solo,
         localBuf,
         remoteBuf,
@@ -319,8 +359,10 @@ class P2pIbgdaTransportDevice {
   /**
    * signal (group-scope, slot-index) - Fenced RDMA atomic add by slot index.
    *
-   * Always FENCEd against preceding WQEs on the same QP, so signal arrives
-   * after any prior put() completes at the NIC.
+   * Standalone signal posts on this block's control lane. It does not wait for
+   * prior puts issued on other round-robined QP lanes. If this signal should
+   * announce completion of earlier put() calls, the user/protocol must call
+   * fence(group) or flush(group) before signal(group, ...).
    *
    * @param group     Thread group; all threads must call. Leader posts WQE.
    * @param signalId  Slot index into the peer's signal inbox (>= 0,
@@ -332,9 +374,12 @@ class P2pIbgdaTransportDevice {
     signal(group, remote_signal_slot(signalId), signalVal);
   }
 
-  /** signal (thread-scope, slot-index) - Single-thread variant. Uses QP 0. */
+  /**
+   * signal (thread-scope, slot-index) - Single-thread variant. Uses the
+   * caller's physical block-owned QP resources.
+   */
   __device__ void signal(int signalId, uint64_t signalVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     signal(solo, signalId, signalVal);
   }
 
@@ -362,7 +407,7 @@ class P2pIbgdaTransportDevice {
       int signalId,
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, timeout);
   }
 
@@ -388,7 +433,7 @@ class P2pIbgdaTransportDevice {
       int counterId,
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, timeout);
   }
 
@@ -405,7 +450,7 @@ class P2pIbgdaTransportDevice {
 
   /** reset_signal (thread-scope, slot-index) - Single-thread variant. */
   __device__ void reset_signal(int signalId) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_signal(solo, signalId);
   }
 
@@ -421,7 +466,7 @@ class P2pIbgdaTransportDevice {
 
   /** reset_counter (thread-scope, slot-index) - Single-thread variant. */
   __device__ void reset_counter(int counterId) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_counter(solo, counterId);
   }
 
@@ -505,7 +550,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * put (thread-scope) - Single-thread, QP 0. Caller gates.
+   * put (thread-scope) - Single-thread variant. Caller gates.
    *
    * signalBuf intentionally not defaulted (see group-scope sibling above).
    */
@@ -517,7 +562,7 @@ class P2pIbgdaTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     put(solo,
         localBuf,
         remoteBuf,
@@ -563,8 +608,12 @@ class P2pIbgdaTransportDevice {
   /**
    * signal (group-scope) - Fenced RDMA atomic add to a remote signal slot.
    *
-   * Always FENCEd against preceding WQEs on the same QP, so signal arrives
-   * after any prior put() completes at the NIC.
+   * Standalone signal posts on this block's control lane. The IB FENCE bit
+   * orders it after earlier WQEs on that same QP only; it does not drain the
+   * block's round-robined put lanes. If this signal is meant to cover previous
+   * put() calls, the user/protocol must call fence(group) or flush(group)
+   * before signal(group, ...). A fused put(..., signal) remains self-ordered
+   * because the put and signal are posted on the same QP.
    *
    * @param group     Thread group; all threads must call. Leader posts WQE,
    *                  all sync.
@@ -577,16 +626,19 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
     if (group.is_leader()) {
-      signal_fenced(group.group_id, signalBuf, signalVal);
+      validate_group_scope(group);
+      IbgdaLane lane = control_lane(group.block_id);
+      const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
+      record_signal_wqe(lane, signalTicket);
     }
     group.sync();
   }
 
-  /** signal (thread-scope) - Single-thread variant. Uses QP 0. */
+  /** signal (thread-scope) - Single-thread variant. */
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     signal(solo, signalBuf, signalVal);
   }
 
@@ -617,7 +669,7 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, timeout);
   }
 
@@ -642,38 +694,39 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, timeout);
   }
 
   /**
-   * flush (group-scope) - Wait for all in-flight transport operations to
-   * complete on this group's QP.
+   * flush (group-scope) - Wait for this block's locally tracked transport
+   * operations to complete.
    *
-   * Drains the QP via a NOP WQE. Use this when callers want "wait for
-   * completion" semantics independent of the underlying mechanism, so the
-   * implementation can later evolve (e.g. cross-QP flush) without churning
-   * call sites.
+   * Flush waits for the block's recorded data put and signal WQEs. Counter
+   * WQEs are local-tracking operations and are intentionally not part of the
+   * flush set.
    *
-   * @param group Thread group; all threads must call. Leader issues NOP
-   *              WQE and waits, all sync.
+   * @param group Thread group; all threads must call. Leader waits, all sync.
    */
   __device__ void flush(ThreadGroup& group) {
     if (group.is_leader()) {
-      flush_impl(group.group_id);
+      validate_group_scope(group);
+      drain_flush_lanes(group.block_id);
     }
     group.sync();
   }
 
   /** flush (thread-scope) - Single-thread variant. */
   __device__ void flush() {
-    flush_impl(0);
+    ThreadGroup solo = make_thread_solo();
+    flush(solo);
   }
 
   /**
-   * fence (group-scope) - Drain all pending WQEs on this group's QP.
+   * fence (group-scope) - Drain all locally tracked WQEs for this block.
    *
-   * Aliased to flush(). Prefer flush() in new code.
+   * Aliased to flush(). Use this before a standalone signal when that signal
+   * must announce completion of prior round-robined puts from the same block.
    *
    * @param group Thread group; all threads must call.
    */
@@ -705,7 +758,7 @@ class P2pIbgdaTransportDevice {
 
   /** reset_signal (thread-scope) - Single-thread variant. */
   __device__ void reset_signal(const IbgdaLocalBuffer& signalBuf) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_signal(solo, signalBuf);
   }
 
@@ -723,7 +776,7 @@ class P2pIbgdaTransportDevice {
 
   /** reset_counter (thread-scope) - Single-thread variant. */
   __device__ void reset_counter(const IbgdaLocalBuffer& counterBuf) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_counter(solo, counterBuf);
   }
 
@@ -756,6 +809,20 @@ class P2pIbgdaTransportDevice {
   // =========================================================================
 
  private:
+  struct IbgdaLane {
+    uint32_t nic_id{0};
+    uint32_t qp_index{0};
+    uint32_t lane_ordinal{0};
+    uint32_t block_id{0};
+    doca_gpu_dev_verbs_qp* qp{nullptr};
+    doca_gpu_dev_verbs_qp* companion_qp{nullptr};
+  };
+
+  struct IbgdaPutSignalTickets {
+    uint64_t put_wqe{0};
+    uint64_t signal_wqe{0};
+  };
+
   __device__ __forceinline__ static uint64_t load_acquire_system_u64(
       const void* ptr) {
     auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
@@ -765,6 +832,209 @@ class P2pIbgdaTransportDevice {
     return cuda::atomic_ref<uint64_t, cuda::thread_scope_system>{*slot}.load(
         cuda::memory_order_acquire);
 #endif
+  }
+
+  __device__ __forceinline__ void validate_block_id(uint32_t blockId) const {
+    if (blockIdx.y != 0 || blockIdx.z != 0 || blockDim.y != 1 ||
+        blockDim.z != 1) {
+      printf(
+          "[PIPES] FATAL: IBGDA per-block QP selection currently supports "
+          "only 1D grids and 1D thread blocks, got blockIdx=(%u,%u,%u) "
+          "blockDim=(%u,%u,%u)\n",
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          blockDim.x,
+          blockDim.y,
+          blockDim.z);
+      PIPES_DEVICE_TRAP();
+    }
+    if (blockId >= static_cast<uint32_t>(maxGroups_) || blockQpState_.empty()) {
+      printf(
+          "[PIPES] FATAL: IBGDA block_id=%u out of range [0, %d) "
+          "or block QP state missing\n",
+          blockId,
+          maxGroups_);
+      PIPES_DEVICE_TRAP();
+    }
+  }
+
+  __device__ __forceinline__ void validate_group_scope(
+      const ThreadGroup& group) const {
+    if (group.scope == SyncScope::CLUSTER) {
+      printf(
+          "[PIPES] FATAL: IBGDA per-block QP selection does not support "
+          "cluster-scope ThreadGroup yet\n");
+      PIPES_DEVICE_TRAP();
+    }
+    validate_block_id(group.block_id);
+  }
+
+  __device__ __forceinline__ IbgdaLane
+  lane_from_ordinal(uint32_t blockId, uint32_t laneOrdinal) const {
+    validate_block_id(blockId);
+    const uint32_t numNics = static_cast<uint32_t>(nicDevices_.size());
+    if (numNics == 0) {
+      printf(
+          "P2pIbgdaTransportDevice: transport not initialized "
+          "(peer not materialized? call get_device_handle(peers) first) "
+          "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          __FILE__,
+          __LINE__,
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          threadIdx.x,
+          threadIdx.y,
+          threadIdx.z);
+      PIPES_DEVICE_TRAP();
+    }
+    const uint32_t nicId = laneOrdinal % numNics;
+    const uint32_t qpIndex = laneOrdinal / numNics;
+    const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
+    const uint32_t qpId = blockId * qpsPerBlockPerNic_ + qpIndex;
+    if (qpIndex >= static_cast<uint32_t>(qpsPerBlockPerNic_) ||
+        qpId >= nic.qps.size() || blockId >= nic.companion_qps.size()) {
+      printf(
+          "[PIPES] FATAL: invalid IBGDA lane block=%u nic=%u qpIndex=%u "
+          "qpsPerBlockPerNic=%d qps=%u companionQps=%u\n",
+          blockId,
+          nicId,
+          qpIndex,
+          qpsPerBlockPerNic_,
+          static_cast<unsigned>(nic.qps.size()),
+          static_cast<unsigned>(nic.companion_qps.size()));
+      PIPES_DEVICE_TRAP();
+    }
+    return IbgdaLane{
+        .nic_id = nicId,
+        .qp_index = qpIndex,
+        .lane_ordinal = laneOrdinal,
+        .block_id = blockId,
+        .qp = nic.qps[qpId],
+        .companion_qp = nic.companion_qps[blockId]};
+  }
+
+  __device__ __forceinline__ uint32_t
+  select_put_lane_ordinal(uint32_t blockId) {
+    validate_block_id(blockId);
+    if (nicDevices_.empty()) {
+      printf(
+          "P2pIbgdaTransportDevice: transport not initialized "
+          "(peer not materialized? call get_device_handle(peers) first) "
+          "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+          __FILE__,
+          __LINE__,
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          threadIdx.x,
+          threadIdx.y,
+          threadIdx.z);
+      PIPES_DEVICE_TRAP();
+    }
+    const uint32_t numLanes =
+        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+    if (numLanes == 1) {
+      return 0;
+    }
+    uint32_t seq = atomicAdd(&blockQpState_[blockId].put_rr, 1U);
+    return seq % numLanes;
+  }
+
+  __device__ __forceinline__ IbgdaLane select_put_lane(uint32_t blockId) {
+    return lane_from_ordinal(blockId, select_put_lane_ordinal(blockId));
+  }
+
+  __device__ __forceinline__ IbgdaLane control_lane(uint32_t blockId) const {
+    return lane_from_ordinal(blockId, 0);
+  }
+
+  __device__ __forceinline__ uint32_t num_qp_lanes() const {
+    return static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+  }
+
+  __device__ __forceinline__ void atomic_max_u64(uint64_t* ptr, uint64_t val) {
+    atomicMax(
+        reinterpret_cast<unsigned long long*>(ptr),
+        static_cast<unsigned long long>(val));
+  }
+
+  __device__ __forceinline__ void atomic_or_u64(uint64_t* ptr, uint64_t val) {
+    atomicOr(
+        reinterpret_cast<unsigned long long*>(ptr),
+        static_cast<unsigned long long>(val));
+  }
+
+  __device__ __forceinline__ uint64_t
+  atomic_exchange_u64(uint64_t* ptr, uint64_t val) {
+    return atomicExch(
+        reinterpret_cast<unsigned long long*>(ptr),
+        static_cast<unsigned long long>(val));
+  }
+
+  __device__ __forceinline__ void record_put_wqe(
+      const IbgdaLane& lane,
+      uint64_t ticket) {
+    record_flush_wqe(lane, ticket);
+  }
+
+  __device__ __forceinline__ void record_flush_wqe(
+      const IbgdaLane& lane,
+      uint64_t ticket) {
+    auto& state = blockQpState_[lane.block_id];
+    atomic_max_u64(&state.last_flush_wqe[lane.lane_ordinal], ticket);
+    atomic_or_u64(&state.pending_flush_lanes_mask, 1ULL << lane.lane_ordinal);
+  }
+
+  __device__ __forceinline__ void record_signal_wqe(
+      const IbgdaLane& lane,
+      uint64_t ticket) {
+    record_flush_wqe(lane, ticket);
+  }
+
+  __device__ void wait_local_on_qp(
+      doca_gpu_dev_verbs_qp* qp,
+      doca_gpu_dev_verbs_ticket_t ticket,
+      Timeout timeout = Timeout()) {
+    if (!timeout.isEnabled()) {
+      doca_gpu_dev_verbs_wait<
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, ticket);
+    } else {
+      int status;
+      do {
+        status = doca_gpu_dev_verbs_poll_one_cq_at<
+            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+            doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
+        if (status == EBUSY) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_local_on_qp timed out (ticket=%llu)",
+              static_cast<unsigned long long>(ticket));
+        }
+      } while (status == EBUSY);
+    }
+  }
+
+  __device__ void
+  wait_lanes(uint32_t blockId, uint64_t mask, const uint64_t* tickets) {
+    const uint32_t numLanes =
+        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+    for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+      if ((mask & (1ULL << laneId)) == 0) {
+        continue;
+      }
+      IbgdaLane lane = lane_from_ordinal(blockId, laneId);
+      wait_local_on_qp(lane.qp, tickets[laneId]);
+    }
+  }
+
+  __device__ void drain_flush_lanes(uint32_t blockId) {
+    auto& state = blockQpState_[blockId];
+    const uint64_t mask =
+        atomic_exchange_u64(&state.pending_flush_lanes_mask, 0);
+    wait_lanes(blockId, mask, state.last_flush_wqe);
   }
 
   __device__ void put_impl(
@@ -789,10 +1059,12 @@ class P2pIbgdaTransportDevice {
     }
 
     if (group.is_leader()) {
+      validate_group_scope(group);
       const bool hasCounter = counterBuf.ptr != nullptr;
+      IbgdaLane lane = select_put_lane(group.block_id);
       if (hasSignal && hasCounter) {
-        put_signal_counter_single_impl(
-            group.group_id,
+        const auto tickets = put_signal_counter_single_impl(
+            lane,
             localBuf,
             remoteBuf,
             nbytes,
@@ -800,19 +1072,19 @@ class P2pIbgdaTransportDevice {
             signalVal,
             counterBuf,
             counterVal);
+        record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasSignal) {
-        put_signal_single_impl(
-            group.group_id, localBuf, remoteBuf, nbytes, signalBuf, signalVal);
+        const auto tickets = put_signal_single_impl(
+            lane, localBuf, remoteBuf, nbytes, signalBuf, signalVal);
+        record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasCounter) {
-        put_counter_single_impl(
-            group.group_id,
-            localBuf,
-            remoteBuf,
-            nbytes,
-            counterBuf,
-            counterVal);
+        const uint64_t putTicket = put_counter_single_impl(
+            lane, localBuf, remoteBuf, nbytes, counterBuf, counterVal);
+        record_put_wqe(lane, putTicket);
       } else {
-        put_single_impl(group.group_id, localBuf, remoteBuf, nbytes);
+        const uint64_t putTicket =
+            put_single_impl(lane, localBuf, remoteBuf, nbytes);
+        record_put_wqe(lane, putTicket);
       }
     }
     group.sync();
@@ -839,16 +1111,26 @@ class P2pIbgdaTransportDevice {
       return;
     }
 
-    const uint64_t lastPutWqeIdx =
-        put_cooperative_data_impl(group, localBuf, remoteBuf, nbytes);
+    uint32_t laneOrdinal = 0;
+    uint64_t lastPutWqeIdx = 0;
     if (group.is_leader()) {
+      validate_group_scope(group);
+      laneOrdinal = select_put_lane_ordinal(group.block_id);
+    }
+    laneOrdinal = group.broadcast<uint32_t>(laneOrdinal);
+    IbgdaLane lane = lane_from_ordinal(group.block_id, laneOrdinal);
+
+    lastPutWqeIdx =
+        put_cooperative_data_impl(group, lane, localBuf, remoteBuf, nbytes);
+    if (group.is_leader()) {
+      record_put_wqe(lane, lastPutWqeIdx);
       const bool hasCounter = counterBuf.ptr != nullptr;
       if (hasSignal) {
-        signal_fenced(group.group_id, signalBuf, signalVal);
+        const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
+        record_signal_wqe(lane, signalTicket);
       }
       if (hasCounter) {
-        counter_after_wqe_impl(
-            group.group_id, lastPutWqeIdx, counterBuf, counterVal);
+        counter_after_wqe_impl(lane, lastPutWqeIdx, counterBuf, counterVal);
       }
     }
     group.sync();
@@ -927,6 +1209,7 @@ class P2pIbgdaTransportDevice {
 
   __device__ uint64_t put_cooperative_data_impl(
       ThreadGroup& group,
+      const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
@@ -939,9 +1222,7 @@ class P2pIbgdaTransportDevice {
     IbgdaLocalBuffer laneBuf = localBuf.subBuffer(offset);
     IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
 
-    auto idx = nic_qp_for_group(group.group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    auto* qp = nic.qps[idx.qp_id];
+    auto* qp = lane.qp;
 
     // Guard: group_size must fit within QP send queue depth
     if (group.is_leader()) {
@@ -970,18 +1251,26 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
 
-    doca_gpu_dev_verbs_wqe_prepare_write(
-        qp,
-        wqe_ptr,
-        static_cast<uint16_t>(wqe_idx),
-        DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
-        DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
-        0,
-        reinterpret_cast<uint64_t>(laneRemoteBuf.ptr),
-        laneRemoteBuf.rkey_per_device[idx.nic_id].value,
-        reinterpret_cast<uint64_t>(laneBuf.ptr),
-        laneBuf.lkey_per_device[idx.nic_id].value,
-        static_cast<uint32_t>(laneBytes));
+    if (laneBytes == 0) {
+      doca_gpu_dev_verbs_wqe_prepare_nop(
+          qp,
+          wqe_ptr,
+          static_cast<uint16_t>(wqe_idx),
+          DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE);
+    } else {
+      doca_gpu_dev_verbs_wqe_prepare_write(
+          qp,
+          wqe_ptr,
+          static_cast<uint16_t>(wqe_idx),
+          DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
+          DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+          0,
+          reinterpret_cast<uint64_t>(laneRemoteBuf.ptr),
+          laneRemoteBuf.rkey_per_device[lane.nic_id].value,
+          reinterpret_cast<uint64_t>(laneBuf.ptr),
+          laneBuf.lkey_per_device[lane.nic_id].value,
+          static_cast<uint32_t>(laneBytes));
+    }
 
     group.sync();
 
@@ -1004,46 +1293,44 @@ class P2pIbgdaTransportDevice {
 
   // --- put_single_impl: one thread, one WQE ---
 
-  __device__ void put_single_impl(
-      uint32_t group_id,
+  __device__ uint64_t put_single_impl(
+      const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
     doca_gpu_dev_verbs_ticket_t ticket;
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey_per_device[idx.nic_id].value};
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
 
     doca_gpu_dev_verbs_put<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        nic.qps[idx.qp_id], remoteAddr, localAddr, nbytes, &ticket);
+        lane.qp, remoteAddr, localAddr, nbytes, &ticket);
+    return ticket;
   }
 
-  __device__ void put_signal_single_impl(
-      uint32_t group_id,
+  __device__ IbgdaPutSignalTickets put_signal_single_impl(
+      const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
+    const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey_per_device[idx.nic_id].value};
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey_per_device[idx.nic_id].value};
+        .key = signalBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sigSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
 
@@ -1052,7 +1339,7 @@ class P2pIbgdaTransportDevice {
     uint64_t ticket = 0;
     pipes_gda::pipes_gda_gpu_dev_verbs_put_signal(
         amdNic,
-        nic.qps[idx.qp_id],
+        lane.qp,
         remoteAddr,
         localAddr,
         nbytes,
@@ -1060,40 +1347,85 @@ class P2pIbgdaTransportDevice {
         sigSinkAddr,
         signalVal,
         &ticket);
+    return IbgdaPutSignalTickets{ticket, ticket};
 #else
-    doca_gpu_dev_verbs_put_signal<
-        DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
+    uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
+        nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+    numChunks = numChunks > 1 ? numChunks : 1;
+    uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(lane.qp, numChunks + 1);
+    uint64_t wqeIdx = baseWqeIdx;
+    std::size_t remainingSize = nbytes;
+
+#pragma unroll 1
+    for (uint64_t i = 0; i < numChunks; ++i) {
+      wqeIdx = baseWqeIdx + i;
+      const std::size_t chunkSize =
+          remainingSize > DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE
+          ? DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE
+          : remainingSize;
+      doca_gpu_dev_verbs_wqe* wqePtr =
+          doca_gpu_dev_verbs_get_wqe_ptr(lane.qp, wqeIdx);
+      doca_gpu_dev_verbs_wqe_prepare_write(
+          lane.qp,
+          wqePtr,
+          wqeIdx,
+          DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
+          DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+          0,
+          remoteAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          remoteAddr.key,
+          localAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          localAddr.key,
+          chunkSize);
+      remainingSize -= chunkSize;
+    }
+    const uint64_t lastPutWqeIdx = wqeIdx;
+
+    ++wqeIdx;
+    doca_gpu_dev_verbs_wqe* wqePtr =
+        doca_gpu_dev_verbs_get_wqe_ptr(lane.qp, wqeIdx);
+    doca_gpu_dev_verbs_wqe_prepare_atomic(
+        lane.qp,
+        wqePtr,
+        wqeIdx,
+        DOCA_GPUNETIO_IB_MLX5_OPCODE_ATOMIC_FA,
+        DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        sigRemoteAddr.addr,
+        sigRemoteAddr.key,
+        sigSinkAddr.addr,
+        sigSinkAddr.key,
+        sizeof(uint64_t),
+        signalVal,
+        0);
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        lane.qp, baseWqeIdx, wqeIdx);
+    doca_gpu_dev_verbs_submit<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
-        DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        nic.qps[idx.qp_id],
-        remoteAddr,
-        localAddr,
-        nbytes,
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal);
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(lane.qp, wqeIdx + 1);
+    return IbgdaPutSignalTickets{lastPutWqeIdx, wqeIdx};
 #endif
   }
 
-  __device__ void put_counter_single_impl(
-      uint32_t group_id,
+  __device__ uint64_t put_counter_single_impl(
+      const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
+    const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey_per_device[idx.nic_id].value};
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey_per_device[idx.nic_id].value};
+        .key = counterBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
 
@@ -1107,34 +1439,105 @@ class P2pIbgdaTransportDevice {
     pipes_gda::ActiveNicBackend amdNic{};
     pipes_gda::pipes_gda_gpu_dev_verbs_put_signal_counter(
         amdNic,
-        nic.qps[idx.qp_id],
+        lane.qp,
         remoteAddr,
         localAddr,
         nbytes,
         noSigRemoteAddr,
         noSigSinkAddr,
         0,
-        nic.companion_qps[idx.qp_id],
+        lane.companion_qp,
         counterRemoteAddr,
         counterSinkAddr,
         counterVal);
+    return 0;
 #else
-    doca_gpu_dev_verbs_put_counter<
+    constexpr unsigned int kNumQps = 2;
+    doca_gpu_dev_verbs_qp* qp = lane.qp;
+    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
+
+    uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
+        nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+    numChunks = numChunks > 1 ? numChunks : 1;
+    uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, numChunks);
+    uint64_t wqeIdx = baseWqeIdx;
+    std::size_t remainingSize = nbytes;
+
+#pragma unroll 1
+    for (uint64_t i = 0; i < numChunks; ++i) {
+      wqeIdx = baseWqeIdx + i;
+      const std::size_t chunkSize =
+          remainingSize > DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE
+          ? DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE
+          : remainingSize;
+      doca_gpu_dev_verbs_wqe* wqePtr =
+          doca_gpu_dev_verbs_get_wqe_ptr(qp, wqeIdx);
+      doca_gpu_dev_verbs_wqe_prepare_write(
+          qp,
+          wqePtr,
+          wqeIdx,
+          DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
+          DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+          0,
+          remoteAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          remoteAddr.key,
+          localAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          localAddr.key,
+          chunkSize);
+      remainingSize -= chunkSize;
+    }
+    const uint64_t lastPutWqeIdx = wqeIdx;
+
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        qp, baseWqeIdx, lastPutWqeIdx);
+
+    uint64_t companionBaseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(companionQp, 2);
+    uint64_t companionWqeIdx = companionBaseWqeIdx;
+    doca_gpu_dev_verbs_wqe* wqePtr =
+        doca_gpu_dev_verbs_get_wqe_ptr(companionQp, companionWqeIdx);
+    doca_gpu_dev_verbs_wqe_prepare_wait(
+        companionQp,
+        wqePtr,
+        companionWqeIdx,
+        DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        lastPutWqeIdx,
+        qp->cq_sq.cq_num);
+
+    ++companionWqeIdx;
+    wqePtr = doca_gpu_dev_verbs_get_wqe_ptr(companionQp, companionWqeIdx);
+    doca_gpu_dev_verbs_wqe_prepare_atomic(
+        companionQp,
+        wqePtr,
+        companionWqeIdx,
+        DOCA_GPUNETIO_IB_MLX5_OPCODE_ATOMIC_FA,
+        DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        counterRemoteAddr.addr,
+        counterRemoteAddr.key,
+        counterSinkAddr.addr,
+        counterSinkAddr.key,
+        sizeof(uint64_t),
+        counterVal,
+        0);
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        companionQp, companionBaseWqeIdx, companionWqeIdx);
+
+    doca_gpu_dev_verbs_qp* qps[kNumQps] = {qp, companionQp};
+    uint64_t prodIndices[kNumQps] = {lastPutWqeIdx + 1, companionWqeIdx + 1};
+    doca_gpu_dev_verbs_submit_multi_qps<
+        kNumQps,
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-        nic.qps[idx.qp_id],
-        remoteAddr,
-        localAddr,
-        nbytes,
-        nic.companion_qps[idx.qp_id],
-        counterRemoteAddr,
-        counterSinkAddr,
-        counterVal);
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qps, prodIndices);
+    return lastPutWqeIdx;
 #endif
   }
 
-  __device__ void put_signal_counter_single_impl(
-      uint32_t group_id,
+  __device__ IbgdaPutSignalTickets put_signal_counter_single_impl(
+      const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -1143,59 +1546,30 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
 #ifdef __HIP_PLATFORM_AMD__
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    doca_gpu_dev_verbs_addr localAddr = {
-        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr remoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr sigRemoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr sigSinkAddr = {
-        .addr = 0, .key = nic.sink_lkey.value};
-    doca_gpu_dev_verbs_addr counterRemoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = nic.sink_lkey.value};
-    pipes_gda::ActiveNicBackend amdNic{};
-    pipes_gda::pipes_gda_gpu_dev_verbs_put_signal_counter(
-        amdNic,
-        nic.qps[idx.qp_id],
-        remoteAddr,
-        localAddr,
-        nbytes,
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal,
-        nic.companion_qps[idx.qp_id],
-        counterRemoteAddr,
-        counterSinkAddr,
-        counterVal);
+    put_counter_single_impl(
+        lane, localBuf, remoteBuf, nbytes, counterBuf, counterVal);
+    const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
+    return IbgdaPutSignalTickets{signalTicket, signalTicket};
 #else
     constexpr unsigned int kNumQps = 2;
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    doca_gpu_dev_verbs_qp* qp = nic.qps[idx.qp_id];
-    doca_gpu_dev_verbs_qp* companionQp = nic.companion_qps[idx.qp_id];
+    const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
+    doca_gpu_dev_verbs_qp* qp = lane.qp;
+    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
 
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey_per_device[idx.nic_id].value};
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey_per_device[idx.nic_id].value};
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sigRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey_per_device[idx.nic_id].value};
+        .key = signalBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sigSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey_per_device[idx.nic_id].value};
+        .key = counterBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
 
@@ -1216,23 +1590,18 @@ class P2pIbgdaTransportDevice {
           : remainingSize;
       doca_gpu_dev_verbs_wqe* wqePtr =
           doca_gpu_dev_verbs_get_wqe_ptr(qp, wqeIdx);
-      [[likely]] if (chunkSize > 0) {
-        doca_gpu_dev_verbs_wqe_prepare_write(
-            qp,
-            wqePtr,
-            wqeIdx,
-            DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
-            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
-            0,
-            remoteAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
-            remoteAddr.key,
-            localAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
-            localAddr.key,
-            chunkSize);
-      } else {
-        doca_gpu_dev_verbs_wqe_prepare_nop(
-            qp, wqePtr, wqeIdx, DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE);
-      }
+      doca_gpu_dev_verbs_wqe_prepare_write(
+          qp,
+          wqePtr,
+          wqeIdx,
+          DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_WRITE,
+          DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+          0,
+          remoteAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          remoteAddr.key,
+          localAddr.addr + (i * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE),
+          localAddr.key,
+          chunkSize);
       remainingSize -= chunkSize;
     }
     const uint64_t lastPutWqeIdx = wqeIdx;
@@ -1252,8 +1621,10 @@ class P2pIbgdaTransportDevice {
         sizeof(uint64_t),
         signalVal,
         0);
+    const uint64_t signalWqeIdx = wqeIdx;
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, baseWqeIdx, wqeIdx);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        qp, baseWqeIdx, signalWqeIdx);
 
     uint64_t companionBaseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(companionQp, 2);
@@ -1287,28 +1658,28 @@ class P2pIbgdaTransportDevice {
         companionQp, companionBaseWqeIdx, companionWqeIdx);
 
     doca_gpu_dev_verbs_qp* qps[kNumQps] = {qp, companionQp};
-    uint64_t prodIndices[kNumQps] = {wqeIdx + 1, companionWqeIdx + 1};
+    uint64_t prodIndices[kNumQps] = {signalWqeIdx + 1, companionWqeIdx + 1};
     doca_gpu_dev_verbs_submit_multi_qps<
         kNumQps,
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qps, prodIndices);
+    return IbgdaPutSignalTickets{lastPutWqeIdx, signalWqeIdx};
 #endif
   }
 
   __device__ void counter_after_wqe_impl(
-      uint32_t group_id,
+      const IbgdaLane& lane,
       uint64_t waitWqeIdx,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    doca_gpu_dev_verbs_qp* qp = nic.qps[idx.qp_id];
-    doca_gpu_dev_verbs_qp* companionQp = nic.companion_qps[idx.qp_id];
+    const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
+    doca_gpu_dev_verbs_qp* qp = lane.qp;
+    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey_per_device[idx.nic_id].value};
+        .key = counterBuf.lkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr counterSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
 
@@ -1326,7 +1697,7 @@ class P2pIbgdaTransportDevice {
     pipes_gda::ActiveNicBackend amdNic{};
     pipes_gda::pipes_gda_gpu_dev_verbs_signal_counter(
         amdNic,
-        nic.qps[idx.qp_id],
+        lane.qp,
         noSigRemoteAddr,
         noSigSinkAddr,
         0,
@@ -1375,16 +1746,15 @@ class P2pIbgdaTransportDevice {
 
   // --- signal_fenced: atomic fetch-add with NIC FENCE (always fenced) ---
 
-  __device__ void signal_fenced(
-      uint32_t group_id,
+  __device__ uint64_t signal_fenced(
+      const IbgdaLane& lane,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    doca_gpu_dev_verbs_qp* qp = nic.qps[idx.qp_id];
+    const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
+    doca_gpu_dev_verbs_qp* qp = lane.qp;
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey_per_device[idx.nic_id].value};
+        .key = signalBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
@@ -1414,78 +1784,9 @@ class P2pIbgdaTransportDevice {
 
     doca_gpu_dev_verbs_submit<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, wqe_idx + 1);
-  }
-
-  // --- signal_counter: fenced signal + companion QP loopback counter ---
-
-  __device__ void signal_counter(
-      uint32_t group_id,
-      const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal,
-      const IbgdaLocalBuffer& counterBuf,
-      uint64_t counterVal) {
-    auto idx = nic_qp_for_group(group_id);
-    const NicDeviceIbgdaResources& nic = nicDevices_[idx.nic_id];
-    doca_gpu_dev_verbs_addr sigRemoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(signalBuf.ptr),
-        .key = signalBuf.rkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr sigSinkAddr = {
-        .addr = 0, .key = nic.sink_lkey.value};
-
-    doca_gpu_dev_verbs_addr counterRemoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
-        .key = counterBuf.lkey_per_device[idx.nic_id].value};
-    doca_gpu_dev_verbs_addr counterSinkAddr = {
-        .addr = 0, .key = nic.sink_lkey.value};
-
-    doca_gpu_dev_verbs_signal_counter<
-        DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-        nic.qps[idx.qp_id],
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal,
-        nic.companion_qps[idx.qp_id],
-        counterRemoteAddr,
-        counterSinkAddr,
-        counterVal);
-  }
-
-  // --- flush_impl: NOP WQE + wait ---
-
-  __device__ void flush_impl(uint32_t group_id) {
-    doca_fence<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(active_qp(group_id));
-  }
-
-  // --- wait_local_impl: CQ poll for specific WQE (internal use only) ---
-
-  __device__ void wait_local_impl(
-      uint32_t group_id,
-      doca_gpu_dev_verbs_ticket_t ticket,
-      Timeout timeout = Timeout()) {
-    if (!timeout.isEnabled()) {
-      doca_gpu_dev_verbs_wait<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(active_qp(group_id), ticket);
-    } else {
-      int status;
-      do {
-        status = doca_gpu_dev_verbs_poll_one_cq_at<
-            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            doca_gpu_dev_verbs_qp_get_cq_sq(active_qp(group_id)), ticket);
-        if (status == EBUSY) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_local_impl timed out (ticket=%llu)",
-              static_cast<unsigned long long>(ticket));
-        }
-      } while (status == EBUSY);
-    }
+    return wqe_idx;
   }
 
   // --- Slot resolution helpers ---
@@ -1904,7 +2205,8 @@ class P2pIbgdaTransportDevice {
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
-        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         put(solo,
             sendRecvState_.sendStagingBuf.subBuffer(chunk.stagingOff),
             sendRecvState_.recvStagingBuf.subBuffer(chunk.stagingOff),
@@ -2286,7 +2588,8 @@ class P2pIbgdaTransportDevice {
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
-        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         put(solo,
             sendRecvState_.sendStagingBuf.subBuffer(stagingOff),
             sendRecvState_.recvStagingBuf.subBuffer(stagingOff),
@@ -2829,7 +3132,8 @@ class P2pIbgdaTransportDevice {
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
-        ThreadGroup solo{0, 1, group.group_id, 1, SyncScope::THREAD};
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         fwd.put(
             solo,
             fwd.sendRecvState_.sendStagingBuf.subBuffer(fwdStagingOff),
@@ -3360,65 +3664,6 @@ class P2pIbgdaTransportDevice {
     };
   }
 
-  struct NicQpIndex {
-    int nic_id;
-    int qp_id;
-  };
-
-  /**
-   * nic_qp_for_group - Single lookup: returns NIC/QP ids.
-   *
-   * Round-robin over NIC resources, then within the chosen NIC round-robin over
-   * its QPs.
-   */
-  __device__ NicQpIndex nic_qp_for_group(uint32_t group_id) const {
-    if (nicDevices_.empty()) {
-      printf(
-          "P2pIbgdaTransportDevice: transport not initialized "
-          "(peer not materialized? call get_device_handle(peers) first) "
-          "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-          __FILE__,
-          __LINE__,
-          blockIdx.x,
-          blockIdx.y,
-          blockIdx.z,
-          threadIdx.x,
-          threadIdx.y,
-          threadIdx.z);
-      PIPES_DEVICE_TRAP();
-    }
-    int nic_id = group_id % nicDevices_.size();
-    const auto& qps = nicDevices_[nic_id].qps;
-    if (qps.empty()) {
-      printf(
-          "P2pIbgdaTransportDevice: NIC %d has no qps at "
-          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-          nic_id,
-          __FILE__,
-          __LINE__,
-          blockIdx.x,
-          blockIdx.y,
-          blockIdx.z,
-          threadIdx.x,
-          threadIdx.y,
-          threadIdx.z);
-      PIPES_DEVICE_TRAP();
-    }
-    int qp_id = (group_id / nicDevices_.size()) % qps.size();
-    return {nic_id, qp_id};
-  }
-
-  __device__ doca_gpu_dev_verbs_qp* active_qp(uint32_t group_id) const {
-    auto idx = nic_qp_for_group(group_id);
-    return nicDevices_[idx.nic_id].qps[idx.qp_id];
-  }
-
-  __device__ doca_gpu_dev_verbs_qp* active_companion_qp(
-      uint32_t group_id) const {
-    auto idx = nic_qp_for_group(group_id);
-    return nicDevices_[idx.nic_id].companion_qps[idx.qp_id];
-  }
-
   // --- Members ---
   // Per-NIC bundles (qps + companion_qps + sink_lkey + device_id).
   DeviceSpan<NicDeviceIbgdaResources> nicDevices_{};
@@ -3430,6 +3675,9 @@ class P2pIbgdaTransportDevice {
 
   int numSignalSlots_{0};
   int numCounterSlots_{0};
+  int maxGroups_{0};
+  int qpsPerBlockPerNic_{1};
+  DeviceSpan<IbgdaBlockQpState> blockQpState_{};
 
   IbSendRecvState sendRecvState_{};
 };

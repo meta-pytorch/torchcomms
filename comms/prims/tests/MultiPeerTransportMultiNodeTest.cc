@@ -113,7 +113,7 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
             },
-        .ibgdaConfig =
+        .ibConfig =
             {
                 .cudaDevice = localRank,
             },
@@ -137,7 +137,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
   auto states = create_transport_states();
 
   int nvlCount = states->nvl_peer_ranks().size();
-  int ibgdaCount = states->ibgda_peer_ranks().size();
+  int ibgdaCount = states->ib_peer_ranks().size();
 
   // IBGDA is universal — always covers all non-self peers.
   EXPECT_EQ(ibgdaCount, numRanks - 1)
@@ -233,8 +233,8 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   }
 
   // IBGDA is universal — accessor works for ALL non-self peers.
-  ASSERT_EQ(static_cast<int>(states->ibgda_peer_ranks().size()), numRanks - 1);
-  for (int r : states->ibgda_peer_ranks()) {
+  ASSERT_EQ(static_cast<int>(states->ib_peer_ranks().size()), numRanks - 1);
+  for (int r : states->ib_peer_ranks()) {
     auto* p2p = states->get_p2p_ibgda_transport_device(r);
     EXPECT_NE(p2p, nullptr) << "IBGDA transport device null for peer " << r;
   }
@@ -245,7 +245,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
       globalRank,
       isMnnvl_,
       states->nvl_peer_ranks().size(),
-      states->ibgda_peer_ranks().size());
+      states->ib_peer_ranks().size());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }

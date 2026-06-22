@@ -344,7 +344,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
   // used for IBGDA WQE construction during RDMA writes; NVLink puts never
   // read them. This mirrors HostWindow::registerLocalBuffer which guards
   // the same call with nIbgdaPeers > 0.
-  if (mpt->ibgda_peer_ranks().empty()) {
+  if (mpt->ib_peer_ranks().empty()) {
     return ncclSuccess;
   }
 

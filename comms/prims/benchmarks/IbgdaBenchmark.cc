@@ -440,6 +440,131 @@ TEST_F(IbgdaBenchmarkFixture, PutFlush) {
   printResultsTable("IBGDA Put+Flush (RDMA Write)", results);
 }
 
+TEST_F(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
+  // One thread per block uses the no-ThreadGroup put()+flush() API on a
+  // block-private slice. This checks that thread-scope wrappers inherit the
+  // physical block id instead of routing all blocks through block 0's QPs.
+  if (numRanks != 2) {
+    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  constexpr int kNumBlocks = 8;
+  constexpr uint8_t kFillPattern = 0x5A;
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  std::vector<IbgdaBenchmarkConfig> configs = {
+      {.nBytes = 8, .name = "8B"},
+      {.nBytes = 64 * 1024, .name = "64KB"},
+  };
+
+  std::size_t maxBytesPerBlock = 0;
+  for (const auto& config : configs) {
+    maxBytesPerBlock = std::max(maxBytesPerBlock, config.nBytes);
+  }
+  const std::size_t maxBufferSize = maxBytesPerBlock * kNumBlocks;
+
+  std::vector<IbgdaBenchmarkResult> results;
+
+  try {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+        .maxGroups = kNumBlocks,
+    };
+    transportConfig.ibHca = benchIbHca();
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultipeerIbgdaTransport transport(
+        globalRank, numRanks, bootstrap, transportConfig);
+    transport.exchange();
+
+    DeviceBuffer dataBuffer(maxBufferSize);
+    auto localDataBuf =
+        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
+
+    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    P2pIbgdaTransportDevice* deviceTransportPtr =
+        transport.getP2pTransportDevice(peerRank);
+
+    unsigned long long* d_blockCycles;
+    CUDA_CHECK_VOID(
+        cudaMalloc(&d_blockCycles, kNumBlocks * sizeof(unsigned long long)));
+    std::vector<unsigned long long> blockCycles(kNumBlocks);
+
+    for (const auto& config : configs) {
+      const std::size_t totalBytes = config.nBytes * kNumBlocks;
+      if (globalRank == 0) {
+        CUDA_CHECK_VOID(cudaMemset(dataBuffer.get(), kFillPattern, totalBytes));
+      } else {
+        CUDA_CHECK_VOID(cudaMemset(dataBuffer.get(), 0, totalBytes));
+      }
+      CUDA_CHECK_VOID(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      if (globalRank == 0) {
+        launchIbgdaThreadScopeMultiBlockPutFlushBatch(
+            deviceTransportPtr,
+            localDataBuf,
+            remoteDataBuf,
+            config.nBytes,
+            kNumBlocks,
+            kIbgdaBatchIters,
+            d_blockCycles,
+            stream_);
+        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+        CUDA_CHECK_VOID(cudaMemcpy(
+            blockCycles.data(),
+            d_blockCycles,
+            kNumBlocks * sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost));
+
+        unsigned long long maxCycles = 0;
+        for (unsigned long long cycles : blockCycles) {
+          maxCycles = std::max(maxCycles, cycles);
+        }
+
+        IbgdaBenchmarkResult result;
+        result.testName = config.name;
+        result.messageSize = config.nBytes;
+        result.latency = cyclesToUs(maxCycles) / kIbgdaBatchIters;
+        result.bandwidth =
+            (config.nBytes * kNumBlocks / 1e9f) / (result.latency / 1e6f);
+        results.push_back(result);
+      }
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      if (globalRank == 1) {
+        std::vector<uint8_t> hostBuf(totalBytes);
+        CUDA_CHECK_VOID(cudaMemcpy(
+            hostBuf.data(),
+            dataBuffer.get(),
+            totalBytes,
+            cudaMemcpyDeviceToHost));
+        for (std::size_t i = 0; i < totalBytes; i++) {
+          ASSERT_EQ(hostBuf[i], kFillPattern)
+              << "thread-scope multi-block put mismatch at byte " << i;
+        }
+      }
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    CUDA_CHECK_VOID(cudaFree(d_blockCycles));
+
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  printResultsTable("IBGDA ThreadScope MultiBlock Put+Flush", results);
+}
+
 TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
   // Measures raw RDMA Write latency (put + counter wait via companion QP)
   if (numRanks != 2) {

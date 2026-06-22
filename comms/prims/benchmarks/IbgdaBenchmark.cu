@@ -137,6 +137,35 @@ __global__ void ibgdaPutFlushBatchKernel(
   }
 }
 
+__global__ void ibgdaThreadScopeMultiBlockPutFlushBatchKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytesPerBlock,
+    int numIters,
+    unsigned long long* blockCycles) {
+  if (threadIdx.x == 0) {
+    const std::size_t offset = blockIdx.x * nbytesPerBlock;
+    IbgdaLocalBuffer blockLocalBuf = localBuf.subBuffer(offset);
+    IbgdaRemoteBuffer blockRemoteBuf = remoteBuf.subBuffer(offset);
+
+    for (int i = 0; i < 10; i++) {
+      transport->put(blockLocalBuf, blockRemoteBuf, nbytesPerBlock);
+      transport->flush();
+    }
+
+    unsigned long long startCycle = BENCHMARK_CLOCK64();
+
+    for (int i = 0; i < numIters; i++) {
+      transport->put(blockLocalBuf, blockRemoteBuf, nbytesPerBlock);
+      transport->flush();
+    }
+
+    unsigned long long endCycle = BENCHMARK_CLOCK64();
+    blockCycles[blockIdx.x] = endCycle - startCycle;
+  }
+}
+
 __global__ void ibgdaPutSignalWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
@@ -427,6 +456,24 @@ void launchIbgdaPutFlushBatch(
     cudaStream_t stream) {
   ibgdaPutFlushBatchKernel<<<1, 32, 0, stream>>>(
       transport, localBuf, remoteBuf, nbytes, numIters, totalCycles);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void launchIbgdaThreadScopeMultiBlockPutFlushBatch(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytesPerBlock,
+    int numBlocks,
+    int numIters,
+    unsigned long long* blockCycles,
+    cudaStream_t stream) {
+  ibgdaThreadScopeMultiBlockPutFlushBatchKernel<<<numBlocks, 32, 0, stream>>>(
+      transport, localBuf, remoteBuf, nbytesPerBlock, numIters, blockCycles);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

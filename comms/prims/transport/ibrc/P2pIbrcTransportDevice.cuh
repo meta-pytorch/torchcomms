@@ -54,6 +54,10 @@ inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 #define IBRC_CHECK_SLOT_ID(id, count, kind) assert((id) >= 0 && (id) < (count))
 #endif
 
+struct IbrcBlockQpState {
+  uint32_t put_rr{0};
+};
+
 /**
  * Device-side IBRC peer handle.
  *
@@ -70,7 +74,9 @@ class P2pIbrcTransportDevice {
   __host__ __device__ P2pIbrcTransportDevice(
       DeviceSpan<IbrcCmdQueueDevice> queues,
       uint32_t nics,
-      uint32_t qpsPerPeerPerNic,
+      uint32_t maxGroups,
+      uint32_t qpsPerBlockPerNic,
+      DeviceSpan<IbrcBlockQpState> blockQpState,
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
       IbgdaLocalBuffer ownedCounterDeviceBuf = {},
@@ -79,7 +85,9 @@ class P2pIbrcTransportDevice {
       int numCounterSlots = 0)
       : cmdQueues(queues),
         numNics(nics),
-        numQpsPerPeerPerNic(qpsPerPeerPerNic),
+        maxGroups_(maxGroups),
+        qpsPerBlockPerNic_(qpsPerBlockPerNic),
+        blockQpState_(blockQpState),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
         ownedCounterDeviceBuf_(ownedCounterDeviceBuf),
@@ -118,7 +126,7 @@ class P2pIbrcTransportDevice {
       uint64_t signalVal = 1,
       int counterId = -1,
       uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     put(solo,
         localBuf,
         remoteBuf,
@@ -154,7 +162,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void signal(int signalId, uint64_t signalVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     signal(solo, signalId, signalVal);
   }
 
@@ -170,7 +178,7 @@ class P2pIbrcTransportDevice {
       int signalId,
       uint64_t expected,
       const Timeout& timeout = Timeout()) const {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, timeout);
   }
 
@@ -186,7 +194,7 @@ class P2pIbrcTransportDevice {
       int counterId,
       uint64_t expected,
       const Timeout& timeout = Timeout()) const {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, timeout);
   }
 
@@ -195,7 +203,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void reset_signal(int signalId) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_signal(solo, signalId);
   }
 
@@ -204,7 +212,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void reset_counter(int counterId) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_counter(solo, counterId);
   }
 
@@ -224,7 +232,8 @@ class P2pIbrcTransportDevice {
       if (signalBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: signal buffer is null");
       }
-      const uint32_t queueId = queue_for_group(group.group_id);
+      validate_group_scope(group);
+      const uint32_t queueId = control_queue_id(group.block_id);
       const uint32_t nicId = nic_for_queue(queueId);
       IbrcDesc desc{};
       desc.signal_addr = reinterpret_cast<uint64_t>(signalBuf.ptr);
@@ -241,7 +250,7 @@ class P2pIbrcTransportDevice {
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     signal(solo, signalBuf, signalVal);
   }
 
@@ -266,7 +275,8 @@ class P2pIbrcTransportDevice {
     group.sync();
 
     if (group.is_leader()) {
-      const uint32_t queueId = queue_for_group(group.group_id);
+      validate_group_scope(group);
+      const uint32_t queueId = select_put_queue_id(group.block_id);
       const uint32_t nicId = nic_for_queue(queueId);
       IbrcDesc desc{};
       desc.op = static_cast<uint16_t>(hasData ? IbrcOp::PUT : IbrcOp::SIGNAL);
@@ -306,7 +316,7 @@ class P2pIbrcTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     put(solo,
         localBuf,
         remoteBuf,
@@ -344,7 +354,7 @@ class P2pIbrcTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     put_cooperative(
         solo,
         localBuf,
@@ -368,7 +378,7 @@ class P2pIbrcTransportDevice {
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
       const Timeout& timeout = Timeout()) const {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, timeout);
   }
 
@@ -379,7 +389,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void reset_signal(const IbgdaLocalBuffer& signalBuf) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_signal(solo, signalBuf);
   }
 
@@ -390,7 +400,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void reset_counter(const IbgdaLocalBuffer& counterBuf) {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     reset_counter(solo, counterBuf);
   }
 
@@ -406,7 +416,7 @@ class P2pIbrcTransportDevice {
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
       const Timeout& timeout = Timeout()) const {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, timeout);
   }
 
@@ -420,24 +430,14 @@ class P2pIbrcTransportDevice {
 
   __device__ void flush(ThreadGroup& group) {
     if (group.is_leader()) {
-      const uint32_t queueId = queue_for_group(group.group_id);
-      const IbrcCmdQueueDevice& queue = cmdQueues[queueId];
-      const uint64_t target = load_acquire_system_u64(queue.pi);
-      Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-      timeout.start();
-      while (load_acquire_system_u64(queue.ci) < target) {
-        check_status(queue);
-        if (timeout.checkExpired()) {
-          printf("P2pIbrcTransportDevice: flush timed out\n");
-          PIPES_DEVICE_TRAP();
-        }
-      }
+      validate_group_scope(group);
+      drain_block_queues(group.block_id);
     }
     group.sync();
   }
 
   __device__ void flush() {
-    ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+    ThreadGroup solo = make_thread_solo();
     flush(solo);
   }
 
@@ -450,11 +450,89 @@ class P2pIbrcTransportDevice {
   }
 
  private:
-  __device__ __forceinline__ uint32_t queue_for_group(uint32_t groupId) const {
+  __device__ __forceinline__ uint32_t num_qp_lanes() const {
+    return numNics * qpsPerBlockPerNic_;
+  }
+
+  __device__ __forceinline__ uint32_t num_qps_per_peer_per_nic() const {
+    return maxGroups_ * qpsPerBlockPerNic_;
+  }
+
+  __device__ __forceinline__ void validate_block_id(uint32_t blockId) const {
+#if PIPES_IS_DEVICE_COMPILE
+    if (blockIdx.y != 0 || blockIdx.z != 0 || blockDim.y != 1 ||
+        blockDim.z != 1) {
+      printf(
+          "P2pIbrcTransportDevice: block-owned QP selection currently "
+          "supports only 1D grids and 1D thread blocks, got "
+          "blockIdx=(%u,%u,%u) blockDim=(%u,%u,%u)\n",
+          blockIdx.x,
+          blockIdx.y,
+          blockIdx.z,
+          blockDim.x,
+          blockDim.y,
+          blockDim.z);
+      PIPES_DEVICE_TRAP();
+    }
+#endif
     if (cmdQueues.empty()) {
       trap("P2pIbrcTransportDevice: no command queues");
     }
-    return groupId % cmdQueues.size();
+    if (numNics == 0 || qpsPerBlockPerNic_ == 0 || maxGroups_ == 0 ||
+        blockQpState_.empty() || blockId >= maxGroups_) {
+      printf(
+          "P2pIbrcTransportDevice: invalid block-owned QP state block_id=%u "
+          "maxGroups=%u qpsPerBlockPerNic=%u numNics=%u stateSize=%u\n",
+          blockId,
+          maxGroups_,
+          qpsPerBlockPerNic_,
+          numNics,
+          static_cast<unsigned>(blockQpState_.size()));
+      PIPES_DEVICE_TRAP();
+    }
+  }
+
+  __device__ __forceinline__ void validate_group_scope(
+      const ThreadGroup& group) const {
+    if (group.scope == SyncScope::CLUSTER) {
+      trap("P2pIbrcTransportDevice: cluster-scope ThreadGroup unsupported");
+    }
+    validate_block_id(group.block_id);
+  }
+
+  __device__ __forceinline__ uint32_t
+  queue_for_lane(uint32_t blockId, uint32_t laneOrdinal) const {
+    validate_block_id(blockId);
+    const uint32_t lanes = num_qp_lanes();
+    if (laneOrdinal >= lanes) {
+      trap("P2pIbrcTransportDevice: lane ordinal out of range");
+    }
+    const uint32_t nicId = laneOrdinal % numNics;
+    const uint32_t qpIndex = laneOrdinal / numNics;
+    const uint32_t qpSlot = blockId * qpsPerBlockPerNic_ + qpIndex;
+    if (qpSlot >= num_qps_per_peer_per_nic()) {
+      trap("P2pIbrcTransportDevice: QP slot out of range");
+    }
+    const uint32_t queueId = qpSlot * numNics + nicId;
+    if (queueId >= cmdQueues.size()) {
+      trap("P2pIbrcTransportDevice: command queue id out of range");
+    }
+    return queueId;
+  }
+
+  __device__ __forceinline__ uint32_t control_queue_id(uint32_t blockId) const {
+    return queue_for_lane(blockId, 0);
+  }
+
+  __device__ __forceinline__ uint32_t select_put_queue_id(uint32_t blockId) {
+    validate_block_id(blockId);
+    const uint32_t lanes = num_qp_lanes();
+    if (lanes == 1) {
+      return control_queue_id(blockId);
+    }
+    const uint32_t seq =
+        fetch_add_system_u32(&blockQpState_[blockId].put_rr, 1U);
+    return queue_for_lane(blockId, seq % lanes);
   }
 
   __device__ __forceinline__ uint32_t nic_for_queue(uint32_t queueId) const {
@@ -462,6 +540,35 @@ class P2pIbrcTransportDevice {
       trap("P2pIbrcTransportDevice: no NICs");
     }
     return queueId % numNics;
+  }
+
+  __device__ void drain_queue(const IbrcCmdQueueDevice& queue) const {
+    const uint64_t target = load_acquire_system_u64(queue.pi);
+    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
+    timeout.start();
+    while (load_acquire_system_u64(queue.ci) < target) {
+      check_status(queue);
+      if (timeout.checkExpired()) {
+        printf("P2pIbrcTransportDevice: flush timed out\n");
+        PIPES_DEVICE_TRAP();
+      }
+    }
+  }
+
+  __device__ void drain_block_queues(uint32_t blockId) const {
+    validate_block_id(blockId);
+    const uint32_t lanes = num_qp_lanes();
+    for (uint32_t lane = 0; lane < lanes; ++lane) {
+      drain_queue(cmdQueues[queue_for_lane(blockId, lane)]);
+    }
+  }
+
+  __device__ void check_block_status(uint32_t blockId) const {
+    validate_block_id(blockId);
+    const uint32_t lanes = num_qp_lanes();
+    for (uint32_t lane = 0; lane < lanes; ++lane) {
+      check_status(cmdQueues[queue_for_lane(blockId, lane)]);
+    }
   }
 
   __device__ __forceinline__ uint64_t reserve(IbrcCmdQueueDevice& queue) const {
@@ -513,10 +620,9 @@ class P2pIbrcTransportDevice {
       trap("P2pIbrcTransportDevice: wait buffer is null");
     }
     if (group.is_leader()) {
-      const uint32_t queueId = queue_for_group(group.group_id);
-      const IbrcCmdQueueDevice& queue = cmdQueues[queueId];
+      validate_group_scope(group);
       while (load_acquire_system_u64(ptr) < expected) {
-        check_status(queue);
+        check_block_status(group.block_id);
         if (timeout.checkExpired()) {
           printf(
               "P2pIbrcTransportDevice: wait_%s timed out expected=%llu\n",
@@ -588,6 +694,18 @@ class P2pIbrcTransportDevice {
 #endif
   }
 
+  __device__ __forceinline__ static uint32_t fetch_add_system_u32(
+      uint32_t* ptr,
+      uint32_t value) {
+#ifdef __HIP_PLATFORM_AMD__
+    return __hip_atomic_fetch_add(
+        ptr, value, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+#else
+    return cuda::atomic_ref<uint32_t, cuda::thread_scope_system>{*ptr}
+        .fetch_add(value, cuda::memory_order_relaxed);
+#endif
+  }
+
   __device__ __forceinline__ static void store_release_system_u64(
       uint64_t* ptr,
       uint64_t value) {
@@ -634,7 +752,9 @@ class P2pIbrcTransportDevice {
 
   DeviceSpan<IbrcCmdQueueDevice> cmdQueues{};
   uint32_t numNics{0};
-  uint32_t numQpsPerPeerPerNic{0};
+  uint32_t maxGroups_{0};
+  uint32_t qpsPerBlockPerNic_{0};
+  DeviceSpan<IbrcBlockQpState> blockQpState_{};
   IbgdaRemoteBuffer ownedRemoteSignalBuf_{};
   IbgdaLocalBuffer ownedLocalSignalBuf_{};
   IbgdaLocalBuffer ownedCounterDeviceBuf_{};

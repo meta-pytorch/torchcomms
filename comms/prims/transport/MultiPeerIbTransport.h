@@ -69,14 +69,19 @@ struct MultipeerIbTransportConfig {
   // slot-index API. Independent of send/recv's private counter buffers.
   int numCounterSlots{0};
 
+  // Maximum number of physical block groups that may own IB QP resources.
+  // Device-side IB QP selection uses ThreadGroup::block_id and requires
+  // block_id < maxGroups.
+  int maxGroups{64};
+
   // Send/recv configuration. When set, the transport allocates a private
   // pipelined staging ring plus private signal/counter state for send()/recv().
   // When nullopt (default), only the raw put/signal APIs are available.
   struct SendRecvConfig {
     // Maximum number of block-groups that may participate in one send()/recv()
     // call. Sizes the private signal/counter/step arrays and caps
-    // active_blocks.
-    int maxGroups{128};
+    // active_blocks. A value of 0 inherits the top-level maxGroups.
+    int maxGroups{0};
 
     // Number of logical slots in the send/recv staging ring. Total staging
     // bytes per peer per direction: pipelineDepth * dataBufferSize.
@@ -92,10 +97,14 @@ struct MultipeerIbTransportConfig {
   uint32_t qpDepth{1024};
 #endif
 
-  // Number of QP sets per (peer, NIC). Total QPs to a peer =
-  // numQpsPerPeerPerNic * numNics. Multiple QPs let different GPU blocks use
-  // independent QPs.
-  int numQpsPerPeerPerNic{1};
+  // Number of main QPs owned by one physical block on each NIC. IBGDA executes
+  // on the selected QP directly; IBRC enqueues to the selected QP's CPU-proxy
+  // command queue.
+  int qpsPerBlockPerNic{1};
+
+  int numQpsPerPeerPerNic() const {
+    return maxGroups * qpsPerBlockPerNic;
+  }
 
   // InfiniBand Verbs Timeout for QP ACK timeout (4.096us * 2^timeout). Valid
   // 1-31; 0 or >=32 is infinite. Default 20 (similar to NCCL_IB_TIMEOUT).
@@ -156,10 +165,13 @@ struct IbTransportExchInfo {
  */
 constexpr int kMaxRanksForAllGather = 128;
 
-/**
- * Maximum number of QP sets per (peer, NIC) for multi-QP support.
- */
-constexpr int kMaxQpsPerPeerPerNic = 128;
+// Eager allGather QPN exchange uses a compact fixed-size wire format. Larger
+// block-owned QP shapes must use lazy peer materialization.
+constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
+
+constexpr int kMaxIbGroups = 64;
+constexpr int kMaxIbQpsPerBlockPerNic = 128;
+constexpr int kMaxIbQpsPerPeerPerNic = kMaxIbGroups * kMaxIbQpsPerBlockPerNic;
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -178,7 +190,8 @@ struct IbTransportExchInfoAll {
     uint16_t lid{0};
     // QPN this rank uses on this NIC to connect to (target_rank, q).
     // qpnForRank[myRank][*] is unused (set to 0).
-    uint32_t qpnForRank[kMaxRanksForAllGather][kMaxQpsPerPeerPerNic]{};
+    uint32_t qpnForRank[kMaxRanksForAllGather]
+                       [kMaxEagerExchangeQpsPerPeerPerNic]{};
   };
   NicWireInfo nicInfo[kMaxNicsPerGpu]{};
 
@@ -192,6 +205,10 @@ struct IbTransportExchInfoAll {
 
   // Number of QPs per (peer, NIC) used by this rank.
   int numQpsPerPeerPerNic{1};
+
+  // Block-owned QP shape.
+  int maxGroups{64};
+  int qpsPerBlockPerNic{1};
 };
 
 // Bootstrap tags for the two-phase bilateral exchange in lazy materialization.
@@ -204,13 +221,15 @@ struct PeerQpPayload {
   struct NicQpInfo {
     uint8_t gid[16]{};
     uint16_t lid{0};
-    uint32_t qpns[kMaxQpsPerPeerPerNic]{};
+    uint32_t qpns[kMaxIbQpsPerPeerPerNic]{};
   };
   NicQpInfo nicInfo[kMaxNicsPerGpu]{};
   int gidIndex{0};
   int mtu{0};
   int numNics{0};
   int numQpsPerPeerPerNic{0};
+  int maxGroups{0};
+  int qpsPerBlockPerNic{0};
 };
 
 struct PeerBufferPayload {
