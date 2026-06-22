@@ -44,7 +44,7 @@ class IbvQp {
       ibv_recv_wr* recvWrBad);
   inline folly::Expected<folly::Unit, Error> postSend(
       ibv_send_wr* sendWr,
-      ibv_send_wr* sendWrBad);
+      ibv_send_wr** sendWrBad);
 
   void enquePhysicalSendWrStatus(int physicalWrId, int virtualWrId);
   void enquePhysicalRecvWrStatus(int physicalWrId, int virtualWrId);
@@ -91,8 +91,8 @@ inline folly::Expected<folly::Unit, Error> IbvQp::postRecv(
 
 inline folly::Expected<folly::Unit, Error> IbvQp::postSend(
     ibv_send_wr* sendWr,
-    ibv_send_wr* sendWrBad) {
-  int rc = qp_->context->ops.post_send(qp_, sendWr, &sendWrBad);
+    ibv_send_wr** sendWrBad) {
+  int rc = qp_->context->ops.post_send(qp_, sendWr, sendWrBad);
   if (rc != 0) {
     return folly::makeUnexpected(Error(rc));
   }
