@@ -328,6 +328,38 @@ class RunMastBenchmarksTest(unittest.TestCase):
 
         self.assertTrue(job.passed)
 
+    def test_print_summary_distinguishes_usable_result_from_runtime_clean(
+        self,
+    ) -> None:
+        result = {
+            "benchmark": "disagg_prefill_decode",
+            "connector": "UniflowConnector",
+            "correctness": {"mismatches": 0, "passed": True, "total_checked": 2},
+            "mode": "accuracy",
+            "performance": {
+                "median_s": 10.0,
+                "req_per_s": 4.0,
+            },
+            "schema_version": 1,
+            "status": "passed",
+        }
+        job = run_mast_benchmarks.JobResult(
+            spec=self.job_spec(),
+            app_uri="mast://torchx/torchx-bench-cn-uni-tp1",
+            state="SUCCEEDED",
+            log_lines=[
+                "trainer/0 [0]:BENCHMARK_RESULT_JSON: " + json.dumps(result),
+                "trainer/0 [0]:Traceback (most recent call last):",
+            ],
+        )
+
+        with self.assertLogs(run_mast_benchmarks.logger, level="INFO") as logs:
+            run_mast_benchmarks.print_summary("pkg:abcdef0", [job])
+
+        rendered = "\n".join(logs.output)
+        self.assertIn("comparison=USABLE runtime=ISSUES", rendered)
+        self.assertIn("post_result_runtime_errors=1", rendered)
+
     def test_make_job_specs_logs_when_tp_values_shadow_tp(self) -> None:
         args = argparse.Namespace(
             connector="uniflow",
