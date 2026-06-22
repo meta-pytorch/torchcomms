@@ -74,6 +74,9 @@ NcclScubaSample MemoryEvent::toSample() {
   if (durationUs.has_value()) {
     sample.addInt("durationUs", durationUs.value());
   }
+  if (memType.has_value()) {
+    sample.addNormal("memType", memType.value());
+  }
   sample.addNormal("callsite", callsite);
   sample.addNormal("use", use);
   sample.addInt("iteration", iteration);
