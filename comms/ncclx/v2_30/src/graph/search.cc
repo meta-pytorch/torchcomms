@@ -994,8 +994,10 @@ float sm90SpeedArrayInter[] = { 48.0, 45.0, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0, 
 
 float sm100SpeedArrayIntra[] = { 90.0, 80.0, 70.0, 60.0, 50.0, 45.0, 40.0, 30.0, 24.0, 20.0, 19.0, 18.0 };
 float sm100SpeedArrayInter[] = { 96.0, 86.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0, 17.5, 15.0, 12.0, 6.0, 3.0, 2.4, 1.2, 0.24, 0.12 };
+const float sm100SpeedArrayInterV229[] = { 96.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0, 17.5, 15.0, 12.0, 6.0, 3.0, 2.4, 1.2, 0.24, 0.12 };
 #define NSPEEDSINTRA_SM100 (sizeof(sm100SpeedArrayIntra)/sizeof(float))
 #define NSPEEDSINTER_SM100 (sizeof(sm100SpeedArrayInter)/sizeof(float))
+#define NSPEEDSINTER_SM100_V229 (sizeof(sm100SpeedArrayInterV229)/sizeof(float))
 
 ncclResult_t ncclTopoCheckCrossNicSupport(bool* supported) {
   *supported = (ncclParamCrossNic() != 0);
@@ -1095,13 +1097,17 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
 
   // First try crossnic, then decrease bw and finally increase bwIntra.
   int nspeeds = 0;
-  float* speedArray = NULL;
+  const float* speedArray = NULL;
   if (system->inter == 0) {
     nspeeds = ccMin >= 100 ? NSPEEDSINTRA_SM100 : (ccMin >= 90 ? NSPEEDSINTRA_SM90 : NSPEEDSINTRA);
     speedArray = ccMin >= 100 ? sm100SpeedArrayIntra : (ccMin >= 90 ? sm90SpeedArrayIntra : speedArrayIntra);
+  } else if (ccMin >= 100) {
+    const bool useV229 = NCCL_TOPO_BOND_V229;
+    nspeeds = useV229 ? NSPEEDSINTER_SM100_V229 : NSPEEDSINTER_SM100;
+    speedArray = useV229 ? sm100SpeedArrayInterV229 : sm100SpeedArrayInter;
   } else {
-    nspeeds = ccMin >= 100 ? NSPEEDSINTER_SM100 : (ccMin >= 90 ? NSPEEDSINTER_SM90 : NSPEEDSINTER);
-    speedArray = ccMin >= 100 ? sm100SpeedArrayInter : (ccMin >= 90 ? sm90SpeedArrayInter : speedArrayInter);
+    nspeeds = ccMin >= 90 ? NSPEEDSINTER_SM90 : NSPEEDSINTER;
+    speedArray = ccMin >= 90 ? sm90SpeedArrayInter : speedArrayInter;
   }
   int pass = 1;
   int speedIndex = 0;

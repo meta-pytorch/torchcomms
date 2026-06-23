@@ -677,6 +677,14 @@ cvars:
      Blackwell per-channel tuning bandwidths, and uses NET node
      count for system->inter.
 
+ - name        : NCCL_TOPO_BOND_V229
+   type        : bool
+   default     : true
+   description : |-
+     Controls v2.29 vs v2.30 SM100 inter-node topology speed tiers.
+     When true (default, v2.29-like): skips the 86GB/s inter-node
+     speed tier. When false (v2.30 behavior): includes that tier.
+
  - name        : NCCL_NTHREADS
    type        : int64_t
    default     : -2
