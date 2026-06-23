@@ -3199,6 +3199,16 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
+   type        : bool
+   default     : true
+   description : |-
+     Enable MCCL Bootstrap READY-socket health polling. When enabled, Bootstrap
+     polls established peer sockets and converts kernel-observed socket errors
+     or peer close into communicator abort. Disable this as a kill switch for
+     the socket-health polling path; active Bootstrap socket I/O errors still
+     use the separate callback path.
+
  - name        : MCCL_SCUBA_ENABLED
    type        : bool
    default     : true
