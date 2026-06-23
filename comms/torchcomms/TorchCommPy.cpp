@@ -136,6 +136,25 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           &CommOptions::hints,
           "Dictionary of string hints for backend-specific options");
 
+  py::class_<CommTopology>(
+      m, "CommTopology", "Node layout of a communicator's ranks.")
+      .def_readonly(
+          "num_nodes",
+          &CommTopology::num_nodes,
+          "Number of distinct nodes spanned by this communicator")
+      .def_readonly(
+          "local_node_ranks",
+          &CommTopology::local_node_ranks,
+          "Number of ranks on the local node")
+      .def_readonly(
+          "uniform",
+          &CommTopology::uniform,
+          "True if every node has the same number of ranks")
+      .def(
+          "is_single_node",
+          &CommTopology::isSingleNode,
+          "Whether all ranks are on a single node");
+
   py::class_<BatchP2POptions>(
       m, "BatchP2POptions", "Options for batched P2P operations.")
       .def(py::init<>(), "Create default BatchP2POptions")
@@ -1261,6 +1280,11 @@ or an object with a ``wait()`` method for asynchronous operations.
           "get_name",
           &TorchComm::getCommName,
           "Get the name of the communicator",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_topology",
+          &TorchComm::getTopology,
+          "Get the topology of the communicator's ranks",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_options",

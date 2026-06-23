@@ -52,7 +52,10 @@ void createPreMulSum(
       is_tensor ? dataType == getXcclDataTypeInternal(tensor)
                 : dataType != onecclBfloat16,
       "PreMulSum factor type must match input data type");
-  xccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm);
+  XCCL_CHECK(
+      xccl_api,
+      xccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm),
+      "Failed to create PreMulSum reduction operation");
 }
 
 } // namespace
@@ -102,7 +105,10 @@ TorchCommXCCL::RedOpRAII::RedOpRAII(
 
 TorchCommXCCL::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    xccl_api_->redOpDestroy(xcclRedOp_, comm_);
+    XCCL_CHECK_IGNORE(
+        xccl_api_,
+        xccl_api_->redOpDestroy(xcclRedOp_, comm_),
+        "Failed to destroy XCCL reduction operation");
   }
 }
 

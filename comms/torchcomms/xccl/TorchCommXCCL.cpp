@@ -4,10 +4,15 @@
 #include <c10/core/DeviceGuard.h>
 #include <c10/xpu/XPUCachingAllocator.h>
 #include <c10/xpu/XPUStream.h>
+#include <limits.h>
 #include <torch/csrc/xpu/XPUPluggableAllocator.h>
+#include <unistd.h>
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
@@ -15,6 +20,37 @@
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
 namespace torch::comms {
+
+uint64_t fnvHash(const void* data, size_t len) {
+  uint64_t hash = 0xcbf29ce484222325ULL; // FNV-1a offset basis
+  auto* bytes = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < len; ++i) {
+    hash ^= bytes[i];
+    hash *= 0x100000001b3ULL; // FNV-1a prime
+  }
+  return hash;
+}
+
+uint64_t getHostHash() {
+  static uint64_t hash = [] {
+    char hostname[HOST_NAME_MAX + 1] = {};
+    gethostname(hostname, sizeof(hostname));
+
+    std::string hostId(hostname);
+
+    // Append boot_id for container awareness — each Linux namespace gets a
+    // unique boot_id, so containers on the same physical host hash differently.
+    std::ifstream bootIdFile("/proc/sys/kernel/random/boot_id");
+    if (bootIdFile) {
+      std::string bootId;
+      std::getline(bootIdFile, bootId);
+      hostId += bootId;
+    }
+
+    return fnvHash(hostId.data(), hostId.size());
+  }();
+  return hash;
+}
 
 // Create a StreamGuard only when the device is not CPU.
 // CPU tensors don't need stream-based ordering, and constructing a
@@ -385,6 +421,32 @@ void TorchCommXCCL::init(
       xccl_api_->commCount(xccl_comm_, &comm_size_),
       "XCCL commCount failed");
 
+  // Determine the communicator's topology by hashing each rank's
+  // hostname (folded with boot_id for container awareness) and all-gathering
+  // the per-rank hashes. Counting distinct hashes gives the node count, and
+  // the multiplicity of the local rank's hash gives the local ranks-per-node.
+  // The host hashes operate on host buffers, but the oneCCL plugin submits the
+  // all-gather on the provided stream (asynchronously), so we synchronize
+  // before reading the gathered results back.
+  // Topology discovery costs one extra all-gather at init. On by default;
+  // callers that never query it can opt out via the compute_topology hint.
+  if (options_.getHint<bool>(kHintComputeTopology, true)) {
+    topology_ = computeTopology();
+    topology_available_ = true;
+    TC_LOG(INFO, this) << "XCCL communicator name: " << name_
+                       << ", comm_size: " << comm_size_
+                       << ", num_nodes: " << topology_.num_nodes
+                       << ", local_node_ranks: " << topology_.local_node_ranks
+                       << ", uniform: "
+                       << (topology_.uniform ? "true" : "false")
+                       << ", is_single_node: "
+                       << (topology_.isSingleNode() ? "true" : "false");
+  } else {
+    TC_LOG(INFO, this) << "XCCL communicator name: " << name_
+                       << ", topology discovery disabled via '"
+                       << kHintComputeTopology << "' hint";
+  }
+
   TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
@@ -570,6 +632,58 @@ std::string_view TorchCommXCCL::getBackendVersion() const {
 
 std::string_view TorchCommXCCL::getCommName() const {
   return name_;
+}
+
+CommTopology TorchCommXCCL::getTopology() const {
+  if (!topology_available_) {
+    throw std::logic_error(
+        "[TorchCommXCCL]: topology not computed; init with the '" +
+        std::string(kHintComputeTopology) +
+        "' hint enabled (default) to use getTopology() for communicator: " +
+        std::string(name_));
+  }
+  return topology_;
+}
+
+CommTopology TorchCommXCCL::computeTopology() {
+  // Each rank contributes a hash of its host identity; gathering all of them
+  // lets every rank reconstruct the same node layout. These are host buffers,
+  // which the oneCCL plugin submits on the stream, so we synchronize before
+  // reading the gathered values back.
+  uint64_t host_id = getHostHash();
+  std::vector<uint64_t> all_host_ids(comm_size_);
+
+  xpuStream_t stream = internal_stream_.value();
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allGather(
+          &host_id, all_host_ids.data(), 1, onecclUint64, xccl_comm_, stream),
+      "XCCL allGather of host ids failed");
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->streamSynchronize(stream),
+      "Failed to synchronize stream for topology detection");
+
+  // Count how many ranks share each host hash. The number of distinct hashes
+  // is the node count; the count for the local rank's hash is the local
+  // ranks-per-node.
+  std::unordered_map<uint64_t, int> ranks_on_host;
+  for (uint64_t id : all_host_ids) {
+    ++ranks_on_host[id];
+  }
+
+  CommTopology topology;
+  topology.num_nodes = static_cast<int>(ranks_on_host.size());
+  topology.local_node_ranks = ranks_on_host[host_id];
+
+  // The factorization is only meaningful if every node holds the same number
+  // of ranks.
+  topology.uniform = std::all_of(
+      ranks_on_host.begin(), ranks_on_host.end(), [&](const auto& entry) {
+        return entry.second == topology.local_node_ranks;
+      });
+
+  return topology;
 }
 
 static inline std::chrono::milliseconds getOperationTimeout(
@@ -2369,5 +2483,5 @@ class XCCLRegistration {
   }
 };
 
-static XCCLRegistration registration{};
+[[maybe_unused]] static XCCLRegistration registration{};
 } // namespace
