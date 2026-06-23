@@ -184,13 +184,43 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
           nRanks,
           std::move(bootstrap),
           config) {
-  if (config.numQpsPerPeerPerNic < 1 ||
-      config.numQpsPerPeerPerNic > kMaxQpsPerPeerPerNic) {
+  const int numQpsPerPeerPerNic = config.numQpsPerPeerPerNic();
+  if (config.maxGroups < 1) {
+    throw std::invalid_argument("maxGroups must be >= 1");
+  }
+  if (config.qpsPerBlockPerNic < 1) {
+    throw std::invalid_argument("qpsPerBlockPerNic must be >= 1");
+  }
+  if (config.maxGroups > kMaxIbGroups) {
     throw std::invalid_argument(
         fmt::format(
-            "numQpsPerPeerPerNic must be in [1, {}], got {}",
-            kMaxQpsPerPeerPerNic,
-            config.numQpsPerPeerPerNic));
+            "maxGroups must be <= {}, got {}", kMaxIbGroups, config.maxGroups));
+  }
+  if (config.qpsPerBlockPerNic > kMaxIbQpsPerBlockPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "qpsPerBlockPerNic must be <= {}, got {}",
+            kMaxIbQpsPerBlockPerNic,
+            config.qpsPerBlockPerNic));
+  }
+  if (numQpsPerPeerPerNic > kMaxIbQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "maxGroups * qpsPerBlockPerNic must be <= {}, got {} * {} = {}",
+            kMaxIbQpsPerPeerPerNic,
+            config.maxGroups,
+            config.qpsPerBlockPerNic,
+            numQpsPerPeerPerNic));
+  }
+  if (!config.ibLazyConnect &&
+      numQpsPerPeerPerNic > kMaxEagerExchangeQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "eager IBRC allGather exchange supports at most {} QPs per "
+            "(peer,NIC); got {}. Enable ibLazyConnect for larger "
+            "maxGroups * qpsPerBlockPerNic shapes.",
+            kMaxEagerExchangeQpsPerPeerPerNic,
+            numQpsPerPeerPerNic));
   }
 
   peerResources_.resize(nRanks_ - 1);
@@ -563,7 +593,7 @@ void MultipeerIbrcTransport::publishQueueError(
   const int peerRank = peerIndex < myRank_ ? peerIndex : peerIndex + 1;
   const auto queueIndex = static_cast<uint32_t>(
       ((static_cast<uint64_t>(peerIndex) *
-            static_cast<uint64_t>(config_.numQpsPerPeerPerNic) +
+            static_cast<uint64_t>(config_.numQpsPerPeerPerNic()) +
         static_cast<uint64_t>(cmdQueue.qpSlot)) *
        static_cast<uint64_t>(numNics_)) +
       static_cast<uint64_t>(cmdQueue.nic));
@@ -659,6 +689,7 @@ void MultipeerIbrcTransport::cleanupPeerCmdQueues(int peerIndex) noexcept {
   auto& peer = peerResources_[peerIndex];
   peer.cmdQueues.clear();
   peer.cmdQueueDevices.reset();
+  peer.blockQpState.reset();
   peer.cmdQueuesAllocated = false;
   if (p2pTransportDevices_.host != nullptr) {
     updatePeerDeviceTransport(peerIndex);
@@ -683,7 +714,7 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
     return;
   }
 
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int numQps = config_.numQpsPerPeerPerNic();
   const std::size_t cmdQueuesPerPeer = checkedMul(
       static_cast<std::size_t>(numNics_),
       static_cast<std::size_t>(numQps),
@@ -739,6 +770,9 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
       peer.cmdQueueDevices.host,
       deviceCmdQueues.data(),
       deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice));
+  peer.blockQpState = allocateMapped(
+      static_cast<std::size_t>(config_.maxGroups) * sizeof(IbrcBlockQpState),
+      "per-peer block QP state");
   peer.cmdQueues = std::move(cmdQueues);
   peer.cmdQueuesAllocated = true;
   updatePeerDeviceTransport(peerIndex);
@@ -788,7 +822,11 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
           static_cast<IbrcCmdQueueDevice*>(peer.cmdQueueDevices.device),
           static_cast<uint32_t>(peer.cmdQueues.size())),
       static_cast<uint32_t>(numNics_),
-      static_cast<uint32_t>(config_.numQpsPerPeerPerNic),
+      static_cast<uint32_t>(config_.maxGroups),
+      static_cast<uint32_t>(config_.qpsPerBlockPerNic),
+      DeviceSpan<IbrcBlockQpState>(
+          static_cast<IbrcBlockQpState*>(peer.blockQpState.device),
+          static_cast<uint32_t>(config_.maxGroups)),
       remoteSignalBuf,
       localSignalBuf,
       counterDeviceBuf,
@@ -925,7 +963,7 @@ void MultipeerIbrcTransport::createPeerQps(int peerIndex) {
     return;
   }
 
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int numQps = config_.numQpsPerPeerPerNic();
   std::vector<PeerQpResource> qpResources;
   qpResources.reserve(static_cast<std::size_t>(numNics_) * numQps);
   auto& symbols = ibverbx::ibvSymbols;
@@ -1031,7 +1069,7 @@ const MultipeerIbrcTransport::PeerQpResource&
 MultipeerIbrcTransport::qpResourceAt(int peerIndex, int nic, int qpSlot) const {
   if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size()) ||
       nic < 0 || nic >= numNics_ || qpSlot < 0 ||
-      qpSlot >= config_.numQpsPerPeerPerNic) {
+      qpSlot >= config_.numQpsPerPeerPerNic()) {
     throw std::invalid_argument(
         fmt::format(
             "qpResourceAt: invalid peerIndex={} nic={} qpSlot={}",
@@ -1053,12 +1091,14 @@ MultipeerIbrcTransport::qpResourceAt(int peerIndex, int nic, int qpSlot) const {
 }
 
 PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int numQps = config_.numQpsPerPeerPerNic();
   PeerQpPayload payload{};
   payload.gidIndex = gidIndex_;
   payload.mtu = static_cast<int>(localMtu_);
   payload.numNics = numNics_;
   payload.numQpsPerPeerPerNic = numQps;
+  payload.maxGroups = config_.maxGroups;
+  payload.qpsPerBlockPerNic = config_.qpsPerBlockPerNic;
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1186,16 +1226,28 @@ void MultipeerIbrcTransport::connectPeerQps(
             remotePayload.numNics,
             numNics_));
   }
-  if (remotePayload.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
+  if (remotePayload.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic()) {
     throw std::runtime_error(
         fmt::format(
             "IBRC peerIndex={} numQps={} vs local {}",
             peerIndex,
             remotePayload.numQpsPerPeerPerNic,
-            config_.numQpsPerPeerPerNic));
+            config_.numQpsPerPeerPerNic()));
+  }
+  if (remotePayload.maxGroups != config_.maxGroups ||
+      remotePayload.qpsPerBlockPerNic != config_.qpsPerBlockPerNic) {
+    throw std::runtime_error(
+        fmt::format(
+            "IBRC peerIndex={} block-owned QP shape maxGroups={} "
+            "qpsPerBlockPerNic={} vs local {} {}",
+            peerIndex,
+            remotePayload.maxGroups,
+            remotePayload.qpsPerBlockPerNic,
+            config_.maxGroups,
+            config_.qpsPerBlockPerNic));
   }
 
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int numQps = config_.numQpsPerPeerPerNic();
   for (int nic = 0; nic < numNics_; ++nic) {
     for (int q = 0; q < numQps; ++q) {
       connectPeerQp(
@@ -1211,7 +1263,7 @@ void MultipeerIbrcTransport::connectPeerQps(
 
 void MultipeerIbrcTransport::exchangeAndConnectQps() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int numQps = config_.numQpsPerPeerPerNic();
 
   for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
     createPeerQps(peerIndex);
@@ -1222,6 +1274,8 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
   myInfo.mtu = localMtu_;
   myInfo.numNics = numNics_;
   myInfo.numQpsPerPeerPerNic = numQps;
+  myInfo.maxGroups = config_.maxGroups;
+  myInfo.qpsPerBlockPerNic = config_.qpsPerBlockPerNic;
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {

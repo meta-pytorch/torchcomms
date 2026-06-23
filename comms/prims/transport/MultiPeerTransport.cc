@@ -66,7 +66,7 @@ MultiPeerTransport::MultiPeerTransport(
     : myRank_(myRank),
       nRanks_(nRanks),
       deviceId_(deviceId),
-      ibLazyConnect_(config.ibgdaConfig.ibLazyConnect),
+      ibLazyConnect_(config.ibConfig.ibLazyConnect),
       bootstrap_(std::move(bootstrap)) {
   if (!topo.has_value()) {
     TopologyDiscovery topoDiscovery;
@@ -107,7 +107,7 @@ void MultiPeerTransport::initFromTopology(
             "NCCL_CTRAN_PIPES_DISABLE_IB=1.");
       }
     }
-    // ibgdaPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
+    // ibPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
   } else {
     const auto ibTransportType = config.ibMode == IbBackendMode::kIbrc
         ? TransportType::P2P_IBRC
@@ -123,8 +123,9 @@ void MultiPeerTransport::initFromTopology(
     }
 
     for (int r = 0; r < nRanks_; ++r) {
-      if (r != myRank_) {
-        ibgdaPeerRanks_.push_back(r);
+      if (typePerRank_.at(r) == TransportType::P2P_IBGDA ||
+          typePerRank_.at(r) == TransportType::P2P_IBRC) {
+        ibPeerRanks_.push_back(r);
       }
     }
   }
@@ -172,20 +173,20 @@ void MultiPeerTransport::initFromTopology(
   // Create the IB sub-transport — the universal fallback for all non-NVL peers.
   // Exactly one backend is built, selected by config.ibMode (kIbgda default;
   // kIbrc selects the CPU-proxy backend).
-  if (!config.disableIb && nRanks_ > 1) {
-    auto ibConfig = config.ibgdaConfig;
+  if (!config.disableIb && !ibPeerRanks_.empty()) {
+    auto ibConfig = config.ibConfig;
     ibConfig.cudaDevice = deviceId_;
     if (config.ibMode == IbBackendMode::kIbrc) {
       ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
           myRank_, nRanks_, bootstrap_, ibConfig);
       VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBRC sub-transport for " << ibgdaPeerRanks_.size()
+              << " created IBRC sub-transport for " << ibPeerRanks_.size()
               << " peers";
     } else {
       ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
           myRank_, nRanks_, bootstrap_, ibConfig);
       VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBGDA sub-transport for " << ibgdaPeerRanks_.size()
+              << " created IBGDA sub-transport for " << ibPeerRanks_.size()
               << " peers";
     }
   }
@@ -290,7 +291,7 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
       nRanks_,
       {transportsGpu_, static_cast<uint32_t>(nRanks_)},
       static_cast<int>(nvlPeerRanks_.size()),
-      static_cast<int>(ibgdaPeerRanks_.size()),
+      static_cast<int>(ibPeerRanks_.size()),
   };
 }
 
@@ -306,7 +307,7 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
       nRanks_,
       {transportsGpu_, static_cast<uint32_t>(nRanks_)},
       static_cast<int>(nvlPeerRanks_.size()),
-      static_cast<int>(ibgdaPeerRanks_.size()),
+      static_cast<int>(ibPeerRanks_.size()),
   };
 }
 

@@ -113,17 +113,17 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           config.nvlConfig.ll128BufferSize);
     }
 
-    // IBGDA config (ordered to match MultipeerIbgdaTransportConfig fields)
-    config.ibgdaConfig.cudaDevice = comm->statex_->cudaDev();
+    // IB config (ordered to match MultipeerIbTransportConfig fields)
+    config.ibConfig.cudaDevice = comm->statex_->cudaDev();
     if (NCCL_IB_GID_INDEX >= 0) {
-      config.ibgdaConfig.gidIndex = static_cast<int>(NCCL_IB_GID_INDEX);
+      config.ibConfig.gidIndex = static_cast<int>(NCCL_IB_GID_INDEX);
     }
     if (!NCCL_IB_ADDR_FAMILY.empty()) {
-      config.ibgdaConfig.addressFamily = (NCCL_IB_ADDR_FAMILY == "IPV4")
+      config.ibConfig.addressFamily = (NCCL_IB_ADDR_FAMILY == "IPV4")
           ? comms::prims::AddressFamily::IPV4
           : comms::prims::AddressFamily::IPV6;
     }
-    // Pass raw NCCL_IB_HCA string to ibgdaConfig; NicDiscovery's ibHcaParser
+    // Pass raw NCCL_IB_HCA string to ibConfig; NicDiscovery's ibHcaParser
     // handles prefix semantics and port suffixes internally.
     if (!NCCL_IB_HCA.empty()) {
       std::string hcaStr = NCCL_IB_HCA_PREFIX;
@@ -133,7 +133,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         }
         hcaStr += NCCL_IB_HCA[i];
       }
-      config.ibgdaConfig.ibHca = std::move(hcaStr);
+      config.ibConfig.ibHca = std::move(hcaStr);
     }
     uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
         ? static_cast<size_t>(pc.ibgdaDataBufferSize)
@@ -142,51 +142,58 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       ibgdaDataBufferSize = std::max(
           ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
     }
-    config.ibgdaConfig.dataBufferSize =
-        static_cast<size_t>(ibgdaDataBufferSize);
-    config.ibgdaConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
+    config.ibConfig.dataBufferSize = static_cast<size_t>(ibgdaDataBufferSize);
+    config.ibConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
+      config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
     }
     if (NCCL_IB_RETRY_CNT != NCCL_IB_RETRY_CNT_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.retryCount = static_cast<uint8_t>(NCCL_IB_RETRY_CNT);
+      config.ibConfig.retryCount = static_cast<uint8_t>(NCCL_IB_RETRY_CNT);
     }
     if (NCCL_IB_TC != NCCL_IB_TC_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.trafficClass = static_cast<uint8_t>(NCCL_IB_TC);
+      config.ibConfig.trafficClass = static_cast<uint8_t>(NCCL_IB_TC);
     }
     if (NCCL_IB_SL != NCCL_IB_SL_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.serviceLevel = static_cast<uint8_t>(NCCL_IB_SL);
+      config.ibConfig.serviceLevel = static_cast<uint8_t>(NCCL_IB_SL);
     }
     if (NCCL_CTRAN_IBGDA_MIN_RNR_TIMER !=
         NCCL_CTRAN_IBGDA_MIN_RNR_TIMER_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.minRnrTimer =
+      config.ibConfig.minRnrTimer =
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_MIN_RNR_TIMER);
     }
     if (NCCL_CTRAN_IBGDA_RNR_RETRY !=
         NCCL_CTRAN_IBGDA_RNR_RETRY_DEFAULTCVARVALUE) {
-      config.ibgdaConfig.rnrRetry =
+      config.ibConfig.rnrRetry =
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
-    config.ibgdaConfig.ibLazyConnect = pc.ibLazyConnect;
-    config.ibgdaConfig.materializePeerTimeoutMs =
+    config.ibConfig.ibLazyConnect = pc.ibLazyConnect;
+    config.ibConfig.materializePeerTimeoutMs =
         NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
+    if (NCCL_CTRAN_IB_MAX_GROUPS <= 0) {
+      CLOGF(
+          ERR,
+          "NCCL_CTRAN_IB_MAX_GROUPS must be positive, got {}",
+          NCCL_CTRAN_IB_MAX_GROUPS);
+      return commInvalidArgument;
+    }
+    if (NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC <= 0) {
+      CLOGF(
+          ERR,
+          "NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC must be positive, got {}",
+          NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
+      return commInvalidArgument;
+    }
+    config.ibConfig.maxGroups = static_cast<int>(NCCL_CTRAN_IB_MAX_GROUPS);
+    config.ibConfig.qpsPerBlockPerNic =
+        static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
     if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
-      config.ibgdaConfig.numQpsPerPeerPerNic =
-          static_cast<int>(NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC);
-      if (config.ibgdaConfig.dataBufferSize == 0) {
+      if (config.ibConfig.dataBufferSize == 0) {
         CLOGF(
             ERR,
             "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 requires a positive "
             "IBGDA data-buffer size via NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE "
             "or the per-communicator IBGDA data-buffer override");
-        return commInvalidArgument;
-      }
-      if (NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS <= 0) {
-        CLOGF(
-            ERR,
-            "NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS must be positive, got {}",
-            NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS);
         return commInvalidArgument;
       }
       if (NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
@@ -196,19 +203,18 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
         return commInvalidArgument;
       }
-      config.ibgdaConfig.sendRecv =
-          comms::prims::MultipeerIbgdaTransportConfig::SendRecvConfig{
-              .maxGroups =
-                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS),
+      config.ibConfig.sendRecv =
+          comms::prims::MultipeerIbTransportConfig::SendRecvConfig{
+              .maxGroups = config.ibConfig.maxGroups,
               .pipelineDepth =
                   static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
           };
       CLOGF(
           INFO,
           "Prims IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}",
-          config.ibgdaConfig.sendRecv->maxGroups,
-          config.ibgdaConfig.sendRecv->pipelineDepth,
-          config.ibgdaConfig.dataBufferSize);
+          config.ibConfig.sendRecv->maxGroups,
+          config.ibConfig.sendRecv->pipelineDepth,
+          config.ibConfig.dataBufferSize);
     }
 
     if (NCCL_CTRAN_PIPES_IB_MODE == NCCL_CTRAN_PIPES_IB_MODE::ibrc) {
@@ -236,10 +242,10 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.disableIb,
         config.topoConfig.p2pDisable,
         static_cast<int>(config.topoConfig.mnnvlMode),
-        config.ibgdaConfig.dataBufferSize,
-        config.ibgdaConfig.qpDepth,
-        config.ibgdaConfig.ibLazyConnect,
-        config.ibgdaConfig.materializePeerTimeoutMs);
+        config.ibConfig.dataBufferSize,
+        config.ibConfig.qpDepth,
+        config.ibConfig.ibLazyConnect,
+        config.ibConfig.materializePeerTimeoutMs);
 
     CLOGF(
         INFO,
@@ -283,9 +289,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             config);
     CLOGF(
         INFO,
-        "Prims MultiPeerTransport initialized: nvlPeers={}, ibgdaPeers={}, p2pDisable={}",
+        "Prims MultiPeerTransport initialized: nvlPeers={}, ibPeers={}, p2pDisable={}",
         comm->multiPeerTransport_->nvl_n_ranks() - 1,
-        comm->multiPeerTransport_->ibgda_peer_ranks().size(),
+        comm->multiPeerTransport_->ib_peer_ranks().size(),
         config.topoConfig.p2pDisable);
   } catch (const std::exception& e) {
     CLOGF(ERR, "Failed to initialize Prims MultiPeerTransport: {}", e.what());
@@ -408,11 +414,11 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
   int nvlNRanks = comm->multiPeerTransport_->nvl_n_ranks();
   CLOGF(
       INFO,
-      "CTRAN-PRIMS: resource topology rank={} nvlNRanks={} nvlPeers={} ibgdaPeers={}",
+      "CTRAN-PRIMS: resource topology rank={} nvlNRanks={} nvlPeers={} ibPeers={}",
       statex->rank(),
       nvlNRanks,
       nvlNRanks - 1,
-      comm->multiPeerTransport_->ibgda_peer_ranks().size());
+      comm->multiPeerTransport_->ib_peer_ranks().size());
 
   // Wire staging buffers only when there are NVL peers. When P2P is disabled
   // (NCCL_P2P_DISABLE=1), nvlNRanks == 1 (self only) while nLocalRanks may

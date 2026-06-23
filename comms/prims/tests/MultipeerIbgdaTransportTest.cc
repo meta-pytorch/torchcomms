@@ -93,7 +93,11 @@ class TestIbTransport {
   }
 
   int numQpsPerPeerPerNic() const {
-    return config_.numQpsPerPeerPerNic;
+    return config_.numQpsPerPeerPerNic();
+  }
+
+  int qpsPerBlockPerNic() const {
+    return ibgda_ ? ibgda_->qpsPerBlockPerNic() : config_.qpsPerBlockPerNic;
   }
 
   int getGidIndex() const {
@@ -174,12 +178,14 @@ std::unique_ptr<TestIbTransport> createTestTransport(
     int localRank,
     int numSignalSlots = 1,
     int numCounterSlots = 1,
-    int numQpsPerPeerPerNic = 1) {
+    int maxGroups = 64,
+    int qpsPerBlockPerNic = 1) {
   MultipeerIbTransportConfig config{
       .cudaDevice = localRank,
       .numSignalSlots = numSignalSlots,
       .numCounterSlots = numCounterSlots,
-      .numQpsPerPeerPerNic = numQpsPerPeerPerNic,
+      .maxGroups = maxGroups,
+      .qpsPerBlockPerNic = qpsPerBlockPerNic,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -203,7 +209,8 @@ class MultipeerIbTransportTestFixture
   std::unique_ptr<TestIbTransport> createTransport(
       int numSignalSlots = 1,
       int numCounterSlots = 1,
-      int numQpsPerPeerPerNic = 1) {
+      int maxGroups = 64,
+      int qpsPerBlockPerNic = 1) {
     return createTestTransport(
         backend(),
         globalRank,
@@ -211,7 +218,8 @@ class MultipeerIbTransportTestFixture
         localRank,
         numSignalSlots,
         numCounterSlots,
-        numQpsPerPeerPerNic);
+        maxGroups,
+        qpsPerBlockPerNic);
   }
 };
 
@@ -1971,9 +1979,9 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
   }
 
   try {
-    auto transport = createTransport(1, 1, 4);
+    auto transport = createTransport(1, 1, 1, 4);
 
-    EXPECT_EQ(transport->numQpsPerPeerPerNic(), 4);
+    EXPECT_EQ(transport->qpsPerBlockPerNic(), 4);
     EXPECT_NE(transport->getDeviceTransportPtr(), nullptr);
 
     // Verify each peer has a valid transport pointer
@@ -1986,9 +1994,9 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
 
     XLOGF(
         INFO,
-        "Rank {}: Multi-QP transport created with {} QPs/(peer,NIC)",
+        "Rank {}: Multi-QP transport created with {} QPs/block/NIC",
         globalRank,
-        transport->numQpsPerPeerPerNic());
+        transport->qpsPerBlockPerNic());
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend())
                  << " transport not available: " << e.what();
@@ -2012,7 +2020,7 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpPutSignalBasic) {
   const uint8_t testPattern = 0x77;
 
   try {
-    auto transport = createTransport(1, 1, numQps);
+    auto transport = createTransport(1, 1, numBlocks, numQps);
 
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
@@ -2088,14 +2096,14 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpPutSignalBasic) {
 // Multi-NIC Aggregate Bandwidth Test
 // =============================================================================
 //
-// Drives put_signal traffic through every (NIC × QP) slot for a single peer
-// pair, then measures aggregate bandwidth across all slots. The slot→NIC
-// commutative hash distributes blocks across both NICs at numNics_>1, so
-// aggregate BW ~doubles vs single-NIC if multi-NIC is wired correctly.
+// Drives put_signal traffic through every (NIC × QP lane) slot for a single
+// peer pair, then measures aggregate bandwidth across all slots. Block-owned
+// NIC-first lane selection distributes blocks across both NICs at numNics_>1,
+// so aggregate BW ~doubles vs single-NIC if multi-NIC is wired correctly.
 //
-// Runs on 2 ranks (1 peer pair); uses numQpsPerPeerPerNic=4 so the slot space
-// is 4 × numNics_ (4 slots on H100, 8 on GB200/GB300). The kernel launches
-// numBlocks > total slots so block-driven dispatch saturates every slot.
+// Runs on 2 ranks (1 peer pair); uses qpsPerBlockPerNic=4 so the slot space is
+// 4 × numNics_ (4 slots on H100, 8 on GB200/GB300). The kernel launches
+// numBlocks > total slots so block-driven dispatch can saturate every slot.
 //
 // Acceptance threshold is conservative — picks a floor that single-NIC
 // (~46 GB/s on 400 Gb/s ConnectX-7) cannot exceed but multi-NIC (~80-92
@@ -2117,7 +2125,7 @@ TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
 
   std::unique_ptr<TestIbTransport> transport;
   try {
-    transport = createTransport(1, 1, numQps);
+    transport = createTransport(1, 1, numBlocks, numQps);
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend())
                  << " transport not available: " << e.what();
@@ -2190,7 +2198,7 @@ TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
 
     XLOGF(
         INFO,
-        "MultiNicAggregateBandwidth: numNics={} numQpsPerPeerPerNic={} numBlocks={}",
+        "MultiNicAggregateBandwidth: numNics={} qpsPerBlockPerNic={} numBlocks={}",
         detectedNics,
         numQps,
         numBlocks);

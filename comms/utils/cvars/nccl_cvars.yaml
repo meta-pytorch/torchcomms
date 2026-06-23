@@ -1907,6 +1907,21 @@ cvars:
      block-scope). Higher values allow more pipelining but use more
      memory.
 
+ - name        : NCCL_CTRAN_IB_MAX_GROUPS
+   type        : int
+   default     : 64
+   description : |-
+     Maximum number of physical CUDA block groups that may own IB QP
+     resources. Device-side IB QP selection uses ThreadGroup::block_id
+     and requires block_id < NCCL_CTRAN_IB_MAX_GROUPS.
+
+ - name        : NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC
+   type        : int
+   default     : 1
+   description : |-
+     Number of main IB QPs owned by each physical CUDA block on each NIC.
+     Puts from a block round-robin across its NIC-first QP lanes.
+
  - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
    type        : uint64_t
    default     : 1
@@ -1967,13 +1982,6 @@ cvars:
      IBGDA peer. The effective IBGDA data-buffer size must be positive via
      NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE or the per-communicator
      pipesIbgdaDataBufferSize hint.
-
- - name        : NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS
-   type        : int
-   default     : 128
-   description : |-
-     Maximum number of block-groups for IBGDA send/recv staging.
-     Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
 
  - name        : NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH
    type        : int

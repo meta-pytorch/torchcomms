@@ -4,6 +4,7 @@
 #include <folly/logging/xlog.h>
 #include <nccl.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <vector>
@@ -145,15 +146,16 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     std::unique_ptr<MultipeerIbgdaTransport> transport;
     try {
+      const int maxGroups = config.num_blocks * config.num_rings;
       MultipeerIbgdaTransportConfig transport_config{
           .cudaDevice = localRank,
           .dataBufferSize = config.data_buffer_size,
+          .maxGroups = maxGroups,
           .sendRecv =
               MultipeerIbgdaTransportConfig::SendRecvConfig{
-                  .maxGroups = config.num_blocks * config.num_rings,
                   .pipelineDepth = config.pipeline_depth,
               },
-          .numQpsPerPeerPerNic = config.num_qps,
+          .qpsPerBlockPerNic = config.num_qps,
       };
       transport = std::make_unique<MultipeerIbgdaTransport>(
           globalRank, worldSize, bootstrap, transport_config);

@@ -345,7 +345,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::put_cooperative(
     uint64_t signalVal,
     const IbgdaLocalBuffer& counterBuf,
     uint64_t counterVal) {
-  ThreadGroup solo{0, 1, 0, 1, SyncScope::THREAD};
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  ThreadGroup solo{0, 1, 0, blockIdx.x, 1, SyncScope::THREAD};
+#else
+  ThreadGroup solo{0, 1, 0, 0, 1, SyncScope::THREAD};
+#endif
   put_cooperative(
       solo,
       localBuf,

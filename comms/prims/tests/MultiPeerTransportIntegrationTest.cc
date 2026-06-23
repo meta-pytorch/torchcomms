@@ -38,7 +38,7 @@ class MultiPeerIntegrationTestFixture : public MpiBaseTestFixture {
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
             },
-        .ibgdaConfig =
+        .ibConfig =
             {
                 .cudaDevice = localRank,
             },

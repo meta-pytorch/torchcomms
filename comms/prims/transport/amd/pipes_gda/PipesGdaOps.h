@@ -842,6 +842,16 @@ pipes_gda_gpu_dev_verbs_get_wqe_ptr(
   return pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 }
 
+__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_nop(
+    pipes_gda_gpu_dev_verbs_qp* qp,
+    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    uint64_t wqeIdx,
+    uint8_t ctrlFlags) {
+  (void)ctrlFlags;
+  ActiveNicBackend nic{};
+  pipes_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
+}
+
 __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
     pipes_gda_gpu_dev_verbs_qp* qp,
     pipes_gda_gpu_dev_verbs_wqe* wqe,

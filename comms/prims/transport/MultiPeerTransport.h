@@ -37,7 +37,7 @@ struct MultiPeerDeviceHandle;
 
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
-  MultipeerIbgdaTransportConfig ibgdaConfig;
+  MultipeerIbTransportConfig ibConfig;
 
   // Selects the IB backend for non-NVL peers. Default remains IBGDA.
   IbBackendMode ibMode{IbBackendMode::kIbgda};
@@ -135,9 +135,9 @@ class MultiPeerTransport {
     return nvlPeerRanks_;
   }
 
-  /** @return Global ranks of all non-self peers (IBGDA covers everyone). */
-  const std::vector<int>& ibgda_peer_ranks() const {
-    return ibgdaPeerRanks_;
+  /** @return Global ranks whose preferred transport is IB. */
+  const std::vector<int>& ib_peer_ranks() const {
+    return ibPeerRanks_;
   }
 
   /** @return NVL bootstrap adapter for NVL-scoped collective ops.
@@ -292,7 +292,7 @@ class MultiPeerTransport {
 
   // --- Topology (populated in constructor) ---
   std::vector<int> nvlPeerRanks_;
-  std::vector<int> ibgdaPeerRanks_;
+  std::vector<int> ibPeerRanks_;
   std::vector<TransportType> typePerRank_;
 
   // --- NVLink rank mapping ---

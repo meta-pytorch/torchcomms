@@ -83,6 +83,12 @@ struct ThreadGroup {
   // For warps: global warp ID. Use for work distribution.
   uint32_t group_id;
 
+  // block_id - Physical CUDA block ID that owns transport resources.
+  // Unlike group_id, this is preserved when groups are partitioned or
+  // renumbered. IBGDA QP selection uses block_id so logical group routing
+  // cannot accidentally move a group onto another block's QPs.
+  uint32_t block_id;
+
   // total_groups - Total number of groups in entire kernel
   // For warps: gridDim.x × (blockDim.x / 32)
   uint32_t total_groups;
@@ -218,6 +224,7 @@ struct ThreadGroup {
         .thread_id_in_group = lane_id,
         .group_size = kWarpSize,
         .group_id = group_id * warps_per_group + warp_in_group,
+        .block_id = block_id,
         .total_groups = total_groups * warps_per_group,
         .scope = SyncScope::WARP};
 #else
@@ -561,6 +568,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
           .thread_id_in_group = thread_id_in_group,
           .group_size = group_size,
           .group_id = group_id - partition_start,
+          .block_id = block_id,
           .total_groups = partition_size,
           .scope = scope}};
 #endif
@@ -650,6 +658,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
             .thread_id_in_group = thread_id_in_group,
             .group_size = group_size,
             .group_id = group_id,
+            .block_id = block_id,
             .total_groups = total_groups,
             .scope = scope}};
   }
@@ -691,6 +700,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
               .thread_id_in_group = thread_id_in_group,
               .group_size = group_size,
               .group_id = group_id - partition_start,
+              .block_id = block_id,
               .total_groups = partition_end - partition_start,
               .scope = scope}};
     }
@@ -751,6 +761,7 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
           .thread_id_in_group = thread_id_in_group,
           .group_size = group_size,
           .group_id = new_group_id,
+          .block_id = block_id,
           .total_groups = groups_in_partition,
           .scope = scope}};
 #endif
@@ -780,6 +791,7 @@ __device__ inline ThreadGroup make_thread_solo() {
       .thread_id_in_group = 0,
       .group_size = 1,
       .group_id = global_tid,
+      .block_id = blockIdx.x,
       .total_groups = total_threads,
       .scope = SyncScope::THREAD};
 #else
@@ -816,6 +828,7 @@ __device__ inline ThreadGroup make_warp_group() {
       .thread_id_in_group = lane_id,
       .group_size = comms::device::kWarpSize,
       .group_id = global_warp_id,
+      .block_id = blockIdx.x,
       .total_groups = total_warps,
       .scope = SyncScope::WARP};
 #else
@@ -879,6 +892,7 @@ __device__ inline ThreadGroup make_cluster_group() {
       .thread_id_in_group = thread_id_in_cluster,
       .group_size = threads_per_cluster,
       .group_id = cluster_rank,
+      .block_id = blockIdx.x,
       .total_groups = num_clusters_x,
       .scope = SyncScope::CLUSTER};
 #else
@@ -888,6 +902,7 @@ __device__ inline ThreadGroup make_cluster_group() {
       .thread_id_in_group = threadIdx.x,
       .group_size = blockDim.x,
       .group_id = blockIdx.x,
+      .block_id = blockIdx.x,
       .total_groups = gridDim.x,
       .scope = SyncScope::CLUSTER};
 #endif
@@ -914,6 +929,7 @@ __device__ inline ThreadGroup make_block_group() {
       .thread_id_in_group = threadIdx.x,
       .group_size = blockDim.x,
       .group_id = blockIdx.x,
+      .block_id = blockIdx.x,
       .total_groups = gridDim.x,
       .scope = SyncScope::BLOCK};
 #else
@@ -964,6 +980,7 @@ __device__ inline ThreadGroup make_multiwarp_group() {
       .thread_id_in_group = thread_id_in_multiwarp,
       .group_size = kMultiwarpSize,
       .group_id = global_multiwarp_id,
+      .block_id = blockIdx.x,
       .total_groups = total_multiwarps,
       .scope = SyncScope::MULTIWARP};
 #else

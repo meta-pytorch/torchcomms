@@ -187,6 +187,7 @@ __device__ __forceinline__ ThreadGroup make_sub_block_group(
       .thread_id_in_group = group.thread_id_in_group,
       .group_size = group.group_size,
       .group_id = group_id,
+      .block_id = group.block_id,
       .total_groups = total_groups,
       .scope = group.scope};
 }
