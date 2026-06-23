@@ -14,12 +14,11 @@
 #include <folly/io/async/EventBase.h>
 
 #include <comms/ctran/ibverbx/IbvCommon.h>
+#include <comms/ctran/ibverbx/IbvCq.h>
 #include <comms/ctran/ibverbx/IbvDevice.h>
 #include <comms/ctran/ibverbx/IbvMr.h>
 #include <comms/ctran/ibverbx/IbvPd.h>
-#include <comms/ctran/ibverbx/IbvVirtualCq.h>
-#include <comms/ctran/ibverbx/IbvVirtualQp.h>
-#include <comms/ctran/ibverbx/IbvVirtualWr.h>
+#include <comms/ctran/ibverbx/IbvQp.h>
 #include <comms/utils/commSpecs.h>
 
 namespace torch::comms {
@@ -188,15 +187,12 @@ class StagedRdmaTransportBase {
   // IB resources (H100: single device/PD; GB200 diff expands to vectors)
   std::optional<ibverbx::IbvDevice> device_;
   std::optional<ibverbx::IbvPd> pd_;
-  std::optional<ibverbx::IbvVirtualCq> vcq_;
+  std::optional<ibverbx::IbvCq> cq_;
   std::optional<StagedBuffer> stagingBuf_;
   cudaStream_t stream_{nullptr};
 
-  // Virtual QP — declared last so it is destroyed first.
-  std::optional<ibverbx::IbvVirtualQp> vqp_;
-
-  // Get the device ID for building deviceKeys maps.
-  int32_t getDeviceId() const;
+  // QP — declared last so it is destroyed first.
+  std::optional<ibverbx::IbvQp> qp_;
 
   // Protected helpers — called explicitly by subclasses, no virtual dispatch.
 
@@ -206,7 +202,7 @@ class StagedRdmaTransportBase {
   // that first creates the stream, not on other threads that get a cache hit.
   void ensureCudaStream();
 
-  // Initialize IB resources: device, PD, CQ, VirtualQP, staging buffer.
+  // Initialize IB resources: device, PD, CQ, QP, staging buffer.
   // Must be called before connectQp().
   void initIbResources();
 
