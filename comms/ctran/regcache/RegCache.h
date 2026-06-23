@@ -404,13 +404,9 @@ class RegCache {
   // Thread-safe functions to free a cached segment from the global cache and
   // deregister any associated registration. If the segment is already freed
   // (e.g. by a prior globalDeregister), this is a no-op. If the segment is
-  // still in use by any communicator (refCount > 0), this call is a no-op
-  // unless forceFree is true.
+  // still in use by any communicator (refCount > 0), this call is a no-op.
   // input:
   //   - segHdl: the handle of the cached segment
-  //   - forceFree: if true, skip the refCount check and always free the
-  //                segment. Used by globalDeregister when the underlying
-  //                physical memory is about to be freed.
   // output:
   //   - freed: whether or not the segment is freed from the global cache
   //   - ncclManaged: whether or not the segment is managed by NCCL
@@ -421,8 +417,7 @@ class RegCache {
       void* segHdl,
       bool& freed,
       bool& ncclManaged,
-      std::vector<std::unique_ptr<regcache::RegElem>>& regElems,
-      bool forceFree = false);
+      std::vector<std::unique_ptr<regcache::RegElem>>& regElems);
 
   regcache::Segment* getSegment(void* segHdl);
 
