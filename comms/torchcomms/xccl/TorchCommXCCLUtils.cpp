@@ -29,6 +29,8 @@ onecclDataType_t getXcclDataTypeInternal(const at::Tensor& tensor) {
       return onecclInt8;
     case at::ScalarType::Byte:
       return onecclUint8;
+    case at::ScalarType::Bool:
+      return onecclUint8;
     default:
       throw std::runtime_error("Unsupported tensor data type for XCCL");
   }
