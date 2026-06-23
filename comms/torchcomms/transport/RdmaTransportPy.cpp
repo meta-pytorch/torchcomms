@@ -21,32 +21,48 @@ folly::ScopedEventBaseThread& getScopedEventBaseThread() {
   static folly::ScopedEventBaseThread scopedEventBaseThread{"torchcomms_evb"};
   return scopedEventBaseThread;
 }
+
+py::tuple getRdmaRemoteBufferState(const RdmaRemoteBuffer& buffer) {
+  return py::make_tuple(
+      reinterpret_cast<uintptr_t>(buffer.ptr), buffer.len, buffer.accessKey);
+}
+
+RdmaRemoteBuffer rdmaRemoteBufferFromState(
+    uintptr_t ptr,
+    size_t len,
+    const std::string& accessKey) {
+  return RdmaRemoteBuffer{
+      // NOLINTNEXTLINE(performance-no-int-to-ptr)
+      reinterpret_cast<void*>(ptr),
+      len,
+      accessKey};
+}
+
+py::tuple getRdmaRemoteBufferReduceTuple(const py::object& self) {
+  return py::make_tuple(
+      py::type::of(self),
+      getRdmaRemoteBufferState(self.cast<const RdmaRemoteBuffer&>()));
+}
 } // namespace
 
 PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
   m.doc() = "RdmaTransport python bindings for TorchComm";
 
-  py::class_<RdmaRemoteBuffer, std::shared_ptr<RdmaRemoteBuffer>>(
-      m, "RdmaRemoteBuffer")
+  py::class_<RdmaRemoteBuffer>(m, "RdmaRemoteBuffer")
       .def(
-          py::pickle(
-              [](const RdmaRemoteBuffer& buffer) { // __getstate__
-                return py::make_tuple(
-                    reinterpret_cast<uintptr_t>(buffer.ptr),
-                    buffer.len,
-                    buffer.accessKey);
-              },
-              [](const py::tuple& t) { // __setstate__
-                if (t.size() != 3) {
-                  throw std::runtime_error(
-                      "Invalid state for RdmaRemoteBuffer");
-                }
-                return RdmaRemoteBuffer{
-                    // NOLINTNEXTLINE(performance-no-int-to-ptr)
-                    reinterpret_cast<void*>(t[0].cast<uintptr_t>()),
-                    t[1].cast<size_t>(),
-                    t[2].cast<std::string>()};
-              }));
+          py::init([](uintptr_t ptr, size_t len, const std::string& accessKey) {
+            return rdmaRemoteBufferFromState(ptr, len, accessKey);
+          }),
+          py::arg("ptr"),
+          py::arg("len"),
+          py::arg("access_key"))
+      .def("__getstate__", &getRdmaRemoteBufferState)
+      .def("__reduce__", &getRdmaRemoteBufferReduceTuple)
+      .def("__reduce_ex__", [](const py::object& self, int /* protocol */) {
+        // Older pickle protocols reconstruct via constructor args rather
+        // than pybind11's __newobj__ helper.
+        return getRdmaRemoteBufferReduceTuple(self);
+      });
 
   py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
       // initialize a new RDMATransport using a custom init fn

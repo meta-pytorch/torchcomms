@@ -149,16 +149,25 @@ class TransportTest(unittest.TestCase):
         tensor2_mem = RdmaMemory(tensor2)
         remote_buffer = tensor2_mem.to_remote_buffer()
 
-        pickled = pickle.dumps(remote_buffer)
-        unpickled_remote_buffer = pickle.loads(pickled)
+        for protocol in (0, 1, pickle.HIGHEST_PROTOCOL):
+            with self.subTest(protocol=protocol):
+                tensor2.zero_()
 
-        res = transport1.write(tensor1_mem.to_view(), unpickled_remote_buffer)
+                pickled = pickle.dumps(remote_buffer, protocol=protocol)
+                unpickled_remote_buffer = pickle.loads(pickled)
 
-        self.assertEqual(res, 0, "Write transfer should succeed")
-        self.assertTrue(
-            torch.allclose(tensor1.cpu(), tensor2.cpu()),
-            "Data should be correctly transferred after unpickling",
-        )
+                res = transport1.write(tensor1_mem.to_view(), unpickled_remote_buffer)
+
+                self.assertEqual(
+                    res,
+                    0,
+                    f"Write transfer should succeed for pickle protocol {protocol}",
+                )
+                self.assertTrue(
+                    torch.allclose(tensor1.cpu(), tensor2.cpu()),
+                    f"Data should be correctly transferred after unpickling "
+                    f"with protocol {protocol}",
+                )
 
         del transport1
         del transport2
