@@ -29,8 +29,7 @@ class HRDWRingBufferStressTest : public ::testing::Test {
     if (err != cudaSuccess || deviceCount == 0) {
       GTEST_SKIP() << "No CUDA device available";
     }
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaSetDevice(0);
+    ASSERT_EQ(cudaSuccess, cudaSetDevice(0));
   }
 };
 
@@ -67,8 +66,8 @@ static void launchEagerWrites(
   auto numStreams = static_cast<int>(streams.size());
   for (int i = 0; i < totalPairs; ++i) {
     auto streamIdx = i % numStreams;
-    buf.write(streams[streamIdx], TestEvent{0});
-    buf.write(streams[streamIdx], TestEvent{0});
+    EXPECT_EQ(cudaSuccess, buf.write(streams[streamIdx], TestEvent{0}));
+    EXPECT_EQ(cudaSuccess, buf.write(streams[streamIdx], TestEvent{0}));
   }
 }
 
@@ -77,33 +76,32 @@ static void launchEagerWrites(
 //   buf       — HRDWRingBuffer<TestEvent>
 //   streams   — vector of cudaStream_t (cfg.numStreams)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define EAGER_STRESS_TEST(name)                                 \
-  static void eagerStressBody_##name(                           \
-      const StressConfig&,                                      \
-      HRDWRingBuffer<TestEvent>&,                               \
-      std::vector<cudaStream_t>&);                              \
-  TEST_F(HRDWRingBufferStressTest, name) {                      \
-    for (const auto& cfg : kStressConfigs) {                    \
-      SCOPED_TRACE(                                             \
-          "ring=" + std::to_string(cfg.ringSize) +              \
-          " streams=" + std::to_string(cfg.numStreams) +        \
-          " writes=" + std::to_string(cfg.numWrites));          \
-      HRDWRingBuffer<TestEvent> buf(cfg.ringSize);              \
-      ASSERT_TRUE(buf.valid());                                 \
-      std::vector<cudaStream_t> streams(cfg.numStreams);        \
-      for (auto& s : streams) {                                 \
-        ASSERT_EQ(cudaStreamCreate(&s), cudaSuccess);           \
-      }                                                         \
-      eagerStressBody_##name(cfg, buf, streams);                \
-      for (auto& s : streams) {                                 \
-        /* NOLINTNEXTLINE(facebook-cuda-safe-api-call-check) */ \
-        cudaStreamDestroy(s);                                   \
-      }                                                         \
-    }                                                           \
-  }                                                             \
-  static void eagerStressBody_##name(                           \
-      const StressConfig& cfg,                                  \
-      HRDWRingBuffer<TestEvent>& buf,                           \
+#define EAGER_STRESS_TEST(name)                          \
+  static void eagerStressBody_##name(                    \
+      const StressConfig&,                               \
+      HRDWRingBuffer<TestEvent>&,                        \
+      std::vector<cudaStream_t>&);                       \
+  TEST_F(HRDWRingBufferStressTest, name) {               \
+    for (const auto& cfg : kStressConfigs) {             \
+      SCOPED_TRACE(                                      \
+          "ring=" + std::to_string(cfg.ringSize) +       \
+          " streams=" + std::to_string(cfg.numStreams) + \
+          " writes=" + std::to_string(cfg.numWrites));   \
+      HRDWRingBuffer<TestEvent> buf(cfg.ringSize);       \
+      ASSERT_TRUE(buf.valid());                          \
+      std::vector<cudaStream_t> streams(cfg.numStreams); \
+      for (auto& s : streams) {                          \
+        ASSERT_EQ(cudaStreamCreate(&s), cudaSuccess);    \
+      }                                                  \
+      eagerStressBody_##name(cfg, buf, streams);         \
+      for (auto& s : streams) {                          \
+        EXPECT_EQ(cudaSuccess, cudaStreamDestroy(s));    \
+      }                                                  \
+    }                                                    \
+  }                                                      \
+  static void eagerStressBody_##name(                    \
+      const StressConfig& cfg,                           \
+      HRDWRingBuffer<TestEvent>& buf,                    \
       std::vector<cudaStream_t>& streams)
 
 // Launch write pairs across multiple streams, sync, then poll.
@@ -162,8 +160,7 @@ EAGER_STRESS_TEST(ConcurrentWriteAndPoll) {
   launchEagerWrites(streams, buf, cfg.totalWrites());
 
   for (auto& s : streams) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaStreamSynchronize(s);
+    EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(s));
   }
   writersDone.store(true, std::memory_order_release);
   readerThread.join();
@@ -219,27 +216,28 @@ static CapturedGraph captureGraph(
     int numColls) {
   CapturedGraph cg;
 
-  cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+  EXPECT_EQ(
+      cudaSuccess, cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
   for (int i = 0; i < numColls; ++i) {
     TestEvent event{static_cast<uint32_t>(i)};
-    buf.write(stream, event);
-    buf.write(stream, event);
+    EXPECT_EQ(cudaSuccess, buf.write(stream, event));
+    EXPECT_EQ(cudaSuccess, buf.write(stream, event));
   }
-  cudaStreamEndCapture(stream, &cg.graph);
+  EXPECT_EQ(cudaSuccess, cudaStreamEndCapture(stream, &cg.graph));
   if (cg.graph) {
-    cudaGraphInstantiate(&cg.instance, cg.graph, nullptr, nullptr, 0);
+    EXPECT_EQ(
+        cudaSuccess,
+        cudaGraphInstantiate(&cg.instance, cg.graph, nullptr, nullptr, 0));
   }
   return cg;
 }
 
 static void destroyGraph(CapturedGraph& cg) {
   if (cg.instance) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaGraphExecDestroy(cg.instance);
+    EXPECT_EQ(cudaSuccess, cudaGraphExecDestroy(cg.instance));
   }
   if (cg.graph) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaGraphDestroy(cg.graph);
+    EXPECT_EQ(cudaSuccess, cudaGraphDestroy(cg.graph));
   }
 }
 
@@ -249,35 +247,34 @@ static void destroyGraph(CapturedGraph& cg) {
 //   stream  — cudaStream_t
 //   cg      — CapturedGraph with cfg.numStreams write pairs
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define GRAPH_STRESS_TEST(name)                               \
-  static void graphStressBody_##name(                         \
-      const StressConfig&,                                    \
-      HRDWRingBuffer<TestEvent>&,                             \
-      cudaStream_t,                                           \
-      CapturedGraph&);                                        \
-  TEST_F(HRDWRingBufferStressTest, name) {                    \
-    for (const auto& cfg : kStressConfigs) {                  \
-      SCOPED_TRACE(                                           \
-          "ring=" + std::to_string(cfg.ringSize) +            \
-          " colls=" + std::to_string(cfg.numStreams) +        \
-          " replays=" + std::to_string(cfg.numWrites));       \
-      HRDWRingBuffer<TestEvent> buf(cfg.ringSize);            \
-      ASSERT_TRUE(buf.valid());                               \
-      cudaStream_t stream;                                    \
-      ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);      \
-      auto cg = captureGraph(stream, buf, cfg.numStreams);    \
-      ASSERT_NE(cg.graph, nullptr);                           \
-      ASSERT_NE(cg.instance, nullptr);                        \
-      graphStressBody_##name(cfg, buf, stream, cg);           \
-      destroyGraph(cg);                                       \
-      /* NOLINTNEXTLINE(facebook-cuda-safe-api-call-check) */ \
-      cudaStreamDestroy(stream);                              \
-    }                                                         \
-  }                                                           \
-  static void graphStressBody_##name(                         \
-      const StressConfig& cfg,                                \
-      [[maybe_unused]] HRDWRingBuffer<TestEvent>& buf,        \
-      cudaStream_t stream,                                    \
+#define GRAPH_STRESS_TEST(name)                            \
+  static void graphStressBody_##name(                      \
+      const StressConfig&,                                 \
+      HRDWRingBuffer<TestEvent>&,                          \
+      cudaStream_t,                                        \
+      CapturedGraph&);                                     \
+  TEST_F(HRDWRingBufferStressTest, name) {                 \
+    for (const auto& cfg : kStressConfigs) {               \
+      SCOPED_TRACE(                                        \
+          "ring=" + std::to_string(cfg.ringSize) +         \
+          " colls=" + std::to_string(cfg.numStreams) +     \
+          " replays=" + std::to_string(cfg.numWrites));    \
+      HRDWRingBuffer<TestEvent> buf(cfg.ringSize);         \
+      ASSERT_TRUE(buf.valid());                            \
+      cudaStream_t stream;                                 \
+      ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);   \
+      auto cg = captureGraph(stream, buf, cfg.numStreams); \
+      ASSERT_NE(cg.graph, nullptr);                        \
+      ASSERT_NE(cg.instance, nullptr);                     \
+      graphStressBody_##name(cfg, buf, stream, cg);        \
+      destroyGraph(cg);                                    \
+      EXPECT_EQ(cudaSuccess, cudaStreamDestroy(stream));   \
+    }                                                      \
+  }                                                        \
+  static void graphStressBody_##name(                      \
+      const StressConfig& cfg,                             \
+      [[maybe_unused]] HRDWRingBuffer<TestEvent>& buf,     \
+      cudaStream_t stream,                                 \
       CapturedGraph& cg)
 
 // Replay graph, then poll. Every delivered entry must have valid timestamps.
@@ -333,11 +330,9 @@ GRAPH_STRESS_TEST(GraphReplayConcurrentPoll) {
   });
 
   for (int r = 0; r < cfg.numWrites; ++r) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaGraphLaunch(cg.instance, stream);
+    EXPECT_EQ(cudaSuccess, cudaGraphLaunch(cg.instance, stream));
   }
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaStreamSynchronize(stream);
+  EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(stream));
   replaysDone.store(true, std::memory_order_release);
   readerThread.join();
 
@@ -379,11 +374,9 @@ GRAPH_STRESS_TEST(GraphReplayEventValidation) {
   });
 
   for (int r = 0; r < cfg.numWrites; ++r) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaGraphLaunch(cg.instance, stream);
+    EXPECT_EQ(cudaSuccess, cudaGraphLaunch(cg.instance, stream));
   }
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaStreamSynchronize(stream);
+  EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(stream));
   replaysDone.store(true, std::memory_order_release);
   readerThread.join();
 
@@ -406,7 +399,7 @@ TEST_F(HRDWRingBufferStressTest, WrapAroundImmediateNoContention) {
 
   // Fill the ring with kSize writes, then one more to wrap around.
   for (uint32_t i = 0; i <= kSize; ++i) {
-    buf.write(stream, TestEvent{0});
+    EXPECT_EQ(cudaSuccess, buf.write(stream, TestEvent{0}));
   }
   ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
 
@@ -420,8 +413,7 @@ TEST_F(HRDWRingBufferStressTest, WrapAroundImmediateNoContention) {
   // kSize + 1 writes total. Some may be lost due to lapping on tiny ring.
   EXPECT_EQ(result.entriesRead + result.entriesLost, kSize + 1);
 
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaStreamDestroy(stream);
+  EXPECT_EQ(cudaSuccess, cudaStreamDestroy(stream));
 }
 
 // Multi-writer stress test: 4 streams, all writing concurrently.
@@ -440,7 +432,7 @@ TEST_F(HRDWRingBufferStressTest, MultiWriterNeverBlocks) {
 
   for (int w = 0; w < kWritesPerStream; ++w) {
     for (int si = 0; si < kNumStreams; ++si) {
-      buf.write(streams[si], TestEvent{0});
+      EXPECT_EQ(cudaSuccess, buf.write(streams[si], TestEvent{0}));
     }
   }
 
@@ -460,7 +452,6 @@ TEST_F(HRDWRingBufferStressTest, MultiWriterNeverBlocks) {
   EXPECT_EQ(result.entriesRead + result.entriesLost, totalSlots);
 
   for (auto& s : streams) {
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaStreamDestroy(s);
+    EXPECT_EQ(cudaSuccess, cudaStreamDestroy(s));
   }
 }
