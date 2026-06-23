@@ -49,6 +49,14 @@ __global__ void ibgdaPutFlushBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
+__global__ void ibgdaThreadScopeMultiBlockPutFlushBatchKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytesPerBlock,
+    int numIters,
+    unsigned long long* blockCycles);
+
 __global__ void ibgdaPutSignalWaitCounterBatchKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,

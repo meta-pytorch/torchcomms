@@ -270,13 +270,13 @@ commResult_t ctranAllReduceTree(
       return result;
     }
 
-    const int maxIbGroups = NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS;
+    const int maxIbGroups = NCCL_CTRAN_IB_MAX_GROUPS;
     const int requiredIbGroups = numBlocks * ctran::allreduce::tree::kTreeLanes;
     if (requiredIbGroups > maxIbGroups) {
       CLOGF(
           ERR,
           "AllReduce ctree requires {} IBGDA send/recv groups, exceeding "
-          "NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS={}",
+          "NCCL_CTRAN_IB_MAX_GROUPS={}",
           requiredIbGroups,
           maxIbGroups);
       return commInvalidArgument;

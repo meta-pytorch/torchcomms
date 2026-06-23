@@ -131,14 +131,14 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
         numBlocks);
     return commInvalidArgument;
   }
-  if (numBlocks > NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS) {
+  if (numBlocks > NCCL_CTRAN_IB_MAX_GROUPS) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} numBlocks={} exceeds NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS={}",
+        "AllGather {} numBlocks={} exceeds NCCL_CTRAN_IB_MAX_GROUPS={}",
         allGatherAlgoName(myAlgo),
         numBlocks,
-        NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS);
+        NCCL_CTRAN_IB_MAX_GROUPS);
     return commInvalidArgument;
   }
   if (dataBufferSize / static_cast<uint64_t>(numBlocks) < 16) {

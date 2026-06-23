@@ -47,10 +47,9 @@ namespace comms::prims {
 // the ctor signature below are unchanged.
 using MultipeerIbgdaTransportConfig = MultipeerIbTransportConfig;
 
-// The exchange wire structs and allGather caps (kMaxRanksForAllGather,
-// kMaxQpsPerPeerPerNic) now live in MultiPeerIbTransport.h so they are shared
-// across IB backends. Keep the historical IBGDA names as aliases so callers and
-// the .cc are unchanged.
+// The exchange wire structs and allGather caps now live in
+// MultiPeerIbTransport.h so they are shared across IB backends. Keep the
+// historical IBGDA names as aliases so callers and the .cc are unchanged.
 using IbgdaTransportExchInfo = IbTransportExchInfo;
 using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 
@@ -206,11 +205,8 @@ class MultipeerIbgdaTransport
   // backend supplies the register_mr_on_nics()/lookup_alloc_base()/
   // deregister_mr() hooks below).
 
-  /**
-   * Get the number of QP sets per (peer, NIC).
-   * Total QPs to a peer = numQpsPerPeerPerNic() * numNics().
-   */
-  int numQpsPerPeerPerNic() const;
+  int maxGroups() const;
+  int qpsPerBlockPerNic() const;
 
   // numNics() is inherited from MultiPeerIbTransport.
 
@@ -269,15 +265,18 @@ class MultipeerIbgdaTransport
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDevices_.size() == numNics_ after openIbDevice().
 
-  // Per-NIC host-side IB verbs resources. qpGroups and loopbackCompanionQps
-  // are indexed [peer * numQpsPerPeerPerNic + q].
+  // Per-NIC host-side IB verbs resources. blockQpGroups and
+  // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0
+  // main QP comes from blockQpGroups; extra main QPs are indexed
+  // [(peer * maxGroups + block) * (qpsPerBlockPerNic - 1) + (lane - 1)].
   // Backend-specific (DOCA) per-NIC state. The generic per-NIC resources
   // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
   // index-aligned with this vector; openIbDevice() fills both.
   struct NicDocaResources {
     doca_verbs_ah_attr* ahAttr{nullptr};
     ibverbx::ibv_mr* sinkMr{nullptr};
-    std::vector<doca_gpu_verbs_qp_group_hl*> qpGroups;
+    std::vector<doca_gpu_verbs_qp_group_hl*> blockQpGroups;
+    std::vector<doca_gpu_verbs_qp_hl*> extraMainQps;
     std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
   };
   std::vector<NicDocaResources> nicDoca_;

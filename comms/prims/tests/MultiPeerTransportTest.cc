@@ -52,7 +52,7 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
             },
-        .ibgdaConfig =
+        .ibConfig =
             {
                 .cudaDevice = localRank,
             },
@@ -74,7 +74,7 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
             },
-        .ibgdaConfig =
+        .ibConfig =
             {
                 .cudaDevice = localRank,
             },
@@ -155,8 +155,7 @@ TEST_F(MultiPeerTransportTestFixture, TopologyDiscovery) {
   EXPECT_EQ(transport->get_transport_type(globalRank), TransportType::SELF);
   EXPECT_EQ(transport->get_transport_type(peer), TransportType::P2P_NVL);
   EXPECT_FALSE(transport->nvl_peer_ranks().empty());
-  EXPECT_EQ(
-      static_cast<int>(transport->ibgda_peer_ranks().size()), numRanks - 1);
+  EXPECT_EQ(static_cast<int>(transport->ib_peer_ranks().size()), numRanks - 1);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -644,7 +643,7 @@ TEST_F(MultiPeerTransportTestFixture, DisableIb_AllPeersNvl) {
     }
   }
 
-  EXPECT_TRUE(transport->ibgda_peer_ranks().empty());
+  EXPECT_TRUE(transport->ib_peer_ranks().empty());
   for (int r = 0; r < numRanks; ++r) {
     EXPECT_FALSE(transport->has_ibgda(r));
   }
@@ -778,7 +777,7 @@ TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
         EXPECT_EQ(transport.get_transport_type(r), TransportType::P2P_NVL);
       }
     }
-    EXPECT_TRUE(transport.ibgda_peer_ranks().empty());
+    EXPECT_TRUE(transport.ib_peer_ranks().empty());
   } catch (const std::exception&) {
     // NVL transport creation failed (expected without GPU).
   }

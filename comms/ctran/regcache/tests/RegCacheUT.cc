@@ -1432,6 +1432,234 @@ TEST_F(RegCacheTest, GetRegHandleReturnsHandleForRegisteredBuffer) {
 
   CUDACHECK_TEST(cudaFree(buf));
 }
+// --- External backend registration tests ---
+
+TEST_F(RegCacheTest, ExternalRegMemCallbackIsInvoked) {
+  bool regCalled = false;
+  bool deregCalled = false;
+  void* capturedRegElem = nullptr;
+
+  regCache->registerExternalRegMemFn(
+      [&](const void* buf, const size_t len, const int cudaDev, void** regElem)
+          -> commResult_t {
+        regCalled = true;
+        *regElem = reinterpret_cast<void*>(0xDEAD);
+        return commSuccess;
+      },
+      [&](void* regElem) -> commResult_t {
+        deregCalled = true;
+        capturedRegElem = regElem;
+        return commSuccess;
+      });
+
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Cache the segment
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  // Register with EXTERNAL backend only
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  backends[CommBackend::EXTERNAL] = true;
+
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logData{};
+  logData.commDesc = "test";
+  EXPECT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logData,
+          backends,
+          didRegister,
+          &regHdl,
+          false),
+      commSuccess);
+  EXPECT_TRUE(regCalled);
+  EXPECT_TRUE(didRegister);
+  ASSERT_NE(regHdl, nullptr);
+  EXPECT_EQ(regHdl->externalRegElem, reinterpret_cast<void*>(0xDEAD));
+
+  // Deregister via globalDeregister (deregElem is private)
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_TRUE(deregCalled);
+  EXPECT_EQ(capturedRegElem, reinterpret_cast<void*>(0xDEAD));
+
+  // Cleanup
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems);
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(RegCacheTest, ExternalRegMemNotCalledWhenDeregIsNull) {
+  bool regCalled = false;
+
+  // Passing null deregMem causes registerExternalRegMemFn to drop both
+  // callbacks.
+  regCache->registerExternalRegMemFn(
+      [&](const void*, const size_t, const int, void**) -> commResult_t {
+        regCalled = true;
+        return commSuccess;
+      },
+      nullptr);
+
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  // Request EXTERNAL backend — but callbacks were dropped, so regMem won't
+  // fire.
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  backends[CommBackend::EXTERNAL] = true;
+
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logData{};
+  logData.commDesc = "test";
+  EXPECT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logData,
+          backends,
+          didRegister,
+          &regHdl,
+          false),
+      commSuccess);
+  EXPECT_FALSE(regCalled);
+
+  // Cleanup via globalDeregister
+  if (regHdl) {
+    regCache->globalDeregister(buf, bufSize);
+  }
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems);
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(RegCacheTest, ExternalRegMemNotCalledWhenBackendDisabled) {
+  bool regCalled = false;
+
+  regCache->registerExternalRegMemFn(
+      [&](const void*, const size_t, const int, void**) -> commResult_t {
+        regCalled = true;
+        return commSuccess;
+      },
+      [](void*) -> commResult_t { return commSuccess; });
+
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  // Register with IB backend only (not EXTERNAL)
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  backends[CommBackend::IB] = true;
+
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logData{};
+  logData.commDesc = "test";
+  EXPECT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logData,
+          backends,
+          didRegister,
+          &regHdl,
+          false),
+      commSuccess);
+  EXPECT_FALSE(regCalled);
+
+  // Cleanup via globalDeregister
+  if (regHdl) {
+    regCache->globalDeregister(buf, bufSize);
+  }
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems);
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+TEST_F(RegCacheTest, ExternalRegMemFailureIsHandledGracefully) {
+  regCache->registerExternalRegMemFn(
+      [](const void*, const size_t, const int, void**) -> commResult_t {
+        return commSystemError;
+      },
+      [](void*) -> commResult_t { return commSuccess; });
+
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  backends[CommBackend::EXTERNAL] = true;
+
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logData{};
+  logData.commDesc = "test";
+
+  // The registration should fail but not crash
+  auto res = regCache->regRangeCached(
+      buf,
+      bufSize,
+      cudaDev,
+      "test",
+      logData,
+      backends,
+      didRegister,
+      &regHdl,
+      false);
+  // External registration failure returns error
+  EXPECT_NE(res, commSuccess);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems);
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);

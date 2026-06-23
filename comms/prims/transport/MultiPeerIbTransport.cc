@@ -135,6 +135,9 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
       config_(std::move(config)) {
+  if (config_.sendRecv.has_value() && config_.sendRecv->maxGroups == 0) {
+    config_.sendRecv->maxGroups = config_.maxGroups;
+  }
   if (myRank_ < 0 || myRank_ >= nRanks_) {
     throw std::invalid_argument("Invalid rank");
   }
@@ -1110,14 +1113,27 @@ void MultiPeerIbTransportBase::validatePeerTopology(
               peerInfo.numNics,
               numNics_));
     }
-    if (peerInfo.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
+    const int expectedNumQpsPerPeerPerNic = config_.numQpsPerPeerPerNic();
+    if (peerInfo.numQpsPerPeerPerNic != expectedNumQpsPerPeerPerNic) {
       throw std::runtime_error(
           fmt::format(
               "Peer rank {} reports numQpsPerPeerPerNic={} but mine is {}; all "
               "ranks must use the same numQpsPerPeerPerNic",
               peerRank,
               peerInfo.numQpsPerPeerPerNic,
-              config_.numQpsPerPeerPerNic));
+              expectedNumQpsPerPeerPerNic));
+    }
+    if (peerInfo.maxGroups != config_.maxGroups ||
+        peerInfo.qpsPerBlockPerNic != config_.qpsPerBlockPerNic) {
+      throw std::runtime_error(
+          fmt::format(
+              "Peer rank {} reports maxGroups={} qpsPerBlockPerNic={} but "
+              "mine are {} {}; all ranks must use the same IB QP shape",
+              peerRank,
+              peerInfo.maxGroups,
+              peerInfo.qpsPerBlockPerNic,
+              config_.maxGroups,
+              config_.qpsPerBlockPerNic));
     }
   }
 }

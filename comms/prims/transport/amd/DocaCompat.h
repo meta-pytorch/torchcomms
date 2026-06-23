@@ -64,6 +64,7 @@ using doca_gpu_dev_verbs_wqe_ctrl_flags = uint8_t;
 constexpr int DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU = 0;
 constexpr int DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO = 0;
 constexpr int DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU = 0;
+constexpr int DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD = 0;
 constexpr int DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD = 0;
 constexpr int DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD = 0;
 
@@ -91,6 +92,15 @@ __device__ __forceinline__ uint64_t doca_gpu_dev_verbs_reserve_wq_slots(
 __device__ __forceinline__ doca_gpu_dev_verbs_wqe*
 doca_gpu_dev_verbs_get_wqe_ptr(doca_gpu_dev_verbs_qp* qp, uint64_t wqeIdx) {
   return pipes_gda::pipes_gda_gpu_dev_verbs_get_wqe_ptr(qp, wqeIdx);
+}
+
+__device__ __forceinline__ void doca_gpu_dev_verbs_wqe_prepare_nop(
+    doca_gpu_dev_verbs_qp* qp,
+    doca_gpu_dev_verbs_wqe* wqe,
+    uint64_t wqeIdx,
+    uint8_t ctrlFlags) {
+  pipes_gda::pipes_gda_gpu_dev_verbs_wqe_prepare_nop(
+      qp, wqe, wqeIdx, ctrlFlags);
 }
 
 __device__ __forceinline__ void doca_gpu_dev_verbs_wqe_prepare_write(

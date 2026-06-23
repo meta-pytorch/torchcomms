@@ -43,9 +43,11 @@ namespace {
 
 constexpr int kHopLimit = 255;
 
-// Companion QPs use the same init attributes as main QPs but with smaller
-// depth since they only carry WAIT + atomic operations (2 WQEs per round).
-constexpr uint32_t kCompanionQpDepth = 32;
+// Host loopback QPs are only used to bring each exported companion QP to RTS.
+// The device-visible companion QP is created by create_qp_group_hl() with
+// mainAttr and therefore uses config_.qpDepth.
+constexpr uint32_t kLoopbackCompanionQpDepth = 32;
+constexpr int kMaxQpLanesPerBlock = 64;
 
 } // namespace
 
@@ -383,12 +385,17 @@ void MultipeerIbgdaTransport::registerMemory() {
 }
 void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeerPerNic;
-  const int totalQpsPerPeer = numNics_ * numQps;
-  const int totalQpGroups = numPeers * totalQpsPerPeer;
+  const int mainQpsPerPeerPerNic =
+      config_.maxGroups * config_.qpsPerBlockPerNic;
+  const int totalMainQpsPerPeer = numNics_ * mainQpsPerPeerPerNic;
+  const int totalCompanionQpsPerPeer = numNics_ * config_.maxGroups;
   for (auto& nic : nicDoca_) {
-    nic.qpGroups.resize(static_cast<size_t>(numPeers) * numQps);
-    nic.loopbackCompanionQps.resize(static_cast<size_t>(numPeers) * numQps);
+    nic.blockQpGroups.resize(static_cast<size_t>(numPeers) * config_.maxGroups);
+    nic.extraMainQps.resize(
+        static_cast<size_t>(numPeers) * config_.maxGroups *
+        static_cast<size_t>(config_.qpsPerBlockPerNic - 1));
+    nic.loopbackCompanionQps.resize(
+        static_cast<size_t>(numPeers) * config_.maxGroups);
   }
 
   // Verify CUDA device is still set correctly
@@ -411,10 +418,12 @@ void MultipeerIbgdaTransport::createQpGroups() {
             << " max_qp_wr=" << devAttr.max_qp_wr;
   }
 
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalQpGroups
-          << " QP groups (" << totalQpsPerPeer << " slots/peer = " << numNics_
-          << " NICs × " << numQps << " QPs, " << numPeers
-          << " peers) gpu_dev=" << (void*)docaGpu_
+  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalMainQpsPerPeer
+          << " main QPs/peer and " << totalCompanionQpsPerPeer
+          << " companion QPs/peer (" << numNics_
+          << " NICs × maxGroups=" << config_.maxGroups
+          << " × qpsPerBlockPerNic=" << config_.qpsPerBlockPerNic
+          << ", peers=" << numPeers << ") gpu_dev=" << (void*)docaGpu_
           << " sq_nwqe=" << config_.qpDepth
           << " nic_handler=AUTO mreg_type=DEFAULT";
 
@@ -529,7 +538,6 @@ void MultipeerIbgdaTransport::connectQp(
 }
 
 void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
-  const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
     mainAttr.gpu_dev = docaGpu_;
@@ -539,25 +547,33 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     mainAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
-    loopbackAttr.sq_nwqe = kCompanionQpDepth;
+    loopbackAttr.sq_nwqe = kLoopbackCompanionQpDepth;
 
-    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].blockQpGroups;
+    auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
       doca_error_t err =
-          doca_gpu_verbs_create_qp_group_hl(&mainAttr, &nicQps[qpIdx]);
+          doca_gpu_verbs_create_qp_group_hl(&mainAttr, &nicQps[blockIdx]);
       checkDocaError(err, "Failed to create QP group");
-      err = doca_gpu_verbs_create_qp_hl(&loopbackAttr, &nicLoopback[qpIdx]);
+      err = doca_gpu_verbs_create_qp_hl(&loopbackAttr, &nicLoopback[blockIdx]);
       checkDocaError(err, "Failed to create loopback companion QP");
+      for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+        const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                (config_.qpsPerBlockPerNic - 1) +
+            (lane - 1);
+        err =
+            doca_gpu_verbs_create_qp_hl(&mainAttr, &nicExtraMainQps[extraIdx]);
+        checkDocaError(err, "Failed to create extra main QP");
+      }
     }
   }
 }
 
 void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
-  const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].blockQpGroups;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
 
     IbgdaTransportExchInfo selfInfo;
@@ -570,12 +586,12 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
       selfInfo.lid = portAttr.lid;
     }
 
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicLoopback[qpIdx]->qp);
-      connectQp(&nicQps[qpIdx]->qp_companion, selfInfo, nic);
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicQps[qpIdx]->qp_companion.qp);
-      connectQp(nicLoopback[qpIdx], selfInfo, nic);
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
+      selfInfo.qpn = doca_verbs_qp_get_qpn(nicLoopback[blockIdx]->qp);
+      connectQp(&nicQps[blockIdx]->qp_companion, selfInfo, nic);
+      selfInfo.qpn = doca_verbs_qp_get_qpn(nicQps[blockIdx]->qp_companion.qp);
+      connectQp(nicLoopback[blockIdx], selfInfo, nic);
     }
   }
 }
@@ -594,7 +610,8 @@ PeerBufferSizes MultipeerIbgdaTransport::computePeerBufferSizes() const {
 
 P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int mainQpsPerPeerPerNic =
+      config_.maxGroups * config_.qpsPerBlockPerNic;
   auto makeSendRecvState = [&]() -> IbSendRecvState {
     if (sendRecvPeerBuffers_.empty()) {
       return {};
@@ -616,27 +633,42 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   };
 
   P2pIbgdaTransportBuildParams params(makeSendRecvState());
+  params.maxGroups = config_.maxGroups;
+  params.qpsPerBlockPerNic = config_.qpsPerBlockPerNic;
   params.h_nicDeviceIbgdaResources.resize(numNics_);
   for (int n = 0; n < numNics_; ++n) {
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
-    nicSpec.qps.resize(numQps);
-    nicSpec.companionQps.resize(numQps);
+    nicSpec.qps.resize(mainQpsPerPeerPerNic);
+    nicSpec.companionQps.resize(config_.maxGroups);
     nicSpec.sinkLkey = NetworkLKey(HostLKey(nicDoca_[n].sinkMr->lkey));
     nicSpec.deviceId = n;
   }
 
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].blockQpGroups;
+    auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
     auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
+      const int lane0MainIdx = block * config_.qpsPerBlockPerNic;
       doca_error_t err = doca_gpu_verbs_get_qp_dev(
-          nicQps[qpIdx]->qp_main.qp_gverbs, &nicSpec.qps[q]);
+          nicQps[blockIdx]->qp_main.qp_gverbs, &nicSpec.qps[lane0MainIdx]);
       checkDocaError(err, "Failed to get GPU QP handle");
 
       err = doca_gpu_verbs_get_qp_dev(
-          nicQps[qpIdx]->qp_companion.qp_gverbs, &nicSpec.companionQps[q]);
+          nicQps[blockIdx]->qp_companion.qp_gverbs,
+          &nicSpec.companionQps[block]);
       checkDocaError(err, "Failed to get companion GPU QP handle");
+
+      for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+        const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                (config_.qpsPerBlockPerNic - 1) +
+            (lane - 1);
+        err = doca_gpu_verbs_get_qp_dev(
+            nicExtraMainQps[extraIdx]->qp_gverbs,
+            &nicSpec.qps[lane0MainIdx + lane]);
+        checkDocaError(err, "Failed to get extra main GPU QP handle");
+      }
     }
   }
 
@@ -665,22 +697,69 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
           nRanks,
           std::move(bootstrap),
           config) {
-  if (config.numQpsPerPeerPerNic < 1 ||
-      config.numQpsPerPeerPerNic > kMaxQpsPerPeerPerNic) {
+  if (config_.maxGroups < 1) {
+    throw std::invalid_argument("maxGroups must be >= 1");
+  }
+  if (config_.qpsPerBlockPerNic < 1) {
+    throw std::invalid_argument("qpsPerBlockPerNic must be >= 1");
+  }
+  if (config_.maxGroups > kMaxIbGroups) {
     throw std::invalid_argument(
         fmt::format(
-            "numQpsPerPeerPerNic must be in [1, {}], got {}",
-            kMaxQpsPerPeerPerNic,
-            config.numQpsPerPeerPerNic));
+            "maxGroups must be <= {}, got {}",
+            kMaxIbGroups,
+            config_.maxGroups));
   }
-  if (config.numQpsPerPeerPerNic * (nRanks - 1) * 3 > 1000) {
+  if (config_.qpsPerBlockPerNic > kMaxIbQpsPerBlockPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "qpsPerBlockPerNic must be <= {}, got {}",
+            kMaxIbQpsPerBlockPerNic,
+            config_.qpsPerBlockPerNic));
+  }
+  const int mainQpsPerPeerPerNic = config_.numQpsPerPeerPerNic();
+  if (mainQpsPerPeerPerNic > kMaxIbQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "maxGroups * qpsPerBlockPerNic must be <= {}, got {} * {} = {}",
+            kMaxIbQpsPerPeerPerNic,
+            config_.maxGroups,
+            config_.qpsPerBlockPerNic,
+            mainQpsPerPeerPerNic));
+  }
+  if (!config_.ibLazyConnect &&
+      mainQpsPerPeerPerNic > kMaxEagerExchangeQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "eager IBGDA allGather exchange supports at most {} QPs per "
+            "(peer,NIC); got {}. Enable ibLazyConnect for larger "
+            "maxGroups * qpsPerBlockPerNic shapes.",
+            kMaxEagerExchangeQpsPerPeerPerNic,
+            mainQpsPerPeerPerNic));
+  }
+  if (config_.sendRecv.has_value() &&
+      config_.sendRecv->maxGroups > config_.maxGroups) {
+    throw std::invalid_argument(
+        fmt::format(
+            "sendRecv.maxGroups ({}) must be <= maxGroups ({})",
+            config_.sendRecv->maxGroups,
+            config_.maxGroups));
+  }
+  if (numNics_ * config_.qpsPerBlockPerNic > kMaxQpLanesPerBlock) {
+    throw std::invalid_argument(
+        fmt::format(
+            "numNics ({}) * qpsPerBlockPerNic ({}) must be <= {}",
+            numNics_,
+            config_.qpsPerBlockPerNic,
+            kMaxQpLanesPerBlock));
+  }
+  if (mainQpsPerPeerPerNic * (nRanks_ - 1) * 3 > 1000) {
     LOG(WARNING) << "MultipeerIbgdaTransport: high QP count: "
-                 << config.numQpsPerPeerPerNic << " QPs/(peer,NIC) * "
-                 << (nRanks - 1) << " peers * 3 = "
-                 << config.numQpsPerPeerPerNic * (nRanks - 1) * 3
+                 << mainQpsPerPeerPerNic << " main QPs/(peer,NIC) * "
+                 << (nRanks_ - 1)
+                 << " peers * 3 ~= " << mainQpsPerPeerPerNic * (nRanks_ - 1) * 3
                  << " total QPs (per NIC)";
   }
-
   try {
 #ifndef __HIP_PLATFORM_AMD__
     // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
@@ -702,10 +781,13 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     } else {
       const int numPeers = nRanks - 1;
       for (auto& nic : nicDoca_) {
-        nic.qpGroups.resize(
-            static_cast<size_t>(numPeers) * config.numQpsPerPeerPerNic);
+        nic.blockQpGroups.resize(
+            static_cast<size_t>(numPeers) * config.maxGroups);
+        nic.extraMainQps.resize(
+            static_cast<size_t>(numPeers) * config.maxGroups *
+            static_cast<size_t>(config.qpsPerBlockPerNic - 1));
         nic.loopbackCompanionQps.resize(
-            static_cast<size_t>(numPeers) * config.numQpsPerPeerPerNic);
+            static_cast<size_t>(numPeers) * config.maxGroups);
       }
       lazyPeerBufs_.resize(numPeers);
       peerMaterialized_.resize(numPeers, false);
@@ -751,14 +833,20 @@ void MultipeerIbgdaTransport::cleanup() {
   // Free tile sendrecv buffers
   cleanup_send_recv_buffers();
 
-  // Destroy per-NIC QP groups (main + companion) and loopback responders.
+  // Destroy per-NIC QPs and loopback responders.
   for (auto& nic : nicDoca_) {
-    for (auto* qpGroup : nic.qpGroups) {
+    for (auto* qpGroup : nic.blockQpGroups) {
       if (qpGroup != nullptr) {
         doca_gpu_verbs_destroy_qp_group_hl(qpGroup);
       }
     }
-    nic.qpGroups.clear();
+    nic.blockQpGroups.clear();
+    for (auto* qpHl : nic.extraMainQps) {
+      if (qpHl != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(qpHl);
+      }
+    }
+    nic.extraMainQps.clear();
     for (auto* qpHl : nic.loopbackCompanionQps) {
       if (qpHl != nullptr) {
         doca_gpu_verbs_destroy_qp_hl(qpHl);
@@ -847,7 +935,8 @@ void MultipeerIbgdaTransport::cleanup() {
 
 void MultipeerIbgdaTransport::exchange() {
   const int numPeers = nRanks_ - 1;
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int mainQpsPerPeerPerNic =
+      config_.maxGroups * config_.qpsPerBlockPerNic;
   auto& symbols = ibverbx::ibvSymbols;
 
   if (config_.ibLazyConnect) {
@@ -878,7 +967,9 @@ void MultipeerIbgdaTransport::exchange() {
   myInfo.gidIndex = gidIndex_;
   myInfo.mtu = localMtu_;
   myInfo.numNics = numNics_;
-  myInfo.numQpsPerPeerPerNic = numQps;
+  myInfo.numQpsPerPeerPerNic = mainQpsPerPeerPerNic;
+  myInfo.maxGroups = config_.maxGroups;
+  myInfo.qpsPerBlockPerNic = config_.qpsPerBlockPerNic;
   for (int n = 0; n < numNics_; ++n) {
     memcpy(
         myInfo.nicInfo[n].gid,
@@ -894,24 +985,32 @@ void MultipeerIbgdaTransport::exchange() {
     }
   }
 
-  // Fill in per-target QPNs for every (nic, q). NIC-fast interleaving:
-  // slot s = q * numNics_ + nic.
-  const int totalQpsPerPeer = numNics_ * numQps;
+  const int totalQpsPerPeer = numNics_ * mainQpsPerPeerPerNic;
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
     const int peerRank = peerIndexToRank(peerIndex);
     for (int nic = 0; nic < numNics_; nic++) {
-      const auto& nicQps = nicDoca_[nic].qpGroups;
-      for (int q = 0; q < numQps; q++) {
-        const int qpIdx = peerIndex * numQps + q;
-        myInfo.nicInfo[nic].qpnForRank[peerRank][q] =
-            doca_verbs_qp_get_qpn(nicQps[qpIdx]->qp_main.qp);
+      const auto& nicQps = nicDoca_[nic].blockQpGroups;
+      const auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
+      for (int block = 0; block < config_.maxGroups; block++) {
+        const int blockIdx = peerIndex * config_.maxGroups + block;
+        const int lane0MainIdx = block * config_.qpsPerBlockPerNic;
+        myInfo.nicInfo[nic].qpnForRank[peerRank][lane0MainIdx] =
+            doca_verbs_qp_get_qpn(nicQps[blockIdx]->qp_main.qp);
+        for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+          const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                  (config_.qpsPerBlockPerNic - 1) +
+              (lane - 1);
+          myInfo.nicInfo[nic].qpnForRank[peerRank][lane0MainIdx + lane] =
+              doca_verbs_qp_get_qpn(nicExtraMainQps[extraIdx]->qp);
+        }
       }
     }
   }
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " performing allGather exchange (" << totalQpsPerPeer
-          << " slots/peer = " << numNics_ << " NICs × " << numQps << " QPs)";
+          << " main QPs/peer = " << numNics_ << " NICs × "
+          << mainQpsPerPeerPerNic << " main QPs)";
 
   // allGather (rank-count guarded) + per-peer topology validation (numNics +
   // numQpsPerPeerPerNic) are owned by the base.
@@ -925,6 +1024,16 @@ void MultipeerIbgdaTransport::exchange() {
     int peerRank = peerIndexToRank(peerIndex);
     const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
 
+    CHECK_EQ(peerInfo.maxGroups, config_.maxGroups)
+        << "Rank " << peerRank << " has maxGroups=" << peerInfo.maxGroups
+        << " but local rank " << myRank_ << " has " << config_.maxGroups
+        << ". All ranks must use the same maxGroups.";
+    CHECK_EQ(peerInfo.qpsPerBlockPerNic, config_.qpsPerBlockPerNic)
+        << "Rank " << peerRank
+        << " has qpsPerBlockPerNic=" << peerInfo.qpsPerBlockPerNic
+        << " but local rank " << myRank_ << " has " << config_.qpsPerBlockPerNic
+        << ". All ranks must use the same qpsPerBlockPerNic.";
+
     // Store common connection info (from QP 0 — same GID/LID for all QPs)
     peerExchInfo_[peerIndex].qpn = peerInfo.nicInfo[0].qpnForRank[myRank_][0];
     memcpy(
@@ -937,7 +1046,8 @@ void MultipeerIbgdaTransport::exchange() {
 
     VLOG(1) << "MultipeerIbgdaTransport: received from peer " << peerRank
             << " numNics=" << peerInfo.numNics
-            << " numQps=" << peerInfo.numQpsPerPeerPerNic
+            << " maxGroups=" << peerInfo.maxGroups
+            << " qpsPerBlockPerNic=" << peerInfo.qpsPerBlockPerNic
             << " slot0_qpn=" << peerExchInfo_[peerIndex].qpn;
   }
 
@@ -947,17 +1057,29 @@ void MultipeerIbgdaTransport::exchange() {
         allInfo[peerIndexToRank(peerIndex)];
 
     for (int nic = 0; nic < numNics_; nic++) {
-      auto& nicQps = nicDoca_[nic].qpGroups;
-      for (int q = 0; q < numQps; q++) {
-        const int qpIdx = peerIndex * numQps + q;
+      auto& nicQps = nicDoca_[nic].blockQpGroups;
+      auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
+      for (int block = 0; block < config_.maxGroups; block++) {
+        const int blockIdx = peerIndex * config_.maxGroups + block;
+        const int lane0MainIdx = block * config_.qpsPerBlockPerNic;
         IbgdaTransportExchInfo qpPeerInfo;
-        qpPeerInfo.qpn = peerInfo.nicInfo[nic].qpnForRank[myRank_][q];
+        qpPeerInfo.qpn =
+            peerInfo.nicInfo[nic].qpnForRank[myRank_][lane0MainIdx];
         memcpy(
             qpPeerInfo.gid, peerInfo.nicInfo[nic].gid, sizeof(qpPeerInfo.gid));
         qpPeerInfo.gidIndex = peerInfo.gidIndex;
         qpPeerInfo.lid = peerInfo.nicInfo[nic].lid;
         qpPeerInfo.mtu = peerInfo.mtu;
-        connectQp(&nicQps[qpIdx]->qp_main, qpPeerInfo, nic);
+        connectQp(&nicQps[blockIdx]->qp_main, qpPeerInfo, nic);
+
+        for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+          const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                  (config_.qpsPerBlockPerNic - 1) +
+              (lane - 1);
+          qpPeerInfo.qpn =
+              peerInfo.nicInfo[nic].qpnForRank[myRank_][lane0MainIdx + lane];
+          connectQp(nicExtraMainQps[extraIdx], qpPeerInfo, nic);
+        }
       }
     }
     connectPeerLoopback(peerIndex);
@@ -980,7 +1102,8 @@ void MultipeerIbgdaTransport::exchange() {
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " exchange complete, connected to " << numPeers << " peers"
-          << " (" << numQps << " QPs/(peer,NIC) × " << numNics_ << " NICs)";
+          << " (" << mainQpsPerPeerPerNic << " main QPs/(peer,NIC) × "
+          << numNics_ << " NICs)";
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
@@ -1028,8 +1151,12 @@ int MultipeerIbgdaTransport::getGidIndex() const {
   return gidIndex_;
 }
 
-int MultipeerIbgdaTransport::numQpsPerPeerPerNic() const {
-  return config_.numQpsPerPeerPerNic;
+int MultipeerIbgdaTransport::maxGroups() const {
+  return config_.maxGroups;
+}
+
+int MultipeerIbgdaTransport::qpsPerBlockPerNic() const {
+  return config_.qpsPerBlockPerNic;
 }
 
 // =============================================================================
@@ -1179,12 +1306,15 @@ void MultipeerIbgdaTransport::cleanup_send_recv_buffers() {
 
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     int peerIndex) const {
-  const int numQps = config_.numQpsPerPeerPerNic;
+  const int mainQpsPerPeerPerNic =
+      config_.maxGroups * config_.qpsPerBlockPerNic;
   PeerQpPayload payload{};
   payload.gidIndex = gidIndex_;
   payload.mtu = static_cast<int>(localMtu_);
   payload.numNics = numNics_;
-  payload.numQpsPerPeerPerNic = numQps;
+  payload.numQpsPerPeerPerNic = mainQpsPerPeerPerNic;
+  payload.maxGroups = config_.maxGroups;
+  payload.qpsPerBlockPerNic = config_.qpsPerBlockPerNic;
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1196,11 +1326,20 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) == 0) {
       payload.nicInfo[n].lid = portAttr.lid;
     }
-    auto& nicQps = nicDoca_[n].qpGroups;
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
-      payload.nicInfo[n].qpns[q] =
-          doca_verbs_qp_get_qpn(nicQps[qpIdx]->qp_main.qp);
+    auto& nicQps = nicDoca_[n].blockQpGroups;
+    auto& nicExtraMainQps = nicDoca_[n].extraMainQps;
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
+      const int lane0MainIdx = block * config_.qpsPerBlockPerNic;
+      payload.nicInfo[n].qpns[lane0MainIdx] =
+          doca_verbs_qp_get_qpn(nicQps[blockIdx]->qp_main.qp);
+      for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+        const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                (config_.qpsPerBlockPerNic - 1) +
+            (lane - 1);
+        payload.nicInfo[n].qpns[lane0MainIdx + lane] =
+            doca_verbs_qp_get_qpn(nicExtraMainQps[extraIdx]->qp);
+      }
     }
   }
   return payload;
@@ -1265,19 +1404,28 @@ void MultipeerIbgdaTransport::allocatePeerBuffers(
 void MultipeerIbgdaTransport::connectPeerMainQps(
     int peerIndex,
     const PeerQpPayload& remotePayload) {
-  const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].qpGroups;
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
+    auto& nicQps = nicDoca_[nic].blockQpGroups;
+    auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
+      const int lane0MainIdx = block * config_.qpsPerBlockPerNic;
       IbgdaTransportExchInfo peerInfo;
-      peerInfo.qpn = remotePayload.nicInfo[nic].qpns[q];
+      peerInfo.qpn = remotePayload.nicInfo[nic].qpns[lane0MainIdx];
       memcpy(
           peerInfo.gid, remotePayload.nicInfo[nic].gid, sizeof(peerInfo.gid));
       peerInfo.gidIndex = remotePayload.gidIndex;
       peerInfo.lid = remotePayload.nicInfo[nic].lid;
       peerInfo.mtu = static_cast<ibverbx::ibv_mtu>(remotePayload.mtu);
-      connectQp(&nicQps[qpIdx]->qp_main, peerInfo, nic);
+      connectQp(&nicQps[blockIdx]->qp_main, peerInfo, nic);
+
+      for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+        const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                (config_.qpsPerBlockPerNic - 1) +
+            (lane - 1);
+        peerInfo.qpn = remotePayload.nicInfo[nic].qpns[lane0MainIdx + lane];
+        connectQp(nicExtraMainQps[extraIdx], peerInfo, nic);
+      }
     }
   }
 }
@@ -1293,19 +1441,28 @@ void MultipeerIbgdaTransport::applyRemoteViews(
 }
 
 void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
-  const int numQps = config_.numQpsPerPeerPerNic;
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].qpGroups;
+    auto& nicQps = nicDoca_[nic].blockQpGroups;
+    auto& nicExtraMainQps = nicDoca_[nic].extraMainQps;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
-    for (int q = 0; q < numQps; q++) {
-      const int qpIdx = peerIndex * numQps + q;
-      if (nicQps[qpIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_group_hl(nicQps[qpIdx]);
-        nicQps[qpIdx] = nullptr;
+    for (int block = 0; block < config_.maxGroups; block++) {
+      const int blockIdx = peerIndex * config_.maxGroups + block;
+      if (nicQps[blockIdx] != nullptr) {
+        doca_gpu_verbs_destroy_qp_group_hl(nicQps[blockIdx]);
+        nicQps[blockIdx] = nullptr;
       }
-      if (nicLoopback[qpIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(nicLoopback[qpIdx]);
-        nicLoopback[qpIdx] = nullptr;
+      if (nicLoopback[blockIdx] != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(nicLoopback[blockIdx]);
+        nicLoopback[blockIdx] = nullptr;
+      }
+      for (int lane = 1; lane < config_.qpsPerBlockPerNic; ++lane) {
+        const int extraIdx = (peerIndex * config_.maxGroups + block) *
+                (config_.qpsPerBlockPerNic - 1) +
+            (lane - 1);
+        if (nicExtraMainQps[extraIdx] != nullptr) {
+          doca_gpu_verbs_destroy_qp_hl(nicExtraMainQps[extraIdx]);
+          nicExtraMainQps[extraIdx] = nullptr;
+        }
       }
     }
   }
@@ -1346,13 +1503,17 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             remoteQp.numNics,
             numNics_));
   }
-  if (remoteQp.numQpsPerPeerPerNic != config_.numQpsPerPeerPerNic) {
+  if (remoteQp.maxGroups != config_.maxGroups ||
+      remoteQp.qpsPerBlockPerNic != config_.qpsPerBlockPerNic) {
     throw std::runtime_error(
         fmt::format(
-            "materializePeer: peer {} numQps={} vs local {}",
+            "materializePeer: peer {} maxGroups={} qpsPerBlockPerNic={} "
+            "vs local maxGroups={} qpsPerBlockPerNic={}",
             peerRank,
-            remoteQp.numQpsPerPeerPerNic,
-            config_.numQpsPerPeerPerNic));
+            remoteQp.maxGroups,
+            remoteQp.qpsPerBlockPerNic,
+            config_.maxGroups,
+            config_.qpsPerBlockPerNic));
   }
 
   connectPeerMainQps(peerIndex, remoteQp);

@@ -358,6 +358,12 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
         {"NCCL_CTRAN_USE_PIPES", "1"},
         {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
         {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
+        // Keep the parameterized CI target focused on collective correctness.
+        // The default IBGDA group cap creates many block-owned QPs on every
+        // test setup, which makes the 68-case tree sweep timeout before it can
+        // finish.
+        {"NCCL_CTRAN_MAX_NBLOCKS", "8"},
+        {"NCCL_CTRAN_IB_MAX_GROUPS", "16"},
     };
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     envs.emplace_back("NCCL_CTRAN_BACKENDS", "socket, nvl");

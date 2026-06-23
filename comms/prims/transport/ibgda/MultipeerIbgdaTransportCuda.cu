@@ -20,33 +20,45 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   CHECK(!params.empty() && !params[0].h_nicDeviceIbgdaResources.empty())
       << "buildDeviceTransportsOnGpu: empty params or zero NICs";
   int numNics = static_cast<int>(params[0].h_nicDeviceIbgdaResources.size());
-  int qpsPerNic =
+  int mainQpsPerNic =
       static_cast<int>(params[0].h_nicDeviceIbgdaResources[0].qps.size());
+  int companionQpsPerNic = static_cast<int>(
+      params[0].h_nicDeviceIbgdaResources[0].companionQps.size());
   for (int i = 0; i < numPeers; ++i) {
+    CHECK_EQ(params[i].maxGroups, params[0].maxGroups)
+        << "All peers must have the same maxGroups";
+    CHECK_EQ(params[i].qpsPerBlockPerNic, params[0].qpsPerBlockPerNic)
+        << "All peers must have the same qpsPerBlockPerNic";
     CHECK_EQ(
         static_cast<int>(params[i].h_nicDeviceIbgdaResources.size()), numNics)
         << "All peers must have the same numNics";
     for (int n = 0; n < numNics; ++n) {
       CHECK_EQ(
           static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
-          qpsPerNic)
+          params[i].maxGroups * params[i].qpsPerBlockPerNic)
+          << "Main QP count must equal maxGroups * qpsPerBlockPerNic";
+      CHECK_EQ(
+          static_cast<int>(
+              params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
+          params[i].maxGroups)
+          << "Companion QP count must equal maxGroups";
+      CHECK_EQ(
+          static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
+          mainQpsPerNic)
           << "All peers' NICs must have the same QP count";
       CHECK_EQ(
           static_cast<int>(
               params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
-          qpsPerNic)
-          << "qps and companionQps must match per NIC";
+          companionQpsPerNic)
+          << "All peers' NICs must have the same companion QP count";
     }
   }
 
-  // Each NIC has two QP kinds packed back-to-back: primary + companion.
-  constexpr int kQpKindsPerNic = 2;
-
   // 1. Allocate one contiguous GPU buffer for all QP pointer arrays.
   //    Layout per peer: [nic0_main][nic0_comp][nic1_main][nic1_comp]...
-  //    Total: numPeers * numNics * kQpKindsPerNic * qpsPerNic pointers.
-  std::size_t qpsPerPeer =
-      static_cast<std::size_t>(kQpKindsPerNic) * numNics * qpsPerNic;
+  //    Total: numPeers * numNics * (mainQpsPerNic + companionQpsPerNic).
+  std::size_t qpsPerPeer = static_cast<std::size_t>(numNics) *
+      (static_cast<std::size_t>(mainQpsPerNic) + companionQpsPerNic);
   std::size_t totalQpBytes =
       numPeers * qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
   doca_gpu_dev_verbs_qp** d_allQps = nullptr;
@@ -88,15 +100,14 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   h_nicResources.reserve(numPeers * numNics);
   for (int i = 0; i < numPeers; ++i) {
     for (int n = 0; n < numNics; ++n) {
-      // QP pointers for this peer/NIC start at offset:
-      //   (i * qpsPerPeer) + (n * kQpKindsPerNic * qpsPerNic) within d_allQps.
-      auto* d_mainQps =
-          d_allQps + (i * qpsPerPeer) + (n * kQpKindsPerNic * qpsPerNic);
-      auto* d_companionQps = d_mainQps + qpsPerNic;
+      auto* d_mainQps = d_allQps + (i * qpsPerPeer) +
+          n * (mainQpsPerNic + companionQpsPerNic);
+      auto* d_companionQps = d_mainQps + mainQpsPerNic;
       h_nicResources.push_back(
           NicDeviceIbgdaResources{
-              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, qpsPerNic),
-              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_companionQps, qpsPerNic),
+              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, mainQpsPerNic),
+              DeviceSpan<doca_gpu_dev_verbs_qp*>(
+                  d_companionQps, companionQpsPerNic),
               params[i].h_nicDeviceIbgdaResources[n].sinkLkey,
               params[i].h_nicDeviceIbgdaResources[n].deviceId,
           });
@@ -113,6 +124,17 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
 
   // 3. Build transport objects pointing into the contiguous
   // NicDeviceIbgdaResources array.
+  IbgdaBlockQpState* d_allBlockQpState = nullptr;
+  std::size_t blockStateBytes = static_cast<std::size_t>(numPeers) *
+      params[0].maxGroups * sizeof(IbgdaBlockQpState);
+  err = cudaMalloc(&d_allBlockQpState, blockStateBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to allocate GPU block QP state: " << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_allBlockQpState);
+  err = cudaMemset(d_allBlockQpState, 0, blockStateBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to zero GPU block QP state: " << cudaGetErrorString(err);
+
   std::vector<P2pIbgdaTransportDevice> h_transports;
   h_transports.reserve(numPeers);
   for (int i = 0; i < numPeers; ++i) {
@@ -125,6 +147,10 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         params[i].counterBuf,
         params[i].numSignalSlots,
         params[i].numCounterSlots,
+        params[i].maxGroups,
+        params[i].qpsPerBlockPerNic,
+        DeviceSpan<IbgdaBlockQpState>(
+            d_allBlockQpState + i * params[i].maxGroups, params[i].maxGroups),
         params[i].sendRecvState);
   }
 
@@ -151,12 +177,24 @@ void writeDeviceTransportSlot(
   CHECK(!params.h_nicDeviceIbgdaResources.empty())
       << "writeDeviceTransportSlot needs >= 1 NIC";
   int numNics = static_cast<int>(params.h_nicDeviceIbgdaResources.size());
-  int qpsPerNic =
+  int mainQpsPerNic =
       static_cast<int>(params.h_nicDeviceIbgdaResources[0].qps.size());
-  constexpr int kQpKindsPerNic = 2;
+  int companionQpsPerNic =
+      static_cast<int>(params.h_nicDeviceIbgdaResources[0].companionQps.size());
+  for (int n = 0; n < numNics; ++n) {
+    CHECK_EQ(
+        static_cast<int>(params.h_nicDeviceIbgdaResources[n].qps.size()),
+        mainQpsPerNic)
+        << "All NICs must have the same QP count";
+    CHECK_EQ(
+        static_cast<int>(
+            params.h_nicDeviceIbgdaResources[n].companionQps.size()),
+        companionQpsPerNic)
+        << "All NICs must have the same companion QP count";
+  }
 
-  std::size_t qpsPerPeer =
-      static_cast<std::size_t>(kQpKindsPerNic) * numNics * qpsPerNic;
+  std::size_t qpsPerPeer = static_cast<std::size_t>(numNics) *
+      (static_cast<std::size_t>(mainQpsPerNic) + companionQpsPerNic);
   std::size_t qpBytes = qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
   doca_gpu_dev_verbs_qp** d_qps = nullptr;
   cudaError_t err = cudaMalloc(&d_qps, qpBytes);
@@ -187,12 +225,13 @@ void writeDeviceTransportSlot(
   std::vector<NicDeviceIbgdaResources> h_nicResources;
   h_nicResources.reserve(numNics);
   for (int n = 0; n < numNics; ++n) {
-    auto* d_mainQps = d_qps + (n * kQpKindsPerNic * qpsPerNic);
-    auto* d_companionQps = d_mainQps + qpsPerNic;
+    auto* d_mainQps = d_qps + n * (mainQpsPerNic + companionQpsPerNic);
+    auto* d_companionQps = d_mainQps + mainQpsPerNic;
     h_nicResources.push_back(
         NicDeviceIbgdaResources{
-            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, qpsPerNic),
-            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_companionQps, qpsPerNic),
+            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, mainQpsPerNic),
+            DeviceSpan<doca_gpu_dev_verbs_qp*>(
+                d_companionQps, companionQpsPerNic),
             params.h_nicDeviceIbgdaResources[n].sinkLkey,
             params.h_nicDeviceIbgdaResources[n].deviceId,
         });
@@ -203,6 +242,17 @@ void writeDeviceTransportSlot(
       << "Failed to copy per-peer NicDeviceIbgdaResources to GPU: "
       << cudaGetErrorString(err);
 
+  IbgdaBlockQpState* d_blockQpState = nullptr;
+  std::size_t blockStateBytes =
+      static_cast<std::size_t>(params.maxGroups) * sizeof(IbgdaBlockQpState);
+  err = cudaMalloc(&d_blockQpState, blockStateBytes);
+  CHECK(err == cudaSuccess) << "Failed to allocate per-peer block QP state: "
+                            << cudaGetErrorString(err);
+  outGpuAllocations.push_back(d_blockQpState);
+  err = cudaMemset(d_blockQpState, 0, blockStateBytes);
+  CHECK(err == cudaSuccess)
+      << "Failed to zero per-peer block QP state: " << cudaGetErrorString(err);
+
   P2pIbgdaTransportDevice hostTransport(
       DeviceSpan<NicDeviceIbgdaResources>(d_nicResources, numNics),
       params.remoteSignalBuf,
@@ -210,6 +260,9 @@ void writeDeviceTransportSlot(
       params.counterBuf,
       params.numSignalSlots,
       params.numCounterSlots,
+      params.maxGroups,
+      params.qpsPerBlockPerNic,
+      DeviceSpan<IbgdaBlockQpState>(d_blockQpState, params.maxGroups),
       params.sendRecvState);
 
   err = cudaMemcpy(

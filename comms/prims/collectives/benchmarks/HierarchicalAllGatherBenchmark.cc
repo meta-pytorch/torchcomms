@@ -338,12 +338,13 @@ class HierarchicalAllGatherBenchmarkFixture
       MultipeerIbgdaTransportConfig transport_config{
           .cudaDevice = localRank,
           .dataBufferSize = config.data_buffer_size,
+          .maxGroups = config.num_blocks,
           .sendRecv =
               MultipeerIbgdaTransportConfig::SendRecvConfig{
                   .maxGroups = config.num_blocks,
                   .pipelineDepth = config.pipeline_depth,
               },
-          .numQpsPerPeerPerNic = config.num_qps,
+          .qpsPerBlockPerNic = config.num_qps,
       };
       transport_config.ibHca = config.ib_hca;
       ib_transport = std::make_unique<MultipeerIbgdaTransport>(

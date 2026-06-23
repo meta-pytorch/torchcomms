@@ -24,6 +24,14 @@ class RegCache;
 
 namespace regcache {
 
+using ExternalRegMemFn = std::function<commResult_t(
+    const void* buf,
+    const size_t len,
+    const int cudaDev,
+    void** regElem)>;
+
+using ExternalDeregMemFn = std::function<commResult_t(void* regElem)>;
+
 struct SegmentRange {
   const void* buf{nullptr};
   const std::size_t len{0};
@@ -104,6 +112,7 @@ struct RegElem {
   void* ibRegElem{nullptr};
   void* ipcRegElem{nullptr};
   void* tcpRegElem{nullptr};
+  void* externalRegElem{nullptr};
 
   // The state of the segment to ensure thread-safe access.
   // Concurrent writes:
@@ -177,11 +186,14 @@ struct RegElem {
   // It internally locks the stateMnger to ensure thread-safe access.
   // The segment should be registered only once by the first thread and reused
   // by all later calls before deregistration.
-  commResult_t doRegister(const std::vector<bool>& backends);
+  commResult_t doRegister(
+      const std::vector<bool>& backends,
+      const ExternalRegMemFn& externalRegMemFn = nullptr);
 
   // Thread-safe function to deregister the segment.
   // It internally locks the stateMnger to ensure thread-safe access.
-  commResult_t doDeregister();
+  commResult_t doDeregister(
+      const ExternalDeregMemFn& externalDeregMemFn = nullptr);
 
   // Thread-unsafe function to print internal fields.
   // It is only used for debugging purpose. Caller should ensure thread-safety
@@ -281,7 +293,8 @@ class RegCache {
       size_t len,
       bool forceReg = false,
       bool ncclManaged = false,
-      int deviceId = -1);
+      int deviceId = -1,
+      std::optional<std::vector<bool>> backends = std::nullopt);
 
   // Global deregistration using pointer lookup.
   // Frees cached segments and their associated registrations.
@@ -468,9 +481,24 @@ class RegCache {
   // cached.
   void* searchIbRegHandle(const void* ptr, size_t len, int deviceId = -1);
 
+  // Thread-safe function to search for a RegElem containing [ptr, ptr+len)
+  // and return its externalRegElem. If the buffer is cached but not yet
+  // registered, it will perform registration via regRangeCached(). Returns
+  // nullptr if not cached.
+  void* searchExternalRegHandle(const void* ptr, size_t len, int deviceId = -1);
+
   // Thread-safe function to wait on all async registration requests to finish.
   // Used by test only.
   void waitAsyncRegComplete();
+
+  // Register external memory registration/deregistration callbacks.
+  // Threading: must be called at init time before any concurrent
+  // regRangeCached/deregElem calls. Not safe for concurrent mutation.
+  void registerExternalRegMemFn(
+      regcache::ExternalRegMemFn regMem,
+      regcache::ExternalDeregMemFn deregMem);
+
+  void resetExternalRegMemFn();
 
   // Global API to register all cached segments. This is useful in lazy
   // registration mode where segments are cached but not immediately registered.
@@ -540,6 +568,9 @@ class RegCache {
         segToRegElemsMap;
   };
   folly::Synchronized<RegElemMaps> regElemsMaps_;
+
+  regcache::ExternalRegMemFn externalRegMemFn_;
+  regcache::ExternalDeregMemFn externalDeregMemFn_;
 
   // Thread and cmd queue to handle async registration requests
   struct AsyncRegCmd {

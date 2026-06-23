@@ -71,6 +71,26 @@ void launchIbgdaPutFlushBatch(
     cudaStream_t stream);
 
 /**
+ * Launch batched kernel: one thread per block uses the thread-scope put +
+ * flush API on a block-private buffer slice.
+ *
+ * This exercises the no-ThreadGroup API from multiple physical blocks, so it
+ * catches regressions where thread-scope wrappers accidentally route every
+ * block through block 0's transport state.
+ *
+ * @param blockCycles Output: one cycle count per launched block
+ */
+void launchIbgdaThreadScopeMultiBlockPutFlushBatch(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytesPerBlock,
+    int numBlocks,
+    int numIters,
+    unsigned long long* blockCycles,
+    cudaStream_t stream);
+
+/**
  * Launch batched kernel: Multiple put + signal + counter iterations
  *
  * Companion-QP loopback atomically increments the local counter when the
