@@ -14,6 +14,7 @@
 #include "folly/synchronization/CallOnce.h"
 
 #include <cerrno>
+#include <exception>
 
 namespace ctran {
 
@@ -313,6 +314,8 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
       recvComms;
   size_t queuedRecvCount = 0;
   size_t cancelledQueuedRecvCount = 0;
+  size_t pendingRecvNotifyCount = 0;
+  size_t cancelledPendingRecvNotifyCount = 0;
   {
     std::lock_guard lock(mutex_);
     queuedRecvCount = queuedRecv_.size();
@@ -328,6 +331,14 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
         ++cancelledQueuedRecvCount;
       }
     }
+    for (auto& [peerRank, pending] : pendingRecvNotifies_) {
+      pendingRecvNotifyCount += pending.size();
+      if (!pending.empty()) {
+        recvNotifyErrorCount_[peerRank] += pending.size();
+        cancelledPendingRecvNotifyCount += pending.size();
+        pending.clear();
+      }
+    }
     queuedRecv_.clear();
     queuedCtrlRecv_.clear();
     sendComms.swap(sendComms_);
@@ -338,7 +349,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
   if (forceClose) {
     CLOGF(
         WARN,
-        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {}",
+        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {} pendingRecvNotifies {} cancelledPendingRecvNotifies {}",
         (void*)this,
         rank_,
         commHash_,
@@ -348,11 +359,13 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
         sendComms.size(),
         recvComms.size(),
         queuedRecvCount,
-        cancelledQueuedRecvCount);
+        cancelledQueuedRecvCount,
+        pendingRecvNotifyCount,
+        cancelledPendingRecvNotifyCount);
   } else {
     CLOGF(
         INFO,
-        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {}",
+        "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {} pendingRecvNotifies {} cancelledPendingRecvNotifies {}",
         (void*)this,
         rank_,
         commHash_,
@@ -362,7 +375,9 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
         sendComms.size(),
         recvComms.size(),
         queuedRecvCount,
-        cancelledQueuedRecvCount);
+        cancelledQueuedRecvCount,
+        pendingRecvNotifyCount,
+        cancelledPendingRecvNotifyCount);
   }
 
   auto transport = CtranTcpDmSingleton::getTransport();
@@ -800,10 +815,15 @@ commResult_t CtranTcpDm::irecvCounted(
     void* unpackPool) {
   auto req = std::make_unique<CtranTcpDmRequest>();
   auto* rawReq = req.get();
-  pendingRecvNotifies_[peerRank].push_back(std::move(req));
 
   {
     std::unique_lock lock(mutex_);
+    if (aborted_.load()) {
+      return commRemoteError;
+    }
+
+    pendingRecvNotifies_[peerRank].push_back(std::move(req));
+
     if (recvComms_.find(peerRank) == recvComms_.end()) {
       auto recvReq = std::make_unique<RecvRequest>();
       recvReq->peerRank = peerRank;
@@ -818,12 +838,38 @@ commResult_t CtranTcpDm::irecvCounted(
     }
   }
 
-  return irecvConnected(peerRank, handle, data, size, *rawReq, unpackPool);
+  auto result =
+      irecvConnected(peerRank, handle, data, size, *rawReq, unpackPool);
+  if (result != commSuccess) {
+    rawReq->complete(::comms::tcp_devmem::Status::RemoteError);
+  }
+  return result;
 }
 
 void CtranTcpDm::recvNotifyProgress() {
   for (auto& [peerRank, pending] : pendingRecvNotifies_) {
-    while (!pending.empty() && pending.front()->isComplete()) {
+    while (!pending.empty()) {
+      bool complete = false;
+      try {
+        complete = pending.front()->isComplete();
+      } catch (const std::exception& e) {
+        CLOGF(
+            WARN,
+            "CTRAN-TCPDM: counted recv notify failed for peer {} rank {} commHash {:x} commDesc {} error {}",
+            peerRank,
+            rank_,
+            commHash_,
+            commDesc_,
+            e.what());
+        pending.pop_front();
+        recvNotifyErrorCount_[peerRank]++;
+        continue;
+      }
+
+      if (!complete) {
+        break;
+      }
+
       pending.pop_front();
       recvNotifyCount_[peerRank]++;
     }
@@ -832,6 +878,13 @@ void CtranTcpDm::recvNotifyProgress() {
 
 commResult_t CtranTcpDm::checkNotify(int peerRank, bool* done) {
   recvNotifyProgress();
+  auto errIt = recvNotifyErrorCount_.find(peerRank);
+  if (errIt != recvNotifyErrorCount_.end() && errIt->second > 0) {
+    errIt->second--;
+    *done = false;
+    return commRemoteError;
+  }
+
   auto it = recvNotifyCount_.find(peerRank);
   if (it != recvNotifyCount_.end() && it->second > 0) {
     it->second--;

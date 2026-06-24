@@ -160,6 +160,7 @@ class CtranTcpDm {
       pendingRecvNotifies_;
   // Per-peer count of completed data recvs, decremented by checkNotify.
   std::unordered_map<int, int> recvNotifyCount_;
+  std::unordered_map<int, int> recvNotifyErrorCount_;
 
   void recvNotifyProgress();
   void ctrlRecvProgress();
