@@ -1640,6 +1640,32 @@ cvars:
      complete and CQEs are generated, new messages will be posted to keep the
      send queue full of this many WQEs.
 
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+   type        : bool
+   default     : True
+   description : |-
+     When a VC spans multiple NICs (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 with a
+     single VC striped across them), distribute a single put/get's QP-scaling
+     sub-chunks round-robin across all NICs first (interleaved visit order
+     qp0, qpK, qp2K, ... advancing the device before the next QP on a device,
+     where K = MAX_QPS / devices, instead of filling one NIC's qp0..K-1 before
+     the next). This lets a put smaller than
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD * (MAX_QPS / devices) still drive all
+     NICs, capturing the multi-NIC bandwidth without extra QP or channel setup.
+     No effect when the VC is bound to a single NIC (the mapping is the
+     identity).
+
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE
+   type        : uint64_t
+   default     : 65536
+   description : |-
+     Minimum per-WQE size (bytes) for NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+     to take effect. A single op's WQEs are interleaved across NICs only when
+     each WQE exceeds this size. WQEs at or below it (e.g. the 64K pieces a
+     NUM_SPLIT=2 AllGather ring produces from a 128K per-rank chunk) are
+     latency-bound -- one NIC handles them fine and spreading them across NICs
+     only adds cross-NIC ordering/straggler cost, so interleaving is skipped.
+
  - name        : NCCL_CTRAN_IB_MAX_NUM_CQE
    type        : int
    default     : -1
