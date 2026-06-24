@@ -238,12 +238,13 @@ struct CommLogData {
   std::string commDesc{"undefined"};
   int rank{-1};
   int nRanks{-1};
+  int64_t uuid{-1}; // MCCL comm instance UUID (from InitOpts::uuid)
 
   bool operator==(const CommLogData& other) const {
     return (
         commId == other.commId && commHash == other.commHash &&
         commDesc == other.commDesc && rank == other.rank &&
-        nRanks == other.nRanks);
+        nRanks == other.nRanks && uuid == other.uuid);
   }
 
   std::size_t hash() const noexcept;
