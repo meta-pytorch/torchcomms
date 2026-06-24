@@ -3,6 +3,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 
 #include "comms/tcp_devmem/transport.h"
 
@@ -18,6 +19,9 @@ class CtranTcpDmRequest {
     if (request_ == nullptr) {
       // Pending irecv where sender has not been connected yet or send/recv
       // control.
+      if (done_) {
+        lifetime_.reset();
+      }
       if (done_ && status_ != ::comms::tcp_devmem::Status::Ok) {
         COMMCHECKTHROW(status_);
       }
@@ -42,6 +46,7 @@ class CtranTcpDmRequest {
 
         COMMCHECKTHROW(transport_->consumedRequest(request_));
       }
+      lifetime_.reset();
     }
 
     return done_;
@@ -51,27 +56,34 @@ class CtranTcpDmRequest {
       ::comms::tcp_devmem::Status status = ::comms::tcp_devmem::Status::Ok) {
     status_ = status;
     done_ = true;
+    if (request_ == nullptr) {
+      lifetime_.reset();
+    }
   }
 
-  void markQueuedRecv() {
+  void markQueuedRecv(std::shared_ptr<void> lifetime = nullptr) {
     done_ = false;
     status_ = ::comms::tcp_devmem::Status::Ok;
     request_ = nullptr;
+    lifetime_ = std::move(lifetime);
   }
 
   void track(
       ::comms::tcp_devmem::TransportInterface* transport,
-      ::comms::tcp_devmem::RequestInterface* request) {
+      ::comms::tcp_devmem::RequestInterface* request,
+      std::shared_ptr<void> lifetime = nullptr) {
     done_ = false;
     status_ = ::comms::tcp_devmem::Status::Ok;
     transport_ = transport;
     request_ = request;
+    lifetime_ = std::move(lifetime);
   }
 
  private:
   ::comms::tcp_devmem::RequestInterface* request_{nullptr};
   ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
   ::comms::tcp_devmem::Status status_{::comms::tcp_devmem::Status::Ok};
+  std::shared_ptr<void> lifetime_;
   bool done_{false};
 };
 
