@@ -141,13 +141,8 @@ class RdmaMemory : folly::MoveOnly {
    * @param buf Pointer to the memory buffer to register
    * @param len Length of the memory buffer in bytes
    * @param cudaDev CUDA device ID associated with this memory buffer
-   * @param cacheReg Whether the buffer is already registered in regCache.
-   *        When true, the constructor expects the buffer to be pre-registered
-   *        and will throw if the handle is not found. When false, the
-   *        constructor will register the buffer itself and deregister it on
-   *        destruction
    */
-  RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg = false);
+  RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
   RdmaMemory& operator=(RdmaMemory&& other) = delete;
   ~RdmaMemory() noexcept;
@@ -249,10 +244,12 @@ class RdmaMemory : folly::MoveOnly {
 
   void* regHdl_{nullptr};
   // Opaque handle to the dynamic ctran::regcache::RegElem when this RdmaMemory
-  // owns a dynamic (non-cached) registration; null on the cacheReg/HIT path.
+  // owns a dynamic (non-cached) registration; null on the cache-HIT path.
   // Stored as void* to keep the regcache type out of this header.
   void* dynRegHdl_{nullptr};
   std::string remoteKey_;
+  // Whether this RdmaMemory reused an existing cached registration (cache hit);
+  // reported by reusedRegistration().
   bool cacheReg_{false};
   std::shared_ptr<ctran::RegCache> regCache_;
 };

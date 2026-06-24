@@ -108,7 +108,7 @@ PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
 
   py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
       .def(
-          py::init([](const at::Tensor& tensor, bool cacheReg) {
+          py::init([](const at::Tensor& tensor) {
             TORCH_CHECK(
                 tensor.is_contiguous(),
                 "RdmaMemory currently requires a contiguous tensor");
@@ -116,10 +116,9 @@ PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
             const auto device =
                 tensor.get_device() < 0 ? 0 : tensor.get_device();
             return std::make_shared<RdmaMemory>(
-                tensor.data_ptr(), tensor.nbytes(), device, cacheReg);
+                tensor.data_ptr(), tensor.nbytes(), device);
           }),
-          py::arg("tensor"),
-          py::arg("cache_reg") = false)
+          py::arg("tensor"))
       .def(
           "to_view",
           [](RdmaMemory& self,
@@ -142,10 +141,15 @@ PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
           },
           py::arg("offset") = py::none(),
           py::arg("length") = py::none())
-      .def("to_remote_buffer", [](RdmaMemory& self) {
-        return RdmaRemoteBuffer{
-            const_cast<void*>(self.data()), self.length(), self.remoteKey()};
-      });
+      .def(
+          "to_remote_buffer",
+          [](RdmaMemory& self) {
+            return RdmaRemoteBuffer{
+                const_cast<void*>(self.data()),
+                self.length(),
+                self.remoteKey()};
+          })
+      .def("reused_registration", &RdmaMemory::reusedRegistration);
 
   m.def(
       "attach_rdma_memory_hook",

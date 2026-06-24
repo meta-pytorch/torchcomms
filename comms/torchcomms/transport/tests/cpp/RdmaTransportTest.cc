@@ -307,17 +307,15 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
 
 TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
   auto regCache = ctran::RegCache::getInstance();
-  // A cacheReg=true ctor on an unregistered buffer initializes the ctran/IB
-  // environment (initEnvironment) and then throws because the buffer is not yet
-  // cached. This mirrors CacheRegConstruction and ensures globalRegister below
-  // runs with CUDA/IB initialized.
-  EXPECT_THROW(
-      RdmaMemory(buffer_, bufferSize_, cudaDev_, /*cacheReg=*/true),
-      std::runtime_error);
-
-  // Pre-register (cache) the buffer; both RdmaMemory instances then HIT and
-  // reuse the same cached registration. (After the dynamic-MISS change, reuse
-  // happens only via the cache, not via the isolated dynamic path.)
+  // Initialize the ctran/IB environment: a bare RdmaMemory ctor runs
+  // initEnvironment(). On this unregistered buffer it takes the dynamic-MISS
+  // path (reused == false) and deregisters on scope exit.
+  {
+    RdmaMemory warmup(buffer_, bufferSize_, cudaDev_);
+    EXPECT_FALSE(warmup.reusedRegistration());
+  }
+  // Pre-register (cache) the buffer; subsequent RdmaMemory instances HIT and
+  // reuse the same cached registration.
   ASSERT_EQ(
       regCache->globalRegister(
           buffer_,
@@ -326,14 +324,12 @@ TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
           /*ncclManaged=*/false,
           cudaDev_),
       commSuccess);
-
   RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
   EXPECT_TRUE(firstMemory.reusedRegistration());
   RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
   EXPECT_TRUE(secondMemory.reusedRegistration());
   EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
   EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
-
   EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
 }
 
@@ -494,35 +490,6 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
   EXPECT_EQ(memory.remoteKey(), originalKey);
   EXPECT_EQ(memory.getDevice(), cudaDev_);
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-}
-
-TEST_F(RdmaMemoryTest, CacheRegConstruction) {
-  // Without globalRegister, RdmaMemory should throw because the buffer
-  // is not cached and searchIbRegHandle returns nullptr
-  EXPECT_THROW(
-      RdmaMemory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */),
-      std::runtime_error);
-
-  // After globalRegister, RdmaMemory should succeed
-  auto regCache = ctran::RegCache::getInstance();
-  EXPECT_EQ(
-      regCache->globalRegister(
-          buffer_,
-          bufferSize_,
-          false /* forceReg */,
-          false /* ncclManaged */,
-          cudaDev_),
-      commSuccess);
-  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
-  EXPECT_EQ(memory.getDevice(), cudaDev_);
-  EXPECT_NE(memory.localKey(), nullptr);
-  EXPECT_FALSE(memory.remoteKey().empty());
-  EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-  // Views should work the same as non-cached
-  auto view = memory.createView();
-  EXPECT_EQ(view.data(), buffer_);
-  EXPECT_EQ(view.size(), bufferSize_);
-  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
 }
 
 TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
