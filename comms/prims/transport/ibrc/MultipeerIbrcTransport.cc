@@ -25,7 +25,12 @@
 #include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
-#include "comms/prims/transport/ibrc/P2pIbrcTransportDevice.cuh"
+// Device-handle construction lives in MultipeerIbrcTransportCuda.cu: the full
+// P2pIbrcTransportDevice pulls hip_bf16 (via the send/recv CopyOp) which a host
+// .cc can't compile on AMD, so it's built in device context there (mirrors
+// IBGDA's MultipeerIbgdaTransportCuda). This .cc only needs the host-callable
+// builder declarations.
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransportCuda.cuh"
 
 namespace comms::prims {
 
@@ -65,6 +70,10 @@ GpuError gpuFreeHost(void* ptr) {
 GpuError gpuSetDevice(int device) {
   return hipSetDevice(device);
 }
+
+GpuError gpuMemset(void* ptr, int value, std::size_t bytes) {
+  return hipMemset(ptr, value, bytes);
+}
 #else
 using GpuError = cudaError_t;
 constexpr GpuError kGpuSuccess = cudaSuccess;
@@ -87,6 +96,10 @@ GpuError gpuFreeHost(void* ptr) {
 
 GpuError gpuSetDevice(int device) {
   return cudaSetDevice(device);
+}
+
+GpuError gpuMemset(void* ptr, int value, std::size_t bytes) {
+  return cudaMemset(ptr, value, bytes);
 }
 #endif
 
@@ -252,6 +265,13 @@ void MultipeerIbrcTransport::exchange() {
     exchangeAndConnectQps();
     allocateSignalCounterResources(
         IbCounterStorage::HostPinned, /*allocateDiscardSignal=*/false);
+    // Allocate + collectively exchange send/recv staging before building the
+    // device transports, so updatePeerDeviceTransport can embed the resulting
+    // IbSendRecvState. Delegated to the shared base; IBRC uses a host-mapped
+    // NIC_DONE counter (CPU proxy writes it) via the HostPinned counter
+    // storage.
+    allocateSendRecvBuffersEager(IbCounterStorage::HostPinned);
+    exchangeSendRecvBuffersEager();
     allocateCmdQueuesForAllPeers();
     VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " allocated "
             << allocatedCmdQueueCount() << " command queues";
@@ -272,6 +292,7 @@ void MultipeerIbrcTransport::cleanup() {
     cleanupPeerCmdQueues(peerIndex);
     cleanupPeerQps(peerIndex);
   }
+  cleanupSendRecvBuffers();
   cleanupSignalCounterResources();
 
   auto& symbols = ibverbx::ibvSymbols;
@@ -783,12 +804,9 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
 void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
   const std::size_t numPeers = static_cast<std::size_t>(nRanks_ - 1);
   p2pTransportDevices_ = allocateMapped(
-      numPeers * sizeof(P2pIbrcTransportDevice),
-      "P2pIbrcTransportDevice slots");
-  auto* slots = static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.host);
-  for (std::size_t peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-    new (&slots[peerIndex]) P2pIbrcTransportDevice();
-  }
+      numPeers * ibrcDeviceSlotSize(), "P2pIbrcTransportDevice slots");
+  constructIbrcDeviceSlots(
+      p2pTransportDevices_.host, static_cast<int>(numPeers));
 }
 
 void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
@@ -797,10 +815,12 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
     return;
   }
 
-  auto* slots = static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.host);
   auto& peer = peerResources_[peerIndex];
   if (!peer.cmdQueuesAllocated || peer.cmdQueueDevices.device == nullptr) {
-    new (&slots[peerIndex]) P2pIbrcTransportDevice();
+    constructIbrcDeviceSlots(
+        static_cast<char*>(p2pTransportDevices_.host) +
+            peerIndex * ibrcDeviceSlotSize(),
+        1);
     return;
   }
 
@@ -817,7 +837,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
     counterHostBuf = slotCounterHostView(peerIndex);
   }
 
-  new (&slots[peerIndex]) P2pIbrcTransportDevice(
+  writeIbrcDeviceSlot(
+      p2pTransportDevices_.host,
+      peerIndex,
       DeviceSpan<IbrcCmdQueueDevice>(
           static_cast<IbrcCmdQueueDevice*>(peer.cmdQueueDevices.device),
           static_cast<uint32_t>(peer.cmdQueues.size())),
@@ -832,7 +854,8 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       counterDeviceBuf,
       counterHostBuf,
       config_.numSignalSlots,
-      config_.numCounterSlots);
+      config_.numCounterSlots,
+      sendRecvStateForPeer(peerIndex));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -878,6 +901,12 @@ MultipeerIbrcTransport::MappedAllocation MultipeerIbrcTransport::allocateMapped(
 
   return allocation;
 }
+
+// Send/recv staging allocation, exchange, cleanup, and IbSendRecvState
+// construction are provided by MultiPeerIbTransportBase. IBRC delegates via
+// allocateSendRecvBuffersEager(IbCounterStorage::HostPinned) /
+// exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers() /
+// sendRecvStateForPeer().
 
 void MultipeerIbrcTransport::destroyPeerQps(
     std::vector<PeerQpResource>& qpResources) noexcept {
@@ -1339,8 +1368,9 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
         "getP2pTransportDeviceSlot: IBRC device transport slots are not initialized");
   }
   const int peerIndex = rankToPeerIndex(peerRank);
-  return static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.device) +
-      peerIndex;
+  return reinterpret_cast<P2pIbrcTransportDevice*>(
+      static_cast<char*>(p2pTransportDevices_.device) +
+      peerIndex * ibrcDeviceSlotSize());
 }
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
@@ -1353,8 +1383,9 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
         "getP2pTransportDevice: IBRC device transport slots are not initialized");
   }
   const int peerIndex = rankToPeerIndex(peerRank);
-  return static_cast<P2pIbrcTransportDevice*>(p2pTransportDevices_.device) +
-      peerIndex;
+  return reinterpret_cast<P2pIbrcTransportDevice*>(
+      static_cast<char*>(p2pTransportDevices_.device) +
+      peerIndex * ibrcDeviceSlotSize());
 }
 
 void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
@@ -1371,10 +1402,17 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
       localBuf,
       IbCounterStorage::HostPinned,
       /*allocateDiscardSignal=*/false);
+  // Allocate this peer's send/recv rings on demand (HostPinned NIC_DONE
+  // counter, CPU-proxy written) and publish them on the same bilateral round,
+  // so sendRecvStateForPeer(peerIndex) is populated when allocatePeerCmdQueues
+  // -> updatePeerDeviceTransport bakes it into the device slot.
+  allocateSendRecvBufferForPeer(
+      peerIndex, localBuf, IbCounterStorage::HostPinned);
   auto remoteBuf =
       exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
   applyRemoteSignalCounterResources(
       peerIndex, remoteBuf, /*hasDiscardSignal=*/false);
+  applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
   allocatePeerCmdQueues(peerIndex);
   startProgressThread();
   peerMaterialized_[peerIndex] = true;
@@ -1386,6 +1424,7 @@ void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
   cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);
   cleanupPeerSignalCounterResources(peerIndex);
+  cleanupSendRecvBufferForPeer(peerIndex);
   if (peerIndex >= 0 &&
       peerIndex < static_cast<int>(peerMaterialized_.size())) {
     peerMaterialized_[peerIndex] = false;

@@ -16,7 +16,12 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+
+namespace meta::comms {
+class DeviceBuffer;
+} // namespace meta::comms
 
 namespace comms::prims {
 
@@ -239,9 +244,31 @@ struct PeerBufferPayload {
   IbgdaBufferExchInfo slotDiscard;
 };
 
+// Which memory a NIC completion counter lives in. Shared by the slot counter
+// (#16) and the send/recv NIC_DONE counter:
+//   Device     - GPU device memory, allocated and registered by the transport.
+//                The NIC bumps it via a loopback RDMA atomic (IBGDA).
+//   HostPinned - host-mapped (cudaHostAllocMapped) memory, allocated by the
+//                transport; the CPU progress thread writes it and the device
+//                reads via the mapped pointer (IBRC). Never MR-registered.
 enum class IbCounterStorage {
   Device,
   HostPinned,
+};
+
+// Per-peer send/recv staging-ring views. Eager mode owns the bulk allocations
+// and slices these; the device side reads them via sendRecvStateForPeer().
+struct IbSendRecvPeerBuffers {
+  IbgdaLocalBuffer sendStaging;
+  IbgdaLocalBuffer recvStaging;
+  IbgdaLocalBuffer signal;
+  IbgdaLocalBuffer counter;
+  IbgdaLocalBuffer counterCompletion;
+  // DeviceSpan has a const data_ member (no copy-assign), so wrap in optional
+  // and emplace() the per-peer slice.
+  std::optional<DeviceSpan<IbSendRecvState::ProgressSlot>> state;
+  IbgdaRemoteBuffer remoteRecvStaging;
+  IbgdaRemoteBuffer remoteSignal;
 };
 
 /**
@@ -321,8 +348,10 @@ class MultiPeerIbTransportBase {
       MultipeerIbTransportConfig config);
 
   // Non-virtual protected dtor: the base is never owned/deleted polymorphically
-  // (the dispatcher holds the concrete backend type).
-  ~MultiPeerIbTransportBase() = default;
+  // (the dispatcher holds the concrete backend type). Defined out-of-line in
+  // the .cc so the unique_ptr<DeviceBuffer> members destruct against a complete
+  // type.
+  ~MultiPeerIbTransportBase();
 
   MultiPeerIbTransportBase(const MultiPeerIbTransportBase&) = delete;
   MultiPeerIbTransportBase& operator=(const MultiPeerIbTransportBase&) = delete;
@@ -372,6 +401,52 @@ class MultiPeerIbTransportBase {
       void* remotePayload,
       std::size_t bytes,
       int tag);
+
+  // ---- shared send/recv staging-ring lifecycle (eager mode) ----
+  // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
+  // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
+  // = pipelineDepth * dataBufferSize per direction; signal/state are sized off
+  // maxGroups. Per-peer staging + signal are device-registered; recvStaging +
+  // signal are collectively exchanged so peers can RDMA into our ring.
+  bool sendRecvBuffersEnabled() const {
+    return config_.sendRecv.has_value();
+  }
+  IbSendRecvState sendRecvStateForPeer(int peerIndex) const;
+  // Allocate + register the per-peer staging/signal/state bulks and slice them.
+  // counterStorage selects the NIC_DONE counter: Device (transport-allocated,
+  // registered) or HostPinned (transport-allocated host-mapped, never
+  // registered).
+  void allocateSendRecvBuffersEager(IbCounterStorage counterStorage);
+  // COLLECTIVE. allGather recvStaging + signal so each peer holds our remote
+  // views. Must be called after allocateSendRecvBuffersEager().
+  void exchangeSendRecvBuffersEager();
+  void cleanupSendRecvBuffers() noexcept;
+
+  // ---- per-peer (lazy) send/recv: shared by IBGDA + IBRC ----
+  // Allocate + register ONE peer's send/recv rings on demand (lazy connect) and
+  // fill the outbound payload's recvStaging/srSignal exch info. counterStorage
+  // selects the NIC_DONE counter: Device (a registered slice of the contiguous
+  // per-peer buffer; NIC loopback atomic — IBGDA) or HostPinned (a separate
+  // host-mapped allocation written by the CPU proxy — IBRC). The per-peer
+  // buffer is dedicated to this peer pair, so no numPeers slicing is needed.
+  void allocateSendRecvBufferForPeer(
+      int peerIndex,
+      PeerBufferPayload& payload,
+      IbCounterStorage counterStorage);
+  // Apply a peer's payload: remote recvStaging/signal views are used whole.
+  void applyRemoteSendRecvBuffer(
+      int peerIndex,
+      const PeerBufferPayload& remotePayload);
+  // Per-peer teardown: deregister + free this peer's lazy allocation and reset
+  // its views. Safe on an unmaterialized peer.
+  void cleanupSendRecvBufferForPeer(int peerIndex) noexcept;
+
+  const MultipeerIbTransportConfig::SendRecvConfig& sendRecvConfig() const;
+  void validateSendRecvConfig() const;
+  std::size_t sendRecvStagingBytesPerPeer() const;
+  std::size_t sendRecvSignalBytesPerPeer() const;
+  std::size_t sendRecvCounterBytesPerPeer() const;
+  std::size_t sendRecvStateBytesPerPeer() const;
 
   void allocateSignalCounterResources(
       IbCounterStorage counterStorage,
@@ -432,6 +507,20 @@ class MultiPeerIbTransportBase {
   // Maps allocation base address -> cached MR covering the full allocation.
   // Ordered map enables O(log n) containment lookup via upper_bound.
   std::map<uintptr_t, CachedMr> registeredBuffers_;
+
+  // Shared send/recv staging-ring state (eager mode). Owns the bulk
+  // allocations; sendRecvPeerBuffers_ slices them per peer.
+  std::vector<IbSendRecvPeerBuffers> sendRecvPeerBuffers_;
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvSendStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvRecvStagingBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvSignalBulk_;
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvStateBulk_;
+  // Device counter bulk (counterStorage == Device). Null for Host counters.
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvCounterBulk_;
+  IbgdaLocalBuffer sendRecvRecvStagingBulkReg_;
+  IbgdaLocalBuffer sendRecvSignalBulkReg_;
+  IbgdaLocalBuffer sendRecvCounterBulkReg_;
+  IbCounterStorage sendRecvCounterStorage_{IbCounterStorage::Device};
 
   // Lazy materialization state machine.
   std::vector<int> pendingPeers_;
@@ -512,9 +601,19 @@ class MultiPeerIbTransportBase {
   DeviceSlotAllocation slotSignalAllocation_;
   CounterSlotAllocation slotCounterAllocation_;
   DeviceSlotAllocation slotDiscardSignalAllocation_;
+  // Host-mapped send/recv NIC_DONE counter (counterStorage == Host). Owns the
+  // host-pinned allocation; sliced per peer into IbSendRecvPeerBuffers.counter.
+  CounterSlotAllocation sendRecvHostCounterAllocation_;
   std::vector<DeviceSlotAllocation> lazySlotSignalAllocations_;
   std::vector<CounterSlotAllocation> lazySlotCounterAllocations_;
   std::vector<DeviceSlotAllocation> lazySlotDiscardSignalAllocations_;
+  // Lazy per-peer send/recv allocations: one contiguous device buffer per
+  // materialized peer (sendStaging|recvStaging|signal|state, plus the counter
+  // when device-resident). Empty in eager mode. Shared by IBGDA (Device
+  // counter) and IBRC, which additionally allocates a per-peer host-mapped
+  // NIC_DONE counter below.
+  std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
+  std::vector<CounterSlotAllocation> lazySendRecvHostCounters_;
 };
 
 /**
