@@ -1,6 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/ibverbx/IbvDevice.h"
+
+#include <utility>
+
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
 namespace ibverbx {
@@ -226,15 +229,11 @@ IbvDevice::IbvDevice(IbvDevice&& other) noexcept {
 }
 
 IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
-  device_ = other.device_;
-  context_ = other.context_;
-  port_ = other.port_;
-  dataDirect_ = other.dataDirect_;
-  deviceId_ = other.deviceId_;
-
-  other.device_ = nullptr;
-  other.context_ = nullptr;
-  other.deviceId_ = -1;
+  std::swap(device_, other.device_);
+  std::swap(context_, other.context_);
+  std::swap(port_, other.port_);
+  std::swap(dataDirect_, other.dataDirect_);
+  std::swap(deviceId_, other.deviceId_);
   return *this;
 }
 

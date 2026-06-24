@@ -5,6 +5,7 @@
 #include <fmt/format.h>
 #include <folly/json.h>
 #include <folly/logging/xlog.h>
+#include <utility>
 
 #include "comms/ctran/ibverbx/IbvQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
@@ -37,12 +38,10 @@ IbvQp::IbvQp(IbvQp&& other) noexcept {
 }
 
 IbvQp& IbvQp::operator=(IbvQp&& other) noexcept {
-  qp_ = other.qp_;
-  physicalSendWrStatus_ = std::move(other.physicalSendWrStatus_);
-  physicalRecvWrStatus_ = std::move(other.physicalRecvWrStatus_);
-  deviceId_ = other.deviceId_;
-  other.qp_ = nullptr;
-  other.deviceId_ = -1;
+  std::swap(qp_, other.qp_);
+  std::swap(physicalSendWrStatus_, other.physicalSendWrStatus_);
+  std::swap(physicalRecvWrStatus_, other.physicalRecvWrStatus_);
+  std::swap(deviceId_, other.deviceId_);
   return *this;
 }
 
