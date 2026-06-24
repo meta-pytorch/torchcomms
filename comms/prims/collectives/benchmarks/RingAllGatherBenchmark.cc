@@ -1,10 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
+#include <glog/logging.h>
 #include <nccl.h>
 
-#include <algorithm>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <vector>
@@ -13,6 +15,7 @@
 #include "comms/prims/collectives/RingAllgatherLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -30,6 +33,7 @@ struct RingAllGatherBenchmarkConfig {
   std::size_t data_buffer_size;
   int pipeline_depth;
   int num_qps;
+  bool use_ibrc{false};
   std::string name;
 };
 
@@ -38,10 +42,10 @@ struct RingAllGatherBenchmarkResult {
   std::size_t sendcount{};
   std::size_t total_bytes{};
   int num_rings{};
-  float nccl_bandwidth{};
-  float ring_bandwidth{};
-  float nccl_latency{};
-  float ring_latency{};
+  float baseline_bandwidth{};
+  float candidate_bandwidth{};
+  float baseline_latency{};
+  float candidate_latency{};
   float speedup{};
 };
 
@@ -52,13 +56,10 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
     setenv("NCCL_P2P_DISABLE", "1", 1);
-    NCCL_CHECK_VOID(
-        ncclCommInitRank(&nccl_comm_, worldSize, get_nccl_id(), globalRank));
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
-    NCCL_CHECK_VOID(ncclCommDestroy(nccl_comm_));
     CUDA_CHECK_VOID(cudaStreamDestroy(stream_));
     BenchmarkTestFixture::TearDown();
   }
@@ -96,6 +97,16 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     CUDA_CHECK(cudaMemset(send_buf.get(), 1, config.sendcount));
     CUDA_CHECK(cudaMemset(recv_buf.get(), 0, recvcount));
 
+    ncclComm_t nccl_comm{};
+    NCCL_CHECK(
+        ncclCommInitRank(&nccl_comm, worldSize, get_nccl_id(), globalRank));
+    auto ncclCommGuard = folly::makeGuard([&] {
+      const ncclResult_t res = ncclCommDestroy(nccl_comm);
+      if (res != ncclSuccess) {
+        XLOGF(ERR, "ncclCommDestroy failed: {}", ncclGetErrorString(res));
+      }
+    });
+
     CudaEvent start, stop;
     const int n_warmup = 5;
     const int n_iter = 100;
@@ -107,7 +118,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           recv_buf.get(),
           config.sendcount,
           ncclChar,
-          nccl_comm_,
+          nccl_comm,
           stream_));
     }
 
@@ -118,7 +129,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           recv_buf.get(),
           config.sendcount,
           ncclChar,
-          nccl_comm_,
+          nccl_comm,
           stream_));
     }
     CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
@@ -144,27 +155,39 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     CUDA_CHECK(cudaMemset(send_buf.get(), 1, config.sendcount));
     CUDA_CHECK(cudaMemset(recv_buf.get(), 0, recvcount));
 
-    std::unique_ptr<MultipeerIbgdaTransport> transport;
-    try {
-      const int maxGroups = config.num_blocks * config.num_rings;
-      MultipeerIbgdaTransportConfig transport_config{
-          .cudaDevice = localRank,
-          .dataBufferSize = config.data_buffer_size,
-          .maxGroups = maxGroups,
-          .sendRecv =
-              MultipeerIbgdaTransportConfig::SendRecvConfig{
-                  .pipelineDepth = config.pipeline_depth,
-              },
-          .qpsPerBlockPerNic = config.num_qps,
-      };
-      transport = std::make_unique<MultipeerIbgdaTransport>(
+    const int maxGroups = config.num_blocks * config.num_rings;
+    MultipeerIbgdaTransportConfig transport_config{
+        .cudaDevice = localRank,
+        .dataBufferSize = config.data_buffer_size,
+        .maxGroups = maxGroups,
+        .sendRecv =
+            MultipeerIbgdaTransportConfig::SendRecvConfig{
+                .pipelineDepth = config.pipeline_depth,
+            },
+        .qpsPerBlockPerNic = config.num_qps,
+    };
+
+    if (config.use_ibrc) {
+      MultipeerIbrcTransport transport(
           globalRank, worldSize, bootstrap, transport_config);
-      transport->exchange();
-    } catch (const std::exception& e) {
-      XLOGF(ERR, "IBGDA transport not available: {}", e.what());
-      latency_us = 0.0f;
-      return 0.0f;
+      return run_ring_benchmark_with_transport(
+          config, send_buf, recv_buf, recvcount, latency_us, transport);
     }
+    MultipeerIbgdaTransport transport(
+        globalRank, worldSize, bootstrap, transport_config);
+    return run_ring_benchmark_with_transport(
+        config, send_buf, recv_buf, recvcount, latency_us, transport);
+  }
+
+  template <typename Transport>
+  float run_ring_benchmark_with_transport(
+      const RingAllGatherBenchmarkConfig& config,
+      DeviceBuffer& send_buf,
+      DeviceBuffer& recv_buf,
+      std::size_t recvcount,
+      float& latency_us,
+      Transport& transport) {
+    transport.exchange();
 
     auto rings_opt =
         make_standard_rings(worldSize, globalRank, config.num_rings);
@@ -192,14 +215,16 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       auto& rp = launch_params.rings[r];
       rp.prev_rank = rings[r].prev_rank;
       rp.next_rank = rings[r].next_rank;
-      transport->queuePeerForMaterialization(rp.prev_rank);
-      transport->queuePeerForMaterialization(rp.next_rank);
+      transport.queuePeerForMaterialization(rp.prev_rank);
+      transport.queuePeerForMaterialization(rp.next_rank);
     }
-    transport->connectPeers();
+    transport.connectPeers();
     for (int r = 0; r < config.num_rings; r++) {
       auto& rp = launch_params.rings[r];
-      rp.prev = transport->getP2pTransportDevice(rp.prev_rank);
-      rp.next = transport->getP2pTransportDevice(rp.next_rank);
+      rp.prev =
+          P2pIbTransportDevice(transport.getP2pTransportDevice(rp.prev_rank));
+      rp.next =
+          P2pIbTransportDevice(transport.getP2pTransportDevice(rp.next_rank));
     }
 
     CudaEvent start, stop;
@@ -230,7 +255,10 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     return bw;
   }
 
-  void print_results(const std::vector<RingAllGatherBenchmarkResult>& results) {
+  void print_results(
+      const std::vector<RingAllGatherBenchmarkResult>& results,
+      const char* baselineLabel,
+      const char* candidateLabel) {
     if (globalRank != 0) {
       return;
     }
@@ -248,17 +276,27 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       return std::to_string(bytes) + "B";
     };
 
+    auto fmt_float = [](float value, int precision) -> std::string {
+      if (value <= 0.0f) {
+        return "n/a";
+      }
+      std::stringstream value_ss;
+      value_ss << std::fixed << std::setprecision(precision) << value;
+      return value_ss.str();
+    };
+
     std::stringstream ss;
     ss << "\n";
     ss << "================================================================================\n";
-    ss << "           NCCL AllGather vs Ring AllGather (IBGDA) Benchmark\n";
+    ss << "             Ring AllGather Benchmark (" << candidateLabel << " vs "
+       << baselineLabel << ")\n";
     ss << "================================================================================\n";
     ss << std::left << std::setw(14) << "Test" << std::right << std::setw(10)
        << "Size" << std::right << std::setw(6) << "Rings" << std::right
-       << std::setw(10) << "NCCL" << std::right << std::setw(10) << "Ring"
-       << std::right << std::setw(10) << "Speedup" << std::right
-       << std::setw(12) << "NCCL Lat" << std::right << std::setw(12)
-       << "Ring Lat\n";
+       << std::setw(10) << baselineLabel << std::right << std::setw(10)
+       << candidateLabel << std::right << std::setw(10) << "Speedup"
+       << std::right << std::setw(12) << "Base Lat" << std::right
+       << std::setw(12) << "Cand Lat\n";
     ss << std::left << std::setw(14) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(6) << "" << std::right << std::setw(10)
        << "(GB/s)" << std::right << std::setw(10) << "(GB/s)" << std::right
@@ -268,15 +306,14 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     for (const auto& r : results) {
       ss << std::left << std::setw(14) << r.test_name << std::right
-         << std::setw(10) << fmt_bytes(r.sendcount) << std::right
+         << std::setw(10) << fmt_bytes(r.total_bytes) << std::right
          << std::setw(6) << r.num_rings << std::right << std::setw(10)
-         << std::fixed << std::setprecision(2) << r.nccl_bandwidth << std::right
-         << std::setw(10) << std::fixed << std::setprecision(2)
-         << r.ring_bandwidth << std::right << std::setw(9) << std::fixed
-         << std::setprecision(2) << r.speedup << "x" << std::right
-         << std::setw(12) << std::fixed << std::setprecision(1)
-         << r.nccl_latency << std::right << std::setw(12) << std::fixed
-         << std::setprecision(1) << r.ring_latency << "\n";
+         << fmt_float(r.baseline_bandwidth, 2) << std::right << std::setw(10)
+         << fmt_float(r.candidate_bandwidth, 2) << std::right << std::setw(10)
+         << (r.speedup > 0.0f ? fmt_float(r.speedup, 2) + "x" : "n/a")
+         << std::right << std::setw(12) << fmt_float(r.baseline_latency, 1)
+         << std::right << std::setw(12) << fmt_float(r.candidate_latency, 1)
+         << "\n";
     }
 
     ss << "================================================================================\n";
@@ -286,131 +323,183 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     XLOG(INFO) << ss.str();
   }
 
-  ncclComm_t nccl_comm_{};
+  std::vector<RingAllGatherBenchmarkConfig> make_benchmark_configs(
+      bool useIbrc) {
+    // Matched config for a fair IBRC-vs-IBGDA comparison: same QP count and
+    // staging buffer size for both backends.
+    std::size_t kDataBufferSize = 32UL * 1024 * 1024;
+    int kNumQps = 4;
+
+    auto configs = std::vector<RingAllGatherBenchmarkConfig>{
+        {.sendcount = 256 * 1024,
+         .num_blocks = 8,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "256K_8B"},
+        {.sendcount = 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "1M_16B"},
+        {.sendcount = 4 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "4M_16B"},
+        {.sendcount = 16 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "16M_16B"},
+        {.sendcount = 64 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "64M_16B"},
+        {.sendcount = 128 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "128M_16B"},
+        {.sendcount = 256 * 1024 * 1024,
+         .num_blocks = 32,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "256M_32B"},
+        {.sendcount = 512UL * 1024 * 1024,
+         .num_blocks = 32,
+         .num_rings = 1,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "512M_32B"},
+        {.sendcount = 4 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 2,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "4M_16B_2R"},
+        {.sendcount = 16 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 2,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "16M_16B_2R"},
+        {.sendcount = 64 * 1024 * 1024,
+         .num_blocks = 16,
+         .num_rings = 2,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "64M_16B_2R"},
+        {.sendcount = 256 * 1024 * 1024,
+         .num_blocks = 32,
+         .num_rings = 2,
+         .data_buffer_size = kDataBufferSize,
+         .pipeline_depth = 2,
+         .num_qps = kNumQps,
+         .name = "256M_32B_2R"},
+    };
+    for (auto& config : configs) {
+      config.use_ibrc = useIbrc;
+    }
+    return configs;
+  }
+
+  RingAllGatherBenchmarkResult make_benchmark_result(
+      const RingAllGatherBenchmarkConfig& config,
+      float baselineBw,
+      float baselineLatencyUs,
+      float candidateBw,
+      float candidateLatencyUs) {
+    return {
+        .test_name = config.name,
+        .sendcount = config.sendcount,
+        .total_bytes = config.sendcount * static_cast<std::size_t>(worldSize),
+        .num_rings = config.num_rings,
+        .baseline_bandwidth = baselineBw,
+        .candidate_bandwidth = candidateBw,
+        .baseline_latency = baselineLatencyUs,
+        .candidate_latency = candidateLatencyUs,
+        .speedup = (baselineBw > 0) ? candidateBw / baselineBw : 0.0f,
+    };
+  }
+
+  void run_ibgda_vs_nccl_benchmark_suite() {
+    if (globalRank == 0) {
+      XLOG(INFO) << "\n=== Ring AllGather (IBGDA) vs NCCL Comparison ===\n";
+    }
+
+    std::vector<RingAllGatherBenchmarkResult> results;
+    for (const auto& config : make_benchmark_configs(false)) {
+      float ncclLatencyUs = 0.0f;
+      float ncclBw = run_nccl_benchmark(config, ncclLatencyUs);
+      float ringLatencyUs = 0.0f;
+      float ringBw = run_ring_benchmark(config, ringLatencyUs);
+      if (globalRank == 0) {
+        results.push_back(make_benchmark_result(
+            config, ncclBw, ncclLatencyUs, ringBw, ringLatencyUs));
+      }
+      bootstrap->barrierAll();
+    }
+
+    print_results(results, "NCCL", "IBGDA");
+  }
+
+  void run_ibrc_vs_ibgda_benchmark_suite() {
+    if (globalRank == 0) {
+      XLOG(INFO) << "\n=== Ring AllGather (IBRC) vs IBGDA Comparison ===\n";
+    }
+
+    std::vector<RingAllGatherBenchmarkResult> results;
+    auto ibgdaConfigs = make_benchmark_configs(false);
+    auto ibrcConfigs = make_benchmark_configs(true);
+    CHECK_EQ(ibgdaConfigs.size(), ibrcConfigs.size());
+    for (std::size_t i = 0; i < ibrcConfigs.size(); ++i) {
+      const auto& ibgdaConfig = ibgdaConfigs.at(i);
+      const auto& ibrcConfig = ibrcConfigs.at(i);
+
+      float ibgdaLatencyUs = 0.0f;
+      float ibgdaBw = run_ring_benchmark(ibgdaConfig, ibgdaLatencyUs);
+
+      float ibrcLatencyUs = 0.0f;
+      float ibrcBw = run_ring_benchmark(ibrcConfig, ibrcLatencyUs);
+
+      if (globalRank == 0) {
+        results.push_back(make_benchmark_result(
+            ibrcConfig, ibgdaBw, ibgdaLatencyUs, ibrcBw, ibrcLatencyUs));
+      }
+      bootstrap->barrierAll();
+    }
+
+    print_results(results, "IBGDA", "IBRC");
+  }
+
   cudaStream_t stream_{};
 };
 
 TEST_F(RingAllGatherBenchmarkFixture, VsNccl) {
-  if (globalRank == 0) {
-    XLOG(INFO) << "\n=== Ring AllGather (IBGDA) vs NCCL Comparison ===\n";
-  }
+  run_ibgda_vs_nccl_benchmark_suite();
+}
 
-  std::size_t kDataBufferSize = 32UL * 1024 * 1024;
-  int kNumQps = 4;
-
-  std::vector<RingAllGatherBenchmarkConfig> configs = {
-      {.sendcount = 256 * 1024,
-       .num_blocks = 8,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256K_8B"},
-      {.sendcount = 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "1M_16B"},
-      {.sendcount = 4 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "4M_16B"},
-      {.sendcount = 16 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "16M_16B"},
-      {.sendcount = 64 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "64M_16B"},
-      {.sendcount = 128 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "128M_16B"},
-      {.sendcount = 256 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256M_32B"},
-      {.sendcount = 512UL * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 1,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "512M_32B"},
-      {.sendcount = 4 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "4M_16B_2R"},
-      {.sendcount = 16 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "16M_16B_2R"},
-      {.sendcount = 64 * 1024 * 1024,
-       .num_blocks = 16,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "64M_16B_2R"},
-      {.sendcount = 256 * 1024 * 1024,
-       .num_blocks = 32,
-       .num_rings = 2,
-       .data_buffer_size = kDataBufferSize,
-       .pipeline_depth = 2,
-       .num_qps = kNumQps,
-       .name = "256M_32B_2R"},
-  };
-
-  std::vector<RingAllGatherBenchmarkResult> results;
-
-  for (const auto& config : configs) {
-    float nccl_lat = 0.0f;
-    float nccl_bw = run_nccl_benchmark(config, nccl_lat);
-
-    float ring_lat = 0.0f;
-    float ring_bw = run_ring_benchmark(config, ring_lat);
-
-    if (globalRank == 0) {
-      results.push_back({
-          .test_name = config.name,
-          .sendcount = config.sendcount,
-          .total_bytes = config.sendcount * static_cast<std::size_t>(worldSize),
-          .num_rings = config.num_rings,
-          .nccl_bandwidth = nccl_bw,
-          .ring_bandwidth = ring_bw,
-          .nccl_latency = nccl_lat,
-          .ring_latency = ring_lat,
-          .speedup = (nccl_bw > 0) ? ring_bw / nccl_bw : 0.0f,
-      });
-    }
-    bootstrap->barrierAll();
-  }
-
-  print_results(results);
+TEST_F(RingAllGatherBenchmarkFixture, IbrcVsIbgda) {
+  run_ibrc_vs_ibgda_benchmark_suite();
 }
 
 } // namespace
