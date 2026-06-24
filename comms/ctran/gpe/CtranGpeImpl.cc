@@ -297,8 +297,9 @@ commResult_t CtranGpe::Impl::submit(
   // can synchronize with the kernel before running cleanup. During graph
   // capture the cleanup is retained directly on the graph via
   // retainUserObject, avoiding host-node overhead.
-  bool needsKernelFlag =
-      !opGroup.empty() || (kernelConfig.postKernelCleanup && !isCapturing);
+  bool needsKernelFlag = !opGroup.empty() ||
+      kernelConfig.unpackPool != nullptr ||
+      (kernelConfig.postKernelCleanup && !isCapturing);
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   volatile int* flag = nullptr;
@@ -388,6 +389,31 @@ commResult_t CtranGpe::Impl::submit(
     if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
+      if (cmd->unpackPool != nullptr) {
+        auto existingCleanup = std::move(cmd->postKernelCleanup);
+        auto* unpackPool = cmd->unpackPool;
+        cmd->postKernelCleanup = [comm = comm,
+                                  unpackPool,
+                                  existingCleanup =
+                                      std::move(existingCleanup)]() mutable {
+          if (existingCleanup) {
+            existingCleanup();
+          }
+          if (!ctranInitialized(comm) || comm->ctran_->mapper == nullptr) {
+            return;
+          }
+          auto result =
+              comm->ctran_->mapper->teardownUnpackConsumer(unpackPool);
+          if (result != commSuccess) {
+            CLOGF_SUBSYS(
+                WARN,
+                COLL,
+                "CTRAN-GPE: failed to teardown graph unpack pool {}: result {}",
+                unpackPool,
+                static_cast<int>(result));
+          }
+        };
+      }
       // Mark the flag as persistent so reclaim() won't steal it between
       // graph replays (the kernel writes KERNEL_UNSET after each replay).
       if (kernelFlag) {
@@ -916,11 +942,10 @@ void CtranGpe::Impl::gpeThreadFn() {
               comm->testAbort() ? KERNEL_HOST_ABORT : KERNEL_TERMINATE);
           gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_KERNEL);
         }
-        // Teardown unpack queue if it was allocated for this operation (TcpDM
-        // backend). Don't wait for kernel to finish, the pool manages
-        // the allocations in the round robin fashion to avoid immediate
-        // reuse.
-        if (cmd->unpackPool != nullptr) {
+        // Teardown eager unpack queues after this kernel. Persistent graph
+        // commands keep the pool alive across replays and release it from
+        // cmdDestroy when the graph is destroyed.
+        if (cmd->unpackPool != nullptr && !cmd->persistent) {
           FB_COMMCHECKTHROW_EX(
               comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
               comm->logMetaData_);
