@@ -76,7 +76,8 @@ struct OpElem {
   bool isDevice{true};
 
   // TCP Device Memory unpack pool for this operation.
-  // Allocated by prepareUnpackConsumer() and freed during GPE kernel teardown.
+  // Allocated by prepareUnpackConsumer(). Eager operations return it during
+  // GPE kernel teardown; CUDA graph captures keep it until graph destruction.
   // Used by algorithm implementations to populate CtranMapperContext and
   // pass it down to CtranTcpDm::irecvConnected().
   void* unpackPool{nullptr};

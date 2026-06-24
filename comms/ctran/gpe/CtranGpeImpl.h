@@ -158,7 +158,8 @@ class CtranGpeCmd {
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
 
-  // Unpack queue to teardown after kernel completes (for TcpDM backend)
+  // Unpack queue to teardown after the eager kernel completes, or when
+  // a persistent CUDA graph command is destroyed (for TcpDM backend).
   void* unpackPool{nullptr};
 
   // Post-kernel cleanup callback. Called by GPE thread after kernel finishes.
