@@ -3245,7 +3245,7 @@ cvars:
 
  - name        : MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable TCP keepalive on MCCL Bootstrap sockets. When enabled, Bootstrap
      applies its TCP keepalive options to outgoing and accepted CoroSocket
