@@ -53,7 +53,7 @@ std::unique_ptr<apache::thrift::util::ScopedServerThread> startAndGetService(
 #endif
   // Workaround to avoid using libevent backend for EventBase. Currently
   // folly has bug with libevent backend with libevent 2.1.12.
-  server->setPreferIoUring(true);
+  server->setPreferAsyncIoUringSocket(true);
   server->setUseDefaultIoUringExecutor(true);
 
   // Use fewer resources to run faster
