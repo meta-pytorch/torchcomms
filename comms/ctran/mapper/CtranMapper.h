@@ -2032,7 +2032,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           return commInternalError;
         }
         rbuff = regElem->buf;
-        len = regElem->len;
+        const auto recvMsgSize = this->context.getRecvMsgSize(peerRank);
+        len = recvMsgSize != 0 ? recvMsgSize : regElem->len;
       }
 
       // Counter-based: request managed internally by CtranTcpDm.
