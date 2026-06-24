@@ -8,7 +8,6 @@
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
-#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,10 +29,10 @@
  * the numerical reduction result. It intentionally avoids colltrace assertions
  * so the same test can cover CTREE and future AllReduce algorithm variants.
  */
-class CtranAllReduceTest : public ctran::CtranDistTestFixture,
+class AllReduceTestSuite : public ctran::CtranDistTestFixture,
                            public CtranBaseTest {
  public:
-  CtranAllReduceTest() = default;
+  AllReduceTestSuite() = default;
 
   /** Identical-input repeats used to check bitwise deterministic output. */
   static constexpr int kDeterminismRepeats = 4;
@@ -47,7 +46,7 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
             ctran::utils::getCuMemAllocHandleType(),
             bytes,
             nullptr,
-            "CtranAllReduceTest"));
+            "AllReduceTestSuite"));
     return ptr;
   }
 
@@ -322,6 +321,17 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
     }
   }
 
+  void runOffsetCorrectnessTest(
+      enum NCCL_ALLREDUCE_ALGO algo,
+      commDataType_t datatype,
+      size_t offsetElements,
+      bool inPlace) {
+    const size_t typeBytes = commTypeSize(datatype);
+    const size_t count = 100 / typeBytes;
+    const size_t offsetBytes = offsetElements * typeBytes;
+    runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
+  }
+
  protected:
   /** Dispatch one AllReduce call for the algorithm under test. */
   commResult_t runAllReduce(
@@ -358,10 +368,7 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
         {"NCCL_CTRAN_USE_PIPES", "1"},
         {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
         {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
-        // Keep the parameterized CI target focused on collective correctness.
-        // The default IBGDA group cap creates many block-owned QPs on every
-        // test setup, which makes the 68-case tree sweep timeout before it can
-        // finish.
+        // Keep setup cost bounded across the parameterized tree sweep.
         {"NCCL_CTRAN_MAX_NBLOCKS", "8"},
         {"NCCL_CTRAN_IB_MAX_GROUPS", "16"},
     };
@@ -486,226 +493,67 @@ inline std::string offsetTestName(
   return allReduceOffsetTestName(algo, datatype, offsetElements, inPlace);
 }
 
-#if defined(CTRAN_ALLREDUCE_TEST_NVL_ONLY)
-/**
- * NVL-only topology test using the default local topology.
- */
-class NVL_ONLY : public CtranAllReduceTest,
-                 public ::testing::WithParamInterface<AllReduceParam> {};
-class NVL_ONLY_MIXED_ORDER
-    : public CtranAllReduceTest,
-      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {};
-class NVL_ONLY_OFFSET
-    : public CtranAllReduceTest,
-      public ::testing::WithParamInterface<AllReduceOffsetParam> {};
-
-TEST_P(NVL_ONLY, Correctness) {
-  auto [algo, datatype, count, inPlace] = GetParam();
-  runCorrectnessTest(algo, datatype, count, inPlace);
-}
-
-TEST_P(NVL_ONLY_MIXED_ORDER, Correctness) {
-  auto [algo, datatype, inPlace] = GetParam();
-  runCorrectnessSweep(
-      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
-}
-
-TEST_P(NVL_ONLY_OFFSET, Correctness) {
-  auto [algo, datatype, offsetElements, inPlace] = GetParam();
-  const size_t typeBytes = commTypeSize(datatype);
-  const size_t count = 100 / typeBytes;
-  const size_t offsetBytes = offsetElements * typeBytes;
-  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
-}
-
-inline std::string nvlTestName(
-    const testing::TestParamInfo<NVL_ONLY::ParamType>& info) {
+inline std::string correctnessTestName(
+    const testing::TestParamInfo<AllReduceParam>& info) {
   auto [algo, datatype, count, inPlace] = info.param;
   return allReduceTestName(algo, datatype, count, inPlace);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    NVL_ONLY,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceElementCounts()),
-        ::testing::Bool()),
-    nvlTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    NVL_ONLY_MIXED_ORDER,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::Bool()),
-    mixedOrderTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    NVL_ONLY_OFFSET,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
-        ::testing::Bool()),
-    offsetTestName);
-#endif
-
+#if defined(CTRAN_ALLREDUCE_TEST_NVL_ONLY) || \
+    defined(CTRAN_ALLREDUCE_TEST_IB_ONLY) ||  \
+    defined(CTRAN_ALLREDUCE_TEST_HYBRID)
+class CtranAllReduceTopologyTest : public AllReduceTestSuite {
+ public:
+  ctran::CtranEnvs envOverrides() const override {
+    auto envs = AllReduceTestSuite::envOverrides();
 #if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY)
-/**
- * IB-only topology test that disables local P2P and forces a no-local topology.
- */
-class IB_ONLY : public CtranAllReduceTest,
-                public ::testing::WithParamInterface<AllReduceParam> {
- public:
-  /**
-   * Extend the base CTREE overrides to force the inter-node path without
-   * leaking topology overrides into later tests.
-   */
-  ctran::CtranEnvs envOverrides() const override {
-    auto envs = CtranAllReduceTest::envOverrides();
     envs.emplace_back("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal");
     envs.emplace_back("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1");
     envs.emplace_back("NCCL_P2P_DISABLE", "1");
-    return envs;
-  }
-};
-
-TEST_P(IB_ONLY, Correctness) {
-  auto [algo, datatype, count, inPlace] = GetParam();
-  runCorrectnessTest(algo, datatype, count, inPlace);
-}
-
-class IB_ONLY_MIXED_ORDER
-    : public CtranAllReduceTest,
-      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {
- public:
-  ctran::CtranEnvs envOverrides() const override {
-    auto envs = CtranAllReduceTest::envOverrides();
-    envs.emplace_back("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal");
-    envs.emplace_back("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1");
-    envs.emplace_back("NCCL_P2P_DISABLE", "1");
-    return envs;
-  }
-};
-
-class IB_ONLY_OFFSET
-    : public CtranAllReduceTest,
-      public ::testing::WithParamInterface<AllReduceOffsetParam> {
- public:
-  ctran::CtranEnvs envOverrides() const override {
-    auto envs = CtranAllReduceTest::envOverrides();
-    envs.emplace_back("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal");
-    envs.emplace_back("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1");
-    envs.emplace_back("NCCL_P2P_DISABLE", "1");
-    return envs;
-  }
-};
-
-TEST_P(IB_ONLY_MIXED_ORDER, Correctness) {
-  auto [algo, datatype, inPlace] = GetParam();
-  runCorrectnessSweep(
-      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
-}
-
-TEST_P(IB_ONLY_OFFSET, Correctness) {
-  auto [algo, datatype, offsetElements, inPlace] = GetParam();
-  const size_t typeBytes = commTypeSize(datatype);
-  const size_t count = 100 / typeBytes;
-  const size_t offsetBytes = offsetElements * typeBytes;
-  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
-}
-
-inline std::string ibTestName(
-    const testing::TestParamInfo<IB_ONLY::ParamType>& info) {
-  auto [algo, datatype, count, inPlace] = info.param;
-  return allReduceTestName(algo, datatype, count, inPlace);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    IB_ONLY,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceElementCounts()),
-        ::testing::Bool()),
-    ibTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    IB_ONLY_MIXED_ORDER,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::Bool()),
-    mixedOrderTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    IB_ONLY_OFFSET,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
-        ::testing::Bool()),
-    offsetTestName);
 #endif
+    return envs;
+  }
+};
 
-#if defined(CTRAN_ALLREDUCE_TEST_HYBRID)
-/**
- * Hybrid topology test that exercises NVL and IB paths together.
- */
-class HYBRID : public CtranAllReduceTest,
-               public ::testing::WithParamInterface<AllReduceParam> {};
-class HYBRID_MIXED_ORDER
-    : public CtranAllReduceTest,
+class CtranAllReduceCorrectnessTest
+    : public CtranAllReduceTopologyTest,
+      public ::testing::WithParamInterface<AllReduceParam> {};
+class CtranAllReduceMixedOrderTest
+    : public CtranAllReduceTopologyTest,
       public ::testing::WithParamInterface<AllReduceMixedOrderParam> {};
-class HYBRID_OFFSET
-    : public CtranAllReduceTest,
+class CtranAllReduceOffsetTest
+    : public CtranAllReduceTopologyTest,
       public ::testing::WithParamInterface<AllReduceOffsetParam> {};
 
-TEST_P(HYBRID, Correctness) {
+TEST_P(CtranAllReduceCorrectnessTest, Correctness) {
   auto [algo, datatype, count, inPlace] = GetParam();
   runCorrectnessTest(algo, datatype, count, inPlace);
 }
 
-TEST_P(HYBRID_MIXED_ORDER, Correctness) {
+TEST_P(CtranAllReduceMixedOrderTest, Correctness) {
   auto [algo, datatype, inPlace] = GetParam();
   runCorrectnessSweep(
       algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
 }
 
-TEST_P(HYBRID_OFFSET, Correctness) {
+TEST_P(CtranAllReduceOffsetTest, Correctness) {
   auto [algo, datatype, offsetElements, inPlace] = GetParam();
-  const size_t typeBytes = commTypeSize(datatype);
-  const size_t count = 100 / typeBytes;
-  const size_t offsetBytes = offsetElements * typeBytes;
-  runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
-}
-
-inline std::string hybridTestName(
-    const testing::TestParamInfo<HYBRID::ParamType>& info) {
-  auto [algo, datatype, count, inPlace] = info.param;
-  return allReduceTestName(algo, datatype, count, inPlace);
+  runOffsetCorrectnessTest(algo, datatype, offsetElements, inPlace);
 }
 
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
-    HYBRID,
+    CtranAllReduceCorrectnessTest,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::ValuesIn(allReduceElementCounts()),
         ::testing::Bool()),
-    hybridTestName);
+    correctnessTestName);
 
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
-    HYBRID_MIXED_ORDER,
+    CtranAllReduceMixedOrderTest,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
@@ -714,13 +562,15 @@ INSTANTIATE_TEST_SUITE_P(
 
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
-    HYBRID_OFFSET,
+    CtranAllReduceOffsetTest,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
         ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::ValuesIn(allReduceOffsetElementOffsets()),
         ::testing::Bool()),
     offsetTestName);
+#else
+#error "Define one CTRAN AllReduce topology: NVL_ONLY, IB_ONLY, or HYBRID"
 #endif
 
 int main(int argc, char* argv[]) {
