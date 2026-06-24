@@ -19,6 +19,7 @@
 #endif
 #include "comms/prims/benchmarks/IbgdaBenchmark.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #ifndef __HIP_PLATFORM_AMD__
@@ -54,6 +55,73 @@ inline std::string benchIbHca() {
   const char* hca = std::getenv("NCCL_IB_HCA");
   return hca ? std::string(hca) : std::string();
 }
+
+enum class BenchIbBackend {
+  IBGDA,
+  IBRC,
+};
+
+inline const char* benchIbBackendName(BenchIbBackend backend) {
+  switch (backend) {
+    case BenchIbBackend::IBGDA:
+      return "IBGDA";
+    case BenchIbBackend::IBRC:
+      return "IBRC";
+  }
+  return "UNKNOWN";
+}
+
+// Backend-agnostic transport handle for the benchmark. Holds exactly one of the
+// two multi-peer IB transports (IBGDA or IBRC, selected by test parameter) and
+// dispatches the small surface the benchmark needs. getP2pTransportDevice()
+// returns the common P2pIbTransportDevice so the same kernels run over either
+// backend. registerBuffer()/exchangeBuffer() are inherited from the shared
+// MultiPeerIbTransportBase and are identical for both backends.
+class BenchIbTransport {
+ public:
+  BenchIbTransport(
+      BenchIbBackend backend,
+      int globalRank,
+      int numRanks,
+      const std::shared_ptr<meta::comms::IBootstrap>& bootstrap,
+      const MultipeerIbTransportConfig& config) {
+    XLOGF(INFO, "BenchIbTransport: backend={}", benchIbBackendName(backend));
+    if (backend == BenchIbBackend::IBRC) {
+      ibrc_ = std::make_unique<MultipeerIbrcTransport>(
+          globalRank, numRanks, bootstrap, config);
+    } else {
+      ibgda_ = std::make_unique<MultipeerIbgdaTransport>(
+          globalRank, numRanks, bootstrap, config);
+    }
+  }
+
+  void exchange() {
+    if (ibrc_) {
+      ibrc_->exchange();
+    } else {
+      ibgda_->exchange();
+    }
+  }
+
+  IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size) {
+    return ibrc_ ? ibrc_->registerBuffer(ptr, size)
+                 : ibgda_->registerBuffer(ptr, size);
+  }
+
+  std::vector<IbgdaRemoteBuffer> exchangeBuffer(const IbgdaLocalBuffer& buf) {
+    return ibrc_ ? ibrc_->exchangeBuffer(buf) : ibgda_->exchangeBuffer(buf);
+  }
+
+  P2pIbTransportDevice getP2pTransportDevice(int peerRank) {
+    return ibrc_
+        ? P2pIbTransportDevice(ibrc_->getP2pTransportDevice(peerRank))
+        : P2pIbTransportDevice(ibgda_->getP2pTransportDevice(peerRank));
+  }
+
+ private:
+  std::unique_ptr<MultipeerIbgdaTransport> ibgda_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrc_;
+};
 
 // CUDA error checking macro for void functions
 #define CUDA_CHECK_VOID(call)        \
@@ -101,8 +169,22 @@ struct IbgdaBenchmarkResult {
   float latency{}; // microseconds
 };
 
-class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
+class IbgdaBenchmarkFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<BenchIbBackend> {
  protected:
+  BenchIbBackend backend() const {
+    return GetParam();
+  }
+
+  const char* backendName() const {
+    return benchIbBackendName(backend());
+  }
+
+  std::string backendTitle(const std::string& suffix) const {
+    return std::string(backendName()) + " " + suffix;
+  }
+
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
@@ -153,11 +235,9 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   // Run put + signal + counter benchmark using batched kernel. Populates
   // latencyUs, excludes kernel launch overhead.
   void runPutSignalBenchmark(
-      P2pIbgdaTransportDevice* deviceTransportPtr,
+      P2pIbTransportDevice deviceTransport,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      const IbgdaRemoteBuffer& remoteSignalBuf,
-      const IbgdaLocalBuffer& localCounterBuf,
       const IbgdaBenchmarkConfig& config,
       unsigned long long* d_totalCycles,
       float& latencyUs) {
@@ -169,13 +249,11 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     // Only rank 0 (sender) runs the batched benchmark
     if (globalRank == 0) {
       launchIbgdaPutSignalWaitCounterBatch(
-          deviceTransportPtr,
+          deviceTransport,
           localBuf,
           remoteBuf,
           config.nBytes,
-          remoteSignalBuf,
           kSignalId,
-          localCounterBuf,
           kCounterId,
           kIbgdaBatchIters,
           d_totalCycles,
@@ -254,6 +332,9 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
         {.nBytes = 32 * 1024 * 1024, .name = "32MB"},
         {.nBytes = 64 * 1024 * 1024, .name = "64MB"},
         {.nBytes = 128 * 1024 * 1024, .name = "128MB"},
+        {.nBytes = std::size_t{256} * 1024 * 1024, .name = "256MB"},
+        {.nBytes = std::size_t{512} * 1024 * 1024, .name = "512MB"},
+        {.nBytes = std::size_t{1} * 1024 * 1024 * 1024, .name = "1GB"},
     };
   }
 
@@ -267,13 +348,11 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   template <typename LaunchFn>
   void verifyPutDataCorrectness(
       LaunchFn launchFn,
-      P2pIbgdaTransportDevice* deviceTransportPtr,
+      P2pIbTransportDevice deviceTransport,
       void* localBufferPtr,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer& remoteSignalBuf,
-      const IbgdaLocalBuffer& localCounterBuf,
       uint8_t fillPattern,
       const std::string& methodName) {
     constexpr int kSignalId = 0;
@@ -289,20 +368,15 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK_VOID(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Sender: exactly one put+signal+counter (no warmup, no loop). The
-    // sender resets its local counter to 0 first so the kernel's spin sees
-    // the fresh increment.
+    // Sender: exactly one put+signal+counter (no warmup, no loop). The kernel
+    // resets the transport-owned local counter slot before posting the put.
     if (globalRank == 0) {
-      CUDA_CHECK_VOID(
-          cudaMemsetAsync(localCounterBuf.ptr, 0, sizeof(uint64_t), stream_));
       launchFn(
-          deviceTransportPtr,
+          deviceTransport,
           localBuf,
           remoteBuf,
           nbytes,
-          remoteSignalBuf,
           kSignalId,
-          localCounterBuf,
           kCounterId,
           stream_);
       CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
@@ -338,7 +412,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   }
 };
 
-TEST_F(IbgdaBenchmarkFixture, PutFlush) {
+TEST_P(IbgdaBenchmarkFixture, PutFlush) {
   // Measures raw RDMA Write latency as put + flush.
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -359,10 +433,11 @@ TEST_F(IbgdaBenchmarkFixture, PutFlush) {
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
     };
+    transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     DeviceBuffer dataBuffer(maxBufferSize);
@@ -378,7 +453,7 @@ TEST_F(IbgdaBenchmarkFixture, PutFlush) {
     }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* deviceTransportPtr =
+    P2pIbTransportDevice deviceTransport =
         transport.getP2pTransportDevice(peerRank);
 
     unsigned long long* d_totalCycles;
@@ -395,7 +470,7 @@ TEST_F(IbgdaBenchmarkFixture, PutFlush) {
 
       if (globalRank == 0) {
         launchIbgdaPutFlushBatch(
-            deviceTransportPtr,
+            deviceTransport,
             localDataBuf,
             remoteDataBuf,
             config.nBytes,
@@ -434,13 +509,13 @@ TEST_F(IbgdaBenchmarkFixture, PutFlush) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 
-  printResultsTable("IBGDA Put+Flush (RDMA Write)", results);
+  printResultsTable(backendTitle("Put+Flush (RDMA Write)"), results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
+TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   // One thread per block uses the no-ThreadGroup put()+flush() API on a
   // block-private slice. This checks that thread-scope wrappers inherit the
   // physical block id instead of routing all blocks through block 0's QPs.
@@ -566,7 +641,7 @@ TEST_F(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
 }
 
 TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
-  // Measures raw RDMA Write latency (put + counter wait via companion QP)
+  // Measures raw RDMA Write latency (put + transport counter-slot wait).
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -591,8 +666,8 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     DeviceBuffer dataBuffer(maxBufferSize);
@@ -608,14 +683,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Counter buffer (local only — companion QP atomically increments via
-    // loopback when each put completes at the NIC).
-    DeviceBuffer counterBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-    auto localCounterBuf =
-        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
-
-    P2pIbgdaTransportDevice* deviceTransportPtr =
+    P2pIbTransportDevice deviceTransport =
         transport.getP2pTransportDevice(peerRank);
 
     // Allocate device memory for cycle counter output
@@ -631,21 +699,13 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     for (const auto& config : configs) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Reset counter buffer before each size — kernel uses an absolute
-      // expected sequence (1, 2, 3, ...) starting from 0.
-      if (globalRank == 0) {
-        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-        CUDA_CHECK_VOID(cudaDeviceSynchronize());
-      }
-
       // Only rank 0 sends
       if (globalRank == 0) {
         launchIbgdaPutWaitCounterBatch(
-            deviceTransportPtr,
+            deviceTransport,
             localDataBuf,
             remoteDataBuf,
             config.nBytes,
-            localCounterBuf,
             kCounterId,
             kIbgdaBatchIters,
             d_totalCycles,
@@ -682,13 +742,13 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 
-  printResultsTable("IBGDA Put+WaitCounter (RDMA Write)", results);
+  printResultsTable(backendTitle("Put+WaitCounter (RDMA Write)"), results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
+TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
   // Measures RDMA Write + atomic signal latency (put + signal + counter wait)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -709,14 +769,15 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numSignalSlots = 1,
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     DeviceBuffer dataBuffer(maxBufferSize);
@@ -732,22 +793,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
     }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Allocate and exchange signal buffer (1 signal slot)
-    DeviceBuffer signalBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
-    auto localSignalBuf =
-        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
-    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
-    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
-
-    // Counter buffer (local only — companion QP atomically increments via
-    // loopback when each put+signal completes at the NIC).
-    DeviceBuffer counterBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-    auto localCounterBuf =
-        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
-
-    P2pIbgdaTransportDevice* deviceTransportPtr =
+    P2pIbTransportDevice deviceTransport =
         transport.getP2pTransportDevice(peerRank);
 
     // Allocate device memory for cycle counter output
@@ -763,23 +809,14 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
     for (const auto& config : configs) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Reset counter buffer before each size — kernel uses an absolute
-      // expected sequence (1, 2, 3, ...) starting from 0.
-      if (globalRank == 0) {
-        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-        CUDA_CHECK_VOID(cudaDeviceSynchronize());
-      }
-
       // Only rank 0 sends
       if (globalRank == 0) {
         launchIbgdaPutSignalWaitCounterBatch(
-            deviceTransportPtr,
+            deviceTransport,
             localDataBuf,
             remoteDataBuf,
             config.nBytes,
-            remoteSignalBuf,
             kSignalId,
-            localCounterBuf,
             kCounterId,
             kIbgdaBatchIters,
             d_totalCycles,
@@ -816,14 +853,14 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 
   printResultsTable(
-      "IBGDA Put+Signal+WaitCounter (RDMA Write + Atomic)", results);
+      backendTitle("Put+Signal+WaitCounter (RDMA Write + Atomic)"), results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
+TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
   // Measures atomic signal-only latency (no data transfer)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -841,8 +878,8 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
@@ -855,7 +892,7 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
     auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
-    P2pIbgdaTransportDevice* deviceTransportPtr =
+    P2pIbTransportDevice deviceTransport =
         transport.getP2pTransportDevice(peerRank);
 
     // Allocate device memory for cycle counter output
@@ -875,7 +912,7 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     // Only rank 0 sends
     if (globalRank == 0) {
       launchIbgdaSignalOnlyBatch(
-          deviceTransportPtr,
+          deviceTransport,
           remoteSignalBuf,
           kSignalId,
           kIbgdaBatchIters,
@@ -894,7 +931,8 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
 
       XLOGF(
           INFO,
-          "\n=== Signal-Only Latency (Raw, no kernel launch overhead) ===");
+          "\n=== {} Signal-Only Latency (Raw, no kernel launch overhead) ===",
+          backendName());
       XLOGF(INFO, "Average latency: {:.2f} us", latencyUs);
       XLOGF(INFO, "Batch iterations: {}", kIbgdaBatchIters);
       XLOGF(
@@ -907,13 +945,13 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 }
 
 // put+signal+counter latency benchmark
-// Counter = put + signal + companion-QP counter loopback + local poll
-TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
+// Counter = put + signal + transport counter-slot completion + local poll.
+TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -946,14 +984,15 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
+        .numSignalSlots = 1,
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     DeviceBuffer dataBuffer(maxBufferSize);
@@ -968,21 +1007,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     }
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Allocate and exchange signal buffer (1 signal slot)
-    DeviceBuffer signalBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
-    auto localSignalBuf =
-        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
-    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
-    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
-
-    // Counter buffer (local only — companion QP loopback target).
-    DeviceBuffer counterBuffer(sizeof(uint64_t));
-    CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-    auto localCounterBuf =
-        transport.registerBuffer(counterBuffer.get(), sizeof(uint64_t));
-
-    P2pIbgdaTransportDevice* deviceTransportPtr =
+    P2pIbTransportDevice deviceTransport =
         transport.getP2pTransportDevice(peerRank);
 
     // Allocate device memory for cycle counter output
@@ -1001,13 +1026,11 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
 
       verifyPutDataCorrectness(
           launchIbgdaPutSignalSingle,
-          deviceTransportPtr,
+          deviceTransport,
           dataBuffer.get(),
           localDataBuf,
           remoteDataBuf,
           cfg.nBytes,
-          remoteSignalBuf,
-          localCounterBuf,
           static_cast<uint8_t>(basePattern + 1),
           "put+signal+counter [" + cfg.name + "]");
     }
@@ -1016,7 +1039,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
       XLOGF(
           INFO,
           "\n================================================================================");
-      XLOGF(INFO, "    put+signal+counter latency");
+      XLOGF(INFO, "    {} put+signal+counter latency", backendName());
       XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
       XLOGF(
           INFO,
@@ -1030,19 +1053,10 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     for (const auto& config : configs) {
       float counterLatency = 0.0f;
 
-      // Reset counter buffer before each size — kernel uses an absolute
-      // expected sequence (1, 2, 3, ...) starting from 0.
-      if (globalRank == 0) {
-        CUDA_CHECK_VOID(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
-        CUDA_CHECK_VOID(cudaDeviceSynchronize());
-      }
-
       runPutSignalBenchmark(
-          deviceTransportPtr,
+          deviceTransport,
           localDataBuf,
           remoteDataBuf,
-          remoteSignalBuf,
-          localCounterBuf,
           config,
           d_totalCycles,
           counterLatency);
@@ -1058,7 +1072,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
           "================================================================================");
       XLOGF(
           INFO,
-          "Counter = put + signal + counter (companion-QP loopback) + local poll");
+          "Counter = put + signal + transport counter-slot completion + local poll");
       XLOGF(
           INFO,
           "================================================================================\n");
@@ -1067,7 +1081,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 }
 
@@ -1082,11 +1096,16 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
 //
 // Expected: FanOut per-iter latency stays roughly constant as numPeers grows,
 //           while Serial scales linearly with numPeers.
-TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
+TEST_P(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
   const int numPeers = numRanks - 1;
   if (numPeers < 1) {
     XLOGF(INFO, "Skipping test: requires >= 2 ranks, got {}", numRanks);
     return;
+  }
+  if (backend() == BenchIbBackend::IBRC) {
+    GTEST_SKIP()
+        << "Shared explicit counter-buffer fan-out is IBGDA-only; IBRC "
+           "counters use per-peer transport-owned host/device slots.";
   }
 
   constexpr std::size_t kDataSize = 64 * 1024; // 64KB per peer
@@ -1101,8 +1120,8 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
     transportConfig.ibHca = benchIbHca();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(
-        globalRank, numRanks, bootstrap, transportConfig);
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
 
     // Data buffer
@@ -1141,29 +1160,24 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
         numPeers * sizeof(IbgdaRemoteBuffer),
         cudaMemcpyHostToDevice));
 
-    P2pIbgdaTransportDevice* transportsBase = transport.getDeviceTransportPtr();
-    // Compute transport element stride from the base pointer returned by
-    // getP2pTransportDevice(). peerIndex 0 starts at transportsBase, so the
-    // distance from base to peerIndex=1 gives the element stride.
-    // For numPeers >= 2 we can measure it; for numPeers == 1, the stride is
-    // not used (only index [0] accessed) so any value is fine.
-    std::size_t transportStride = 0;
-    {
-      // peerIndexToRank(0) is rank 0 if globalRank > 0, else rank 1
-      int peerIdx0Rank = (0 < globalRank) ? 0 : 1;
-      auto* ptr0 = transport.getP2pTransportDevice(peerIdx0Rank);
-      transportStride = static_cast<std::size_t>(
-          reinterpret_cast<char*>(ptr0) -
-          reinterpret_cast<char*>(transportsBase));
-      if (transportStride == 0 && numPeers >= 2) {
-        // peerIdx0 == base; use peerIdx 1 instead
-        int peerIdx1Rank = (1 < globalRank) ? 1 : 2;
-        transportStride = static_cast<std::size_t>(
-            reinterpret_cast<char*>(
-                transport.getP2pTransportDevice(peerIdx1Rank)) -
-            reinterpret_cast<char*>(ptr0));
-      }
+    // Build a contiguous device array of per-peer transport handles. IBRC has
+    // no getDeviceTransportPtr()/contiguous device-array accessor, so build the
+    // array from the per-peer getP2pTransportDevice() (works for both
+    // backends). Index p holds the handle for peer p (peerIndexToRank: rank p
+    // if p < globalRank, else p + 1).
+    std::vector<P2pIbTransportDevice> hostTransports(numPeers);
+    for (int p = 0; p < numPeers; p++) {
+      int peerRank = (p < globalRank) ? p : (p + 1);
+      hostTransports[p] = transport.getP2pTransportDevice(peerRank);
     }
+    DeviceBuffer transportsDevice(numPeers * sizeof(P2pIbTransportDevice));
+    CUDA_CHECK_VOID(cudaMemcpy(
+        transportsDevice.get(),
+        hostTransports.data(),
+        numPeers * sizeof(P2pIbTransportDevice),
+        cudaMemcpyHostToDevice));
+    const auto* transports =
+        static_cast<const P2pIbTransportDevice*>(transportsDevice.get());
 
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
@@ -1174,8 +1188,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
 
     if (globalRank == 0) {
       launchMultiPeerSerialCounterFanOutBatch(
-          transportsBase,
-          transportStride,
+          transports,
           numPeers,
           localDataBuf,
           static_cast<IbgdaRemoteBuffer*>(remoteDataBufsDevice.get()),
@@ -1210,8 +1223,7 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
 
     if (globalRank == 0) {
       launchMultiPeerCounterFanOutBatch(
-          transportsBase,
-          transportStride,
+          transports,
           numPeers,
           localDataBuf,
           static_cast<IbgdaRemoteBuffer*>(remoteDataBufsDevice.get()),
@@ -1243,7 +1255,8 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
           "\n================================================================================");
       XLOGF(
           INFO,
-          "    Multi-Peer Counter Fan-Out ({} peers, {} per peer)",
+          "    {} Multi-Peer Counter Fan-Out ({} peers, {} per peer)",
+          backendName(),
           numPeers,
           formatSize(kDataSize));
       XLOGF(
@@ -1284,9 +1297,17 @@ TEST_F(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+    GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    IbBackend,
+    IbgdaBenchmarkFixture,
+    ::testing::Values(BenchIbBackend::IBGDA, BenchIbBackend::IBRC),
+    [](const ::testing::TestParamInfo<BenchIbBackend>& info) {
+      return std::string(benchIbBackendName(info.param));
+    });
 } // namespace comms::prims::benchmark
 
 int main(int argc, char* argv[]) {
