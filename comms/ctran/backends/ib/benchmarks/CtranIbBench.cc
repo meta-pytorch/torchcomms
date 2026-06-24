@@ -4,12 +4,14 @@
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
+#include <unistd.h>
 #include <memory>
 
 #include <folly/init/Init.h>
 
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
@@ -84,6 +86,13 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   const int cudaDev0 = 0;
   const int cudaDev1 = 1;
 
+  // GB200 (aarch64) uses 64KB pages; dma-buf registration via
+  // cuMemGetHandleForAddressRange requires a page-aligned length (sub-page
+  // lengths fail with CUDA_ERROR_INVALID_VALUE). Register a page-aligned region
+  // while still transferring `bufferSize` bytes.
+  const size_t pageSize = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  const size_t regLen = ((bufferSize + pageSize - 1) / pageSize) * pageSize;
+
   // Initialize senderIb and receiverIb
   auto senderIb = std::make_unique<CtranIb>(
       kDummyRank,
@@ -114,23 +123,42 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
           senderVcIdentifier, kDummyRank),
       commSuccess);
 
-  // Allocate memory on the sender side
+  // Allocate RDMA-registerable device buffers with commCudaMalloc, the same
+  // auto-selecting allocator CTRAN algos use: a GPUDirect-RDMA-capable CUDA VMM
+  // allocation when cuMem is supported (matching production and ncclMemAlloc,
+  // both POSIX|FABRIC on GB200), falling back to cudaMalloc otherwise. The
+  // dma-buf fd export used by regMem (cuMemGetHandleForAddressRange) operates
+  // on the VMM address range and is independent of the POSIX/FABRIC handle
+  // type. Allocate/register the page-aligned regLen while still transferring
+  // bufferSize bytes.
   CHECK_EQ(cudaSetDevice(cudaDev0), cudaSuccess);
   void* sendBuffer = nullptr;
-  CHECK_EQ(cudaMalloc(&sendBuffer, bufferSize), cudaSuccess);
+  CHECK_EQ(
+      ctran::utils::commCudaMalloc(
+          reinterpret_cast<char**>(&sendBuffer),
+          regLen,
+          /*logMetaData=*/nullptr,
+          "CtranIbBench"),
+      commSuccess);
   void* senderRegHdl = nullptr;
-  if (CtranIb::regMem(sendBuffer, bufferSize, cudaDev0, &senderRegHdl) !=
+  if (CtranIb::regMem(sendBuffer, regLen, cudaDev0, &senderRegHdl) !=
       commSuccess) {
     throw ctran::utils::Exception(
         "regMem failed for sendBuffer", commSystemError);
   }
 
-  // Allocate memory on the receiver side
+  // Allocate memory on the receiver side (see sender note above).
   CHECK_EQ(cudaSetDevice(cudaDev1), cudaSuccess);
   void* recvBuffer = nullptr;
-  CHECK_EQ(cudaMalloc(&recvBuffer, bufferSize), cudaSuccess);
+  CHECK_EQ(
+      ctran::utils::commCudaMalloc(
+          reinterpret_cast<char**>(&recvBuffer),
+          regLen,
+          /*logMetaData=*/nullptr,
+          "CtranIbBench"),
+      commSuccess);
   void* receiverRegHdl = nullptr;
-  if (CtranIb::regMem(recvBuffer, bufferSize, cudaDev1, &receiverRegHdl) !=
+  if (CtranIb::regMem(recvBuffer, regLen, cudaDev1, &receiverRegHdl) !=
       commSuccess) {
     throw ctran::utils::Exception(
         "regMem failed for recvBuffer", commSystemError);
@@ -169,8 +197,12 @@ static void cleanupBenchmarkContext(BenchmarkContext& ctx) {
     XLOGF(ERR, "deregMem failed for receiverRegHdl");
   }
 
-  CHECK_EQ(cudaFree(ctx.sendBuffer), cudaSuccess);
-  CHECK_EQ(cudaFree(ctx.recvBuffer), cudaSuccess);
+  // Free each buffer on the device it was allocated on (CUDA VMM unmap is
+  // context-sensitive): sendBuffer on cudaDev0, recvBuffer on cudaDev1.
+  CHECK_EQ(cudaSetDevice(0), cudaSuccess);
+  CHECK_EQ(ctran::utils::commCudaFree(ctx.sendBuffer), commSuccess);
+  CHECK_EQ(cudaSetDevice(1), cudaSuccess);
+  CHECK_EQ(ctran::utils::commCudaFree(ctx.recvBuffer), commSuccess);
 }
 
 static void
