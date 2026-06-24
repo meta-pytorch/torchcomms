@@ -88,4 +88,11 @@ struct IbrcCmdQueueDevice {
 static_assert(std::is_standard_layout_v<IbrcCmdQueueDevice>);
 static_assert(std::is_trivially_copyable_v<IbrcCmdQueueDevice>);
 
+struct IbrcBlockQpState {
+  uint32_t put_rr{0};
+};
+
+static_assert(std::is_standard_layout_v<IbrcBlockQpState>);
+static_assert(std::is_trivially_copyable_v<IbrcBlockQpState>);
+
 } // namespace comms::prims

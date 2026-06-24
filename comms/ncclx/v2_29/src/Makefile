@@ -149,6 +149,7 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerIbTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransportCuda.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
