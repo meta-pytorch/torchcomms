@@ -158,6 +158,7 @@ class MultipeerIbrcTransport
   void startProgressThread();
   void stopProgressThread() noexcept;
   void progressLoop() noexcept;
+  std::vector<int> selectProgressCpus() const;
   bool progressOnce();
   bool pollOneCmdQueueDescriptor(int peerIndex, IbrcCmdQueueHost& cmdQueue);
   bool pollCmdQueueCompletions(int peerIndex, IbrcCmdQueueHost& cmdQueue);
@@ -225,6 +226,7 @@ class MultipeerIbrcTransport
   std::size_t cmdQueueControlBytes_{0};
   std::atomic<bool> stopProgress_{false};
   std::thread progressThread_;
+  std::vector<int> progressCpus_;
 
   // Send/recv staging state (eager mode) lives in MultiPeerIbTransportBase
   // (sendRecvPeerBuffers_ + bulks); IBRC delegates allocation/exchange/cleanup.

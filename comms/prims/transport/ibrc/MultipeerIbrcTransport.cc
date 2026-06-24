@@ -4,11 +4,18 @@
 
 #include <endian.h>
 
+#include <pthread.h>
+#include <sched.h>
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <new>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -146,6 +153,75 @@ uint32_t keyForIbvPostSend(uint32_t deviceOrderKey) {
 #endif
 }
 
+void appendCpuRange(std::vector<int>& cpus, int first, int last) {
+  if (first < 0 || last < first || first >= CPU_SETSIZE) {
+    return;
+  }
+  const int end = last < CPU_SETSIZE ? last : CPU_SETSIZE - 1;
+  for (int cpu = first; cpu <= end; ++cpu) {
+    cpus.push_back(cpu);
+  }
+}
+
+std::vector<int> cpusFromLocalCpuList(const std::string& cpulist) {
+  std::vector<int> cpus;
+  std::stringstream stream(cpulist);
+  std::string token;
+  while (std::getline(stream, token, ',')) {
+    int first = -1;
+    int last = -1;
+    if (std::sscanf(token.c_str(), " %d - %d", &first, &last) == 2) {
+      appendCpuRange(cpus, first, last);
+    } else if (std::sscanf(token.c_str(), " %d", &first) == 1) {
+      appendCpuRange(cpus, first, first);
+    }
+  }
+  return cpus;
+}
+
+std::string cpuListToString(const std::vector<int>& cpus) {
+  std::string result;
+  for (std::size_t i = 0; i < cpus.size();) {
+    const int first = cpus[i];
+    int last = first;
+    ++i;
+    while (i < cpus.size() && cpus[i] == last + 1) {
+      last = cpus[i];
+      ++i;
+    }
+
+    if (!result.empty()) {
+      result += ",";
+    }
+    result += std::to_string(first);
+    if (last != first) {
+      result += "-";
+      result += std::to_string(last);
+    }
+  }
+  return result;
+}
+
+void pinCurrentThreadToCpus(const std::vector<int>& cpus) noexcept {
+  if (cpus.empty()) {
+    return;
+  }
+
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  for (const int cpu : cpus) {
+    CPU_SET(cpu, &cpuset);
+  }
+  const int rc =
+      pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+  if (rc != 0) {
+    LOG(WARNING) << "Failed to pin IBRC progress thread to CPUs "
+                 << cpuListToString(cpus) << ": " << errnoString(rc);
+  } else {
+    VLOG(1) << "Pinned IBRC progress thread to CPUs " << cpuListToString(cpus);
+  }
+}
+
 constexpr uint16_t kSupportedIbrcFlags =
     IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD | IBRC_HAS_COUNTER;
 
@@ -245,6 +321,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
         gpuSetDevice(config_.cudaDevice),
         "MultipeerIbrcTransport: set CUDA device");
     openNics();
+    progressCpus_ = selectProgressCpus();
     initializeControlResources();
     initializeDeviceTransportSlots();
     if (config_.ibLazyConnect) {
@@ -341,7 +418,73 @@ void MultipeerIbrcTransport::stopProgressThread() noexcept {
   }
 }
 
+std::vector<int> MultipeerIbrcTransport::selectProgressCpus() const {
+  std::vector<int> selectedCpus;
+  std::string selectedNic;
+  std::string missingNic;
+  std::string missingReason;
+  for (const auto& nic : nics_) {
+    if (nic.deviceName.empty()) {
+      continue;
+    }
+    const std::string path =
+        "/sys/class/infiniband/" + nic.deviceName + "/device/local_cpulist";
+    std::ifstream file(path);
+    std::string cpulist;
+    if (!file || !std::getline(file, cpulist)) {
+      VLOG(1) << "Could not read IBRC progress CPU locality from " << path;
+      if (missingNic.empty()) {
+        missingNic = nic.deviceName;
+        missingReason = "could not be read";
+      }
+      continue;
+    }
+
+    std::vector<int> cpus = cpusFromLocalCpuList(cpulist);
+    std::sort(cpus.begin(), cpus.end());
+    cpus.erase(std::unique(cpus.begin(), cpus.end()), cpus.end());
+    if (cpus.empty()) {
+      if (missingNic.empty()) {
+        missingNic = nic.deviceName;
+        missingReason = fmt::format(
+            "local_cpulist={} did not resolve to any usable CPUs", cpulist);
+      }
+      continue;
+    }
+
+    VLOG(1) << "Selected IBRC progress CPUs " << cpuListToString(cpus)
+            << " from " << nic.deviceName << " local_cpulist=" << cpulist;
+    if (selectedCpus.empty()) {
+      selectedCpus = cpus;
+      selectedNic = nic.deviceName;
+    } else if (cpus != selectedCpus) {
+      throw std::runtime_error(
+          fmt::format(
+              "IBRC selected NICs have different CPU locality: {} resolved to "
+              "CPUs {}, but {} resolved to CPUs {}. A single progress thread "
+              "requires a single NIC-local CPU affinity mask.",
+              selectedNic,
+              cpuListToString(selectedCpus),
+              nic.deviceName,
+              cpuListToString(cpus)));
+    }
+  }
+  if (!selectedCpus.empty() && !missingNic.empty()) {
+    throw std::runtime_error(
+        fmt::format(
+            "IBRC selected NICs do not all expose CPU locality: {} resolved to "
+            "CPUs {}, but {} {}. A single progress thread requires a single "
+            "NIC-local CPU affinity mask.",
+            selectedNic,
+            cpuListToString(selectedCpus),
+            missingNic,
+            missingReason));
+  }
+  return selectedCpus;
+}
+
 void MultipeerIbrcTransport::progressLoop() noexcept {
+  pinCurrentThreadToCpus(progressCpus_);
   while (!stopProgress_.load(std::memory_order_acquire)) {
     bool progressed = false;
     try {
