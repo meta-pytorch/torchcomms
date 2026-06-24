@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
@@ -18,6 +19,7 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/commSpecs.h"
 
 namespace {
 
@@ -100,13 +102,6 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
   // scope
   regCache_ = ctran::RegCache::getInstance();
 
-  REG_VERBOSE_LOG(
-      "RdmaMemory regcache={} buf={} len={} cudaDev={}",
-      fmt::ptr(regCache_.get()),
-      buf_,
-      len_,
-      cudaDev_);
-
   // Try to find an existing registration first.
   regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
 
@@ -119,17 +114,30 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
     throw std::runtime_error(
         "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
-    // Not registered yet; do it now.
-    FB_COMMCHECKTHROW(regCache_->globalRegister(
-        buf_, len_, true /* forceReg */, false /* ncclManaged */, cudaDev_));
-    regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
-    if (regHdl_ == nullptr) {
-      FB_COMMCHECKIGNORE(regCache_->globalDeregister(
-          buf_, len_, false /* skipRemRelease */, cudaDev_));
-      throw std::runtime_error("Failed to fetch the IB handle from regCache.");
-    }
+    // Not registered/cached yet. Register dynamically with an IB-only backend
+    // set: an isolated registration that is NOT cached and NOT reused
+    // (searchRegElem skips dynamic RegElems), so a transient per-buffer
+    // registration never pollutes the shared segment cache or force-frees a
+    // segment another buffer still needs. The RDMA transport only needs IB.
+    std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+    backends[CommBackend::IB] = true;
+    ctran::regcache::RegElem* dynHdl = nullptr;
+    FB_COMMCHECKTHROW(
+        regCache_->regDynamic(buf_, len_, cudaDev_, backends, &dynHdl));
+    dynRegHdl_ = dynHdl;
+    regHdl_ = dynHdl->ibRegElem;
   }
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
+  REG_VERBOSE_LOG(
+      "RdmaMemory regcache={} buf={} len={} cudaDev={} cacheReg_={} regHdl={} dynRegHdl={} remoteKey={}",
+      fmt::ptr(regCache_.get()),
+      buf_,
+      len_,
+      cudaDev_,
+      cacheReg_,
+      fmt::ptr(regHdl_),
+      fmt::ptr(dynRegHdl_),
+      remoteKey_);
 }
 
 RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
@@ -137,6 +145,7 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
       len_(other.len_),
       cudaDev_(other.cudaDev_),
       regHdl_(other.regHdl_),
+      dynRegHdl_(other.dynRegHdl_),
       remoteKey_(std::move(other.remoteKey_)),
       cacheReg_(other.cacheReg_),
       regCache_(std::move(other.regCache_)) {
@@ -146,18 +155,20 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
   other.len_ = 0;
   other.cudaDev_ = -1;
   other.regHdl_ = nullptr;
+  other.dynRegHdl_ = nullptr;
   other.cacheReg_ = false;
   // Note: remoteKey_ is already moved, leaving other.remoteKey_ empty
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
   if (cacheReg_) {
-    // cacheReg path only queried the handle; caller owns registration lifetime
+    // cacheReg/HIT path only queried the handle
     return;
   }
-  if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(regCache_->globalDeregister(
-        buf_, len_, false /* skipRemRelease */, cudaDev_));
+  if (dynRegHdl_ != nullptr) {
+    FB_COMMCHECKIGNORE(regCache_->deregDynamic(
+        static_cast<ctran::regcache::RegElem*>(dynRegHdl_)));
+    dynRegHdl_ = nullptr;
     regHdl_ = nullptr;
   }
 }

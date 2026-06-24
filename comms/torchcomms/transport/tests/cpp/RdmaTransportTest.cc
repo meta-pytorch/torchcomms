@@ -306,13 +306,54 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
 }
 
 TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
-  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
-  EXPECT_FALSE(firstMemory.reusedRegistration());
+  auto regCache = ctran::RegCache::getInstance();
+  // A cacheReg=true ctor on an unregistered buffer initializes the ctran/IB
+  // environment (initEnvironment) and then throws because the buffer is not yet
+  // cached. This mirrors CacheRegConstruction and ensures globalRegister below
+  // runs with CUDA/IB initialized.
+  EXPECT_THROW(
+      RdmaMemory(buffer_, bufferSize_, cudaDev_, /*cacheReg=*/true),
+      std::runtime_error);
 
+  // Pre-register (cache) the buffer; both RdmaMemory instances then HIT and
+  // reuse the same cached registration. (After the dynamic-MISS change, reuse
+  // happens only via the cache, not via the isolated dynamic path.)
+  ASSERT_EQ(
+      regCache->globalRegister(
+          buffer_,
+          bufferSize_,
+          /*forceReg=*/false,
+          /*ncclManaged=*/false,
+          cudaDev_),
+      commSuccess);
+
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_TRUE(firstMemory.reusedRegistration());
   RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
   EXPECT_TRUE(secondMemory.reusedRegistration());
   EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
   EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+
+  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
+}
+
+TEST_F(RdmaMemoryTest, CacheMissDynamicRegistrationsAreNotReused) {
+  auto regCache = ctran::RegCache::getInstance();
+
+  // The buffer is never globalRegister'd, so it is not in the segment cache.
+  // Both RdmaMemory instances take the cache-MISS path, which creates an
+  // isolated dynamic registration that is neither cached nor reused. As a
+  // result, even two registrations over the SAME buffer each register
+  // independently and neither reports a reused registration.
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(firstMemory.reusedRegistration());
+
+  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(secondMemory.reusedRegistration());
+
+  // The dynamic registrations never pollute the shared segment cache.
+  EXPECT_EQ(
+      regCache->searchIbRegHandle(buffer_, bufferSize_, cudaDev_), nullptr);
 }
 
 TEST_F(RdmaMemoryTest, ViewCreation) {

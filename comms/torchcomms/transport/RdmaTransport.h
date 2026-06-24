@@ -248,6 +248,10 @@ class RdmaMemory : folly::MoveOnly {
   int cudaDev_{-1};
 
   void* regHdl_{nullptr};
+  // Opaque handle to the dynamic ctran::regcache::RegElem when this RdmaMemory
+  // owns a dynamic (non-cached) registration; null on the cacheReg/HIT path.
+  // Stored as void* to keep the regcache type out of this header.
+  void* dynRegHdl_{nullptr};
   std::string remoteKey_;
   bool cacheReg_{false};
   std::shared_ptr<ctran::RegCache> regCache_;
