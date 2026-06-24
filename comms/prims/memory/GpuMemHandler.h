@@ -21,16 +21,9 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/memory/NvlMemExchange.h"
 
 namespace comms::prims {
-
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-struct FabricHandle {
-  unsigned char data[64]; // CU_IPC_HANDLE_SIZE
-};
-#else
-using FabricHandle = CUmemFabricHandle;
-#endif
 
 /**
  * Memory sharing mode - determines which IPC mechanism to use.
@@ -208,10 +201,6 @@ class GpuMemHandler {
   // Fabric mode methods
   void allocateFabricMemory(size_t size);
   void exchangeFabricHandles();
-  void importFabricPeerMemory(
-      int32_t rank,
-      const FabricHandle& handle,
-      size_t peerAllocatedSize);
   void cleanupFabric();
 
   // CudaIpc mode methods
