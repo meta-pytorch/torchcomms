@@ -677,6 +677,14 @@ cvars:
      Blackwell per-channel tuning bandwidths, and uses NET node
      count for system->inter.
 
+ - name        : NCCL_TOPO_BOND_V229
+   type        : bool
+   default     : true
+   description : |-
+     Controls v2.29 vs v2.30 SM100 inter-node topology speed tiers.
+     When true (default, v2.29-like): skips the 86GB/s inter-node
+     speed tier. When false (v2.30 behavior): includes that tier.
+
  - name        : NCCL_NTHREADS
    type        : int64_t
    default     : -2
@@ -1631,6 +1639,32 @@ cvars:
      Maximum number of outstanding messages per QP at a given time. As messages
      complete and CQEs are generated, new messages will be posted to keep the
      send queue full of this many WQEs.
+
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+   type        : bool
+   default     : True
+   description : |-
+     When a VC spans multiple NICs (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 with a
+     single VC striped across them), distribute a single put/get's QP-scaling
+     sub-chunks round-robin across all NICs first (interleaved visit order
+     qp0, qpK, qp2K, ... advancing the device before the next QP on a device,
+     where K = MAX_QPS / devices, instead of filling one NIC's qp0..K-1 before
+     the next). This lets a put smaller than
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD * (MAX_QPS / devices) still drive all
+     NICs, capturing the multi-NIC bandwidth without extra QP or channel setup.
+     No effect when the VC is bound to a single NIC (the mapping is the
+     identity).
+
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE
+   type        : uint64_t
+   default     : 65536
+   description : |-
+     Minimum per-WQE size (bytes) for NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+     to take effect. A single op's WQEs are interleaved across NICs only when
+     each WQE exceeds this size. WQEs at or below it (e.g. the 64K pieces a
+     NUM_SPLIT=2 AllGather ring produces from a 128K per-rank chunk) are
+     latency-bound -- one NIC handles them fine and spreading them across NICs
+     only adds cross-NIC ordering/straggler cost, so interleaving is skipped.
 
  - name        : NCCL_CTRAN_IB_MAX_NUM_CQE
    type        : int
@@ -3208,6 +3242,15 @@ cvars:
      or peer close into communicator abort. Disable this as a kill switch for
      the socket-health polling path; active Bootstrap socket I/O errors still
      use the separate callback path.
+
+ - name        : MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED
+   type        : bool
+   default     : false
+   description : |-
+     Enable TCP keepalive on MCCL Bootstrap sockets. When enabled, Bootstrap
+     applies its TCP keepalive options to outgoing and accepted CoroSocket
+     instances so the kernel can surface half-open peer failures. Disabled by
+     default so production behavior is unchanged unless explicitly opted in.
 
  - name        : MCCL_SCUBA_ENABLED
    type        : bool

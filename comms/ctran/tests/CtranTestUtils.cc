@@ -185,17 +185,17 @@ commResult_t commMemFreeDisjoint(
   CUdevice ptrDev = 0;
 
   if (ptr == NULL) {
-    cudaSetDevice(saveDevice);
+    (void)cudaSetDevice(saveDevice);
     return ErrorStackTraceUtil::log(commInvalidArgument);
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
-    cudaSetDevice(saveDevice);
+    (void)cudaSetDevice(saveDevice);
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
   if (!ctran::utils::getCuMemSysSupported()) {
-    cudaSetDevice(saveDevice);
+    (void)cudaSetDevice(saveDevice);
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
@@ -235,7 +235,7 @@ commResult_t commMemFreeDisjoint(
     curPtr = ctran::utils::addDevicePtr(curPtr, alignedSizes[i]);
   }
   FB_CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, vaSize));
-  cudaSetDevice(saveDevice);
+  CUDACHECK_TEST(cudaSetDevice(saveDevice));
   return ret;
 }
 
@@ -430,7 +430,7 @@ void commMemFree(
       break;
     }
     case kMemHostManaged:
-      cudaFreeHost(buf);
+      CUDACHECK_TEST(cudaFreeHost(buf));
       break;
     case kMemCuMemAlloc: {
       std::vector<size_t> segSize(1, bufSize);
@@ -781,7 +781,7 @@ void CtranTestHelpers::releaseDevArgs() {
 }
 
 void CtranTestHelpers::releaseDevArg(void* ptr) {
-  cudaFree(ptr);
+  CUDACHECK_TEST(cudaFree(ptr));
   devArgs_.erase(ptr);
 }
 
