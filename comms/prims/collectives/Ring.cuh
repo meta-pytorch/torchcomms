@@ -4,15 +4,15 @@
 
 #include <cstddef>
 
-#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/P2pIbTransportDevice.cuh"
 
 namespace comms::prims {
 
 struct RingTopology {
   int prev_rank{0};
   int next_rank{0};
-  P2pIbgdaTransportDevice* prev{nullptr};
-  P2pIbgdaTransportDevice* next{nullptr};
+  P2pIbTransportDevice prev{};
+  P2pIbTransportDevice next{};
 };
 
 template <int NumRings>
