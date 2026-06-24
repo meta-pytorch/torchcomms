@@ -2,6 +2,12 @@
 
 #include "RdmaTransport.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
+#include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
@@ -29,7 +35,61 @@ void initEnvironment() {
   });
 }
 
+// Gates verbose RDMA registration logs via env var
+// TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG. Disabled when unset/empty or set to a
+// falsy value (case-insensitive: "0", "false", "off", "no"); any other value
+// enables it.
+bool rdmaRegVerboseLogEnabled() {
+  static const bool enabled = [] {
+    const char* env = std::getenv("TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG");
+    if (env == nullptr || env[0] == '\0') {
+      return false;
+    }
+    std::string value(env);
+    std::transform(
+        value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
+    return value != "0" && value != "false" && value != "off" && value != "no";
+  }();
+  return enabled;
+}
+
 } // namespace
+
+// Logs a verbose RDMA registration message (prefixed with [RDMA]) only when
+// TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG is enabled. fmtStr must be a string
+// literal; trailing args are the fmt arguments.
+#define REG_VERBOSE_LOG(fmtStr, ...)                            \
+  do {                                                          \
+    if (rdmaRegVerboseLogEnabled()) {                           \
+      XLOGF(INFO, "[RDMA] " fmtStr __VA_OPT__(, ) __VA_ARGS__); \
+    }                                                           \
+  } while (0)
+
+extern "C" int RdmaRegTensor(void* addr, size_t len) {
+  initEnvironment();
+  const auto regCache = ctran::RegCache::getInstance();
+  REG_VERBOSE_LOG(
+      "RdmaRegTensor regcache={} addr={} len={}",
+      fmt::ptr(regCache.get()),
+      addr,
+      len);
+  return static_cast<int>(regCache->globalRegister(
+      addr, len, /*forceReg=*/false, /*ncclManaged=*/false, /*deviceId=*/-1));
+}
+
+extern "C" int RdmaDeregTensor(void* addr, size_t len) {
+  initEnvironment();
+  const auto regCache = ctran::RegCache::getInstance();
+  REG_VERBOSE_LOG(
+      "RdmaDeregTensor regcache={} addr={} len={}",
+      fmt::ptr(regCache.get()),
+      addr,
+      len);
+  return static_cast<int>(regCache->globalDeregister(
+      addr, len, /*skipRemRelease=*/false, /*deviceId=*/-1));
+}
 
 namespace torch::comms {
 
@@ -39,6 +99,13 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
   // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
   // scope
   regCache_ = ctran::RegCache::getInstance();
+
+  REG_VERBOSE_LOG(
+      "RdmaMemory regcache={} buf={} len={} cudaDev={}",
+      fmt::ptr(regCache_.get()),
+      buf_,
+      len_,
+      cudaDev_);
 
   // Try to find an existing registration first.
   regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
