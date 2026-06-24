@@ -221,7 +221,10 @@ ext_modules += [
 if USE_TRANSPORT:
     ext_modules.append(CMakeExtension("torchcomms._transport"))
 
-backend_entry_points = ["fake = torchcomms._comms"] + [
+backend_entry_points = [
+    "fake = torchcomms._comms",
+    "symmem = torchcomms.symmem",
+] + [
     f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
 ]
 # nccl-lazy is implemented inside the _comms_nccl extension via the
