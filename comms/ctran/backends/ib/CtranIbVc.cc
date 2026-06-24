@@ -50,6 +50,8 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   qpScalingTh_ = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
   vcMode_ = NCCL_CTRAN_IB_VC_MODE;
   maxQpMsgs_ = NCCL_CTRAN_IB_QP_MAX_MSGS;
+  qpInterleaveDevices_ = NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE;
+  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
   ConnectionType connTyp = ConnectionType::NO_STATEX;
   std::vector<std::string>* configList{nullptr};
   if (comm_ && comm_->statex_) {

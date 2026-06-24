@@ -5,7 +5,10 @@
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
 #include <unistd.h>
+#include <chrono>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <folly/init/Init.h>
 
@@ -312,6 +315,126 @@ static void BM_CtranIb_IGet(benchmark::State& state, CtranIbConfig config) {
 }
 
 //------------------------------------------------------------------------------
+// Multi-put per-arrival benchmark (interleave on vs off)
+//
+// Issues `numPuts` concurrent CtranIb::iput ops (each `chunkSize` bytes, to
+// distinct offsets of the receive buffer) on the single per-peer VC, then
+// records the elapsed time at which each put's notify arrives at the receiver
+// (notify1_us = first arrival ... notifyN_us = last). Uses only the high-level
+// CtranIb iput/progress/checkNotify API on the simple kExternal setup -- no
+// multi-VC / control-message transport.
+//
+// Purpose: expose NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE, which only has an
+// effect when the VC spans >1 NIC (DEVICES_PER_RANK=2, default on GB200). With
+// K = MAX_QPS/devices QPs per NIC and a chunk whose QP-scaling sub-chunks
+// number <= K, interleave OFF packs each put onto a single NIC (consecutive
+// small puts can pile onto the same NIC, leaving the other idle), while
+// interleave ON spreads every put across both NICs. Aggregate BW can look
+// identical; the per-put arrival times do not.
+//------------------------------------------------------------------------------
+
+static void benchmarkMultiPut(benchmark::State& state, int numPuts) {
+  const size_t chunkSize = state.range(0);
+  // Reuse the kExternal single-VC setup; one contiguous region holds all
+  // chunks (setupBenchmarkContext page-aligns and registers the buffers).
+  auto ctx = setupBenchmarkContext(numPuts * chunkSize);
+
+  CtranIbConfig config{
+      .numQps = 16,
+      .qpScalingTh = 524288,
+      .qpMsgs = 128,
+  };
+
+  std::vector<double> sumDeltaUs(numPuts, 0.0);
+
+  for (auto _ : state) {
+    CHECK_EQ(cudaSetDevice(0), cudaSuccess);
+    std::vector<CtranIbRequest> putReq(numPuts);
+    const auto t0 = std::chrono::steady_clock::now();
+
+    // Issue all puts back-to-back; each notifies the receiver on completion.
+    for (int i = 0; i < numPuts; ++i) {
+      const void* sbuf =
+          static_cast<const char*>(ctx.sendBuffer) + i * chunkSize;
+      void* dbuf = static_cast<char*>(ctx.recvBuffer) + i * chunkSize;
+      if (ctx.senderIb->iput(
+              sbuf,
+              dbuf,
+              chunkSize,
+              kDummyRank,
+              ctx.senderRegHdl,
+              ctx.ibReceiveKey,
+              true /* notify */,
+              &config,
+              &putReq[i],
+              false /* fast */) != commSuccess) {
+        throw ctran::utils::Exception("iput failed", commSystemError);
+      }
+    }
+
+    // Drive sender progress + receiver notify polling; timestamp each arrival.
+    int seen = 0;
+    std::vector<double> deltaUs(numPuts, 0.0);
+    while (seen < numPuts) {
+      if (ctx.senderIb->progress() != commSuccess) {
+        throw ctran::utils::Exception("progress failed", commSystemError);
+      }
+      bool notified = false;
+      if (ctx.receiverIb->checkNotify(kDummyRank, &notified) != commSuccess) {
+        throw ctran::utils::Exception("checkNotify failed", commSystemError);
+      }
+      if (notified) {
+        deltaUs[seen++] = std::chrono::duration<double, std::micro>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count();
+      }
+    }
+
+    // Drain the sender's outstanding iputs before putReq leaves scope.
+    bool allComplete = false;
+    while (!allComplete) {
+      if (ctx.senderIb->progress() != commSuccess) {
+        throw ctran::utils::Exception("progress failed", commSystemError);
+      }
+      allComplete = true;
+      for (int i = 0; i < numPuts; ++i) {
+        if (!putReq[i].isComplete()) {
+          allComplete = false;
+          break;
+        }
+      }
+    }
+
+    for (int i = 0; i < numPuts; ++i) {
+      sumDeltaUs[i] += deltaUs[i];
+    }
+  }
+
+  const double iters = static_cast<double>(state.iterations());
+  for (int i = 0; i < numPuts; ++i) {
+    state.counters["notify" + std::to_string(i + 1) + "_us"] =
+        sumDeltaUs[i] / iters;
+  }
+  const double totalBytes = iters * numPuts * static_cast<double>(chunkSize);
+  state.counters["BW_GBps"] =
+      benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
+  // Self-document the resolved config in the output row.
+  state.counters["interleave"] =
+      NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE ? 1 : 0;
+  state.counters["devs"] = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+
+  cleanupBenchmarkContext(ctx);
+}
+
+static void BM_CtranIb_MultiPut2(benchmark::State& state) {
+  benchmarkMultiPut(state, 2);
+}
+
+static void BM_CtranIb_MultiPut4(benchmark::State& state) {
+  benchmarkMultiPut(state, 4);
+}
+
+//------------------------------------------------------------------------------
 // Benchmark Registration
 //------------------------------------------------------------------------------
 
@@ -396,6 +519,45 @@ static auto* registered_iget_512k = benchmark::RegisterBenchmark(
                                         ->Range(kMinBufferSize, kMaxBufferSize)
                                         ->UseRealTime()
                                         ->Unit(benchmark::kMicrosecond);
+
+// Multi-put per-arrival: 2 and 4 concurrent puts across the
+// interleave-sensitive chunk-size range. Run twice -- with
+// NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE 0 then 1 (and
+// NCCL_CTRAN_IB_DEVICES_PER_RANK=2) -- and compare the notify*_us columns.
+const size_t kMultiPut32K = 32 * 1024;
+const size_t kMultiPut64K = 64 * 1024;
+const size_t kMultiPut128K = 128 * 1024;
+const size_t kMultiPut256K = 256 * 1024;
+const size_t kMultiPut512K = 512 * 1024;
+const size_t kMultiPut1M = 1 * 1024 * 1024;
+const size_t kMultiPut2M = 2 * 1024 * 1024;
+const size_t kMultiPut4M = 4 * 1024 * 1024;
+
+static auto* registered_multiput2 =
+    benchmark::RegisterBenchmark("BM_CtranIb_MultiPut2", BM_CtranIb_MultiPut2)
+        ->Arg(kMultiPut32K)
+        ->Arg(kMultiPut64K)
+        ->Arg(kMultiPut128K)
+        ->Arg(kMultiPut256K)
+        ->Arg(kMultiPut512K)
+        ->Arg(kMultiPut1M)
+        ->Arg(kMultiPut2M)
+        ->Arg(kMultiPut4M)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_multiput4 =
+    benchmark::RegisterBenchmark("BM_CtranIb_MultiPut4", BM_CtranIb_MultiPut4)
+        ->Arg(kMultiPut32K)
+        ->Arg(kMultiPut64K)
+        ->Arg(kMultiPut128K)
+        ->Arg(kMultiPut256K)
+        ->Arg(kMultiPut512K)
+        ->Arg(kMultiPut1M)
+        ->Arg(kMultiPut2M)
+        ->Arg(kMultiPut4M)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
 
 //------------------------------------------------------------------------------
 // Main Function

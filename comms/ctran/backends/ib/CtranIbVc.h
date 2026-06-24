@@ -482,6 +482,50 @@ class CtranIbVirtualConn {
     return activeDevices_[getActiveDevIdxFromQpIdx(qpIdx)];
   }
 
+  // Map a logical round-robin position to a physical (device-major) data-QP
+  // index that interleaves consecutive sub-chunks across the VC's D NICs.
+  // ibvDataQps_ is stored device-major ([dev0: qp0..K-1, dev1: qpK..2K-1, ...,
+  // dev(D-1): qp(D-1)K..DK-1]), so the default sequential walk fills one NIC's
+  // K QPs before spilling to the next. Interleaving advances the device first,
+  // remapping logical 0,1,2,... to physical 0,K,2K,...,(D-1)K,1,K+1,... so a
+  // single op spanning a few sub-chunks drives all NICs (for D==2 this is
+  // 0,K,1,K+1,...).
+  //
+  // numActive (= D) = activeDevices_.size();
+  // numQpsPerDevice (= K) = maxNumQps_ / numActive.
+  // For numActive == 1 this is the identity. The result is always
+  // < numActive * numQpsPerDevice (== maxNumQps_) for any logical < maxNumQps_,
+  // so it stays in-bounds for pendingWqeQs_ even when the free-running qpIdxRR_
+  // briefly exceeds a smaller per-op qps.
+  static inline int
+  interleaveQpIdx(int logical, int numActive, int numQpsPerDevice) {
+    return (logical % numActive) * numQpsPerDevice + (logical / numActive);
+  }
+
+  // Whether a single op's WQEs should be interleaved across the VC's NICs.
+  // Worth it only when the VC spans >1 NIC and each posted WQE is large enough
+  // (> minWqeSize) to be bandwidth-bound -- then spreading WQEs across NICs
+  // adds bandwidth. WQEs <= minWqeSize (e.g. the 64K pieces a NUM_SPLIT=2
+  // AllGather ring makes from a 128K per-rank chunk) are latency-bound: one NIC
+  // handles them fine, and interleaving them only pays cross-NIC
+  // ordering/straggler cost for no gain. Pure function for unit testing.
+  static inline bool shouldInterleaveQp(
+      bool interleaveDevices,
+      int numActive,
+      uint64_t wqeSize,
+      uint64_t minWqeSize) {
+    return interleaveDevices && numActive > 1 && wqeSize > minWqeSize;
+  }
+
+  // Size of the next WQE the front op would post, mirroring the maxWqeSize
+  // logic in queueWriteOnQp / queueReadOnQp. Used to gate interleaving.
+  template <typename OpPtr>
+  inline uint64_t nextWqeSize(const OpPtr& op) {
+    const uint64_t remData = op->len - op->offset;
+    const auto opQps = std::min(getOpQps(op->config), maxNumQps_);
+    return std::min(remData, maxWqeSizeFor(op->config, op->len, opQps));
+  }
+
   // Returns the IB device that hosts the control QPs for this VC.
   // Always equals activeDevices_.front() today.
   inline int getCtrlDevice() const {
@@ -630,6 +674,18 @@ class CtranIbVirtualConn {
         config, &CtranIbConfig::qpScalingTh, qpScalingTh_);
   }
 
+  // Max size of a single WQE for an op of total size `len` whose payload is
+  // spread across `qps` QPs: the configured per-QP scaling threshold if set,
+  // else an equal split (len / qps); clamped to [mtu_, maxMsgSize_]. The
+  // single-WQE fast path passes qps=1 (no QP scaling, so the fallback is the
+  // whole message).
+  inline uint64_t
+  maxWqeSizeFor(const CtranIbConfig* config, uint64_t len, int qps) {
+    const auto scalingTh = getOpScalingTh(config);
+    const uint64_t raw = scalingTh > 0 ? scalingTh : len / std::max(qps, 1);
+    return std::min(maxMsgSize_, std::max(raw, mtu_));
+  }
+
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline bool
   isFastPutValid(CtranIbConfig* config, size_t len, size_t numMessages) {
@@ -651,10 +707,7 @@ class CtranIbVirtualConn {
       return false;
     }
 
-    auto perPutScalingTh = getOpScalingTh(config);
-    uint64_t maxWqeSize = perPutScalingTh > 0 ? perPutScalingTh : len;
-    // Lock max WQE size to the range [1MTU, (max size supported by port)]
-    maxWqeSize = std::min(maxMsgSize_, std::max(maxWqeSize, mtu_));
+    uint64_t maxWqeSize = maxWqeSizeFor(config, len, /*qps=*/1);
 
     if (len > maxWqeSize) {
       CLOGF(
@@ -947,10 +1000,7 @@ class CtranIbVirtualConn {
         return commSystemError;
       }
 
-      auto perGetScalingTh = getOpScalingTh(config);
-      uint64_t maxWqeSize = perGetScalingTh > 0 ? perGetScalingTh : len;
-      // Lock max WQE size to the range [1MTU, (max size supported by port)]
-      maxWqeSize = std::min(maxMsgSize_, std::max(maxWqeSize, mtu_));
+      uint64_t maxWqeSize = maxWqeSizeFor(config, len, /*qps=*/1);
 
       if (len > maxWqeSize) {
         CLOGF(
@@ -1331,19 +1381,35 @@ class CtranIbVirtualConn {
       FastOpQueue& outstandingFastQueue,
       QueueOpFunc queueOpOnQp,
       int fastQpIdx) {
+    const int numActive = static_cast<int>(activeDevices_.size());
     bool sent = true;
     while (sent && (pendingOpQueue.size() > 0)) {
       sent = false;
       auto& op = pendingOpQueue.front();
       auto qps = std::min(getOpQps(op->config), maxNumQps_);
       auto maxmsgs = std::min(getOpMaxQpMsgs(op->config), maxQpMsgs_);
+      // Interleave this op's WQEs across NICs only when enabled, the VC spans
+      // >1 NIC, and each WQE is large enough to be bandwidth-bound. Small WQEs
+      // (<= qpInterleaveMinWqeSize_) are latency-bound; spreading them across
+      // NICs only adds cross-NIC ordering/straggler cost for no bandwidth gain.
+      const bool doInterleave = shouldInterleaveQp(
+          qpInterleaveDevices_,
+          numActive,
+          nextWqeSize(op),
+          qpInterleaveMinWqeSize_);
       for (int i = 0; i < qps; i++) {
-        auto pendingWqeSize = pendingWqeQs_.at(qpIdxRR_).size();
-        if (qpIdxRR_ == fastQpIdx) {
+        // qpIdxRR_ steps logically; translate it to a physical device-major QP
+        // index so a single op's sub-chunks interleave across NICs. The map is
+        // the identity when doInterleave is false, preserving the legacy walk.
+        const int qpIdx = doInterleave
+            ? interleaveQpIdx(qpIdxRR_, numActive, numQpsPerDevice_)
+            : qpIdxRR_;
+        auto pendingWqeSize = pendingWqeQs_.at(qpIdx).size();
+        if (qpIdx == fastQpIdx) {
           pendingWqeSize += outstandingFastQueue.size();
         }
         if (pendingWqeSize < maxmsgs) {
-          FB_COMMCHECK(queueOpOnQp(qpIdxRR_));
+          FB_COMMCHECK(queueOpOnQp(qpIdx));
           sent = true;
         }
         qpIdxRR_ = (qpIdxRR_ + 1) % qps;
@@ -1364,14 +1430,9 @@ class CtranIbVirtualConn {
     auto& put = pendingPuts_.front();
 
     uint64_t remData = put->len - put->offset;
-    // Write WQEs of max size qpScalingTh_ unless the threshold is 0. If it
-    // is, divide message equally among QPs.
-    auto perPutScalingTh = getOpScalingTh(put->config);
-    auto putqps = std::min(getOpQps(put->config), maxNumQps_);
-    uint64_t maxWqeSize =
-        perPutScalingTh > 0 ? perPutScalingTh : put->len / putqps;
-    // Lock max WQE size to the range [1MTU, (max size supported by port)]
-    maxWqeSize = std::min(maxMsgSize_, std::max(maxWqeSize, mtu_));
+    // Write WQEs of max size qpScalingTh_, else divide the message among QPs.
+    uint64_t maxWqeSize = maxWqeSizeFor(
+        put->config, put->len, std::min(getOpQps(put->config), maxNumQps_));
     auto toSend = std::min(remData, maxWqeSize);
     bool finalWriteOfPut = toSend == remData;
 
@@ -1444,14 +1505,9 @@ class CtranIbVirtualConn {
     auto& get = pendingGets_.front();
 
     uint64_t remData = get->len - get->offset;
-    // Write WQEs of max size qpScalingTh_ unless the threshold is 0. If it
-    // is, divide message equally among QPs.
-    auto perGetScalingTh = getOpScalingTh(get->config);
-    auto getqps = std::min(getOpQps(get->config), maxNumQps_);
-    uint64_t maxWqeSize =
-        perGetScalingTh > 0 ? perGetScalingTh : get->len / getqps;
-    // Lock max WQE size to the range [1MTU, (max size supported by port)]
-    maxWqeSize = std::min(maxMsgSize_, std::max(maxWqeSize, mtu_));
+    // Write WQEs of max size qpScalingTh_, else divide the message among QPs.
+    uint64_t maxWqeSize = maxWqeSizeFor(
+        get->config, get->len, std::min(getOpQps(get->config), maxNumQps_));
     auto toSend = std::min(remData, maxWqeSize);
     bool finalReadOfGet = toSend == remData;
 
@@ -1871,6 +1927,17 @@ class CtranIbVirtualConn {
   int numQpsPerDevice_{0};
   size_t qpScalingTh_{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
   enum NCCL_CTRAN_IB_VC_MODE vcMode_ { NCCL_CTRAN_IB_VC_MODE::spray };
+  // When true and the VC spans multiple NICs, tryToPostOp interleaves a single
+  // op's QP-scaling sub-chunks across all NICs (visit order qp0, qpK, qp2K, ...
+  // advancing the device first, where K = maxNumQps_ / numActiveDevices)
+  // instead of filling one NIC's QPs first. Read from
+  // NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE in setDefaultQPConfig. No effect
+  // when activeDevices_.size() == 1 (the mapping is the identity).
+  bool qpInterleaveDevices_{false};
+  // Minimum per-WQE size for interleaving to kick in. WQEs at or below this are
+  // latency-bound; interleaving them regresses (the 64K-per-put AllGather
+  // case). Read from NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE.
+  uint64_t qpInterleaveMinWqeSize_{NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE};
   int maxQpMsgs_;
   uint64_t mtu_{4096};
   uint64_t maxMsgSize_{CTRAN_IB_FAST_PATH_MSG_MAX_SIZE};
