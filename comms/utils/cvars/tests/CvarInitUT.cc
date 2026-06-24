@@ -48,12 +48,29 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_P2P_DISABLE");
     unsetenv("CUDA_LAUNCH_BLOCKING");
     unsetenv("NCCL_MIN_CTAS");
+    unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
   }
 };
 
 TEST_F(CvarInitTest, BasicInitialization) {
   // Test basic ncclCvarInit functionality
   EXPECT_NO_THROW(ncclCvarInit());
+}
+
+TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveDisabledByDefault) {
+  EXPECT_NO_THROW(ncclCvarInit());
+
+  EXPECT_FALSE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED);
+  EXPECT_FALSE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED_DEFAULT_LITERAL);
+}
+
+TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveCanBeEnabled) {
+  setenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED", "1", 1);
+
+  EXPECT_NO_THROW(ncclCvarInit());
+
+  EXPECT_TRUE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED);
+  EXPECT_FALSE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED_DEFAULT_LITERAL);
 }
 
 TEST_F(CvarInitTest, InitWithStringCvar) {

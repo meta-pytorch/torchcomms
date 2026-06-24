@@ -3217,6 +3217,15 @@ cvars:
      the socket-health polling path; active Bootstrap socket I/O errors still
      use the separate callback path.
 
+ - name        : MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED
+   type        : bool
+   default     : false
+   description : |-
+     Enable TCP keepalive on MCCL Bootstrap sockets. When enabled, Bootstrap
+     applies its TCP keepalive options to outgoing and accepted CoroSocket
+     instances so the kernel can surface half-open peer failures. Disabled by
+     default so production behavior is unchanged unless explicitly opted in.
+
  - name        : MCCL_SCUBA_ENABLED
    type        : bool
    default     : true
