@@ -14,6 +14,14 @@
 //   }
 //   CUresult err = comms::prims::pfn_cuMemCreate(&handle, size, &prop, 0);
 
+// NVIDIA-only: the lazy CUDA driver API has no HIP equivalent, and every caller
+// guards its use behind `#if CUDART_VERSION >= 12030` / `#ifndef
+// __HIP_PLATFORM_AMD__` (the VMM / fabric paths, compiled out on AMD). Compile
+// to nothing under HIP so a hipified TU that transitively includes this header
+// (e.g. via Checks.h) doesn't pull real <cuda_runtime.h> alongside
+// <hip/hip_runtime.h> (the ROCm vector-type alias vs CUDA struct clash).
+#if !defined(__HIP_PLATFORM_AMD__)
+
 #include <cuda.h>
 
 #include <cudaTypedefs.h>
@@ -68,3 +76,5 @@ extern PFN_cuMemGetHandleForAddressRange_v11070
     pfn_cuMemGetHandleForAddressRange;
 
 } // namespace comms::prims
+
+#endif // !defined(__HIP_PLATFORM_AMD__)

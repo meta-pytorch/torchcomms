@@ -13,6 +13,8 @@
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
+#include "comms/prims/core/Checks.h"
+
 #include <glog/logging.h>
 #include <mutex>
 #include <stdexcept>
@@ -20,23 +22,6 @@
 namespace comms::prims {
 
 namespace {
-
-void checkCudaError(cudaError_t err, const char* msg) {
-  if (err != cudaSuccess) {
-    throw std::runtime_error(std::string(msg) + ": " + cudaGetErrorString(err));
-  }
-}
-
-#ifndef __HIP_PLATFORM_AMD__
-void checkCuError(CUresult err, const char* msg) {
-  if (err != CUDA_SUCCESS) {
-    const char* errStr = nullptr;
-    pfn_cuGetErrorString(err, &errStr);
-    throw std::runtime_error(
-        std::string(msg) + ": " + (errStr ? errStr : "unknown error"));
-  }
-}
-#endif
 
 // Minimum allocation size for trial allocation (matches ctran)
 constexpr size_t kTrialAllocSize = 2097152UL; // 2MB
