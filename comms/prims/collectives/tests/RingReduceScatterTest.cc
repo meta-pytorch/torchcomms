@@ -3,10 +3,14 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <memory>
+#include <vector>
+
 #include "comms/prims/collectives/RingReduceScatterLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"
 #include "comms/prims/collectives/tests/ReduceScatterTestHarness.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 
 using meta::comms::DeviceBuffer;
 
@@ -20,12 +24,68 @@ struct RingReduceScatterTestParams {
   std::size_t data_buffer_size;
   int pipeline_depth;
   bool ibLazyConnect{false};
+  bool useIbrc{false};
 };
 
 std::string param_name(
     const ::testing::TestParamInfo<RingReduceScatterTestParams>& info) {
   return info.param.config.name;
 }
+
+class RingReduceScatterIbTransport {
+ public:
+  RingReduceScatterIbTransport(
+      bool useIbrc,
+      int globalRank,
+      int worldSize,
+      const std::shared_ptr<meta::comms::IBootstrap>& bootstrap,
+      const MultipeerIbgdaTransportConfig& transportConfig) {
+    if (useIbrc) {
+      ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
+          globalRank, worldSize, bootstrap, transportConfig);
+    } else {
+      ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+          globalRank, worldSize, bootstrap, transportConfig);
+    }
+  }
+
+  void exchange() {
+    if (ibrcTransport_) {
+      ibrcTransport_->exchange();
+    } else {
+      ibgdaTransport_->exchange();
+    }
+  }
+
+  void queuePeerForMaterialization(int peerRank) {
+    if (ibrcTransport_) {
+      ibrcTransport_->queuePeerForMaterialization(peerRank);
+    } else {
+      ibgdaTransport_->queuePeerForMaterialization(peerRank);
+    }
+  }
+
+  void connectPeers() {
+    if (ibrcTransport_) {
+      ibrcTransport_->connectPeers();
+    } else {
+      ibgdaTransport_->connectPeers();
+    }
+  }
+
+  P2pIbTransportDevice getP2pTransportDevice(int peerRank) {
+    if (ibrcTransport_) {
+      return P2pIbTransportDevice(
+          ibrcTransport_->getP2pTransportDevice(peerRank));
+    }
+    return P2pIbTransportDevice(
+        ibgdaTransport_->getP2pTransportDevice(peerRank));
+  }
+
+ private:
+  std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
+};
 
 class RingReduceScatterTest
     : public ReduceScatterTestBase,
@@ -39,24 +99,19 @@ TEST_P(RingReduceScatterTest, Correctness) {
     GTEST_SKIP() << "Ring reduce-scatter requires at least 2 ranks";
   }
 
-  std::unique_ptr<MultipeerIbgdaTransport> transport;
-  try {
-    MultipeerIbgdaTransportConfig transportConfig{
-        .cudaDevice = localRank,
-        .dataBufferSize = params.data_buffer_size,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = config.num_blocks * params.num_rings,
-                .pipelineDepth = params.pipeline_depth,
-            },
-        .ibLazyConnect = params.ibLazyConnect,
-    };
-    transport = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank, worldSize, bootstrap, transportConfig);
-    transport->exchange();
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
-  }
+  MultipeerIbgdaTransportConfig transportConfig{
+      .cudaDevice = localRank,
+      .dataBufferSize = params.data_buffer_size,
+      .sendRecv =
+          MultipeerIbgdaTransportConfig::SendRecvConfig{
+              .maxGroups = config.num_blocks * params.num_rings,
+              .pipelineDepth = params.pipeline_depth,
+          },
+      .ibLazyConnect = params.ibLazyConnect,
+  };
+  auto transport = std::make_unique<RingReduceScatterIbTransport>(
+      params.useIbrc, globalRank, worldSize, bootstrap, transportConfig);
+  transport->exchange();
 
   const std::size_t total_elements = config.chunk_elements * worldSize;
   DeviceBuffer inputBuf(total_elements * sizeof(float));
@@ -93,10 +148,8 @@ TEST_P(RingReduceScatterTest, Correctness) {
   transport->connectPeers();
   for (int r = 0; r < params.num_rings; r++) {
     auto& ringParams = launchParams.rings[r];
-    ringParams.prev = P2pIbTransportDevice(
-        transport->getP2pTransportDevice(ringParams.prev_rank));
-    ringParams.next = P2pIbTransportDevice(
-        transport->getP2pTransportDevice(ringParams.next_rank));
+    ringParams.prev = transport->getP2pTransportDevice(ringParams.prev_rank);
+    ringParams.next = transport->getP2pTransportDevice(ringParams.next_rank);
   }
 
   bootstrap->barrierAll();
@@ -108,95 +161,96 @@ TEST_P(RingReduceScatterTest, Correctness) {
       static_cast<const float*>(outputBuf.get()), config.chunk_elements);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Ring1,
-    RingReduceScatterTest,
-    ::testing::Values(
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 16 * 1024,
-                 .num_blocks = 4,
-                 .name = "64KB_4B"},
-            .num_rings = 1,
-            .data_buffer_size = 1024 * 1024,
-            .pipeline_depth = 2,
-        },
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 64 * 1024,
-                 .num_blocks = 8,
-                 .name = "256KB_8B"},
-            .num_rings = 1,
-            .data_buffer_size = 1024 * 1024,
-            .pipeline_depth = 2,
-        },
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 256 * 1024,
-                 .num_blocks = 16,
-                 .name = "1MB_16B"},
-            .num_rings = 1,
-            .data_buffer_size = 2 * 1024 * 1024,
-            .pipeline_depth = 2,
-        },
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 1024 * 1024,
-                 .num_blocks = 16,
-                 .name = "4MB_16B"},
-            .num_rings = 1,
-            .data_buffer_size = 4 * 1024 * 1024,
-            .pipeline_depth = 2,
-        },
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 4 * 1024 * 1024,
-                 .num_blocks = 16,
-                 .name = "16MB_16B"},
-            .num_rings = 1,
-            .data_buffer_size = 8 * 1024 * 1024,
-            .pipeline_depth = 2,
-        }),
-    param_name);
+std::vector<RingReduceScatterTestParams> all_test_params() {
+  std::vector<RingReduceScatterTestParams> base{
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 16 * 1024, .num_blocks = 4, .name = "64KB_4B"},
+          .num_rings = 1,
+          .data_buffer_size = 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 64 * 1024,
+               .num_blocks = 8,
+               .name = "256KB_8B"},
+          .num_rings = 1,
+          .data_buffer_size = 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 256 * 1024,
+               .num_blocks = 16,
+               .name = "1MB_16B"},
+          .num_rings = 1,
+          .data_buffer_size = 2 * 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 1024 * 1024,
+               .num_blocks = 16,
+               .name = "4MB_16B"},
+          .num_rings = 1,
+          .data_buffer_size = 4 * 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 4 * 1024 * 1024,
+               .num_blocks = 16,
+               .name = "16MB_16B"},
+          .num_rings = 1,
+          .data_buffer_size = 8 * 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 64 * 1024,
+               .num_blocks = 8,
+               .name = "256KB_8B_2R"},
+          .num_rings = 2,
+          .data_buffer_size = 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 1024 * 1024,
+               .num_blocks = 16,
+               .name = "4MB_16B_2R"},
+          .num_rings = 2,
+          .data_buffer_size = 4 * 1024 * 1024,
+          .pipeline_depth = 2,
+      },
+      RingReduceScatterTestParams{
+          .config =
+              {.chunk_elements = 64 * 1024,
+               .num_blocks = 8,
+               .name = "256KB_8B_lazy"},
+          .num_rings = 1,
+          .data_buffer_size = 1024 * 1024,
+          .pipeline_depth = 2,
+          .ibLazyConnect = true,
+      },
+  };
+
+  std::vector<RingReduceScatterTestParams> expanded;
+  expanded.reserve(base.size() * 2);
+  for (auto params : base) {
+    expanded.push_back(params);
+    params.useIbrc = true;
+    params.config.name += "_ibrc";
+    expanded.push_back(params);
+  }
+  return expanded;
+}
 
 INSTANTIATE_TEST_SUITE_P(
-    Ring2,
+    AllBackends,
     RingReduceScatterTest,
-    ::testing::Values(
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 64 * 1024,
-                 .num_blocks = 8,
-                 .name = "256KB_8B_2R"},
-            .num_rings = 2,
-            .data_buffer_size = 1024 * 1024,
-            .pipeline_depth = 2,
-        },
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 1024 * 1024,
-                 .num_blocks = 16,
-                 .name = "4MB_16B_2R"},
-            .num_rings = 2,
-            .data_buffer_size = 4 * 1024 * 1024,
-            .pipeline_depth = 2,
-        }),
-    param_name);
-
-INSTANTIATE_TEST_SUITE_P(
-    LazyMode,
-    RingReduceScatterTest,
-    ::testing::Values(
-        RingReduceScatterTestParams{
-            .config =
-                {.chunk_elements = 64 * 1024,
-                 .num_blocks = 8,
-                 .name = "256KB_8B_lazy"},
-            .num_rings = 1,
-            .data_buffer_size = 1024 * 1024,
-            .pipeline_depth = 2,
-            .ibLazyConnect = true,
-        }),
+    ::testing::ValuesIn(all_test_params()),
     param_name);
 
 } // namespace
