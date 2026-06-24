@@ -22,14 +22,14 @@ class CachingAllocatorHookTest(unittest.TestCase):
     )
     def test_default_allocator_registers_tensor(self) -> None:
         """Verify that a tensor allocated with the default CUDACachingAllocator
-        is automatically registered via the CCA hook, by constructing
-        RdmaMemory with cache_reg=True (which throws if not registered)."""
+        is automatically registered via the CCA hook. Constructing RdmaMemory
+        hits the cache, so reused_registration() is True."""
         tensor = torch.ones(self.tensor_size_, device=self.device_)
 
         from torchcomms._transport import RdmaMemory
 
-        rdma_mem = RdmaMemory(tensor, cache_reg=True)
-        self.assertIsNotNone(rdma_mem)
+        rdma_mem = RdmaMemory(tensor)
+        self.assertTrue(rdma_mem.reused_registration())
 
     @unittest.skipIf(
         torch.cuda.get_device_capability() < (9, 0),
@@ -37,16 +37,16 @@ class CachingAllocatorHookTest(unittest.TestCase):
     )
     def test_mem_pool_registers_tensor(self) -> None:
         """Verify that a tensor allocated from cuda.MemPool is automatically
-        registered with globalRegisterWithPtr via the CCA hook, by constructing
-        RdmaMemory with cache_reg=True (which throws if not registered)."""
+        registered with globalRegisterWithPtr via the CCA hook. Constructing
+        RdmaMemory hits the cache, so reused_registration() is True."""
         pool = torch.cuda.MemPool()
         with torch.cuda.use_mem_pool(pool):
             tensor = torch.ones(self.tensor_size_, device=self.device_)
 
         from torchcomms._transport import RdmaMemory
 
-        rdma_mem = RdmaMemory(tensor, cache_reg=True)
-        self.assertIsNotNone(rdma_mem)
+        rdma_mem = RdmaMemory(tensor)
+        self.assertTrue(rdma_mem.reused_registration())
 
 
 if __name__ == "__main__":

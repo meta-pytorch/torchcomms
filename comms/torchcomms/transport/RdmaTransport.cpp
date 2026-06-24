@@ -95,30 +95,24 @@ extern "C" int RdmaDeregTensor(void* addr, size_t len) {
 
 namespace torch::comms {
 
-RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
-    : buf_(buf), len_(len), cudaDev_(cudaDev), cacheReg_(cacheReg) {
+RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
+    : buf_(buf), len_(len), cudaDev_(cudaDev) {
   initEnvironment();
   // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
   // scope
   regCache_ = ctran::RegCache::getInstance();
 
-  // Try to find an existing registration first.
   regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
-
   if (regHdl_ != nullptr) {
-    // Buffer is already registered. If caller didn't expect that, upgrade to
-    // cache-managed so the destructor won't deregister a handle it doesn't own.
+    // Cache HIT: reuse the existing cached registration. This RdmaMemory does
+    // not own it (no dynamic handle), so the dtor will not deregister it.
     cacheReg_ = true;
-  } else if (cacheReg_) {
-    // Caller asserted the buffer is pre-registered, but it wasn't found.
-    throw std::runtime_error(
-        "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
-    // Not registered/cached yet. Register dynamically with an IB-only backend
-    // set: an isolated registration that is NOT cached and NOT reused
-    // (searchRegElem skips dynamic RegElems), so a transient per-buffer
-    // registration never pollutes the shared segment cache or force-frees a
-    // segment another buffer still needs. The RDMA transport only needs IB.
+    // Cache MISS: register dynamically with an IB-only backend set — an
+    // isolated registration that is NOT cached and NOT reused (searchRegElem
+    // skips dynamic RegElems), so a transient per-buffer registration never
+    // pollutes the shared segment cache or force-frees a segment another
+    // buffer still needs. This RdmaMemory owns it (deregistered in the dtor).
     std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
     backends[CommBackend::IB] = true;
     ctran::regcache::RegElem* dynHdl = nullptr;
@@ -161,10 +155,8 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
-  if (cacheReg_) {
-    // cacheReg/HIT path only queried the handle
-    return;
-  }
+  // Ownership is keyed on dynRegHdl_: the HIT path has dynRegHdl_ == nullptr,
+  // so this is a no-op there and only the owned dynamic registration is freed.
   if (dynRegHdl_ != nullptr) {
     FB_COMMCHECKIGNORE(regCache_->deregDynamic(
         static_cast<ctran::regcache::RegElem*>(dynRegHdl_)));
