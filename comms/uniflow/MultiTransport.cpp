@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 
@@ -105,7 +106,7 @@ MultiTransportFactory::MultiTransportFactory(int deviceId, NicFilter nicFilter)
       std::runtime_error);
 #ifndef __HIP_PLATFORM_AMD__
   // NVLink is NVIDIA-only.
-  if (deviceId_ >= 0) {
+  if (deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));

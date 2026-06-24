@@ -141,7 +141,7 @@ TEST(RdmaTransportInfoTest, DeserializeTruncatedHeader) {
 TEST(RdmaTransportInfoTest, DeserializeTruncatedPayload) {
   // Provide a full header but no NicInfo/QpInfo payload.
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 3;
   info.header.numNics = 2;
 
@@ -155,7 +155,7 @@ TEST(RdmaTransportInfoTest, DeserializeTruncatedPayload) {
 
 TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 0;
   info.header.numNics = 1;
   info.nicInfos = {{.lid = 1}};
@@ -442,7 +442,7 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 0x5678}};
@@ -472,7 +472,7 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 2;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
@@ -494,7 +494,7 @@ TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
 
   // Don't call bind() - go straight to connect()
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
@@ -894,7 +894,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
-    remoteInfo.header.version = 1;
+    remoteInfo.header.version = kRdmaVersion;
     remoteInfo.header.numQps = 1;
     remoteInfo.header.numNics = 1;
     remoteInfo.header.domainId = kRemoteDomainId;
@@ -1012,7 +1012,7 @@ TEST_P(RdmaTransportOpcodeTest, DisconnectedTransportReturnsError) {
 TEST_P(RdmaTransportOpcodeTest, EmptyRequestsReturnsOk) {
   std::vector<TransferRequest> reqs;
   auto status = transfer(reqs).get();
-  EXPECT_FALSE(status.hasError());
+  EXPECT_FALSE(status.hasError()) << status.error().message();
 }
 
 TEST_P(RdmaTransportOpcodeTest, MismatchedSpanSizesReturnsError) {
@@ -1208,7 +1208,7 @@ TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 2;
   remoteInfo.header.numNics = 2;
   remoteInfo.header.domainId = kRemoteDomainId;
