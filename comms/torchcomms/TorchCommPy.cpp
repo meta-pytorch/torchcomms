@@ -137,7 +137,7 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           "Dictionary of string hints for backend-specific options");
 
   py::class_<CommTopology>(
-      m, "CommTopology", "Node layout of a communicator's ranks.")
+      m, "CommTopology", "Node layout of a communicator's ranks")
       .def_readonly(
           "num_nodes",
           &CommTopology::num_nodes,

@@ -34,7 +34,10 @@ class TopologyTest(unittest.TestCase):
 
         # This test hardcodes expectations for a single-node, 4-rank run.
         if self.num_ranks != EXPECTED_NUM_RANKS:
-            raise unittest.SkipTest(
+            # tearDown won't run on a setUp skip, so clean up explicitly to
+            # finalize the comm created above.
+            self.tearDown()
+            self.skipTest(
                 f"TopologyTest requires exactly {EXPECTED_NUM_RANKS} ranks on a "
                 f"single node, got {self.num_ranks}"
             )
@@ -44,7 +47,10 @@ class TopologyTest(unittest.TestCase):
         try:
             self.torchcomm.get_topology()
         except RuntimeError as e:
-            raise unittest.SkipTest(f"backend does not implement get_topology(): {e}")
+            # tearDown won't run on a setUp skip, so clean up explicitly to
+            # finalize the comm created above.
+            self.tearDown()
+            self.skipTest(f"backend does not implement get_topology(): {e}")
 
     def tearDown(self):
         """Clean up after each test."""
