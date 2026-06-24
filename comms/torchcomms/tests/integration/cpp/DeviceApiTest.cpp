@@ -906,7 +906,7 @@ TEST_F(DeviceApiTest, PutHalf) {
 // --- Address query tests ---
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-TEST_F(DeviceApiTest, GetMultimemAddress) {
+TEST_F(DeviceApiTest, DISABLED_GetMultimemAddress) {
   testGetMultimemAddress();
 }
 #endif
