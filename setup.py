@@ -86,6 +86,11 @@ USE_XCCL = flag_enabled("USE_XCCL", False)
 IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
+# Minimal RDMA CCA-hook extension. CUDA-only and requires the NCCLX static lib;
+# default ON when NCCLX is built (and not ROCm).
+USE_TRANSPORT_CCA_HOOK = flag_enabled(
+    "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
+)
 USE_TRITON = flag_enabled("USE_TRITON", False)
 
 
@@ -186,6 +191,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_RCCLX={flag_str(USE_RCCLX)}",
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
+            f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
         build_args = ["--", "-j"]
@@ -220,6 +226,8 @@ ext_modules += [
 ]
 if USE_TRANSPORT:
     ext_modules.append(CMakeExtension("torchcomms._transport"))
+if USE_TRANSPORT_CCA_HOOK:
+    ext_modules.append(CMakeExtension("torchcomms._transport_cca_hook"))
 
 backend_entry_points = ["fake = torchcomms._comms"] + [
     f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled

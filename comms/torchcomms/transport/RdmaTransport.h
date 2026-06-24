@@ -16,6 +16,9 @@
 
 #include <comms/utils/commSpecs.h>
 
+extern "C" int RdmaRegTensor(void* addr, size_t len);
+extern "C" int RdmaDeregTensor(void* addr, size_t len);
+
 // Forward declaration
 class CtranIb;
 
