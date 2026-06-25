@@ -36,6 +36,8 @@ def get_dtype_name(dtype):
         return "Int"
     elif dtype == torch.int8:
         return "SignedChar"
+    elif dtype == torch.bool:
+        return "Bool"
     else:
         return "Unknown"
 
