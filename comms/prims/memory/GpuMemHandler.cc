@@ -14,6 +14,7 @@
 #endif
 
 #include "comms/prims/core/Checks.h"
+#include "comms/prims/memory/NvlMemExchange.h"
 
 #include <glog/logging.h>
 #include <mutex>
@@ -356,105 +357,15 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
 }
 
 void GpuMemHandler::exchangeFabricHandles() {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("Fabric handles require CUDA 12.3+");
-#else
-  // Prepare data for allGather: fabric handle + allocated size
-  struct ExchangeData {
-    FabricHandle handle;
-    size_t allocatedSize;
-  };
-
-  std::vector<ExchangeData> allData(nRanks_);
-  allData[selfRank_].handle = fabricLocalHandle_;
-  allData[selfRank_].allocatedSize = allocatedSize_;
-
-  // Exchange fabric handles with all ranks
-  auto result =
-      bootstrap_
-          ->allGather(allData.data(), sizeof(ExchangeData), selfRank_, nRanks_)
-          .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "GpuMemHandler::exchangeFabricHandles allGather failed");
-  }
-
-  // Import peer memory from received fabric handles
-  for (int32_t rank = 0; rank < nRanks_; ++rank) {
-    if (rank == selfRank_) {
-      continue;
-    }
-    fabricPeerAllocatedSizes_[rank] = allData[rank].allocatedSize;
-    importFabricPeerMemory(
-        rank, allData[rank].handle, allData[rank].allocatedSize);
-  }
-#endif
-}
-
-void GpuMemHandler::importFabricPeerMemory(
-    int32_t rank,
-    const FabricHandle& handle,
-    size_t peerAllocatedSize) {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("Fabric handles require CUDA 12.3+");
-#else
-  if (cuda_driver_lazy_init() != 0) {
-    throw std::runtime_error("CUDA driver not available");
-  }
-
-  int cudaDev = 0;
-  CUdevice cuDev;
-
-  checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
-  checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
-
-  // Import the fabric handle to get allocation handle
-  checkCuError(
-      pfn_cuMemImportFromShareableHandle(
-          &fabricPeerAllocHandles_[rank],
-          const_cast<void*>(static_cast<const void*>(&handle)),
-          CU_MEM_HANDLE_TYPE_FABRIC),
-      "cuMemImportFromShareableHandle failed");
-
-  // Get allocation properties for granularity
-  CUmemAllocationProp prop = {};
-  checkCuError(
-      pfn_cuMemGetAllocationPropertiesFromHandle(
-          &prop, fabricPeerAllocHandles_[rank]),
-      "cuMemGetAllocationPropertiesFromHandle failed");
-
-  size_t granularity = 0;
-  checkCuError(
-      pfn_cuMemGetAllocationGranularity(
-          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
-      "cuMemGetAllocationGranularity failed");
-
-  // Reserve virtual address space for peer memory
-  checkCuError(
-      pfn_cuMemAddressReserve(
-          &fabricPeerPtrs_[rank], peerAllocatedSize, granularity, 0, 0),
-      "cuMemAddressReserve for peer failed");
-
-  // Map peer's physical memory to our virtual address
-  checkCuError(
-      pfn_cuMemMap(
-          fabricPeerPtrs_[rank],
-          peerAllocatedSize,
-          0,
-          fabricPeerAllocHandles_[rank],
-          0),
-      "cuMemMap for peer failed");
-
-  // Set access permissions for peer memory
-  CUmemAccessDesc accessDesc = {};
-  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  accessDesc.location.id = cuDev;
-  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  checkCuError(
-      pfn_cuMemSetAccess(
-          fabricPeerPtrs_[rank], peerAllocatedSize, &accessDesc, 1),
-      "cuMemSetAccess for peer failed");
-#endif
+  nvlMemExchangeVmm(
+      *bootstrap_,
+      selfRank_,
+      nRanks_,
+      fabricLocalHandle_,
+      allocatedSize_,
+      fabricPeerPtrs_,
+      fabricPeerAllocHandles_,
+      fabricPeerAllocatedSizes_);
 }
 
 void GpuMemHandler::cleanupFabric() {
@@ -525,32 +436,8 @@ void GpuMemHandler::allocateCudaIpcMemory(size_t size) {
 }
 
 void GpuMemHandler::exchangeCudaIpcHandles() {
-  // Exchange IPC handles with all ranks
-  std::vector<cudaIpcMemHandle_t> allHandles(nRanks_);
-  allHandles[selfRank_] = cudaIpcLocalHandle_;
-
-  auto result =
-      bootstrap_
-          ->allGather(
-              allHandles.data(), sizeof(cudaIpcMemHandle_t), selfRank_, nRanks_)
-          .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "GpuMemHandler::exchangeCudaIpcHandles allGather failed");
-  }
-
-  // Open peer memory handles
-  for (int32_t rank = 0; rank < nRanks_; ++rank) {
-    if (rank == selfRank_) {
-      continue;
-    }
-    checkCudaError(
-        cudaIpcOpenMemHandle(
-            &cudaIpcPeerPtrs_[rank],
-            allHandles[rank],
-            cudaIpcMemLazyEnablePeerAccess),
-        "cudaIpcOpenMemHandle failed");
-  }
+  nvlMemExchangeCudaIpc(
+      *bootstrap_, selfRank_, nRanks_, cudaIpcLocalHandle_, cudaIpcPeerPtrs_);
 }
 
 void GpuMemHandler::cleanupCudaIpc() {
