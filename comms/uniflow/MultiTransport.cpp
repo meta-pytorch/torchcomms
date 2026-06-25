@@ -27,10 +27,42 @@ bool isCpu(int deviceId) {
 // MultiTransport Implementation
 // ============================================================================
 
+std::vector<std::string> MultiTransportFactory::selectCpuNics() {
+  auto& topo = sharedTopology();
+  auto nics = topo.selectCpuNics(nicFilter_);
+  const auto candidateNicCount = nics.size();
+  if (options_.cpuNicSelectionPolicy == CpuNicSelectionPolicy::kAll) {
+    UNIFLOW_LOG_INFO(
+        "CPU RDMA NIC selection policy=all selected_nics={}",
+        candidateNicCount);
+    return nics;
+  }
+
+  auto localNics =
+      topo.selectCpuNicsForNumaNodes(nicFilter_, options_.maxCpuNics);
+  if (localNics.empty()) {
+    localNics = std::move(nics);
+    if (options_.maxCpuNics > 0 && localNics.size() > options_.maxCpuNics) {
+      localNics.resize(options_.maxCpuNics);
+    }
+  }
+
+  UNIFLOW_LOG_INFO(
+      "CPU RDMA NIC selection policy=numa_local_bounded selected_nics={} "
+      "candidate_nics={} numa_nodes={} max_cpu_nics_per_numa={}",
+      localNics.size(),
+      candidateNicCount,
+      topo.numaNodeCount(),
+      options_.maxCpuNics);
+  return localNics;
+}
+
 std::vector<std::string> MultiTransportFactory::selectNics() {
   auto& topo = sharedTopology();
-  return isCpu(deviceId_) ? topo.selectCpuNics(nicFilter_)
-                          : topo.selectGpuNics(deviceId_, nicFilter_);
+  if (isCpu(deviceId_)) {
+    return selectCpuNics();
+  }
+  return topo.selectGpuNics(deviceId_, nicFilter_);
 }
 
 Status MultiTransportFactory::supported(TransportType type) {
@@ -95,9 +127,13 @@ Transport* MultiTransport::findTransport(TransportType type) const {
   return nullptr;
 }
 
-MultiTransportFactory::MultiTransportFactory(int deviceId, NicFilter nicFilter)
+MultiTransportFactory::MultiTransportFactory(
+    int deviceId,
+    NicFilter nicFilter,
+    MultiTransportFactoryOptions options)
     : deviceId_(deviceId),
       nicFilter_(std::move(nicFilter)),
+      options_(options),
       eventBaseThread_(std::make_shared<ScopedEventBaseThread>()) {
   auto& topo = sharedTopology();
   CHECK_THROW_EXCEPTION(

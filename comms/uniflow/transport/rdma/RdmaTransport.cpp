@@ -222,14 +222,13 @@ RdmaTransport::RdmaTransport(
       slabPool_(std::move(slabPool)) {
   CHECK_THROW_EXCEPTION(
       nicsHandle_ && !nicsHandle_->empty(), std::invalid_argument);
+  CHECK_THROW_EXCEPTION(nicsHandle_->size() <= 255, std::invalid_argument);
   CHECK_THROW_EXCEPTION(
       config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
 
   deviceAdapter_ = createDeviceAdapter(cudaApi_);
 
-  const uint32_t numNics =
-      std::min(config_.numQps, static_cast<uint32_t>(nicsHandle_->size()));
-  nics_ = std::span<NicResources>(nicsHandle_->data(), numNics);
+  nics_ = std::span<NicResources>(nicsHandle_->data(), nicsHandle_->size());
 
   name_ = "rdma";
   for (const auto& nic : nics_) {

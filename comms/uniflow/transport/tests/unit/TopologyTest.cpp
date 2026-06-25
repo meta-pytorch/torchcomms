@@ -1070,6 +1070,69 @@ TEST_F(TopologyNicTest, NicNumaNodeLookup) {
   EXPECT_EQ(topo->nicNumaNode("missing_nic"), -1);
 }
 
+TEST_F(TopologyNicTest, SelectCpuNicsKeepsAllBestPerNicNumaCandidates) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNics(), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaPrefersLocalNics) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> numa0Nics{"mlx5_0", "mlx5_1"};
+  const std::vector<std::string> numa1Nics{"mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0), numa0Nics);
+  EXPECT_EQ(topo->selectCpuNicsForNuma(1), numa1Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaAppliesCapAfterLocality) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> boundedNuma0Nics{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0, NicFilter(), 1), boundedNuma0Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaNodesKeepsBoundedPoolPerNuma) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNumaNodes(NicFilter(), 1), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaUnknownNodeReturnsEmpty) {
+  setupNics({{"mlx5_0", nic0_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(-1).empty());
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(99).empty());
+}
+
 TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {
   setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
 
