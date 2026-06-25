@@ -150,6 +150,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
 
 ifeq ($(ENABLE_PRIMS),1)
 LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemAllocation.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemMapping.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc

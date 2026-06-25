@@ -14,11 +14,14 @@
 #endif
 
 #include "comms/prims/core/Checks.h"
-#include "comms/prims/memory/NvlMemExchange.h"
 
 #include <glog/logging.h>
+#include <cstddef>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace comms::prims {
 
@@ -182,44 +185,41 @@ GpuMemHandler::GpuMemHandler(
     int32_t selfRank,
     int32_t nRanks,
     size_t size,
-    MemSharingMode mode)
+    MemSharingMode mode,
+    std::size_t alignFloor)
     : bootstrap_(std::move(bootstrap)),
       selfRank_(selfRank),
       nRanks_(nRanks),
-      mode_(mode),
-      fabricPeerPtrs_(nRanks, 0),
-      fabricPeerAllocHandles_(nRanks, 0),
-      fabricPeerAllocatedSizes_(nRanks, 0),
-      cudaIpcPeerPtrs_(nRanks, nullptr) {
+      mode_(mode) {
   if (mode_ == MemSharingMode::kFabric && !isFabricHandleSupported()) {
     throw std::runtime_error(
         "Fabric handle mode requested but not supported on this system. "
         "Requires Hopper (H100) or newer GPU with CUDA 12.3+.");
   }
 
-  init(size);
+  init(size, alignFloor);
 }
 
 GpuMemHandler::~GpuMemHandler() {
-  if (mode_ == MemSharingMode::kFabric) {
-    cleanupFabric();
+  if (isVmmMode()) {
+    cleanupVmm();
   } else {
     cleanupCudaIpc();
   }
 }
 
-void GpuMemHandler::init(size_t size) {
-  if (mode_ == MemSharingMode::kFabric) {
-    allocateFabricMemory(size);
+void GpuMemHandler::init(size_t size, std::size_t alignFloor) {
+  if (isVmmMode()) {
+    allocateVmmMemory(size, alignFloor);
   } else {
     allocateCudaIpcMemory(size);
   }
 }
 
 void* GpuMemHandler::getLocalDeviceMemPtr() const {
-  if (mode_ == MemSharingMode::kFabric) {
+  if (isVmmMode()) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type
-    return reinterpret_cast<void*>(fabricLocalPtr_);
+    return reinterpret_cast<void*>(unicastMapping_->devicePtr());
   } else {
     return cudaIpcLocalPtr_;
   }
@@ -236,12 +236,12 @@ void* GpuMemHandler::getPeerDeviceMemPtr(int32_t rank) const {
         "GpuMemHandler: Must call exchangeMemPtrs() before accessing peer memory");
   }
 
-  if (mode_ == MemSharingMode::kFabric) {
-    // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type
-    return reinterpret_cast<void*>(fabricPeerPtrs_[rank]);
-  } else {
-    return cudaIpcPeerPtrs_[rank];
+  // The self pointer is always available (even before exchange / single-rank);
+  // peers_.peerPtrs is only populated by exchangeMemPtrs().
+  if (rank == selfRank_) {
+    return getLocalDeviceMemPtr();
   }
+  return peers_.peerPtrs[static_cast<std::size_t>(rank)];
 }
 
 void GpuMemHandler::exchangeMemPtrs() {
@@ -255,8 +255,8 @@ void GpuMemHandler::exchangeMemPtrs() {
     return;
   }
 
-  if (mode_ == MemSharingMode::kFabric) {
-    exchangeFabricHandles();
+  if (isVmmMode()) {
+    exchangeVmmHandles();
   } else {
     exchangeCudaIpcHandles();
   }
@@ -265,20 +265,22 @@ void GpuMemHandler::exchangeMemPtrs() {
 }
 
 const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
-  if (mode_ == MemSharingMode::kFabric) {
+  if (isVmmMode()) {
     throw std::runtime_error(
-        "GpuMemHandler::getLocalIpcHandle: not available in kFabric mode");
+        "GpuMemHandler::getLocalIpcHandle: not available in VMM (fabric/posix-fd) mode");
   }
   return cudaIpcLocalHandle_;
 }
 
 // ============================================================================
-// Fabric Mode Implementation
+// VMM Mode Implementation (kFabric)
 // ============================================================================
 
-void GpuMemHandler::allocateFabricMemory(size_t size) {
+void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("Fabric handles require CUDA 12.3+");
+  (void)size;
+  (void)alignFloor;
+  throw std::runtime_error("VMM fabric handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error("CUDA driver not available");
@@ -290,120 +292,56 @@ void GpuMemHandler::allocateFabricMemory(size_t size) {
   checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
   checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
 
-  // Set up allocation properties with fabric handle support
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = cuDev;
-  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
+  // CuMemAllocation::create allocates the physical handle requesting fabric
+  // support. The shareable-handle export is deferred to exchangeMemPtrs() so a
+  // handler used purely as a multicast backing (no P2P) does no export.
+  //
+  // create() returns unique_ptr; the implicit promotion to shared_ptr keeps
+  // exception safety -- if the control-block allocation throws, the
+  // unique_ptr's destructor releases the physical handle.
+  allocation_ = CuMemAllocation::create(
+      cuDev, size, CU_MEM_HANDLE_TYPE_FABRIC, alignFloor);
+  allocatedSize_ = allocation_->size();
 
-  // Check for GPUDirect RDMA support
-  int rdmaSupported = 0;
-  pfn_cuDeviceGetAttribute(
-      &rdmaSupported, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_SUPPORTED, cuDev);
-  if (rdmaSupported) {
-    prop.allocFlags.gpuDirectRDMACapable = 1;
-  }
-
-  // Get allocation granularity
-  size_t granularity = 0;
-  checkCuError(
-      pfn_cuMemGetAllocationGranularity(
-          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
-      "cuMemGetAllocationGranularity failed");
-
-  // Round up size to granularity
-  allocatedSize_ = ((size + granularity - 1) / granularity) * granularity;
-
-  // Create the physical memory allocation
-  checkCuError(
-      pfn_cuMemCreate(&fabricLocalAllocHandle_, allocatedSize_, &prop, 0),
-      "cuMemCreate failed");
-
-  // Reserve virtual address space
-  checkCuError(
-      pfn_cuMemAddressReserve(
-          &fabricLocalPtr_, allocatedSize_, granularity, 0, 0),
-      "cuMemAddressReserve failed");
-
-  // Map the physical memory to virtual address
-  checkCuError(
-      pfn_cuMemMap(
-          fabricLocalPtr_, allocatedSize_, 0, fabricLocalAllocHandle_, 0),
-      "cuMemMap failed");
-
-  // Set access permissions
-  CUmemAccessDesc accessDesc = {};
-  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  accessDesc.location.id = cuDev;
-  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  checkCuError(
-      pfn_cuMemSetAccess(fabricLocalPtr_, allocatedSize_, &accessDesc, 1),
-      "cuMemSetAccess failed");
-
-  // Export to fabric handle for sharing with peers
-  checkCuError(
-      pfn_cuMemExportToShareableHandle(
-          &fabricLocalHandle_,
-          fabricLocalAllocHandle_,
-          CU_MEM_HANDLE_TYPE_FABRIC,
-          0),
-      "cuMemExportToShareableHandle failed");
-
-  // Store local pointer in peer array for uniform access
-  fabricPeerPtrs_[selfRank_] = fabricLocalPtr_;
-  fabricPeerAllocHandles_[selfRank_] = fabricLocalAllocHandle_;
+  // CuMemMapping reserves and maps the unicast VA and grants access. It co-owns
+  // allocation_ so the physical handle outlives the VA.
+  unicastMapping_ = std::make_unique<CuMemMapping>(CuMemMapping::overAllocation(
+      allocation_, allocation_->size(), allocation_->granularity()));
 #endif
 }
 
-void GpuMemHandler::exchangeFabricHandles() {
-  nvlMemExchangeVmm(
+void GpuMemHandler::exchangeVmmHandles() {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  throw std::runtime_error("VMM fabric handles require CUDA 12.3+");
+#else
+  if (cuda_driver_lazy_init() != 0) {
+    throw std::runtime_error("CUDA driver not available");
+  }
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
+  checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
+
+  peers_ = nvlMemExchangeVmm(
       *bootstrap_,
       selfRank_,
       nRanks_,
-      fabricLocalHandle_,
-      allocatedSize_,
-      fabricPeerPtrs_,
-      fabricPeerAllocHandles_,
-      fabricPeerAllocatedSizes_);
+      cuDev,
+      allocation_->handle(),
+      getLocalDeviceMemPtr(),
+      allocation_->size());
+#endif
 }
 
-void GpuMemHandler::cleanupFabric() {
+void GpuMemHandler::cleanupVmm() {
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
-  // Check if CUDA context is still valid
-  CUcontext ctx = nullptr;
-  if (pfn_cuCtxGetCurrent == nullptr ||
-      pfn_cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == nullptr) {
-    return;
-  }
-
-  // Release peer mappings
-  for (int32_t rank = 0; rank < nRanks_; ++rank) {
-    if (rank == selfRank_) {
-      continue;
-    }
-    if (fabricPeerPtrs_[rank] != 0) {
-      pfn_cuMemUnmap(fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
-      pfn_cuMemAddressFree(
-          fabricPeerPtrs_[rank], fabricPeerAllocatedSizes_[rank]);
-      fabricPeerPtrs_[rank] = 0;
-    }
-    if (fabricPeerAllocHandles_[rank] != 0) {
-      pfn_cuMemRelease(fabricPeerAllocHandles_[rank]);
-      fabricPeerAllocHandles_[rank] = 0;
-    }
-  }
-
-  // Release local allocation
-  if (fabricLocalPtr_ != 0) {
-    pfn_cuMemUnmap(fabricLocalPtr_, allocatedSize_);
-    pfn_cuMemAddressFree(fabricLocalPtr_, allocatedSize_);
-    fabricLocalPtr_ = 0;
-  }
-  if (fabricLocalAllocHandle_ != 0) {
-    pfn_cuMemRelease(fabricLocalAllocHandle_);
-    fabricLocalAllocHandle_ = 0;
-  }
+  // RAII teardown: unicast VA first, then peer VAs (each co-owns its imported
+  // allocation), then the shared physical allocation (released when the last
+  // shared_ptr owner drops).
+  unicastMapping_.reset();
+  peers_.vmmMappings.clear();
+  allocation_.reset();
 #endif
 }
 
@@ -424,35 +362,35 @@ void GpuMemHandler::allocateCudaIpcMemory(size_t size) {
   } else {
     checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
   }
-  allocatedSize_ = size;
-
-  // Get IPC handle for local memory
+  // Cache the local IPC handle for getLocalIpcHandle(). It depends only on the
+  // local allocation, so deriving it here makes it valid before exchange too.
   checkCudaError(
       cudaIpcGetMemHandle(&cudaIpcLocalHandle_, cudaIpcLocalPtr_),
       "cudaIpcGetMemHandle failed");
-
-  // Store local pointer in peer array
-  cudaIpcPeerPtrs_[selfRank_] = cudaIpcLocalPtr_;
+  allocatedSize_ = size;
 }
 
 void GpuMemHandler::exchangeCudaIpcHandles() {
-  nvlMemExchangeCudaIpc(
-      *bootstrap_, selfRank_, nRanks_, cudaIpcLocalHandle_, cudaIpcPeerPtrs_);
+  peers_ =
+      nvlMemExchangeCudaIpc(*bootstrap_, selfRank_, nRanks_, cudaIpcLocalPtr_);
 }
 
 void GpuMemHandler::cleanupCudaIpc() {
-  // Close peer handles
+  // Close peer handles opened by cudaIpcOpenMemHandle. The self slot holds the
+  // local pointer (freed below), not an opened handle.
   for (int32_t rank = 0; rank < nRanks_; ++rank) {
     if (rank == selfRank_) {
       continue;
     }
-    if (cudaIpcPeerPtrs_[rank] != nullptr) {
-      cudaError_t err = cudaIpcCloseMemHandle(cudaIpcPeerPtrs_[rank]);
+    void* peerPtr = peers_.peerPtrs.empty()
+        ? nullptr
+        : peers_.peerPtrs[static_cast<std::size_t>(rank)];
+    if (peerPtr != nullptr) {
+      cudaError_t err = cudaIpcCloseMemHandle(peerPtr);
       if (err != cudaSuccess) {
         LOG(ERROR) << "cudaIpcCloseMemHandle failed for rank " << rank << ": "
                    << cudaGetErrorString(err);
       }
-      cudaIpcPeerPtrs_[rank] = nullptr;
     }
   }
 
