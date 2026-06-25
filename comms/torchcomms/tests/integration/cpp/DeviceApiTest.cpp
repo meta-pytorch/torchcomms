@@ -745,6 +745,11 @@ void DeviceApiTest::testStressPutHalf(size_t msg_bytes, CoopScope scope) {
 void DeviceApiTest::testGetMultimemAddress() {
   SCOPED_TRACE(::testing::Message() << "GetMultimemAddress");
 
+  if (num_ranks_ <= 2) {
+    GTEST_SKIP() << "get_multimem_address requires LSA team size > 2 "
+                    "(lsaMultimem is gated off for <=2-rank configs)";
+  }
+
   size_t count = 1024;
   auto s = createWindowSetup(
       torchcomm_,
