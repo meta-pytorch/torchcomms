@@ -3,196 +3,165 @@
 #include "comms/prims/memory/NvlMemExchange.h"
 
 #include "comms/prims/core/Checks.h"
-
-#if !defined(__HIP_PLATFORM_AMD__)
+#include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/platform/CudaDriverLazy.h"
-#endif
 
+#include <cstddef>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace comms::prims {
 
 namespace {
 
-// Import + map one peer's fabric memory into a fresh local virtual address with
-// RW access. Writes the imported handle and mapped pointer into the per-rank
-// output vectors at index `rank`. Caller (nvlMemExchangeVmm) pre-sizes both
-// output vectors to `nRanks` and bounds-checks at the public entry point;
-// `.at()` is used at the write sites as a second proof of bounds for the
-// clang-tidy ParameterUncheckedArrayBounds checker.
-void importFabricPeerMemory(
+// Import one peer's fabric handle, wrap it in a co-ownable CuMemAllocation, map
+// it into a fresh peer VA, and record the mapping + pointer in `result`. The
+// imported handle is owned by the CuMemAllocation that the peer VA mapping
+// co-owns, so dropping the mapping releases the handle -- no separate handle
+// bookkeeping.
+void importAndMapPeerMemory(
     int32_t rank,
     const FabricHandle& handle,
     std::size_t peerAllocatedSize,
-    std::vector<CUdeviceptr>& peerPtrs,
-    std::vector<CUmemGenericAllocationHandle>& peerAllocHandles) {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+    CUdevice cuDev,
+    NvlPeerMem& result) {
+#if CUDART_VERSION < 12030
   (void)rank;
   (void)handle;
   (void)peerAllocatedSize;
-  (void)peerPtrs;
-  (void)peerAllocHandles;
+  (void)cuDev;
+  (void)result;
   throw std::runtime_error("Fabric handles require CUDA 12.3+");
 #else
-  if (cuda_driver_lazy_init() != 0) {
-    throw std::runtime_error("CUDA driver not available");
-  }
-
-  int cudaDev = 0;
-  CUdevice cuDev;
-
-  checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
-  checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
-
-  // Import the fabric handle to get allocation handle
+  CUmemGenericAllocationHandle peerHandle = 0;
   checkCuError(
       pfn_cuMemImportFromShareableHandle(
-          &peerAllocHandles.at(rank),
+          &peerHandle,
           const_cast<void*>(static_cast<const void*>(&handle)),
           CU_MEM_HANDLE_TYPE_FABRIC),
       "cuMemImportFromShareableHandle failed");
 
-  // Get allocation properties for granularity
-  CUmemAllocationProp prop = {};
-  checkCuError(
-      pfn_cuMemGetAllocationPropertiesFromHandle(
-          &prop, peerAllocHandles.at(rank)),
-      "cuMemGetAllocationPropertiesFromHandle failed");
+  // CuMemAllocation::adopt() takes ownership of `peerHandle` on entry: on
+  // internal failure (CUDA query, allocator bad_alloc) it releases the handle
+  // and rethrows, so there is no raw-handle window for the caller to guard.
+  // The returned unique_ptr promotes implicitly to shared_ptr for
+  // CuMemMapping::overAllocation's keep-alive contract.
+  std::shared_ptr<CuMemAllocation> peerAlloc =
+      CuMemAllocation::adopt(peerHandle, cuDev, peerAllocatedSize);
+  const std::size_t granularity = peerAlloc->granularity();
 
-  std::size_t granularity = 0;
-  checkCuError(
-      pfn_cuMemGetAllocationGranularity(
-          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
-      "cuMemGetAllocationGranularity failed");
-
-  // Reserve virtual address space for peer memory
-  checkCuError(
-      pfn_cuMemAddressReserve(
-          &peerPtrs.at(rank), peerAllocatedSize, granularity, 0, 0),
-      "cuMemAddressReserve for peer failed");
-
-  // Map peer's physical memory to our virtual address
-  checkCuError(
-      pfn_cuMemMap(
-          peerPtrs.at(rank),
-          peerAllocatedSize,
-          0,
-          peerAllocHandles.at(rank),
-          0),
-      "cuMemMap for peer failed");
-
-  // Set access permissions for peer memory
-  CUmemAccessDesc accessDesc = {};
-  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  accessDesc.location.id = cuDev;
-  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  checkCuError(
-      pfn_cuMemSetAccess(peerPtrs.at(rank), peerAllocatedSize, &accessDesc, 1),
-      "cuMemSetAccess for peer failed");
+  result.vmmMappings.push_back(
+      CuMemMapping::overAllocation(
+          std::move(peerAlloc), peerAllocatedSize, granularity));
+  result.peerPtrs.at(static_cast<std::size_t>(rank)) =
+      // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer
+      reinterpret_cast<void*>(result.vmmMappings.back().devicePtr());
 #endif
 }
 
 } // namespace
 
-void nvlMemExchangeVmm(
+NvlPeerMem nvlMemExchangeVmm(
     meta::comms::IBootstrap& bootstrap,
-    int32_t selfRank,
+    int32_t rank,
     int32_t nRanks,
-    const FabricHandle& localHandle,
-    std::size_t allocatedSize,
-    std::vector<CUdeviceptr>& peerPtrs,
-    std::vector<CUmemGenericAllocationHandle>& peerAllocHandles,
-    std::vector<std::size_t>& peerAllocatedSizes) {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+    CUdevice cuDev,
+    CUmemGenericAllocationHandle localHandle,
+    void* localPtr,
+    std::size_t allocatedSize) {
+  NvlPeerMem result;
+  result.peerPtrs.assign(static_cast<std::size_t>(nRanks), nullptr);
+  result.peerPtrs[static_cast<std::size_t>(rank)] = localPtr;
+
+#if CUDART_VERSION < 12030
   (void)bootstrap;
-  (void)selfRank;
-  (void)nRanks;
+  (void)cuDev;
   (void)localHandle;
   (void)allocatedSize;
-  (void)peerPtrs;
-  (void)peerAllocHandles;
-  (void)peerAllocatedSizes;
-  throw std::runtime_error("Fabric handles require CUDA 12.3+");
+  throw std::runtime_error("nvlMemExchangeVmm requires CUDA 12.3+");
 #else
-  if (static_cast<std::size_t>(nRanks) > peerPtrs.size() ||
-      static_cast<std::size_t>(nRanks) > peerAllocHandles.size() ||
-      static_cast<std::size_t>(nRanks) > peerAllocatedSizes.size()) {
-    throw std::runtime_error(
-        "nvlMemExchangeVmm: output vectors must each have size >= nRanks");
-  }
+  // Export the local handle once as a fabric handle.
+  FabricHandle localFabric{};
+  checkCuError(
+      pfn_cuMemExportToShareableHandle(
+          &localFabric, localHandle, CU_MEM_HANDLE_TYPE_FABRIC, 0),
+      "cuMemExportToShareableHandle for fabric handle failed");
 
-  // Prepare data for allGather: fabric handle + allocation size
   struct ExchangeData {
-    FabricHandle handle;
-    std::size_t allocatedSize;
+    FabricHandle handle{};
+    std::size_t allocatedSize{};
   };
 
-  std::vector<ExchangeData> allData(nRanks);
-  allData[selfRank].handle = localHandle;
-  allData[selfRank].allocatedSize = allocatedSize;
+  std::vector<ExchangeData> allData(static_cast<std::size_t>(nRanks));
+  allData[static_cast<std::size_t>(rank)].handle = localFabric;
+  allData[static_cast<std::size_t>(rank)].allocatedSize = allocatedSize;
 
-  // Exchange fabric handles with all ranks
-  auto result =
-      bootstrap
-          .allGather(allData.data(), sizeof(ExchangeData), selfRank, nRanks)
+  auto gatherResult =
+      bootstrap.allGather(allData.data(), sizeof(ExchangeData), rank, nRanks)
           .get();
-  if (result != 0) {
+  if (gatherResult != 0) {
     throw std::runtime_error("nvlMemExchangeVmm allGather failed");
   }
 
-  // Import peer memory from received fabric handles
-  for (int32_t rank = 0; rank < nRanks; ++rank) {
-    if (rank == selfRank) {
+  for (int32_t peer = 0; peer < nRanks; ++peer) {
+    if (peer == rank) {
       continue;
     }
-    peerAllocatedSizes.at(rank) = allData[rank].allocatedSize;
-    importFabricPeerMemory(
-        rank,
-        allData[rank].handle,
-        allData[rank].allocatedSize,
-        peerPtrs,
-        peerAllocHandles);
+    const auto peerIdx = static_cast<std::size_t>(peer);
+    importAndMapPeerMemory(
+        peer,
+        allData[peerIdx].handle,
+        allData[peerIdx].allocatedSize,
+        cuDev,
+        result);
   }
+
+  return result;
 #endif
 }
 
-void nvlMemExchangeCudaIpc(
+NvlPeerMem nvlMemExchangeCudaIpc(
     meta::comms::IBootstrap& bootstrap,
-    int32_t selfRank,
+    int32_t rank,
     int32_t nRanks,
-    const cudaIpcMemHandle_t& localHandle,
-    std::vector<void*>& peerPtrs) {
-  if (static_cast<std::size_t>(nRanks) > peerPtrs.size()) {
-    throw std::runtime_error(
-        "nvlMemExchangeCudaIpc: peerPtrs must have size >= nRanks");
-  }
+    void* localPtr) {
+  NvlPeerMem result;
+  result.peerPtrs.assign(static_cast<std::size_t>(nRanks), nullptr);
+  result.peerPtrs[static_cast<std::size_t>(rank)] = localPtr;
 
-  // Exchange IPC handles with all ranks
-  std::vector<cudaIpcMemHandle_t> allHandles(nRanks);
-  allHandles[selfRank] = localHandle;
+  cudaIpcMemHandle_t localHandle{};
+  checkCudaError(
+      cudaIpcGetMemHandle(&localHandle, localPtr),
+      "cudaIpcGetMemHandle failed");
 
-  auto result =
+  std::vector<cudaIpcMemHandle_t> allHandles(static_cast<std::size_t>(nRanks));
+  allHandles[static_cast<std::size_t>(rank)] = localHandle;
+
+  auto gatherResult =
       bootstrap
           .allGather(
-              allHandles.data(), sizeof(cudaIpcMemHandle_t), selfRank, nRanks)
+              allHandles.data(), sizeof(cudaIpcMemHandle_t), rank, nRanks)
           .get();
-  if (result != 0) {
+  if (gatherResult != 0) {
     throw std::runtime_error("nvlMemExchangeCudaIpc allGather failed");
   }
 
-  // Open peer memory handles
-  for (int32_t rank = 0; rank < nRanks; ++rank) {
-    if (rank == selfRank) {
+  for (int32_t peer = 0; peer < nRanks; ++peer) {
+    if (peer == rank) {
       continue;
     }
+    const auto peerIdx = static_cast<std::size_t>(peer);
     checkCudaError(
         cudaIpcOpenMemHandle(
-            &peerPtrs.at(rank),
-            allHandles[rank],
+            &result.peerPtrs[peerIdx],
+            allHandles[peerIdx],
             cudaIpcMemLazyEnablePeerAccess),
         "cudaIpcOpenMemHandle failed");
   }
+
+  return result;
 }
 
 } // namespace comms::prims
