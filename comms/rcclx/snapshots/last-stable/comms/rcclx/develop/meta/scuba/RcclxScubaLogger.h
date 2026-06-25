@@ -158,7 +158,7 @@ static void initNcclLogger() {
               meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
           .threadContextFn = []() {
             int cudaDev = -1;
-            cudaGetDevice(&cudaDev);
+            (void)cudaGetDevice(&cudaDev);
             return cudaDev;
           }});
   // Init logging for NCCL header inside meta directory.
@@ -176,7 +176,7 @@ static void initNcclLogger() {
               meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
           .threadContextFn = []() {
             int cudaDev = -1;
-            cudaGetDevice(&cudaDev);
+            (void)cudaGetDevice(&cudaDev);
             return cudaDev;
           }});
 }
