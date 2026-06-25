@@ -16,6 +16,7 @@
 #include "comms/prims/core/Checks.h"
 
 #include <glog/logging.h>
+
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -162,10 +163,23 @@ bool GpuMemHandler::isFabricHandleSupported() {
 }
 
 MemSharingMode GpuMemHandler::detectBestMode() {
-  if (isFabricHandleSupported()) {
-    return MemSharingMode::kFabric;
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  return MemSharingMode::kCudaIpc;
+#else
+  int cudaDev = 0;
+  if (cudaGetDevice(&cudaDev) != cudaSuccess) {
+    return MemSharingMode::kCudaIpc;
+  }
+  switch (selectShareableHandleType(cudaDev)) {
+    case ShareableHandleType::kFabric:
+      return MemSharingMode::kFabric;
+    case ShareableHandleType::kPosixFd:
+      return MemSharingMode::kPosixFd;
+    case ShareableHandleType::kUnsupported:
+      break;
   }
   return MemSharingMode::kCudaIpc;
+#endif
 }
 
 GpuMemHandler::GpuMemHandler(
@@ -273,14 +287,14 @@ const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
 }
 
 // ============================================================================
-// VMM Mode Implementation (kFabric)
+// VMM Mode Implementation (kFabric / kPosixFd)
 // ============================================================================
 
 void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   (void)size;
   (void)alignFloor;
-  throw std::runtime_error("VMM fabric handles require CUDA 12.3+");
+  throw std::runtime_error("VMM shareable handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error("CUDA driver not available");
@@ -292,15 +306,22 @@ void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
   checkCudaError(cudaGetDevice(&cudaDev), "cudaGetDevice failed");
   checkCuError(pfn_cuDeviceGet(&cuDev, cudaDev), "cuDeviceGet failed");
 
-  // CuMemAllocation::create allocates the physical handle requesting fabric
-  // support. The shareable-handle export is deferred to exchangeMemPtrs() so a
-  // handler used purely as a multicast backing (no P2P) does no export.
-  //
-  // create() returns unique_ptr; the implicit promotion to shared_ptr keeps
-  // exception safety -- if the control-block allocation throws, the
-  // unique_ptr's destructor releases the physical handle.
-  allocation_ = CuMemAllocation::create(
-      cuDev, size, CU_MEM_HANDLE_TYPE_FABRIC, alignFloor);
+  // Derive the requested handle-types mask directly from mode_ instead of
+  // re-probing the device attribute. mode_ already encodes the result of a
+  // full export+import+map probe (via detectBestMode() or the 6-arg ctor's
+  // isFabricHandleSupported() check), which is strictly stronger than
+  // CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED (the attribute is true
+  // on fabric-capable GPUs without IMEX, where cuMemCreate then rejects the
+  // fabric request). Always request POSIX FD so a fabric-mode handler retains
+  // POSIX FD as a fallback wire format. The shareable-handle export is
+  // deferred to exchangeMemPtrs() so a handler used purely as a multicast
+  // backing (no P2P) does no export and opens no posix-fd.
+  unsigned int mask = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  if (mode_ == MemSharingMode::kFabric) {
+    mask |= CU_MEM_HANDLE_TYPE_FABRIC;
+  }
+
+  allocation_ = CuMemAllocation::create(cuDev, size, mask, alignFloor);
   allocatedSize_ = allocation_->size();
 
   // CuMemMapping reserves and maps the unicast VA and grants access. It co-owns
@@ -312,7 +333,7 @@ void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
 
 void GpuMemHandler::exchangeVmmHandles() {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("VMM fabric handles require CUDA 12.3+");
+  throw std::runtime_error("VMM shareable handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error("CUDA driver not available");
@@ -330,7 +351,8 @@ void GpuMemHandler::exchangeVmmHandles() {
       cuDev,
       allocation_->handle(),
       getLocalDeviceMemPtr(),
-      allocation_->size());
+      allocation_->size(),
+      mode_ == MemSharingMode::kFabric);
 #endif
 }
 
