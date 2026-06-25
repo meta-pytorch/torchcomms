@@ -7,6 +7,7 @@
 #include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
+#include "comms/utils/RankUtils.h"
 
 namespace torch::comms {
 
@@ -51,15 +52,36 @@ TorchCommXCCLBootstrap::TorchCommXCCLBootstrap(
       [](unsigned char c) { return std::tolower(c); });
 
   if (device_.index() == -1) {
-    int device_count;
+    int device_count{0};
     XPU_CHECK(
         xpu_api_,
         xpu_api_->getDeviceCount(&device_count),
         "Failed to get XPU device count");
+    if (device_count <= 0) {
+      throw std::invalid_argument(
+          "No XPU devices found; please check your XPU installation");
+    }
 
-    device_ = c10::Device(c10::kXPU, rank_ % device_count);
+    auto local_rank = RankUtils::getLocalRank();
+    int resolved_device = rank_ % device_count;
+    if (local_rank.has_value()) {
+      if (local_rank.value() < 0 || local_rank.value() >= device_count) {
+        throw std::invalid_argument(
+            fmt::format(
+                "LOCAL_RANK {} is out of range for {} visible XPU devices",
+                local_rank.value(),
+                device_count));
+      }
+      resolved_device = static_cast<int>(local_rank.value());
+    }
+
+    device_ = c10::Device(c10::kXPU, resolved_device);
     TC_LOG(INFO) << "User did not provide device ID; using device xpu:"
-                 << static_cast<int>(device_.index());
+                 << static_cast<int>(device_.index())
+                 << (local_rank.has_value()
+                         ? fmt::format(
+                               " from local rank {}", local_rank.value())
+                         : fmt::format(" from global rank {}", rank_));
   }
 
   XPU_CHECK(

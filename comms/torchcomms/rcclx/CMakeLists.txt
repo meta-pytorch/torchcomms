@@ -13,7 +13,10 @@ message(STATUS "RCCLX_INCLUDE is set to ${RCCLX_INCLUDE}")
 set(RCCLX_SHARED_LIB $ENV{RCCLX_LIB}/librccl.so)
 message(STATUS "RCCLX_SHARED_LIB is set to ${RCCLX_SHARED_LIB}")
 
-add_library(torchcomms_comms_rcclx MODULE ${TORCHCOMMS_RCCLX_SOURCES})
+add_library(torchcomms_comms_rcclx MODULE
+    ${TORCHCOMMS_RCCLX_SOURCES}
+    comms/utils/RankUtils.cc
+)
 set_target_properties(torchcomms_comms_rcclx PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_rcclx"

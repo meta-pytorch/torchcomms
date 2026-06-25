@@ -11,7 +11,10 @@ set(ROCM_INCLUDE "${ROCM_HOME}/include")
 set(RCCL_INCLUDE $ENV{RCCL_INCLUDE})
 message(STATUS "RCCL_INCLUDE is set to ${RCCL_INCLUDE}")
 set(RCCL_SHARED_LIB ${ROCM_HOME}/lib/librccl.so)
-add_library(torchcomms_comms_rccl MODULE ${TORCHCOMMS_RCCL_SOURCES})
+add_library(torchcomms_comms_rccl MODULE
+    ${TORCHCOMMS_RCCL_SOURCES}
+    comms/utils/RankUtils.cc
+)
 set_target_properties(torchcomms_comms_rccl PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_rccl"
