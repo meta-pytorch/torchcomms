@@ -350,8 +350,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
           nccl_api_->commUserRank(current, &currentRank),
           "NCCLX commUserRank failed during grow");
 
+      const ncclUniqueId* uniqueIdPtr = nullptr;
+      ncclUniqueId uniqueId{};
       if (currentRank == 0) {
-        ncclUniqueId uniqueId{};
         NCCLX_CHECK(
             nccl_api_,
             current,
@@ -366,13 +367,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
             reinterpret_cast<uint8_t*>(&uniqueId),
             reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
         store->set("unique_id", vec);
+        uniqueIdPtr = &uniqueId;
       }
 
       ncclComm_t grown = nullptr;
       NCCLX_CHECK(
           nccl_api_,
           current,
-          nccl_api_->commGrow(current, new_size, nullptr, -1, &grown, nullptr),
+          nccl_api_->commGrow(
+              current, new_size, uniqueIdPtr, -1, &grown, nullptr),
           "NCCLX commGrow failed during reconfigure");
       current = grown;
     }
@@ -386,6 +389,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
     revoked_ = false;
+
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->setDevice(device_.index()),
+        fmt::format("Failed to set CUDA device to {}", device_.index()));
 
     int quorumSize = static_cast<int>(quorum.ranks.size());
     auto store = connectStore(
