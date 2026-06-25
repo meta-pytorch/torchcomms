@@ -4,6 +4,9 @@
 
 #include <cassert>
 #include <cstring>
+#include <stdexcept>
+
+#include "comms/uniflow/Result.h"
 
 namespace uniflow {
 
@@ -15,11 +18,24 @@ RdmaRegistrationHandle::RdmaRegistrationHandle(
     std::vector<ibv_mr*> mrs,
     std::shared_ptr<IbvApi> ibvApi,
     uint64_t domainId,
+    uint64_t registrationBase,
+    std::shared_ptr<DeviceAdapter> deviceAdapter,
+    int deviceId,
     int hostBufferNumaNode)
     : mrs_(std::move(mrs)),
       ibvApi_(std::move(ibvApi)),
       domainId_(domainId),
-      hostBufferNumaNode_(hostBufferNumaNode) {}
+      hostBufferNumaNode_(hostBufferNumaNode),
+      registrationBase_(registrationBase),
+      deviceAdapter_(std::move(deviceAdapter)),
+      deviceId_(deviceId) {
+  // toWireAddr() dereferences deviceAdapter_ whenever deviceId_ >= 0, so a
+  // device-backed handle must be given a non-null adapter. Enforced in release
+  // builds too: a null adapter here is a programming error, not a runtime
+  // input.
+  CHECK_THROW_EXCEPTION(
+      deviceId_ < 0 || deviceAdapter_ != nullptr, std::invalid_argument);
+}
 
 RdmaRegistrationHandle::~RdmaRegistrationHandle() {
   for (auto* mr : mrs_) {
@@ -36,6 +52,7 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
 
   Header header{
       .domainId = domainId_,
+      .registrationBase = registrationBase_,
       .numMrs = static_cast<uint8_t>(mrs_.size()),
   };
   std::memcpy(buf.data(), &header, sizeof(header));
@@ -50,6 +67,11 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
 
   return buf;
 }
+uint64_t RdmaRegistrationHandle::toWireAddr(const void* ptr) const {
+  auto devAddr = (deviceId_ >= 0) ? deviceAdapter_->resolveDevicePointer(ptr)
+                                  : reinterpret_cast<uint64_t>(ptr);
+  return devAddr - registrationBase_;
+}
 
 // ---------------------------------------------------------------------------
 // RdmaRemoteRegistrationHandle
@@ -57,7 +79,29 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
 
 RdmaRemoteRegistrationHandle::RdmaRemoteRegistrationHandle(
     std::vector<uint32_t> rkeys,
-    uint64_t domainId)
-    : rkeys_(std::move(rkeys)), domainId_(domainId) {}
+    uint64_t domainId,
+    uint64_t registrationBase,
+    std::shared_ptr<DeviceAdapter> deviceAdapter)
+    : rkeys_(std::move(rkeys)),
+      domainId_(domainId),
+      registrationBase_(registrationBase),
+      deviceAdapter_(std::move(deviceAdapter)) {
+  // toWireAddr() dereferences deviceAdapter_ whenever registrationBase_ != 0,
+  // so a translated handle must be given a non-null adapter. Enforced in
+  // release builds too: a null adapter here is a programming error, not a
+  // runtime input.
+  CHECK_THROW_EXCEPTION(
+      registrationBase_ == 0 || deviceAdapter_ != nullptr,
+      std::invalid_argument);
+}
+
+uint64_t RdmaRemoteRegistrationHandle::toWireAddr(const void* ptr) const {
+  /// Remote handles don't carry information on whether the target is a device
+  /// ptr or not So we use the fact that only targets that have a non-zero
+  /// registrationBase require pointer translation
+  auto devAddr = registrationBase_ ? deviceAdapter_->resolveDevicePointer(ptr)
+                                   : reinterpret_cast<uint64_t>(ptr);
+  return devAddr - registrationBase_;
+}
 
 } // namespace uniflow
