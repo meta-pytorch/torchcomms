@@ -500,7 +500,8 @@ struct IbSendRecvState {
       nullptr}; ///< Raw local recvStaging pointer (recv memcpy)
   IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
-  IbgdaLocalBuffer localCounterBuf; ///< NIC_DONE counter inbox
+  IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
+  IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
   DeviceSpan<ProgressSlot> state; ///< Protocol cursors + async state
   int maxGroups{0}; ///< Layout size for signal/state arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring

@@ -18,6 +18,7 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
 
@@ -54,10 +55,6 @@ inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 #define IBRC_CHECK_SLOT_ID(id, count, kind) assert((id) >= 0 && (id) < (count))
 #endif
 
-struct IbrcBlockQpState {
-  uint32_t put_rr{0};
-};
-
 /**
  * Device-side IBRC peer handle.
  *
@@ -82,7 +79,8 @@ class P2pIbrcTransportDevice {
       IbgdaLocalBuffer ownedCounterDeviceBuf = {},
       IbgdaLocalBuffer ownedCounterHostBuf = {},
       int numSignalSlots = 0,
-      int numCounterSlots = 0)
+      int numCounterSlots = 0,
+      IbSendRecvState sendRecvState = {})
       : cmdQueues(queues),
         numNics(nics),
         maxGroups_(maxGroups),
@@ -93,7 +91,8 @@ class P2pIbrcTransportDevice {
         ownedCounterDeviceBuf_(ownedCounterDeviceBuf),
         ownedCounterHostBuf_(ownedCounterHostBuf),
         numSignalSlots_(numSignalSlots),
-        numCounterSlots_(numCounterSlots) {}
+        numCounterSlots_(numCounterSlots),
+        sendRecv_(sendRecvState) {}
 
   __device__ void put(
       ThreadGroup& group,
@@ -449,6 +448,144 @@ class P2pIbrcTransportDevice {
     flush();
   }
 
+  // ===========================================================================
+  // Pipelined send/recv — delegated to the shared IbSendRecvDevice.
+  // ===========================================================================
+  //
+  // The send/recv algorithm is transport-agnostic and lives in
+  // `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh). Each method routes every
+  // transport op through `*this`, so IBRC reuses IBGDA's send/recv unchanged.
+
+  __host__ __device__ const IbSendRecvState& send_recv_state() const {
+    return sendRecv_.send_recv_state();
+  }
+
+  __device__ __forceinline__ std::size_t pipeline_window(
+      int active_blocks) const {
+    return sendRecv_.pipeline_window(active_blocks);
+  }
+
+  __device__ __forceinline__ void init_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0) {
+    sendRecv_.init_send_progress(
+        group, nbytes, active_blocks, max_signal_bytes);
+  }
+
+  __device__ __forceinline__ void init_recv_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0) {
+    sendRecv_.init_recv_progress(
+        group, nbytes, active_blocks, max_signal_bytes);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    return sendRecv_.progress_send_once<P2pIbrcTransportDevice, CopyOp>(
+        *this,
+        group,
+        src,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    return sendRecv_.progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
+        *this,
+        group,
+        dst,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void send(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    sendRecv_.send<P2pIbrcTransportDevice, CopyOp>(
+        *this,
+        group,
+        src,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recv(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    sendRecv_.recv<P2pIbrcTransportDevice, CopyOp>(
+        *this,
+        group,
+        dst,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forward(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbrcTransportDevice& fwd,
+      std::size_t nbytes,
+      int active_blocks = 0,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    sendRecv_.forward<CopyOp>(
+        *this,
+        group,
+        dst,
+        fwd.sendRecv_,
+        fwd,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  }
+
  private:
   __device__ __forceinline__ uint32_t num_qp_lanes() const {
     return numNics * qpsPerBlockPerNic_;
@@ -761,6 +898,7 @@ class P2pIbrcTransportDevice {
   IbgdaLocalBuffer ownedCounterHostBuf_{};
   int numSignalSlots_{0};
   int numCounterSlots_{0};
+  IbSendRecvDevice sendRecv_{};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);

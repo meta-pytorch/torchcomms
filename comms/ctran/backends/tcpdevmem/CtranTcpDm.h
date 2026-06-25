@@ -2,8 +2,11 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
+#include <list>
+#include <memory>
 #include <unordered_map>
 
 #include "comms/ctran/CtranComm.h"
@@ -144,18 +147,12 @@ class CtranTcpDm {
   };
   std::list<std::unique_ptr<RecvRequest>> queuedRecv_;
 
-  // Lazy per-peer TCP connections for sync-only control messages.
-  // Created on-demand by ensureCtrlSocket() on first isendCtrlMsg/irecvCtrlMsg.
-  // Smaller rank initiates; larger rank's bootstrapAccept thread accepts.
-  std::unordered_map<int, ctran::bootstrap::Socket> ctrlSocks_;
-  void ensureCtrlSocket(int peerRank);
-
-  // Per-peer queue of pending sync recv requests (from irecvCtrlMsg).
-  // Completed in FIFO order as sync bytes arrive on ctrlSocks_.
-  std::unordered_map<int, std::deque<CtranTcpDmRequest*>> pendingSyncRecvs_;
-
-  // Per-peer count of received sync bytes (for debugging).
-  std::unordered_map<int, int> syncRecvCount_;
+  struct CtrlRecvRequest {
+    int peerRank{-1};
+    std::shared_ptr<std::array<uint8_t, 1>> storage;
+    CtranTcpDmRequest* req{nullptr};
+  };
+  std::list<std::unique_ptr<CtrlRecvRequest>> queuedCtrlRecv_;
 
   // Counter-based recv notification (analogous to IB's notifyCount_).
   // Internally-owned requests for irecvCounted; completed in FIFO order.
@@ -163,9 +160,10 @@ class CtranTcpDm {
       pendingRecvNotifies_;
   // Per-peer count of completed data recvs, decremented by checkNotify.
   std::unordered_map<int, int> recvNotifyCount_;
+  std::unordered_map<int, int> recvNotifyErrorCount_;
 
   void recvNotifyProgress();
-  void ctrlSyncProgress();
+  void ctrlRecvProgress();
 
   commResult_t connectPeer(int peerRank);
   void closeComms(const char* reason, uint32_t closeFlags);
@@ -189,6 +187,11 @@ class CtranTcpDm {
       size_t size,
       CtranTcpDmRequest& req,
       void* unpackPool);
+
+  commResult_t irecvCtrlMsgConnected(
+      int peerRank,
+      std::shared_ptr<std::array<uint8_t, 1>> storage,
+      CtranTcpDmRequest& req);
 };
 
 } // namespace ctran

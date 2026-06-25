@@ -7,8 +7,20 @@
 #include "comms/uniflow/transport/Transport.h"
 
 #include <array>
+#include <cstddef>
 
 namespace uniflow {
+
+enum class CpuNicSelectionPolicy {
+  kAll,
+  kNumaLocalBounded,
+};
+
+struct MultiTransportFactoryOptions {
+  CpuNicSelectionPolicy cpuNicSelectionPolicy{
+      CpuNicSelectionPolicy::kNumaLocalBounded};
+  size_t maxCpuNics{2};
+};
 
 class MultiTransport {
  public:
@@ -94,7 +106,8 @@ class MultiTransportFactory {
  public:
   explicit MultiTransportFactory(
       int deviceId,
-      NicFilter nicFilter = NicFilter());
+      NicFilter nicFilter = NicFilter(),
+      MultiTransportFactoryOptions options = {});
 
   Result<RegisteredSegment> registerSegment(Segment& segment);
 
@@ -123,9 +136,11 @@ class MultiTransportFactory {
       : factories_(std::move(factories)) {}
 
   std::vector<std::string> selectNics();
+  std::vector<std::string> selectCpuNics();
 
   int deviceId_{-1};
   NicFilter nicFilter_;
+  MultiTransportFactoryOptions options_;
   std::shared_ptr<ScopedEventBaseThread> eventBaseThread_;
   std::vector<std::shared_ptr<TransportFactory>> factories_;
 };

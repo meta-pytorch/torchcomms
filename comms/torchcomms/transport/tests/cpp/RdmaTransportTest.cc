@@ -306,13 +306,50 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
 }
 
 TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
+  auto regCache = ctran::RegCache::getInstance();
+  // Initialize the ctran/IB environment: a bare RdmaMemory ctor runs
+  // initEnvironment(). On this unregistered buffer it takes the dynamic-MISS
+  // path (reused == false) and deregisters on scope exit.
+  {
+    RdmaMemory warmup(buffer_, bufferSize_, cudaDev_);
+    EXPECT_FALSE(warmup.reusedRegistration());
+  }
+  // Pre-register (cache) the buffer; subsequent RdmaMemory instances HIT and
+  // reuse the same cached registration.
+  ASSERT_EQ(
+      regCache->globalRegister(
+          buffer_,
+          bufferSize_,
+          /*forceReg=*/false,
+          /*ncclManaged=*/false,
+          cudaDev_),
+      commSuccess);
   RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
-  EXPECT_FALSE(firstMemory.reusedRegistration());
-
+  EXPECT_TRUE(firstMemory.reusedRegistration());
   RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
   EXPECT_TRUE(secondMemory.reusedRegistration());
   EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
   EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
+}
+
+TEST_F(RdmaMemoryTest, CacheMissDynamicRegistrationsAreNotReused) {
+  auto regCache = ctran::RegCache::getInstance();
+
+  // The buffer is never globalRegister'd, so it is not in the segment cache.
+  // Both RdmaMemory instances take the cache-MISS path, which creates an
+  // isolated dynamic registration that is neither cached nor reused. As a
+  // result, even two registrations over the SAME buffer each register
+  // independently and neither reports a reused registration.
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(firstMemory.reusedRegistration());
+
+  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(secondMemory.reusedRegistration());
+
+  // The dynamic registrations never pollute the shared segment cache.
+  EXPECT_EQ(
+      regCache->searchIbRegHandle(buffer_, bufferSize_, cudaDev_), nullptr);
 }
 
 TEST_F(RdmaMemoryTest, ViewCreation) {
@@ -453,35 +490,6 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
   EXPECT_EQ(memory.remoteKey(), originalKey);
   EXPECT_EQ(memory.getDevice(), cudaDev_);
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-}
-
-TEST_F(RdmaMemoryTest, CacheRegConstruction) {
-  // Without globalRegister, RdmaMemory should throw because the buffer
-  // is not cached and searchIbRegHandle returns nullptr
-  EXPECT_THROW(
-      RdmaMemory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */),
-      std::runtime_error);
-
-  // After globalRegister, RdmaMemory should succeed
-  auto regCache = ctran::RegCache::getInstance();
-  EXPECT_EQ(
-      regCache->globalRegister(
-          buffer_,
-          bufferSize_,
-          false /* forceReg */,
-          false /* ncclManaged */,
-          cudaDev_),
-      commSuccess);
-  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
-  EXPECT_EQ(memory.getDevice(), cudaDev_);
-  EXPECT_NE(memory.localKey(), nullptr);
-  EXPECT_FALSE(memory.remoteKey().empty());
-  EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-  // Views should work the same as non-cached
-  auto view = memory.createView();
-  EXPECT_EQ(view.data(), buffer_);
-  EXPECT_EQ(view.size(), bufferSize_);
-  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
 }
 
 TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {

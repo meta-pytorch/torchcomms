@@ -30,6 +30,8 @@ ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
       return ncclInt8;
     case at::ScalarType::Byte:
       return ncclUint8;
+    case at::ScalarType::Bool:
+      return ncclUint8;
     default:
       throw std::runtime_error("Unsupported tensor data type for NCCL");
   }

@@ -6,11 +6,22 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
+// `meta::comms::DeviceBuffer`: HIP shim on AMD, CUDA RAII on NVIDIA (mirrors
+// MultipeerIbgdaTransport.h).
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#else
+#include "comms/utils/CudaRAII.h"
+#endif
+
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
 
 namespace comms::prims {
@@ -147,6 +158,7 @@ class MultipeerIbrcTransport
   void startProgressThread();
   void stopProgressThread() noexcept;
   void progressLoop() noexcept;
+  std::vector<int> selectProgressCpus() const;
   bool progressOnce();
   bool pollOneCmdQueueDescriptor(int peerIndex, IbrcCmdQueueHost& cmdQueue);
   bool pollCmdQueueCompletions(int peerIndex, IbrcCmdQueueHost& cmdQueue);
@@ -171,6 +183,16 @@ class MultipeerIbrcTransport
   void updatePeerDeviceTransport(int peerIndex) noexcept;
   std::size_t allocatedCmdQueueCount() const;
   MappedAllocation allocateMapped(std::size_t bytes, const char* label);
+
+  // ---- Pipelined send/recv staging (eager mode only) ----
+  //
+  // Host send/recv buffer management is shared with IBGDA in
+  // MultiPeerIbTransportBase. IBRC delegates to
+  // allocateSendRecvBuffersEager(IbCounterStorage::HostPinned) — the NIC_DONE
+  // counter is host-mapped and updated by the CPU proxy (NCCL GIN style)
+  // instead of an IBGDA companion-QP loopback counter — plus
+  // exchangeSendRecvBuffersEager(), sendRecvStateForPeer(), and
+  // cleanupSendRecvBuffers().
 
   void createPeerQps(int peerIndex);
   PeerQpPayload buildLocalQpPayload(int peerIndex) const;
@@ -204,6 +226,10 @@ class MultipeerIbrcTransport
   std::size_t cmdQueueControlBytes_{0};
   std::atomic<bool> stopProgress_{false};
   std::thread progressThread_;
+  std::vector<int> progressCpus_;
+
+  // Send/recv staging state (eager mode) lives in MultiPeerIbTransportBase
+  // (sendRecvPeerBuffers_ + bulks); IBRC delegates allocation/exchange/cleanup.
 };
 
 } // namespace comms::prims

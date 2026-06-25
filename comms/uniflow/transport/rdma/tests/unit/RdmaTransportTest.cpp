@@ -266,12 +266,13 @@ TEST_F(RdmaTransportTest, ConstructorRejectsZeroQps) {
       std::invalid_argument);
 }
 
-TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
+TEST_F(RdmaTransportTest, BindKeepsNicsWhenQpCountIsSmaller) {
   fakeQp0_.qp_num = 10;
 
   EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
       .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
-  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
   EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
       .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
@@ -281,7 +282,7 @@ TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
   nics->push_back(
       makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
   nics->push_back(
-      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x2222, gid1));
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 1};
   RdmaTransport transport(
       mockApi_,
@@ -297,10 +298,97 @@ TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
 
   auto result = RdmaTransportInfo::deserialize(data);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().header.numNics, 1);
   EXPECT_EQ(result.value().header.numQps, 1);
-  ASSERT_EQ(result.value().nicInfos.size(), 1);
+  EXPECT_EQ(result.value().header.numNics, 2);
+  ASSERT_EQ(result.value().nicInfos.size(), 2);
   EXPECT_EQ(result.value().nicInfos[0].lid, 0x1111);
+  EXPECT_EQ(result.value().nicInfos[1].lid, 0x2222);
+}
+
+TEST_F(RdmaTransportTest, PutAcceptsAllNicHandlesWhenQpCountIsSmaller) {
+  constexpr uint64_t kLocalDomainId = 42;
+  constexpr uint64_t kRemoteDomainId = 99;
+
+  fakeQp0_.qp_num = 100;
+
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
+
+  RdmaTransportConfig config{.numQps = 1};
+  config.maxWr = kTestMaxWr;
+  RdmaTransport transport(
+      mockApi_,
+      mockCudaApi_,
+      nullptr,
+      evbThread_.getEventBase(),
+      nics,
+      kLocalDomainId,
+      config);
+  transport.bind();
+
+  RdmaTransportInfo remoteInfo;
+  remoteInfo.header.version = 1;
+  remoteInfo.header.numQps = 1;
+  remoteInfo.header.numNics = 2;
+  remoteInfo.header.domainId = kRemoteDomainId;
+  remoteInfo.nicInfos = {{.lid = 0x3333}, {.lid = 0x4444}};
+  remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0, 0};
+  remoteInfo.slab.rkeys = {0, 0};
+  auto connectStatus = transport.connect(remoteInfo.serialize());
+  ASSERT_FALSE(connectStatus.hasError()) << connectStatus.error().message();
+
+  std::vector<char> localBuf(4096);
+  std::vector<char> remoteBuf(4096);
+  Segment localSeg(localBuf.data(), localBuf.size(), MemoryType::DRAM);
+  ibv_mr fakeMr0{};
+  ibv_mr fakeMr1{};
+  fakeMr0.addr = localBuf.data();
+  fakeMr0.length = localBuf.size();
+  fakeMr0.lkey = 0x1111;
+  fakeMr1.addr = localBuf.data();
+  fakeMr1.length = localBuf.size();
+  fakeMr1.lkey = 0x2222;
+
+  auto localReg = SegmentTest::makeRegistered(
+      localSeg,
+      std::make_unique<RdmaRegistrationHandle>(
+          std::vector<ibv_mr*>{&fakeMr0, &fakeMr1}, mockApi_, kLocalDomainId));
+  auto remoteReg = SegmentTest::makeRemote(
+      remoteBuf.data(),
+      remoteBuf.size(),
+      std::make_unique<RdmaRemoteRegistrationHandle>(
+          std::vector<uint32_t>{0x3333, 0x4444}, kRemoteDomainId));
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp0_, _, _)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq0_, _, _))
+      .WillOnce([](ibv_cq*, int, ibv_wc* wcs) {
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = 1;
+        return Result<int>(1);
+      })
+      .WillRepeatedly(Return(Result<int>(0)));
+
+  TransferRequest req{
+      .local = localReg.span(0ul, localBuf.size()),
+      .remote = remoteReg.span(0ul, remoteBuf.size()),
+  };
+  std::vector<TransferRequest> reqs = {req};
+  auto status = transport.put(reqs).get();
+  EXPECT_FALSE(status.hasError()) << status.error().message();
 }
 
 TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
