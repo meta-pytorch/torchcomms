@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -205,6 +206,20 @@ class Topology {
   /// NicFilter. Returns multiple NICs when they share the same best path
   /// type and bandwidth.
   std::vector<std::string> selectCpuNics(const NicFilter& filter = {}) const;
+
+  /// Select NICs with the best path from the given NUMA node, filtered by
+  /// NicFilter. Returns an empty vector when the NUMA node is unknown.
+  std::vector<std::string> selectCpuNicsForNuma(
+      int numaId,
+      const NicFilter& filter = {},
+      size_t maxNics = 0) const;
+
+  /// Select a bounded union of best CPU NICs for every known NUMA node.
+  /// This preserves transfer-time buffer-NUMA scheduling without keeping every
+  /// equivalent CPU NIC in the transport.
+  std::vector<std::string> selectCpuNicsForNumaNodes(
+      const NicFilter& filter = {},
+      size_t maxNicsPerNuma = 0) const;
 
   /// Select NICs closest to the given GPU, filtered by NicFilter.
   /// Returns multiple NICs when they share the same best path (e.g. GB200:

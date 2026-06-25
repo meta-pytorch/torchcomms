@@ -382,6 +382,14 @@ class MultiTransportFactoryTest : public ::testing::Test {
   }
 };
 
+TEST_F(MultiTransportFactoryTest, DefaultOptionsUseBoundedNumaLocalCpuNics) {
+  const MultiTransportFactoryOptions options;
+
+  EXPECT_EQ(
+      options.cpuNicSelectionPolicy, CpuNicSelectionPolicy::kNumaLocalBounded);
+  EXPECT_EQ(options.maxCpuNics, 2u);
+}
+
 TEST_F(MultiTransportFactoryTest, RegisterSegmentSingleFactory) {
   auto rdma = makeFactory(TransportType::RDMA, {0xAA, 0xBB});
   MultiTransportFactory mtf = makeMultiTransportFactory({rdma});
