@@ -22,7 +22,7 @@
 
 namespace uniflow {
 
-constexpr uint8_t kRdmaVersion{1};
+constexpr uint8_t kRdmaVersion{2};
 
 // Forward declarations.
 class RdmaRegistrationHandle;
@@ -679,9 +679,9 @@ class RdmaTransportFactory : public TransportFactory {
 
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
-  size_t pageSize_{0};
   std::atomic<uint64_t> dmaBufFallbackCount_{0};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   const RdmaTransportConfig config_;
   std::shared_ptr<RdmaSlabPool> slabPool_;
 };
