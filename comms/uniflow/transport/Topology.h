@@ -119,6 +119,7 @@ struct TopoNode {
     int numaNode{-1};
     int port{-1}; // Active port numbers
     uint32_t portSpeedMbps{0}; // RDMA port speed from ibv_query_port (Mbps)
+    std::string netdevName; // Backing netdev (e.g. "beth0"); empty = unknown
   };
 
   std::variant<GpuData, CpuData, NicData> data;
@@ -200,12 +201,22 @@ class Topology {
   /// Check if a NIC passes the given filter.
   bool filterNic(int nicIndex, const NicFilter& filter) const;
 
-  // --- NIC selection ---
+  /// Returns true if the NIC's backing netdev name starts with @p netdevPrefix.
+  /// An empty prefix matches everything (predicate disabled).
+  bool matchesNetdevPrefix(int nicIndex, std::string_view netdevPrefix) const;
 
-  /// Select NICs with the best path from their own NUMA node, filtered by
-  /// NicFilter. Returns multiple NICs when they share the same best path
-  /// type and bandwidth.
-  std::vector<std::string> selectCpuNics(const NicFilter& filter = {}) const;
+  /// Returns true if any NIC has a known backing netdev name. Backends that do
+  /// not populate netdev names return false, letting callers skip netdev-prefix
+  /// filtering instead of warning on every NIC selection.
+  bool hasNetdevNames() const;
+
+  // --- NIC selection ---
+  /// When @p netdevPrefix is non-empty, only NICs whose backing netdev name
+  /// starts with the prefix (e.g. "beth") are considered; if none match, it
+  /// falls back to filter-only selection and logs a warning.
+  std::vector<std::string> selectCpuNics(
+      const NicFilter& filter = {},
+      std::string_view netdevPrefix = "") const;
 
   /// Select NICs with the best path from the given NUMA node, filtered by
   /// NicFilter. Returns an empty vector when the NUMA node is unknown.
@@ -223,10 +234,11 @@ class Topology {
 
   /// Select NICs closest to the given GPU, filtered by NicFilter.
   /// Returns multiple NICs when they share the same best path (e.g. GB200:
-  /// 2 NICs per GPU).
+  /// 2 NICs per GPU). See selectCpuNics for @p netdevPrefix semantics.
   std::vector<std::string> selectGpuNics(
       int cudaDeviceId,
-      const NicFilter& filter = {}) const;
+      const NicFilter& filter = {},
+      std::string_view netdevPrefix = "") const;
 
   // --- Mutation API (used by discovery backends) ---
 

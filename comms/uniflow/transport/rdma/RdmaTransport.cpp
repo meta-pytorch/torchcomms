@@ -482,7 +482,7 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
     if (remoteNic.linkLayer == IBV_LINK_LAYER_ETHERNET) {
       rtrAttr.ah_attr.is_global = 1;
       rtrAttr.ah_attr.grh.dgid = remoteNic.gid;
-      rtrAttr.ah_attr.grh.sgid_index = config_.gidIndex;
+      rtrAttr.ah_attr.grh.sgid_index = localNic.gidIndex;
       rtrAttr.ah_attr.grh.hop_limit = 255;
       rtrAttr.ah_attr.grh.flow_label = 0;
       rtrAttr.ah_attr.grh.traffic_class = config_.trafficClass;

@@ -116,6 +116,16 @@ class MockIbvApi : public IbvApi {
       queryGid,
       (ibv_context * context, uint8_t portNum, int index, ibv_gid* gid),
       (override));
+  MOCK_METHOD(
+      Status,
+      queryGidEx,
+      (ibv_context * context,
+       uint32_t portNum,
+       uint32_t index,
+       ibv_gid_entry* entry,
+       uint32_t flags),
+      (override));
+  MOCK_METHOD(bool, isQueryGidExSupported, (), (override));
 
   // MLX5 direct verbs
   MOCK_METHOD(
