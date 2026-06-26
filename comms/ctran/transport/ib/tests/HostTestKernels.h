@@ -45,4 +45,30 @@ void launchIbStagingCopyTestKernel(
     IbStagingCopyTestKernelArgs args,
     cudaStream_t stream);
 
+// Args for the per-slot parallel recv-only test kernel. Used by the
+// pollRecvNotifications wrap-around regression test. Each GPU block
+// handles a SINGLE slot's full sequence of chunks across rounds —
+// e.g. block s walks chunks s, s+pipelineDepth, s+2*pipelineDepth,
+// ... up to totalChunks. This decouples slot processing so a stranded
+// slot N can NOT block the kernel from reaching slot M's wait (m≠n)
+// — which is the precise pattern needed to make a buggy
+// pollRecvNotifications attribute round-(R+1) postFlag to a slot
+// before sender's iput-to-that-slot-round-(R+1) has actually
+// landed, causing the kernel to copy stale staging into the user
+// buffer.
+struct IbRecvPerSlotKernelArgs {
+  HostTransportDev* devTransport;
+  char* recvBuf;
+  size_t recvTotalSize;
+  int totalChunks;
+};
+
+// Launches the per-slot parallel recv kernel. gridDim.x = pipelineDepth
+// (from devTransport). Caller must have setKernelNumBlocks(any,
+// pipelineDepth) so each slot's GpeKernelSync has nworkers ==
+// pipelineDepth and processData/post signals the right block.
+void launchIbRecvPerSlotKernel(
+    IbRecvPerSlotKernelArgs args,
+    cudaStream_t stream);
+
 } // namespace ctran::transport::ib

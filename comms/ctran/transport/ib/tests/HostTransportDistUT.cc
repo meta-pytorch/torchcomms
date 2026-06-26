@@ -1,10 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -26,7 +32,9 @@
 using namespace ctran::transport;
 using ctran::transport::ib::HostCbTransport;
 using ctran::transport::ib::HostZcTransport;
+using ctran::transport::ib::IbRecvPerSlotKernelArgs;
 using ctran::transport::ib::IbStagingCopyTestKernelArgs;
+using ctran::transport::ib::launchIbRecvPerSlotKernel;
 using ctran::transport::ib::launchIbStagingCopyTestKernel;
 using ctran::transport::ib::impl::exportRecvBuf;
 using ctran::transport::ib::impl::importRemoteInfo;
@@ -693,6 +701,370 @@ TEST_P(HostTransportParamTest, BidirectionalRoundTrip) {
   }
   ASSERT_EQ(cudaFree(sendBuf), cudaSuccess);
   ASSERT_EQ(cudaFree(recvBuf), cudaSuccess);
+}
+
+// ═══════════════════════════════════════════════════════════
+// RecvWrapAround — regression test for pollRecvNotifications
+// CQE mis-attribution when recv slot indices wrap past
+// pipelineDepth. The race:
+//
+//   1. Receiver issues recvs on slots 0..7 round 0 (all WAIT_RECV).
+//   2. Sender sends chunks for slots 0..3 round 0 ONLY, then pauses.
+//   3. Receiver consumes those CQEs, the kernel processes them, the
+//      slots return to IDLE, and the receiver-side driver immediately
+//      reissues round 1 on slots 0..3 (WAIT_RECV round 1).
+//   4. Sender resumes and sends chunks for slots 4..7 round 0. Their
+//      CQEs arrive at the receiver AFTER slots 0..3 are already
+//      WAIT_RECV round 1.
+//
+// The old `pollRecvNotifications` picked the lowest-s WAIT_RECV slot
+// and would attribute the late round-0 CQEs to slot 0/1/2/3 round 1,
+// stranding slots 4/5/6/7 round 0 forever. The fixed code picks the
+// slot with the oldest round, which keeps FIFO across rounds and
+// routes those CQEs to slots 4..7 round 0.
+//
+// Two ranks: rank 0 sends, rank 1 receives.
+// ═══════════════════════════════════════════════════════════
+
+class HostTransportRecvWrapTest : public ctran::CtranDistTestFixture {
+ public:
+  void SetUp() override {
+    CtranDistTestFixture::SetUp();
+    // 2 VCs: VC 0 carries the ctrl-msg (kCtrlMsgVc) and ResourceExchange
+    // traffic; we pin all data chunks to VC 1. pollRecvNotifications
+    // scans per-VC, so isolating data chunks on a single VC keeps the
+    // bug's wrap-around race deterministic.
+    setenv("NCCL_CTRAN_IB_NUM_VCS_PER_RANK", "2", 1);
+    ncclCvarInit();
+    comm_ = makeCtranComm();
+    comm = comm_.get();
+  }
+  void TearDown() override {
+    comm_.reset();
+    CtranDistTestFixture::TearDown();
+    unsetenv("NCCL_CTRAN_IB_NUM_VCS_PER_RANK");
+  }
+
+ protected:
+  std::unique_ptr<CtranComm> comm_{nullptr};
+  CtranComm* comm{nullptr};
+  static constexpr int kSendRank = 0;
+  static constexpr int kRecvRank = 1;
+};
+
+// Watchdog that aborts the test process if the test body doesn't
+// signal completion within `timeout`. Without a watchdog a regression
+// in pollRecvNotifications would hang the entire buck test target
+// until the (much longer) outer test timeout fires.
+class TestWatchdog {
+ public:
+  TestWatchdog(std::chrono::seconds timeout, const std::string& label)
+      : timeout_(timeout), label_(label) {
+    thread_ = std::thread([this] { run(); });
+  }
+  ~TestWatchdog() {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      done_ = true;
+    }
+    cv_.notify_all();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  void run() {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (!cv_.wait_for(lk, timeout_, [this] { return done_; })) {
+      fprintf(
+          stderr,
+          "TestWatchdog[%s]: TIMED OUT after %lld s — likely a hang. "
+          "Aborting test process.\n",
+          label_.c_str(),
+          static_cast<long long>(timeout_.count()));
+      fflush(stderr);
+      std::abort();
+    }
+  }
+
+  std::chrono::seconds timeout_;
+  std::string label_;
+  std::mutex mu_;
+  std::condition_variable cv_;
+  bool done_{false};
+  std::thread thread_;
+};
+
+TEST_F(HostTransportRecvWrapTest, RecvWrapAroundNoStranding) {
+  if (this->numRanks < 2) {
+    GTEST_SKIP() << "Requires 2 ranks";
+  }
+
+  std::unique_ptr<CtranIb> ctranIb;
+  try {
+    ctranIb = std::make_unique<CtranIb>(comm);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+
+  // pipelineDepth=8 is the device-side max (kDeviceMaxPipelineDepth).
+  // chunkSize small + many chunks → many wraps → many race windows.
+  // 1 send block per the existing single-block ibStagingCopyTestKernel;
+  // the recv side uses the per-slot kernel below (1 block per slot,
+  // configured via setKernelNumBlocks(send, recv=1)).
+  constexpr int kPipelineDepth = 8;
+  constexpr size_t kChunkSize = 4 * 1024;
+  constexpr int kTotalChunks = 32; // 4 full rounds across 8 slots
+  constexpr size_t kBufSize = kChunkSize * kTotalChunks;
+  constexpr int kSendBlocks = 1;
+  // VC 0 is the ctrl-msg VC; pin all data chunks to VC 1 so the
+  // wrap-around race in pollRecvNotifications is exercised on a single
+  // data VC's WAIT_RECV set.
+  constexpr int kVcIdx = 1;
+
+  // Watchdog: a buggy poll could either corrupt staging (caught by the
+  // verify pass at the end) or strand a slot and hang the per-slot
+  // recv kernel. The watchdog converts a hang into a hard test abort
+  // within 30 s so a regression doesn't sit on the test infra timeout.
+  TestWatchdog watchdog(
+      std::chrono::seconds(30),
+      "rank" + std::to_string(globalRank) + "/RecvWrapAround");
+
+  int* buf = nullptr;
+  const size_t numElems = kBufSize / sizeof(int);
+  ASSERT_EQ(cudaMalloc(&buf, kBufSize), cudaSuccess);
+  std::vector<int> hostBuf(numElems);
+  for (size_t i = 0; i < numElems; ++i) {
+    hostBuf[i] = (globalRank == kSendRank) ? static_cast<int>(i + 1) : -1;
+  }
+  ASSERT_EQ(
+      cudaMemcpy(buf, hostBuf.data(), kBufSize, cudaMemcpyHostToDevice),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  auto transport = std::make_unique<HostCbTransport>(
+      globalRank == kSendRank ? kRecvRank : kSendRank,
+      ctranIb.get(),
+      comm->ctran_->gpe->gpeKernelSyncPool(),
+      kPipelineDepth,
+      kChunkSize,
+      globalRank,
+      localRank,
+      &comm->logMetaData_);
+  P2pTransportLockGuard transportGuard(transport.get());
+
+  cudaStream_t copyStream;
+  ASSERT_EQ(cudaStreamCreate(&copyStream), cudaSuccess);
+
+  // One-way SYNC ctrl-msg handshake: receiver → sender, matching the
+  // CB path in RoundTrip. The CB ResourceExchangeMsg is posted lazily
+  // inside the first iSend/iRecvChunk call via postResourceExchange().
+  if (globalRank == kRecvRank) {
+    CtrlRequest ctrlReq;
+    ControlMsg outMsg;
+    outMsg.setType(ControlMsgType::SYNC);
+    COMMCHECK_TEST(transport->iSendCtrlMsg(
+        static_cast<ControlMsgType>(outMsg.type),
+        &outMsg,
+        sizeof(outMsg),
+        &ctrlReq));
+    COMMCHECK_TEST(transport->waitCtrlMsgDone(ctrlReq));
+  } else {
+    CtrlRequest ctrlReq;
+    ControlMsg recvMsg;
+    COMMCHECK_TEST(
+        transport->iRecvCtrlMsg(&recvMsg, sizeof(recvMsg), &ctrlReq));
+    COMMCHECK_TEST(transport->waitCtrlMsgDone(ctrlReq));
+  }
+
+  if (globalRank == kRecvRank) {
+    // Launch the per-slot recv kernel: 1 block per slot, each block
+    // walks only its own slot's chunks across rounds. Slots are
+    // INDEPENDENT — a stranded slot N does NOT block block M (m != n)
+    // from advancing. This decoupling is what lets the bug actually
+    // surface: a misattributed postFlag on slot 0 round 1 wakes block 0
+    // immediately to copy stale slot-0 staging (before sender's chunk-8
+    // iput has landed there), corrupting the user buffer for chunk 8.
+    // With the sequential single-block kernel, block 0 can't reach c=8
+    // until all of c=4..7 are processed, by which time sender's
+    // round-1 iputs have already landed → corruption healed by timing.
+    transport->setKernelNumBlocks(kSendBlocks, /*recvNumBlocks=*/1);
+    IbRecvPerSlotKernelArgs kArgs{};
+    kArgs.devTransport = transport->getDeviceTransport();
+    kArgs.recvBuf = reinterpret_cast<char*>(buf);
+    kArgs.recvTotalSize = kBufSize;
+    kArgs.totalChunks = kTotalChunks;
+    launchIbRecvPerSlotKernel(kArgs, copyStream);
+
+    // Issue every recv chunk in chunk-natural order. We do NOT pace
+    // these — the driver should reissue round 1 on slots 0..3 as soon
+    // as those slots return to IDLE (which is exactly the race window
+    // the sender's pause below opens).
+    std::vector<ChunkRequest> reqs(kTotalChunks);
+    int issued = 0;
+    int drained = 0;
+    while (drained < kTotalChunks) {
+      COMMCHECK_TEST(transport->progress());
+      if (issued < kTotalChunks) {
+        const int slot = issued % kPipelineDepth;
+        const int round = issued / kPipelineDepth;
+        if (transport->isReadyForRecv(kVcIdx, slot)) {
+          COMMCHECK_TEST(transport->iRecvChunk({
+              .userBuf = buf,
+              .offset = static_cast<size_t>(issued) * kChunkSize,
+              .len = kChunkSize,
+              .vcIdx = kVcIdx,
+              .req = &reqs[issued],
+              .stagingSlot = slot,
+              .round = round,
+          }));
+          ++issued;
+        }
+      }
+      if (drained < issued) {
+        bool done = false;
+        COMMCHECK_TEST(transport->testChunkDone(reqs[drained], &done));
+        if (done) {
+          ++drained;
+        }
+      }
+    }
+  } else {
+    // Sender: launch the staging-copy kernel for send. The CB send
+    // state machine relies on it to fill the staging slot before
+    // ifetchAndAdd notifies the peer; without it, the WAIT_PREPARE
+    // state never advances and the test hangs.
+    // recvNumBlocks=0 leaves recv-side nworkers untouched (sender
+    // never issues recvs on this transport).
+    transport->setKernelNumBlocks(kSendBlocks, /*recvNumBlocks=*/0);
+    IbStagingCopyTestKernelArgs kArgs{};
+    kArgs.devTransport = transport->getDeviceTransport();
+    kArgs.sendBuf = reinterpret_cast<char*>(buf);
+    kArgs.sendTotalSize = kBufSize;
+    kArgs.sendBlocks = kSendBlocks;
+    launchIbStagingCopyTestKernel(kArgs, copyStream);
+
+    // Drive the bug deterministically by pacing chunks into two
+    // batches per round:
+    //   - phase A: send 4 low-slot chunks (slots 0..3) of round r
+    //   - drain them so receiver finishes round r on those slots and
+    //     reissues round r+1 (WAIT_RECV) before any late CQE lands
+    //   - sleep to widen the window in which slots 4..7 round r are
+    //     still WAIT_RECV with no CQE yet, while slots 0..3 are
+    //     WAIT_RECV round r+1
+    //   - phase B: send 4 high-slot chunks (slots 4..7) of round r.
+    //     With the bug, these CQEs get stolen by slot 0..3 round r+1,
+    //     stranding 4..7 round r and hanging the receiver kernel.
+    //
+    // (For the last round, phase B may not have a corresponding round
+    // r+1 yet, so the bug needs to fire on earlier rounds. With
+    // kTotalChunks=32 we have rounds 0..3, plenty of windows.)
+    constexpr int kRounds = kTotalChunks / kPipelineDepth;
+    static_assert(
+        kRounds >= 2, "Need at least 2 rounds to wrap and fire the race");
+
+    std::vector<ChunkRequest> reqs(kTotalChunks);
+    constexpr int kHalf = kPipelineDepth / 2; // 4
+
+    auto sendOne = [&](int chunkIdx) {
+      const int slot = chunkIdx % kPipelineDepth;
+      const int round = chunkIdx / kPipelineDepth;
+      while (!transport->isReadyForSend(kVcIdx, slot)) {
+        COMMCHECK_TEST(transport->progress());
+      }
+      COMMCHECK_TEST(transport->iSendChunk({
+          .userBuf = buf,
+          .offset = static_cast<size_t>(chunkIdx) * kChunkSize,
+          .len = kChunkSize,
+          .vcIdx = kVcIdx,
+          .req = &reqs[chunkIdx],
+          .stagingSlot = slot,
+          .round = round,
+      }));
+    };
+
+    auto drainOne = [&](int chunkIdx) {
+      bool done = false;
+      while (!done) {
+        COMMCHECK_TEST(transport->progress());
+        COMMCHECK_TEST(transport->testChunkDone(reqs[chunkIdx], &done));
+      }
+    };
+
+    for (int r = 0; r < kRounds; ++r) {
+      const int base = r * kPipelineDepth;
+      // Phase A: low half (slots 0..3) of round r.
+      for (int s = 0; s < kHalf; ++s) {
+        sendOne(base + s);
+      }
+      for (int s = 0; s < kHalf; ++s) {
+        drainOne(base + s);
+      }
+      // Window: receiver consumes the low half, kernel completes them,
+      // driver reissues round r+1 on slots 0..3 → WAIT_RECV round r+1.
+      // Slots 4..7 are still WAIT_RECV round r with no CQE yet (we
+      // haven't sent them). The sleep lets the receiver run through
+      // all of those state transitions before we wake up.
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      // Phase B: high half (slots 4..7) of round r. Without the fix,
+      // their notify CQEs get attributed to slot 0..3 round r+1,
+      // leaving slots 4..7 round r stranded — the kernel either hangs
+      // at chunk r*pipelineDepth+4 or processes corrupt staging.
+      for (int s = kHalf; s < kPipelineDepth; ++s) {
+        sendOne(base + s);
+      }
+      for (int s = kHalf; s < kPipelineDepth; ++s) {
+        drainOne(base + s);
+      }
+    }
+  }
+
+  ASSERT_EQ(cudaStreamSynchronize(copyStream), cudaSuccess);
+  if (globalRank == kRecvRank) {
+    ASSERT_EQ(
+        cudaMemcpy(hostBuf.data(), buf, kBufSize, cudaMemcpyDeviceToHost),
+        cudaSuccess);
+    // Total mismatches across the recv buffer. Per-chunk mismatch counts
+    // are reported so a regression makes the failed slot/round obvious.
+    constexpr int kMaxMismatches = 5;
+    int totalMismatches = 0;
+    for (int c = 0; c < kTotalChunks; ++c) {
+      const size_t elemBase =
+          static_cast<size_t>(c) * (kChunkSize / sizeof(int));
+      const size_t elemEnd = elemBase + (kChunkSize / sizeof(int));
+      int chunkMismatches = 0;
+      for (size_t i = elemBase; i < elemEnd; ++i) {
+        const int expected = static_cast<int>(i + 1);
+        if (hostBuf[i] != expected) {
+          if (totalMismatches < kMaxMismatches) {
+            ADD_FAILURE() << "chunk " << c << " (slot=" << (c % kPipelineDepth)
+                          << " round=" << (c / kPipelineDepth)
+                          << ") mismatch at index " << i << ": got "
+                          << hostBuf[i] << ", expected " << expected;
+          }
+          ++totalMismatches;
+          ++chunkMismatches;
+        }
+      }
+      if (chunkMismatches > 0) {
+        fprintf(
+            stderr,
+            "[Recv] chunk %d (slot=%d round=%d): %d/%d mismatches\n",
+            c,
+            c % kPipelineDepth,
+            c / kPipelineDepth,
+            chunkMismatches,
+            static_cast<int>(kChunkSize / sizeof(int)));
+        fflush(stderr);
+      }
+    }
+    EXPECT_EQ(totalMismatches, 0)
+        << "Total mismatches: " << totalMismatches << " of " << numElems;
+  }
+  ASSERT_EQ(cudaStreamDestroy(copyStream), cudaSuccess);
+  ASSERT_EQ(cudaFree(buf), cudaSuccess);
 }
 
 int main(int argc, char* argv[]) {

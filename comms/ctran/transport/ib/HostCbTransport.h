@@ -753,13 +753,33 @@ inline void HostCbTransport::pollRecvNotifications() {
   }
   for (int i = 0; i < numVcs(); ++i) {
     while (true) {
+      // BUG WORKAROUND: IB notify CQEs are anonymous — we have no per-CQE
+      // identity (e.g. wr_id) tying a completion back to the slot it came
+      // from. Originally this scan picked the first WAIT_RECV slot on the
+      // VC at lowest s, but that mis-attributes when slot indices wrap:
+      //
+      //   1. Host issues recvs slots 0..7 round 0, then slots 0..3 round 1.
+      //   2. Slots 0..3 round 0 complete first → IDLE → host immediately
+      //      reissues them as round 1 in WAIT_RECV.
+      //   3. CQEs for slots 4..7 round 0 arrive AFTER. The lowest-s scan
+      //      attributes them to slots 0..3 round 1 (the lowest-s slots
+      //      currently in WAIT_RECV on this VC), stranding slots 4..7
+      //      round 0 forever — their postFlag never advances and the GPU
+      //      kernel's waitPostWithReset hangs.
+      //
+      // The proper fix is to encode (slot, round) in the IB wr_id and
+      // attribute by wr_id from the CQE. As a tactical workaround, prefer
+      // the slot with the OLDEST round on this VC — that keeps FIFO
+      // semantics across rounds and unstrands the older round's slots.
       RecvStagingRecord* match = nullptr;
       for (int s = 0; s < pipelineDepth_; ++s) {
         auto& slot = recvStagingSlots_[s];
-        if (slot.status == RecvChunkStatus::WAIT_RECV && slot.chunk &&
-            slot.chunk->vcIdx == i) {
+        if (slot.status != RecvChunkStatus::WAIT_RECV || !slot.chunk ||
+            slot.chunk->vcIdx != i) {
+          continue;
+        }
+        if (match == nullptr || slot.chunk->round < match->chunk->round) {
           match = &slot;
-          break;
         }
       }
       if (!match) {
@@ -786,10 +806,11 @@ inline void HostCbTransport::advanceRecvStagingRecord(
   auto ctx = makeRecvChunkContext(physicalSlot, chunk);
 
   switch (slot.status) {
-    case RecvChunkStatus::PROCESS_DATA:
+    case RecvChunkStatus::PROCESS_DATA: {
       chunk.hooks.processData(ctx);
       slot.status = RecvChunkStatus::WAIT_PROCESS;
       break;
+    }
 
     case RecvChunkStatus::WAIT_PROCESS:
       if (chunk.hooks.isProcessDone(ctx)) {
@@ -797,7 +818,7 @@ inline void HostCbTransport::advanceRecvStagingRecord(
       }
       break;
 
-    case RecvChunkStatus::SIGNAL_READY:
+    case RecvChunkStatus::SIGNAL_READY: {
       chunk.hooks.signalReady(ctx);
       chunk.hooks.onRecvDone(ctx);
       ++slot.completed;
@@ -805,6 +826,7 @@ inline void HostCbTransport::advanceRecvStagingRecord(
       slot.status = RecvChunkStatus::IDLE;
       --cbRecvActive_;
       break;
+    }
 
     case RecvChunkStatus::IDLE:
     case RecvChunkStatus::WAIT_RECV:
