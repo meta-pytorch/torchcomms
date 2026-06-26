@@ -8,6 +8,7 @@
 #include <comms/torchcomms/TorchCommBatch.hpp>
 #include <comms/torchcomms/TorchCommHooks.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
+#include <comms/torchcomms/TorchCommTopology.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
@@ -53,6 +54,13 @@ class TorchCommBackend {
 
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
+
+  virtual CommTopology getTopology() const {
+    throw std::logic_error(
+        "[TorchCommBackend]: getTopology not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
 
   // Point-to-Point Operations
   virtual c10::intrusive_ptr<TorchWork> send(

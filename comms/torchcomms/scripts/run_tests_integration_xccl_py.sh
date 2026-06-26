@@ -47,6 +47,7 @@ run_tests () {
         SendRecvTest.py
         ScatterTest.py
         SplitTest.py
+        TopologyTest.py
         TPCommTest.py
         WaitBlockingTest.py
     )
