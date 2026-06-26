@@ -196,6 +196,7 @@ void TorchCommNCCL::initNcclResources() {
       options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
   if (options_.store) {
+    bootstrap_store_ = options_.store;
     options_.store.reset();
   }
 
@@ -454,6 +455,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
   // Record start event before NCCL operation
   work->recordStart("send");
 
+  // Wrap in ncclGroupStart/End so the kernel is enqueued on the stream
+  // before we record the end event.  Without the group wrapper,
+  // non-blocking NCCL comms may defer kernel launch past the event
+  // record, causing the end event to fire before the data transfer
+  // completes.  (Matches c10d ProcessGroupNCCL::pointToPoint.)
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
   NCCL_CHECK(
       nccl_api_,
       nccl_comm_,
@@ -465,6 +473,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
           nccl_comm_,
           stream),
       "NCCL Send failed");
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
@@ -494,6 +504,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
   // Record start event before NCCL operation
   work->recordStart("recv");
 
+  // Wrap in ncclGroupStart/End — see send() comment for rationale.
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
   NCCL_CHECK(
       nccl_api_,
       nccl_comm_,
@@ -505,6 +518,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
           nccl_comm_,
           stream),
       "NCCL Recv failed");
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
