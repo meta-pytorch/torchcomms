@@ -363,6 +363,55 @@ class SendRecvTest(unittest.TestCase):
                     f"Tensors not equal for {description}",
                 )
 
+    def _async_send_recv_event_ordering(self, count, dtype):
+        """Regression test for NCCL P2P event ordering.
+
+        Issues an async send/recv, waits on the work, and immediately reads
+        back the received data. work.wait() synchronizes on the end CUDA event
+        recorded after the NCCL call. Without wrapping the send/recv in
+        ncclGroupStart/End, a non-blocking NCCL comm may defer the kernel
+        launch past the end-event record, so the event can fire before the
+        transfer completes and wait() would return with stale/partial data.
+        Looping with distinct values makes such an early completion observable.
+        """
+        print(
+            f"Testing async send/recv event ordering with count={count} and dtype={get_dtype_name(dtype)}"
+        )
+
+        send_rank = (self.rank + 1) % self.num_ranks
+        recv_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
+
+        num_iters = 8
+        for i in range(num_iters):
+            send_tensor = torch.ones(count, dtype=dtype, device=self.device) * int(
+                self.rank + 1 + i
+            )
+            recv_tensor = torch.zeros(count, dtype=dtype, device=self.device)
+
+            if self.rank % 2 == 0:
+                send_work = self.torchcomm.send(send_tensor, send_rank, True)
+                recv_work = self.torchcomm.recv(recv_tensor, recv_rank, True)
+            else:
+                recv_work = self.torchcomm.recv(recv_tensor, recv_rank, True)
+                send_work = self.torchcomm.send(send_tensor, send_rank, True)
+
+            send_work.wait()
+            recv_work.wait()
+
+            # Read immediately after wait(): the data must be fully transferred.
+            expected = torch.ones(count, dtype=dtype) * int(recv_rank + 1 + i)
+            description = f"event ordering iter {i} from rank {recv_rank}"
+            if dtype == torch.float:
+                self.assertTrue(
+                    torch.allclose(recv_tensor.cpu(), expected),
+                    f"Tensors not close enough for {description}",
+                )
+            else:
+                self.assertTrue(
+                    torch.equal(recv_tensor.cpu(), expected),
+                    f"Tensors not equal for {description}",
+                )
+
     def _create_send_tensor(self, count, dtype):
         """Create send tensor with rank-specific values."""
         options = {"dtype": dtype, "device": self.device}
@@ -441,6 +490,12 @@ class SendRecvTest(unittest.TestCase):
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._async_send_recv_repeated(count, dtype)
+
+    def test_async_send_recv_event_ordering(self):
+        """Regression test for NCCL P2P send/recv event ordering."""
+        for count, dtype in itertools.product(self.counts, self.dtypes):
+            with self.subTest(count=count, dtype=dtype):
+                self._async_send_recv_event_ordering(count, dtype)
 
     @unittest.skipIf(os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only tests")
     def test_graph_send_recv(self):
