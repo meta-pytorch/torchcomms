@@ -899,8 +899,13 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/ibrc/.*")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerIbTransport\\.")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/window/.*")
-# Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
+# Exclude GpuMemHandler, NvlMemExchange, CuMemAllocation, CuMemMapping, and
+# CudaDriverLazy — they depend on cudaTypedefs.h / the CUDA driver API which
+# is not available here.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "NvlMemExchange\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemAllocation\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemMapping\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")

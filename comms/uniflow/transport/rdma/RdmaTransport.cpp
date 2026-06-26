@@ -10,7 +10,6 @@
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
-#include <unistd.h>
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -26,6 +25,29 @@ namespace uniflow {
 namespace {
 
 constexpr uint32_t kSlabIdxInvalid{0xFFFFFFFF};
+
+// RAII guard that releases a DmaBuff's resources on scope exit. Closing is
+// only attempted when an fd was actually exported (fd >= 0).
+class DmaBuffCloseGuard {
+ public:
+  DmaBuffCloseGuard(DeviceAdapter& adapter, DmaBuff& buff) noexcept
+      : adapter_{adapter}, buff_{buff} {}
+
+  ~DmaBuffCloseGuard() {
+    if (buff_.fd >= 0) {
+      (void)adapter_.closeDmaBuff(buff_);
+    }
+  }
+
+  DmaBuffCloseGuard(const DmaBuffCloseGuard&) = delete;
+  DmaBuffCloseGuard& operator=(const DmaBuffCloseGuard&) = delete;
+  DmaBuffCloseGuard(DmaBuffCloseGuard&&) = delete;
+  DmaBuffCloseGuard& operator=(DmaBuffCloseGuard&&) = delete;
+
+ private:
+  DeviceAdapter& adapter_;
+  DmaBuff& buff_;
+};
 
 struct __attribute__((packed)) RdmaTopologyInfo {
   uint8_t version{kRdmaVersion};
@@ -610,6 +632,14 @@ RdmaTransport::buildSendWrs(
     if (reqSize == 0) {
       continue;
     }
+    // preprocessRequest guarantees both handles are non-null; guard here to
+    // document the invariant and satisfy nullable-dereference analysis.
+    if (localHandle == nullptr || remoteHandle == nullptr) {
+      return Err(
+          ErrCode::InvalidArgument, "RDMA transfer: null registration handle");
+    }
+    const uint64_t localWireBase = localHandle->toWireAddr(req.local.data());
+    const uint64_t remoteWireBase = remoteHandle->toWireAddr(req.remote.data());
 
     // Split into fixed-size chunks. Each chunk becomes one SendWr.
     size_t offset = 0;
@@ -617,13 +647,12 @@ RdmaTransport::buildSendWrs(
       size_t len = std::min(reqSize - offset, kChunkSize);
       auto& sendWr = wrs->emplace_back();
 
-      sendWr.sge.addr = reinterpret_cast<uint64_t>(req.local.data()) + offset;
+      sendWr.sge.addr = localWireBase + offset;
       sendWr.sge.length = static_cast<uint32_t>(len);
       sendWr.wr.num_sge = 1;
       sendWr.wr.opcode = opcode;
       sendWr.wr.send_flags = 0; // Signaled only on the last WR per QP.
-      sendWr.wr.wr.rdma.remote_addr =
-          reinterpret_cast<uint64_t>(req.remote.data()) + offset;
+      sendWr.wr.wr.rdma.remote_addr = remoteWireBase + offset;
       sendWr.localHandle = localHandle;
       sendWr.remoteHandle = remoteHandle;
 
@@ -1835,11 +1864,11 @@ RdmaTransportFactory::RdmaTransportFactory(
     cudaApi_ = std::make_shared<CudaApi>();
   }
 
+  deviceAdapter_ = createDeviceAdapter(cudaApi_, cudaDriverApi_);
+
   // Generate a random domain id to identify handles from this factory.
   std::mt19937_64 rng{std::random_device{}()};
   domainId_ = rng();
-
-  pageSize_ = sysconf(_SC_PAGESIZE);
 
   int numDevices = 0;
   auto devListResult = ibvApi_->getDeviceList(&numDevices);
@@ -1890,64 +1919,65 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   int access =
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
 
-  // For VRAM, get DMA-BUF fd for GPU Direct RDMA (NIC reads/writes GPU
-  // memory directly). For DRAM, use standard ibv_reg_mr.
-  // RAII guard ensures the fd is closed when we leave this scope.
-  struct FdGuard {
-    int fd = -1;
-    ~FdGuard() {
-      if (fd >= 0) {
-        ::close(fd);
-      }
-    }
-  } fdGuard;
-
-  // dma buffers must be page aligned, the address must be page-aligned.
-  // Align down to page boundary and track the offset for regDmabufMr.
-  uint64_t dmaBufOffset = 0;
-  uintptr_t addr = reinterpret_cast<uintptr_t>(segment.mutable_data());
+  // For VRAM, ask the DeviceAdapter to export a DMA-BUF fd for GPU Direct
+  // RDMA (NIC reads/writes accelerator memory directly). For DRAM, fall
+  // back to standard ibv_reg_mr.
+  // RAII guard ensures closeDmaBuff() runs on every exit path.
+  DmaBuff dmaBuff;
+  DmaBuffCloseGuard closeGuard{*deviceAdapter_, dmaBuff};
+  uint64_t registrationBase = 0;
 
   if (segment.memType() == MemoryType::VRAM) {
     auto dmaBufSupported =
-        cudaDriverApi_->isDmaBufSupported(segment.deviceId());
+        deviceAdapter_->isDmaBuffSupported(segment.deviceId());
     CHECK_RETURN(dmaBufSupported);
     if (dmaBufSupported.value()) {
-      const uintptr_t alignedAddr = addr & ~(pageSize_ - 1);
-      dmaBufOffset = addr - alignedAddr;
-      const size_t dmaBufLen =
-          (segment.len() + dmaBufOffset + pageSize_ - 1) & ~(pageSize_ - 1);
-
-      int flags = 0;
-      // TODO: set CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE if data direct
-      // link is available.
-      auto dmaBufStatus = cudaDriverApi_->cuMemGetHandleForAddressRange(
-          &fdGuard.fd,
-          toDevicePtr(alignedAddr),
-          dmaBufLen,
-          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-          flags);
-      if (!dmaBufStatus) {
-        fdGuard.fd = -1;
-        // DMA-BUF is the preferred GPU Direct RDMA registration path, but it
-        // is an optimization over a valid VRAM allocation rather than the only
-        // correctness path. Some CUDA allocation modes or driver states cannot
-        // export a DMA-BUF for an otherwise usable segment; fall back to normal
-        // MR registration so non-GDR-capable paths can still make progress.
+      auto exportRes = deviceAdapter_->exportDmaBuff(
+          segment.deviceId(), segment.mutable_data(), segment.len());
+      if (exportRes.hasValue()) {
+        dmaBuff = std::move(exportRes).value();
+        registrationBase = dmaBuff.registrationBase;
+      } else if (deviceAdapter_->allowsRegMrFallback()) {
         UNIFLOW_LOG_WARN(
-            "cuMemGetHandleForAddressRange failed for VRAM segment "
-            "(addr=0x{:x}, len={}, device={}): {}. "
-            "Falling back to ibv_reg_mr; this may disable GPU Direct RDMA. "
-            "For PyTorch expandable-segment allocations, "
-            "TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC=1 can restore DMA-BUF export.",
-            addr,
-            dmaBufLen,
+            "registerSegment: exportDmaBuff failed for VRAM segment "
+            "(device={}, ptr=0x{:x}, len={}): {}. Falling back to ibv_reg_mr; "
+            "GPU Direct RDMA may be disabled for this segment.",
             segment.deviceId(),
-            dmaBufStatus.error().message());
+            reinterpret_cast<uint64_t>(segment.mutable_data()),
+            segment.len(),
+            exportRes.error().toString());
+      } else {
+        UNIFLOW_LOG_ERROR(
+            "registerSegment: exportDmaBuff failed for VRAM segment "
+            "(device={}, ptr=0x{:x}, len={}): {}. Backend does not allow "
+            "ibv_reg_mr fallback for accelerator memory (a plain registration "
+            "would be invalid, e.g. out-of-pool or wrong-device pointer); "
+            "failing registration.",
+            segment.deviceId(),
+            reinterpret_cast<uint64_t>(segment.mutable_data()),
+            segment.len(),
+            exportRes.error().toString());
+        return std::move(exportRes).error();
       }
+    } else if (!deviceAdapter_->allowsRegMrFallback()) {
+      // DMA-BUF is the only valid registration path for this backend's
+      // accelerator memory; a plain ibv_reg_mr would mis-register it.
+      UNIFLOW_LOG_ERROR(
+          "registerSegment: DMA-BUF unsupported for VRAM segment "
+          "(device={}, ptr=0x{:x}, len={}) and backend does not allow "
+          "ibv_reg_mr fallback; failing registration.",
+          segment.deviceId(),
+          reinterpret_cast<uint64_t>(segment.mutable_data()),
+          segment.len());
+      return Err(
+          ErrCode::DriverError,
+          "registerSegment: DMA-BUF unsupported and ibv_reg_mr fallback not "
+          "permitted for accelerator memory on device " +
+              std::to_string(segment.deviceId()));
     }
   }
   const bool useRegMrFallback =
-      segment.memType() == MemoryType::VRAM && fdGuard.fd < 0;
+      segment.memType() == MemoryType::VRAM && dmaBuff.fd < 0;
   if (useRegMrFallback) {
     dmaBufFallbackCount_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -1958,14 +1988,14 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   mrs.reserve(nicsHandle_->size());
   for (const auto& nic : *nicsHandle_) {
     Result<ibv_mr*> mrResult = Err(ErrCode::NotImplemented);
-    if (nic.dmaBufSupported && fdGuard.fd >= 0) {
-      // GPU memory: register via DMA-BUF for GPU Direct RDMA.
+    if (nic.dmaBufSupported && dmaBuff.fd >= 0) {
+      // Accelerator memory: register via DMA-BUF for GPU Direct RDMA.
       mrResult = ibvApi_->regDmabufMr(
           nic.pd,
-          dmaBufOffset,
-          segment.len(),
-          reinterpret_cast<uint64_t>(addr),
-          fdGuard.fd,
+          dmaBuff.offset,
+          dmaBuff.len,
+          dmaBuff.iova,
+          dmaBuff.fd,
           access);
     } else {
       // standard registration.
@@ -1987,7 +2017,13 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       ? detectHostNumaNode(segment.mutable_data())
       : -1;
   return std::make_unique<RdmaRegistrationHandle>(
-      std::move(mrs), ibvApi_, domainId_, numaNode);
+      std::move(mrs),
+      ibvApi_,
+      domainId_,
+      registrationBase,
+      deviceAdapter_,
+      segment.deviceId(),
+      numaNode);
 }
 
 Result<std::unique_ptr<RemoteRegistrationHandle>>
@@ -2023,7 +2059,7 @@ RdmaTransportFactory::importSegment(
 
   uint64_t domainId = header.domainId;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), domainId);
+      std::move(rkeys), domainId, header.registrationBase, deviceAdapter_);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
