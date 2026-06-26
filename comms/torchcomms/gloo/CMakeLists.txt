@@ -31,6 +31,7 @@ target_include_directories(torchcomms_comms_gloo PRIVATE
     ${Python3_INCLUDE_DIRS}
     ${gloo_SOURCE_DIR}
 )
+torchcomms_use_torch_pybind11(torchcomms_comms_gloo)
 target_compile_features(torchcomms_comms_gloo PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_gloo PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_gloo PRIVATE
