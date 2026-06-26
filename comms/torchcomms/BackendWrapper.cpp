@@ -568,10 +568,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   return c10::make_intrusive<WorkWrapper>(comm_->barrier(opts.asyncOp, bopts));
 }
 
-c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
-    std::vector<at::Tensor>& tensors,
-    int dstRank,
-    int /*tag*/) {
+c10::intrusive_ptr<c10d::Work>
+BackendWrapper::send(std::vector<at::Tensor>& tensors, int dstRank, int tag) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
@@ -585,14 +583,15 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  SendOptions opts;
+  opts.timeout = options_->timeout;
+  opts.tag = tag;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->send(tensors.at(0), dstRank, /*async_op=*/true), tensors);
+      comm_->send(tensors.at(0), dstRank, /*async_op=*/true, opts), tensors);
 }
 
-c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
-    std::vector<at::Tensor>& tensors,
-    int srcRank,
-    int /*tag*/) {
+c10::intrusive_ptr<c10d::Work>
+BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
@@ -603,8 +602,11 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  RecvOptions opts;
+  opts.timeout = options_->timeout;
+  opts.tag = tag;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true), tensors);
+      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true, opts), tensors);
 }
 
 void BackendWrapper::startCoalescing() {
