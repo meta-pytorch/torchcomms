@@ -3,9 +3,14 @@
 #include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
 
 #include <folly/concurrency/AtomicSharedPtr.h>
+#include <folly/executors/IOThreadPoolExecutor.h>
+#include <folly/executors/thread_factory/NamedThreadFactory.h>
+#include <folly/io/async/EventBase.h>
+#include <folly/io/async/EventBaseManager.h>
+#include <folly/io/async/IoUringBackend.h>
+#include <folly/io/async/IoUringOptions.h>
 #include <folly/io/async/Liburing.h>
 #include <folly/io/async/SSLOptions.h>
-#include <folly/synchronization/CallOnce.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 #include <thrift/lib/cpp2/util/ScopedServerThread.h>
 #include <wangle/ssl/SSLContextConfig.h>
@@ -54,7 +59,24 @@ std::unique_ptr<apache::thrift::util::ScopedServerThread> startAndGetService(
   // Workaround to avoid using libevent backend for EventBase. Currently
   // folly has bug with libevent backend with libevent 2.1.12.
   server->setPreferIoUring(true);
-  server->setUseDefaultIoUringExecutor(true);
+  static folly::EventBaseManager ioUringEbm(
+      folly::EventBase::Options().setBackendFactory(
+          []() -> std::unique_ptr<folly::EventBaseBackendBase> {
+            folly::IoUringOptions options;
+            options.setRegisterRingFd(true)
+                .setInitialProvidedBuffers(2048, 2000)
+                .setUseRegisteredFds(2048)
+                .setDeferTaskRun(true)
+                .setCapacity(512);
+            return std::make_unique<folly::IoUringBackend>(std::move(options));
+          }));
+  server->setIOThreadPool(
+      std::make_shared<folly::IOThreadPoolExecutor>(
+          1,
+          std::make_shared<folly::NamedThreadFactory>("ThriftIO"),
+          &ioUringEbm,
+          folly::IOThreadPoolExecutor::Options().setEnableThreadIdCollection(
+              true)));
 
   // Use fewer resources to run faster
   server->setNumIOWorkerThreads(1);
