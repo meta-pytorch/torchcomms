@@ -301,7 +301,10 @@ class CommOptions:
 
 class CommTopology:
     num_nodes: int
+    node_ids: List[int]
     local_node_ranks: int
+    local_node_global_rank_ids: List[int]
+    local_node_local_rank_ids: List[int]
     uniform: bool
     def is_single_node(self) -> bool: ...
 

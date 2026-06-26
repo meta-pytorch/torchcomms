@@ -143,9 +143,21 @@ PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
           &CommTopology::num_nodes,
           "Number of distinct nodes spanned by this communicator")
       .def_readonly(
+          "node_ids",
+          &CommTopology::node_ids,
+          "Node index of each rank, indexed by comm-local rank")
+      .def_readonly(
           "local_node_ranks",
           &CommTopology::local_node_ranks,
           "Number of ranks on the local node")
+      .def_readonly(
+          "local_node_global_rank_ids",
+          &CommTopology::local_node_global_rank_ids,
+          "Global (world) rank ids on the node")
+      .def_readonly(
+          "local_node_local_rank_ids",
+          &CommTopology::local_node_local_rank_ids,
+          "Local rank ids on the local node")
       .def_readonly(
           "uniform",
           &CommTopology::uniform,

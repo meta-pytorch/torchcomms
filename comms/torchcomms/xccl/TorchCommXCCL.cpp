@@ -18,6 +18,7 @@
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
+#include "comms/utils/RankUtils.h"
 
 namespace torch::comms {
 
@@ -433,10 +434,47 @@ void TorchCommXCCL::init(
   if (options_.getHint<bool>(kHintComputeTopology, true)) {
     topology_ = computeTopology();
     topology_available_ = true;
+    auto join = [](const std::vector<int>& ids) {
+      std::string out;
+      for (size_t i = 0; i < ids.size(); ++i) {
+        if (i != 0) {
+          out += ", ";
+        }
+        out += std::to_string(ids[i]);
+      }
+      return out;
+    };
+    // node_ids has one entry per rank, so printing it verbatim clutters the log
+    // on large comms. Collapse contiguous runs of ranks sharing a node into
+    // "[start-end]=node" (single ranks as "[r]=node"), e.g. "[0-3]=0 [4-7]=1".
+    auto joinNodeRanges = [](const std::vector<int>& ids) {
+      std::string out;
+      for (size_t i = 0; i < ids.size();) {
+        size_t j = i;
+        while (j + 1 < ids.size() && ids[j + 1] == ids[i]) {
+          ++j;
+        }
+        if (!out.empty()) {
+          out += " ";
+        }
+        out += "[" + std::to_string(i);
+        if (j != i) {
+          out += "-" + std::to_string(j);
+        }
+        out += "]=" + std::to_string(ids[i]);
+        i = j + 1;
+      }
+      return out;
+    };
     TC_LOG(INFO, this) << "XCCL communicator name: " << name_
                        << ", comm_size: " << comm_size_
                        << ", num_nodes: " << topology_.num_nodes
                        << ", local_node_ranks: " << topology_.local_node_ranks
+                       << ", local_node_global_rank_ids: ["
+                       << join(topology_.local_node_global_rank_ids) << "]"
+                       << ", local_node_local_rank_ids: ["
+                       << join(topology_.local_node_local_rank_ids) << "]"
+                       << ", node_ids: " << joinNodeRanges(topology_.node_ids)
                        << ", uniform: "
                        << (topology_.uniform ? "true" : "false")
                        << ", is_single_node: "
@@ -653,12 +691,48 @@ CommTopology TorchCommXCCL::computeTopology() {
   uint64_t host_id = getHostHash();
   std::vector<uint64_t> all_host_ids(comm_size_);
 
+  // Gather each member's launcher-assigned rank ids alongside its host hash, so
+  // every rank can label its on-node peers two ways:
+  //   - global (world) rank ("RANK"): preserved across split(), so the world
+  //     comm can split() directly on these ids to build an intra-node group.
+  //   - node-local rank ("LOCAL_RANK"/"SLURM_LOCALID"): the member's slot on
+  //     its physical node, independent of comm membership.
+  // Both come from the launcher and cannot be derived from comm membership —
+  // e.g. an even-ranks subcommunicator on an 8-rank node must report global ids
+  // [0, 2, 4, 6], not the comm-local [0, 1, 2, 3].
+  int32_t global_rank =
+      static_cast<int32_t>(RankUtils::getGlobalRank().value_or(-1));
+  std::vector<int32_t> all_global_ranks(comm_size_);
+  int32_t local_rank =
+      static_cast<int32_t>(RankUtils::getLocalRank().value_or(-1));
+  std::vector<int32_t> all_local_ranks(comm_size_);
+
   xpuStream_t stream = internal_stream_.value();
   XCCL_CHECK(
       xccl_api_,
       xccl_api_->allGather(
           &host_id, all_host_ids.data(), 1, onecclUint64, xccl_comm_, stream),
       "XCCL allGather of host ids failed");
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allGather(
+          &global_rank,
+          all_global_ranks.data(),
+          1,
+          onecclInt32,
+          xccl_comm_,
+          stream),
+      "XCCL allGather of global ranks failed");
+  XCCL_CHECK(
+      xccl_api_,
+      xccl_api_->allGather(
+          &local_rank,
+          all_local_ranks.data(),
+          1,
+          onecclInt32,
+          xccl_comm_,
+          stream),
+      "XCCL allGather of node-local ranks failed");
   XPU_CHECK(
       xpu_api_,
       xpu_api_->streamSynchronize(stream),
@@ -674,7 +748,29 @@ CommTopology TorchCommXCCL::computeTopology() {
 
   CommTopology topology;
   topology.num_nodes = static_cast<int>(ranks_on_host.size());
+
+  // Assign each distinct host a node index by first appearance in comm-rank
+  // order (rank 0's host is node 0). This numbering is derived purely from the
+  // all-gathered hashes, so it is identical on every rank.
+  std::unordered_map<uint64_t, int> node_index;
+  topology.node_ids.reserve(comm_size_);
+  for (int r = 0; r < comm_size_; ++r) {
+    auto [it, inserted] = node_index.try_emplace(
+        all_host_ids[r], static_cast<int>(node_index.size()));
+    topology.node_ids.push_back(it->second);
+  }
+
   topology.local_node_ranks = ranks_on_host[host_id];
+
+  // The global and node-local rank ids of the members that share this rank's
+  // host, both ordered by rank within this communicator (so the two vectors are
+  // index-aligned: entry i refers to the same member).
+  for (int r = 0; r < comm_size_; ++r) {
+    if (all_host_ids[r] == host_id) {
+      topology.local_node_global_rank_ids.push_back(all_global_ranks[r]);
+      topology.local_node_local_rank_ids.push_back(all_local_ranks[r]);
+    }
+  }
 
   // The factorization is only meaningful if every node holds the same number
   // of ranks.
