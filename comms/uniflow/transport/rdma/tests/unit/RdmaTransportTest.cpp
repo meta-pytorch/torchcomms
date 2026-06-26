@@ -339,7 +339,7 @@ TEST_F(RdmaTransportTest, PutAcceptsAllNicHandlesWhenQpCountIsSmaller) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 2;
   remoteInfo.header.domainId = kRemoteDomainId;
