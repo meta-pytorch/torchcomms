@@ -462,27 +462,28 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
 
   TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
-  // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
+  uint64_t tag = static_cast<uint64_t>(options.tag);
 
-  // Note on tensor lifetime: tensorCPU is captured by value in the lambda.
-  // Since at::Tensor uses reference counting, this ensures the storage remains
-  // alive until the async work completes.
-  return createWork(
-      [tensorCPU, dst, options, context = context_, tag = nextTag()]() {
-        const auto& scalarType = tensorCPU.scalar_type();
+  // Initiate the send immediately via gloo's unbound buffer, matching native
+  // ProcessGroupGloo::send semantics. buf->send() registers with the gloo
+  // transport layer and returns without blocking.
+  auto ptr = tensorCPU.const_data_ptr();
+  auto size = tensorCPU.numel() * tensorCPU.element_size();
+  auto buf = context_->createUnboundBuffer(const_cast<void*>(ptr), size);
+  buf->send(dst, tag);
 
-        // Use type dispatch to send tensor
-        GENERATE_ALL_TYPES(
-            scalarType,
-            sendTensor,
-            context,
-            tensorCPU,
-            dst,
-            tag,
-            options.timeout);
-      },
-      async_op);
+  if (!async_op) {
+    if (options.timeout == kNoTimeout) {
+      buf->waitSend();
+    } else {
+      buf->waitSend(options.timeout);
+    }
+    return c10::make_intrusive<TorchWorkCompleted>();
+  }
+
+  return c10::make_intrusive<TorchWorkGlooSend>(
+      std::move(tensorCPU), std::move(buf), options.timeout);
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
@@ -504,39 +505,31 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
 
   TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
-  // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
+  uint64_t tag = static_cast<uint64_t>(options.tag);
 
-  // Note on tensor lifetime: Both 'tensor' and 'tensorCPU' are captured by
-  // value in the lambda below. Since at::Tensor uses reference counting
-  // (intrusive_ptr to TensorImpl), capturing by value increments the refcount
-  // and ensures the underlying storage remains alive until the async work
-  // completes. This is the intended and correct pattern for async operations.
-  return createWork(
-      [tensor,
-       tensorCPU,
-       src,
-       options = options,
-       context = context_,
-       tag = nextTag()]() mutable {
-        const auto& scalarType = tensorCPU.scalar_type();
+  // Initiate the recv immediately via gloo's unbound buffer, matching native
+  // ProcessGroupGloo::recv semantics. buf->recv() registers with the gloo
+  // transport layer and returns without blocking.
+  auto ptr = tensorCPU.mutable_data_ptr();
+  auto size = tensorCPU.numel() * tensorCPU.element_size();
+  auto buf = context_->createUnboundBuffer(ptr, size);
+  buf->recv(src, tag);
 
-        // Use type dispatch to receive tensor
-        GENERATE_ALL_TYPES(
-            scalarType,
-            recvTensor,
-            context,
-            tensorCPU,
-            src,
-            tag,
-            options.timeout);
+  if (!async_op) {
+    if (options.timeout == kNoTimeout) {
+      buf->waitRecv();
+    } else {
+      buf->waitRecv(options.timeout);
+    }
+    if (tensorCPU.device() != tensor.device()) {
+      tensor.copy_(tensorCPU);
+    }
+    return c10::make_intrusive<TorchWorkCompleted>();
+  }
 
-        if (tensorCPU.device() != tensor.device()) {
-          // Copy back to original device if needed
-          tensor.copy_(tensorCPU);
-        }
-      },
-      async_op);
+  return c10::make_intrusive<TorchWorkGlooRecv>(
+      tensor, std::move(tensorCPU), std::move(buf), options.timeout);
 }
 
 // Batch P2P Operations
