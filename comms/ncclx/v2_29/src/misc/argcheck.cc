@@ -17,6 +17,10 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 10000
+  if (attr.type == cudaMemoryTypeUnregistered) {
+    WARN("%s : %s %p is unregistered host memory, not a valid device pointer", opname, ptrname, pointer);
+    return ncclInvalidArgument;
+  }
   if (attr.type == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
 #else
   if (attr.memoryType == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
