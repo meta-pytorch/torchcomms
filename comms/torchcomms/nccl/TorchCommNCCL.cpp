@@ -196,6 +196,7 @@ void TorchCommNCCL::initNcclResources() {
       options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
   if (options_.store) {
+    bootstrap_store_ = options_.store;
     options_.store.reset();
   }
 

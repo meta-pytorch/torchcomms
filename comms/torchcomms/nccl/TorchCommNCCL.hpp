@@ -473,6 +473,9 @@ class TorchCommNCCL : public TorchCommBackend,
   // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
   c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
+  // Store preserved from init for lazy pair-comm bootstrap (createPairComm).
+  c10::intrusive_ptr<c10d::Store> bootstrap_store_;
+
   // NCCL API abstraction
   std::shared_ptr<NcclApi> nccl_api_;
 
