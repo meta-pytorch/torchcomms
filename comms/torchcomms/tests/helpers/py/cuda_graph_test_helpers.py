@@ -368,8 +368,9 @@ class GraphTestBuilder:
     def _run(  # noqa: C901
         self,
         inputs: list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]],
-        expected: list[torch.Tensor]
-        | Callable[["GraphTestBuilder"], list[torch.Tensor]],
+        expected: (
+            list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]]
+        ),
         pipeline_fn: Callable[["GraphTestBuilder"], list[PipelineStep]],
         graph_assertions: Callable[["GraphTestBuilder"], None] | None = None,
     ) -> None:
@@ -422,22 +423,32 @@ class GraphTestBuilder:
                     params = "_".join(f"{k}={v}" for k, v in subtest.params.items())
                     test_name = f"{test_name}_{params}"
 
-                # Analyze captured graphs, optionally saving SVGs
+                # Analyze captured graphs only when the result is consumed —
+                # i.e. graph_assertions inspect graph_infos, or SVG export is
+                # requested. analyze_cuda_graph() calls graph.debug_dump(), which
+                # requires the optional `cuda-bindings` package (torch
+                # _dump_graph_dot -> _require_cuda_bindings); running it
+                # unconditionally makes tests that don't inspect graph structure
+                # fail when that package is absent (T277288124). graph_infos
+                # defaults to [] and is only ever read inside graph_assertions.
                 svg_dir = os.environ.get("CUDA_GRAPH_SVG_DIR")
-                if svg_dir:
-                    os.makedirs(svg_dir, exist_ok=True)
-                self.graph_infos = [
-                    analyze_cuda_graph(
-                        g,
-                        svg_path=os.path.join(
-                            svg_dir,
-                            f"{test_name}_graph{i}_rank{rank}.svg",
+                if graph_assertions is not None or svg_dir:
+                    if svg_dir:
+                        os.makedirs(svg_dir, exist_ok=True)
+                    self.graph_infos = [
+                        analyze_cuda_graph(
+                            g,
+                            svg_path=(
+                                os.path.join(
+                                    svg_dir,
+                                    f"{test_name}_graph{i}_rank{rank}.svg",
+                                )
+                                if svg_dir
+                                else None
+                            ),
                         )
-                        if svg_dir
-                        else None,
-                    )
-                    for i, g in enumerate(self.graphs)
-                ]
+                        for i, g in enumerate(self.graphs)
+                    ]
 
                 if graph_assertions is not None:
                     graph_assertions(self)
@@ -486,8 +497,9 @@ class GraphTestBuilder:
     def run_serial(
         self,
         inputs: list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]],
-        expected: list[torch.Tensor]
-        | Callable[["GraphTestBuilder"], list[torch.Tensor]],
+        expected: (
+            list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]]
+        ),
         graph_assertions: Callable[["GraphTestBuilder"], None] | None = None,
     ) -> None:
         """
@@ -503,8 +515,9 @@ class GraphTestBuilder:
     def run_concurrent(
         self,
         inputs: list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]],
-        expected: list[torch.Tensor]
-        | Callable[["GraphTestBuilder"], list[torch.Tensor]],
+        expected: (
+            list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]]
+        ),
         graph_assertions: Callable[["GraphTestBuilder"], None] | None = None,
     ) -> None:
         """
@@ -528,8 +541,9 @@ class GraphTestBuilder:
         self,
         pipeline: Callable[["GraphTestBuilder"], list[PipelineStep]],
         inputs: list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]],
-        expected: list[torch.Tensor]
-        | Callable[["GraphTestBuilder"], list[torch.Tensor]],
+        expected: (
+            list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]]
+        ),
         graph_assertions: Callable[["GraphTestBuilder"], None] | None = None,
     ) -> None:
         """
