@@ -82,6 +82,7 @@ target_include_directories(torchcomms_transport PRIVATE
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms_transport)
 target_compile_features(torchcomms_transport PRIVATE cxx_std_20)
 target_link_directories(torchcomms_transport PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_transport PRIVATE

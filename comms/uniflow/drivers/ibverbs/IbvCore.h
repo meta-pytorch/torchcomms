@@ -28,6 +28,20 @@ union ibv_gid {
   } global;
 };
 
+enum ibv_gid_type {
+  IBV_GID_TYPE_IB,
+  IBV_GID_TYPE_ROCE_V1,
+  IBV_GID_TYPE_ROCE_V2,
+};
+
+struct ibv_gid_entry {
+  union ibv_gid gid;
+  uint32_t gid_index;
+  uint32_t port_num;
+  uint32_t gid_type; /* enum ibv_gid_type */
+  uint32_t ndev_ifindex;
+};
+
 #ifndef container_of
 /**
  * container_of - cast a member of a structure out to the containing structure

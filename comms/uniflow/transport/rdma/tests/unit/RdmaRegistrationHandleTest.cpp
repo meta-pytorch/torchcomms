@@ -22,6 +22,9 @@ using ::testing::Return;
 
 // --- RdmaRegistrationHandle tests ---
 
+constexpr uint8_t kTestGidIndex = 3;
+constexpr uint8_t kMockGidTblLen = kTestGidIndex + 1;
+
 class RdmaRegistrationHandleTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -355,9 +358,11 @@ class RdmaFactoryRegistrationTest : public ::testing::Test {
           attr->active_mtu = IBV_MTU_4096;
           attr->link_layer = IBV_LINK_LAYER_ETHERNET;
           attr->state = IBV_PORT_ACTIVE;
+          attr->gid_tbl_len = kMockGidTblLen;
           return Ok();
         });
-    EXPECT_CALL(*ibv_, queryGid(&fakeCtx_, 1, 3, _)).WillOnce(Return(Ok()));
+    EXPECT_CALL(*ibv_, queryGid(&fakeCtx_, 1, kTestGidIndex, _))
+        .WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, freeDeviceList(_)).WillOnce(Return(Ok()));
     // Cleanup on destruction.
     EXPECT_CALL(*ibv_, deallocPd(&fakePd_)).WillOnce(Return(Ok()));
@@ -606,10 +611,12 @@ class RdmaFactoryMultiNicTest : public ::testing::Test {
           attr->lid = 1;
           attr->active_mtu = IBV_MTU_4096;
           attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+          attr->gid_tbl_len = kMockGidTblLen;
           attr->state = IBV_PORT_ACTIVE;
           return Ok();
         });
-    EXPECT_CALL(*ibv_, queryGid(_, 1, 3, _)).WillRepeatedly(Return(Ok()));
+    EXPECT_CALL(*ibv_, queryGid(_, 1, kTestGidIndex, _))
+        .WillRepeatedly(Return(Ok()));
     EXPECT_CALL(*ibv_, freeDeviceList(_)).WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, deallocPd(&fakePd0_)).WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, deallocPd(&fakePd1_)).WillOnce(Return(Ok()));

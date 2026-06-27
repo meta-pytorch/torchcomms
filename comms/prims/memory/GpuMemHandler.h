@@ -38,6 +38,13 @@ enum class MemSharingMode {
   // Supports: Multi-node NVLink (GB200 NVL72)
   kFabric,
 
+  // Use CUDA VMM allocations shared via POSIX file descriptors
+  // (CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR).
+  // Requires: CUDA 12.3+ VMM support.
+  // Limitation: Intra-node only (descriptors are duplicated via pidfd_getfd).
+  // Used for single-host H100 NVLink where fabric handles are unavailable.
+  kPosixFd,
+
   // Use cudaIpcMemHandle_t
   // Works on: All CUDA GPUs
   // Limitation: Intra-node only
@@ -195,11 +202,11 @@ class GpuMemHandler {
   }
 
   /**
-   * Returns this handler's shared physical VMM allocation in the kFabric mode,
-   * or nullptr in cudaIpc mode (cudaMalloc has no VMM handle). The allocation
-   * is co-owned via shared_ptr; the multicast overlay (exchangeMulticast) binds
-   * the same allocation so the unicast and multicast views share one physical
-   * backing. Valid after construction.
+   * Returns this handler's shared physical VMM allocation in a VMM-backed mode
+   * (kFabric or kPosixFd), or nullptr in cudaIpc mode (cudaMalloc has no VMM
+   * handle). The allocation is co-owned via shared_ptr; the multicast overlay
+   * (exchangeMulticast) binds the same allocation so the unicast and multicast
+   * views share one physical backing. Valid after construction.
    */
   std::shared_ptr<CuMemAllocation> allocation() const {
     return allocation_;
@@ -220,9 +227,9 @@ class GpuMemHandler {
  private:
   void init(size_t size, std::size_t alignFloor);
 
-  // VMM (fabric) mode methods. The physical allocation is owned by a
-  // CuMemAllocation co-owned via shared_ptr; the unicast VA is a CuMemMapping;
-  // the peer exchange is delegated to NvlMemExchange.
+  // VMM mode methods (shared by kFabric and kPosixFd). The physical allocation
+  // requests both handle types when the device allows it; the actual exported
+  // shareable-handle type is chosen at exchange time via supportsFabric().
   void allocateVmmMemory(size_t size, std::size_t alignFloor);
   void exchangeVmmHandles();
   void cleanupVmm();
@@ -232,10 +239,11 @@ class GpuMemHandler {
   void exchangeCudaIpcHandles();
   void cleanupCudaIpc();
 
-  // True for the VMM-backed mode (kFabric), which uses the NvlMemExchange-based
-  // code path. False for kCudaIpc.
+  // True for the VMM-backed modes (kFabric / kPosixFd), which share the same
+  // NvlMemExchange-based code path. False for kCudaIpc.
   bool isVmmMode() const {
-    return mode_ == MemSharingMode::kFabric;
+    return mode_ == MemSharingMode::kFabric ||
+        mode_ == MemSharingMode::kPosixFd;
   }
 
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
@@ -247,14 +255,15 @@ class GpuMemHandler {
   size_t allocatedSize_{0};
   bool exchanged_{false};
 
-  // ---- VMM mode state (kFabric) ----
+  // ---- VMM mode state (kFabric / kPosixFd) ----
   // The local physical allocation (co-owned via shared_ptr so a multicast
   // overlay can share it) and its unicast VA mapping (which also co-owns the
-  // allocation via keepAlive).
+  // allocation via keepAlive). The actual exported shareable-handle type is
+  // chosen at exchange time via allocation_->supportsFabric().
   std::shared_ptr<CuMemAllocation> allocation_;
   std::unique_ptr<CuMemMapping> unicastMapping_;
   // Peer mappings + pointers, produced by nvlMemExchange during
-  // exchangeMemPtrs(). For VMM mode the peer mappings co-own their imported
+  // exchangeMemPtrs(). For VMM modes the peer mappings co-own their imported
   // allocations; for cudaIpc only the peer pointers (owned by the IPC runtime).
   NvlPeerMem peers_;
 

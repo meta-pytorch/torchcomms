@@ -5,6 +5,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <sys/types.h>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -23,15 +24,86 @@ struct FabricHandle {
 #endif
 
 /**
- * NvlMemExchange - NVLink-domain peer-exchange building blocks.
+ * NvlMemExchange - NVLink-domain shared-memory building blocks.
  *
- * The consolidated peer exchange (export -> all-gather -> import -> map) that
- * gives every rank a VA onto every peer's backing allocation, for both VMM
- * (fabric) and cudaIpc modes. Used by GpuMemHandler. The `cuMem*` fabric
- * driver-API paths are guarded by `#if CUDART_VERSION >= 12030`; on AMD only
- * the cudaIpc path (HIPify-rewritten) is used. Provides the FabricHandle
- * typedef.
+ * Bundles the two pieces needed to share a GPU buffer across NVLink-local
+ * ranks:
+ *
+ *  1. Shareable-handle export/import for CUDA VMM allocation handles. The same
+ *     export/import logic is needed in two places:
+ *       - GpuMemHandler exports its unicast backing handle so peers can map the
+ *         same physical allocation.
+ *       - MultimemHandler exports the multicast object handle so peers can join
+ *         the same multicast team.
+ *  2. The consolidated peer exchange (export -> all-gather -> import -> map)
+ *     used by GpuMemHandler to give every rank a VA onto every peer's backing
+ *     allocation, for both VMM (fabric / POSIX FD) and cudaIpc modes.
+ *
+ * Two shareable-handle mechanisms are supported, selected by capability:
+ *  - kFabric: CU_MEM_HANDLE_TYPE_FABRIC, works across hosts (e.g. GB200 MNNVL).
+ *  - kPosixFd: CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, intra-host only (e.g.
+ *    single-host H100 without IMEX). The descriptor number is process-local, so
+ *    peers duplicate the exporter's fd via pidfd_open/pidfd_getfd before
+ * import.
  */
+enum class ShareableHandleType : uint8_t {
+  kUnsupported,
+  kFabric,
+  kPosixFd,
+};
+
+/**
+ * A shareable handle ready to be exchanged across ranks.
+ *
+ * For kFabric, `fabric` is the exported fabric handle and can be copied between
+ * processes verbatim. For kPosixFd, `pid` and `fd` identify an open file
+ * descriptor in the exporter's process; peers duplicate it before importing.
+ */
+struct ShareableHandle {
+  ShareableHandleType type{ShareableHandleType::kUnsupported};
+  FabricHandle fabric{}; // valid iff type == kFabric
+  int32_t pid{-1}; // valid iff type == kPosixFd
+  int32_t fd{-1}; // exporter-local fd; valid iff type == kPosixFd
+};
+
+/**
+ * Maps a ShareableHandleType to the corresponding CUDA handle type. Throws
+ * std::runtime_error for kUnsupported.
+ */
+CUmemAllocationHandleType toCudaHandleType(ShareableHandleType type);
+
+/**
+ * Selects the best shareable-handle type for `cudaDevice`: fabric if supported,
+ * else POSIX FD, else kUnsupported. Initializes the CUDA driver lazily and
+ * resolves the CUdevice internally.
+ */
+ShareableHandleType selectShareableHandleType(int cudaDevice);
+
+/**
+ * Exports `handle` as the given shareable-handle `type`.
+ *
+ * For kFabric the returned handle is self-contained. For kPosixFd the returned
+ * ShareableHandle carries {pid=getpid(), fd=<newly exported fd>}; the CALLER
+ * owns that fd and must keep it open until all peers have imported it, then
+ * close it.
+ *
+ * Throws std::runtime_error on kUnsupported or any CUDA driver error.
+ */
+ShareableHandle exportShareableHandle(
+    CUmemGenericAllocationHandle handle,
+    ShareableHandleType type);
+
+/**
+ * Imports the physical handle described by `h`.
+ *
+ * For kFabric the fabric handle is imported directly. For kPosixFd the
+ * exporter's fd is duplicated into this process via duplicateRemoteFd(), the
+ * handle is imported, and the duplicated fd is closed before returning.
+ *
+ * Returns the imported physical handle (the caller owns the reference and must
+ * eventually cuMemRelease it). Throws std::runtime_error on any failure.
+ */
+CUmemGenericAllocationHandle importShareableHandle(const ShareableHandle& h);
 
 /**
  * The per-rank peer memory state produced by an NVLink-domain exchange.
@@ -51,13 +123,16 @@ struct NvlPeerMem {
 };
 
 /**
- * VMM (fabric) peer exchange.
+ * VMM (fabric / POSIX FD) peer exchange.
  *
- * Exports `localHandle` as a fabric handle, all-gathers every rank's handle +
- * allocated size, then imports and maps each peer's backing allocation into a
- * fresh peer VA. `peerPtrs[rank]` is null for self; the caller fills the self
- * slot with `localPtr`. Throws std::runtime_error on any failure. Requires CUDA
- * 12.3+.
+ * Exports `localHandle` (as fabric when `preferFabric`, else POSIX FD),
+ * all-gathers every rank's shareable handle + allocated size, imports and maps
+ * each peer's backing allocation, holds a post-import barrier so no rank closes
+ * its exported POSIX FD before peers have duplicated it, then closes the local
+ * exported fd.
+ *
+ * `peerPtrs[rank]` is null for self; the caller fills the self slot with
+ * `localPtr`. Throws std::runtime_error on any failure. Requires CUDA 12.3+.
  */
 NvlPeerMem nvlMemExchangeVmm(
     meta::comms::IBootstrap& bootstrap,
@@ -66,7 +141,8 @@ NvlPeerMem nvlMemExchangeVmm(
     CUdevice cuDev,
     CUmemGenericAllocationHandle localHandle,
     void* localPtr,
-    std::size_t allocatedSize);
+    std::size_t allocatedSize,
+    bool preferFabric);
 
 /**
  * cudaIpc peer exchange.
@@ -74,8 +150,8 @@ NvlPeerMem nvlMemExchangeVmm(
  * Exports `localPtr`'s cudaIpc handle, all-gathers handles, and opens each
  * peer's handle. The self slot of `peerPtrs` is filled with `localPtr`; peer
  * slots are owned by the CUDA IPC runtime (the caller closes them via
- * cudaIpcCloseMemHandle). `vmmMappings` is empty. Throws std::runtime_error on
- * any failure.
+ * cudaIpcCloseMemHandle). `vmmMappings` is empty. Throws
+ * std::runtime_error on any failure.
  */
 NvlPeerMem nvlMemExchangeCudaIpc(
     meta::comms::IBootstrap& bootstrap,

@@ -8,7 +8,9 @@
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
 #include <cstring>
+#include <map>
 #include <queue>
+#include <utility>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -192,6 +194,7 @@ NicResources makeNic(
         attr->active_mtu = IBV_MTU_4096;
         attr->link_layer = IBV_LINK_LAYER_ETHERNET;
         attr->state = IBV_PORT_ACTIVE;
+        attr->gid_tbl_len = 8;
         return Ok();
       });
   ON_CALL(*mockApi, queryGid(ctx, port, _, _))
@@ -208,6 +211,196 @@ NicResources makeNic(
   ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
 
   return NicResources(dev, mockApi, numaNode, 3, port);
+}
+
+// Configures the common NicResources ON_CALLs for an Ethernet (RoCE) port with
+// the given GID table length. Callers set queryGidEx / isQueryGidExSupported
+// behavior separately before constructing the NicResources.
+void setupGidNicMock(
+    testing::NiceMock<MockIbvApi>& api,
+    ibv_device* dev,
+    ibv_context* ctx,
+    ibv_pd* pd,
+    int gidTblLen) {
+  ON_CALL(api, openDevice(dev))
+      .WillByDefault(Return(Result<ibv_context*>(ctx)));
+  ON_CALL(api, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
+  ON_CALL(api, isDmaBufSupported(pd))
+      .WillByDefault(Return(Result<bool>(false)));
+  ON_CALL(api, queryPort(ctx, 1, _))
+      .WillByDefault([gidTblLen](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->state = IBV_PORT_ACTIVE;
+        attr->gid_tbl_len = gidTblLen;
+        return Ok();
+      });
+  ON_CALL(api, queryGid(ctx, 1, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, int, ibv_gid* out) {
+        *out = ibv_gid{};
+        return Ok();
+      });
+  ON_CALL(api, deallocPd(pd)).WillByDefault(Return(Ok()));
+  ON_CALL(api, closeDevice(ctx)).WillByDefault(Return(Ok()));
+}
+
+// Builds a queryGidEx stub from a {index -> gid_type} table, marking the entry
+// at @p ipv4Index (if >= 0) as IPv4-mapped, the entry at @p linkLocalIndex (if
+// >= 0) as an IPv6 link-local (fe80::) address, and the entry at @p
+// ipv4LinkLocalIndex (if >= 0) as an IPv4-mapped IPv4 link-local (169.254.x.x)
+// address.
+auto makeGidExStub(
+    std::map<uint32_t, uint32_t> typesByIndex,
+    int ipv4Index,
+    int linkLocalIndex = -1,
+    int ipv4LinkLocalIndex = -1) {
+  return [typesByIndex = std::move(typesByIndex),
+          ipv4Index,
+          linkLocalIndex,
+          ipv4LinkLocalIndex](
+             ibv_context*,
+             uint32_t,
+             uint32_t index,
+             ibv_gid_entry* entry,
+             uint32_t) -> Status {
+    auto it = typesByIndex.find(index);
+    if (it == typesByIndex.end()) {
+      return Err(ErrCode::DriverError, "empty GID entry");
+    }
+    *entry = ibv_gid_entry{};
+    entry->gid_index = index;
+    entry->gid_type = it->second;
+    if (static_cast<int>(index) == ipv4Index) {
+      entry->gid.raw[10] = 0xff;
+      entry->gid.raw[11] = 0xff;
+    }
+    if (static_cast<int>(index) == linkLocalIndex) {
+      entry->gid.raw[0] = 0xfe;
+      entry->gid.raw[1] = 0x80;
+    }
+    if (static_cast<int>(index) == ipv4LinkLocalIndex) {
+      entry->gid.raw[10] = 0xff;
+      entry->gid.raw[11] = 0xff;
+      entry->gid.raw[12] = 169;
+      entry->gid.raw[13] = 254;
+    }
+    return Ok();
+  };
+}
+
+class NicResourcesGidTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    api_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    ctx_.device = &dev_;
+  }
+
+  void setupMock(int gidTblLen = 8) {
+    setupGidNicMock(*api_, &dev_, &ctx_, &pd_, gidTblLen);
+  }
+
+  std::shared_ptr<testing::NiceMock<MockIbvApi>> api_;
+  ibv_device dev_{};
+  ibv_context ctx_{};
+  ibv_pd pd_{};
+};
+
+TEST_F(NicResourcesGidTest, AutoSelectPrefersIpv4MappedRoceV2) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 2: RoCEv2 (not IPv4); index 5: RoCEv2 IPv4-mapped (preferred).
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_ROCE_V1},
+           {2, IBV_GID_TYPE_ROCE_V2},
+           {5, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/5));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 5);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectFallsBackWhenGidExUnsupported) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(false));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3); // Mellanox RoCEv2 default.
+}
+
+TEST_F(NicResourcesGidTest, ForcedIndexSkipsScan) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  EXPECT_CALL(*api_, queryGidEx(_, _, _, _, _)).Times(0);
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/5, 1);
+  EXPECT_EQ(nic.gidIndex, 5);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectFallsBackWhenNoRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_IB},
+           {1, IBV_GID_TYPE_ROCE_V1},
+           {2, IBV_GID_TYPE_ROCE_V1}},
+          /*ipv4Index=*/-1));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectSkipsLinkLocalRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 1: link-local RoCEv2 (skipped); index 3: global RoCEv2 (selected).
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{1, IBV_GID_TYPE_ROCE_V2}, {3, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/1));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectSkipsIpv4LinkLocalRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 2: IPv4 link-local (169.254.x.x) RoCEv2 (skipped); index 3: global.
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{2, IBV_GID_TYPE_ROCE_V2}, {3, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/-1,
+          /*ipv4LinkLocalIndex=*/2));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, ForcedIndexOutOfRangeThrows) {
+  setupMock(/*gidTblLen=*/4);
+
+  EXPECT_THROW(
+      NicResources(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/10, 1),
+      std::runtime_error);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectThrowsWhenNoGlobalAndDefaultOutOfRange) {
+  setupMock(/*gidTblLen=*/2);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // Only a link-local RoCEv2 entry exists and default index 3 >= gid_tbl_len.
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_ROCE_V1}, {1, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/1));
+
+  EXPECT_THROW(
+      NicResources(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1),
+      std::runtime_error);
 }
 
 // --- Mock-based transport tests ---
@@ -339,7 +532,7 @@ TEST_F(RdmaTransportTest, PutAcceptsAllNicHandlesWhenQpCountIsSmaller) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 2;
   remoteInfo.header.domainId = kRemoteDomainId;
