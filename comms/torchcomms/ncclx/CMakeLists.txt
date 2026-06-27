@@ -120,6 +120,7 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
 
 # Add device API compile definition if headers are available
