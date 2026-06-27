@@ -29,7 +29,7 @@ bool isCpu(int deviceId) {
 
 std::vector<std::string> MultiTransportFactory::selectCpuNics() {
   auto& topo = sharedTopology();
-  auto nics = topo.selectCpuNics(nicFilter_);
+  auto nics = topo.selectCpuNics(options_.nicFilter, options_.netdevPrefix);
   const auto candidateNicCount = nics.size();
   if (options_.cpuNicSelectionPolicy == CpuNicSelectionPolicy::kAll) {
     UNIFLOW_LOG_INFO(
@@ -39,7 +39,7 @@ std::vector<std::string> MultiTransportFactory::selectCpuNics() {
   }
 
   auto localNics =
-      topo.selectCpuNicsForNumaNodes(nicFilter_, options_.maxCpuNics);
+      topo.selectCpuNicsForNumaNodes(options_.nicFilter, options_.maxCpuNics);
   if (localNics.empty()) {
     localNics = std::move(nics);
     if (options_.maxCpuNics > 0 && localNics.size() > options_.maxCpuNics) {
@@ -62,7 +62,8 @@ std::vector<std::string> MultiTransportFactory::selectNics() {
   if (isCpu(deviceId_)) {
     return selectCpuNics();
   }
-  return topo.selectGpuNics(deviceId_, nicFilter_);
+  return topo.selectGpuNics(
+      deviceId_, options_.nicFilter, options_.netdevPrefix);
 }
 
 Status MultiTransportFactory::supported(TransportType type) {
@@ -129,18 +130,16 @@ Transport* MultiTransport::findTransport(TransportType type) const {
 
 MultiTransportFactory::MultiTransportFactory(
     int deviceId,
-    NicFilter nicFilter,
     MultiTransportFactoryOptions options)
     : deviceId_(deviceId),
-      nicFilter_(std::move(nicFilter)),
-      options_(options),
+      options_(std::move(options)),
       eventBaseThread_(std::make_shared<ScopedEventBaseThread>()) {
   auto& topo = sharedTopology();
   CHECK_THROW_EXCEPTION(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
+
 #ifndef __HIP_PLATFORM_AMD__
-  // NVLink is NVIDIA-only.
   if (deviceId_ >= 0) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
@@ -151,6 +150,8 @@ MultiTransportFactory::MultiTransportFactory(
   auto nics = selectNics();
   if (!nics.empty()) {
     RdmaTransportConfig config;
+    config.gidIndex = options_.gidIndex;
+    config.trafficClass = options_.trafficClass;
     config.numQps = static_cast<uint32_t>(nics.size());
     auto rdma = std::make_shared<RdmaTransportFactory>(
         std::move(nics), eventBaseThread_->getEventBase(), config);

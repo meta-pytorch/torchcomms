@@ -540,15 +540,13 @@ PYBIND11_MODULE(_core, m) {
                       CpuNicSelectionPolicy cpuNicSelectionPolicy,
                       size_t maxCpuNics) {
             MultiTransportFactoryOptions options{
+                .nicFilter =
+                    nicFilter.empty() ? NicFilter() : NicFilter(nicFilter),
                 .cpuNicSelectionPolicy = cpuNicSelectionPolicy,
                 .maxCpuNics = maxCpuNics,
             };
-            if (nicFilter.empty()) {
-              return std::make_shared<MultiTransportFactory>(
-                  deviceId, NicFilter(), options);
-            }
             return std::make_shared<MultiTransportFactory>(
-                deviceId, NicFilter(nicFilter), options);
+                deviceId, std::move(options));
           }),
           "Create a MultiTransportFactory for the given device.",
           py::arg("device_id"),

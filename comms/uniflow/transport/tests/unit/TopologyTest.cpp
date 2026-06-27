@@ -951,6 +951,14 @@ class TopologyNicTest : public TopologyTest {
     ON_CALL(*ibv_, closeDevice(_)).WillByDefault(Return(Ok()));
   }
 
+  /// Stub the backing netdev name reported for an IB device via
+  /// /sys/class/infiniband/<dev>/device/net.
+  void setNetdev(const std::string& devName, const std::string& netdev) {
+    ON_CALL(
+        *sysfs_, listDir("/sys/class/infiniband/" + devName + "/device/net", _))
+        .WillByDefault(Return(std::vector<std::string>{netdev}));
+  }
+
   std::string gpu0_, nic0_, nic1_, nic2_, sw0_, sw1_, root_;
   std::vector<ibv_device> nicDevices_;
   std::vector<ibv_device*> nicDevicePtrs_;
@@ -1283,6 +1291,65 @@ TEST_F(TopologyNicTest, MixedPhysicalAndVirtualNics) {
   EXPECT_NE(phys.bdf, "virtual");
   EXPECT_EQ(virt.bdf, "virtual");
   EXPECT_EQ(virt.numaNode, 0);
+}
+
+// --- Netdev-prefix NIC selection ---
+
+TEST_F(TopologyNicTest, NetdevNameCapturedFromSysfs) {
+  setupNics({{"mlx5_0", nic0_}});
+  setNetdev("mlx5_0", "beth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.netdevName, "beth0");
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixSelectsMatchingNic) {
+  // Two equidistant NICs; only mlx5_0 has a backend-ethernet ("beth") netdev.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixFallsBackWhenNoMatch) {
+  // Neither NIC has a "beth" netdev → fall back to filter-only selection.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "eth0");
+  setNetdev("mlx5_1", "eth1");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, EmptyNetdevPrefixConsidersAllNics) {
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  // Empty prefix disables the predicate: both equidistant NICs are selected.
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, ""), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixIgnoredWhenNoNetdevNames) {
+  // No NIC has a netdev name (e.g. a backend that does not populate it). The
+  // prefix predicate is skipped entirely rather than excluding every NIC.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
 }
 
 } // namespace uniflow
