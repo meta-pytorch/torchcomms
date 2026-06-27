@@ -20,17 +20,26 @@ struct NicResources {
   ibv_pd* pd{nullptr}; /* Protection domain on this device. */
   uint16_t lid{0}; /* Local identifier (IB fabrics). */
   ibv_gid gid{}; /* GID for RoCE / IB with GRH. */
+  uint8_t gidIndex{3}; /* Resolved GID table index used for this NIC. */
   ibv_mtu mtu{IBV_MTU_4096}; /* Active MTU from port query. */
   int linkLayer{IBV_LINK_LAYER_ETHERNET}; /* IB or Ethernet (RoCE). */
   uint8_t portNum{1}; /* Physical port number on the HCA. */
   bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
   int numaNode{-1}; /* NUMA node of the NIC, from Topology (-1 = unknown). */
 
+  /*
+   * Full-init constructor.
+   *
+   * @param configuredGidIndex  Forced RoCE GID index, or -1 to auto-select a
+   *                            RoCEv2 entry by scanning the GID table (falls
+   *                            back to index 3 when ibv_query_gid_ex is
+   *                            unavailable or no RoCEv2 entry is found).
+   */
   NicResources(
       ibv_device* device,
       std::shared_ptr<IbvApi> api,
       int numaNode = -1,
-      uint8_t gidIndex = 3,
+      int configuredGidIndex = -1,
       std::optional<uint8_t> port = std::nullopt);
 
   ~NicResources();
@@ -42,6 +51,11 @@ struct NicResources {
 
  private:
   uint8_t findActivePort() const;
+  /// Resolve the RoCE GID table index for an Ethernet port. Returns the
+  /// configured index when >= 0; otherwise scans for a RoCEv2 entry (preferring
+  /// IPv4-mapped); falls back to index 3.
+  uint8_t resolveGidIndex(int configuredGidIndex, const ibv_port_attr& portAttr)
+      const;
   void cleanup();
   std::shared_ptr<IbvApi> ibvApi{nullptr};
 };

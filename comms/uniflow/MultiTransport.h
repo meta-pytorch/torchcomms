@@ -17,6 +17,10 @@ enum class CpuNicSelectionPolicy {
 };
 
 struct MultiTransportFactoryOptions {
+  NicFilter nicFilter;
+  std::string netdevPrefix{"beth"};
+  int16_t gidIndex{-1};
+  uint8_t trafficClass{0};
   CpuNicSelectionPolicy cpuNicSelectionPolicy{
       CpuNicSelectionPolicy::kNumaLocalBounded};
   size_t maxCpuNics{2};
@@ -106,7 +110,6 @@ class MultiTransportFactory {
  public:
   explicit MultiTransportFactory(
       int deviceId,
-      NicFilter nicFilter = NicFilter(),
       MultiTransportFactoryOptions options = {});
 
   Result<RegisteredSegment> registerSegment(Segment& segment);
@@ -139,7 +142,6 @@ class MultiTransportFactory {
   std::vector<std::string> selectCpuNics();
 
   int deviceId_{-1};
-  NicFilter nicFilter_;
   MultiTransportFactoryOptions options_;
   std::shared_ptr<ScopedEventBaseThread> eventBaseThread_;
   std::vector<std::shared_ptr<TransportFactory>> factories_;

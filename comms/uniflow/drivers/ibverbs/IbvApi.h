@@ -85,6 +85,19 @@ class IbvApi {
   virtual Status
   queryGid(ibv_context* context, uint8_t portNum, int index, ibv_gid* gid);
 
+  /// Query an extended GID table entry (type, ndev, etc.) via
+  /// _ibv_query_gid_ex. Optional: only available when rdma-core exports the
+  /// symbol (IBVERBS_1.11+). Check isQueryGidExSupported() first.
+  virtual Status queryGidEx(
+      ibv_context* context,
+      uint32_t portNum,
+      uint32_t index,
+      ibv_gid_entry* entry,
+      uint32_t flags);
+
+  /// Returns true if ibv_query_gid_ex is available in the loaded rdma-core.
+  virtual bool isQueryGidExSupported();
+
   // --- MLX5 direct verbs ---
 
   /// Check if an IB device supports mlx5 direct verbs.

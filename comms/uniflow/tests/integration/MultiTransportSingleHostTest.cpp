@@ -34,7 +34,7 @@ class MultiTransportFactoryTest : public ::testing::Test {
     auto factory =
         std::unique_ptr<MultiTransportFactory>(new MultiTransportFactory({}));
     factory->deviceId_ = deviceId;
-    factory->nicFilter_ = std::move(nicFilter);
+    factory->options_.nicFilter = std::move(nicFilter);
     return factory;
   }
 
