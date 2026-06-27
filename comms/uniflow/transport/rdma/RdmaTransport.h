@@ -42,7 +42,9 @@ class RdmaSlabPool;
  */
 struct RdmaTransportConfig {
   uint32_t numQps{1}; /* Total QPs distributed round-robin across NICs. */
-  uint8_t gidIndex{3}; /* GID table index for RoCE addressing (3 = RoCEv2). */
+  /* RoCE GID table index. -1 = auto-select a RoCEv2 entry by scanning the GID
+   * table; >= 0 forces that index (3 is the Mellanox RoCEv2 convention). */
+  int16_t gidIndex{-1};
   uint8_t timeout{14}; /* IB timeout exponent for QP retransmission. */
   uint8_t retryCnt{7}; /* Number of retries before reporting an error. */
   uint8_t trafficClass{0}; /* Traffic class for GRH (QoS / DSCP). */

@@ -77,6 +77,10 @@ class SingleHostTest : public ::testing::Test {
 
   /// Create two factories on different NICs, create transports, connect them.
   /// Returns the two connected transports and their factories.
+  ///
+  /// When a NIC list is empty (the default), the first two enumerated devices
+  /// are used. This keeps the data-path tests vendor-agnostic so they run on
+  /// any RDMA host (mlx5, bnxt_re/Thor2, etc.) without hardcoded device names.
   struct ConnectedPair {
     std::unique_ptr<RdmaTransportFactory> factory0;
     std::unique_ptr<RdmaTransportFactory> factory1;
@@ -85,8 +89,14 @@ class SingleHostTest : public ::testing::Test {
   };
 
   ConnectedPair connectPair(
-      const std::vector<std::string>& nicVec0 = {"mlx5_0"},
-      const std::vector<std::string>& nicVec1 = {"mlx5_3"}) {
+      std::vector<std::string> nicVec0 = {},
+      std::vector<std::string> nicVec1 = {}) {
+    if (nicVec0.empty()) {
+      nicVec0 = {deviceNames_[0]};
+    }
+    if (nicVec1.empty()) {
+      nicVec1 = {deviceNames_[1]};
+    }
     ConnectedPair pair;
     auto* evb = evbThread_->getEventBase();
     pair.factory0 = std::make_unique<RdmaTransportFactory>(
