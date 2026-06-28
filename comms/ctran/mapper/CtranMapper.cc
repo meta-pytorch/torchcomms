@@ -10,6 +10,8 @@
 #include <sstream>
 #include <string>
 
+#include <fmt/core.h>
+
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
@@ -928,6 +930,46 @@ bool CtranMapper::hasBackend() {
     }
   }
   return true;
+}
+
+commResult_t CtranMapper::validateAllGatherPHandle(
+    void* hdl,
+    std::string* reason) {
+  auto setReason = [&](std::string message) {
+    if (reason != nullptr) {
+      *reason = std::move(message);
+    }
+  };
+
+  if (hdl == nullptr) {
+    setReason("recv buffer registration handle is null");
+    return commInvalidArgument;
+  }
+
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
+  const auto& statex = comm->statex_;
+  const int myRank = statex->rank();
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (peer == myRank) {
+      continue;
+    }
+
+    auto peerBackend = queryPeerBackend(regElem, peer);
+    if (peerBackend == CtranMapperBackend::UNSET) {
+      setReason(fmt::format(
+          "recv buffer is not exportable to rank {} via NVL or IB",
+          peer));
+      return commInvalidUsage;
+    }
+    if (peerBackend == CtranMapperBackend::TCPDM) {
+      setReason(fmt::format(
+          "rank {} requires TCPDM, which Persistent AllGather does not support",
+          peer));
+      return commInvalidUsage;
+    }
+  }
+
+  return commSuccess;
 }
 
 CtranIb* CtranMapper::ctranIbPtr() {

@@ -20,7 +20,8 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
   if (!ctran::allGatherPSupport(comm->ctranComm_.get())) {
     FB_ERRORTHROW(
         commInvalidUsage,
-        "Persistent AllGather is not supported. Check whether CTRAN is enabled.");
+        "Persistent AllGather is not supported. "
+        "Requires CTRAN Persistent AllGather transport support.");
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);

@@ -154,14 +154,6 @@ struct CtranWin {
     atomicCapable_ = val;
   }
 
-  // Check whether persistent allgather (allgatherP) is supported.
-  // Returns true if ctran is initialized and all peers have configured
-  // backends. Static variant allows checking before a window is created.
-  static bool allGatherPSupported(CtranComm* comm);
-  bool allGatherPSupported() const {
-    return allGatherPSupported(comm);
-  }
-
  private:
   DevMemType bufType_{DevMemType::kCumem};
   // whether allocate window data buffer or provided by users

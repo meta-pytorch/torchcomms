@@ -67,7 +67,7 @@ class CtranWinAllGatherTest : public ctran::CtranDistTestFixture {
     const size_t recvBytes = sendBytes * nRanks;
 
     // Check support before allocating resources
-    if (!CtranWin::allGatherPSupported(comm.get())) {
+    if (!ctran::allGatherPSupport(comm.get())) {
       GTEST_SKIP() << "allGatherP not supported on this topology";
     }
     const auto nNodes = statex->nNodes();
@@ -179,7 +179,7 @@ TEST_F(CtranWinAllGatherTest, DisjointMemory) {
   const size_t sendBytes = sendCount * commTypeSize(dt);
   const size_t recvBytes = sendBytes * nRanks;
 
-  if (!CtranWin::allGatherPSupported(comm.get())) {
+  if (!ctran::allGatherPSupport(comm.get())) {
     GTEST_SKIP() << "allGatherP not supported on this topology";
   }
 
@@ -257,7 +257,7 @@ TEST_F(CtranWinAllGatherTest, BackToBackMultiComm) {
     ASSERT_EQ(
         ctranWinRegister(tmpBuf, recvBytes, firstComm.get(), &tmpWin),
         commSuccess);
-    if (!tmpWin->allGatherPSupported()) {
+    if (!ctran::allGatherPSupport(firstComm.get())) {
       ASSERT_EQ(ctranWinFree(tmpWin), commSuccess);
       CUDACHECK_TEST(cudaFree(tmpBuf));
       GTEST_SKIP() << "allGatherP not supported on this topology";
