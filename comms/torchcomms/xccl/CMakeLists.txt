@@ -23,9 +23,14 @@ message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
 
+# Shared comms utilities (e.g. RankUtils::getLocalRank() for node-local rank
+# discovery in topology). Add more comms/utils/*.cc files here as needed.
+set(TORCHCOMMS_UTILS_SOURCES "comms/utils/RankUtils.cc")
+
 add_library(torchcomms_comms_xccl MODULE
     ${TORCHCOMMS_XCCL_SOURCES}
     ${TORCHCOMMS_XPU_API_SOURCE}
+    ${TORCHCOMMS_UTILS_SOURCES}
 )
 set_target_properties(torchcomms_comms_xccl PROPERTIES
     PREFIX ""
@@ -45,13 +50,10 @@ torchcomms_use_torch_pybind11(torchcomms_comms_xccl)
 target_compile_features(torchcomms_comms_xccl PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_xccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_xccl PRIVATE
+    torchcomms
     fmt::fmt
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
-    torchcomms
-)
-
-target_link_libraries(torchcomms_comms_xccl PRIVATE
     ${XCCL_SHARED_LIB}
 )
 

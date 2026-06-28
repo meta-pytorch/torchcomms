@@ -201,6 +201,7 @@ void TorchCommXCCLBootstrap::cleanupTCPStore(onecclComm_t xccl_comm) {
 static const std::set<std::string> kTorchCommLayerHints = {
     std::string(kHintIsHighPriorityStream),
     std::string(kHintMaxEventPoolSize),
+    std::string(kHintComputeNodeRankLayout),
 };
 
 // Helper function to populate XCCL config from hints
