@@ -9,6 +9,7 @@ namespace uniflow {
 namespace {
 
 constexpr uint8_t kDefaultRoceV2GidIndex = 3;
+constexpr int kMaxGidTblLen = 256;
 
 /// True if @p gid is an IPv4-mapped IPv6 address (::ffff:a.b.c.d).
 bool isIpv4MappedGid(const ibv_gid& gid) {
@@ -28,6 +29,68 @@ bool isLinkLocalGid(const ibv_gid& gid) {
     return true;
   }
   return isIpv4MappedGid(gid) && gid.raw[12] == 169 && gid.raw[13] == 254;
+}
+
+/// Scan GID table for RoCEv2. Returns IPv4-mapped first, else first global,
+/// else nullopt. Logs selection.
+std::optional<uint8_t> scanForRoceV2Gid(
+    int gidTblLen,
+    ibv_context* ctx,
+    uint8_t portNum,
+    const std::shared_ptr<IbvApi>& ibvApi) {
+  // Defense-in-depth: gid_tbl_len should be positive and reasonably bounded.
+  // ibv_port_attr.gid_tbl_len is int; typical hardware values are < 256.
+  if (gidTblLen <= 0 || gidTblLen > kMaxGidTblLen) {
+    return std::nullopt;
+  }
+  int firstGlobalRoceV2 = -1;
+  for (int i = 0; i < gidTblLen; ++i) {
+    ibv_gid_entry entry{};
+    auto status =
+        ibvApi->queryGidEx(ctx, portNum, static_cast<uint32_t>(i), &entry, 0);
+    if (status.hasError() || entry.gid_type != IBV_GID_TYPE_ROCE_V2) {
+      continue;
+    }
+    // Link-local GIDs are not routable across NICs/hosts; skip them so that
+    // cross-NIC and cross-host RoCE connections use a globally routable GID.
+    if (isLinkLocalGid(entry.gid)) {
+      continue;
+    }
+    // Prefer an IPv4-mapped RoCEv2 entry; otherwise remember the first global.
+    if (isIpv4MappedGid(entry.gid)) {
+      UNIFLOW_LOG_INFO(
+          "Selected IPv4-mapped RoCEv2 GID index {} on port {}", i, portNum);
+      return static_cast<uint8_t>(i);
+    }
+    if (firstGlobalRoceV2 < 0) {
+      firstGlobalRoceV2 = i;
+    }
+  }
+
+  if (firstGlobalRoceV2 >= 0) {
+    UNIFLOW_LOG_INFO(
+        "Selected RoCEv2 GID index {} on port {}", firstGlobalRoceV2, portNum);
+    return static_cast<uint8_t>(firstGlobalRoceV2);
+  }
+  return std::nullopt;
+}
+
+/// Throw runtime_error for default GID index out of range with unified message.
+[[noreturn]] void throwDefaultGidIndexOutOfRange(
+    int gidTblLen,
+    uint8_t portNum) {
+  throw std::runtime_error(
+      "NicResources: default GID index " +
+      std::to_string(kDefaultRoceV2GidIndex) + " out of range (gid_tbl_len=" +
+      std::to_string(gidTblLen) + ") on port " + std::to_string(portNum));
+}
+
+/// Return kDefaultRoceV2GidIndex if in range else throw with unified message.
+uint8_t getDefaultGidIndexOrThrow(int gidTblLen, uint8_t portNum) {
+  if (kDefaultRoceV2GidIndex < gidTblLen) {
+    return kDefaultRoceV2GidIndex;
+  }
+  throwDefaultGidIndexOutOfRange(gidTblLen, portNum);
 }
 
 } // namespace
@@ -152,84 +215,51 @@ uint8_t NicResources::findActivePort() const {
 uint8_t NicResources::resolveGidIndex(
     int configuredGidIndex,
     const ibv_port_attr& portAttr) const {
+  // 1. precondition — GID table must be non-empty and reasonably bounded.
+  //    After this, 0 < gid_tbl_len <= kMaxGidTblLen is guaranteed.
+  if (portAttr.gid_tbl_len <= 0 || portAttr.gid_tbl_len > kMaxGidTblLen) {
+    throw std::runtime_error(
+        "NicResources: gid_tbl_len is " + std::to_string(portAttr.gid_tbl_len) +
+        " on port " + std::to_string(portNum) + "; expected 1.." +
+        std::to_string(kMaxGidTblLen) + "; cannot resolve GID index");
+  }
+
+  // 2. validate forced index — now single range check, no need to re-check <=0.
   if (configuredGidIndex >= 0) {
     if (configuredGidIndex >= portAttr.gid_tbl_len) {
       throw std::runtime_error(
           "NicResources: configured GID index " +
-          std::to_string(configuredGidIndex) +
-          " out of range (gid_tbl_len=" + std::to_string(portAttr.gid_tbl_len) +
-          "); check configured gidIndex");
+          std::to_string(configuredGidIndex) + " out of range (gid_tbl_len=" +
+          std::to_string(portAttr.gid_tbl_len) + ") on port " +
+          std::to_string(portNum) + "; check configured gidIndex");
     }
     return static_cast<uint8_t>(configuredGidIndex);
   }
 
+  // 3. non-Ethernet or no query_ex support -> default or throw (single point)
   // The GID index only matters for RoCE (Ethernet) addressing; IB ports use
   // LID-based address vectors. Auto-selection also requires ibv_query_gid_ex,
   // which older rdma-core may not export.
   if (linkLayer != IBV_LINK_LAYER_ETHERNET ||
       !ibvApi->isQueryGidExSupported()) {
-    if (portAttr.gid_tbl_len > 0 &&
-        kDefaultRoceV2GidIndex >= portAttr.gid_tbl_len) {
-      throw std::runtime_error(
-          "NicResources: default GID index " +
-          std::to_string(kDefaultRoceV2GidIndex) +
-          " out of range (gid_tbl_len=" + std::to_string(portAttr.gid_tbl_len) +
-          "); set gidIndex explicitly");
-    }
-    return kDefaultRoceV2GidIndex;
-  }
-  int firstGlobalRoceV2 = -1;
-  for (int i = 0; i < portAttr.gid_tbl_len; ++i) {
-    ibv_gid_entry entry{};
-    auto status =
-        ibvApi->queryGidEx(ctx, portNum, static_cast<uint32_t>(i), &entry, 0);
-    if (status.hasError() || entry.gid_type != IBV_GID_TYPE_ROCE_V2) {
-      continue;
-    }
-    // Link-local GIDs are not routable across NICs/hosts; skip them so that
-    // cross-NIC and cross-host RoCE connections use a globally routable GID.
-    if (isLinkLocalGid(entry.gid)) {
-      continue;
-    }
-    // Prefer an IPv4-mapped RoCEv2 entry; otherwise remember the first global.
-    if (isIpv4MappedGid(entry.gid)) {
-      UNIFLOW_LOG_INFO(
-          "Selected IPv4-mapped RoCEv2 GID index {} on port {}", i, portNum);
-      return static_cast<uint8_t>(i);
-    }
-    if (firstGlobalRoceV2 < 0) {
-      firstGlobalRoceV2 = i;
-    }
+    return getDefaultGidIndexOrThrow(portAttr.gid_tbl_len, portNum);
   }
 
-  if (firstGlobalRoceV2 >= 0) {
-    if (firstGlobalRoceV2 > 255) {
-      UNIFLOW_LOG_WARN(
-          "GID index {} exceeds uint8_t range on port {}; using default",
-          firstGlobalRoceV2,
-          portNum);
-    } else {
-      UNIFLOW_LOG_INFO(
-          "Selected RoCEv2 GID index {} on port {}",
-          firstGlobalRoceV2,
-          portNum);
-      return static_cast<uint8_t>(firstGlobalRoceV2);
-    }
+  // 4. scan
+  if (auto scanned =
+          scanForRoceV2Gid(portAttr.gid_tbl_len, ctx, portNum, ibvApi)) {
+    return *scanned;
   }
 
-  if (kDefaultRoceV2GidIndex < portAttr.gid_tbl_len) {
-    UNIFLOW_LOG_WARN(
-        "No global RoCEv2 GID found on port {}; falling back to GID index {}",
-        portNum,
-        kDefaultRoceV2GidIndex);
-    return kDefaultRoceV2GidIndex;
+  // 5. single fallback
+  if (kDefaultRoceV2GidIndex >= portAttr.gid_tbl_len) {
+    throwDefaultGidIndexOutOfRange(portAttr.gid_tbl_len, portNum);
   }
-
-  throw std::runtime_error(
-      "NicResources: no global RoCEv2 GID found on port " +
-      std::to_string(portNum) + " and default GID index " +
-      std::to_string(kDefaultRoceV2GidIndex) + " out of range (gid_tbl_len=" +
-      std::to_string(portAttr.gid_tbl_len) + ")");
+  UNIFLOW_LOG_WARN(
+      "No global RoCEv2 GID found on port {}; falling back to GID index {}",
+      portNum,
+      kDefaultRoceV2GidIndex);
+  return kDefaultRoceV2GidIndex;
 }
 
 } // namespace uniflow
