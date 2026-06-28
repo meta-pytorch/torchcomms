@@ -9,8 +9,8 @@
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchCommBatch.hpp>
 #include <comms/torchcomms/TorchCommHooks.hpp>
+#include <comms/torchcomms/TorchCommNodeRankLayout.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
-#include <comms/torchcomms/TorchCommTopology.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <memory>
@@ -44,7 +44,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   int getSize() const;
   std::vector<int> getRanks() const;
   std::string_view getCommName() const;
-  CommTopology getTopology() const;
+  NodeRankLayout getNodeRankLayout() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(

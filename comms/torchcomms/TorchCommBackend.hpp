@@ -7,8 +7,8 @@
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommBatch.hpp>
 #include <comms/torchcomms/TorchCommHooks.hpp>
+#include <comms/torchcomms/TorchCommNodeRankLayout.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
-#include <comms/torchcomms/TorchCommTopology.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
@@ -55,9 +55,9 @@ class TorchCommBackend {
   // Unique name for this instance of the communicator.
   virtual std::string_view getCommName() const = 0;
 
-  virtual CommTopology getTopology() const {
+  virtual NodeRankLayout getNodeRankLayout() const {
     throw std::logic_error(
-        "[TorchCommBackend]: getTopology not implemented for "
+        "[TorchCommBackend]: getNodeRankLayout not implemented for "
         "communicator:" +
         std::string(getCommName()));
   }

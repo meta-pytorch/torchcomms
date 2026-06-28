@@ -422,18 +422,19 @@ void TorchCommXCCL::init(
       xccl_api_->commCount(xccl_comm_, &comm_size_),
       "XCCL commCount failed");
 
-  // Determine the communicator's topology by hashing each rank's
+  // Determine the communicator's node layout by hashing each rank's
   // hostname (folded with boot_id for container awareness) and all-gathering
   // the per-rank hashes. Counting distinct hashes gives the node count, and
   // the multiplicity of the local rank's hash gives the local ranks-per-node.
   // The host hashes operate on host buffers, but the oneCCL plugin submits the
   // all-gather on the provided stream (asynchronously), so we synchronize
   // before reading the gathered results back.
-  // Topology discovery costs one extra all-gather at init. On by default;
-  // callers that never query it can opt out via the compute_topology hint.
-  if (options_.getHint<bool>(kHintComputeTopology, true)) {
-    topology_ = computeTopology();
-    topology_available_ = true;
+  // Node-layout discovery costs one extra all-gather at init. On by default;
+  // callers that never query it can opt out via the compute_node_rank_layout
+  // hint.
+  if (options_.getHint<bool>(kHintComputeNodeRankLayout, true)) {
+    node_rank_layout_ = computeNodeRankLayout();
+    node_rank_layout_available_ = true;
     auto join = [](const std::vector<int>& ids) {
       std::string out;
       for (size_t i = 0; i < ids.size(); ++i) {
@@ -466,23 +467,22 @@ void TorchCommXCCL::init(
       }
       return out;
     };
-    TC_LOG(INFO, this) << "XCCL communicator name: " << name_
-                       << ", comm_size: " << comm_size_
-                       << ", num_nodes: " << topology_.num_nodes
-                       << ", local_node_ranks: " << topology_.local_node_ranks
-                       << ", local_node_global_rank_ids: ["
-                       << join(topology_.local_node_global_rank_ids) << "]"
-                       << ", local_node_local_rank_ids: ["
-                       << join(topology_.local_node_local_rank_ids) << "]"
-                       << ", node_ids: " << joinNodeRanges(topology_.node_ids)
-                       << ", uniform: "
-                       << (topology_.uniform ? "true" : "false")
-                       << ", is_single_node: "
-                       << (topology_.isSingleNode() ? "true" : "false");
+    TC_LOG(INFO, this)
+        << "XCCL communicator name: " << name_ << ", comm_size: " << comm_size_
+        << ", num_nodes: " << node_rank_layout_.num_nodes
+        << ", local_node_ranks: " << node_rank_layout_.local_node_ranks
+        << ", local_node_global_rank_ids: ["
+        << join(node_rank_layout_.local_node_global_rank_ids) << "]"
+        << ", local_node_local_rank_ids: ["
+        << join(node_rank_layout_.local_node_local_rank_ids) << "]"
+        << ", node_ids: " << joinNodeRanges(node_rank_layout_.node_ids)
+        << ", uniform: " << (node_rank_layout_.uniform ? "true" : "false")
+        << ", is_single_node: "
+        << (node_rank_layout_.isSingleNode() ? "true" : "false");
   } else {
     TC_LOG(INFO, this) << "XCCL communicator name: " << name_
-                       << ", topology discovery disabled via '"
-                       << kHintComputeTopology << "' hint";
+                       << ", node-layout discovery disabled via '"
+                       << kHintComputeNodeRankLayout << "' hint";
   }
 
   TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
@@ -672,18 +672,19 @@ std::string_view TorchCommXCCL::getCommName() const {
   return name_;
 }
 
-CommTopology TorchCommXCCL::getTopology() const {
-  if (!topology_available_) {
+NodeRankLayout TorchCommXCCL::getNodeRankLayout() const {
+  if (!node_rank_layout_available_) {
     throw std::logic_error(
-        "[TorchCommXCCL]: topology not computed; init with the '" +
-        std::string(kHintComputeTopology) +
-        "' hint enabled (default) to use getTopology() for communicator: " +
+        "[TorchCommXCCL]: node layout not computed; init with the '" +
+        std::string(kHintComputeNodeRankLayout) +
+        "' hint enabled (default) to use getNodeRankLayout() for "
+        "communicator: " +
         std::string(name_));
   }
-  return topology_;
+  return node_rank_layout_;
 }
 
-CommTopology TorchCommXCCL::computeTopology() {
+NodeRankLayout TorchCommXCCL::computeNodeRankLayout() {
   // Each rank contributes a hash of its host identity; gathering all of them
   // lets every rank reconstruct the same node layout. These are host buffers,
   // which the oneCCL plugin submits on the stream, so we synchronize before
@@ -736,7 +737,7 @@ CommTopology TorchCommXCCL::computeTopology() {
   XPU_CHECK(
       xpu_api_,
       xpu_api_->streamSynchronize(stream),
-      "Failed to synchronize stream for topology detection");
+      "Failed to synchronize stream for node-layout detection");
 
   // Count how many ranks share each host hash. The number of distinct hashes
   // is the node count; the count for the local rank's hash is the local
@@ -746,40 +747,40 @@ CommTopology TorchCommXCCL::computeTopology() {
     ++ranks_on_host[id];
   }
 
-  CommTopology topology;
-  topology.num_nodes = static_cast<int>(ranks_on_host.size());
+  NodeRankLayout layout;
+  layout.num_nodes = static_cast<int>(ranks_on_host.size());
 
   // Assign each distinct host a node index by first appearance in comm-rank
   // order (rank 0's host is node 0). This numbering is derived purely from the
   // all-gathered hashes, so it is identical on every rank.
   std::unordered_map<uint64_t, int> node_index;
-  topology.node_ids.reserve(comm_size_);
+  layout.node_ids.reserve(comm_size_);
   for (int r = 0; r < comm_size_; ++r) {
     auto [it, inserted] = node_index.try_emplace(
         all_host_ids[r], static_cast<int>(node_index.size()));
-    topology.node_ids.push_back(it->second);
+    layout.node_ids.push_back(it->second);
   }
 
-  topology.local_node_ranks = ranks_on_host[host_id];
+  layout.local_node_ranks = ranks_on_host[host_id];
 
   // The global and node-local rank ids of the members that share this rank's
   // host, both ordered by rank within this communicator (so the two vectors are
   // index-aligned: entry i refers to the same member).
   for (int r = 0; r < comm_size_; ++r) {
     if (all_host_ids[r] == host_id) {
-      topology.local_node_global_rank_ids.push_back(all_global_ranks[r]);
-      topology.local_node_local_rank_ids.push_back(all_local_ranks[r]);
+      layout.local_node_global_rank_ids.push_back(all_global_ranks[r]);
+      layout.local_node_local_rank_ids.push_back(all_local_ranks[r]);
     }
   }
 
   // The factorization is only meaningful if every node holds the same number
   // of ranks.
-  topology.uniform = std::all_of(
+  layout.uniform = std::all_of(
       ranks_on_host.begin(), ranks_on_host.end(), [&](const auto& entry) {
-        return entry.second == topology.local_node_ranks;
+        return entry.second == layout.local_node_ranks;
       });
 
-  return topology;
+  return layout;
 }
 
 static inline std::chrono::milliseconds getOperationTimeout(

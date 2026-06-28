@@ -66,7 +66,7 @@ __all__ = [  # noqa: F405
     "BatchSendRecv",
     "P2POp",
     "CommOptions",
-    "CommTopology",
+    "NodeRankLayout",
     "TorchCommWindow",
     "register_backend",
     "TorchCommBackend",

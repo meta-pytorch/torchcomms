@@ -118,8 +118,8 @@ std::string_view TorchComm::getCommName() const {
   return impl_->getCommName();
 }
 
-CommTopology TorchComm::getTopology() const {
-  return impl_->getTopology();
+NodeRankLayout TorchComm::getNodeRankLayout() const {
+  return impl_->getNodeRankLayout();
 }
 
 std::string_view TorchComm::getBackendVersion() const {

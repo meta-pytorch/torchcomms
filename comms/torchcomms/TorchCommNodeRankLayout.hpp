@@ -7,19 +7,19 @@
 namespace torch::comms {
 
 /**
- * CommTopology - Node layout of a communicator's ranks.
+ * NodeRankLayout - Node layout of a communicator's ranks.
  *
  * Backends that can determine this (e.g. via a hostname hash exchange at
  * init) populate it so higher layers can make topology-aware decisions.
  *
- * The default value describes an unknown topology and is deliberately
+ * The default value describes an unknown layout and is deliberately
  * conservative: isSingleNode() returns false.
  *
  * Note on node identity: "node" means a distinct host as observed by the
  * backend. A backend that folds the Linux boot_id into its host hash will
  * treat two containers on the same physical host as different nodes.
  */
-struct CommTopology {
+struct NodeRankLayout {
   // Number of distinct hosts spanned by this communicator.
   int num_nodes{0};
 

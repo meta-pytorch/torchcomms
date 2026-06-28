@@ -30,9 +30,10 @@ namespace torch::comms {
 constexpr std::string_view kHintIsHighPriorityStream =
     "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-// When false, skip the init-time host-hash all-gather; getTopology() then
-// throws as if the backend did not implement it. Default true.
-constexpr std::string_view kHintComputeTopology = "compute_topology";
+// When false, skip the init-time host-hash all-gather; getNodeRankLayout()
+// then throws as if the backend did not implement it. Default true.
+constexpr std::string_view kHintComputeNodeRankLayout =
+    "compute_node_rank_layout";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
@@ -95,7 +96,7 @@ class TorchCommXCCL : public TorchCommBackend,
   std::string_view getBackendName() const override;
   std::string_view getBackendVersion() const override;
   std::string_view getCommName() const override;
-  CommTopology getTopology() const override;
+  NodeRankLayout getNodeRankLayout() const override;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -358,17 +359,17 @@ class TorchCommXCCL : public TorchCommBackend,
   void attachMemoryHook();
   void detachMemoryHook();
 
-  // Determines the communicator's physical topology by all-gathering a
+  // Determines the communicator's node layout by all-gathering a
   // per-rank host hash. Called once during init().
-  CommTopology computeTopology();
+  NodeRankLayout computeNodeRankLayout();
 
   // Member variables
   onecclComm_t xccl_comm_{};
   at::Device device_;
   int comm_size_{};
   int rank_{};
-  CommTopology topology_;
-  bool topology_available_{false};
+  NodeRankLayout node_rank_layout_;
+  bool node_rank_layout_available_{false};
   CommOptions options_;
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
   void* barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
