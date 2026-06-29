@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 using ::testing::_;
@@ -72,6 +73,28 @@ TEST(TorchCommOptionsTest, StringToBool) {
   EXPECT_THROW(torch::comms::string_to_bool("yess"), std::runtime_error);
   EXPECT_THROW(torch::comms::string_to_bool("nope"), std::runtime_error);
   EXPECT_THROW(torch::comms::string_to_bool("falsey"), std::runtime_error);
+}
+
+TEST(TorchCommOptionsTest, SendOptionsTagDefaultsToZero) {
+  SendOptions options;
+  EXPECT_EQ(options.tag, 0);
+}
+
+TEST(TorchCommOptionsTest, SendOptionsTagIsAssignable) {
+  SendOptions options;
+  options.tag = 42;
+  EXPECT_EQ(options.tag, 42);
+}
+
+TEST(TorchCommOptionsTest, RecvOptionsTagDefaultsToZero) {
+  RecvOptions options;
+  EXPECT_EQ(options.tag, 0);
+}
+
+TEST(TorchCommOptionsTest, RecvOptionsTagIsAssignable) {
+  RecvOptions options;
+  options.tag = 7;
+  EXPECT_EQ(options.tag, 7);
 }
 
 } // namespace torch::comms::test
