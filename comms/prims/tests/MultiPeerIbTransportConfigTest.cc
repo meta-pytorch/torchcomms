@@ -64,5 +64,67 @@ TEST(
       dataDirectActiveForNic(defaultConfig, /*nicIsDataDirect=*/false));
 }
 
+// The PCIe Relaxed Ordering knob (NCCL_IB_PCI_RELAXED_ORDERING, tunneled into
+// enablePciRelaxedOrdering) reaches registerBuffer's access-flag decision via
+// relaxedOrderingActiveForNic(): the IBV_ACCESS_RELAXED_ORDERING flag is set
+// exactly when this holds. Crucially, it is also gated on NIC capability
+// (probed during openNics), so on a NIC whose driver rejects the flag both
+// Auto and Enabled fall back to strict ordering instead of failing
+// registration. These pure checks pin that gating without needing a NIC.
+
+// Default config requests Relaxed Ordering (Auto), matching NCCL's default.
+TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingDefaultsToAuto) {
+  MultipeerIbTransportConfig config;
+  EXPECT_EQ(
+      config.enablePciRelaxedOrdering,
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Auto);
+}
+
+// Auto + RO-capable NIC -> registerBuffer sets the Relaxed Ordering flag.
+TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingAutoActiveOnCapableNic) {
+  MultipeerIbTransportConfig config;
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Auto;
+  EXPECT_TRUE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/true));
+}
+
+// Auto but the NIC's driver rejects the flag -> fall back to strict ordering
+// (no throw). This is the case the review flagged.
+TEST(
+    MultiPeerIbTransportConfigTest,
+    RelaxedOrderingAutoFallsBackOnIncapableNic) {
+  MultipeerIbTransportConfig config;
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Auto;
+  EXPECT_FALSE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/false));
+}
+
+// Even an explicit Enabled request falls back when the NIC can't do RO, so
+// transport setup never breaks on an unsupporting driver (a warning is logged).
+TEST(
+    MultiPeerIbTransportConfigTest,
+    RelaxedOrderingEnabledFallsBackOnIncapableNic) {
+  MultipeerIbTransportConfig config;
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Enabled;
+  EXPECT_TRUE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/true));
+  EXPECT_FALSE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/false));
+}
+
+// Disabled -> never set the flag, even on a capable NIC.
+TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingDisabledNeverActive) {
+  MultipeerIbTransportConfig config;
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Disabled;
+  EXPECT_FALSE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/true));
+  EXPECT_FALSE(
+      relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/false));
+}
+
 } // namespace
 } // namespace comms::prims
