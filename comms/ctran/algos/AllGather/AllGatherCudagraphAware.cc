@@ -43,12 +43,14 @@
 namespace {
 
 // winPersistBuffReg: register recvbuff as a window on the caller-provided
-// local-NVL clique comm (nvlComm), persisting only the NVL peers' addresses,
-// then run allGatherWinInit on the parent comm. allGatherWinInit fills the
-// cross-node rail IB keys before graph replay can use them, so the execution
-// path never needs to access a nonlocal window key. Registering on the
-// local-NVL comm preserves normal whole-communicator window registration
-// semantics within that domain.
+// local-NVL clique comm (nvlComm), persisting only the NVL peers' addresses.
+// The cross-node rail IB rkeys are NOT exchanged here: allGatherWinInit leaves
+// them UNSET (deferRail) and they are filled lazily on the first graph replay
+// by ensureRailKeysExchanged() in the exec path. At replay all ranks are in
+// lockstep, so that in-line allGatherCtrl is quick and never gated by a
+// straggler's capture-time cuMemImport. Registering on the local-NVL comm
+// preserves normal whole-communicator window registration semantics within
+// that domain.
 commResult_t winPersistBuffReg(
     void* recvbuff,
     size_t recvBytes,
@@ -72,7 +74,9 @@ commResult_t winPersistBuffReg(
   {
     meta::comms::StreamCaptureModeGuard captureGuard{
         cudaStreamCaptureModeRelaxed};
-    FB_COMMCHECK(ctran::allGatherWinInit(*nvlWinOut, comm, stream, request));
+    FB_COMMCHECK(
+        ctran::allGatherWinInit(
+            *nvlWinOut, comm, stream, request, /*deferRail=*/true));
   }
 
   winGuard.dismiss();

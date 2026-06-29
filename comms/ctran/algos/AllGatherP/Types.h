@@ -16,6 +16,12 @@ struct PersistArgs {
   std::vector<void*> remoteRecvBuffs;
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
 
+  // When set, populateWinPArgs populates only
+  // the local NVL window and marks initialized; the cross-node rail
+  // remoteRecvBuffs/remoteAccessKeys are left UNSET and filled later by the
+  // first-replay drain registered on the comm in winPersistBuffReg.
+  bool railDeferred{false};
+
   // Initialization offloads the remote handle exchange to GPE thread to avoid
   // potential deadlock on mapper epoch lock, if init is called again on the
   // main thread while there is an outstanding exec. Init returns without

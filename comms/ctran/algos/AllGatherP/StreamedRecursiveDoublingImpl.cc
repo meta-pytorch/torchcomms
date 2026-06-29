@@ -5,6 +5,7 @@
 
 #include <folly/ScopeGuard.h>
 
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Common.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
@@ -102,6 +103,12 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   const auto sendSize =
       op->allgatherP.count * commTypeSize(op->allgatherP.datatype);
   CtranComm* comm = opGroup.front()->comm_;
+
+  // Lazily exchange the cross-node rail IB rkeys on the first replay (win init
+  // leaves them UNSET). At replay all ranks are in lockstep, so this in-line
+  // exchange is quick and never gated by a straggler's capture-time
+  // cuMemImport. A no-op on later replays (rail entries already set).
+  FB_COMMCHECK(ctran::ensureRailKeysExchanged(comm, pArgs));
 
   const auto statex = comm->statex_.get();
   const auto rank = statex->rank();

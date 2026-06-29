@@ -263,7 +263,8 @@ commResult_t allGatherWinInit(
     CtranWin* win,
     CtranComm* comm,
     cudaStream_t stream,
-    CtranPersistentRequest*& request);
+    CtranPersistentRequest*& request,
+    bool deferRail = false);
 
 commResult_t allGatherWinExec(
     const void* sendbuff,
@@ -272,6 +273,17 @@ commResult_t allGatherWinExec(
     CtranPersistentRequest* request);
 
 commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
+
+// Lazily exchange the cross-node rail IB rkeys on first use, called from the
+// windowed-allgather exec path: the rail entries are left UNSET at win init and
+// filled on the first graph replay. No-op once filled. Defined in
+// WinAllGather.cc.
+namespace allgatherp {
+struct PersistArgs;
+}
+commResult_t ensureRailKeysExchanged(
+    CtranComm* comm,
+    allgatherp::PersistArgs* pArgs);
 
 bool AllToAllPSupport(CtranComm* comm);
 

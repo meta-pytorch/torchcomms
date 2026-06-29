@@ -178,9 +178,24 @@ commResult_t populateWinPArgs(
   const auto statex = comm->statex_.get();
   const auto railRanks = allgatherp::computeRailRanks(statex);
 
-  // Exchange the cross-node rail IB rkeys in-line during win init, on the GPE
-  // thread, before the captured graph can replay. populateRemoteInfoFromWindow
-  // has already filled the local NVL window entries; this fills the rail ones.
+  // Deferred rail wait (production / cudagraph capture path): the local NVL
+  // window info is already populated by populateRemoteInfoFromWindow. The
+  // cross-node rail entries stay UNSET here and are filled lazily on the first
+  // graph replay by ensureRailKeysExchanged() in the exec path. Skip the
+  // in-line allGatherCtrl/railBarrier path.
+  if (pArgs->railDeferred) {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "allGatherWinInit: rank {} deferred rail rkey wait (filled at first replay)",
+        statex->rank());
+    pArgs->initialized.store(true);
+    return commSuccess;
+  }
+
+  // Direct (non-deferred) init: exchange the rail IB rkeys in-line. Only direct
+  // callers that do not defer (the windowed-allgather unit tests) reach this;
+  // the cudagraph capture path always defers above and fills lazily at replay.
   if (needsRailExchange(pArgs, railRanks, statex->rank())) {
     auto mapper = comm->ctran_->mapper.get();
     FB_COMMCHECK(mapper->allGatherCtrl(
@@ -205,11 +220,45 @@ commResult_t populateWinPArgs(
 }
 } // namespace
 
+// Lazily exchange the cross-node rail IB rkeys on first use. winPersistBuffReg
+// leaves the rail entries UNSET (populateWinPArgs only fills the local NVL
+// window); the first graph replay's exec gpeFn calls this to fill them in-line
+// before reading remote rail keys. At replay all ranks are in lockstep, so the
+// allGatherCtrl + barrier is quick and not gated by any straggler's
+// capture-time cuMemImport. Subsequent replays find the entries set (the
+// needsRailExchange null-check returns false) and this is a no-op.
+commResult_t ensureRailKeysExchanged(
+    CtranComm* comm,
+    allgatherp::PersistArgs* pArgs) {
+  const auto statex = comm->statex_.get();
+  const auto railRanks = allgatherp::computeRailRanks(statex);
+  if (!needsRailExchange(pArgs, railRanks, statex->rank())) {
+    return commSuccess;
+  }
+  auto mapper = comm->ctran_->mapper.get();
+  FB_COMMCHECK(mapper->allGatherCtrl(
+      pArgs->recvbuff,
+      pArgs->recvHdl,
+      railRanks,
+      pArgs->remoteRecvBuffs,
+      pArgs->remoteAccessKeys,
+      CtranMapperBackend::IB));
+  FB_COMMCHECK(railBarrier(mapper, railRanks, statex->rank()));
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "ensureRailKeysExchanged: rank {} lazily exchanged rail IB rkeys over {} ranks",
+      statex->rank(),
+      railRanks.size());
+  return commSuccess;
+}
+
 commResult_t allGatherWinInit(
     CtranWin* win,
     CtranComm* comm,
     cudaStream_t stream,
-    CtranPersistentRequest*& request) {
+    CtranPersistentRequest*& request,
+    bool deferRail) {
   FB_COMMCHECK(validateWindowRemoteInfo(win, comm));
 
   auto algo = std::make_unique<AlgoImpl>(comm, stream);
@@ -217,6 +266,14 @@ commResult_t allGatherWinInit(
   algo->pArgs.recvbuff = win->winDataPtr;
   algo->pArgs.recvHdl = win->dataRegHdl;
   algo->pArgs.initialized.store(false);
+
+  // Deferred rail wait: the rail IB key exchange was issued in
+  // winPersistBuffReg but is NOT waited here. Mark the rail entries deferred so
+  // populateWinPArgs skips the in-line allGatherCtrl; the rail entries are
+  // filled later by the first-replay drain registered on the comm.
+  if (deferRail) {
+    algo->pArgs.railDeferred = true;
+  }
 
   FB_COMMCHECK(algo->initResources());
 
