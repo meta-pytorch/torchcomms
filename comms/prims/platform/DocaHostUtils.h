@@ -51,6 +51,18 @@ struct DmaBufExport {
   DmaBufAlignment alignment; // alignment info for ibv_reg_dmabuf_mr
 };
 
+// Mapping requested when exporting a GPU allocation as a DMA-BUF fd.
+enum class DmaBufExportKind {
+  // Standard mapping (cuMemGetHandleForAddressRange flags = 0).
+  Default,
+  // BAR1 PCIe mapping (CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE) so the fd
+  // can back an mlx5dv_reg_dmabuf_mr with MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT
+  // (NCCL's NCCL_IB_DATA_DIRECT / GDAKI path): the NIC writes straight to GPU
+  // HBM over PCIe BAR1 instead of bouncing through Grace's C2C path. Requires
+  // CUDA >= 12.8; on older toolkits it is unavailable (returns std::nullopt).
+  Pcie,
+};
+
 // Export a GPU buffer as DMA-BUF with proper page alignment.
 //
 // Handles the full flow for cudaMalloc buffers on Grace/aarch64:
@@ -58,14 +70,32 @@ struct DmaBufExport {
 //   2. compute_dmabuf_alignment → align base/size to host page size
 //   3. cuMemGetHandleForAddressRange → export as DMA-BUF fd
 //
-// This is the plain CUDA-driver DMA-BUF export — doca_gpu_dmabuf_fd is a thin
-// wrapper over the same cuMemGetHandleForAddressRange call — so no DOCA context
-// is needed. Returns std::nullopt on failure (caller can fall back to
-// ibv_reg_mr). The returned DmaBufExport contains the fd and alignment info
-// needed for ibv_reg_dmabuf_mr (dmabufOffset as offset, ptr as iova).
+// `kind` selects the mapping: Default is the plain CUDA-driver DMA-BUF export
+// (C2C) — doca_gpu_dmabuf_fd is a thin wrapper over the same
+// cuMemGetHandleForAddressRange call, so no DOCA context is needed; Pcie
+// requests the BAR1 PCIe mapping for mlx5 Data-Direct (see DmaBufExportKind).
+// Returns std::nullopt on failure (the caller may fall back to ibv_reg_mr, or
+// treat Data-Direct as mandatory and fail hard). The returned DmaBufExport
+// contains the fd and alignment info needed for ibv_reg_dmabuf_mr (dmabufOffset
+// as offset, ptr as iova).
 inline std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
     void* ptr,
-    size_t size) {
+    size_t size,
+    DmaBufExportKind kind = DmaBufExportKind::Default) {
+  // Resolve the cuMemGetHandleForAddressRange mapping flag. The PCIe
+  // (Data-Direct) mapping requires CUDA >= 12.8; on older toolkits it cannot be
+  // expressed, so report it as unavailable.
+  unsigned long long handleFlags = 0;
+  if (kind == DmaBufExportKind::Pcie) {
+#if CUDA_VERSION >= 12080
+    handleFlags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
+#else
+    (void)ptr;
+    (void)size;
+    return std::nullopt;
+#endif
+  }
+
   if (cuda_driver_lazy_init() != 0 || pfn_cuMemGetAddressRange == nullptr ||
       pfn_cuMemGetHandleForAddressRange == nullptr) {
     LOG(WARNING)
@@ -93,10 +123,11 @@ inline std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
       reinterpret_cast<CUdeviceptr>(alignment.alignedBase),
       alignment.alignedSize,
       CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-      0);
+      handleFlags);
   if (fdRes != CUDA_SUCCESS || fd < 0) {
     LOG(WARNING) << "export_gpu_dmabuf_aligned: cuMemGetHandleForAddressRange"
-                 << " failed err=" << fdRes << " ptr=" << ptr
+                 << " failed err=" << fdRes << " ptr=" << ptr << " kind="
+                 << (kind == DmaBufExportKind::Pcie ? "pcie" : "default")
                  << " alignedBase=" << alignment.alignedBase
                  << " alignedSize=" << alignment.alignedSize;
     return std::nullopt;

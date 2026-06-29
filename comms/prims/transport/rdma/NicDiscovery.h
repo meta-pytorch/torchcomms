@@ -7,19 +7,10 @@
 #include <utility>
 #include <vector>
 
+#include "comms/prims/transport/rdma/DataDirectMode.h"
 #include "comms/prims/transport/rdma/IbHcaParser.h"
 
 namespace comms::prims {
-
-/**
- * Data Direct NIC discovery mode.
- * Controls whether Data Direct DMA NICs are discovered alongside regular NICs.
- */
-enum class DataDirectMode {
-  Disabled = 0, // No Data Direct discovery
-  Only = 1, // Replace regular NICs with DD variants (non-DD NICs remain)
-  Both = 2, // Keep both regular and DD variants
-};
 
 /**
  * Path type hierarchy for topology-aware NIC selection.
