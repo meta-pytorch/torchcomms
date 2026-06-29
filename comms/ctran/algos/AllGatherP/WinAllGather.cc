@@ -1,9 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <vector>
+
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -30,8 +33,133 @@ using ctran::allgatherp::PersistArgs;
 
 namespace ctran {
 
+namespace allgatherp {
+std::vector<int> computeRailRanks(const ncclx::CommStateX* statex) {
+  const int localRank = statex->localRank();
+  const int nNodes = statex->nNodes();
+
+  std::vector<int> ranks;
+  ranks.reserve(nNodes);
+  for (int node = 0; node < nNodes; ++node) {
+    ranks.push_back(statex->localRankToRank(localRank, node));
+  }
+  return ranks;
+}
+} // namespace allgatherp
+
 namespace {
 const std::string algoWinInitName = "CtranAllGatherWinInit";
+
+bool needsRailExchange(
+    const PersistArgs* pArgs,
+    const std::vector<int>& railRanks,
+    int myRank) {
+  for (const int rank : railRanks) {
+    if (rank != myRank &&
+        pArgs->remoteAccessKeys[rank].backend == CtranMapperBackend::UNSET) {
+      return true;
+    }
+  }
+  return false;
+}
+
+commResult_t railBarrier(
+    CtranMapper* mapper,
+    const std::vector<int>& railRanks,
+    int myRank) {
+  if (railRanks.size() <= 1) {
+    return commSuccess;
+  }
+  std::vector<CtranMapperRequest> reqs((railRanks.size() - 1) * 2);
+  int reqIdx = 0;
+  for (const int peerRank : railRanks) {
+    if (peerRank == myRank) {
+      continue;
+    }
+    FB_COMMCHECK(mapper->irecvCtrl(peerRank, &reqs[reqIdx++]));
+    FB_COMMCHECK(mapper->isendCtrl(peerRank, &reqs[reqIdx++]));
+  }
+  for (auto& req : reqs) {
+    FB_COMMCHECK(mapper->waitRequest(&req));
+  }
+  return commSuccess;
+}
+
+commResult_t validateWindowRemoteInfo(const CtranWin* win, CtranComm* comm) {
+  const auto nRanks = comm->statex_->nRanks();
+  const auto winRanks = static_cast<int>(win->remWinInfo.size());
+  if (winRanks == 0) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "Window remWinInfo not populated. Was exchange() called?");
+  }
+  if (winRanks == nRanks) {
+    return commSuccess;
+  }
+
+  if (win->comm == nullptr || win->comm->statex_ == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "Window was registered on a communicator without statex");
+  }
+  const auto& windowRanksToCommRanks = win->comm->parentRanks();
+  if (windowRanksToCommRanks.size() != win->remWinInfo.size()) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "Window remWinInfo size {} does not match window rank map size {}",
+        win->remWinInfo.size(),
+        windowRanksToCommRanks.size());
+  }
+
+  std::vector<bool> seenRanks(nRanks, false);
+  for (const auto commRank : windowRanksToCommRanks) {
+    if (commRank < 0 || commRank >= nRanks) {
+      FB_ERRORRETURN(
+          commInvalidArgument,
+          "Window rank map contains parent rank {} outside [0, {})",
+          commRank,
+          nRanks);
+    }
+    if (seenRanks[commRank]) {
+      FB_ERRORRETURN(
+          commInvalidArgument,
+          "Window rank map contains duplicate parent rank {}",
+          commRank);
+    }
+    seenRanks[commRank] = true;
+  }
+
+  return commSuccess;
+}
+
+commResult_t populateRemoteInfoFromWindow(
+    const CtranWin* win,
+    CtranComm* comm,
+    PersistArgs* pArgs) {
+  FB_COMMCHECK(validateWindowRemoteInfo(win, comm));
+
+  const auto nRanks = comm->statex_->nRanks();
+  pArgs->remoteRecvBuffs.assign(nRanks, nullptr);
+  pArgs->remoteAccessKeys.assign(nRanks, CtranMapperRemoteAccessKey{});
+
+  if (static_cast<int>(win->remWinInfo.size()) == nRanks) {
+    for (int r = 0; r < nRanks; r++) {
+      pArgs->remoteRecvBuffs[r] = win->remWinInfo[r].dataAddr;
+      pArgs->remoteAccessKeys[r] = win->remWinInfo[r].dataRkey;
+    }
+    return commSuccess;
+  }
+
+  const auto& windowRanksToCommRanks = win->comm->parentRanks();
+  for (int winRank = 0; winRank < static_cast<int>(win->remWinInfo.size());
+       ++winRank) {
+    const int commRank = windowRanksToCommRanks[winRank];
+    pArgs->remoteRecvBuffs[commRank] = win->remWinInfo[winRank].dataAddr;
+    pArgs->remoteAccessKeys[commRank] = win->remWinInfo[winRank].dataRkey;
+  }
+
+  return commSuccess;
+}
 
 // GPE callback: populate pArgs remote info from window, then mark initialized.
 // Runs on GPE thread to avoid races between init and exec on the mapper epoch
@@ -43,15 +171,33 @@ commResult_t populateWinPArgs(
   auto* win = op->allgatherp_init.win;
   CtranComm* comm = opGroup.front()->comm_;
 
-  const auto nRanks = comm->statex_->nRanks();
-
   CtranAlgoLogger logger(algoWinInitName, op->opCount, comm);
 
-  pArgs->remoteRecvBuffs.resize(nRanks);
-  pArgs->remoteAccessKeys.resize(nRanks);
-  for (int r = 0; r < nRanks; r++) {
-    pArgs->remoteRecvBuffs[r] = win->remWinInfo[r].dataAddr;
-    pArgs->remoteAccessKeys[r] = win->remWinInfo[r].dataRkey;
+  FB_COMMCHECK(populateRemoteInfoFromWindow(win, comm, pArgs));
+
+  const auto statex = comm->statex_.get();
+  const auto railRanks = allgatherp::computeRailRanks(statex);
+
+  // Exchange the cross-node rail IB rkeys in-line during win init, on the GPE
+  // thread, before the captured graph can replay. populateRemoteInfoFromWindow
+  // has already filled the local NVL window entries; this fills the rail ones.
+  if (needsRailExchange(pArgs, railRanks, statex->rank())) {
+    auto mapper = comm->ctran_->mapper.get();
+    FB_COMMCHECK(mapper->allGatherCtrl(
+        pArgs->recvbuff,
+        pArgs->recvHdl,
+        railRanks,
+        pArgs->remoteRecvBuffs,
+        pArgs->remoteAccessKeys,
+        CtranMapperBackend::IB));
+    FB_COMMCHECK(railBarrier(mapper, railRanks, statex->rank()));
+
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "allGatherWinInit: rank {} exchanged rail IB rkeys over {} ranks",
+        statex->rank(),
+        railRanks.size());
   }
 
   pArgs->initialized.store(true);
@@ -64,17 +210,7 @@ commResult_t allGatherWinInit(
     CtranComm* comm,
     cudaStream_t stream,
     CtranPersistentRequest*& request) {
-  const auto statex = comm->statex_.get();
-  const auto nRanks = statex->nRanks();
-
-  if (win->remWinInfo.empty() ||
-      static_cast<int>(win->remWinInfo.size()) != nRanks) {
-    FB_ERRORRETURN(
-        commInvalidArgument,
-        "Window remWinInfo not populated (size {}). "
-        "Was exchange() called?",
-        win->remWinInfo.size());
-  }
+  FB_COMMCHECK(validateWindowRemoteInfo(win, comm));
 
   auto algo = std::make_unique<AlgoImpl>(comm, stream);
 

@@ -9,8 +9,11 @@
 // Two registration strategies:
 //
 //   winPersistBuffReg (ctgraph_pipeline/rdpipeline, nLocalRanks > 1):
-//     Both local and remote addresses must be stable across replays.
-//     Uses window: ctranWinRegister → allGatherWinInit → AlgoImpl dispatch.
+//     Local NVL peer addresses must be stable across replays because the
+//     captured CE broadcasts use them. Rail peers exchange IB addr/rkey once
+//     during allGatherWinInit.
+//     Uses local-NVL window registration → allGatherWinInit → AlgoImpl
+//     dispatch.
 //
 //   localPersistBuffReg (ctgraph_ring/rd, nLocalRanks == 1):
 //     Only local registration persists; remote exchange happens at each replay
@@ -23,9 +26,11 @@
 // is destroyed. Graph replay is guaranteed to finish before comm destroy.
 
 #include <folly/ScopeGuard.h>
+#include <memory>
+#include <utility>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranCommSplit.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
@@ -37,24 +42,37 @@
 
 namespace {
 
-// winPersistBuffReg: register recvbuff as a window, exchange handles with
-// all peers. Both local and remote addresses must be stable across replays.
+// winPersistBuffReg: register recvbuff as a window on the caller-provided
+// local-NVL clique comm (nvlComm), persisting only the NVL peers' addresses,
+// then run allGatherWinInit on the parent comm. allGatherWinInit fills the
+// cross-node rail IB keys before graph replay can use them, so the execution
+// path never needs to access a nonlocal window key. Registering on the
+// local-NVL comm preserves normal whole-communicator window registration
+// semantics within that domain.
 commResult_t winPersistBuffReg(
     void* recvbuff,
     size_t recvBytes,
     CtranComm* comm,
+    CtranComm* nvlComm,
     cudaStream_t stream,
-    ctran::CtranWin** winOut,
+    ctran::CtranWin** nvlWinOut,
     CtranPersistentRequest** requestOut) {
-  FB_COMMCHECK(ctran::ctranWinRegister(recvbuff, recvBytes, comm, winOut));
+  FB_COMMCHECK(
+      ctran::ctranWinRegister(recvbuff, recvBytes, nvlComm, nvlWinOut));
 
-  auto winGuard = folly::makeGuard([winOut]() { delete *winOut; });
+  auto winGuard = folly::makeGuard([nvlWinOut]() {
+    if (*nvlWinOut != nullptr) {
+      (*nvlWinOut)->free(true /* skipBarrier */);
+      delete *nvlWinOut;
+      *nvlWinOut = nullptr;
+    }
+  });
 
   CtranPersistentRequest* request = nullptr;
   {
     meta::comms::StreamCaptureModeGuard captureGuard{
         cudaStreamCaptureModeRelaxed};
-    FB_COMMCHECK(ctran::allGatherWinInit(*winOut, comm, stream, request));
+    FB_COMMCHECK(ctran::allGatherWinInit(*nvlWinOut, comm, stream, request));
   }
 
   winGuard.dismiss();
@@ -123,21 +141,29 @@ commResult_t ctranAllGatherCudagraphAware(
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_pipeline:
     case NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline: {
-      ctran::CtranWin* win = nullptr;
+      // Split a local-NVL clique comm to register the recvbuff window on, so
+      // only the NVL peers' addresses are persisted; the cross-node rail rkeys
+      // are exchanged in allGatherWinInit. nvlComm must outlive all graph
+      // replays, so it is moved into the deferred-cleanup closure below.
+      std::shared_ptr<CtranComm> nvlComm;
+      FB_COMMCHECK(ctranCommSplitLocalNvl(comm, &nvlComm));
+
+      ctran::CtranWin* nvlWin = nullptr;
       CtranPersistentRequest* request = nullptr;
-      FB_COMMCHECK(
-          winPersistBuffReg(recvbuff, recvBytes, comm, stream, &win, &request));
+      FB_COMMCHECK(winPersistBuffReg(
+          recvbuff, recvBytes, comm, nvlComm.get(), stream, &nvlWin, &request));
       FB_CHECKABORT(
-          win != nullptr, "winPersistBuffReg succeeded but win is null");
+          nvlWin != nullptr, "winPersistBuffReg succeeded but nvlWin is null");
       FB_CHECKABORT(
           request != nullptr,
           "winPersistBuffReg succeeded but request is null");
 
-      auto cleanup = [request, win]() {
+      auto cleanup = [request, nvlWin, nvlComm = std::move(nvlComm)]() mutable {
         ctran::allGatherWinDestroy(request);
         delete request;
-        win->free(true /* skipBarrier */);
-        delete win;
+        nvlWin->free(true /* skipBarrier */);
+        delete nvlWin;
+        nvlComm.reset();
       };
       auto cleanupGuard = folly::makeGuard(cleanup);
 

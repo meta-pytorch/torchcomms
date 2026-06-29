@@ -7,6 +7,10 @@
 
 namespace ctran::allgatherp {
 
+// Rail ranks of this rank: the same local rank on every node. Used by both the
+// window init rail key exchange and the early-rail-exchange prefetch path.
+std::vector<int> computeRailRanks(const ncclx::CommStateX* statex);
+
 class AlgoImpl {
  public:
   PersistArgs pArgs;

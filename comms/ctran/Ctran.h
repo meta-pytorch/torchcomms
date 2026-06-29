@@ -272,6 +272,7 @@ commResult_t allGatherWinExec(
     CtranPersistentRequest* request);
 
 commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
+
 bool AllToAllPSupport(CtranComm* comm);
 
 commResult_t AllToAllPInit(
