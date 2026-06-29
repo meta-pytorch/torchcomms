@@ -31,7 +31,14 @@ inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.2";
  */
 class TorchCommBackend {
  public:
+  TorchCommBackend();
   virtual ~TorchCommBackend() = default;
+
+  // Initialize glog for torchcomms if it hasn't been initialized yet.
+  // Idempotent and safe to call from any entry point. Invoked from the
+  // base-class ctor and from TorchCommFactory::get() so logging is ready
+  // before any TC_LOG site runs.
+  static void ensureLoggingInit();
 
   // Initialize the communication backend
   virtual void init(
