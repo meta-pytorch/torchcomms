@@ -333,24 +333,22 @@ __device__ __noinline__ void phase2IbDualTree(
   const size_t tileOffsetElems = tile.offsetBytes / sizeof(T);
   const size_t tileElems = tile.bytes / sizeof(T);
 
-  // If the whole segment has at most one element per block, lane 1 would be
-  // empty for every block. Compress transport group ids to a single lane for
-  // that tiny-message shape; otherwise keep the stable two-lane mapping.
-  const bool useSingleLane =
-      actualElems <= static_cast<size_t>(args.common.numBlocks);
-  const int activeIbLanesPerBlock =
-      useSingleLane ? 1 : ctran::allreduce::tree::kTreeLanes;
-
-  const size_t halfElems0 = useSingleLane ? tileElems : (tileElems + 1) / 2;
-  const size_t halfElems1 = useSingleLane ? 0 : tileElems - halfElems0;
+  const size_t halfElems0 = (tileElems + 1) / 2;
+  const size_t halfElems1 = tileElems - halfElems0;
   T* phase2Buf = static_cast<T*>(args.common.phase2Buf);
-  const int activeIbGroups = args.common.numBlocks * activeIbLanesPerBlock;
+  const int activeIbGroups = args.ibSendRecvGroups;
+  PIPES_DEVICE_CHECK_MSG(
+      activeIbGroups >=
+          args.common.numBlocks * ctran::allreduce::tree::kTreeLanes,
+      "ctree Phase 2 fixed IB group geometry is too small");
 
   auto lane0Group = blockGroup;
-  lane0Group.group_id = blockGroup.group_id * activeIbLanesPerBlock;
+  lane0Group.group_id =
+      blockGroup.group_id * ctran::allreduce::tree::kTreeLanes;
   lane0Group.total_groups = static_cast<uint32_t>(activeIbGroups);
   auto lane1Group = blockGroup;
-  lane1Group.group_id = blockGroup.group_id * activeIbLanesPerBlock + 1;
+  lane1Group.group_id =
+      blockGroup.group_id * ctran::allreduce::tree::kTreeLanes + 1;
   lane1Group.total_groups = static_cast<uint32_t>(activeIbGroups);
 
   auto lane0 = makeTreeLaneState<T>(
