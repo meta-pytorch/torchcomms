@@ -20,7 +20,11 @@
 #include <cuda_runtime.h>
 #endif
 
+#include <memory>
+
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/memory/CuMemAllocation.h"
+#include "comms/prims/memory/CuMemMapping.h"
 #include "comms/prims/memory/NvlMemExchange.h"
 
 namespace comms::prims {
@@ -33,6 +37,13 @@ enum class MemSharingMode {
   // Requires: Hopper+ GPU, CUDA 12.3+
   // Supports: Multi-node NVLink (GB200 NVL72)
   kFabric,
+
+  // Use CUDA VMM allocations shared via POSIX file descriptors
+  // (CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR).
+  // Requires: CUDA 12.3+ VMM support.
+  // Limitation: Intra-node only (descriptors are duplicated via pidfd_getfd).
+  // Used for single-host H100 NVLink where fabric handles are unavailable.
+  kPosixFd,
 
   // Use cudaIpcMemHandle_t
   // Works on: All CUDA GPUs
@@ -110,6 +121,12 @@ class GpuMemHandler {
    * @param nRanks Total number of ranks
    * @param size Size of memory to allocate
    * @param mode Explicitly select fabric or cudaIpc mode
+   * @param alignFloor Optional minimum allocation alignment/size floor. Must be
+   * 0 (no floor) or a power of two. In a VMM mode it raises the physical
+   * allocation's granularity/size floor so the allocation can satisfy a larger
+   * granularity requirement (e.g. so it can later be bound into a multicast
+   * object - see MultimemHandler::backingGranularity()). Ignored in cudaIpc
+   * mode.
    *
    * @throws std::runtime_error if requested mode is not supported or allocation
    * fails
@@ -119,7 +136,8 @@ class GpuMemHandler {
       int32_t selfRank,
       int32_t nRanks,
       size_t size,
-      MemSharingMode mode);
+      MemSharingMode mode,
+      std::size_t alignFloor = 0);
 
   ~GpuMemHandler();
 
@@ -164,7 +182,7 @@ class GpuMemHandler {
    * Get the local IPC handle (cudaIpc / hipIpc). Only valid in `kCudaIpc` /
    * `kCudaIpcUncached` mode.
    *
-   * @throws std::runtime_error when mode is `kFabric`.
+   * @throws std::runtime_error when called in a VMM (fabric / posix-fd) mode.
    */
   const cudaIpcMemHandle_t& getLocalIpcHandle() const;
 
@@ -184,6 +202,17 @@ class GpuMemHandler {
   }
 
   /**
+   * Returns this handler's shared physical VMM allocation in a VMM-backed mode
+   * (kFabric or kPosixFd), or nullptr in cudaIpc mode (cudaMalloc has no VMM
+   * handle). The allocation is co-owned via shared_ptr; the multicast overlay
+   * (exchangeMulticast) binds the same allocation so the unicast and multicast
+   * views share one physical backing. Valid after construction.
+   */
+  std::shared_ptr<CuMemAllocation> allocation() const {
+    return allocation_;
+  }
+
+  /**
    * Check if the current GPU supports fabric handles.
    *
    * @return true if Hopper+ GPU with CUDA 12.3+ and fabric support enabled
@@ -196,17 +225,26 @@ class GpuMemHandler {
   static MemSharingMode detectBestMode();
 
  private:
-  void init(size_t size);
+  void init(size_t size, std::size_t alignFloor);
 
-  // Fabric mode methods
-  void allocateFabricMemory(size_t size);
-  void exchangeFabricHandles();
-  void cleanupFabric();
+  // VMM mode methods (shared by kFabric and kPosixFd). The physical allocation
+  // requests both handle types when the device allows it; the actual exported
+  // shareable-handle type is chosen at exchange time via supportsFabric().
+  void allocateVmmMemory(size_t size, std::size_t alignFloor);
+  void exchangeVmmHandles();
+  void cleanupVmm();
 
   // CudaIpc mode methods
   void allocateCudaIpcMemory(size_t size);
   void exchangeCudaIpcHandles();
   void cleanupCudaIpc();
+
+  // True for the VMM-backed modes (kFabric / kPosixFd), which share the same
+  // NvlMemExchange-based code path. False for kCudaIpc.
+  bool isVmmMode() const {
+    return mode_ == MemSharingMode::kFabric ||
+        mode_ == MemSharingMode::kPosixFd;
+  }
 
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const int32_t selfRank_{-1};
@@ -217,18 +255,21 @@ class GpuMemHandler {
   size_t allocatedSize_{0};
   bool exchanged_{false};
 
-  // ---- Fabric mode state ----
-  CUdeviceptr fabricLocalPtr_{0};
-  CUmemGenericAllocationHandle fabricLocalAllocHandle_{0};
-  FabricHandle fabricLocalHandle_{};
-  std::vector<CUdeviceptr> fabricPeerPtrs_;
-  std::vector<CUmemGenericAllocationHandle> fabricPeerAllocHandles_;
-  std::vector<size_t> fabricPeerAllocatedSizes_;
+  // ---- VMM mode state (kFabric / kPosixFd) ----
+  // The local physical allocation (co-owned via shared_ptr so a multicast
+  // overlay can share it) and its unicast VA mapping (which also co-owns the
+  // allocation via keepAlive). The actual exported shareable-handle type is
+  // chosen at exchange time via allocation_->supportsFabric().
+  std::shared_ptr<CuMemAllocation> allocation_;
+  std::unique_ptr<CuMemMapping> unicastMapping_;
+  // Peer mappings + pointers, produced by nvlMemExchange during
+  // exchangeMemPtrs(). For VMM modes the peer mappings co-own their imported
+  // allocations; for cudaIpc only the peer pointers (owned by the IPC runtime).
+  NvlPeerMem peers_;
 
   // ---- CudaIpc mode state ----
   void* cudaIpcLocalPtr_{nullptr};
   cudaIpcMemHandle_t cudaIpcLocalHandle_{};
-  std::vector<void*> cudaIpcPeerPtrs_;
 };
 
 // Backwards compatibility alias

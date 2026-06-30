@@ -2,104 +2,161 @@
 
 #pragma once
 
-// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
-// fabric-handle support is unavailable; only the cudaIpc path is used, and its
-// `cudaIpcMemHandle_t` parameter is HIPify-rewritten to `hipIpcMemHandle_t`
-// (provided by `<hip/hip_runtime.h>`).
-#ifdef __HIP_PLATFORM_AMD__
-#include <hip/hip_runtime.h>
-#else
 #include <cuda.h>
 #include <cuda_runtime.h>
-#endif
 
+#include <sys/types.h>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/memory/CuMemMapping.h"
 
 namespace comms::prims {
 
-#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
+#if CUDART_VERSION >= 12030
 using FabricHandle = CUmemFabricHandle;
 #else
 struct FabricHandle {
   unsigned char data[64]; // CU_IPC_HANDLE_SIZE
 };
-// Stub the CUDA driver-API typedefs referenced by the always-declared VMM
-// signature so the header (and downstream consumers like GpuMemHandler)
-// compiles on AMD / pre-CUDA-12.3. The concrete VMM driver-API code lives
-// behind `#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030` in
-// the .cc; on these platforms `nvlMemExchangeVmm` is a throwing stub. Types
-// match the real CUDA driver-API typedefs (`unsigned long long`).
-#if defined(__HIP_PLATFORM_AMD__)
-using CUdeviceptr = unsigned long long;
-using CUmemGenericAllocationHandle = unsigned long long;
-#endif
 #endif
 
 /**
- * NvlMemExchange - NVLink-domain peer-exchange building blocks.
+ * NvlMemExchange - NVLink-domain shared-memory building blocks.
  *
- * The peer exchange (export -> all-gather -> import -> map) that gives every
- * rank a VA onto every peer's backing allocation, for both VMM (fabric) and
- * cudaIpc modes. Used by GpuMemHandler. The VMM/fabric path is NVIDIA-only
- * (CUDA driver API + CUDA 12.3+); on AMD or pre-12.3, `nvlMemExchangeVmm` is
- * declared but its body throws. The cudaIpc path is HIPify-rewritten to
- * hipIpc on AMD.
+ * Bundles the two pieces needed to share a GPU buffer across NVLink-local
+ * ranks:
+ *
+ *  1. Shareable-handle export/import for CUDA VMM allocation handles. The same
+ *     export/import logic is needed in two places:
+ *       - GpuMemHandler exports its unicast backing handle so peers can map the
+ *         same physical allocation.
+ *       - MultimemHandler exports the multicast object handle so peers can join
+ *         the same multicast team.
+ *  2. The consolidated peer exchange (export -> all-gather -> import -> map)
+ *     used by GpuMemHandler to give every rank a VA onto every peer's backing
+ *     allocation, for both VMM (fabric / POSIX FD) and cudaIpc modes.
+ *
+ * Two shareable-handle mechanisms are supported, selected by capability:
+ *  - kFabric: CU_MEM_HANDLE_TYPE_FABRIC, works across hosts (e.g. GB200 MNNVL).
+ *  - kPosixFd: CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, intra-host only (e.g.
+ *    single-host H100 without IMEX). The descriptor number is process-local, so
+ *    peers duplicate the exporter's fd via pidfd_open/pidfd_getfd before
+ * import.
  */
+enum class ShareableHandleType : uint8_t {
+  kUnsupported,
+  kFabric,
+  kPosixFd,
+};
 
 /**
- * VMM (fabric) peer exchange. all-gathers this rank's exported fabric handle
- * and allocation size, then imports + maps every peer's physical memory into a
- * fresh local virtual address with RW access. Results are written into the
- * per-rank output vectors (indexed by rank); the self slot of `peerPtrs` is
- * left untouched (the caller stores its own local VA there).
+ * A shareable handle ready to be exchanged across ranks.
  *
- * COLLECTIVE OPERATION: all ranks must call. Throws on AMD or pre-CUDA-12.3.
- *
- * Output vectors must each have size `>= nRanks`.
- *
- * @param bootstrap Bootstrap interface for the allGather
- * @param selfRank This rank's ID (0..nRanks-1)
- * @param nRanks Total number of ranks
- * @param localHandle This rank's exported fabric handle
- * @param allocatedSize This rank's allocation size
- * @param peerPtrs [out] per-rank mapped peer pointers (size nRanks)
- * @param peerAllocHandles [out] per-rank imported allocation handles (size
- * nRanks)
- * @param peerAllocatedSizes [out] per-rank allocation sizes (size nRanks)
+ * For kFabric, `fabric` is the exported fabric handle and can be copied between
+ * processes verbatim. For kPosixFd, `pid` and `fd` identify an open file
+ * descriptor in the exporter's process; peers duplicate it before importing.
  */
-void nvlMemExchangeVmm(
+struct ShareableHandle {
+  ShareableHandleType type{ShareableHandleType::kUnsupported};
+  FabricHandle fabric{}; // valid iff type == kFabric
+  int32_t pid{-1}; // valid iff type == kPosixFd
+  int32_t fd{-1}; // exporter-local fd; valid iff type == kPosixFd
+};
+
+/**
+ * Maps a ShareableHandleType to the corresponding CUDA handle type. Throws
+ * std::runtime_error for kUnsupported.
+ */
+CUmemAllocationHandleType toCudaHandleType(ShareableHandleType type);
+
+/**
+ * Selects the best shareable-handle type for `cudaDevice`: fabric if supported,
+ * else POSIX FD, else kUnsupported. Initializes the CUDA driver lazily and
+ * resolves the CUdevice internally.
+ */
+ShareableHandleType selectShareableHandleType(int cudaDevice);
+
+/**
+ * Exports `handle` as the given shareable-handle `type`.
+ *
+ * For kFabric the returned handle is self-contained. For kPosixFd the returned
+ * ShareableHandle carries {pid=getpid(), fd=<newly exported fd>}; the CALLER
+ * owns that fd and must keep it open until all peers have imported it, then
+ * close it.
+ *
+ * Throws std::runtime_error on kUnsupported or any CUDA driver error.
+ */
+ShareableHandle exportShareableHandle(
+    CUmemGenericAllocationHandle handle,
+    ShareableHandleType type);
+
+/**
+ * Imports the physical handle described by `h`.
+ *
+ * For kFabric the fabric handle is imported directly. For kPosixFd the
+ * exporter's fd is duplicated into this process via duplicateRemoteFd(), the
+ * handle is imported, and the duplicated fd is closed before returning.
+ *
+ * Returns the imported physical handle (the caller owns the reference and must
+ * eventually cuMemRelease it). Throws std::runtime_error on any failure.
+ */
+CUmemGenericAllocationHandle importShareableHandle(const ShareableHandle& h);
+
+/**
+ * The per-rank peer memory state produced by an NVLink-domain exchange.
+ *
+ * `peerPtrs[rank]` is a VA usable in local kernels to access rank `rank`'s
+ * backing allocation; the self slot holds the local pointer. For VMM modes,
+ * `vmmMappings` holds the RAII peer VAs; each mapping co-owns the imported peer
+ * CuMemAllocation (via CuMemMapping's keepAlive), so releasing a mapping also
+ * releases the imported physical handle -- there is no separate handle vector
+ * to track. For cudaIpc mode `vmmMappings` is empty and the peer pointers are
+ * owned by the CUDA IPC runtime (closed via cudaIpcCloseMemHandle by the
+ * caller).
+ */
+struct NvlPeerMem {
+  std::vector<void*> peerPtrs;
+  std::vector<CuMemMapping> vmmMappings;
+};
+
+/**
+ * VMM (fabric / POSIX FD) peer exchange.
+ *
+ * Exports `localHandle` (as fabric when `preferFabric`, else POSIX FD),
+ * all-gathers every rank's shareable handle + allocated size, imports and maps
+ * each peer's backing allocation, holds a post-import barrier so no rank closes
+ * its exported POSIX FD before peers have duplicated it, then closes the local
+ * exported fd.
+ *
+ * `peerPtrs[rank]` is null for self; the caller fills the self slot with
+ * `localPtr`. Throws std::runtime_error on any failure. Requires CUDA 12.3+.
+ */
+NvlPeerMem nvlMemExchangeVmm(
     meta::comms::IBootstrap& bootstrap,
-    int32_t selfRank,
+    int32_t rank,
     int32_t nRanks,
-    const FabricHandle& localHandle,
+    CUdevice cuDev,
+    CUmemGenericAllocationHandle localHandle,
+    void* localPtr,
     std::size_t allocatedSize,
-    std::vector<CUdeviceptr>& peerPtrs,
-    std::vector<CUmemGenericAllocationHandle>& peerAllocHandles,
-    std::vector<std::size_t>& peerAllocatedSizes);
+    bool preferFabric);
 
 /**
- * cudaIpc peer exchange. all-gathers this rank's cudaIpc handle, then opens
- * every peer's handle into `peerPtrs` (indexed by rank). Intra-node only.
+ * cudaIpc peer exchange.
  *
- * COLLECTIVE OPERATION: all ranks must call.
- *
- * `peerPtrs` must have size `>= nRanks`.
- *
- * @param bootstrap Bootstrap interface for the allGather
- * @param selfRank This rank's ID (0..nRanks-1)
- * @param nRanks Total number of ranks
- * @param localHandle This rank's cudaIpc handle
- * @param peerPtrs [out] per-rank opened peer pointers (size nRanks)
+ * Exports `localPtr`'s cudaIpc handle, all-gathers handles, and opens each
+ * peer's handle. The self slot of `peerPtrs` is filled with `localPtr`; peer
+ * slots are owned by the CUDA IPC runtime (the caller closes them via
+ * cudaIpcCloseMemHandle). `vmmMappings` is empty. Throws
+ * std::runtime_error on any failure.
  */
-void nvlMemExchangeCudaIpc(
+NvlPeerMem nvlMemExchangeCudaIpc(
     meta::comms::IBootstrap& bootstrap,
-    int32_t selfRank,
+    int32_t rank,
     int32_t nRanks,
-    const cudaIpcMemHandle_t& localHandle,
-    std::vector<void*>& peerPtrs);
+    void* localPtr);
 
 } // namespace comms::prims

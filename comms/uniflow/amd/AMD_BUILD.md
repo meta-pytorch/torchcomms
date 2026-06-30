@@ -9,13 +9,20 @@ selected through `__HIP_PLATFORM_AMD__` and the CUDA runtime deps are swapped fo
 ROCm/HIP — there is no separate AMD library target.
 
 > **AMD transport status:** The unified `uniflow` target builds and runs on AMD
-> with **RDMA (RoCEv2) + GPUDirect** as the GPU transport (GPU-NIC PCIe affinity,
-> RoCE GID auto-selection, `UNIFLOW_IB_*` tunables; validated 2-host on MI350 over
-> Broadcom (bnxt) NICs). The **NVLink** transport is NVIDIA-only and is compiled
-> out on AMD (guarded by `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, with its
-> BUCK deps `select()`'d out). Intra-node GPU-to-GPU P2P (XGMI) is exercised at the
-> `CudaApi` level by the peer-to-peer transfer test, but is not a registered
-> uniflow transport on AMD.
+> with **RDMA (RoCEv2) + GPUDirect** as the GPU transport. Features from the
+> Phase 2 stack (D107220750 D107220748 D107220757 D107346920 D107220749 D108381013
+> D108675437 D108942542):
+> - GPU-NIC PCIe affinity via `selectGpuNics` mapping each GPU to topologically-closest NIC
+> - RoCEv2 GID auto-selection skipping link-local (fe80::/10, 169.254/16), preferring IPv4-mapped then first global RoCEv2, with validation against gid_tbl_len
+> - Caller-configurable tunables via `MultiTransportFactoryOptions`: NicFilter (HCA selection), gidIndex (force GID, default auto-select), netdevPrefix (default `"beth"` for Broadcom bnxt NIC selection), trafficClass
+> - Netdev-prefix NIC selection capturing backing netdev name in topology
+> - Validated 2-host on MI350 (gfx950, ROCm 7.0) over Broadcom bnxt NICs with `cross_host_test` and `rdma_bandwidth` benchmarks
+>
+> The **NVLink** transport is NVIDIA-only and is compiled out on AMD (guarded by
+> `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, BUCK deps select'd out).
+> Intra-node GPU-to-GPU P2P over XGMI is exercised at `CudaApi` level by
+> `PeerToPeerTransferTest` (`hipMemcpyPeerAsync` on AMD via `oss_gpu_cpp_unittest`),
+> but is not a registered uniflow transport on AMD.
 
 ## Prerequisites
 
@@ -106,18 +113,79 @@ buck build @//mode/dev-nosan-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
 ## Building Specific Components
 
+The Phase 2 GPU runtime seam in `drivers/cuda/BUCK` exposes four first-party targets,
+all built via the unified `//comms/uniflow:uniflow` but testable individually.
+On AMD they translate CUDA → HIP at build time; on NVIDIA they compile original CUDA.
+
+### CUDA/HIP runtime API wrapper
+
+```bash
+# Builds with HIP on AMD via oss_gpu_cpp_library (hipifies sources+headers, rename_cpp_to_hip),
+# CUDA on NVIDIA
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-api
+# or buck2:
+buck2 build @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-api
+```
+
+`cuda-api` wraps `cuda_runtime_api.h` — device management, host alloc/free,
+memcpy async/peer/batch, stream/event, plus `CudaDeviceGuard` RAII.
+
 ### Device Adapter (CUDA/HIP)
 
 ```bash
-# Builds with HIP on AMD, CUDA on NVIDIA
 buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-device-adapter
 ```
 
-### CUDA/HIP API wrapper
+Implements `DeviceAdapter` interface for pinned host memory suitable for DMA.
+Also via `oss_gpu_cpp_library` so header stays plain (no vendor types) while
+source is hipified.
+
+### CUDA Driver API wrapper
 
 ```bash
-buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-api
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-driver-api
 ```
+
+Wraps `cuda.h` driver API — cuMem VMM create/release/map/unmap, address reserve/free,
+set access, export/import shareable handle, dma-buf export, streamWriteValue64,
+device attributes. Built with uniflow-local `hipify` rule (hipify-perl) +
+`hip_toolchain_override`, **not** `gpu_cpp_library`, due to symbol-translation
+blocker: `gpu_cpp_library` hipify renames `CU_STREAM_WRITE_VALUE_DEFAULT` breaking
+RDMA `CopyEngine` consumers still on hipify-perl. Until RDMA migrates to
+`gpu_cpp_library`, driver seam stays on hipify-perl to preserve CUDA spellings.
+
+### Topology Discovery backend
+
+```bash
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/cuda:cuda-topology-discovery
+```
+
+`CudaTopologyDiscovery` wires `CudaApi`, `NvmlApi` factory, `IbvApi`, and
+`SysfsApi` into `TopologyDiscovery` interface. Plain C++ library selecting GPU
+seam targets via deps.
+
+### NVML factory (topology/management seam)
+
+```bash
+buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow/drivers/nvml:nvml-api
+```
+
+`createNvmlApi()` factory returns real NVML on NVIDIA (`nvml-lazy`) and no-op
+stub on AMD (amdsmi backend is future work). Keeps neutral code free of direct
+NVML linkage.
+
+### Neutral zone dependency guards
+
+```bash
+# Verify platform-agnostic modules stay free of GPU deps
+buck2 test @fbcode//mode/opt fbcode//comms/uniflow/amd:
+# 20 tests: per-target check_dependencies_test blocklisting drivers/cuda/*,
+# drivers/nvml/*, and external runtime libs (cuda-lazy, nvml-lazy, amdhip64-lazy)
+```
+
+See `NEUTRAL_ZONES.md` for full architecture description of frozen modules
+(executor, controller, core result/segment, logging, sysfs, ibverbs core) and
+GPU seam boundaries.
 
 ### Main Library
 
@@ -181,9 +249,26 @@ If you encounter errors about CUDA functions not being recognized on AMD:
 
 1. Check that `__HIP_PLATFORM_AMD__` guards are in place for CUDA-specific code
 2. Verify the file is being compiled with the AMD toolchain (the `ovr_config//gpu:amd`
-   constraint is active)
+   constraint is active via `@//mode/opt-amd-gpu`)
 3. New NVIDIA-only code added under `MultiTransport`/transports must be guarded with
    `#ifndef __HIP_PLATFORM_AMD__` and its BUCK dep `select()`'d out on AMD
+4. **Driver-API symbol mismatch:** If you see undefined references to
+   `hipStreamWriteValueDefault` or wrong-arity `hipGetErrorName`, you're likely
+   mixing `gpu_cpp_library` hipify output with hipify-perl consumers.
+   `cuda-driver-api` must stay on uniflow-local hipify-perl until RDMA
+   `CopyEngine` migrates to `gpu_cpp_library` — see `drivers/cuda/BUCK` Phase 2
+   seam comment for blocker details. Both producer and consumer must use same
+   hipify tool to preserve CUDA spellings.
+
+### Neutral Zone Guard Failures
+
+If `buck2 test fbcode//comms/uniflow/amd:` fails with `neutral_zone_dep_guard_*`:
+
+1. The failing target's transitive deps now reach `drivers/cuda/*` or `drivers/nvml/*`
+   or external GPU runtime libs — check `buck2 uquery "alldeps(fbcode//path:target)"`
+2. Move GPU-touching code behind seam interface (`CudaApi`, `CudaDriverApi`,
+   `DeviceAdapter`, or `NvmlApi` factory) rather than relaxing the guard
+3. See `NEUTRAL_ZONES.md` for full list of frozen modules and allowed GPU seam boundaries
 
 ### Missing Symbols
 

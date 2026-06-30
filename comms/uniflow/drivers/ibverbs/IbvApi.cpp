@@ -11,6 +11,18 @@
 #include <mutex>
 #include <string>
 
+namespace {
+std::string safeStrerror(int errnum) {
+  char buf[256];
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+  return std::string(strerror_r(errnum, buf, sizeof(buf)));
+#else
+  strerror_r(errnum, buf, sizeof(buf));
+  return std::string(buf);
+#endif
+}
+} // namespace
+
 namespace uniflow {
 
 // ---------------------------------------------------------------------------
@@ -103,6 +115,15 @@ UNIFLOW_IBV_FN(
     ibv_query_gid,
     int,
     (ibv_context * context, uint8_t port_num, int index, ibv_gid* gid))
+UNIFLOW_IBV_FN(
+    _ibv_query_gid_ex,
+    int,
+    (ibv_context * context,
+     uint32_t port_num,
+     uint32_t gid_index,
+     ibv_gid_entry* entry,
+     uint32_t flags,
+     size_t entry_size))
 
 #undef UNIFLOW_IBV_FN
 #undef UNIFLOW_IBV_FN_WRAP
@@ -192,6 +213,9 @@ void doInit() {
 
   // Optional symbols — fail silently (pointer stays nullptr).
   LOAD_SYM_OPTIONAL(libHandle, ibv_reg_dmabuf_mr, "IBVERBS_1.12");
+  // ibv_query_gid_ex is a static-inline wrapper around the exported
+  // _ibv_query_gid_ex symbol (IBVERBS_1.11+); load the real symbol.
+  LOAD_SYM_OPTIONAL(libHandle, _ibv_query_gid_ex, "IBVERBS_1.11");
 
   // Deliberately never dlclose — the loaded object remains in memory
   // until the process terminates.
@@ -236,14 +260,14 @@ void doInit() {
 
 /// Check an already-obtained errno return; expect ret == 0. Return Status.
 /// Used for hot-path ops vtable calls that bypass init/symbol checks.
-#define IBV_CHECK_ERRNO(name, ret)                                \
-  do {                                                            \
-    if ((ret) != 0) {                                             \
-      return Err(                                                 \
-          ErrCode::DriverError,                                   \
-          std::string(#name "() failed: ") + std::strerror(ret)); \
-    }                                                             \
-    return Ok();                                                  \
+#define IBV_CHECK_ERRNO(name, ret)                               \
+  do {                                                           \
+    if ((ret) != 0) {                                            \
+      return Err(                                                \
+          ErrCode::DriverError,                                  \
+          std::string(#name "() failed: ") + safeStrerror(ret)); \
+    }                                                            \
+    return Ok();                                                 \
   } while (0)
 
 /// Call pfn_##name(__VA_ARGS__); expect ret == 0 (returns errno on failure).
@@ -272,17 +296,17 @@ void doInit() {
 /// Call pfn_##name(__VA_ARGS__); expect ret != nullptr.
 /// Error message includes strerror(errno). Matches nccl
 /// IBV_CHECK_PTR_ERRNO.
-#define IBV_CHECK_PTR_ERRNO(name, ...)                              \
-  do {                                                              \
-    IBV_ENSURE_INIT();                                              \
-    IBV_CHECK_FN(name);                                             \
-    auto _ptr = pfn_##name(__VA_ARGS__);                            \
-    if (_ptr == nullptr) {                                          \
-      return Err(                                                   \
-          ErrCode::DriverError,                                     \
-          std::string(#name "() failed: ") + std::strerror(errno)); \
-    }                                                               \
-    return _ptr;                                                    \
+#define IBV_CHECK_PTR_ERRNO(name, ...)                             \
+  do {                                                             \
+    IBV_ENSURE_INIT();                                             \
+    IBV_CHECK_FN(name);                                            \
+    auto _ptr = pfn_##name(__VA_ARGS__);                           \
+    if (_ptr == nullptr) {                                         \
+      return Err(                                                  \
+          ErrCode::DriverError,                                    \
+          std::string(#name "() failed: ") + safeStrerror(errno)); \
+    }                                                              \
+    return _ptr;                                                   \
   } while (0)
 
 /// Call pfn_##name(__VA_ARGS__); expect ret != nullptr.
@@ -450,6 +474,24 @@ Status IbvApi::queryGid(
     int index,
     ibv_gid* gid) {
   IBV_CHECK_INT_ERRNO(ibv_query_gid, context, portNum, index, gid);
+}
+
+Status IbvApi::queryGidEx(
+    ibv_context* context,
+    uint32_t portNum,
+    uint32_t index,
+    ibv_gid_entry* entry,
+    uint32_t flags) {
+  IBV_ENSURE_INIT();
+  IBV_CHECK_FN(_ibv_query_gid_ex);
+  int ret = pfn__ibv_query_gid_ex(
+      context, portNum, index, entry, flags, sizeof(*entry));
+  IBV_CHECK_ERRNO(_ibv_query_gid_ex, ret);
+}
+
+bool IbvApi::isQueryGidExSupported() {
+  init();
+  return pfn__ibv_query_gid_ex != nullptr;
 }
 
 // --- MLX5 direct verbs ---

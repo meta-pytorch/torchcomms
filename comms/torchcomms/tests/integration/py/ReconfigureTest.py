@@ -105,7 +105,8 @@ class ReconfigureTest(unittest.TestCase):
         if self.backend not in ("nccl", "ncclx"):
             return
         if torch.cuda.is_available():
-            major, minor, _ = torch.cuda.nccl.version()
+            nccl_ver = torch.cuda.nccl.version()
+            major, minor = nccl_ver[0], nccl_ver[1]
             if (major, minor) < (2, 29):
                 self.skipTest(f"NCCL {major}.{minor} < 2.29, commGrow not supported")
 

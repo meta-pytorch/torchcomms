@@ -82,6 +82,9 @@ TEST_F(CommDumpTest, CommDumpAll) {
       << "Expected at least 1 communicator in dump_all";
 
   for (const auto& [comm_key, dump] : all_dumps) {
+    if (comm_key == "GlobalInfo") {
+      continue;
+    }
     EXPECT_GT(dump.size(), 0) << "Dump for comm " << comm_key << " is empty";
     EXPECT_EQ(dump.count("rank"), 1) << "Missing rank for comm " << comm_key;
     EXPECT_EQ(dump.count("nRanks"), 1)

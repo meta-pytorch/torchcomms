@@ -29,6 +29,7 @@ target_include_directories(torchcomms_comms_rcclx PRIVATE
     ${ROCM_INCLUDE}
     ${ROCM_INCLUDE}/hip
 )
+torchcomms_use_torch_pybind11(torchcomms_comms_rcclx)
 target_compile_features(torchcomms_comms_rcclx PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_rcclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_rcclx PRIVATE
