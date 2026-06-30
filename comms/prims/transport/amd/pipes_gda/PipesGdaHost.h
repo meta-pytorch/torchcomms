@@ -393,9 +393,20 @@ struct DmaBufExport {
   DmaBufAlignment alignment;
 };
 
+// Mapping requested when exporting a GPU allocation as a DMA-BUF fd. mlx5
+// Data-Direct (Pcie / BAR1 PCIe-mapped DMA-BUF) is NVIDIA/GB300-only; on AMD
+// the Pcie kind is unsupported and export returns std::nullopt. (Data-Direct is
+// also disabled in NIC discovery on AMD, so Pcie is never requested at runtime;
+// the enum exists so the shared registerBuffer compiles under HIP.)
+enum class DmaBufExportKind {
+  Default,
+  Pcie,
+};
+
 std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
     void* ptr,
-    std::size_t size);
+    std::size_t size,
+    DmaBufExportKind kind = DmaBufExportKind::Default);
 
 } // namespace comms::prims
 

@@ -18,6 +18,7 @@
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
+#include "comms/prims/transport/rdma/DataDirectMode.h"
 
 namespace meta::comms {
 class DeviceBuffer;
@@ -111,6 +112,28 @@ struct MultipeerIbTransportConfig {
     return maxGroups * qpsPerBlockPerNic;
   }
 
+  // mlx5 Data-Direct: register MRs through the NIC's data-direct (BAR1) PCIe
+  // path for ~2x NIC<->HBM RDMA-write BW on GB300 (NCCL's NCCL_IB_DATA_DIRECT).
+  // The single shared comms::prims::DataDirectMode (see DataDirectMode.h) — the
+  // same enum NIC discovery uses — so this field both selects the discovery
+  // mode and gates the registration path. Disabled disables discovery's DD
+  // probing too; Only/Both take effect only on a DD-capable NIC (a no-op
+  // otherwise). The caller should tunnel NCCL_IB_DATA_DIRECT (0/1/2) into this
+  // field.
+  DataDirectMode enableDataDirect{DataDirectMode::Only};
+
+  // PCIe Relaxed Ordering on eligible (bulk data) MRs so NIC<->HBM DMA TLPs
+  // pipeline instead of strict-ordering to ~half rate (NCCL's
+  // NCCL_IB_PCI_RELAXED_ORDERING). Only applied to MRs the caller marks
+  // relaxed-ordering-eligible (data, not signal/counter). The caller should
+  // tunnel NCCL_IB_PCI_RELAXED_ORDERING into this field.
+  enum class PciRelaxedOrderingMode {
+    Disabled, // strict ordering on every MR
+    Enabled, // relaxed ordering on eligible MRs
+    Auto, // relaxed ordering on eligible MRs when supported (NCCL default)
+  };
+  PciRelaxedOrderingMode enablePciRelaxedOrdering{PciRelaxedOrderingMode::Auto};
+
   // InfiniBand Verbs Timeout for QP ACK timeout (4.096us * 2^timeout). Valid
   // 1-31; 0 or >=32 is infinite. Default 20 (similar to NCCL_IB_TIMEOUT).
   uint8_t timeout{20};
@@ -139,6 +162,31 @@ struct MultipeerIbTransportConfig {
   // Timeout (ms) for the bilateral exchange in materializePeer().
   uint32_t materializePeerTimeoutMs{30000};
 };
+
+// Whether Data-Direct MR registration applies for a NIC: Data-Direct is
+// requested via config (not Disabled) and the NIC is DD-capable.
+// registerBuffer() selects the Data-Direct registration path exactly when this
+// holds (and the mlx5dv symbol is available). Exposed as a free function so the
+// config -> registration tunnel can be unit-tested without a NIC.
+inline bool dataDirectActiveForNic(
+    const MultipeerIbTransportConfig& config,
+    bool nicIsDataDirect) {
+  return config.enableDataDirect != DataDirectMode::Disabled && nicIsDataDirect;
+}
+
+// Whether PCIe Relaxed Ordering applies for a NIC: requested via config (not
+// Disabled) and the NIC accepts the IBV_ACCESS_RELAXED_ORDERING access flag
+// (probed during openNics). registerBuffer() sets the flag exactly when this
+// holds, so on a NIC whose driver rejects it both Auto and Enabled fall back to
+// strict ordering instead of failing registration. Free function so the
+// config -> registration gating is unit-testable without a NIC.
+inline bool relaxedOrderingActiveForNic(
+    const MultipeerIbTransportConfig& config,
+    bool nicRelaxedOrderingCapable) {
+  return config.enablePciRelaxedOrdering !=
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Disabled &&
+      nicRelaxedOrderingCapable;
+}
 
 /**
  * Transport connection information for RDMA QP setup.
@@ -322,7 +370,12 @@ class MultiPeerIbTransportBase {
    *
    * @return IbgdaLocalBuffer carrying one lkey per NIC.
    */
-  IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size);
+  // @param relaxedOrdering eligible for PCIe Relaxed Ordering (gated by
+  //   config.enablePciRelaxedOrdering). Only bulk data (staging) MRs pass true;
+  //   signal/counter MRs stay strict. Data-Direct is applied automatically on
+  //   DD-capable NICs regardless of this flag.
+  IbgdaLocalBuffer
+  registerBuffer(void* ptr, std::size_t size, bool relaxedOrdering = false);
 
   /** deregisterBuffer - Decrement refcount; deregister all per-NIC MRs at 0. */
   void deregisterBuffer(void* ptr);
@@ -475,6 +528,12 @@ class MultiPeerIbTransportBase {
     std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
     std::size_t allocSize{0};
     int refs{0};
+    // Effective PCIe Relaxed Ordering the MRs were registered with (the
+    // caller's request resolved against config). Part of the cache key: a
+    // containment hit must resolve to the same value, else the access-flag
+    // (ordering) semantics would silently differ from what the caller asked
+    // for.
+    bool relaxedOrdering{false};
   };
 
   const int myRank_{-1};
@@ -501,8 +560,22 @@ class MultiPeerIbTransportBase {
     ibverbx::ibv_pd* ibvPd{nullptr};
     ibverbx::ibv_gid localGid{};
     int linkLayer{0}; // ibverbx::IBV_LINK_LAYER_* (IB vs Ethernet/RoCE)
+    // This NIC exposes a Data-Direct (`_dma`) variant, so data MRs can register
+    // through the PCIe (BAR1) path. Copied from the discovery NicCandidate.
+    bool isDataDirect{false};
+    // This NIC's driver accepts IBV_ACCESS_RELAXED_ORDERING (probed once during
+    // openNics). registerBuffer() applies Relaxed Ordering only when every NIC
+    // is capable, so an unsupporting NIC falls back to strict ordering instead
+    // of failing every data-MR registration.
+    bool relaxedOrderingCapable{false};
   };
   std::vector<NicResources> nics_;
+
+  // True iff every opened NIC accepts IBV_ACCESS_RELAXED_ORDERING (AND of
+  // nics_[n].relaxedOrderingCapable, computed once in openNics). The MR cache
+  // keys on a single effective-ordering bool per allocation, so Relaxed
+  // Ordering must be uniform across NICs; gating on this aggregate keeps it so.
+  bool relaxedOrderingCapable_{false};
 
   // Maps allocation base address -> cached MR covering the full allocation.
   // Ordered map enables O(log n) containment lookup via upper_bound.

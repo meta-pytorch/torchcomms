@@ -133,11 +133,12 @@ TEST(TorchWorkTest, AllHooksFiredInLifecycle) {
   auto work = c10::make_intrusive<TestWork>();
   std::vector<std::string> events;
 
-  work->registerWorkStartHook([&events]() { events.push_back("start"); });
-  work->registerWorkEndHook([&events]() { events.push_back("end"); });
-  work->registerWorkWaitPreHook([&events]() { events.push_back("wait_pre"); });
+  work->registerWorkStartHook([&events]() { events.emplace_back("start"); });
+  work->registerWorkEndHook([&events]() { events.emplace_back("end"); });
+  work->registerWorkWaitPreHook(
+      [&events]() { events.emplace_back("wait_pre"); });
   work->registerWorkWaitPostHook(
-      [&events]() { events.push_back("wait_post"); });
+      [&events]() { events.emplace_back("wait_post"); });
 
   work->setStatus(TorchWork::WorkStatus::INPROGRESS);
   work->wait();

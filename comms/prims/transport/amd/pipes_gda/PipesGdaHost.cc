@@ -1956,9 +1956,14 @@ pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_group_hl(
 
 namespace comms::prims {
 
-std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
-    void* ptr,
-    std::size_t size) {
+std::optional<DmaBufExport>
+export_gpu_dmabuf_aligned(void* ptr, std::size_t size, DmaBufExportKind kind) {
+  // mlx5 Data-Direct (BAR1 PCIe mapping) is NVIDIA-only; the AMD HSA export has
+  // no equivalent, so report Pcie as unavailable. (Data-Direct is also disabled
+  // in AMD NIC discovery, so this is never requested at runtime.)
+  if (kind == DmaBufExportKind::Pcie) {
+    return std::nullopt;
+  }
   // Skip dmabuf for non-GPU pointers. HSA's
   // `hsa_amd_portable_export_dmabuf` will export host-pinned
   // (`hipHostMalloc`) memory as a dmabuf, but the resulting fd
