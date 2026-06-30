@@ -113,6 +113,41 @@ bool nicSupportsDataDirect(
 #endif
 }
 
+// A NIC supports PCIe Relaxed Ordering iff its driver accepts
+// IBV_ACCESS_RELAXED_ORDERING on a registration. Probe once by registering a
+// tiny host buffer with the flag (the same shape NCCL uses): if the driver
+// rejects it, applying the flag to the real (GPU) data MRs would fail every
+// registration and throw, breaking transport setup. RO is a TLP attribute
+// negotiated via the access flag, independent of the buffer's memory type, so a
+// host probe is a valid proxy for flag acceptance. registerBuffer() gates the
+// flag on this so an unsupporting NIC falls back to strict ordering.
+bool nicSupportsRelaxedOrdering(ibverbx::ibv_pd* pd) {
+  // Precondition: pd is an allocated protection domain (openNics throws on a
+  // failed alloc before reaching here). Guard defensively so a future caller
+  // that probes before allocation degrades to "not RO-capable" rather than
+  // dereferencing null inside the driver.
+  DCHECK(pd != nullptr) << "nicSupportsRelaxedOrdering called with null pd";
+  if (pd == nullptr) {
+    return false;
+  }
+  const auto& symbols = ibverbx::ibvSymbols;
+  if (symbols.ibv_internal_reg_mr == nullptr ||
+      symbols.ibv_internal_dereg_mr == nullptr) {
+    return false;
+  }
+  alignas(64) char probe[64] = {};
+  ibverbx::ibv_mr* mr = symbols.ibv_internal_reg_mr(
+      pd,
+      probe,
+      sizeof(probe),
+      ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_RELAXED_ORDERING);
+  if (mr == nullptr) {
+    return false;
+  }
+  symbols.ibv_internal_dereg_mr(mr);
+  return true;
+}
+
 #ifdef __HIP_PLATFORM_AMD__
 using SlotGpuError = hipError_t;
 constexpr SlotGpuError kSlotGpuSuccess = hipSuccess;
@@ -399,10 +434,17 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   sendRecvSignalBulk_ = allocateBulk(signalPerPeer, "signal bulk");
   sendRecvStateBulk_ = allocateBulk(statePerPeer, "state bulk");
 
+  // Staging is bulk data: opt into Relaxed Ordering. Signal/counter stay strict
+  // so a flag write can't be reordered ahead of the data on the shared route.
+  // (Data-Direct, when active, applies to all of these automatically.)
   auto sendStagingBulkReg = registerBuffer(
-      sendRecvSendStagingBulk_->get(), stagingPerPeer * numPeers);
+      sendRecvSendStagingBulk_->get(),
+      stagingPerPeer * numPeers,
+      /*relaxedOrdering=*/true);
   sendRecvRecvStagingBulkReg_ = registerBuffer(
-      sendRecvRecvStagingBulk_->get(), stagingPerPeer * numPeers);
+      sendRecvRecvStagingBulk_->get(),
+      stagingPerPeer * numPeers,
+      /*relaxedOrdering=*/true);
   sendRecvSignalBulkReg_ =
       registerBuffer(sendRecvSignalBulk_->get(), signalPerPeer * numPeers);
 
@@ -745,6 +787,27 @@ void MultiPeerIbTransportBase::openNics() {
             << nics_[0].deviceName << " for GPU device " << config_.cudaDevice;
   }
 
+  // Data-Direct active per NIC = requested (config Auto) AND capable. RO mode
+  // string for logging by enum value (Disabled/Enabled/Auto) so autodetection
+  // vs explicit opt-in stays distinguishable. Computed once before the bring-up
+  // loop so each NIC can log its resolved status inline.
+  const bool ddEnabled = config_.enableDataDirect != DataDirectMode::Disabled;
+  const char* roMode = "auto";
+  switch (config_.enablePciRelaxedOrdering) {
+    case MultipeerIbTransportConfig::PciRelaxedOrderingMode::Disabled:
+      roMode = "disabled";
+      break;
+    case MultipeerIbTransportConfig::PciRelaxedOrderingMode::Enabled:
+      roMode = "enabled";
+      break;
+    case MultipeerIbTransportConfig::PciRelaxedOrderingMode::Auto:
+      roMode = "auto";
+      break;
+  }
+  // RO must be uniform across NICs (the MR cache keys on one effective-ordering
+  // bool per allocation); AND in each NIC's capability as it is brought up.
+  relaxedOrderingCapable_ = numNics_ > 0;
+
   // Open + setup each NIC: find by name, open ctx, alloc PD, query GID + port.
   for (int n = 0; n < numNics_; ++n) {
     int nicIdx = -1;
@@ -773,6 +836,13 @@ void MultiPeerIbTransportBase::openNics() {
       throw std::runtime_error(
           "Failed to allocate protection domain on NIC " + nics_[n].deviceName);
     }
+
+    // Probe PCIe Relaxed Ordering support once per NIC. registerBuffer() gates
+    // IBV_ACCESS_RELAXED_ORDERING on this; on a driver that rejects the flag,
+    // applying it would fail every data-MR registration and break setup, so an
+    // unsupporting NIC falls back to strict ordering instead.
+    nics_[n].relaxedOrderingCapable =
+        nicSupportsRelaxedOrdering(nics_[n].ibvPd);
 
     // Detect Data-Direct capability for the explicit gpuNicMap path.
     // registerBuffer() auto-selects the Data-Direct (BAR1) path when
@@ -843,17 +913,36 @@ void MultiPeerIbTransportBase::openNics() {
                    << " differs from NIC 0 active_mtu=" << localMtu_
                    << "; using NIC 0's MTU for negotiation";
     }
-  }
 
-  // Per-NIC Data-Direct status, covering both the gpuNicMap and auto-discovery
-  // paths. enable is a request (config); capability is autodetected; DD is
-  // active only when both hold.
-  const bool ddEnabled = config_.enableDataDirect != DataDirectMode::Disabled;
-  for (int n = 0; n < numNics_; ++n) {
+    // NIC fully brought up: fold its RO capability into the cross-NIC aggregate
+    // and log its resolved Data-Direct / Relaxed-Ordering status inline.
+    relaxedOrderingCapable_ =
+        relaxedOrderingCapable_ && nics_[n].relaxedOrderingCapable;
     LOG(INFO) << "MultiPeerIbTransport: NIC " << n << " ("
               << nics_[n].deviceName << ") Data-Direct enabled=" << ddEnabled
               << " nicCapable=" << nics_[n].isDataDirect << " -> "
-              << ((ddEnabled && nics_[n].isDataDirect) ? "ACTIVE" : "inactive");
+              << ((ddEnabled && nics_[n].isDataDirect) ? "ACTIVE" : "inactive")
+              << "; relaxedOrdering=" << roMode
+              << " nicCapable=" << nics_[n].relaxedOrderingCapable;
+  }
+
+  // PCIe Relaxed Ordering is applied only when every NIC accepts the flag
+  // (aggregated above). Surface an explicit Enabled request that can't be met
+  // (it falls back to strict ordering rather than throwing); otherwise just
+  // record the resolved setting: config, capability, and the ordering in
+  // effect.
+  const bool useRelaxedOrdering =
+      relaxedOrderingActiveForNic(config_, relaxedOrderingCapable_);
+  if (config_.enablePciRelaxedOrdering ==
+          MultipeerIbTransportConfig::PciRelaxedOrderingMode::Enabled &&
+      !relaxedOrderingCapable_) {
+    LOG(WARNING) << "MultiPeerIbTransport: PCIe Relaxed Ordering requested "
+                    "(Enabled) but not supported on all NICs; falling back to "
+                    "strict ordering on data MRs";
+  } else {
+    LOG(INFO) << "MultiPeerIbTransport: PCIe Relaxed Ordering config=" << roMode
+              << " allNicsCapable=" << relaxedOrderingCapable_ << " -> "
+              << (useRelaxedOrdering ? "ACTIVE" : "strict");
   }
 
   // Success: SCOPE_EXIT frees the device list; SCOPE_FAIL is skipped, so the
@@ -862,18 +951,45 @@ void MultiPeerIbTransportBase::openNics() {
 
 IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     void* ptr,
-    std::size_t size) {
+    std::size_t size,
+    bool relaxedOrdering) {
   if (ptr == nullptr || size == 0) {
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
 
+  // Resolve the effective Relaxed Ordering once, up front: the caller's request
+  // gated by config (NCCL_IB_PCI_RELAXED_ORDERING) AND by NIC capability probed
+  // during openNics. Gating on capability means a NIC whose driver rejects
+  // IBV_ACCESS_RELAXED_ORDERING falls back to strict ordering here rather than
+  // failing every data-MR registration below. This is the actual MR access
+  // flag, so it is part of the cache identity (key) below and is reused for the
+  // access flags — keeping the two from drifting apart.
+  const bool useRelaxedOrdering = relaxedOrdering &&
+      relaxedOrderingActiveForNic(config_, relaxedOrderingCapable_);
+
   // Fast path: containment lookup — if [ptr, ptr+size) falls entirely within an
-  // existing registration, return the cached per-NIC lkeys with no driver call.
+  // existing registration with the same effective ordering, return the cached
+  // per-NIC lkeys with no driver call.
   const auto addr = reinterpret_cast<uintptr_t>(ptr);
   auto it = registeredBuffers_.upper_bound(addr);
   if (it != registeredBuffers_.begin()) {
     --it;
     if (addr + size <= it->first + it->second.allocSize) {
+      // The cache holds one MR set per allocation; its access flags (including
+      // Relaxed Ordering) are fixed at registration, so the effective ordering
+      // is part of the cache key. A containment hit resolving to different
+      // ordering would silently get the wrong semantics.
+      if (it->second.relaxedOrdering != useRelaxedOrdering) {
+        throw std::runtime_error(
+            fmt::format(
+                "registerBuffer: ptr={} is contained in an existing registration "
+                "(allocBase=0x{:x}) registered with relaxedOrdering={} but "
+                "requested relaxedOrdering={}",
+                ptr,
+                it->first,
+                it->second.relaxedOrdering,
+                useRelaxedOrdering));
+      }
       it->second.refs++;
       VLOG(1) << "MultiPeerIbTransport: cache hit for ptr=" << ptr
               << " allocBase=0x" << std::hex << it->first << std::dec
@@ -912,6 +1028,13 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   int accessFlags = ibverbx::IBV_ACCESS_LOCAL_WRITE |
       ibverbx::IBV_ACCESS_REMOTE_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ |
       ibverbx::IBV_ACCESS_REMOTE_ATOMIC;
+  // PCIe Relaxed Ordering (resolved above as useRelaxedOrdering): on bulk data
+  // MRs only, let NIC<->HBM DMA TLPs pipeline instead of strict-ordering to
+  // ~half rate. Signal/counter MRs stay strict so a strict flag write cannot be
+  // reordered ahead of the data on the shared route.
+  if (useRelaxedOrdering) {
+    accessFlags |= ibverbx::IBV_ACCESS_RELAXED_ORDERING;
+  }
   // mlx5 Data-Direct (config.enableDataDirect): on a DD-capable NIC, register
   // through the data-direct (BAR1) PCIe path for ~2x NIC<->HBM write BW on
   // GB300 (NCCL's GDAKI path). Applied to every MR registered here so data and
@@ -921,6 +1044,7 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   CachedMr cached;
   cached.allocSize = allocSize;
   cached.refs = 1;
+  cached.relaxedOrdering = useRelaxedOrdering;
 
   // Per NIC, register the MR in priority order, each path falling through to
   // the next on failure:
