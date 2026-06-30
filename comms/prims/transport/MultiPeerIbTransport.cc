@@ -14,10 +14,12 @@
 
 #include <fmt/core.h>
 #include <folly/ScopeGuard.h>
+#include <folly/String.h>
 #include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/ibverbx/Mlx5core.h"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
 // GPU DMA-BUF export for MR registration. Generic (no DOCA context): on NVIDIA
 // it is cuMemGetHandleForAddressRange via DocaHostUtils (with the CUDA driver
@@ -42,6 +44,74 @@ namespace comms::prims {
 
 namespace {
 constexpr int kDefaultGidIndex = 3; // Default RoCE GID index
+
+// A NIC is Data-Direct-capable iff all three hold: (1) the mlx5dv provider
+// supports the device, (2) the mlx5 Data-Direct DMA-BUF verb is usable, and
+// (3) the driver exposes a data-direct sysfs path for its context. This mirrors
+// the gate NIC discovery (augmentWithDataDirect) and NCCL
+// (ncclMlx5dvDmaBufCapable + the sysfs check) use, so the explicit gpuNicMap
+// path -- which has no discovery candidate to read capability from -- matches
+// the auto-discovery path rather than relying on the sysfs check alone. Always
+// false on AMD (no mlx5 Data-Direct).
+bool nicSupportsDataDirect(
+    [[maybe_unused]] ibverbx::ibv_device* device,
+    [[maybe_unused]] ibverbx::ibv_context* ctx,
+    [[maybe_unused]] ibverbx::ibv_pd* pd) {
+#ifdef __HIP_PLATFORM_AMD__
+  return false;
+#else
+  // Precondition: an opened device/context/PD. Guard so a future caller that
+  // probes before opening degrades to "not DD-capable" rather than
+  // dereferencing null inside the mlx5 driver. DCHECK surfaces misuse in
+  // debug/test builds; release falls back safely.
+  DCHECK(device != nullptr && ctx != nullptr && pd != nullptr)
+      << "nicSupportsDataDirect called with null device/ctx/pd";
+  if (device == nullptr || ctx == nullptr || pd == nullptr) {
+    return false;
+  }
+  const auto& symbols = ibverbx::ibvSymbols;
+
+  // (1) mlx5dv provider supports this device.
+  if (symbols.mlx5dv_internal_is_supported == nullptr ||
+      !symbols.mlx5dv_internal_is_supported(device)) {
+    return false;
+  }
+
+  // (2) The mlx5 Data-Direct DMA-BUF verb is usable. Probe with an invalid fd:
+  // the driver rejects an unsupported verb with EOPNOTSUPP/EPROTONOSUPPORT,
+  // while any other errno (e.g. EBADF) means the verb exists and would have
+  // proceeded. This is the predictor NCCL uses (ncclMlx5dvDmaBufCapable) and is
+  // the relevant one, since DD registration goes through this exact verb.
+  if (symbols.mlx5dv_internal_reg_dmabuf_mr == nullptr) {
+    return false;
+  }
+  errno = 0;
+  ibverbx::ibv_mr* probeMr = symbols.mlx5dv_internal_reg_dmabuf_mr(
+      pd,
+      /*offset=*/0,
+      /*length=*/0,
+      /*iova=*/0,
+      /*fd=*/-1,
+      /*access=*/0,
+      ibverbx::MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);
+  const bool dmabufUnsupported =
+      (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
+  if (probeMr != nullptr) {
+    symbols.ibv_internal_dereg_mr(probeMr);
+  }
+  if (dmabufUnsupported) {
+    return false;
+  }
+
+  // (3) Data-Direct sysfs path resolves (mlx5dv contract: rc == 0 on success).
+  if (symbols.mlx5dv_internal_get_data_direct_sysfs_path == nullptr) {
+    return false;
+  }
+  char ddSysfsPath[4096];
+  return symbols.mlx5dv_internal_get_data_direct_sysfs_path(
+             ctx, ddSysfsPath, sizeof(ddSysfsPath)) == 0;
+#endif
+}
 
 #ifdef __HIP_PLATFORM_AMD__
 using SlotGpuError = hipError_t;
@@ -169,14 +239,16 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     n = static_cast<int>(it->second.size());
     source = "config.gpuNicMap";
   } else {
-    // On AMD, the `DataDirectMode::Only` default triggers `ibv_reg_dmabuf_mr`
-    // inside `augmentWithDataDirect()`, which is not exercised on AMD's
-    // libibverbs path here. Force `Disabled` to skip the DataDirect probe.
+    // Pass the configured Data-Direct mode through so discovery's DD probing
+    // honors config.enableDataDirect (Disabled here yields no DD candidates).
+    // On AMD, force Disabled: augmentWithDataDirect()'s ibv_reg_dmabuf_mr probe
+    // is not exercised on AMD's libibverbs path.
 #ifdef __HIP_PLATFORM_AMD__
     GpuNicDiscovery discovery(
         config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
 #else
-    GpuNicDiscovery discovery(config_.cudaDevice, config_.ibHca);
+    GpuNicDiscovery discovery(
+        config_.cudaDevice, config_.ibHca, config_.enableDataDirect);
 #endif
     auto bestNics = discovery.getBestAffinityNics();
     if (bestNics.empty()) {
@@ -616,7 +688,9 @@ void MultiPeerIbTransportBase::openNics() {
   // Priority 1: Explicit GPU-to-NIC mapping from config (entries [0..numNics_)
   // used in order — first is preferred).
   auto it = config_.gpuNicMap.find(config_.cudaDevice);
-  if (it != config_.gpuNicMap.end() && !it->second.empty()) {
+  const bool usingGpuNicMap =
+      it != config_.gpuNicMap.end() && !it->second.empty();
+  if (usingGpuNicMap) {
     const auto& names = it->second;
     if (static_cast<int>(names.size()) < numNics_) {
       throw std::runtime_error(
@@ -639,14 +713,16 @@ void MultiPeerIbTransportBase::openNics() {
 
   // Priority 2: Auto-discovery (top-numNics_ candidates by NUMA affinity).
   if (nics_[0].deviceName.empty()) {
-    // On AMD, the `DataDirectMode::Only` default triggers `ibv_reg_dmabuf_mr`
-    // inside `augmentWithDataDirect()`, which is not exercised on AMD's
-    // libibverbs path here. Force `Disabled` to skip the DataDirect probe.
+    // Pass the configured Data-Direct mode through so discovery's DD probing
+    // honors config.enableDataDirect (Disabled here yields no DD candidates).
+    // On AMD, force Disabled: augmentWithDataDirect()'s ibv_reg_dmabuf_mr probe
+    // is not exercised on AMD's libibverbs path.
 #ifdef __HIP_PLATFORM_AMD__
     auto discovery = GpuNicDiscovery(
         config_.cudaDevice, config_.ibHca, DataDirectMode::Disabled);
 #else
-    auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
+    auto discovery = GpuNicDiscovery(
+        config_.cudaDevice, config_.ibHca, config_.enableDataDirect);
 #endif
     const auto& candidates = discovery.getCandidates();
     if (static_cast<int>(candidates.size()) < numNics_) {
@@ -661,6 +737,9 @@ void MultiPeerIbTransportBase::openNics() {
     }
     for (int n = 0; n < numNics_; ++n) {
       nics_[n].deviceName = candidates[n].name;
+      // Discovery already probed Data-Direct capability for each candidate;
+      // read it cheaply (no extra sysfs probe needed on this path).
+      nics_[n].isDataDirect = candidates[n].isDataDirect;
     }
     VLOG(1) << "MultiPeerIbTransport: auto-discovered NIC "
             << nics_[0].deviceName << " for GPU device " << config_.cudaDevice;
@@ -693,6 +772,16 @@ void MultiPeerIbTransportBase::openNics() {
     if (!nics_[n].ibvPd) {
       throw std::runtime_error(
           "Failed to allocate protection domain on NIC " + nics_[n].deviceName);
+    }
+
+    // Detect Data-Direct capability for the explicit gpuNicMap path.
+    // registerBuffer() auto-selects the Data-Direct (BAR1) path when
+    // nics_[n].isDataDirect is set. The auto-discovery path sets that flag for
+    // free from the discovery candidate; the gpuNicMap path bypasses discovery,
+    // so run the same capability gate here on the just-opened device.
+    if (usingGpuNicMap) {
+      nics_[n].isDataDirect = nicSupportsDataDirect(
+          deviceList[nicIdx], nics_[n].ibvCtx, nics_[n].ibvPd);
     }
 
     if (symbols.ibv_internal_query_gid(
@@ -755,6 +844,18 @@ void MultiPeerIbTransportBase::openNics() {
                    << "; using NIC 0's MTU for negotiation";
     }
   }
+
+  // Per-NIC Data-Direct status, covering both the gpuNicMap and auto-discovery
+  // paths. enable is a request (config); capability is autodetected; DD is
+  // active only when both hold.
+  const bool ddEnabled = config_.enableDataDirect != DataDirectMode::Disabled;
+  for (int n = 0; n < numNics_; ++n) {
+    LOG(INFO) << "MultiPeerIbTransport: NIC " << n << " ("
+              << nics_[n].deviceName << ") Data-Direct enabled=" << ddEnabled
+              << " nicCapable=" << nics_[n].isDataDirect << " -> "
+              << ((ddEnabled && nics_[n].isDataDirect) ? "ACTIVE" : "inactive");
+  }
+
   // Success: SCOPE_EXIT frees the device list; SCOPE_FAIL is skipped, so the
   // opened ctx/PD are kept for the transport's lifetime.
 }
@@ -811,29 +912,98 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   int accessFlags = ibverbx::IBV_ACCESS_LOCAL_WRITE |
       ibverbx::IBV_ACCESS_REMOTE_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ |
       ibverbx::IBV_ACCESS_REMOTE_ATOMIC;
+  // mlx5 Data-Direct (config.enableDataDirect): on a DD-capable NIC, register
+  // through the data-direct (BAR1) PCIe path for ~2x NIC<->HBM write BW on
+  // GB300 (NCCL's GDAKI path). Applied to every MR registered here so data and
+  // signal/counter share the same route on the same QP -- preserving
+  // data-before-flag ordering without a flush. Autodetected per NIC.
 
   CachedMr cached;
   cached.allocSize = allocSize;
   cached.refs = 1;
 
-  // Try DMABUF first per NIC, fall back to plain reg_mr per NIC. If any NIC's
-  // registration fails, deregister everything already registered and propagate.
+  // Per NIC, register the MR in priority order, each path falling through to
+  // the next on failure:
+  //   1. Data-Direct: PCIe-mapped (BAR1) dmabuf + mlx5dv DATA_DIRECT reg. Only
+  //      on a DD-capable NIC with DD enabled. The regular C2C dmabuf is NOT
+  //      used here -- DD needs its own PCIe-mapped dmabuf.
+  //   2. Regular DMABUF: default (C2C) dmabuf + ibv_reg_dmabuf_mr.
+  //   3. Plain ibv_reg_mr.
+  // If any NIC ultimately fails, deregister everything already done and throw.
   for (int n = 0; n < numNics_; ++n) {
     ibverbx::ibv_mr* mr = nullptr;
-    auto dmabuf = export_gpu_dmabuf_aligned(
-        reinterpret_cast<void*>(allocBase), allocSize);
-    if (dmabuf) {
-      if (symbols.ibv_internal_reg_dmabuf_mr != nullptr) {
-        mr = symbols.ibv_internal_reg_dmabuf_mr(
-            nics_[n].ibvPd,
-            dmabuf->alignment.dmabufOffset,
-            allocSize,
-            static_cast<uint64_t>(allocBase),
-            dmabuf->fd,
-            accessFlags);
+    // 1. Data-Direct. When selected for this NIC it is mandatory: every MR on
+    //    the NIC must share the Data-Direct route so data and signal/counter
+    //    stay ordered on one QP without a flush (see the per-MR-uniformity note
+    //    above). A per-MR fallback would mix DD and non-DD MRs on the same QP
+    //    and break that ordering, so any Data-Direct failure here is fatal --
+    //    deregister the MRs done so far and throw, rather than silently
+    //    downgrading this one MR to the regular path.
+    if (dataDirectActiveForNic(config_, nics_[n].isDataDirect) &&
+        symbols.mlx5dv_internal_reg_dmabuf_mr != nullptr) {
+      auto ddDmabuf = export_gpu_dmabuf_aligned(
+          reinterpret_cast<void*>(allocBase),
+          allocSize,
+          DmaBufExportKind::Pcie);
+      if (!ddDmabuf) {
+        for (int j = 0; j < n; ++j) {
+          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+        }
+        throw std::runtime_error(
+            fmt::format(
+                "Data-Direct selected for NIC {} but PCIe DMA-BUF export failed "
+                "(allocSize={}); refusing to mix DD and non-DD MRs on one QP "
+                "(PCIe DMA-BUF export needs CUDA >= 12.8 and a capable driver)",
+                n,
+                allocSize));
       }
-      close(dmabuf->fd);
+      errno = 0;
+      mr = symbols.mlx5dv_internal_reg_dmabuf_mr(
+          nics_[n].ibvPd,
+          ddDmabuf->alignment.dmabufOffset,
+          allocSize,
+          static_cast<uint64_t>(allocBase),
+          ddDmabuf->fd,
+          accessFlags,
+          ibverbx::MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);
+      // Capture the registration errno before close(): a failing (or even
+      // successful) close() may clobber errno, which would mask the real
+      // mlx5dv_reg_dmabuf_mr failure reason in the message below.
+      const int regErrno = errno;
+      close(ddDmabuf->fd);
+      if (!mr) {
+        for (int j = 0; j < n; ++j) {
+          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+        }
+        throw std::runtime_error(
+            fmt::format(
+                "Data-Direct mlx5dv_reg_dmabuf_mr failed for NIC {} "
+                "(allocSize={} errno={} ({})); refusing to mix DD and non-DD "
+                "MRs on one QP",
+                n,
+                allocSize,
+                regErrno,
+                folly::errnoStr(regErrno)));
+      }
     }
+    // 2. Regular DMABUF (default C2C mapping).
+    if (!mr) {
+      auto dmabuf = export_gpu_dmabuf_aligned(
+          reinterpret_cast<void*>(allocBase), allocSize);
+      if (dmabuf) {
+        if (symbols.ibv_internal_reg_dmabuf_mr != nullptr) {
+          mr = symbols.ibv_internal_reg_dmabuf_mr(
+              nics_[n].ibvPd,
+              dmabuf->alignment.dmabufOffset,
+              allocSize,
+              static_cast<uint64_t>(allocBase),
+              dmabuf->fd,
+              accessFlags);
+        }
+        close(dmabuf->fd);
+      }
+    }
+    // 3. Plain reg_mr.
     if (!mr) {
       errno = 0;
       mr = symbols.ibv_internal_reg_mr(
