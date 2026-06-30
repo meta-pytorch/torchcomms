@@ -20,7 +20,6 @@
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Tile.cuh"
-#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/Transport.cuh"
 
@@ -96,26 +95,50 @@ actualSegElems(size_t count, size_t segmentElems, int rank) {
   return (start + segmentElems <= count) ? segmentElems : (count - start);
 }
 
-/**
- * Tile view for one logical segment owned by the current num-block group.
- */
+/** Byte view for one block-owned partition of a logical owner segment. */
 struct SegmentTile {
   size_t offsetBytes;
   size_t bytes;
 };
 
-__device__ __forceinline__ SegmentTile
-segmentTileForBlock(size_t totalBytes, int numBlocks, int blockId) {
-  comms::prims::TiledBuffer<char> tile(nullptr, totalBytes, numBlocks);
+__device__ __forceinline__ SegmentTile segmentTileForBlock(
+    size_t totalBytes,
+    int numBlocks,
+    int blockId,
+    size_t blockTileBytes) {
+  if (numBlocks <= 1) {
+    return SegmentTile{
+        .offsetBytes = 0,
+        .bytes = totalBytes,
+    };
+  }
+
+  const size_t offsetBytes = static_cast<size_t>(blockId) * blockTileBytes;
+  if (offsetBytes >= totalBytes) {
+    return SegmentTile{
+        .offsetBytes = offsetBytes,
+        .bytes = 0,
+    };
+  }
+
+  const size_t remainingBytes = totalBytes - offsetBytes;
+  const size_t tileBytes =
+      remainingBytes < blockTileBytes ? remainingBytes : blockTileBytes;
+  PIPES_DEVICE_CHECK_MSG(
+      tileBytes <= blockTileBytes,
+      "ctree fused AllReduce tile tail exceeds aligned partition size");
   return SegmentTile{
-      .offsetBytes = static_cast<size_t>(blockId) * tile.tile_elements,
-      .bytes = tile.tile_bytes(blockId),
+      .offsetBytes = offsetBytes,
+      .bytes = tileBytes,
   };
 }
 
-__device__ __forceinline__ SegmentTile
-segmentTile(size_t totalBytes, const comms::prims::ThreadGroup& group) {
-  return segmentTileForBlock(totalBytes, group.total_groups, group.group_id);
+__device__ __forceinline__ SegmentTile segmentTile(
+    size_t totalBytes,
+    const comms::prims::ThreadGroup& group,
+    size_t blockTileBytes) {
+  return segmentTileForBlock(
+      totalBytes, group.total_groups, group.group_id, blockTileBytes);
 }
 
 /**
@@ -129,7 +152,8 @@ __device__ __forceinline__ size_t maxOwnerTileBytes(
   for (int owner = 0; owner < args.pMin; owner++) {
     const size_t ownerElems =
         actualSegElems(args.count, args.segmentElems, owner);
-    const auto ownerTile = segmentTile(ownerElems * sizeof(T), group);
+    const auto ownerTile =
+        segmentTile(ownerElems * sizeof(T), group, args.blockTileBytes);
     maxBytes = ownerTile.bytes > maxBytes ? ownerTile.bytes : maxBytes;
   }
   return maxBytes;

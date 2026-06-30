@@ -329,11 +329,15 @@ __device__ __noinline__ void phase2IbDualTree(
 
   const size_t actualElems = actualSegElems(
       args.common.count, args.common.segmentElems, args.common.localRank);
-  const auto tile = segmentTile(actualElems * sizeof(T), blockGroup);
+  const auto tile = segmentTile(
+      actualElems * sizeof(T), blockGroup, args.common.blockTileBytes);
   const size_t tileOffsetElems = tile.offsetBytes / sizeof(T);
   const size_t tileElems = tile.bytes / sizeof(T);
 
-  const size_t halfElems0 = (tileElems + 1) / 2;
+  const size_t lane0PartitionElems = compute_aligned_tile_parition_size(
+      tileElems, sizeof(T), ctran::allreduce::tree::kTreeLanes);
+  const size_t halfElems0 =
+      lane0PartitionElems < tileElems ? lane0PartitionElems : tileElems;
   const size_t halfElems1 = tileElems - halfElems0;
   T* phase2Buf = static_cast<T*>(args.common.phase2Buf);
   const int activeIbGroups = args.ibSendRecvGroups;

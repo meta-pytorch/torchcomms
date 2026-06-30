@@ -81,6 +81,10 @@ commResult_t fill_common_kern_args(
   args.nLocalRanks = nLocalRanks;
   args.localRank = localRank;
   args.numBlocks = numBlocks;
+  const size_t elemBytes = commTypeSize(datatype);
+  args.blockTileBytes = common::compute_aligned_tile_parition_size(
+                            segmentElems, elemBytes, numBlocks) *
+      elemBytes;
   args.datatype = datatype;
   args.redOp = redOp;
   args.transports = comm->getMultiPeerTransportsPtr();
