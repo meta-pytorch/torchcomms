@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <memory>
+#include <numeric>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
@@ -21,6 +22,130 @@
 using ctran::window::RemWinInfo;
 
 namespace ctran {
+namespace {
+
+commResult_t getWindowMapper(CtranComm* comm, CtranMapper** mapperOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || mapperOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or mapper output is null");
+  }
+
+  auto* resourceComm = comm->resourceComm();
+  if (!ctranInitialized(resourceComm) ||
+      resourceComm->ctran_->mapper == nullptr) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: window resource communicator has no initialized mapper");
+  }
+
+  *mapperOut = resourceComm->ctran_->mapper.get();
+  return commSuccess;
+}
+
+commResult_t getWindowResourceRanks(
+    CtranComm* comm,
+    std::vector<int>* ranksOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || ranksOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or rank output is null");
+  }
+
+  const int nRanks = comm->statex_->nRanks();
+  ranksOut->resize(nRanks);
+  if (!comm->isSplitShare()) {
+    std::iota(ranksOut->begin(), ranksOut->end(), 0);
+    return commSuccess;
+  }
+
+  const auto& resourceRanks = comm->parentRanks();
+  if (resourceRanks.size() != static_cast<size_t>(nRanks)) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window rank map size {} does not match nRanks {}",
+        resourceRanks.size(),
+        nRanks);
+  }
+
+  *ranksOut = resourceRanks;
+  return commSuccess;
+}
+
+commResult_t getWindowResourceRank(CtranComm* comm, int rank, int* rankOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || rankOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or rank output is null");
+  }
+  if (rank < 0 || rank >= comm->statex_->nRanks()) {
+    FB_ERRORRETURN(
+        commInvalidArgument, "CTRAN-WINDOW: rank {} is out of range", rank);
+  }
+  if (!comm->isSplitShare()) {
+    *rankOut = rank;
+    return commSuccess;
+  }
+
+  const auto& resourceRanks = comm->parentRanks();
+  if (resourceRanks.size() != static_cast<size_t>(comm->statex_->nRanks())) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window rank map size {} does not match nRanks {}",
+        resourceRanks.size(),
+        comm->statex_->nRanks());
+  }
+  *rankOut = resourceRanks[rank];
+  return commSuccess;
+}
+
+commResult_t windowBarrier(CtranComm* comm, CtranMapper* mapper) {
+  if (comm == nullptr || comm->statex_ == nullptr || mapper == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: cannot run window barrier without comm/statex/mapper");
+  }
+  if (!comm->isSplitShare()) {
+    return mapper->barrier();
+  }
+
+  std::vector<int> ranks;
+  FB_COMMCHECK(getWindowResourceRanks(comm, &ranks));
+  if (ranks.size() <= 1) {
+    return commSuccess;
+  }
+
+  const int myResourceRank = comm->resourceComm()->statex_->rank();
+  bool foundSelf = false;
+  for (const int rank : ranks) {
+    if (rank == myResourceRank) {
+      foundSelf = true;
+      break;
+    }
+  }
+  if (!foundSelf) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window ranks do not contain resource rank {}",
+        myResourceRank);
+  }
+
+  std::vector<CtranMapperRequest> reqs((ranks.size() - 1) * 2);
+  int reqIdx = 0;
+  for (const int peerRank : ranks) {
+    if (peerRank == myResourceRank) {
+      continue;
+    }
+    FB_COMMCHECK(mapper->irecvCtrl(peerRank, &reqs[reqIdx++]));
+    FB_COMMCHECK(mapper->isendCtrl(peerRank, &reqs[reqIdx++]));
+  }
+  for (auto& req : reqs) {
+    FB_COMMCHECK(mapper->waitRequest(&req));
+  }
+  return commSuccess;
+}
+
+} // namespace
 
 // Defined here (not in header) so that unique_ptr<HostWindow> destructor
 // sees the complete HostWindow type.
@@ -48,7 +173,8 @@ commResult_t CtranWin::exchange() {
 
   remWinInfo.resize(nRanks);
 
-  auto mapper = comm->ctran_->mapper.get();
+  CtranMapper* mapper = nullptr;
+  FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
   // Registration via ctran mapper.
   FB_COMMCHECK(mapper->regMem(
@@ -104,30 +230,50 @@ commResult_t CtranWin::exchange() {
       nRanks);
   std::vector<struct CtranMapperRemoteAccessKey> remoteUserBufAccessKeys(
       nRanks);
+  std::vector<int> exchangeRanks;
+  FB_COMMCHECK(getWindowResourceRanks(comm, &exchangeRanks));
+  if (comm->isSplitShare()) {
+    const auto resourceNRanks = comm->resourceComm()->statex_->nRanks();
+    remoteBaseBufs.resize(resourceNRanks);
+    remoteUserBufs.resize(resourceNRanks);
+    remoteBaseBufAccessKeys.resize(resourceNRanks);
+    remoteUserBufAccessKeys.resize(resourceNRanks);
+  }
 
   FB_COMMCHECK(mapper->allGatherCtrl(
-      winBasePtr, baseRegHdl, remoteBaseBufs, remoteBaseBufAccessKeys));
+      winBasePtr,
+      baseRegHdl,
+      exchangeRanks,
+      remoteBaseBufs,
+      remoteBaseBufAccessKeys));
 
   if (!allocDataBuf_) {
     // if data buffer is provided by user, extra round of handler exchange is
     // needed
     FB_COMMCHECK(mapper->allGatherCtrl(
-        winDataPtr, dataRegHdl, remoteUserBufs, remoteUserBufAccessKeys));
+        winDataPtr,
+        dataRegHdl,
+        exchangeRanks,
+        remoteUserBufs,
+        remoteUserBufAccessKeys));
   }
 
   for (auto r = 0; r < nRanks; r++) {
+    const int exchangeRank = exchangeRanks[r];
     remWinInfo[r].dataBytes = allRankSizes[r];
     if (allocDataBuf_) {
-      remWinInfo[r].dataAddr = remoteBaseBufs[r];
-      remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[r];
+      remWinInfo[r].dataAddr = remoteBaseBufs[exchangeRank];
+      remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[exchangeRank];
       remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
-          reinterpret_cast<size_t>(remoteBaseBufs[r]) + allRankSizes[r]);
-      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+          reinterpret_cast<size_t>(remoteBaseBufs[exchangeRank]) +
+          allRankSizes[r]);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     } else {
-      remWinInfo[r].dataAddr = remoteUserBufs[r];
-      remWinInfo[r].dataRkey = remoteUserBufAccessKeys[r];
-      remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(remoteBaseBufs[r]);
-      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+      remWinInfo[r].dataAddr = remoteUserBufs[exchangeRank];
+      remWinInfo[r].dataRkey = remoteUserBufAccessKeys[exchangeRank];
+      remWinInfo[r].signalAddr =
+          reinterpret_cast<uint64_t*>(remoteBaseBufs[exchangeRank]);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     }
   }
   CLOGF_SUBSYS(
@@ -152,12 +298,12 @@ commResult_t CtranWin::exchange() {
 
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
-  FB_COMMCHECK(mapper->barrier());
+  FB_COMMCHECK(windowBarrier(comm, mapper));
   return commSuccess;
 }
 
 bool CtranWin::allGatherPSupported(CtranComm* comm) {
-  if (!ctranInitialized(comm)) {
+  if (comm == nullptr || comm->isSplitShare() || !ctranInitialized(comm)) {
     return false;
   }
   auto statex = comm->statex_.get();
@@ -242,7 +388,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
   if (statex == nullptr) {
     FB_ERRORRETURN(commInternalError, "Empty communicator statex.");
   }
-  auto mapper = comm->ctran_->mapper.get();
+  CtranMapper* mapper = nullptr;
+  FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
 
   CLOGF_SUBSYS(
@@ -261,7 +408,7 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // ensure the host process waits for CUDA streams where put/wait operations
   // are launched.
   if (!skipBarrier) {
-    FB_COMMCHECK(mapper->barrier());
+    FB_COMMCHECK(windowBarrier(comm, mapper));
   }
 
   auto nRanks = statex->nRanks();
@@ -320,8 +467,14 @@ commResult_t CtranWin::free(bool skipBarrier) {
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
+  CtranMapper* mapper = nullptr;
+  int resourceRank = -1;
+  if (getWindowMapper(comm, &mapper) != commSuccess ||
+      getWindowResourceRank(comm, rank, &resourceRank) != commSuccess) {
+    return false;
+  }
   return isGpuMem() &&
-      comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
+      mapper->hasBackend(resourceRank, CtranMapperBackend::NVL);
 }
 
 #if defined(ENABLE_PRIMS)
