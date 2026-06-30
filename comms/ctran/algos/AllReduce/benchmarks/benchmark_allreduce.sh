@@ -55,6 +55,21 @@ GB300_IMG="${GB300_IMG:-}"
 MAST_IMG="${MAST_IMG:-}"
 H100_NVCC_CONFIG="${H100_NVCC_CONFIG:--c fbcode.nvcc_arch=h100a -c fbcode.platform010_cuda_version=13.0 -m cuda13}"
 GB300_NVCC_CONFIG="${GB300_NVCC_CONFIG:--c fbcode.nvcc_arch=b300a_native -c fbcode.platform010_cuda_version=13.0 -m cuda13}"
+REMOTE_HOST=""
+REMOTE_DIR=""
+REMOTE_KEEP=0
+REMOTE_EXTRA_ENV=""
+REMOTE_MPI_BIN="${REMOTE_MPI_BIN:-/usr/local/fbcode/bin/mpirun}"
+LOG_DIR=""
+SUSH_BIN="${SUSH_BIN:-sush}"
+SUSCP_BIN="${SUSCP_BIN:-suscp}"
+REMOTE_PERF_BIN=""
+BLOCK_CAPS=""
+SUMMARY_CSV=""
+CONTINUE_ON_ERROR=0
+SPLIT_SIZES=0
+RUN_TIMEOUT_SECONDS=""
+RUN_RETRIES=0
 
 usage() {
   cat <<'EOF'
@@ -98,6 +113,18 @@ Options:
   --gb300-img VALUE      Reuse a GB300 fbpkg image
   --buck-mode VALUE      Buck mode to build nccl_allreduce_perf (default: @fbcode//mode/opt)
   --buck-target VALUE    Buck target for nccl_allreduce_perf (default: third-party nccl-tests)
+  --remote-host HOST  Copy the binary to HOST and run there with sush
+  --remote-dir DIR    Remote working directory (default: /tmp/$USER/ctree_allreduce_TIMESTAMP)
+  --remote-keep       Keep --remote-dir after the run
+  --remote-extra-env  Space-separated KEY=VALUE envs added to every remote run
+  --remote-mpi-bin    MPI launcher path on the remote host (default: /usr/local/fbcode/bin/mpirun)
+  --log-dir DIR       Directory for raw per-run logs
+  --block-caps CSV    CTREE-only NCCL_CTRAN_MAX_NBLOCKS values to sweep
+  --summary-csv PATH  Append parsed nccl-tests result rows to PATH
+  --split-sizes       Run each generated size as a separate benchmark command
+  --run-timeout SEC   Wrap each benchmark command in timeout --foreground SEC
+  --retries N         Retry each failed benchmark command N times (default: 0)
+  --continue-on-error Continue after a benchmark command exits non-zero
 EOF
 }
 
@@ -139,10 +166,32 @@ while [[ $# -gt 0 ]]; do
     --gb300-img) GB300_IMG="$2"; shift 2 ;;
     --buck-mode) BUCK_MODE="$2"; shift 2 ;;
     --buck-target) BUCK_TARGET="$2"; shift 2 ;;
+    --remote-host) REMOTE_HOST="$2"; shift 2 ;;
+    --remote-dir) REMOTE_DIR="$2"; shift 2 ;;
+    --remote-keep) REMOTE_KEEP=1; shift ;;
+    --remote-extra-env) REMOTE_EXTRA_ENV="$2"; shift 2 ;;
+    --remote-mpi-bin) REMOTE_MPI_BIN="$2"; shift 2 ;;
+    --log-dir) LOG_DIR="$2"; shift 2 ;;
+    --block-caps) BLOCK_CAPS="$2"; shift 2 ;;
+    --summary-csv) SUMMARY_CSV="$2"; shift 2 ;;
+    --split-sizes) SPLIT_SIZES=1; shift ;;
+    --run-timeout) RUN_TIMEOUT_SECONDS="$2"; shift 2 ;;
+    --retries) RUN_RETRIES="$2"; shift 2 ;;
+    --continue-on-error) CONTINUE_ON_ERROR=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [[ -n "$RUN_TIMEOUT_SECONDS" &&
+      (! "$RUN_TIMEOUT_SECONDS" =~ ^[0-9]+$ || "$RUN_TIMEOUT_SECONDS" -lt 1) ]]; then
+  echo "Unsupported run timeout: ${RUN_TIMEOUT_SECONDS}. Expected positive integer seconds." >&2
+  exit 2
+fi
+if [[ ! "$RUN_RETRIES" =~ ^[0-9]+$ ]]; then
+  echo "Unsupported retries: ${RUN_RETRIES}. Expected non-negative integer." >&2
+  exit 2
+fi
 
 gpu_count() {
   if ! command -v nvidia-smi >/dev/null 2>&1; then
@@ -176,8 +225,10 @@ else:
 
 nvcc_arch_for_build() {
   local arch="$1"
-  if [[ "$arch" == "gb200" || "$arch" == "gb300" ]]; then
-    echo "b200"
+  if [[ "$arch" == "gb300" ]]; then
+    echo "b300a_native"
+  elif [[ "$arch" == "gb200" ]]; then
+    echo "b200a"
   else
     echo "h100"
   fi
@@ -194,7 +245,18 @@ build_perf_binary() {
     -c "fbcode.nvcc_arch=$(nvcc_arch_for_build "$arch")"
   )
   if [[ "$arch" == "gb200" || "$arch" == "gb300" ]]; then
-    build_flags+=(-c fbcode.platform010-aarch64_clang=17)
+    local cuda_version="12.8"
+    local cuda_mode="cuda128"
+    if [[ "$arch" == "gb300" ]]; then
+      cuda_version="13.0"
+      cuda_mode="ovr_config//third-party/cuda/constraints:13.0"
+    fi
+    build_flags+=(
+      -c fbcode.arch=aarch64
+      -c "fbcode.platform010_cuda_version=${cuda_version}"
+      -c fbcode.platform010-aarch64_clang=17
+      -m "$cuda_mode"
+    )
   fi
   if ! buck2 build "${build_flags[@]}" \
     "$BUCK_TARGET" --show-full-json-output >"$json_file"; then
@@ -313,6 +375,157 @@ default_report_prefs() {
   fi
 }
 
+validate_positive_int_values() {
+  local field_name="$1"
+  local -n values="$2"
+  local value
+  for value in "${values[@]}"; do
+    if [[ ! "$value" =~ ^[0-9]+$ || "$value" -lt 1 ]]; then
+      echo "Unsupported ${field_name}: ${value}. Expected positive integers." >&2
+      exit 2
+    fi
+  done
+}
+
+expand_size_values() {
+  local min_bytes="$1"
+  local max_bytes="$2"
+  local factor="$3"
+  python3 - "$min_bytes" "$max_bytes" "$factor" <<'PY'
+import re
+import sys
+
+
+UNITS = {
+    "": 1,
+    "B": 1,
+    "K": 1024,
+    "KB": 1024,
+    "M": 1024**2,
+    "MB": 1024**2,
+    "G": 1024**3,
+    "GB": 1024**3,
+}
+
+
+def parse_size(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([A-Za-z]*)", value.strip())
+    if not match:
+        raise SystemExit(f"invalid size: {value}")
+    number = int(match.group(1))
+    suffix = match.group(2).upper()
+    if suffix not in UNITS:
+        raise SystemExit(f"unsupported size suffix: {value}")
+    return number * UNITS[suffix]
+
+
+def format_size(value: int) -> str:
+    for suffix, unit in (("G", 1024**3), ("M", 1024**2), ("K", 1024)):
+        if value >= unit and value % unit == 0:
+            return f"{value // unit}{suffix}"
+    return str(value)
+
+
+start = parse_size(sys.argv[1])
+end = parse_size(sys.argv[2])
+try:
+    factor = float(sys.argv[3])
+except ValueError as exc:
+    raise SystemExit(f"invalid factor: {sys.argv[3]}") from exc
+
+if start < 1 or end < start:
+    raise SystemExit("expected 1 <= min-bytes <= max-bytes")
+if factor <= 1.0 and start != end:
+    raise SystemExit("split size expansion requires factor > 1")
+
+size = start
+while size <= end:
+    print(format_size(size))
+    if size == end:
+        break
+    next_size = int(size * factor)
+    if next_size <= size:
+        next_size = size + 1
+    size = next_size
+PY
+}
+
+read_env_values() {
+  local env_string="$1"
+  local -n parsed_envs="$2"
+  local -a raw_envs
+  read -r -a raw_envs <<<"$env_string"
+  parsed_envs=()
+  local env_kv
+  for env_kv in "${raw_envs[@]}"; do
+    if [[ -n "$env_kv" ]]; then
+      if [[ "$env_kv" != *=* ]]; then
+        echo "Invalid env override '${env_kv}'; expected KEY=VALUE" >&2
+        exit 2
+      fi
+      parsed_envs+=("$env_kv")
+    fi
+  done
+}
+
+remote_target() {
+  if [[ "$REMOTE_HOST" == *@* ]]; then
+    printf '%s\n' "$REMOTE_HOST"
+  else
+    printf 'root@%s\n' "$REMOTE_HOST"
+  fi
+}
+
+shell_join() {
+  printf '%q ' "$@"
+}
+
+default_remote_dir() {
+  printf '/tmp/%s/ctree_allreduce_%s\n' \
+    "${USER:-ctree}" \
+    "$(date +%Y%m%d_%H%M%S)"
+}
+
+setup_remote_binary() {
+  local perf_bin="$1"
+  local target
+  target="$(remote_target)"
+  if [[ -z "$REMOTE_DIR" ]]; then
+    REMOTE_DIR="$(default_remote_dir)"
+  fi
+  REMOTE_PERF_BIN="${REMOTE_DIR}/nccl_allreduce_perf"
+
+  local -a mkdir_cmd=(
+    "$SUSH_BIN" --reason "prepare CTREE AllReduce benchmark directory"
+    "$target" "mkdir -p $(printf '%q' "$REMOTE_DIR")"
+  )
+  print_command "${mkdir_cmd[@]}"
+  "${mkdir_cmd[@]}"
+
+  local -a copy_cmd=(
+    "$SUSCP_BIN" --reason "copy CTREE AllReduce benchmark binary"
+    "$perf_bin" "${target}:${REMOTE_PERF_BIN}"
+  )
+  print_command "${copy_cmd[@]}"
+  "${copy_cmd[@]}"
+
+  local -a chmod_cmd=(
+    "$SUSH_BIN" --reason "chmod CTREE AllReduce benchmark binary"
+    "$target" "chmod +x $(printf '%q' "$REMOTE_PERF_BIN")"
+  )
+  print_command "${chmod_cmd[@]}"
+  "${chmod_cmd[@]}"
+}
+
+cleanup_remote_binary() {
+  if [[ -n "$REMOTE_HOST" && "$REMOTE_KEEP" -eq 0 && -n "$REMOTE_DIR" ]]; then
+    local target
+    target="$(remote_target)"
+    "$SUSH_BIN" --reason "cleanup CTREE AllReduce benchmark directory" \
+      "$target" "rm -rf $(printf '%q' "$REMOTE_DIR")" || true
+  fi
+}
+
 print_command() {
   printf 'command:'
   printf ' %q' "$@"
@@ -363,6 +576,37 @@ variant_envs() {
   esac
 }
 
+append_summary_csv() {
+  local log_file="$1"
+  local topology="$2"
+  local algorithm="$3"
+  local np="$4"
+  local block_cap="$5"
+  local exit_code="$6"
+
+  if [[ -z "$SUMMARY_CSV" || -z "$log_file" ]]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "$SUMMARY_CSV")"
+  if [[ ! -e "$SUMMARY_CSV" ]]; then
+    printf '%s\n' \
+      "algorithm,topology,np,block_cap,size_bytes,oop_time_us,oop_busbw,oop_wrong,ip_time_us,ip_busbw,ip_wrong,exit_code" \
+      >"$SUMMARY_CSV"
+  fi
+
+  awk \
+    -v algorithm="$algorithm" \
+    -v topology="$topology" \
+    -v np="$np" \
+    -v block_cap="$block_cap" \
+    -v exit_code="$exit_code" \
+    '($1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && NF >= 13) {
+       printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+         algorithm, topology, np, block_cap, $1, $6, $8, $9, $10, $12, $13, exit_code
+     }' "$log_file" >>"$SUMMARY_CSV"
+}
+
 run_one() {
   local perf_bin="$1"
   local arch="$2"
@@ -371,8 +615,11 @@ run_one() {
   local np="$5"
   local min_bytes="$6"
   local max_bytes="$7"
+  local block_cap="$8"
   local -a envs=()
   local -a variant_env_values=()
+  local -a extra_envs=()
+  read_env_values "$REMOTE_EXTRA_ENV" extra_envs
 
   if [[ "$topology" == "IB_ONLY" ]]; then
     envs+=("NCCL_MNNVL_ENABLE=0" "NCCL_P2P_DISABLE=1")
@@ -385,10 +632,21 @@ run_one() {
   envs+=("NCCL_DEBUG=${NCCL_DEBUG:-WARN}")
   mapfile -t variant_env_values < <(variant_envs "$variant")
   envs+=("${variant_env_values[@]}")
+  if [[ -n "${NCCL_DEBUG_FILE:-}" ]]; then
+    envs+=("NCCL_DEBUG_FILE=${NCCL_DEBUG_FILE}")
+  else
+    envs+=("NCCL_DEBUG_FILE=/dev/stderr")
+  fi
 
   if variant_uses_ctran "$variant"; then
     envs+=("NCCL_CTRAN_ENABLE=1")
     envs+=("NCCL_ALLREDUCE_ALGO=${variant}")
+  fi
+
+  envs+=("${extra_envs[@]}")
+
+  if [[ "$variant" == "ctree" && -n "$block_cap" ]]; then
+    envs+=("NCCL_CTRAN_MAX_NBLOCKS=${block_cap}")
   fi
 
   local -a mpi_envs=()
@@ -398,10 +656,14 @@ run_one() {
   done
 
   echo
+  local block_desc=""
+  if [[ -n "$block_cap" ]]; then
+    block_desc=" blocks=${block_cap}"
+  fi
   if [[ "$min_bytes" == "$max_bytes" ]]; then
-    echo "== ${variant} ${topology} np=${np} arch=${arch} size=${min_bytes} =="
+    echo "== ${variant} ${topology} np=${np} arch=${arch}${block_desc} size=${min_bytes} =="
   else
-    echo "== ${variant} ${topology} np=${np} arch=${arch} size=${min_bytes}..${max_bytes} =="
+    echo "== ${variant} ${topology} np=${np} arch=${arch}${block_desc} size=${min_bytes}..${max_bytes} =="
   fi
 
   local -a cmd=(
@@ -411,25 +673,107 @@ run_one() {
     "$perf_bin" -b "$min_bytes" -e "$max_bytes" -f "$FACTOR" -g 1
     -n "$ITERS" -w "$WARMUP" -d "$DTYPE"
   )
+  if [[ -n "$RUN_TIMEOUT_SECONDS" ]]; then
+    cmd=(timeout --foreground "$RUN_TIMEOUT_SECONDS" "${cmd[@]}")
+  fi
 
-  print_command "${cmd[@]}"
-  local start_ns
-  start_ns="$(date +%s%N)"
-  "${cmd[@]}"
-  local end_ns
-  end_ns="$(date +%s%N)"
-  local elapsed_ms
-  elapsed_ms=$(((end_ns - start_ns) / 1000000))
-  printf 'elapsed_seconds topology=%s variant=%s np=%s seconds=%s.%03d\n' \
-    "$topology" \
-    "$variant" \
-    "$np" \
-    "$((elapsed_ms / 1000))" \
-    "$((elapsed_ms % 1000))"
+  local -a run_cmd=("${cmd[@]}")
+  if [[ -n "$REMOTE_HOST" ]]; then
+    local remote_cmd
+    remote_cmd="$(shell_join "${cmd[@]}")"
+    run_cmd=(
+      "$SUSH_BIN" --reason "run CTREE AllReduce benchmark"
+      "$(remote_target)" "$remote_cmd"
+    )
+  fi
+
+  local log_file=""
+  if [[ -n "$LOG_DIR" ]]; then
+    mkdir -p "$LOG_DIR"
+    local log_block_suffix=""
+    if [[ -n "$block_cap" ]]; then
+      log_block_suffix="_blocks${block_cap}"
+    fi
+    log_file="${LOG_DIR}/${variant}_${topology}_np${np}${log_block_suffix}_${min_bytes}_${max_bytes}.log"
+  fi
+
+  print_command "${run_cmd[@]}"
+  local summary_log_file="$log_file"
+  local attempt=0
+  local run_status=0
+  while true; do
+    local attempt_log_file="$log_file"
+    if [[ -n "$log_file" && "$attempt" -gt 0 ]]; then
+      attempt_log_file="${log_file}.retry${attempt}"
+    fi
+    summary_log_file="$attempt_log_file"
+    if [[ "$attempt" -gt 0 ]]; then
+      printf 'retry topology=%s variant=%s np=%s attempt=%s/%s\n' \
+        "$topology" "$variant" "$np" "$attempt" "$RUN_RETRIES"
+      print_command "${run_cmd[@]}"
+    fi
+
+    local start_ns
+    start_ns="$(date +%s%N)"
+    if [[ -n "$attempt_log_file" ]]; then
+      set +e
+      "${run_cmd[@]}" 2>&1 | tee "$attempt_log_file"
+      run_status="${PIPESTATUS[0]}"
+      set -e
+    else
+      set +e
+      "${run_cmd[@]}"
+      run_status="$?"
+      set -e
+    fi
+    local end_ns
+    end_ns="$(date +%s%N)"
+    local elapsed_ms
+    elapsed_ms=$(((end_ns - start_ns) / 1000000))
+    printf 'elapsed_seconds topology=%s variant=%s np=%s attempt=%s seconds=%s.%03d exit_code=%s\n' \
+      "$topology" \
+      "$variant" \
+      "$np" \
+      "$attempt" \
+      "$((elapsed_ms / 1000))" \
+      "$((elapsed_ms % 1000))" \
+      "$run_status"
+
+    if [[ "$run_status" -eq 0 || "$attempt" -ge "$RUN_RETRIES" ]]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+  done
+  append_summary_csv \
+    "$summary_log_file" "$topology" "$variant" "$np" "$block_cap" "$run_status"
+  if [[ "$run_status" -ne 0 && "$CONTINUE_ON_ERROR" -eq 0 ]]; then
+    return "$run_status"
+  fi
+}
+
+run_range() {
+  local perf_bin="$1"
+  local arch="$2"
+  local topology="$3"
+  local variant="$4"
+  local np="$5"
+  local block_cap="$6"
+  local -n split_size_values_ref="$7"
+
+  if [[ "$SPLIT_SIZES" -eq 1 ]]; then
+    local size
+    for size in "${split_size_values_ref[@]}"; do
+      run_one "$perf_bin" "$arch" "$topology" "$variant" "$np" \
+        "$size" "$size" "$block_cap"
+    done
+  else
+    run_one "$perf_bin" "$arch" "$topology" "$variant" "$np" \
+      "$MIN_BYTES" "$MAX_BYTES" "$block_cap"
+  fi
 }
 
 run_local() {
-  if [[ ! -x "$MPI_BIN" ]]; then
+  if [[ -z "$REMOTE_HOST" && ! -x "$MPI_BIN" ]]; then
     if command -v mpirun >/dev/null 2>&1; then
       MPI_BIN="$(command -v mpirun)"
     else
@@ -446,25 +790,55 @@ run_local() {
   read_csv_values "$VARIANTS" variant_values
   validate_csv_values "variant" variant_values nccl nccl_tree nccl_tree_simple nccl_ring_simple ctree ctring
 
+  local -a block_cap_values=()
+  if [[ -n "$BLOCK_CAPS" ]]; then
+    read_csv_values "$BLOCK_CAPS" block_cap_values
+    validate_positive_int_values "block cap" block_cap_values
+  fi
+
+  local -a split_size_values=()
+  if [[ "$SPLIT_SIZES" -eq 1 ]]; then
+    # shellcheck disable=SC2034
+    mapfile -t split_size_values < <(
+      expand_size_values "$MIN_BYTES" "$MAX_BYTES" "$FACTOR")
+  fi
+
   local arch
   arch="$(detect_arch)"
   local ngpus
   ngpus="$(gpu_count)"
   local perf_bin
   perf_bin="$(build_perf_binary "$arch")"
+  if [[ -n "$REMOTE_HOST" ]]; then
+    MPI_BIN="$REMOTE_MPI_BIN"
+    if [[ -z "$LOG_DIR" ]]; then
+      LOG_DIR="/tmp/${USER:-ctree}/ctree-gb300-$(date +%Y%m%d_%H%M%S)"
+    fi
+    setup_remote_binary "$perf_bin"
+    perf_bin="$REMOTE_PERF_BIN"
+    trap cleanup_remote_binary EXIT
+    echo "raw logs: ${LOG_DIR}"
+  fi
 
   local -a sizes
   read_csv_values "$WORLD_SIZES" sizes
   local np topology variant
   for np in "${sizes[@]}"; do
-    if [[ "$ngpus" -gt 0 && "$np" -gt "$ngpus" ]]; then
+    if [[ -z "$REMOTE_HOST" && "$ngpus" -gt 0 && "$np" -gt "$ngpus" ]]; then
       echo "skip np=${np}: host has ${ngpus} GPUs"
       continue
     fi
     for topology in "${topology_values[@]}"; do
       for variant in "${variant_values[@]}"; do
-        run_one "$perf_bin" "$arch" "$topology" "$variant" "$np" \
-          "$MIN_BYTES" "$MAX_BYTES"
+        if [[ "$variant" == "ctree" && "${#block_cap_values[@]}" -gt 0 ]]; then
+          for block_cap in "${block_cap_values[@]}"; do
+            run_range "$perf_bin" "$arch" "$topology" "$variant" "$np" \
+              "$block_cap" split_size_values
+          done
+        else
+          run_range "$perf_bin" "$arch" "$topology" "$variant" "$np" \
+            "" split_size_values
+        fi
       done
     done
   done
