@@ -4,6 +4,7 @@
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/memory/CuMemAllocation.h"
+#include "comms/prims/memory/CuMulticastAllocation.h"
 
 #if !defined(__HIP_PLATFORM_AMD__)
 #include "comms/prims/platform/CudaDriverLazy.h"
@@ -60,6 +61,19 @@ CuMemMapping CuMemMapping::overAllocation(
   const CUdevice cuDev = alloc->device();
   const CUmemGenericAllocationHandle handle = alloc->handle();
   return CuMemMapping(cuDev, handle, size, granularity, std::move(alloc));
+}
+
+CuMemMapping CuMemMapping::overMulticast(
+    std::shared_ptr<CuMulticastAllocation> overlay,
+    std::size_t size,
+    std::size_t granularity) {
+  if (!overlay) {
+    throw std::runtime_error(
+        "CuMemMapping::overMulticast: overlay must be non-null");
+  }
+  const CUdevice cuDev = overlay->device();
+  const CUmemGenericAllocationHandle handle = overlay->handle();
+  return CuMemMapping(cuDev, handle, size, granularity, std::move(overlay));
 }
 
 CuMemMapping::~CuMemMapping() {
