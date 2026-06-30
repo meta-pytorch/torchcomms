@@ -67,7 +67,7 @@ Options:
   --variants CSV         nccl,nccl_tree,nccl_tree_simple,nccl_ring_simple,ctree,ctring (default: ctree,nccl_tree_simple)
   --algorithms CSV       Deprecated alias for --variants
   --arch NAME            Local build architecture: auto,h100,gb200,gb300 (default: auto)
-  --archs CSV            MAST architectures to launch: h100,gb300; H100 runs first when present (default: h100,gb300)
+  --archs CSV            MAST architectures to launch: h100,gb300; platform fbpkg builds run in parallel (default: h100,gb300)
   --nodes CSV            MAST node counts to launch (default: 2,4,8,16,32)
   --ppn N                MAST processes/GPUs per node (default: 1)
   --tenant NAME          MAST entitlement/rmAttribution (default: msl_tbd_iris)
@@ -521,6 +521,110 @@ mast_fbpkg_target() {
   esac
 }
 
+prebuild_mast_arch_image() {
+  local arch="$1"
+  local current_img
+  current_img="$(image_for_arch "$arch")"
+  if [[ -n "$current_img" ]]; then
+    echo "Reusing provided ${arch} fbpkg: ${current_img}"
+    return 0
+  fi
+
+  local nvcc_config
+  nvcc_config="$(mast_nvcc_config "$arch")"
+  local fbpkg_target
+  fbpkg_target="$(mast_fbpkg_target "$arch")"
+  local -a cmd=(
+    env
+    "NVCC_CONFIG=${nvcc_config}"
+    "FBPKG_TARGET=${fbpkg_target}"
+    "$NCCL_TEST_SCRIPT"
+    --collective allreduce
+    --min-nodes 1
+    --max-nodes 1
+    --ppn "$PPN"
+    --build-only
+    --nccl-debug INFO
+  )
+  if [[ "$DRY_RUN" == "1" ]]; then
+    cmd+=(--dry-run)
+  fi
+
+  echo "== mast prebuild arch=${arch} target=${fbpkg_target} =="
+  print_command "${cmd[@]}"
+  "${cmd[@]}"
+}
+
+prebuild_mast_images() {
+  local -a arch_values=("$@")
+  local log_dir="/tmp/${CURRENT_USER}"
+  mkdir -p "$log_dir"
+
+  local -a build_arches=()
+  local -a build_logs=()
+  local -a build_pids=()
+  local arch
+  for arch in "${arch_values[@]}"; do
+    if [[ -n "$(image_for_arch "$arch")" ]]; then
+      echo "Reusing provided ${arch} fbpkg: $(image_for_arch "$arch")"
+      continue
+    fi
+
+    local log_file="${log_dir}/allreduce_${arch}_prebuild.$$.log"
+    echo "Starting ${arch} fbpkg prebuild in background; log: ${log_file}"
+    (
+      prebuild_mast_arch_image "$arch"
+    ) >"$log_file" 2>&1 &
+    build_arches+=("$arch")
+    build_logs+=("$log_file")
+    build_pids+=("$!")
+  done
+
+  if [[ "${#build_pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local failed=0
+  local i
+  for i in "${!build_pids[@]}"; do
+    if ! wait "${build_pids[$i]}"; then
+      failed=1
+    fi
+  done
+
+  for i in "${!build_logs[@]}"; do
+    echo
+    echo "== ${build_arches[$i]} prebuild output =="
+    cat "${build_logs[$i]}"
+  done
+
+  if [[ "$failed" != "0" ]]; then
+    echo "One or more platform fbpkg prebuilds failed." >&2
+    return 1
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    for arch in "${build_arches[@]}"; do
+      set_image_for_arch "$arch" "<dry-run>"
+    done
+    return 0
+  fi
+
+  for i in "${!build_arches[@]}"; do
+    arch="${build_arches[$i]}"
+    local fbpkg_target
+    fbpkg_target="$(mast_fbpkg_target "$arch")"
+    local created_img
+    created_img="$(extract_created_img "${build_logs[$i]}" "$fbpkg_target")"
+    if [[ -z "$created_img" ]]; then
+      echo "Failed to extract ${arch} fbpkg image from ${build_logs[$i]}" >&2
+      return 1
+    fi
+    set_image_for_arch "$arch" "$created_img"
+    echo "Reusing ${created_img} for ${arch} launches."
+  done
+}
+
 write_gb300_bha_config() {
   local multiple="$1"
   local dir="/tmp/${CURRENT_USER}"
@@ -802,6 +906,7 @@ run_mast() {
 
   init_manifest
   write_report_preferences
+  prebuild_mast_images "${arch_values[@]}"
 
   local arch variant nodes
   if [[ "$SKIP_SMOKE" != "1" ]]; then
