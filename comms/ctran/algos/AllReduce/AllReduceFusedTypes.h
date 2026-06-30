@@ -2,6 +2,10 @@
 
 #pragma once
 
+#include <cuda_runtime.h>
+
+#include <cstddef>
+
 #include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
 #include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
 
@@ -13,6 +17,42 @@ static constexpr int kBlockSize = 640;
 static constexpr int kNvlTileElems = 15360;
 /** Elements processed by one IB tile operation in the reduction helpers. */
 static constexpr int kIbTileElems = 5120;
+
+/** Byte granularity required for CTREE block and tree-lane partition starts. */
+static constexpr std::size_t kTileParitionAligmentBytes = 128;
+
+/**
+ * Return the element count for one aligned tile partition.
+ *
+ * The returned size is the `ceil(numElems / numPartitions)` element count
+ * rounded up so `partitionElems * elemBytes` lands on a
+ * `kTileParitionAligmentBytes` boundary. It can be larger than `numElems`;
+ * callers consume the final partition as a tail whose actual size is at most
+ * this value.
+ */
+__host__ __device__ inline std::size_t compute_aligned_tile_parition_size(
+    std::size_t numElems,
+    std::size_t elemBytes,
+    int numPartitions) {
+  if (numElems == 0 || elemBytes == 0 || numPartitions <= 1) {
+    return numElems;
+  }
+
+  std::size_t a = kTileParitionAligmentBytes;
+  std::size_t b = elemBytes;
+  while (b != 0) {
+    const std::size_t r = a % b;
+    a = b;
+    b = r;
+  }
+
+  const std::size_t elemsPerAlignedBoundary = kTileParitionAligmentBytes / a;
+  const std::size_t nPartitions = static_cast<std::size_t>(numPartitions);
+  const std::size_t partitionElems = (numElems + nPartitions - 1) / nPartitions;
+  return ((partitionElems + elemsPerAlignedBoundary - 1) /
+          elemsPerAlignedBoundary) *
+      elemsPerAlignedBoundary;
+}
 
 } // namespace ctran::allreduce::common
 
@@ -82,6 +122,14 @@ struct CommonKernArgs {
   int localRank;
   /** Number of logical data partitions processed by CUDA blocks per GPU. */
   int numBlocks;
+  /**
+   * Byte stride for one block-owned segment partition.
+   *
+   * Computed once on the launch path from `segmentElems`, datatype size, and
+   * `numBlocks`; each block uses this stride to derive its segment offset, and
+   * the final block consumes a tail no larger than this value.
+   */
+  size_t blockTileBytes;
 
   /** Collective datatype implemented by the kernel dispatch. */
   commDataType_t datatype;

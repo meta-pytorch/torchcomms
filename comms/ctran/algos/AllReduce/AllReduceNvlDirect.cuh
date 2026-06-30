@@ -106,7 +106,8 @@ __device__ __noinline__ void nvlDirectReduceScatter(
   if (localRank < pMin) {
     const size_t myActualElems =
         common::actualSegElems(args.count, segmentElems, localRank);
-    myTile = common::segmentTile(myActualElems * sizeof(T), group);
+    myTile = common::segmentTile(
+        myActualElems * sizeof(T), group, args.blockTileBytes);
     const size_t mySegmentOffset =
         static_cast<size_t>(localRank) * segmentBytes;
     const char* src = sendbuff + mySegmentOffset + myTile.offsetBytes;
@@ -144,8 +145,8 @@ __device__ __noinline__ void nvlDirectReduceScatter(
 
       const size_t ownerActualElems =
           common::actualSegElems(args.count, segmentElems, owner);
-      const auto ownerTile =
-          common::segmentTile(ownerActualElems * sizeof(T), group);
+      const auto ownerTile = common::segmentTile(
+          ownerActualElems * sizeof(T), group, args.blockTileBytes);
       if (off >= ownerTile.bytes) {
         continue;
       }
@@ -224,7 +225,8 @@ __device__ __noinline__ void nvlDirectAllGather(
   if (localRank < pMin) {
     const size_t myActualElems =
         common::actualSegElems(args.count, segmentElems, localRank);
-    myTile = common::segmentTile(myActualElems * sizeof(T), group);
+    myTile = common::segmentTile(
+        myActualElems * sizeof(T), group, args.blockTileBytes);
   }
 
   for (size_t off = 0; off < maxTileBytes; off += pipelineWindow) {
@@ -255,8 +257,8 @@ __device__ __noinline__ void nvlDirectAllGather(
 
       const size_t ownerActualElems =
           common::actualSegElems(args.count, segmentElems, owner);
-      const auto ownerTile =
-          common::segmentTile(ownerActualElems * sizeof(T), group);
+      const auto ownerTile = common::segmentTile(
+          ownerActualElems * sizeof(T), group, args.blockTileBytes);
       if (off >= ownerTile.bytes) {
         continue;
       }
