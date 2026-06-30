@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <iostream>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -34,6 +36,8 @@ constexpr double kBfloat16Atol = 3e-2;
 
 // Arbitrary fixed seed for reproducible random test inputs.
 constexpr uint32_t kReductionInputSeed = 12345;
+constexpr const char* kPrintActualOutputEnv =
+    "REDUCTION_NUMERICAL_PRINT_ACTUAL";
 
 struct AllCloseTolerance {
   double rtol{0.0};
@@ -90,6 +94,46 @@ std::vector<T> gatherInputs(
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   NCCLCHECK_TEST(ncclMemFree(gatheredDevice));
   return gathered;
+}
+
+inline bool shouldPrintActualOutput() {
+  return std::getenv(kPrintActualOutputEnv) != nullptr;
+}
+
+template <typename T>
+void printActualOutputBytes(
+    const T* deviceBuffer,
+    size_t count,
+    cudaStream_t stream,
+    int rank,
+    const std::string& collectiveName,
+    const std::string& caseName) {
+  if (!shouldPrintActualOutput()) {
+    return;
+  }
+
+  std::vector<T> observed(count);
+  CUDACHECK_TEST(cudaMemcpyAsync(
+      observed.data(),
+      deviceBuffer,
+      observed.size() * sizeof(T),
+      cudaMemcpyDefault,
+      stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  const auto* bytes = reinterpret_cast<const unsigned char*>(observed.data());
+  const size_t byteCount = observed.size() * sizeof(T);
+  std::string hex;
+  hex.resize(byteCount * 2);
+  constexpr char kHexDigits[] = "0123456789abcdef";
+  for (size_t i = 0; i < byteCount; ++i) {
+    hex[2 * i] = kHexDigits[bytes[i] >> 4];
+    hex[2 * i + 1] = kHexDigits[bytes[i] & 0x0f];
+  }
+
+  std::cout << "REDUCTION_NUMERICAL_ACTUAL collective=" << collectiveName
+            << " case=" << caseName << " rank=" << rank << " bytes=" << hex
+            << std::endl;
 }
 
 template <typename T>
