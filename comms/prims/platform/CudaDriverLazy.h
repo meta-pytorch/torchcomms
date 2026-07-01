@@ -75,6 +75,31 @@ extern PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange;
 extern PFN_cuMemGetHandleForAddressRange_v11070
     pfn_cuMemGetHandleForAddressRange;
 
+// NVSwitch multicast / multimem. The PFN typedefs were introduced in CUDA
+// 12.1 (hence the `_v12010` suffix), but the multimem feature is only
+// usable on CUDA 12.3+ (it needs `CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED`
+// + functioning driver-side multicast). Gate the lazy-loaded symbols on
+// 12.3 so the header / loader can't end up half-populated on an
+// unsupported toolkit. The runtime feature gate in
+// `MultimemHandler::selectMultimemHandleTypeImpl` uses the same threshold,
+// keeping the two layers aligned. NOLINTs match the convention for the
+// other pfn_cu* globals above: these are runtime-resolved driver function
+// pointers that the lazy loader writes via void**, so they cannot be const.
+#if CUDART_VERSION >= 12030
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastCreate_v12010 pfn_cuMulticastCreate;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastAddDevice_v12010 pfn_cuMulticastAddDevice;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastBindMem_v12010 pfn_cuMulticastBindMem;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastBindAddr_v12010 pfn_cuMulticastBindAddr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastUnbind_v12010 pfn_cuMulticastUnbind;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuMulticastGetGranularity_v12010 pfn_cuMulticastGetGranularity;
+#endif
+
 } // namespace comms::prims
 
 #endif // !defined(__HIP_PLATFORM_AMD__)

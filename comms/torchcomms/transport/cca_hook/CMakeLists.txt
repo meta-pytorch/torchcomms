@@ -141,11 +141,12 @@ else()
         COMMAND "${ROOT}/rename_symbols.sh"
                 '$<TARGET_OBJECTS:torchcomms_transport_cca_hook>'
     )
-    add_custom_command(
-        TARGET torchcomms_transport_cca_hook
-        PRE_LINK
-        COMMAND "${ROOT}/rename_symbols.sh" "${NCCLX_STATIC_LIB}"
-    )
+    # libnccl_static.a is symbol-renamed by _comms_ncclx's PRE_LINK step.
+    # Depend on that target so the rename is done before this module links,
+    # rather than renaming the shared archive again here -- two modules
+    # rewriting it concurrently under `ninja -j` raced and intermittently
+    # failed the link with "cannot find libnccl_static.a".
+    add_dependencies(torchcomms_transport_cca_hook torchcomms_comms_ncclx)
 endif()
 
 if(CUDA_FOUND)

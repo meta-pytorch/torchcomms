@@ -152,6 +152,23 @@ class CtranComm {
     return ctranOpCount_;
   }
 
+  inline bool isSplitShare() const {
+    return isSplitShare_;
+  }
+
+  inline CtranComm* resourceComm() {
+    return resourceComm_ == nullptr ? this : resourceComm_;
+  }
+
+  inline const CtranComm* resourceComm() const {
+    return resourceComm_ == nullptr ? this : resourceComm_;
+  }
+
+  // For splitShare children: child-rank -> parent-rank map. Empty otherwise.
+  inline const std::vector<int>& parentRanks() const {
+    return parentRanks_;
+  }
+
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
@@ -194,6 +211,15 @@ class CtranComm {
   // TODO: change shared_prt to unique_ptr after refactor all ctran code using
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
+
+  // Split-share comms define a rank group over a parent comm and share the
+  // parent's Ctran resources. They must not be used directly for
+  // collectives/RMA.
+  // Persistent window internals can borrow resourceComm_ for registration.
+  bool isSplitShare_{false};
+  CtranComm* resourceComm_{nullptr};
+  std::vector<int> parentRanks_;
+
   std::unique_ptr<meta::comms::ICtranBootstrap> bootstrap_;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;

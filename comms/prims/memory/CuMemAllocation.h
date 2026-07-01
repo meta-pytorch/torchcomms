@@ -30,6 +30,9 @@ using CUdeviceptr = unsigned long long;
 struct CUmemAllocationProp {
   unsigned char _padding[1];
 };
+struct CUmemAccessDesc {
+  unsigned char _padding[1];
+};
 #endif
 
 /**

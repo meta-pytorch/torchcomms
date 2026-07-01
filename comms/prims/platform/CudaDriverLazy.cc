@@ -33,6 +33,24 @@ PFN_cuMemGetAddressRange_v3020 pfn_cuMemGetAddressRange = nullptr;
 PFN_cuMemGetHandleForAddressRange_v11070 pfn_cuMemGetHandleForAddressRange =
     nullptr;
 
+// Gated on CUDA 12.3+ to match the runtime multimem feature requirement
+// (see header comment); the PFN typedefs themselves date to 12.1 but the
+// feature isn't usable below 12.3.
+#if CUDART_VERSION >= 12030
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastCreate_v12010 pfn_cuMulticastCreate = nullptr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastAddDevice_v12010 pfn_cuMulticastAddDevice = nullptr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastBindMem_v12010 pfn_cuMulticastBindMem = nullptr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastBindAddr_v12010 pfn_cuMulticastBindAddr = nullptr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastUnbind_v12010 pfn_cuMulticastUnbind = nullptr;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+PFN_cuMulticastGetGranularity_v12010 pfn_cuMulticastGetGranularity = nullptr;
+#endif
+
 namespace {
 
 std::once_flag init_flag;
@@ -58,6 +76,20 @@ int load_sym(const char* name, void** ptr, int version) {
     return -1;
   }
   return 0;
+}
+
+void load_optional_sym(const char* name, void** ptr, int version) {
+  cudaDriverEntryPointQueryResult status = cudaDriverEntryPointSymbolNotFound;
+#if CUDART_VERSION >= 13000
+  auto res = cudaGetDriverEntryPointByVersion(
+      name, ptr, version, cudaEnableDefault, &status);
+#else
+  (void)version;
+  auto res = cudaGetDriverEntryPoint(name, ptr, cudaEnableDefault, &status);
+#endif
+  if (res != cudaSuccess || status != cudaDriverEntryPointSuccess) {
+    *ptr = nullptr;
+  }
 }
 
 void do_init() {
@@ -86,6 +118,24 @@ void do_init() {
   LOAD(cuMemRetainAllocationHandle, 11000);
   LOAD(cuMemGetAddressRange, 3020);
   LOAD(cuMemGetHandleForAddressRange, 11070);
+
+  // Multicast / multimem driver entry points. Aligned with the runtime
+  // feature gate (CUDART_VERSION >= 12030) used by
+  // `MultimemHandler::selectMultimemHandleTypeImpl` -- the PFN typedefs
+  // exist since 12.1 but the multimem feature is only usable on 12.3+.
+#if CUDART_VERSION >= 12030
+#define LOAD_OPTIONAL(symbol, version) \
+  load_optional_sym(#symbol, reinterpret_cast<void**>(&pfn_##symbol), version)
+
+  LOAD_OPTIONAL(cuMulticastCreate, 12010);
+  LOAD_OPTIONAL(cuMulticastAddDevice, 12010);
+  LOAD_OPTIONAL(cuMulticastBindMem, 12010);
+  LOAD_OPTIONAL(cuMulticastBindAddr, 12010);
+  LOAD_OPTIONAL(cuMulticastUnbind, 12010);
+  LOAD_OPTIONAL(cuMulticastGetGranularity, 12010);
+
+#undef LOAD_OPTIONAL
+#endif
 
 #undef LOAD
 
