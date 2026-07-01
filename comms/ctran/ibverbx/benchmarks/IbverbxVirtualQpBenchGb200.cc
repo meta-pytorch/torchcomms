@@ -10,6 +10,7 @@
 #include <folly/logging/Init.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
@@ -59,7 +60,7 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         // Initialize ibverbx first
         auto initResult = ibvInit();
         if (!initResult) {
-          throw std::runtime_error("ibvInit() failed");
+          throw ctran::utils::Exception("ibvInit() failed", commSystemError);
         }
 
         // TODO: Currently, we use NCCL_IB_HCA to obtain the list of InfiniBand
@@ -69,15 +70,18 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         auto deviceList =
             IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
         if (!deviceList) {
-          throw std::runtime_error("Failed to get device list");
+          throw ctran::utils::Exception(
+              "Failed to get device list", commSystemError);
         }
 
         if (deviceList->empty()) {
-          throw std::runtime_error("No InfiniBand devices available");
+          throw ctran::utils::Exception(
+              "No InfiniBand devices available", commSystemError);
         }
 
         if (nicDevId * 2 + 1 >= static_cast<int>(deviceList->size())) {
-          throw std::out_of_range("nicDevId out of range");
+          throw ctran::utils::Exception(
+              "nicDevId out of range", commInvalidArgument);
         }
 
         std::vector<IbvDevice> selectedDevices;
@@ -92,7 +96,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         for (auto& device : devices) {
           auto maybePd = device.allocPd();
           if (!maybePd) {
-            throw std::runtime_error("Failed to allocate protection domain");
+            throw ctran::utils::Exception(
+                "Failed to allocate protection domain", commSystemError);
           }
           pdList.push_back(std::move(*maybePd));
         }
@@ -103,7 +108,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         for (auto& device : devices) {
           auto maybeCq = device.createCq(32768, nullptr, nullptr, 0);
           if (!maybeCq) {
-            throw std::runtime_error("Failed to create completion queue");
+            throw ctran::utils::Exception(
+                "Failed to create completion queue", commSystemError);
           }
           cqList.push_back(std::move(*maybeCq));
         }
@@ -128,7 +134,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
 
           auto maybeQp = pds.at(pdIdx).createQp(&initAttr);
           if (maybeQp.hasError()) {
-            throw std::runtime_error("Failed to create queue pair");
+            throw ctran::utils::Exception(
+                "Failed to create queue pair", commSystemError);
           }
           qps.emplace_back(std::move(*maybeQp));
         }
@@ -139,7 +146,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
 
         auto maybeNotifyQp = pds.at(0).createQp(&notifyInitAttr);
         if (maybeNotifyQp.hasError()) {
-          throw std::runtime_error("Failed to create notify queue pair");
+          throw ctran::utils::Exception(
+              "Failed to create notify queue pair", commSystemError);
         }
 
         // Create the IbvVirtualQp instance
@@ -231,7 +239,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
   size_t numRemoteGids = remoteGids.size();
 
   if (numRemoteGids == 0) {
-    throw std::runtime_error("Remote GIDs cannot be empty");
+    throw ctran::utils::Exception(
+        "Remote GIDs cannot be empty", commInvalidArgument);
   }
 
   // Get references to physical QPs and notify QP
@@ -252,8 +261,9 @@ void IbvEndPoint::changeVirtualQpStateToRts(
           &qpAttr,
           IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to INIT state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to INIT state", i),
+            commSystemError);
       }
     }
 
@@ -266,8 +276,9 @@ void IbvEndPoint::changeVirtualQpStateToRts(
           IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
               IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to RTR state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to RTR state", i),
+            commSystemError);
       }
     }
 
@@ -279,8 +290,9 @@ void IbvEndPoint::changeVirtualQpStateToRts(
           IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
               IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to RTS state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to RTS state", i),
+            commSystemError);
       }
     }
   }
@@ -295,7 +307,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
         &qpAttr,
         IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to INIT state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to INIT state", commSystemError);
     }
   }
 
@@ -308,7 +321,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
         IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
             IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to RTR state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to RTR state", commSystemError);
     }
   }
 
@@ -320,7 +334,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
         IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
             IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to RTS state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to RTS state", commSystemError);
     }
   }
 }
@@ -361,7 +376,8 @@ struct BenchmarkSetup {
     for (const auto& device : receiver->devices) {
       auto gid = device.queryGid(kPortNum, kGidIndex);
       if (!gid) {
-        throw std::runtime_error("Failed to query receiver GID");
+        throw ctran::utils::Exception(
+            "Failed to query receiver GID", commSystemError);
       }
       receiverGids.push_back(*gid);
     }
@@ -372,7 +388,8 @@ struct BenchmarkSetup {
     for (const auto& device : sender->devices) {
       auto gid = device.queryGid(kPortNum, kGidIndex);
       if (!gid) {
-        throw std::runtime_error("Failed to query sender GID");
+        throw ctran::utils::Exception(
+            "Failed to query sender GID", commSystemError);
       }
       senderGids.push_back(*gid);
     }
@@ -398,7 +415,8 @@ struct BenchmarkSetup {
     CHECK_EQ(cudaGetDeviceCount(&deviceCount), cudaSuccess);
 
     if (cudaDev0 >= deviceCount || cudaDev1 >= deviceCount) {
-      throw std::runtime_error("Required CUDA devices not available");
+      throw ctran::utils::Exception(
+          "Required CUDA devices not available", commSystemError);
     }
 
     CHECK_EQ(cudaSetDevice(cudaDev0), cudaSuccess);
@@ -411,8 +429,9 @@ struct BenchmarkSetup {
       auto sendMrExpected =
           sender->pds.at(i).regMr(sendBuffer, bufferSize, access);
       if (!sendMrExpected) {
-        throw std::runtime_error(
-            fmt::format("Failed to register send memory region with PD {}", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to register send memory region with PD {}", i),
+            commSystemError);
       }
       sendMrs.push_back(std::move(*sendMrExpected));
     }
@@ -427,9 +446,10 @@ struct BenchmarkSetup {
       auto recvMrExpected =
           receiver->pds.at(i).regMr(recvBuffer, bufferSize, access);
       if (!recvMrExpected) {
-        throw std::runtime_error(
+        throw ctran::utils::Exception(
             fmt::format(
-                "Failed to register receive memory region with PD {}", i));
+                "Failed to register receive memory region with PD {}", i),
+            commSystemError);
       }
       recvMrs.push_back(std::move(*recvMrExpected));
     }
