@@ -22,6 +22,8 @@ struct BenchmarkConfig {
   bool spreadClusterLaunch = false; // Use spread cluster kernel launch
   bool useDualStateBuffer = false; // Use dual chunk state buffers
   bool useTiled = false; // Use tiled protocol (Triton-style head/tail)
+  bool useBidirCta = false; // One block does both send+recv via half-block
+                            // multiwarp groups. Requires useTiled = true.
   int chunksPerSlot = 1; // Sub-chunks per pipeline slot for finer signaling
   std::string name;
 };

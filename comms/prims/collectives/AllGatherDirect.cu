@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
         continue;
       }
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, group.total_groups, max_sig, timeout);
+      peer.send(group, send_src, window, max_sig, timeout);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -65,7 +65,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
       }
       char* dst = args.recvbuf + peer_rank * sendcount + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.recv(group, dst, window, group.total_groups, max_sig, timeout);
+      peer.recv(group, dst, window, max_sig, timeout);
     }
   }
 #endif
@@ -449,7 +449,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             group,
             send_src + chunk_off,
             window,
-            args.nvl_num_blocks,
             args.nvl_signaling_data_size,
             timeout);
       }
@@ -463,13 +462,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 args.sendcount +
             off + chunk_off;
         auto peer = args.nvl_peers[peer_rank];
-        peer.recv(
-            group,
-            dst,
-            window,
-            args.nvl_num_blocks,
-            args.nvl_signaling_data_size,
-            timeout);
+        peer.recv(group, dst, window, args.nvl_signaling_data_size, timeout);
       }
     }
     trace_hierarchical_allgather(

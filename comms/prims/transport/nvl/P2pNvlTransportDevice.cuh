@@ -19,6 +19,7 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #include "comms/prims/transport/ll/LlOps.cuh"
 #include "comms/prims/transport/ll128/Ll128Ops.cuh"
+#include "comms/prims/transport/nvl/NvlChannelState.cuh"
 
 namespace comms::prims {
 
@@ -92,25 +93,6 @@ struct RemoteState {
 };
 
 /**
- * NvlinkTransportTileState — Per-peer tile protocol state.
- *
- * Bundled by the host transport at construction and passed to
- * P2pNvlTransportDevice via set_tile_state(). Invisible to users.
- */
-struct NvlinkTransportTileState {
-  // Persistent byte cursors:
-  //   [0, tile_max_groups) tracks send progress per tile group.
-  //   [tile_max_groups, 2 * tile_max_groups) tracks recv progress.
-  // The byte cursor advances in 16-byte protocol quanta and is independent of
-  // max_signal_bytes, so callers may change signal granularity between calls
-  // as long as active_blocks is unchanged.
-  DeviceSpan<int64_t> step_state;
-  int tile_max_groups{0};
-  DeviceSpan<SignalState> local_signals;
-  DeviceSpan<SignalState> remote_signals;
-};
-
-/**
  * P2pNvlTransportOptions - Configuration for P2P NVLink transport
  *
  * Defines the buffer sizes and chunking parameters for staged transfers.
@@ -158,6 +140,24 @@ struct P2pNvlTransportOptions {
   bool useDualStateBuffer{false}; // Default to single state buffer mode
   std::size_t ll128BufferNumPackets{0}; // 0 = no chunking
   std::size_t llBufferNumLines{0}; // 0 = no chunking
+
+  // ---- Tile (per-channel) protocol fields. Populated by the host transport
+  // from MultiPeerNvlTransportConfig. Used by send/recv/forward (the tile
+  // path).
+  //
+  // Slot-major staging layout: within each pipeline slot (size =
+  // dataBufferSize) each channel owns a fixed slice of size per_channel_slot.
+  // Channel c at pipeline slot s reads/writes
+  //   staging_base + s * dataBufferSize + c * per_channel_slot
+  //
+  //   per_channel_slot = MultiPeerNvlTransportConfig.perChannelSize
+  //   dataBufferSize = max_num_channels * per_channel_slot
+  //   max_num_channels = MultiPeerNvlTransportConfig.max_num_channels
+  //
+  // max_num_channels must equal the array length of the per-peer
+  // NvlChannelState arrays passed into the device transport.
+  std::size_t per_channel_slot{0};
+  int max_num_channels{0};
 };
 
 /**
@@ -365,16 +365,26 @@ class P2pNvlTransportDevice {
       const P2pNvlTransportOptions& options,
       const LocalState& localState,
       const RemoteState& remoteState,
-      const NvlinkTransportTileState& tileState = {})
+      NvlChannelState* localChannels = nullptr,
+      NvlChannelState* remoteChannels = nullptr)
       : myRank_(myRank),
         peerRank_(peerRank),
         options_(options),
         localState_(localState),
         remoteState_(remoteState),
-        tile_state_(tileState) {}
+        local_channels_(localChannels),
+        remote_channels_(remoteChannels) {}
 
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
+  // Per-block pipeline window in bytes. Returns the largest call size that
+  // can be pipelined within the staging ring without triggering backpressure
+  // *under the assumption* that the caller's totalGroups blocks share the
+  // pipeline-slot equally — i.e. the historical pre-channels arithmetic.
+  // Kept unchanged in D1 so existing callers see the same window size as
+  // before. With the new channel design, calls larger than
+  // (per_channel_slot * safeDepth) will internally wrap the pipeline ring
+  // and pay backpressure-wait cost; revisit this default in a follow-up.
   __host__ __device__ std::size_t pipeline_window(int totalGroups) const {
     const std::size_t perBlockSlotSize =
         (options_.dataBufferSize / totalGroups) & ~15ULL;
@@ -1422,16 +1432,13 @@ class P2pNvlTransportDevice {
    * Unlike send_group(), which has all groups cooperate on the same buffer,
    * send() has each group work on its own partition independently.
    *
-   * @param active_blocks Number of blocks calling send concurrently.
-   *   0 means use tile_max_groups from transport config.
    * @param max_signal_bytes Hint for max bytes between DATA_READY signals.
-   *   0 means one signal per slot fill. Capped at per_block_slot_size.
+   *   0 means one signal per slot fill. Capped at per_channel_slot.
    */
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout()) {
 #if PIPES_IS_DEVICE_COMPILE
@@ -1439,67 +1446,57 @@ class P2pNvlTransportDevice {
       return;
     }
 
-    const int max_groups = tile_state_.tile_max_groups;
-    const int groupId = group.group_id;
-    const int effActive = active_blocks > 0 ? active_blocks : max_groups;
+    const int max_channels = options_.max_num_channels;
+    const uint32_t channel = group.group_id;
 
-    if (effActive > max_groups) {
+    if (group.total_groups > static_cast<uint32_t>(max_channels)) {
       printf(
-          "send: active_blocks=%d > tile_max_groups=%d. "
-          "Signal and step_state arrays would be accessed out of bounds.\n",
-          effActive,
-          max_groups);
+          "send: group.total_groups=%u > max_num_channels=%d. "
+          "Channel arrays would be accessed out of bounds.\n",
+          group.total_groups,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
 
-    if (groupId >= effActive) {
+    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perChannelSlot = options_.per_channel_slot;
+    if (perChannelSlot == 0) {
       printf(
-          "send: groupId=%d >= active_blocks=%d. "
-          "Too many groups calling send.\n",
-          groupId,
-          effActive);
+          "send: per_channel_slot is 0 (dataBufferSize=%llu, "
+          "max_num_channels=%d). Set perChannelSize when channels are "
+          "enabled.\n",
+          (unsigned long long)slotSize,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
+    const std::size_t stagingOff = channel * perChannelSlot;
+
+    const std::size_t chunkSize =
+        max_signal_bytes > 0 && max_signal_bytes < perChannelSlot
+        ? (max_signal_bytes & ~15ULL)
+        : perChannelSlot;
+    const std::size_t effectiveChunk =
+        chunkSize > 0 ? chunkSize : perChannelSlot;
+
+    const std::size_t pipelineBytes = perChannelSlot * options_.pipelineDepth;
+
+    NvlChannelState& local_ch = local_channels_[channel];
+    NvlChannelState& remote_ch = remote_channels_[channel];
 
     const char* __restrict__ srcPtr = reinterpret_cast<const char*>(src);
     char* __restrict__ stagBuf = remoteState_.dataBuffer;
 
-    const std::size_t slotSize = options_.dataBufferSize;
-    const std::size_t perBlockSlotSize = (slotSize / effActive) & ~15ULL;
-    if (perBlockSlotSize == 0) {
-      printf(
-          "send/recv: perBlockSlotSize is 0 "
-          "(dataBufferSize=%llu, active_blocks=%d). "
-          "Increase dataBufferSize or decrease active_blocks.\n",
-          (unsigned long long)slotSize,
-          effActive);
-      PIPES_DEVICE_TRAP();
-    }
-    const std::size_t stagingOff = groupId * perBlockSlotSize;
-
-    const std::size_t chunkSize =
-        max_signal_bytes > 0 && max_signal_bytes < perBlockSlotSize
-        ? (max_signal_bytes & ~15ULL)
-        : perBlockSlotSize;
-    const std::size_t effectiveChunk =
-        chunkSize > 0 ? chunkSize : perBlockSlotSize;
-
-    const std::size_t pipelineBytes = perBlockSlotSize * options_.pipelineDepth;
-    const uint64_t tailSignalId = groupId;
-    const uint64_t headSignalId = max_groups + groupId;
-
-    const uint64_t baseByte =
-        static_cast<uint64_t>(tile_state_.step_state[groupId]);
+    const uint64_t baseByte = static_cast<uint64_t>(local_ch.send_cursor);
 
     const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
     for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
-      const std::size_t slot = pipelineOff / perBlockSlotSize;
+      const std::size_t slot = pipelineOff / perChannelSlot;
       const std::size_t slotOff = slot * slotSize;
-      const std::size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
-      const std::size_t slotRemaining = perBlockSlotSize - chunkOff;
+      const std::size_t chunkOff = pipelineOff - slot * perChannelSlot;
+      const std::size_t slotRemaining = perChannelSlot - chunkOff;
       const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
@@ -1507,7 +1504,7 @@ class P2pNvlTransportDevice {
       const uint64_t streamEnd = streamStart + copyBytes;
 
       if (streamEnd > pipelineBytes) {
-        tile_state_.local_signals[headSignalId].wait_until(
+        local_ch.slot_free.wait_until(
             group, CmpOp::CMP_GE, streamEnd - pipelineBytes, timeout);
       }
 
@@ -1523,15 +1520,13 @@ class P2pNvlTransportDevice {
 
       group.sync();
       if (group.is_leader()) {
-        tile_state_.remote_signals[tailSignalId].signal(
-            SignalOp::SIGNAL_SET, streamEnd);
+        remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, streamEnd);
       }
       dataOff += copyBytes;
     }
 
     if (group.is_leader()) {
-      tile_state_.step_state[groupId] =
-          static_cast<int64_t>(baseByte + protocolBytes);
+      local_ch.send_cursor = static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
@@ -1542,7 +1537,6 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
@@ -1551,76 +1545,64 @@ class P2pNvlTransportDevice {
       return;
     }
 
-    const int max_groups = tile_state_.tile_max_groups;
-    const int groupId = group.group_id;
-    const int effActive = active_blocks > 0 ? active_blocks : max_groups;
+    const int max_channels = options_.max_num_channels;
+    const uint32_t channel = group.group_id;
 
-    if (effActive > max_groups) {
+    if (group.total_groups > static_cast<uint32_t>(max_channels)) {
       printf(
-          "recv: active_blocks=%d > tile_max_groups=%d. "
-          "Signal and step_state arrays would be accessed out of bounds.\n",
-          effActive,
-          max_groups);
+          "recv: group.total_groups=%u > max_num_channels=%d. "
+          "Channel arrays would be accessed out of bounds.\n",
+          group.total_groups,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
 
-    if (groupId >= effActive) {
+    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perChannelSlot = options_.per_channel_slot;
+    if (perChannelSlot == 0) {
       printf(
-          "recv: groupId=%d >= active_blocks=%d. "
-          "Too many groups calling recv.\n",
-          groupId,
-          effActive);
+          "recv: per_channel_slot is 0 (dataBufferSize=%llu, "
+          "max_num_channels=%d). Set perChannelSize when channels are "
+          "enabled.\n",
+          (unsigned long long)slotSize,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
+    const std::size_t stagingOff = channel * perChannelSlot;
+
+    const std::size_t chunkSize =
+        max_signal_bytes > 0 && max_signal_bytes < perChannelSlot
+        ? (max_signal_bytes & ~15ULL)
+        : perChannelSlot;
+    const std::size_t effectiveChunk =
+        chunkSize > 0 ? chunkSize : perChannelSlot;
+
+    const std::size_t pipelineBytes = perChannelSlot * options_.pipelineDepth;
+
+    NvlChannelState& local_ch = local_channels_[channel];
+    NvlChannelState& remote_ch = remote_channels_[channel];
 
     char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
     char* __restrict__ stagBuf = localState_.dataBuffer;
 
-    const std::size_t slotSize = options_.dataBufferSize;
-    const std::size_t perBlockSlotSize = (slotSize / effActive) & ~15ULL;
-    if (perBlockSlotSize == 0) {
-      printf(
-          "send/recv: perBlockSlotSize is 0 "
-          "(dataBufferSize=%llu, active_blocks=%d). "
-          "Increase dataBufferSize or decrease active_blocks.\n",
-          (unsigned long long)slotSize,
-          effActive);
-      PIPES_DEVICE_TRAP();
-    }
-    const std::size_t stagingOff = groupId * perBlockSlotSize;
-
-    const std::size_t chunkSize =
-        max_signal_bytes > 0 && max_signal_bytes < perBlockSlotSize
-        ? (max_signal_bytes & ~15ULL)
-        : perBlockSlotSize;
-    const std::size_t effectiveChunk =
-        chunkSize > 0 ? chunkSize : perBlockSlotSize;
-
-    const std::size_t pipelineBytes = perBlockSlotSize * options_.pipelineDepth;
-
-    const uint64_t tailSignalId = groupId;
-    const uint64_t headSignalId = max_groups + groupId;
-
-    const uint64_t baseByte =
-        static_cast<uint64_t>(tile_state_.step_state[max_groups + groupId]);
+    const uint64_t baseByte = static_cast<uint64_t>(local_ch.recv_cursor);
 
     const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
     for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const std::size_t pipelineOff =
           static_cast<std::size_t>(streamStart % pipelineBytes);
-      const std::size_t slot = pipelineOff / perBlockSlotSize;
+      const std::size_t slot = pipelineOff / perChannelSlot;
       const std::size_t slotOff = slot * slotSize;
-      const std::size_t chunkOff = pipelineOff - slot * perBlockSlotSize;
-      const std::size_t slotRemaining = perBlockSlotSize - chunkOff;
+      const std::size_t chunkOff = pipelineOff - slot * perChannelSlot;
+      const std::size_t slotRemaining = perChannelSlot - chunkOff;
       const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
       copyBytes = copyBytes < slotRemaining ? copyBytes : slotRemaining;
       const uint64_t streamEnd = streamStart + copyBytes;
 
-      tile_state_.local_signals[tailSignalId].wait_until(
-          group, CmpOp::CMP_GE, streamEnd, timeout);
+      local_ch.data_ready.wait_until(group, CmpOp::CMP_GE, streamEnd, timeout);
 
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, copyBytes, nbytes);
@@ -1636,34 +1618,28 @@ class P2pNvlTransportDevice {
 
       group.sync();
       if (group.is_leader()) {
-        if (chunkOff + copyBytes == perBlockSlotSize ||
+        if (chunkOff + copyBytes == perChannelSlot ||
             dataOff + copyBytes == protocolBytes) {
-          tile_state_.remote_signals[headSignalId].signal(
-              SignalOp::SIGNAL_SET, streamEnd);
+          remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, streamEnd);
         }
       }
       dataOff += copyBytes;
     }
 
     if (group.is_leader()) {
-      tile_state_.step_state[max_groups + groupId] =
-          static_cast<int64_t>(baseByte + protocolBytes);
+      local_ch.recv_cursor = static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
   }
 
   /**
-   * forward - Independent per-group fused receive-and-forward (tile-style)
+   * forward - Independent per-channel fused receive-and-forward (tile-style)
    *
-   * Each group independently reads its own tile of data from this transport's
-   * predecessor staging buffer and writes to two destinations simultaneously:
-   * the local user buffer (dst) and the successor's remote staging buffer.
-   * This halves the read bandwidth vs sequential recv + send.
-   *
-   * Unlike forward_group(), which has all groups cooperate on the same buffer,
-   * forward() has each group work on its own partition independently using
-   * the tile_state_ signal protocol (matching send()/recv()).
+   * Each group reads its own channel from this transport's predecessor staging
+   * buffer and writes to two destinations simultaneously: the local user
+   * buffer (dst) and the successor's remote staging buffer. Halves read
+   * bandwidth vs sequential recv + send.
    *
    * PRECONDITIONS:
    * - `this` transport is connected to the predecessor (data arrives in
@@ -1671,19 +1647,14 @@ class P2pNvlTransportDevice {
    * - `successor` transport is connected to the next rank (data forwarded
    *   to successor.remoteState_.dataBuffer)
    * - Both transports must have matching options (dataBufferSize,
-   *   tile_max_groups, pipelineDepth) and consistent active_blocks /
-   *   active_blocks choices across calls unless callers use a barrier before
-   *   changing active_blocks. max_signal_bytes may vary across calls with the
-   *   same active_blocks.
+   *   per_channel_slot, max_num_channels, pipelineDepth).
    *
    * @param group ThreadGroup for cooperative processing (group-local)
    * @param dst Local user buffer to copy data into
    * @param nbytes Number of bytes to forward
    * @param successor Transport to the next rank in the ring
-   * @param active_blocks Number of blocks calling forward concurrently.
-   *   0 means use tile_max_groups from transport config.
    * @param max_signal_bytes Hint for max bytes between signals.
-   *   0 means one signal per slot fill. Capped at per_block_slot_size.
+   *   0 means one signal per slot fill. Capped at per_channel_slot.
    */
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void forward(
@@ -1691,7 +1662,6 @@ class P2pNvlTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       P2pNvlTransportDevice& successor,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       [[maybe_unused]] const Timeout& timeout = Timeout(),
       [[maybe_unused]] Args... args) {
@@ -1700,27 +1670,46 @@ class P2pNvlTransportDevice {
       return;
     }
 
-    const int max_groups = tile_state_.tile_max_groups;
-    const int groupId = group.group_id;
-    const int effActive = active_blocks > 0 ? active_blocks : max_groups;
+    const int max_channels = options_.max_num_channels;
+    const uint32_t channel = group.group_id;
 
-    if (effActive > max_groups) {
+    if (group.total_groups > static_cast<uint32_t>(max_channels)) {
       printf(
-          "forward: active_blocks=%d > tile_max_groups=%d. "
-          "Signal and step_state arrays would be accessed out of bounds.\n",
-          effActive,
-          max_groups);
+          "forward: group.total_groups=%u > max_num_channels=%d. "
+          "Channel arrays would be accessed out of bounds.\n",
+          group.total_groups,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
 
-    if (groupId >= effActive) {
+    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perChannelSlot = options_.per_channel_slot;
+    if (perChannelSlot == 0) {
       printf(
-          "forward: groupId=%d >= active_blocks=%d. "
-          "Too many groups calling forward.\n",
-          groupId,
-          effActive);
+          "forward: per_channel_slot is 0 (dataBufferSize=%llu, "
+          "max_num_channels=%d). Set perChannelSize when channels are "
+          "enabled.\n",
+          (unsigned long long)slotSize,
+          max_channels);
       PIPES_DEVICE_TRAP();
     }
+    const std::size_t stagingOff = channel * perChannelSlot;
+
+    const std::size_t chunkSize =
+        max_signal_bytes > 0 && max_signal_bytes < perChannelSlot
+        ? (max_signal_bytes & ~15ULL)
+        : perChannelSlot;
+    const std::size_t effectiveChunk =
+        chunkSize > 0 ? chunkSize : perChannelSlot;
+
+    const std::size_t pipelineBytes = perChannelSlot * options_.pipelineDepth;
+
+    // Recv side: this transport (predecessor → me).
+    NvlChannelState& recv_local_ch = local_channels_[channel];
+    NvlChannelState& recv_remote_ch = remote_channels_[channel];
+    // Send side: successor transport (me → successor).
+    NvlChannelState& send_local_ch = successor.local_channels_[channel];
+    NvlChannelState& send_remote_ch = successor.remote_channels_[channel];
 
     char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
     // Predecessor's staging buffer (local read)
@@ -1728,57 +1717,29 @@ class P2pNvlTransportDevice {
     // Successor's staging buffer (NVLink write)
     char* __restrict__ sendBuf = successor.remoteState_.dataBuffer;
 
-    const std::size_t slotSize = options_.dataBufferSize;
-    const std::size_t perBlockSlotSize = (slotSize / effActive) & ~15ULL;
-    if (perBlockSlotSize == 0) {
-      printf(
-          "forward: perBlockSlotSize is 0 "
-          "(dataBufferSize=%llu, active_blocks=%d). "
-          "Increase dataBufferSize or decrease active_blocks.\n",
-          (unsigned long long)slotSize,
-          effActive);
-      PIPES_DEVICE_TRAP();
-    }
-    const std::size_t stagingOff = groupId * perBlockSlotSize;
-
-    const std::size_t chunkSize =
-        max_signal_bytes > 0 && max_signal_bytes < perBlockSlotSize
-        ? (max_signal_bytes & ~15ULL)
-        : perBlockSlotSize;
-    const std::size_t effectiveChunk =
-        chunkSize > 0 ? chunkSize : perBlockSlotSize;
-
-    const std::size_t pipelineBytes = perBlockSlotSize * options_.pipelineDepth;
-    const uint64_t tailSignalId = groupId;
-    const uint64_t headSignalId = max_groups + groupId;
-
-    // Recv side byte cursor (this transport: predecessor → me).
-    // Stored in step_state[max_groups + groupId], matching recv().
     const uint64_t recvBaseByte =
-        static_cast<uint64_t>(tile_state_.step_state[max_groups + groupId]);
-    // Send side byte cursor (successor transport: me → successor).
-    // Stored in step_state[groupId], matching send().
+        static_cast<uint64_t>(recv_local_ch.recv_cursor);
     const uint64_t sendBaseByte =
-        static_cast<uint64_t>(successor.tile_state_.step_state[groupId]);
+        static_cast<uint64_t>(send_local_ch.send_cursor);
 
     const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
     for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
       const uint64_t recvStreamStart = recvBaseByte + dataOff;
       const std::size_t recvPipelineOff =
           static_cast<std::size_t>(recvStreamStart % pipelineBytes);
-      const std::size_t recvSlot = recvPipelineOff / perBlockSlotSize;
+      const std::size_t recvSlot = recvPipelineOff / perChannelSlot;
       const std::size_t recvSlotOff = recvSlot * slotSize;
       const std::size_t recvChunkOff =
-          recvPipelineOff - recvSlot * perBlockSlotSize;
+          recvPipelineOff - recvSlot * perChannelSlot;
       const uint64_t sendStreamStart = sendBaseByte + dataOff;
       const std::size_t sendPipelineOff =
           static_cast<std::size_t>(sendStreamStart % pipelineBytes);
-      const std::size_t sendSlot = sendPipelineOff / perBlockSlotSize;
+      const std::size_t sendSlot = sendPipelineOff / perChannelSlot;
       const std::size_t sendSlotOff = sendSlot * slotSize;
       const std::size_t sendChunkOff =
-          sendPipelineOff - sendSlot * perBlockSlotSize;
-      const std::size_t recvSlotRemaining = perBlockSlotSize - recvChunkOff;
-      const std::size_t sendSlotRemaining = perBlockSlotSize - sendChunkOff;
+          sendPipelineOff - sendSlot * perChannelSlot;
+      const std::size_t recvSlotRemaining = perChannelSlot - recvChunkOff;
+      const std::size_t sendSlotRemaining = perChannelSlot - sendChunkOff;
       const std::size_t dataRemaining = protocolBytes - dataOff;
       std::size_t copyBytes =
           effectiveChunk < dataRemaining ? effectiveChunk : dataRemaining;
@@ -1788,13 +1749,13 @@ class P2pNvlTransportDevice {
       const uint64_t sendStreamEnd = sendStreamStart + copyBytes;
 
       // 1. Wait for predecessor data to be ready (recv side, every step).
-      tile_state_.local_signals[tailSignalId].wait_until(
+      recv_local_ch.data_ready.wait_until(
           group, CmpOp::CMP_GE, recvStreamEnd, timeout);
 
-      // 2. Wait for successor's staging step to be free once we have wrapped
+      // 2. Wait for successor's staging slot to be free once we have wrapped
       //    around the pipeline.
       if (sendStreamEnd > pipelineBytes) {
-        successor.tile_state_.local_signals[headSignalId].wait_until(
+        send_local_ch.slot_free.wait_until(
             group, CmpOp::CMP_GE, sendStreamEnd - pipelineBytes, timeout);
       }
 
@@ -1816,32 +1777,34 @@ class P2pNvlTransportDevice {
       group.sync();
       if (group.is_leader()) {
         // 4. Signal successor that data is ready (send semantic: every step).
-        successor.tile_state_.remote_signals[tailSignalId].signal(
-            SignalOp::SIGNAL_SET, sendStreamEnd);
+        send_remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, sendStreamEnd);
 
         // 5. ACK predecessor that buffer is free (recv semantic: only at
         //    slot boundaries).
-        if (recvChunkOff + copyBytes == perBlockSlotSize ||
+        if (recvChunkOff + copyBytes == perChannelSlot ||
             dataOff + copyBytes == protocolBytes) {
-          tile_state_.remote_signals[headSignalId].signal(
-              SignalOp::SIGNAL_SET, recvStreamEnd);
+          recv_remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, recvStreamEnd);
         }
       }
       dataOff += copyBytes;
     }
 
     if (group.is_leader()) {
-      tile_state_.step_state[max_groups + groupId] =
+      recv_local_ch.recv_cursor =
           static_cast<int64_t>(recvBaseByte + protocolBytes);
-      successor.tile_state_.step_state[groupId] =
+      send_local_ch.send_cursor =
           static_cast<int64_t>(sendBaseByte + protocolBytes);
     }
     group.sync();
 #endif
   }
 
-  __host__ __device__ const NvlinkTransportTileState& tile_state() const {
-    return tile_state_;
+  // Test-only accessors for poking at channel state.
+  __host__ __device__ NvlChannelState& local_channel_at(int channel) {
+    return local_channels_[channel];
+  }
+  __host__ __device__ NvlChannelState& remote_channel_at(int channel) {
+    return remote_channels_[channel];
   }
 
   // Device accessors for 2D tile kernel (inlined pipeline)
@@ -2093,7 +2056,13 @@ class P2pNvlTransportDevice {
   const P2pNvlTransportOptions options_{};
   LocalState localState_;
   RemoteState remoteState_;
-  NvlinkTransportTileState tile_state_;
+  // Per-channel protocol state. Length = options_.max_num_channels.
+  // local_channels_: this rank's endpoint; remote sender / recv write
+  //   into it via NVLink (data_ready / slot_free fields).
+  // remote_channels_: IPC-mapped pointer to the remote rank's local_channels_
+  //   array; this rank's send / recv write into it to signal the remote rank.
+  NvlChannelState* local_channels_{nullptr};
+  NvlChannelState* remote_channels_{nullptr};
 };
 
 } // namespace comms::prims

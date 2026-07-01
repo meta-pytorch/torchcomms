@@ -159,7 +159,6 @@ __device__ __noinline__ void nvlDirectReduceScatter(
           group,
           sendbuff + ownerSegmentOffset + ownerTile.offsetBytes + off,
           window,
-          group.total_groups,
           0,
           timeout);
     }
@@ -173,13 +172,7 @@ __device__ __noinline__ void nvlDirectReduceScatter(
         }
         const int peerGlobalRank = args.localRankToGlobalRank[peer];
         args.transports[peerGlobalRank].p2p_nvl.recv<NvlReduceCopy<T>>(
-            group,
-            myDst + off,
-            window,
-            group.total_groups,
-            0,
-            timeout,
-            myDst + off);
+            group, myDst + off, window, 0, timeout, myDst + off);
       }
     }
   }
@@ -242,7 +235,6 @@ __device__ __noinline__ void nvlDirectAllGather(
             group,
             recvbuff + mySegmentOffset + myTile.offsetBytes + off,
             window,
-            group.total_groups,
             0,
             timeout);
       }
@@ -270,7 +262,6 @@ __device__ __noinline__ void nvlDirectAllGather(
           group,
           recvbuff + ownerSegmentOffset + ownerTile.offsetBytes + off,
           window,
-          group.total_groups,
           0,
           timeout);
     }
