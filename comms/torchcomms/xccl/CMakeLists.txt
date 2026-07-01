@@ -26,6 +26,7 @@ file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
 add_library(torchcomms_comms_xccl MODULE
     ${TORCHCOMMS_XCCL_SOURCES}
     ${TORCHCOMMS_XPU_API_SOURCE}
+    comms/utils/RankUtils.cc
 )
 set_target_properties(torchcomms_comms_xccl PROPERTIES
     PREFIX ""

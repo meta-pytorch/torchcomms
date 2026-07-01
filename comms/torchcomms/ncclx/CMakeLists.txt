@@ -105,6 +105,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
     ${TORCHCOMMS_DEVICE_PIPES_SOURCE}
+    comms/utils/RankUtils.cc
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
 )
