@@ -12,7 +12,7 @@
 //   make memcpyasync_blocked
 // Run:
 //   CUDA_MODULE_LOADING=LAZY ./memcpyasync_blocked
-//
+// ctran/issues/repro_cuda_ctx_lock
 // busyKernel and firstTimeKernel live in separate translation units so each
 // gets its own lazily-loaded CUDA module. The main thread launches
 // busyKernel (loads + runs while the GPU is idle), then launches
