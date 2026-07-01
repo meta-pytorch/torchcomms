@@ -419,10 +419,43 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
           2 * config_.sendRecv->maxGroups);
 
+  // Align every GPU bulk allocation to the CUDA VMM allocation granularity so
+  // that any buffer which is later mlx5 Data-Direct (BAR1) registered has a 0
+  // DMA-BUF offset: GB300 rejects a non-zero offset with EOPNOTSUPP, and small
+  // cudaMalloc bulks (signal/counter/state) otherwise land unaligned (staging
+  // is large enough to already be aligned). Done unconditionally -- not gated
+  // on enableDataDirect -- so alignment is decoupled from the DD config and
+  // cannot silently break if a buffer is DD-registered; the off-DD cost is only
+  // a few MB of rounding on the small bulks. Granularity is queried from the
+  // driver (2 MiB fallback); AMD (no Data-Direct) keeps the natural allocation
+  // size.
+  std::size_t ddAlign = 1;
+#ifndef __HIP_PLATFORM_AMD__
+  ddAlign = std::size_t{2} << 20; // fallback if the query below fails
+  if (cuda_driver_lazy_init() == 0 && pfn_cuDeviceGet != nullptr &&
+      pfn_cuMemGetAllocationGranularity != nullptr) {
+    CUdevice dev = 0;
+    if (pfn_cuDeviceGet(&dev, config_.cudaDevice) == CUDA_SUCCESS) {
+      CUmemAllocationProp prop = {};
+      prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+      prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+      prop.location.id = dev;
+      std::size_t granularity = 0;
+      if (pfn_cuMemGetAllocationGranularity(
+              &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) ==
+              CUDA_SUCCESS &&
+          granularity > 0) {
+        ddAlign = granularity;
+      }
+    }
+  }
+#endif
   auto allocateBulk = [&](std::size_t perPeer, const char* label) {
-    auto buf = std::make_unique<meta::comms::DeviceBuffer>(perPeer * numPeers);
+    const std::size_t used = perPeer * numPeers;
+    const std::size_t allocBytes = ((used + ddAlign - 1) / ddAlign) * ddAlign;
+    auto buf = std::make_unique<meta::comms::DeviceBuffer>(allocBytes);
     checkSlotGpu(
-        slotGpuMemset(buf->get(), 0, perPeer * numPeers),
+        slotGpuMemset(buf->get(), 0, allocBytes),
         fmt::format("MultiPeerIbTransport: zero send/recv {}", label));
     return buf;
   };
@@ -431,8 +464,38 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
 
   sendRecvSendStagingBulk_ = allocateBulk(stagingPerPeer, "send staging bulk");
   sendRecvRecvStagingBulk_ = allocateBulk(stagingPerPeer, "recv staging bulk");
-  sendRecvSignalBulk_ = allocateBulk(signalPerPeer, "signal bulk");
-  sendRecvStateBulk_ = allocateBulk(statePerPeer, "state bulk");
+
+  // Signal and the device counter are the small RDMA-registered control
+  // buffers; pack them into ONE granularity-aligned allocation so they cost a
+  // single granularity unit and share one aligned Data-Direct MR (offset 0),
+  // instead of one aligned unit each. Region layout: [signal | (device
+  // counter)], each 16B-aligned; the whole allocation rounded to the VMM
+  // granularity so the DD export offset is 0. The device-local progress state
+  // is never RDMA-registered or shared, so it needs no alignment and is
+  // allocated separately below at its natural size.
+  const std::size_t signalTotal = signalPerPeer * numPeers;
+  const bool deviceCounter = (counterStorage == IbCounterStorage::Device);
+  const std::size_t counterTotal =
+      deviceCounter ? counterPerPeer * numPeers : 0;
+  auto alignUp = [](std::size_t x, std::size_t a) {
+    return ((x + a - 1) / a) * a;
+  };
+  const std::size_t counterOff = alignUp(signalTotal, std::size_t{16});
+  const std::size_t controlBytes = alignUp(counterOff + counterTotal, ddAlign);
+  sendRecvControlBulk_ =
+      std::make_unique<meta::comms::DeviceBuffer>(controlBytes);
+  checkSlotGpu(
+      slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
+      "MultiPeerIbTransport: zero send/recv control bulk");
+  char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
+
+  // Device-local progress state: separate allocation, natural size,
+  // unregistered.
+  sendRecvStateBulk_ =
+      std::make_unique<meta::comms::DeviceBuffer>(statePerPeer * numPeers);
+  checkSlotGpu(
+      slotGpuMemset(sendRecvStateBulk_->get(), 0, statePerPeer * numPeers),
+      "MultiPeerIbTransport: zero send/recv state bulk");
 
   // Staging is bulk data: opt into Relaxed Ordering. Signal/counter stay strict
   // so a flag write can't be reordered ahead of the data on the shared route.
@@ -445,17 +508,19 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       sendRecvRecvStagingBulk_->get(),
       stagingPerPeer * numPeers,
       /*relaxedOrdering=*/true);
-  sendRecvSignalBulkReg_ =
-      registerBuffer(sendRecvSignalBulk_->get(), signalPerPeer * numPeers);
+  // One registration covers the whole control allocation (registerBuffer
+  // registers the entire underlying allocation regardless of the size arg; the
+  // base is granularity-aligned so the DMA-BUF offset is 0). The signal and
+  // device-counter handles are then just views into this single MR (same lkey),
+  // so there is no second registration / refcount to balance.
+  sendRecvSignalBulkReg_ = registerBuffer(controlBase, controlBytes);
 
   IbgdaLocalBuffer counterBulkBuf;
   IbgdaLocalBuffer counterCompletionBulkBuf;
-  if (counterStorage == IbCounterStorage::Device) {
-    // Device counter: transport-allocated + registered. The NIC bumps it via a
-    // loopback RDMA atomic (IBGDA).
-    sendRecvCounterBulk_ = allocateBulk(counterPerPeer, "counter bulk");
-    sendRecvCounterBulkReg_ =
-        registerBuffer(sendRecvCounterBulk_->get(), counterPerPeer * numPeers);
+  if (deviceCounter) {
+    // Device counter is a view into the control MR (same lkey). The NIC bumps
+    // it via a loopback RDMA atomic (IBGDA).
+    sendRecvCounterBulkReg_ = sendRecvSignalBulkReg_.subBuffer(counterOff);
     counterBulkBuf = sendRecvCounterBulkReg_;
     counterCompletionBulkBuf = sendRecvCounterBulkReg_;
   } else {
@@ -537,20 +602,15 @@ void MultiPeerIbTransportBase::cleanupSendRecvBuffers() noexcept {
       sendRecvSendStagingBulk_ ? sendRecvSendStagingBulk_->get() : nullptr);
   deregisterNoexcept(
       sendRecvRecvStagingBulk_ ? sendRecvRecvStagingBulk_->get() : nullptr);
+  // The control bulk was registered exactly once (signal + device-counter are
+  // views into that single MR); state was never registered.
   deregisterNoexcept(
-      sendRecvSignalBulk_ ? sendRecvSignalBulk_->get() : nullptr);
-  // Device counter is transport-owned + registered; host counter is host-mapped
-  // and freed via freeCounterSlotAllocation below (never registered).
-  if (sendRecvCounterStorage_ == IbCounterStorage::Device) {
-    deregisterNoexcept(
-        sendRecvCounterBulk_ ? sendRecvCounterBulk_->get() : nullptr);
-  }
+      sendRecvControlBulk_ ? sendRecvControlBulk_->get() : nullptr);
 
   sendRecvSendStagingBulk_.reset();
   sendRecvRecvStagingBulk_.reset();
-  sendRecvSignalBulk_.reset();
+  sendRecvControlBulk_.reset();
   sendRecvStateBulk_.reset();
-  sendRecvCounterBulk_.reset();
   freeCounterSlotAllocation(sendRecvHostCounterAllocation_);
   sendRecvRecvStagingBulkReg_ = IbgdaLocalBuffer{};
   sendRecvSignalBulkReg_ = IbgdaLocalBuffer{};
