@@ -53,7 +53,6 @@ __device__ int torchcomms_transport_wait_signal(
     unsigned long long value);
 
 // --- Send/Recv (block-cooperative, pipelined transport) ---
-// active_blocks: number of groups calling concurrently (0 = tile_max_groups)
 // max_signal_bytes: hint for signaling granularity (0 = one signal per slot)
 
 __device__ int torchcomms_transport_send(
@@ -61,7 +60,6 @@ __device__ int torchcomms_transport_send(
     int peer,
     void* src_ptr,
     unsigned long long nbytes,
-    int active_blocks,
     unsigned long long max_signal_bytes);
 
 __device__ int torchcomms_transport_recv(
@@ -69,7 +67,6 @@ __device__ int torchcomms_transport_recv(
     int peer,
     void* dst_ptr,
     unsigned long long nbytes,
-    int active_blocks,
     unsigned long long max_signal_bytes);
 
 // --- Barrier ---

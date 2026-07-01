@@ -122,15 +122,13 @@ struct ThreadGroup {
 #endif
         break;
       case SyncScope::MULTIWARP: {
-        // Multiwarp = 4 warps = 128 threads
 #if defined(__CUDA_ARCH__)
-        // Uses CUDA named barriers for synchronization within a multiwarp
+        // Uses CUDA named barriers for synchronization within this contiguous
+        // group. `group_size` is configurable for make_multiwarp_group().
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t barrierId = tid / kMultiwarpSize;
-        asm volatile("bar.sync %0, %1;"
-                     :
-                     : "r"(barrierId), "r"(kMultiwarpSize));
+        uint32_t barrierId = tid / group_size;
+        asm volatile("bar.sync %0, %1;" : : "r"(barrierId), "r"(group_size));
 #else
         // AMD: no named barriers, fall back to block-level sync
         __syncthreads();
@@ -271,7 +269,7 @@ struct ThreadGroup {
         __shared__ uint64_t __tg_broadcast_scratch[kMaxMultiwarpsPerBlock];
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t scratch_idx = tid / kMultiwarpSize;
+        uint32_t scratch_idx = tid / group_size;
         if (is_leader()) {
           __tg_broadcast_scratch[scratch_idx] = static_cast<uint64_t>(val);
         }
@@ -938,20 +936,23 @@ __device__ inline ThreadGroup make_block_group() {
 }
 
 /**
- * make_multiwarp_group - Create a ThreadGroup where 4 warps (128 threads)
- *                        work together as a single multiwarp
+ * make_multiwarp_group - Create a ThreadGroup where multiple warps work
+ *                        together as one group
  *
  * Use case: For Hopper GPU tensor core operations (wgmma instructions) that
  * operate at multiwarp granularity, or when you need synchronization
  * granularity between a single warp and the entire block.
  *
  * REQUIREMENTS:
- * - Block size must be a multiple of 128 (multiwarp size)
- * - Maximum 16 multiwarps per block (hardware named barrier limit)
+ * - group_size must be a multiple of WARP_SIZE
+ * - Block size must be a multiple of group_size
+ * - Maximum 16 MULTIWARP groups per block (hardware named barrier limit)
  *
  * Example with 4 blocks × 512 threads:
- *   - total_groups = 16 (4 multiwarps per block × 4 blocks)
- *   - group_size = 128
+ *   - make_multiwarp_group() gives total_groups = 16
+ *     (4 default 128-thread multiwarps per block × 4 blocks)
+ *   - make_multiwarp_group(256) gives total_groups = 8
+ *     (2 256-thread groups per block × 4 blocks)
  *   - Each multiwarp can execute wgmma instructions or other
  *     multiwarp-level operations
  *
@@ -960,29 +961,53 @@ __device__ inline ThreadGroup make_block_group() {
  * - Allows asynchronous multiwarp-level matrix multiply-accumulate
  * - Better synchronization granularity for producer-consumer patterns
  */
-// TODO: Add support for configurable multiwarp size, 4/8/16.. warps as a
-// multiwarp.
-__device__ inline ThreadGroup make_multiwarp_group() {
+__device__ inline ThreadGroup make_multiwarp_group(
+    uint32_t group_size = kMultiwarpSize) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
 
-  uint32_t multiwarps_per_block = threads_per_block / kMultiwarpSize;
-  uint32_t multiwarp_id_in_block = tid / kMultiwarpSize;
+  if (group_size < kWarpSize || group_size % kWarpSize != 0) {
+    printf(
+        "make_multiwarp_group: group_size (%u) must be >= %u and a multiple of %u\n",
+        group_size,
+        kWarpSize,
+        kWarpSize);
+    __trap();
+  }
+  if (threads_per_block % group_size != 0) {
+    printf(
+        "make_multiwarp_group: threads_per_block (%u) must be divisible by group_size (%u)\n",
+        threads_per_block,
+        group_size);
+    __trap();
+  }
+
+  uint32_t multiwarps_per_block = threads_per_block / group_size;
+  if (group_size > kWarpSize && multiwarps_per_block > kMaxMultiwarpsPerBlock) {
+    printf(
+        "make_multiwarp_group: groups per block (%u) exceeds named-barrier limit (%u)\n",
+        multiwarps_per_block,
+        kMaxMultiwarpsPerBlock);
+    __trap();
+  }
+
+  uint32_t multiwarp_id_in_block = tid / group_size;
   uint32_t global_multiwarp_id =
       blockIdx.x * multiwarps_per_block + multiwarp_id_in_block;
   uint32_t total_multiwarps = gridDim.x * multiwarps_per_block;
 
-  uint32_t thread_id_in_multiwarp = tid % kMultiwarpSize;
+  uint32_t thread_id_in_multiwarp = tid % group_size;
 
   return ThreadGroup{
       .thread_id_in_group = thread_id_in_multiwarp,
-      .group_size = kMultiwarpSize,
+      .group_size = group_size,
       .group_id = global_multiwarp_id,
       .block_id = blockIdx.x,
       .total_groups = total_multiwarps,
-      .scope = SyncScope::MULTIWARP};
+      .scope =
+          group_size == kWarpSize ? SyncScope::WARP : SyncScope::MULTIWARP};
 #else
   return ThreadGroup{};
 #endif

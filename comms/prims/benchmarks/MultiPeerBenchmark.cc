@@ -326,6 +326,7 @@ TEST_F(MultiPeerBenchmarkFixture, BarrierLatency) {
       .dataBufferSize = 1,
       .chunkSize = 1,
       .pipelineDepth = 1,
+      .max_num_channels = 0,
   };
   WindowConfig wmConfig{
       .barrierCount = static_cast<std::size_t>(maxSlots),
@@ -396,6 +397,7 @@ TEST_F(MultiPeerBenchmarkFixture, SignalAllLatency) {
       .dataBufferSize = 1,
       .chunkSize = 1,
       .pipelineDepth = 1,
+      .max_num_channels = 0,
   };
   WindowConfig wmConfig{
       .peerSignalCount = static_cast<std::size_t>(maxSlots),
@@ -466,6 +468,7 @@ TEST_F(MultiPeerBenchmarkFixture, SignalPingPongLatency) {
       .dataBufferSize = 1,
       .chunkSize = 1,
       .pipelineDepth = 1,
+      .max_num_channels = 0,
   };
   WindowConfig wmConfig{
       .peerSignalCount = static_cast<std::size_t>(maxSlots),
