@@ -9,6 +9,12 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+#else
+#include "comms/uniflow/drivers/cuda/CudaApi.h"
+#include "comms/uniflow/transport/p2p/P2pTransport.h"
+
+#include <array>
+#include <string_view>
 #endif
 
 #include <cstring>
@@ -66,6 +72,58 @@ std::vector<std::string> MultiTransportFactory::selectNics() {
       deviceId_, options_.nicFilter, options_.netdevPrefix);
 }
 
+#ifdef __HIP_PLATFORM_AMD__
+// All supported AMD parts (MI300 gfx942, MI350 gfx950, MI450 gfx1250) are
+// all-to-all XGMI intra-node. Gate the P2P transport on this arch family so a
+// non-XGMI part never lets selectTransport (presence-driven) prefer a slow
+// PCIe-P2P link over RDMA. See comms/uniflow/amd/AMD_SUPPORT_DESIGN.md §5.6.
+static bool isAllXgmiArch(CudaApi& cudaApi) {
+  // Match an exact gfx token, allowing a feature-flag suffix after ':'
+  // (e.g. "gfx942:sramecc+:xnack-") but not a longer digit run ("gfx12500").
+  static constexpr std::array<std::string_view, 3> kAllowedArch = {
+      "gfx942", "gfx950", "gfx1250"};
+  auto matchesAllowed = [](std::string_view arch) {
+    for (const auto& base : kAllowedArch) {
+      if (arch.size() >= base.size() && arch.substr(0, base.size()) == base &&
+          (arch.size() == base.size() || arch[base.size()] == ':')) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto count = cudaApi.getDeviceCount();
+  if (count.hasError()) {
+    UNIFLOW_LOG_WARN(
+        "P2P arch gate: getDeviceCount failed ({}); disabling P2P transport",
+        count.error().message());
+    return false;
+  }
+  if (count.value() == 0) {
+    return false;
+  }
+  for (int dev = 0; dev < count.value(); ++dev) {
+    auto arch = cudaApi.getDeviceArch(dev);
+    if (arch.hasError()) {
+      UNIFLOW_LOG_WARN(
+          "P2P arch gate: getDeviceArch({}) failed ({}); disabling P2P",
+          dev,
+          arch.error().message());
+      return false;
+    }
+    if (!matchesAllowed(arch.value())) {
+      UNIFLOW_LOG_INFO(
+          "P2P arch gate: device {} arch '{}' not in the all-XGMI family; "
+          "disabling P2P for this node",
+          dev,
+          arch.value());
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
 Status MultiTransportFactory::supported(TransportType type) {
   switch (type) {
     case TransportType::RDMA:
@@ -74,8 +132,17 @@ Status MultiTransportFactory::supported(TransportType type) {
     case TransportType::NVLink:
       return NVLinkTransportFactory::supported();
 #else
-    case TransportType::NVLink:
-      return Err(ErrCode::NotImplemented, "nvlink is not supported on AMD");
+    case TransportType::NVLink: {
+      // On AMD the NVLink tier is served by the P2P (XGMI) transport, available
+      // only on all-XGMI nodes (matching the constructor's registration gate).
+      CudaApi cudaApi;
+      if (!isAllXgmiArch(cudaApi)) {
+        return Err(
+            ErrCode::NotImplemented,
+            "P2P (XGMI) transport not supported: not an all-XGMI node");
+      }
+      return P2pTransportFactory::supported();
+    }
 #endif
     case TransportType::TCP:
       return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
@@ -144,6 +211,22 @@ MultiTransportFactory::MultiTransportFactory(
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
+  }
+#else
+  // AMD: the NVLink tier is served by the P2P (XGMI) transport, gated on the
+  // all-XGMI arch family (selectTransport is presence-driven; see §5.6).
+  if (deviceId_ >= 0) {
+    CudaApi cudaApi;
+    if (isAllXgmiArch(cudaApi)) {
+      auto p2p = std::make_shared<P2pTransportFactory>(
+          deviceId, eventBaseThread_->getEventBase());
+      factories_.emplace_back(std::move(p2p));
+    } else {
+      UNIFLOW_LOG_INFO(
+          "P2P transport disabled for device {}: node is not all-XGMI "
+          "(see the arch-gate log for the offending device)",
+          deviceId_);
+    }
   }
 #endif
 
