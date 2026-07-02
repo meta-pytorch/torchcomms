@@ -107,8 +107,10 @@ class HierarchicalAllGatherTest : public AllGatherTestBase {
     const int nextGlobal = ibRing.next_rank * kNvlSize + nvlRank;
     launchParams.ib_ring.prev_rank = ibRing.prev_rank;
     launchParams.ib_ring.next_rank = ibRing.next_rank;
-    launchParams.ib_ring.prev = ibTransport->getP2pTransportDevice(prevGlobal);
-    launchParams.ib_ring.next = ibTransport->getP2pTransportDevice(nextGlobal);
+    launchParams.ib_ring.prev =
+        P2pIbTransportDevice(ibTransport->getP2pTransportDevice(prevGlobal));
+    launchParams.ib_ring.next =
+        P2pIbTransportDevice(ibTransport->getP2pTransportDevice(nextGlobal));
 
     for (int peer = 0; peer < kNvlSize; ++peer) {
       if (peer == nvlRank) {

@@ -7,11 +7,10 @@
 
 #include "comms/prims/collectives/DirectCollectiveTypes.h"
 #include "comms/prims/trace/PipesTraceTypes.h"
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 namespace comms::prims {
-
-class P2pIbgdaTransportDevice;
 
 struct DirectAllgatherNvlArgs {
   int my_rank{0};
@@ -23,11 +22,11 @@ struct DirectAllgatherNvlArgs {
   char* recvbuf{nullptr};
 };
 
-struct HierarchicalAllgatherIbgdaRing {
+struct HierarchicalAllgatherIbRing {
   int prev_rank{0};
   int next_rank{0};
-  P2pIbgdaTransportDevice* prev{nullptr};
-  P2pIbgdaTransportDevice* next{nullptr};
+  P2pIbTransportDevice prev{};
+  P2pIbTransportDevice next{};
 };
 
 struct HierarchicalAllgatherFusedArgs {
@@ -40,7 +39,7 @@ struct HierarchicalAllgatherFusedArgs {
   std::size_t nvl_signaling_data_size{0};
   const char* sendbuf{nullptr};
   char* recvbuf{nullptr};
-  HierarchicalAllgatherIbgdaRing ib_ring{};
+  HierarchicalAllgatherIbRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
 };
 
@@ -60,7 +59,7 @@ struct HierarchicalAllgatherOverlapArgs {
   uint64_t* ready_counters{nullptr};
   const char* sendbuf{nullptr};
   char* recvbuf{nullptr};
-  HierarchicalAllgatherIbgdaRing ib_ring{};
+  HierarchicalAllgatherIbRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
   PipesTraceHandle trace{};
 };

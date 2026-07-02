@@ -160,6 +160,50 @@ The benchmark was run with eight ranks total, two ranks per host on GPUs 0 and 1
 | 64M_16B_2R | 512MB | 2 | 52.04 | 51.52 | 0.99x | 10315.7 | 10421.1 |
 | 256M_32B_2R | 2GB | 2 | 48.87 | 49.52 | 1.01x | 43939.0 | 43366.6 |
 
+## CTRAN AllGather Benchmark
+
+Run date: 2026-07-01
+
+Benchmark target:
+
+```bash
+fbcode//comms/ctran/benchmarks:allgather_bench_4x1_binary
+```
+
+The benchmark was run with `cthierarchical_ring`, `NCCL_CTRAN_ENABLE=1`, `NCCL_CTRAN_USE_PIPES=1`, `NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1`, and `NCCL_CTRAN_PIPES_IB_MODE={ibgda,ibrc}`. Values are rank 0 CTRAN bandwidth in GB/s from the `Finished <size>: NCCL=... ctran=...` lines. The 2-node run used `rtptest2329.nha6.facebook.com` and `rtptest2344.nha6.facebook.com` with 4 ranks total, 2 ranks per host, and `NCCL_CTRAN_IB_DEVICES_PER_RANK=1`. The 4-node run used `rtptest2356.nha6.facebook.com`, `rtptest2357.nha6.facebook.com`, `rtptest2359.nha6.facebook.com`, and `rtptest2360.nha6.facebook.com` with 8 ranks total, 2 ranks per host, `NCCL_CTRAN_IB_DEVICES_PER_RANK=2`, and `NCCL_CTRAN_IB_DEVICE_STRIDE=0`.
+
+Full logs:
+
+| Run | Log |
+| --- | --- |
+| 2-node IBGDA | `/tmp/rtptest_gb200_allgather_ibgda_sweep.txt` |
+| 2-node IBRC | `/tmp/rtptest_gb200_allgather_ibrc_sweep.txt` |
+| 4-node IBGDA, two-NIC config | `/tmp/rtptest_gb200_4node_dualnic_allgather_ibgda_sweep.txt` |
+| 4-node IBRC, two-NIC config | `/tmp/rtptest_gb200_4node_dualnic_allgather_ibrc_sweep.txt` |
+
+| Size | 2-node IBGDA | 2-node IBRC | 4-node IBGDA | 4-node IBRC |
+| ---: | ---: | ---: | ---: | ---: |
+| 8KB | 0.075 | 0.071 | 0.028 | 0.027 |
+| 16KB | 0.151 | 0.149 | 0.052 | 0.053 |
+| 32KB | 0.300 | 0.304 | 0.110 | 0.107 |
+| 64KB | 0.620 | 0.586 | 0.223 | 0.211 |
+| 128KB | 1.14 | 1.14 | 0.453 | 0.443 |
+| 256KB | 2.37 | 2.39 | 0.881 | 0.844 |
+| 512KB | 4.73 | 4.63 | 1.74 | 1.65 |
+| 1MB | 8.72 | 8.65 | 3.57 | 3.45 |
+| 2MB | 15.23 | 15.01 | 6.23 | 6.12 |
+| 4MB | 25.98 | 25.66 | 11.34 | 10.94 |
+| 8MB | 34.37 | 36.82 | 17.82 | 18.72 |
+| 16MB | 46.12 | 47.39 | 25.80 | 26.84 |
+| 32MB | 50.81 | 53.00 | 33.65 | 35.87 |
+| 64MB | 58.60 | 58.33 | 40.84 | 41.62 |
+| 128MB | 60.61 | 60.34 | 44.41 | 45.35 |
+| 256MB | 62.87 | 62.80 | 45.69 | 47.02 |
+| 512MB | 64.51 | 61.33 | 45.22 | 46.02 |
+| 1GB | 64.07 | 63.77 | 46.96 | 48.40 |
+
+The 4-node two-NIC setting did not double the CTRAN bandwidth for this path. A follow-up run with `NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=1` produced similar top-end results (`47.02 GB/s` for IBGDA and `48.25 GB/s` for IBRC at 1GB), which is consistent with `cthierarchical_ring` using the prims hierarchical fused send/recv path instead of the CTRAN-IB QP interleave path.
+
 ## Current Counter-Slot Results
 
 These results are from the 2026-06-24 rerun after pinning the IBRC progress thread. The initial filtered run covered `PutFlush`, `PutSignalWaitCounter`, `SignalOnly`, and `PutSignalComparison`. `PutWaitCounter` required a local benchmark test fix from `TEST_F` to `TEST_P` so the backend parameterization works; it was then rebuilt for `aarch64` and rerun separately on the same hosts.

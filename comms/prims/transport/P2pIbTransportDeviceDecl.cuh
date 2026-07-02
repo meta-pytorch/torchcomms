@@ -1898,6 +1898,18 @@ struct P2pIbTransportDevice {
       Args... args);
 
   template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void sendWithTrace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
+      Args... args);
+
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -1905,6 +1917,18 @@ struct P2pIbTransportDevice {
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
+      Args... args);
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recvWithTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
       Args... args);
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -1916,6 +1940,19 @@ struct P2pIbTransportDevice {
       int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
+      Args... args);
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forwardWithTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbTransportDevice& fwd,
+      std::size_t nbytes,
+      int active_blocks,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      PipesTraceHandle trace,
+      uint8_t self_rank,
       Args... args);
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const;

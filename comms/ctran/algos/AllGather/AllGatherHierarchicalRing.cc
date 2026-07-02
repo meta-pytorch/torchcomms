@@ -232,16 +232,16 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
   const auto& ibRing = (*rings)[0];
   const int prevGlobal = ibRing.prev_rank * nLocalRanks + localRank;
   const int nextGlobal = ibRing.next_rank * nLocalRanks + localRank;
-  if (!mpt->has_ibgda(prevGlobal) || !mpt->has_ibgda(nextGlobal)) {
+  if (!mpt->is_ib_peer(prevGlobal) || !mpt->is_ib_peer(nextGlobal)) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} requires IBGDA prev/next transports; prev {} has_ibgda={} next {} has_ibgda={}",
+        "AllGather {} requires IB prev/next transports; prev {} type={} next {} type={}",
         allGatherAlgoName(myAlgo),
         prevGlobal,
-        mpt->has_ibgda(prevGlobal),
+        comms::prims::transport_type_name(mpt->get_transport_type(prevGlobal)),
         nextGlobal,
-        mpt->has_ibgda(nextGlobal));
+        comms::prims::transport_type_name(mpt->get_transport_type(nextGlobal)));
     return commInvalidArgument;
   }
 
@@ -387,8 +387,8 @@ commResult_t ctranAllGatherHierarchicalRing(
   const int nextGlobal = ibRing.next_rank * nLocalRanks + localRank;
   params.ib_ring.prev_rank = ibRing.prev_rank;
   params.ib_ring.next_rank = ibRing.next_rank;
-  params.ib_ring.prev = mpt->get_p2p_ibgda_transport_device(prevGlobal);
-  params.ib_ring.next = mpt->get_p2p_ibgda_transport_device(nextGlobal);
+  params.ib_ring.prev = mpt->get_p2p_ib_transport_device(prevGlobal);
+  params.ib_ring.next = mpt->get_p2p_ib_transport_device(nextGlobal);
 
   for (int peerLocal = 0; peerLocal < nLocalRanks; ++peerLocal) {
     if (peerLocal == localRank) {
