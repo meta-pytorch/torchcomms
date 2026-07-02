@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/window/CtranWin.h"
 
 using ctran::algos::GpeKernelSync;
 using ctran::allgatherp::AlgoImpl;
@@ -46,6 +47,10 @@ commResult_t exchangeMemHdl(
 
   // Ensure all ranks have finished remote importing before return
   FB_COMMCHECK(mapper->barrier());
+
+  // The full-comm exchange above already imported the rail peer rkeys, so the
+  // gpeFn's per-replay handshake skips the rkey exchange and only re-syncs.
+  pArgs->ibKeysExchanged = true;
 
   if (NCCL_CTRAN_ENABLE_TRACE_LOG) {
     for (int i = 0; i < nRanks; i++) {
@@ -124,6 +129,15 @@ commResult_t AlgoImpl::initialize() {
 };
 
 commResult_t AlgoImpl::destroy() {
+  // Free the window before releasing nvlComm (the window is registered on it);
+  // both are null on the eager path. Owned here so eager and windowed share the
+  // same teardown.
+  if (nvlWin != nullptr) {
+    nvlWin->free(true /* skipBarrier */);
+    delete nvlWin;
+    nvlWin = nullptr;
+  }
+  nvlComm.reset();
   if (resource_.pipeSync) {
     FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
     resource_.pipeSync = nullptr;

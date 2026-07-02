@@ -1,15 +1,26 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include <memory>
+
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/utils/Checks.h"
+
+namespace ctran {
+struct CtranWin;
+}
 
 namespace ctran::allgatherp {
 
 class AlgoImpl {
  public:
   PersistArgs pArgs;
+
+  // Local-NVL window + split subcomm for the windowed-capture path; null for
+  // the eager path. Freed in destroy().
+  ctran::CtranWin* nvlWin{nullptr};
+  std::shared_ptr<CtranComm> nvlComm;
 
   AlgoImpl(CtranComm* comm, cudaStream_t stream)
       : comm_(comm), stream_(stream) {};
