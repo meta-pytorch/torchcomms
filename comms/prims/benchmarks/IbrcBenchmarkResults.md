@@ -20,6 +20,70 @@ python3 comms/testinfra/ncclx_test_launcher.py \
 
 The `rtptest2333`/`rtptest2349` pair was used because both hosts had CUDA ready (`cuInit=0`, two devices, no compute processes) and the MPI hostname smoke test passed. Before launching, the `2803:*` IPv6 address on `eth0` was temporarily removed on both hosts to avoid Open MPI advertising a peer address that did not match DNS. The `2803:*` addresses were restored after the run. The `rtptest2348`/`rtptest2350` pair was rejected because CUDA initialization returned `802`.
 
+## Send/Recv Benchmark
+
+Run date: 2026-07-01, with exact KB reruns on 2026-07-02
+
+Hosts: `rtptest2347.nha6.facebook.com`, `rtptest2348.nha6.facebook.com`
+
+Setup: one rank per host on GPU 0, using the rebased `aarch64` GB200 binary. Values are rank 0 P2P bandwidth in GB/s; bidirectional counts traffic in both directions. KB rows use exact 1000-iteration reruns.
+
+Blocking API:
+
+| Size | Bidir IBGDA | Bidir IBRC | Unidir IBGDA | Unidir IBRC |
+| ---: | ---: | ---: | ---: | ---: |
+| 1KB | 0.052 | 0.035 | 0.063 | 0.041 |
+| 2KB | 0.105 | 0.063 | 0.119 | 0.082 |
+| 4KB | 0.210 | 0.129 | 0.236 | 0.164 |
+| 8KB | 0.417 | 0.254 | 0.485 | 0.320 |
+| 16KB | 0.828 | 0.497 | 0.969 | 0.656 |
+| 32KB | 1.57 | 0.944 | 1.94 | 1.12 |
+| 64KB | 3.11 | 1.79 | 3.65 | 2.08 |
+| 128KB | 5.83 | 3.44 | 6.40 | 3.87 |
+| 256KB | 10.41 | 7.11 | 11.24 | 9.84 |
+| 512KB | 5.57 | 3.65 | 7.00 | 4.54 |
+| 1MB | 25.51 | 18.30 | 33.46 | 24.69 |
+| 2MB | 33.07 | 26.71 | 51.28 | 39.54 |
+| 4MB | 39.50 | 34.28 | 69.66 | 56.38 |
+| 8MB | 43.67 | 40.59 | 59.97 | 55.63 |
+| 16MB | 69.60 | 64.37 | 59.14 | 55.21 |
+| 32MB | 85.60 | 79.21 | 58.78 | 57.40 |
+| 64MB | 97.67 | 89.76 | 58.60 | 57.41 |
+| 128MB | 105.40 | 97.46 | 58.50 | 55.36 |
+| 256MB | 111.47 | 102.32 | 57.81 | 56.05 |
+| 512MB | 114.46 | 107.16 | 57.71 | 57.48 |
+| 1GB | 112.37 | 108.70 | 57.69 | 57.98 |
+| 2GB | 115.88 | 111.14 | 58.22 | 60.24 |
+| 4GB | 117.58 | 111.39 | 57.69 | 59.55 |
+
+Progress API:
+
+| Size | Bidir IBGDA | Bidir IBRC | Unidir IBGDA | Unidir IBRC |
+| ---: | ---: | ---: | ---: | ---: |
+| 1KB | 0.050 | 0.031 | 0.054 | 0.049 |
+| 2KB | 0.101 | 0.063 | 0.111 | 0.074 |
+| 4KB | 0.200 | 0.138 | 0.221 | 0.143 |
+| 8KB | 0.401 | 0.247 | 0.444 | 0.290 |
+| 16KB | 0.798 | 0.494 | 0.889 | 0.592 |
+| 32KB | 1.52 | 0.946 | 1.65 | 1.06 |
+| 64KB | 2.91 | 1.82 | 3.22 | 2.68 |
+| 128KB | 5.22 | 3.50 | 5.58 | 3.83 |
+| 256KB | 9.44 | 7.19 | 10.24 | 9.61 |
+| 512KB | 5.06 | 3.80 | 6.04 | 4.35 |
+| 1MB | 24.00 | 19.00 | 31.28 | 24.54 |
+| 2MB | 32.21 | 27.35 | 48.70 | 39.26 |
+| 4MB | 39.86 | 35.19 | 67.23 | 56.02 |
+| 8MB | 44.24 | 41.25 | 59.73 | 55.44 |
+| 16MB | 69.15 | 64.73 | 59.06 | 55.01 |
+| 32MB | 84.96 | 79.86 | 58.66 | 54.58 |
+| 64MB | 96.60 | 90.81 | 58.43 | 55.88 |
+| 128MB | 104.10 | 97.88 | 57.62 | 56.83 |
+| 256MB | 110.46 | 103.44 | 57.57 | 56.08 |
+| 512MB | 112.53 | 108.19 | 57.52 | 57.51 |
+| 1GB | 112.41 | 110.29 | 57.53 | 57.55 |
+| 2GB | 115.33 | 113.14 | 58.08 | 58.86 |
+| 4GB | 119.67 | 112.19 | 57.53 | 59.31 |
+
 ## Current Counter-Slot Results
 
 These results are from the 2026-06-24 rerun after pinning the IBRC progress thread. The initial filtered run covered `PutFlush`, `PutSignalWaitCounter`, `SignalOnly`, and `PutSignalComparison`. `PutWaitCounter` required a local benchmark test fix from `TEST_F` to `TEST_P` so the backend parameterization works; it was then rebuilt for `aarch64` and rerun separately on the same hosts.

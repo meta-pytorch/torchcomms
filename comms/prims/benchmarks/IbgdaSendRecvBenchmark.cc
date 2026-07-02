@@ -17,6 +17,7 @@
 
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/testinfra/ITestBootstrap.h"
 #include "comms/testinfra/TcpStoreBootstrap.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
@@ -46,6 +47,11 @@ enum class SendRecvApi {
 enum class SendRecvDirection {
   Bidirectional,
   Unidirectional,
+};
+
+enum class BenchmarkTransport {
+  Ibgda,
+  Ibrc,
 };
 
 bool isTcpEnvironment() {
@@ -116,23 +122,40 @@ struct BenchmarkSize {
   std::size_t nbytes;
 };
 
-constexpr std::array<BenchmarkSize, 13> kBenchmarkSizes{{
-    {"1MB", 1ULL << 20},
-    {"2MB", 2ULL << 20},
-    {"4MB", 4ULL << 20},
-    {"8MB", 8ULL << 20},
-    {"16MB", 16ULL << 20},
-    {"32MB", 32ULL << 20},
-    {"64MB", 64ULL << 20},
-    {"128MB", 128ULL << 20},
-    {"256MB", 256ULL << 20},
-    {"512MB", 512ULL << 20},
-    {"1GB", 1ULL << 30},
-    {"2GB", 2ULL << 30},
-    {"4GB", 4ULL << 30},
+constexpr std::array<BenchmarkSize, 23> kBenchmarkSizes{{
+    {"1KB", 1ULL << 10},     {"2KB", 2ULL << 10},     {"4KB", 4ULL << 10},
+    {"8KB", 8ULL << 10},     {"16KB", 16ULL << 10},   {"32KB", 32ULL << 10},
+    {"64KB", 64ULL << 10},   {"128KB", 128ULL << 10}, {"256KB", 256ULL << 10},
+    {"512KB", 512ULL << 10}, {"1MB", 1ULL << 20},     {"2MB", 2ULL << 20},
+    {"4MB", 4ULL << 20},     {"8MB", 8ULL << 20},     {"16MB", 16ULL << 20},
+    {"32MB", 32ULL << 20},   {"64MB", 64ULL << 20},   {"128MB", 128ULL << 20},
+    {"256MB", 256ULL << 20}, {"512MB", 512ULL << 20}, {"1GB", 1ULL << 30},
+    {"2GB", 2ULL << 30},     {"4GB", 4ULL << 30},
 }};
 
 constexpr std::size_t kMaxBenchmarkBytes = 4ULL << 30;
+constexpr std::array<BenchmarkTransport, 2> kBenchmarkTransports{
+    BenchmarkTransport::Ibgda,
+    BenchmarkTransport::Ibrc,
+};
+constexpr std::array<SendRecvApi, 2> kBenchmarkApis{
+    SendRecvApi::Blocking,
+    SendRecvApi::Progress,
+};
+constexpr std::array<SendRecvDirection, 2> kBenchmarkDirections{
+    SendRecvDirection::Bidirectional,
+    SendRecvDirection::Unidirectional,
+};
+
+const char* transportName(BenchmarkTransport transport) {
+  switch (transport) {
+    case BenchmarkTransport::Ibgda:
+      return "ibgda";
+    case BenchmarkTransport::Ibrc:
+      return "ibrc";
+  }
+  return "unknown";
+}
 
 const char* apiName(SendRecvApi api) {
   switch (api) {
@@ -155,10 +178,12 @@ const char* directionName(SendRecvDirection direction) {
 }
 
 std::string benchmarkName(
+    BenchmarkTransport transport,
     SendRecvApi api,
     SendRecvDirection direction,
     const char* sizeName) {
-  std::string name = "ibgdaSendRecv(";
+  std::string name = transportName(transport);
+  name += "SendRecv(";
   name += apiName(api);
   name += "_";
   name += directionName(direction);
@@ -181,7 +206,7 @@ class IbgdaSendRecvBenchmarkContext {
     localRank_ = bootstrap_->getLocalRank();
 
     CHECK_EQ(worldSize_, kWorldSize)
-        << "IBGDA send/recv benchmark requires exactly two ranks";
+        << "IB send/recv benchmark requires exactly two ranks";
     int deviceCount = 0;
     CHECK_EQ(cudaGetDeviceCount(&deviceCount), cudaSuccess);
     CHECK_GT(deviceCount, localRank_)
@@ -189,26 +214,11 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaSetDevice(localRank_), cudaSuccess);
     CHECK_EQ(cudaStreamCreate(&stream_), cudaSuccess);
 
-    MultipeerIbgdaTransportConfig transportConfig{
-        .cudaDevice = localRank_,
-        .dataBufferSize = kSlotSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = kNumBlocks,
-                .pipelineDepth = kPipelineDepth,
-            },
-    };
-    transport_ = std::make_unique<MultipeerIbgdaTransport>(
-        globalRank_, worldSize_, bootstrap_, transportConfig);
-    transport_->exchange();
-
     sendBuf_ = std::make_unique<DeviceBuffer>(maxBytes_);
     recvBuf_ = std::make_unique<DeviceBuffer>(maxBytes_);
     CHECK_EQ(cudaMemset(sendBuf_->get(), 0xAA, maxBytes_), cudaSuccess);
     CHECK_EQ(cudaMemset(recvBuf_->get(), 0, maxBytes_), cudaSuccess);
     CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
-
-    deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
   }
 
   ~IbgdaSendRecvBenchmarkContext() {
@@ -225,7 +235,8 @@ class IbgdaSendRecvBenchmarkContext {
     }
     recvBuf_.reset();
     sendBuf_.reset();
-    transport_.reset();
+    ibrcTransport_.reset();
+    ibgdaTransport_.reset();
     bootstrap_.reset();
   }
 
@@ -244,6 +255,10 @@ class IbgdaSendRecvBenchmarkContext {
       launchOperation(nbytes, api, direction);
       CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
     }
+  }
+
+  void barrierAll() {
+    bootstrap_->barrierAll();
   }
 
   float runLocalElapsed(
@@ -271,6 +286,45 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaEventDestroy(stop), cudaSuccess);
 
     return elapsedMs;
+  }
+
+  void useTransport(BenchmarkTransport transport) {
+    if (transportInitialized_ && benchmarkTransport_ == transport) {
+      return;
+    }
+
+    CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+    bootstrap_->barrierAll();
+    ibrcTransport_.reset();
+    ibgdaTransport_.reset();
+    deviceTransport_ = P2pIbTransportDevice();
+
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank_,
+        .dataBufferSize = kSlotSize,
+        .sendRecv =
+            MultipeerIbgdaTransportConfig::SendRecvConfig{
+                .maxGroups = kNumBlocks,
+                .pipelineDepth = kPipelineDepth,
+            },
+    };
+
+    benchmarkTransport_ = transport;
+    transportInitialized_ = true;
+    if (benchmarkTransport_ == BenchmarkTransport::Ibrc) {
+      ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
+          globalRank_, worldSize_, bootstrap_, transportConfig);
+      ibrcTransport_->exchange();
+      deviceTransport_ = P2pIbTransportDevice(
+          ibrcTransport_->getP2pTransportDevice(1 - globalRank_));
+      return;
+    }
+
+    ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank_, worldSize_, bootstrap_, transportConfig);
+    ibgdaTransport_->exchange();
+    deviceTransport_ = P2pIbTransportDevice(
+        ibgdaTransport_->getP2pTransportDevice(1 - globalRank_));
   }
 
  private:
@@ -312,10 +366,13 @@ class IbgdaSendRecvBenchmarkContext {
   }
 
   std::shared_ptr<ITestBootstrap> bootstrap_;
-  std::unique_ptr<MultipeerIbgdaTransport> transport_;
+  std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
   std::unique_ptr<DeviceBuffer> sendBuf_;
   std::unique_ptr<DeviceBuffer> recvBuf_;
-  P2pIbgdaTransportDevice* deviceTransport_{nullptr};
+  P2pIbTransportDevice deviceTransport_;
+  BenchmarkTransport benchmarkTransport_{BenchmarkTransport::Ibgda};
+  bool transportInitialized_{false};
   std::size_t maxBytes_{0};
   cudaStream_t stream_{};
   int globalRank_{0};
@@ -325,6 +382,7 @@ class IbgdaSendRecvBenchmarkContext {
 
 static unsigned int ibgdaSendRecv(
     IbgdaSendRecvBenchmarkContext& context,
+    BenchmarkTransport transport,
     uint32_t iters,
     std::size_t nbytes,
     SendRecvApi api,
@@ -333,7 +391,9 @@ static unsigned int ibgdaSendRecv(
   CHECK_GT(iters, 0);
 
   BENCHMARK_SUSPEND {
+    context.useTransport(transport);
     context.warmup(nbytes, api, direction);
+    context.barrierAll();
   }
 
   const float elapsedMs =
@@ -341,6 +401,7 @@ static unsigned int ibgdaSendRecv(
   folly::doNotOptimizeAway(elapsedMs);
 
   BENCHMARK_SUSPEND {
+    context.barrierAll();
     const double totalBytes =
         (direction == SendRecvDirection::Bidirectional ? 2.0 : 1.0) *
         static_cast<double>(nbytes) * iters;
@@ -358,34 +419,29 @@ static unsigned int ibgdaSendRecv(
 
 void registerBenchmark(
     IbgdaSendRecvBenchmarkContext& context,
+    BenchmarkTransport transport,
     const BenchmarkSize& size,
     SendRecvApi api,
     SendRecvDirection direction) {
   folly::addBenchmark(
       __FILE__,
-      benchmarkName(api, direction, size.name),
-      [&context, nbytes = size.nbytes, api, direction](
+      benchmarkName(transport, api, direction, size.name),
+      [&context, transport, nbytes = size.nbytes, api, direction](
           folly::UserCounters& counters, unsigned int iters) -> unsigned int {
-        return ibgdaSendRecv(context, iters, nbytes, api, direction, counters);
+        return ibgdaSendRecv(
+            context, transport, iters, nbytes, api, direction, counters);
       });
 }
 
 void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
   for (const auto& size : kBenchmarkSizes) {
-    registerBenchmark(
-        context, size, SendRecvApi::Blocking, SendRecvDirection::Bidirectional);
-    registerBenchmark(
-        context, size, SendRecvApi::Progress, SendRecvDirection::Bidirectional);
-    registerBenchmark(
-        context,
-        size,
-        SendRecvApi::Blocking,
-        SendRecvDirection::Unidirectional);
-    registerBenchmark(
-        context,
-        size,
-        SendRecvApi::Progress,
-        SendRecvDirection::Unidirectional);
+    for (auto transport : kBenchmarkTransports) {
+      for (auto api : kBenchmarkApis) {
+        for (auto direction : kBenchmarkDirections) {
+          registerBenchmark(context, transport, size, api, direction);
+        }
+      }
+    }
   }
 }
 
