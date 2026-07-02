@@ -141,6 +141,7 @@ jobs:
             --detach \
             --privileged \
             -v /dev/dri:/dev/dri \
+            -v /sys:/sys \
             -v "${GITHUB_WORKSPACE}:/var/lib/jenkins/workspace" \
             -v "${DLE_PATH}:${DLE_PATH}" \
             -w /var/lib/jenkins/workspace \
