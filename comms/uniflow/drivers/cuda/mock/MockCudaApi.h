@@ -68,6 +68,14 @@ class MockCudaApi : public CudaApi {
        cudaStream_t stream),
       (override));
 
+  MOCK_METHOD(
+      Status,
+      memcpyDeviceToDeviceAsync,
+      (void* dst, const void* src, size_t count, void* stream),
+      (override));
+
+  MOCK_METHOD(Status, synchronizeStream, (void* stream), (override));
+
   MOCK_METHOD(Status, streamSynchronize, (cudaStream_t stream), (override));
 
   MOCK_METHOD(Status, eventCreate, (cudaEvent_t * event), (override));
@@ -78,6 +86,31 @@ class MockCudaApi : public CudaApi {
       (override));
   MOCK_METHOD(Result<bool>, eventQuery, (cudaEvent_t event), (override));
   MOCK_METHOD(Status, eventDestroy, (cudaEvent_t event), (override));
+
+  MOCK_METHOD(Result<std::string>, getDeviceArch, (int device), (override));
+
+  MOCK_METHOD(
+      Result<IpcMemHandle>,
+      ipcGetMemHandle,
+      (void* devPtr),
+      (override));
+  MOCK_METHOD(
+      Result<void*>,
+      ipcOpenMemHandle,
+      (const IpcMemHandle& handle),
+      (override));
+  MOCK_METHOD(Status, ipcCloseMemHandle, (void* devPtr), (override));
+
+  MOCK_METHOD(Result<MemRange>, getMemAddressRange, (void* devPtr), (override));
+
+  MockCudaApi() {
+    // Default: report the pointer as its own allocation base (whole-allocation,
+    // offset 0), so tests that do not exercise sub-allocation keep the prior
+    // behavior without stubbing this call.
+    ON_CALL(*this, getMemAddressRange(testing::_))
+        .WillByDefault(
+            [](void* p) -> Result<MemRange> { return MemRange{p, 0}; });
+  }
 };
 
 } // namespace uniflow

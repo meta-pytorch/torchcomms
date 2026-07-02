@@ -164,9 +164,18 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndRdma) {
   MultiTransportFactory factory(0);
   ASSERT_GE(factoryCount(factory), 1u);
 #if defined(__HIP_PLATFORM_AMD__)
-  // NVLink is NVIDIA-only and is compiled out on AMD, so the GPU factory
-  // provides RDMA as the GPU transport (see MultiTransport.cpp).
-  EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
+  // On AMD the NVLink tier is served by the P2P (XGMI) transport, registered
+  // only on all-XGMI nodes (gfx942/gfx950/gfx1250); otherwise the GPU factory
+  // falls back to RDMA. Gate the expectation on the same condition the
+  // constructor uses (see MultiTransport.cpp).
+  if (!MultiTransportFactory::supported(TransportType::NVLink).hasError()) {
+    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::NVLink);
+    if (factoryCount(factory) > 1) {
+      EXPECT_EQ(factoryTransportType(factory, 1), TransportType::RDMA);
+    }
+  } else {
+    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
+  }
 #else
   // GPU mode: NVLink factory first, then RDMA if PIX NICs exist.
   EXPECT_EQ(factoryTransportType(factory, 0), TransportType::NVLink);

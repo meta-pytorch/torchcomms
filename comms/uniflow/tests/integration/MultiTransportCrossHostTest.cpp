@@ -256,6 +256,7 @@ struct CudaBuffer {
 
 // RAII wrapper for cuMem VMM GPU memory allocation.
 // Uses cuMemCreate with CU_MEM_HANDLE_TYPE_FABRIC for MNNVL.
+#ifndef __HIP_PLATFORM_AMD__
 class VmmAllocation {
  public:
   VmmAllocation() = default;
@@ -333,6 +334,32 @@ class VmmAllocation {
   bool reserved_{false};
   bool mapped_{false};
 };
+#else
+// AMD: VMM fabric (MNNVL) allocation has no HIP equivalent until MI450 (no
+// CU_MEM_HANDLE_TYPE_FABRIC). Provide a stub so the test compiles; alloc()
+// always fails, so the Fabric-parameterized cases skip at runtime.
+class VmmAllocation {
+ public:
+  VmmAllocation() = default;
+
+  Status alloc(CudaDriverApi&, int, size_t) {
+    return Err(
+        ErrCode::NotImplemented,
+        "Fabric (MNNVL) VMM allocation is not supported on AMD");
+  }
+
+  VmmAllocation(const VmmAllocation&) = delete;
+  VmmAllocation& operator=(const VmmAllocation&) = delete;
+
+  void* ptr() const {
+    return nullptr;
+  }
+
+  size_t size() const {
+    return 0;
+  }
+};
+#endif
 
 // --- Same-device transfer tests (parameterized by mem type + alloc type) ---
 
