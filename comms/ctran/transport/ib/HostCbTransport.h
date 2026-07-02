@@ -756,10 +756,12 @@ inline void HostCbTransport::pollRecvNotifications() {
       RecvStagingRecord* match = nullptr;
       for (int s = 0; s < pipelineDepth_; ++s) {
         auto& slot = recvStagingSlots_[s];
-        if (slot.status == RecvChunkStatus::WAIT_RECV && slot.chunk &&
-            slot.chunk->vcIdx == i) {
+        if (slot.status != RecvChunkStatus::WAIT_RECV || !slot.chunk ||
+            slot.chunk->vcIdx != i) {
+          continue;
+        }
+        if (match == nullptr || slot.chunk->round < match->chunk->round) {
           match = &slot;
-          break;
         }
       }
       if (!match) {
@@ -786,10 +788,11 @@ inline void HostCbTransport::advanceRecvStagingRecord(
   auto ctx = makeRecvChunkContext(physicalSlot, chunk);
 
   switch (slot.status) {
-    case RecvChunkStatus::PROCESS_DATA:
+    case RecvChunkStatus::PROCESS_DATA: {
       chunk.hooks.processData(ctx);
       slot.status = RecvChunkStatus::WAIT_PROCESS;
       break;
+    }
 
     case RecvChunkStatus::WAIT_PROCESS:
       if (chunk.hooks.isProcessDone(ctx)) {
@@ -797,7 +800,7 @@ inline void HostCbTransport::advanceRecvStagingRecord(
       }
       break;
 
-    case RecvChunkStatus::SIGNAL_READY:
+    case RecvChunkStatus::SIGNAL_READY: {
       chunk.hooks.signalReady(ctx);
       chunk.hooks.onRecvDone(ctx);
       ++slot.completed;
@@ -805,6 +808,7 @@ inline void HostCbTransport::advanceRecvStagingRecord(
       slot.status = RecvChunkStatus::IDLE;
       --cbRecvActive_;
       break;
+    }
 
     case RecvChunkStatus::IDLE:
     case RecvChunkStatus::WAIT_RECV:
