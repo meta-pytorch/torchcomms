@@ -45,7 +45,7 @@ returns success.
 A rule matches a collective when every populated field AND-matches. The first
 matching rule wins, so rule order encodes priority.
 
-### Interval grammar (`bytes`, `nNodes`, `nLocalRanks`)
+### Interval grammar (`bytesPerRank`, `nNodes`, `nLocalRanks`)
 
 These three fields are `Int64Range` matchers and share a single value grammar
 (leading/trailing whitespace tolerated; `[` `]` inclusive, `(` `)` exclusive; an
@@ -71,12 +71,13 @@ single rule is logged at ERROR and skipped while remaining valid rules load.
 ### CSV (zero-dependency, always available)
 
 ```
-collective,bytes,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBuff,chunkSize
+collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBuff,chunkSize
 ```
 
 - `collective`: `allreduce` / `broadcast` / `reduce` / `allgather` /
   `reducescatter`
-- `bytes`: message-size Int64Range (interval / exact / `*` wildcard)
+- `bytesPerRank`: per-rank-size Int64Range (`nBytes / nRanks`, interval / exact /
+  `*` wildcard); see "Per-rank size filter"
 - `algorithm`: `tree` / `ring` / `collnet_direct` / `collnet_chain` / `nvls` /
   `nvls_tree` / `pat`
 - `protocol`: `ll` / `ll128` / `simple`
@@ -89,10 +90,37 @@ collective,bytes,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBu
   interval and do NOT separate columns (so `[0,1048576]` is one field)
 - Lines beginning with `#` and blank lines are ignored
 
-Example (2 nodes, 8 ranks/node, 1MB-256MB allreduce forced to ring + ll128):
+### Per-rank size filter (`bytesPerRank`)
+
+`bytesPerRank` matches the **per-rank shard** `nBytes / nRanks`
+(`nRanks = nNodes * nLocalRanks`, taken from the comm — so it is correct even when
+`nNodes` / `nLocalRanks` are left wildcard). Because the LL128→Simple crossover is
+~constant in per-rank bytes (but scales with rank count in total bytes), one
+`bytesPerRank` rule can span every rank count — collapsing a per-topology rule
+explosion into a few rules.
+
+- Best suited to **allgather / reducescatter**: NCCL passes those the rank-scaled
+  total `nBytes = nRanks × count × eltsize`, so `nBytes / nRanks` is exactly the
+  per-rank shard. For **allreduce**, `nBytes` is the full buffer (not rank-scaled),
+  so `bytesPerRank` is `buffer / nRanks` — keep that in mind when writing allreduce
+  rules.
+- All populated fields are AND-matched: setting only `bytesPerRank` matches on
+  per-rank size across all topologies; pinning `nNodes` / `nLocalRanks` too narrows
+  it to a specific topology.
+- `gen --per-rank` in the `nccl-tuner-from-sweep` skill emits these rules.
+
+Example (per-rank): force ring + ll128 for any allgather whose per-rank shard is
+8–16 MiB, on any topology (`nNodes` / `nLocalRanks` left wildcard):
 
 ```
-allreduce,[1048576,268435456],ring,ll128,-1,2,8,-1,-1,0
+allgather,[8388608,16777216],ring,ll128,-1,*,*
+```
+
+Example (2 nodes, 8 ranks/node, 1–256 MiB per-rank allreduce forced to ring +
+ll128):
+
+```
+allreduce,[1048576,268435456],ring,ll128,-1,2,8
 ```
 
 ### JSON (folly-enabled build only)
@@ -104,21 +132,21 @@ and `config` holds the overrides applied on a match.
 {
   "rules": [
     {
-      "filter": { "collective": "allgather", "bytes": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
+      "filter": { "collective": "allgather", "bytesPerRank": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
       "config": { "algorithm": "tree", "protocol": "simple", "channels": 4 }
     }
   ]
 }
 ```
 
-- `filter` — match conditions: `collective`, `bytes`, `nNodes`, `nLocalRanks`,
-  `numPipeOps`, `regBuff`. Only `collective` is required; omitting any other
-  filter field means wildcard / any.
+- `filter` — match conditions: `collective`, `bytesPerRank`, `nNodes`,
+  `nLocalRanks`, `numPipeOps`, `regBuff`. Only `collective` is required; omitting
+  any other filter field means wildcard / any.
 - `config` — overrides: `algorithm`, `protocol`, `channels`, `chunkSize`.
   `algorithm` and `protocol` are required; `channels` and `chunkSize` are
   optional and omitting them means "no override".
-- `bytes` / `nNodes` / `nLocalRanks` may be a JSON integer (`N` exact), the
-  string `"*"` (wildcard), OR an interval string (`"[0,1048576]"`, `"(1,)"`).
+- `bytesPerRank` / `nNodes` / `nLocalRanks` may be a JSON integer (`N` exact),
+  the string `"*"` (wildcard), OR an interval string (`"[0,1048576]"`, `"(1,)"`).
 - JSON and an equivalent CSV still parse to identical `TuningConfig` values;
   `rules` array order = priority. The flat (un-nested) form is no longer
   accepted.
