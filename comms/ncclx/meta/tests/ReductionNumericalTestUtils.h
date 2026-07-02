@@ -100,6 +100,30 @@ inline bool shouldPrintActualOutput() {
   return std::getenv(kPrintActualOutputEnv) != nullptr;
 }
 
+// Hex-encode the raw bytes of a host vector and emit one structured diagnostic
+// line: "<tag> collective=.. case=.. rank=.. bytes=<hex>". Downstream tooling
+// decodes the bytes using the element type implied by <tag> (BF16 for actual
+// and bf16-hop, FP64 for the reference).
+template <typename Elem>
+void printNumericalBytes(
+    const char* tag,
+    const std::vector<Elem>& values,
+    int rank,
+    const std::string& collectiveName,
+    const std::string& caseName) {
+  const auto* bytes = reinterpret_cast<const unsigned char*>(values.data());
+  const size_t byteCount = values.size() * sizeof(Elem);
+  std::string hex;
+  hex.resize(byteCount * 2);
+  constexpr char kHexDigits[] = "0123456789abcdef";
+  for (size_t i = 0; i < byteCount; ++i) {
+    hex[2 * i] = kHexDigits[bytes[i] >> 4];
+    hex[2 * i + 1] = kHexDigits[bytes[i] & 0x0f];
+  }
+  std::cout << tag << " collective=" << collectiveName << " case=" << caseName
+            << " rank=" << rank << " bytes=" << hex << std::endl;
+}
+
 template <typename T>
 void printActualOutputBytes(
     const T* deviceBuffer,
@@ -121,19 +145,56 @@ void printActualOutputBytes(
       stream));
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-  const auto* bytes = reinterpret_cast<const unsigned char*>(observed.data());
-  const size_t byteCount = observed.size() * sizeof(T);
-  std::string hex;
-  hex.resize(byteCount * 2);
-  constexpr char kHexDigits[] = "0123456789abcdef";
-  for (size_t i = 0; i < byteCount; ++i) {
-    hex[2 * i] = kHexDigits[bytes[i] >> 4];
-    hex[2 * i + 1] = kHexDigits[bytes[i] & 0x0f];
-  }
+  printNumericalBytes(
+      "REDUCTION_NUMERICAL_ACTUAL", observed, rank, collectiveName, caseName);
+}
 
-  std::cout << "REDUCTION_NUMERICAL_ACTUAL collective=" << collectiveName
-            << " case=" << caseName << " rank=" << rank << " bytes=" << hex
-            << std::endl;
+// Emit the host-side FP64 reference values (8 bytes per element) so passing
+// runs also record the reference, not just the NCCL actual output.
+inline void printReferenceBytes(
+    const std::vector<double>& reference,
+    int rank,
+    const std::string& collectiveName,
+    const std::string& caseName) {
+  if (!shouldPrintActualOutput()) {
+    return;
+  }
+  printNumericalBytes(
+      "REDUCTION_NUMERICAL_REFERENCE",
+      reference,
+      rank,
+      collectiveName,
+      caseName);
+}
+
+// Accumulate contributions in order, rounding the running sum to T (BF16) after
+// each addition. This models NCCL's per-hop BF16 downcast using a simple
+// rank-order fold; it intentionally does not reproduce NCCL's exact reduction
+// order/topology, so it is a directional diagnostic, not a bitwise predictor.
+template <typename T>
+T bf16HopReduce(const std::vector<double>& contributions) {
+  using HostT = typename DataTypeTraits<T>::HostT;
+  double acc = 0.0;
+  for (const double value : contributions) {
+    acc = static_cast<double>(DataTypeTraits<T>::toHost(
+        DataTypeTraits<T>::toDevice(static_cast<HostT>(acc + value))));
+  }
+  return DataTypeTraits<T>::toDevice(static_cast<HostT>(acc));
+}
+
+// Emit the BF16 downcast-per-hop simulated reduction result (2 bytes per
+// element).
+template <typename T>
+void printBf16HopBytes(
+    const std::vector<T>& bf16Hop,
+    int rank,
+    const std::string& collectiveName,
+    const std::string& caseName) {
+  if (!shouldPrintActualOutput()) {
+    return;
+  }
+  printNumericalBytes(
+      "REDUCTION_NUMERICAL_BF16HOP", bf16Hop, rank, collectiveName, caseName);
 }
 
 template <typename T>
