@@ -141,11 +141,11 @@ inline bool isFieldSet(
 // Builds a TuningConfig from the already-trimmed CSV/JSON column strings. Order
 // of fields:
 //   collType,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,
-//   numPipeOps,regBuff,chunkSize
+//   chunkSize
 // bytesPerRank / nNodes / nLocalRanks are Int64Range expressions (interval,
-// exact, or "*" wildcard). channels, numPipeOps, regBuff and chunkSize are
-// optional; absent fields are passed as empty strings (or omitted entirely)
-// and fall back to their wildcard / no-override defaults. Returns nullopt when
+// exact, or "*" wildcard). channels and chunkSize are optional; absent fields
+// are passed as empty strings (or omitted entirely) and fall back to their
+// wildcard / no-override defaults. Returns nullopt when
 // any column fails to parse (an Int64Range that
 // does not parse, an unknown collective/algorithm/protocol token, or a numeric
 // column that is present but not a valid integer), so the caller can log an
@@ -176,14 +176,9 @@ inline std::optional<TuningConfig> buildConfig(
 
   const std::optional<int> channels =
       isFieldSet(fields, 4) ? parseIntStrictAsInt(fields[4]) : -1;
-  const std::optional<int> numPipeOps =
-      isFieldSet(fields, 7) ? parseIntStrictAsInt(fields[7]) : -1;
-  const std::optional<int> regBuff =
-      isFieldSet(fields, 8) ? parseIntStrictAsInt(fields[8]) : -1;
   const std::optional<long long> chunkSize =
-      isFieldSet(fields, 9) ? parseIntStrict(fields[9]) : 0;
-  if (!channels.has_value() || !numPipeOps.has_value() ||
-      !regBuff.has_value() || !chunkSize.has_value()) {
+      isFieldSet(fields, 7) ? parseIntStrict(fields[7]) : 0;
+  if (!channels.has_value() || !chunkSize.has_value()) {
     return std::nullopt;
   }
   // chunkSize is a byte size cast to size_t; a negative value would wrap to a
@@ -200,8 +195,6 @@ inline std::optional<TuningConfig> buildConfig(
   config.nChannels = *channels;
   config.nNodes = *nNodes;
   config.nLocalRanks = *nLocalRanks;
-  config.numPipeOps = *numPipeOps;
-  config.regBuff = *regBuff;
   config.chunkSize = static_cast<size_t>(*chunkSize);
   return config;
 }

@@ -11,7 +11,7 @@ force a binary/conda rebuild, and a `dlopen` plugin adds packaging surface.
 The built-in tuner solves this by compiling a CSV/JSON-driven tuner directly into
 `libnccl.so`. It overrides core `algorithm × protocol` selection, `nChannels`,
 and (on tuner API v6 only) `chunkSize`, keyed by `(collective, per-rank size
-range, topology, numPipeOps, regBuff)`. The topology key is `(nNodes,
+range, topology)`. The topology key is `(nNodes,
 nLocalRanks)` where `nLocalRanks = nRanks / nNodes` is ranks per node. The override table lives in a runtime
 config file (kept in the L4x job's fbpkg, decoupled from the binary), so a tuning
 loop is just "edit the file, repackage the fbpkg, restart" — `libnccl.so` is
@@ -70,11 +70,10 @@ comm init (src/init.cc, guarded by comm->tuner != NULL)
 
 per collective (src/enqueue.cc, guarded by comm->tuner != NULL)
   -> kMetaTuner.getCollInfo(ctx, collType, nBytes, ...) // metaTunerGetCollInfo
-       AND-match each rule on collType/bytesPerRank/nNodes/nLocalRanks/
-                                numPipeOps/regBuff
+       AND-match each rule on collType/bytesPerRank/nNodes/nLocalRanks
        (bytesPerRank/nNodes/nLocalRanks are Int64Range matchers with
         `*` = wildcard; bytesPerRank matches nBytes/nRanks, nRanks =
-        nNodes*nLocalRanks; numPipeOps/regBuff are exact-or-(-1))
+        nNodes*nLocalRanks)
        first match: costTable[algo][proto] = 0.0 (skip if NCCL_ALGO_PROTO_IGNORE)
                     if nChannels != -1, override *nChannels
 
@@ -153,7 +152,7 @@ and `loadConfigJson` (the folly path and the no-folly stub).
 
 Both `getCollInfo` and `getChunkSize` iterate rules in file order and return on
 the first AND-match. A wildcard field matches any value: `*` for the
-`bytesPerRank`/`nNodes`/`nLocalRanks` (`Int64Range`) fields, `-1` for `numPipeOps`/`regBuff`.
+`bytesPerRank`/`nNodes`/`nLocalRanks` (`Int64Range`) fields.
 `getCollInfo` never forces an `algo×proto` combo that core marked
 `NCCL_ALGO_PROTO_IGNORE`.
 
@@ -241,7 +240,7 @@ case) matches purely on per-rank size across all topologies; additionally pinnin
 ### CSV (zero-dependency, always available)
 
 ```
-collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBuff,chunkSize
+collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,chunkSize
 ```
 
 - `collective`: `allreduce` / `broadcast` / `reduce` / `allgather` / `reducescatter`
@@ -252,10 +251,9 @@ collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOp
 - `channels`: `-1` keeps the NCCL default; any other value overrides `*nChannels`
 - `nNodes`: number of nodes (Int64Range)
 - `nLocalRanks`: ranks per node (`nRanks / nNodes`) (Int64Range)
-- `numPipeOps` / `regBuff`: exact int, `-1` is a wildcard
 - `chunkSize` (bytes): `0` means no override
-- `numPipeOps`, `regBuff`, `chunkSize` columns are optional (in that order); at
-  least the first 7 columns (through `nLocalRanks`) are required.
+- `chunkSize` column is optional; at least the first 7 columns (through
+  `nLocalRanks`) are required.
 - The CSV split is **bracket-aware**: it tracks `()`/`[]` nesting and only splits
   on commas at depth 0, so an interval like `[0,1048576]` or `(1,)` stays a
   single column
@@ -264,7 +262,7 @@ collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOp
 Example (small allreduce forced to ring + ll128):
 
 ```
-allreduce,[0,1048576],ring,ll128,-1,*,*,-1,-1,0
+allreduce,[0,1048576],ring,ll128,-1,*,*
 ```
 
 ### JSON (folly-enabled build only)
@@ -290,7 +288,7 @@ overrides `channels`. Rules that should apply regardless of topology simply omit
 wildcard).
 
 - `filter` holds the match conditions: `collective`, `bytesPerRank`, `nNodes`,
-  `nLocalRanks`, `numPipeOps`, `regBuff`. Only `collective` is required;
+  `nLocalRanks`. Only `collective` is required;
   omitting any other filter field means wildcard / any.
 - `config` holds the overrides: `algorithm`, `protocol`, `channels`,
   `chunkSize`. `algorithm` and `protocol` are required; `channels` and
