@@ -20,11 +20,13 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <fmt/core.h>
+#include <fmt/ranges.h>
 
 #include <unistd.h>
 
@@ -643,12 +645,25 @@ void MultimemHandler::agreeOnHandleType() {
 std::string MultimemHandler::describeState(
     const char* failedPhase,
     const char* completedPhase) const {
-  const CUmemGenericAllocationHandle localAllocHandle =
-      backing_ ? backing_->handle() : 0;
-  const CUmemGenericAllocationHandle multicastHandle =
-      overlay_ ? overlay_->handle() : 0;
-  const CUdeviceptr multicastPtr =
-      multicastMapping_ ? multicastMapping_->devicePtr() : 0;
+  // Capture the handle / pointer values as plain integers for logging. The
+  // driver typedefs are integer-valued on NVIDIA, but HIPify rewrites some of
+  // them to opaque `hip*` POINTER types on the AMD build (and does so
+  // inconsistently across the sibling allocation classes), so normalize each
+  // value to `unsigned long long` whether it comes back as an integer or a
+  // pointer.
+  const auto toU64 = [](auto handle) -> unsigned long long {
+    if constexpr (std::is_pointer_v<decltype(handle)>) {
+      return reinterpret_cast<std::uintptr_t>(handle);
+    } else {
+      return static_cast<unsigned long long>(handle);
+    }
+  };
+  const unsigned long long localAllocHandle =
+      backing_ ? toU64(backing_->handle()) : 0ULL;
+  const unsigned long long multicastHandle =
+      overlay_ ? toU64(overlay_->handle()) : 0ULL;
+  const unsigned long long multicastPtr =
+      multicastMapping_ ? toU64(multicastMapping_->devicePtr()) : 0ULL;
   return fmt::format(
       "MultimemHandler state: failedPhase={} completedPhase={} commRank={} "
       "nvlRank={} nvlRanks={} cudaDevice={} requestedSize={} allocatedSize={} "
