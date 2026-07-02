@@ -31,10 +31,11 @@ namespace ncclx::tuner {
 
 std::string TuningConfig::toString() const {
   return fmt::format(
-      "collType={}, bytes={}, algorithm={}, protocol={}, nChannels={}, "
-      "nNodes={}, nLocalRanks={}, numPipeOps={}, regBuff={}, chunkSize={}",
+      "collType={}, bytesPerRank={}, algorithm={}, protocol={}, "
+      "nChannels={}, nNodes={}, nLocalRanks={}, numPipeOps={}, regBuff={}, "
+      "chunkSize={}",
       static_cast<int>(collType),
-      bytes.toString(),
+      bytesPerRank.toString(),
       algorithm,
       protocol,
       nChannels,
@@ -160,10 +161,11 @@ ncclResult_t loadConfigCsv(
 #ifdef NCCLX_TUNER_WITH_FOLLY_JSON
 // JSON parser, only compiled when folly is available. Parses a top-level
 // object with a "rules" array. Each rule is split into two nested objects:
-//   "filter" -- match conditions: collective, bytes, nNodes, nLocalRanks,
-//               numPipeOps, regBuff. Only "collective" is required; an omitted
-//               filter field means wildcard/any (bytes/nNodes/nLocalRanks -> *,
-//               numPipeOps/regBuff -> -1).
+//   "filter" -- match conditions: collective, bytesPerRank, nNodes,
+//               nLocalRanks, numPipeOps, regBuff. Only "collective" is
+//               required; an omitted filter field means wildcard/any
+//               (bytesPerRank/nNodes/nLocalRanks -> *, numPipeOps/regBuff ->
+//               -1).
 //   "config" -- overrides applied on match: algorithm, protocol, channels,
 //               chunkSize. "algorithm"/"protocol" are required; "channels" and
 //               "chunkSize" are optional and omitting them means "no override"
@@ -295,9 +297,17 @@ inline bool matchesCollective(
     const int nLocalRanks,
     const int regBuff,
     const ncclDebugLogger_t logFunction) {
+  // bytesPerRank matches nBytes / nRanks, where nRanks = nNodes * nLocalRanks
+  // (both from MetaTunerContext). Guard a zero/negative product so the division
+  // is always safe. A wildcard bytesPerRank matches any size.
+  int64_t nRanks =
+      static_cast<int64_t>(nNodes) * static_cast<int64_t>(nLocalRanks);
+  if (nRanks <= 0) {
+    nRanks = 1;
+  }
+  const int64_t perRank = static_cast<int64_t>(nBytes) / nRanks;
   auto matched = config.collType == collType &&
-      config.bytes.matches(static_cast<int64_t>(nBytes)) &&
-      config.nNodes.matches(nNodes) &&
+      config.bytesPerRank.matches(perRank) && config.nNodes.matches(nNodes) &&
       config.nLocalRanks.matches(nLocalRanks) &&
       (config.numPipeOps == -1 || config.numPipeOps == numPipeOps) &&
       (config.regBuff == -1 || config.regBuff == regBuff);
@@ -307,11 +317,12 @@ inline bool matchesCollective(
         NCCL_LOG_INFO,
         fmt::format(
             "NCCLX TUNER: rule did not match collective. rule: [{}]. actual: "
-            "collType={}, nBytes={}, nNodes={}, nLocalRanks={}, numPipeOps={}, "
-            "regBuff={}",
+            "collType={}, nBytes={}, bytesPerRank={}, nNodes={}, "
+            "nLocalRanks={}, numPipeOps={}, regBuff={}",
             config.toString(),
             static_cast<int>(collType),
             nBytes,
+            perRank,
             nNodes,
             nLocalRanks,
             numPipeOps,
@@ -411,10 +422,10 @@ ncclResult_t metaTunerGetCollInfo(
         context->logFunction,
         NCCL_LOG_INFO,
         fmt::format(
-            "NCCLX TUNER: matched rule for collType={} nBytes={} (bytes={} nNodes={} nLocalRanks={}) -> algo={} proto={} channels={}",
+            "NCCLX TUNER: matched rule for collType={} nBytes={} (bytesPerRank={} nNodes={} nLocalRanks={}) -> algo={} proto={} channels={}",
             static_cast<int>(collType),
             nBytes,
-            config.bytes.toString(),
+            config.bytesPerRank.toString(),
             config.nNodes.toString(),
             config.nLocalRanks.toString(),
             config.algorithm,
