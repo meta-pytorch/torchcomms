@@ -79,11 +79,26 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
-  // Sync to notify upPeer that I am ready to receive data
-  FB_COMMCHECK(mapper->isendCtrl(upPeer, &syncSreq));
-  FB_COMMCHECK(mapper->irecvCtrl(downPeer, &syncRreq));
-
-  FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+  // Ready-to-receive handshake with the rail neighbors. On the first replay it
+  // also exchanges the rail IB rkey with just those neighbors: export our
+  // recvbuff to upPeer (which puts to us) and import downPeer's (we put to it)
+  // into pArgs->remote* for the puts below. The rkey is replay-invariant, so
+  // later replays only re-sync.
+  if (!pArgs->ibKeysExchanged) {
+    FB_COMMCHECK(
+        mapper->isendCtrl(pArgs->recvbuff, pArgs->recvHdl, upPeer, &syncSreq));
+    FB_COMMCHECK(mapper->irecvCtrl(
+        &pArgs->remoteRecvBuffs[downPeer],
+        &pArgs->remoteAccessKeys[downPeer],
+        downPeer,
+        &syncRreq));
+    FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+    pArgs->ibKeysExchanged = true;
+  } else {
+    FB_COMMCHECK(mapper->isendCtrl(upPeer, &syncSreq));
+    FB_COMMCHECK(mapper->irecvCtrl(downPeer, &syncRreq));
+    FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+  }
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
