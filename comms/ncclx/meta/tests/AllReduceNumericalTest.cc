@@ -95,7 +95,9 @@ class AllReduceNumericalTest
         param.count * sizeof(T),
         cudaMemcpyDefault,
         stream_));
-    const auto reference = [&]() {
+    std::vector<double> reference(param.count, 0.0);
+    std::vector<T> bf16Hop(param.count);
+    {
       ncclx::test::NcclCommRAII referenceComm{
           globalRank, numRanks, localRank, bootstrap_.get()};
       const auto gathered = ncclx::test::numerics::gatherInputs(
@@ -105,15 +107,16 @@ class AllReduceNumericalTest
           referenceComm,
           stream_,
           numRanks);
-      std::vector<double> result(param.count, 0.0);
+      std::vector<double> contributions(numRanks);
       for (size_t i = 0; i < param.count; ++i) {
         for (int rank = 0; rank < numRanks; ++rank) {
-          result[i] += static_cast<double>(DataTypeTraits<T>::toHost(
+          contributions[rank] = static_cast<double>(DataTypeTraits<T>::toHost(
               gathered[static_cast<size_t>(rank) * param.count + i]));
+          reference[i] += contributions[rank];
         }
+        bf16Hop[i] = ncclx::test::numerics::bf16HopReduce<T>(contributions);
       }
-      return result;
-    }();
+    }
 
     std::optional<SysEnvRAII> ncclAlgoGuard;
     if (param.algo == AllReduceNumericalAlgo::Ring) {
@@ -157,6 +160,19 @@ class AllReduceNumericalTest
         stream_);
     ASSERT_EQ(result, ncclSuccess);
     CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    ncclx::test::numerics::printActualOutputBytes(
+        actualDevice,
+        param.count,
+        stream_,
+        globalRank,
+        "AllReduce",
+        param.name());
+    ncclx::test::numerics::printReferenceBytes(
+        reference, globalRank, "AllReduce", param.name());
+    if (param.datatype == ncclBfloat16) {
+      ncclx::test::numerics::printBf16HopBytes(
+          bf16Hop, globalRank, "AllReduce", param.name());
+    }
 
     const size_t mismatches = ncclx::test::numerics::countMismatches(
         actualDevice, reference, stream_, globalRank, param.name());

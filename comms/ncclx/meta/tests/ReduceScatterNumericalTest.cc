@@ -97,7 +97,9 @@ class ReduceScatterNumericalTest
         sendCount * sizeof(T),
         cudaMemcpyDefault,
         stream_));
-    const auto reference = [&]() {
+    std::vector<double> reference(param.count, 0.0);
+    std::vector<T> bf16Hop(param.count);
+    {
       ncclx::test::NcclCommRAII referenceComm{
           globalRank, numRanks, localRank, bootstrap_.get()};
       const auto gathered = ncclx::test::numerics::gatherInputs(
@@ -107,18 +109,18 @@ class ReduceScatterNumericalTest
           referenceComm,
           stream_,
           numRanks);
-      std::vector<double> result(param.count, 0.0);
+      std::vector<double> contributions(numRanks);
+      const size_t chunkOffset = static_cast<size_t>(globalRank) * param.count;
       for (size_t i = 0; i < param.count; ++i) {
         for (int rank = 0; rank < numRanks; ++rank) {
           const size_t rankOffset = static_cast<size_t>(rank) * sendCount;
-          const size_t chunkOffset =
-              static_cast<size_t>(globalRank) * param.count;
-          result[i] += static_cast<double>(DataTypeTraits<T>::toHost(
+          contributions[rank] = static_cast<double>(DataTypeTraits<T>::toHost(
               gathered[rankOffset + chunkOffset + i]));
+          reference[i] += contributions[rank];
         }
+        bf16Hop[i] = ncclx::test::numerics::bf16HopReduce<T>(contributions);
       }
-      return result;
-    }();
+    }
 
     std::optional<EnvRAII<enum NCCL_REDUCESCATTER_ALGO>> reduceScatterAlgoGuard;
     std::optional<SysEnvRAII> ncclAlgoGuard;
@@ -158,6 +160,19 @@ class ReduceScatterNumericalTest
         stream_);
     ASSERT_EQ(result, ncclSuccess);
     CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    ncclx::test::numerics::printActualOutputBytes(
+        actualDevice,
+        param.count,
+        stream_,
+        globalRank,
+        "ReduceScatter",
+        param.name());
+    ncclx::test::numerics::printReferenceBytes(
+        reference, globalRank, "ReduceScatter", param.name());
+    if (param.datatype == ncclBfloat16) {
+      ncclx::test::numerics::printBf16HopBytes(
+          bf16Hop, globalRank, "ReduceScatter", param.name());
+    }
 
     const size_t mismatches = ncclx::test::numerics::countMismatches(
         actualDevice, reference, stream_, globalRank, param.name());
