@@ -586,10 +586,14 @@ class MultiPeerIbTransportBase {
   std::vector<IbSendRecvPeerBuffers> sendRecvPeerBuffers_;
   std::unique_ptr<meta::comms::DeviceBuffer> sendRecvSendStagingBulk_;
   std::unique_ptr<meta::comms::DeviceBuffer> sendRecvRecvStagingBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvSignalBulk_;
+  // Signal + device-counter control regions packed into one granularity-aligned
+  // allocation (both Data-Direct-registered; share one aligned MR).
+  // Host-counter configs put only the signal region here. See
+  // allocateSendRecvBuffersEager.
+  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvControlBulk_;
+  // Device-local progress state (never RDMA-registered / shared): separate,
+  // natural size, no alignment needed.
   std::unique_ptr<meta::comms::DeviceBuffer> sendRecvStateBulk_;
-  // Device counter bulk (counterStorage == Device). Null for Host counters.
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvCounterBulk_;
   IbgdaLocalBuffer sendRecvRecvStagingBulkReg_;
   IbgdaLocalBuffer sendRecvSignalBulkReg_;
   IbgdaLocalBuffer sendRecvCounterBulkReg_;

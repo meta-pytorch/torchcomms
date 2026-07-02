@@ -21,6 +21,7 @@
 namespace comms::prims {
 
 class CuMemAllocation;
+class CuMulticastAllocation;
 
 // RAII virtual-address mapping over a physical / multicast allocation.
 //
@@ -49,6 +50,14 @@ class CuMemMapping {
   // mapping co-owns `alloc`.
   static CuMemMapping overAllocation(
       std::shared_ptr<CuMemAllocation> alloc,
+      std::size_t size,
+      std::size_t granularity);
+
+  // Map `overlay`'s multicast handle into a fresh VA of `size` bytes aligned to
+  // `granularity`, granting RW access on the device registered with the
+  // multicast object. The returned mapping co-owns `overlay`.
+  static CuMemMapping overMulticast(
+      std::shared_ptr<CuMulticastAllocation> overlay,
       std::size_t size,
       std::size_t granularity);
 

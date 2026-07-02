@@ -2,8 +2,18 @@
 
 #pragma once
 
+// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD the
+// concrete VMM driver-API calls are unavailable and the impl bodies throw;
+// `CuMemAllocation.h` (included transitively via `CuMemMapping.h`) declares the
+// matching AMD stub typedefs for `CUdevice` / `CUmemGenericAllocationHandle` /
+// `CUdeviceptr`, and the `CUmemAllocationHandleType` stub below covers the one
+// type unique to this header. Mirrors CuMemAllocation.h / MultimemHandler.h.
+#ifdef __HIP_PLATFORM_AMD__
+#include <hip/hip_runtime.h>
+#else
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
 
 #include <sys/types.h>
 #include <cstddef>
@@ -14,6 +24,15 @@
 #include "comms/prims/memory/CuMemMapping.h"
 
 namespace comms::prims {
+
+#if defined(__HIP_PLATFORM_AMD__)
+// Stub the one CUDA driver-API type unique to this header (the shared
+// `CUdevice` / `CUmemGenericAllocationHandle` stubs come from CuMemAllocation.h
+// via CuMemMapping.h). Concrete VMM/multicast driver-API calls are NVIDIA-only
+// and live behind `#if !defined(__HIP_PLATFORM_AMD__)` in the .cc. The real
+// CUDA type is an enum (int-backed), so an unsigned-int alias matches its ABI.
+using CUmemAllocationHandleType = unsigned int;
+#endif
 
 #if CUDART_VERSION >= 12030
 using FabricHandle = CUmemFabricHandle;

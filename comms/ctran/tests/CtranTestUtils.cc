@@ -185,17 +185,17 @@ commResult_t commMemFreeDisjoint(
   CUdevice ptrDev = 0;
 
   if (ptr == NULL) {
-    (void)cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commInvalidArgument);
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
-    (void)cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
   if (!ctran::utils::getCuMemSysSupported()) {
-    (void)cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
@@ -235,7 +235,7 @@ commResult_t commMemFreeDisjoint(
     curPtr = ctran::utils::addDevicePtr(curPtr, alignedSizes[i]);
   }
   FB_CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, vaSize));
-  CUDACHECK_TEST(cudaSetDevice(saveDevice));
+  FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
   return ret;
 }
 

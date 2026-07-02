@@ -111,4 +111,54 @@ void launchIbStagingCopyTestKernel(
   ibStagingCopyTestKernel<<<numBlocks, kBlockSize, 0, stream>>>(args);
 }
 
+// Per-slot recv-only kernel. Each block owns a single slot and walks
+// all chunks bound to that slot across rounds. Slots progress
+// independently, so a stranded slot only blocks its own block.
+//
+// IMPORTANT: each slot's GpeKernelSync must have nworkers == 1 (set via
+// setKernelNumBlocks(send=*, recv=1)). The host's processData calls
+// sync->post(round) which writes postFlag[0..nworkers-1]; only block
+// `s` reads postFlag[0] for slot s, but only one block touches each
+// slot. The host's isProcessDone scans completeFlag[0..nworkers-1];
+// only block s writes completeFlag[0] for slot s, so nworkers=1 keeps
+// the check coherent. Launch dim is hard-coded to
+// kDeviceMaxPipelineDepth blocks; the kernel only walks chunks bound
+// to slot < dt->pipelineDepth, so any extra blocks exit immediately.
+__global__ void ibRecvPerSlotKernel(IbRecvPerSlotKernelArgs args) {
+  HostTransportDev* dt = args.devTransport;
+  const auto slot = blockIdx.x;
+  const int pipelineDepth = dt->pipelineDepth;
+  if (slot >= pipelineDepth) {
+    return;
+  }
+  const size_t chunkSize = dt->chunkSize;
+  const int totalChunks = args.totalChunks;
+
+  auto block = comms::prims::make_block_group();
+  DeviceChunkDesc& desc = dt->recvChunks[slot];
+
+  for (int c = slot; c < totalChunks; c += pipelineDepth) {
+    const int round = c / pipelineDepth;
+    // workerId=0 because each slot's sync has nworkers=1.
+    ctran::algos::GpeKernelSyncDev::waitPostWithReset(desc.sync, 0, round);
+
+    const size_t offset = static_cast<size_t>(c) * chunkSize;
+    const size_t len = (offset + chunkSize <= args.recvTotalSize)
+        ? chunkSize
+        : (args.recvTotalSize - offset);
+    if (len > 0) {
+      comms::prims::memcpy_vectorized(
+          args.recvBuf + offset, desc.stagingSlot, len, block);
+    }
+    ctran::algos::GpeKernelSyncDev::complete(desc.sync, 0, round);
+  }
+}
+
+void launchIbRecvPerSlotKernel(
+    IbRecvPerSlotKernelArgs args,
+    cudaStream_t stream) {
+  constexpr int kBlockSize = 256;
+  ibRecvPerSlotKernel<<<kDeviceMaxPipelineDepth, kBlockSize, 0, stream>>>(args);
+}
+
 } // namespace ctran::transport::ib
