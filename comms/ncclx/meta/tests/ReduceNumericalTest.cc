@@ -148,6 +148,13 @@ class ReduceNumericalTest
     CUDACHECK_TEST(cudaStreamSynchronize(stream_));
 
     if (globalRank == kRoot) {
+      ncclx::test::numerics::printActualOutputBytes(
+          actualDevice,
+          param.count,
+          stream_,
+          globalRank,
+          "Reduce",
+          param.name());
       const size_t mismatches = ncclx::test::numerics::countMismatches(
           actualDevice, reference, stream_, globalRank, param.name());
       EXPECT_EQ(mismatches, 0) << param.name() << " rank=" << globalRank;
