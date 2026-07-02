@@ -84,6 +84,82 @@ Progress API:
 | 2GB | 115.33 | 113.14 | 58.08 | 58.86 |
 | 4GB | 119.67 | 112.19 | 57.53 | 59.31 |
 
+## Ring ReduceScatter Benchmark
+
+Run date: 2026-06-26
+
+Hosts used: `rtptest2329.nha6.facebook.com`, `rtptest2330.nha6.facebook.com`, `rtptest2344.nha6.facebook.com`, `rtptest2345.nha6.facebook.com`
+
+Benchmark target:
+
+```bash
+fbcode//comms/prims/collectives/benchmarks:ring_reduce_scatter_benchmark_binary
+```
+
+Run command:
+
+```bash
+RUN_ID=codex_4host_ppn1_b_20260626_115913 \
+  HOSTS=rtptest2329.nha6.facebook.com,rtptest2330.nha6.facebook.com,rtptest2344.nha6.facebook.com,rtptest2345.nha6.facebook.com \
+  NNODES=4 \
+  PPN=1 \
+  GPU_ID=0 \
+  /tmp/run_ibrc_reduce_scatter_benchmark.sh
+```
+
+Full log: `/tmp/ibrc_reduce_scatter_codex_4host_ppn1_b.log`
+
+The benchmark was run with four ranks total, one rank per host on GPU 0. Values are bandwidth in GB/s and latency in microseconds. The `Size` column is total bytes across the four ranks; `chunk_elements` is per-rank output elements.
+
+| Test | Size | Rings | IBGDA BW | IBRC BW | Speedup | IBGDA Latency (us) | IBRC Latency (us) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256K_8B | 1MB | 1 | 9.00 | 5.81 | 0.64x | 116.4 | 180.5 |
+| 1M_16B | 4MB | 1 | 22.88 | 18.05 | 0.79x | 183.3 | 232.4 |
+| 4M_16B | 16MB | 1 | 43.88 | 40.34 | 0.92x | 382.3 | 415.9 |
+| 16M_16B | 64MB | 1 | 52.07 | 53.07 | 1.02x | 1288.9 | 1264.7 |
+| 64M_16B | 256MB | 1 | 60.61 | 61.78 | 1.02x | 4428.7 | 4344.7 |
+| 128M_16B | 512MB | 1 | 61.34 | 62.84 | 1.02x | 8752.1 | 8544.1 |
+| 256M_32B | 1GB | 1 | 62.95 | 62.86 | 1.00x | 17055.8 | 17081.4 |
+| 4M_16B_2R | 16MB | 2 | 40.42 | 37.01 | 0.92x | 415.0 | 453.3 |
+| 16M_16B_2R | 64MB | 2 | 55.37 | 52.38 | 0.95x | 1212.0 | 1281.2 |
+| 64M_16B_2R | 256MB | 2 | 59.11 | 58.34 | 0.99x | 4541.6 | 4601.6 |
+| 256M_32B_2R | 1GB | 2 | 57.01 | 58.16 | 1.02x | 18832.7 | 18462.8 |
+
+### 8 ranks, 4 nodes
+
+Run command:
+
+```bash
+/home/zhiyongww/worktrees/IBRC/buck-out/v2/art/fbcode/70552be409c74e42/comms/testinfra/__ncclx_test_launcher__/ncclx_test_launcher.par \
+  --launcher mpi \
+  --nnode 4 \
+  --ppn 2 \
+  --interleave \
+  --hosts rtptest2329.nha6.facebook.com,rtptest2330.nha6.facebook.com,rtptest2344.nha6.facebook.com,rtptest2345.nha6.facebook.com \
+  --ifname eth0 \
+  --env 'NCCL_DEBUG=WARN;NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_3,mlx5_4' \
+  --gtest_filter RingReduceScatterBenchmarkFixture.IbrcVsIbgda \
+  --testname /home/zhiyongww/worktrees/IBRC/buck-out/v2/art/fbcode/7923733aec21c17e/comms/prims/collectives/benchmarks/__ring_reduce_scatter_benchmark_binary__/ring_reduce_scatter_benchmark_binary
+```
+
+Full log: `/tmp/ibrc_reduce_scatter_codex_4node_8rank_interleave_retry.log`
+
+The benchmark was run with eight ranks total, two ranks per host on GPUs 0 and 1. `--interleave` is required for this host layout; the default `ppr:2:node` rank ordering reached the benchmark header but did not produce a result row. Values are bandwidth in GB/s and latency in microseconds. The `Size` column is total bytes across the eight ranks.
+
+| Test | Size | Rings | IBGDA BW | IBRC BW | Speedup | IBGDA Latency (us) | IBRC Latency (us) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256K_8B | 2MB | 1 | 8.26 | 4.66 | 0.56x | 254.0 | 450.0 |
+| 1M_16B | 8MB | 1 | 23.48 | 14.04 | 0.60x | 357.3 | 597.6 |
+| 4M_16B | 32MB | 1 | 43.09 | 34.34 | 0.80x | 778.7 | 977.1 |
+| 16M_16B | 128MB | 1 | 48.85 | 47.73 | 0.98x | 2747.3 | 2811.9 |
+| 64M_16B | 512MB | 1 | 52.79 | 54.41 | 1.03x | 10170.8 | 9867.6 |
+| 128M_16B | 1GB | 1 | 53.04 | 54.85 | 1.03x | 20242.7 | 19575.8 |
+| 256M_32B | 2GB | 1 | 53.37 | 54.72 | 1.03x | 40235.5 | 39246.8 |
+| 4M_16B_2R | 32MB | 2 | 19.04 | 30.55 | 1.60x | 1762.0 | 1098.4 |
+| 16M_16B_2R | 128MB | 2 | 47.98 | 46.08 | 0.96x | 2797.1 | 2912.5 |
+| 64M_16B_2R | 512MB | 2 | 52.04 | 51.52 | 0.99x | 10315.7 | 10421.1 |
+| 256M_32B_2R | 2GB | 2 | 48.87 | 49.52 | 1.01x | 43939.0 | 43366.6 |
+
 ## Current Counter-Slot Results
 
 These results are from the 2026-06-24 rerun after pinning the IBRC progress thread. The initial filtered run covered `PutFlush`, `PutSignalWaitCounter`, `SignalOnly`, and `PutSignalComparison`. `PutWaitCounter` required a local benchmark test fix from `TEST_F` to `TEST_P` so the backend parameterization works; it was then rebuilt for `aarch64` and rerun separately on the same hosts.

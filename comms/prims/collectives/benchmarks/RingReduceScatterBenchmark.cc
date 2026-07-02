@@ -163,6 +163,7 @@ class RingReduceScatterBenchmarkFixture
         cudaMemset(recv_buf.get(), 0, config.chunk_elements * sizeof(float)));
 
     const int maxGroups = config.num_blocks * config.num_rings;
+    constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
     MultipeerIbgdaTransportConfig transport_config{
         .cudaDevice = localRank,
         .dataBufferSize = config.data_buffer_size,
@@ -172,6 +173,8 @@ class RingReduceScatterBenchmarkFixture
                 .pipelineDepth = config.pipeline_depth,
             },
         .qpsPerBlockPerNic = config.num_qps,
+        .ibLazyConnect =
+            maxGroups * config.num_qps > kMaxEagerExchangeQpsPerPeerPerNic,
     };
 
     if (config.use_ibrc) {
