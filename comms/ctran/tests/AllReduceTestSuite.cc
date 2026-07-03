@@ -436,6 +436,14 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
 using AllReduceParam =
     std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, bool>;
 
+/** Algorithm, datatype, placement, and block cap for one capped sweep. */
+struct AllReduceBlockCapParam {
+  enum NCCL_ALLREDUCE_ALGO algo;
+  commDataType_t datatype;
+  bool inPlace;
+  int maxBlockCap;
+};
+
 constexpr size_t kByteOffsetCoverageBytes = 15;
 
 const std::vector<commDataType_t>& allReduceDataTypes() {
@@ -444,6 +452,33 @@ const std::vector<commDataType_t>& allReduceDataTypes() {
       commFloat16,
   };
   return datatypes;
+}
+
+const std::vector<int>& allReduceMaxBlockCaps() {
+  static const std::vector<int> caps{
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+  };
+  return caps;
+}
+
+void setEnvOverride(
+    ctran::CtranEnvs& envs,
+    const std::string& key,
+    const std::string& value) {
+  for (auto& env : envs) {
+    if (env.first == key) {
+      env.second = value;
+      return;
+    }
+  }
+  envs.emplace_back(key, value);
 }
 
 void appendUniqueCount(std::vector<size_t>& counts, size_t count) {
@@ -576,6 +611,24 @@ const std::vector<AllReduceParam>& allReduceParams() {
   return params;
 }
 
+const std::vector<AllReduceBlockCapParam>& allReduceBlockCapParams() {
+  static const std::vector<AllReduceBlockCapParam> params = [] {
+    std::vector<AllReduceBlockCapParam> result;
+    for (commDataType_t datatype : allReduceDataTypes()) {
+      for (int maxBlockCap : allReduceMaxBlockCaps()) {
+        result.push_back(
+            AllReduceBlockCapParam{
+                NCCL_ALLREDUCE_ALGO::ctree, datatype, false, maxBlockCap});
+        result.push_back(
+            AllReduceBlockCapParam{
+                NCCL_ALLREDUCE_ALGO::ctree, datatype, true, maxBlockCap});
+      }
+    }
+    return result;
+  }();
+  return params;
+}
+
 std::string dataTypeTestName(commDataType_t datatype) {
   switch (datatype) {
     case commFloat32:
@@ -593,6 +646,25 @@ std::string allReduceTestName(
     bool inPlace) {
   return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
       "_Sweep_" + (inPlace ? "InPlace" : "OutOfPlace");
+}
+
+std::string allReduceBlockCapTestName(
+    enum NCCL_ALLREDUCE_ALGO algo,
+    commDataType_t datatype,
+    bool inPlace,
+    int maxBlockCap) {
+  return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
+      "_Sweep_" + (inPlace ? "InPlace" : "OutOfPlace") + "_MaxBlocks" +
+      std::to_string(maxBlockCap);
+}
+
+inline std::string blockCapCorrectnessTestName(
+    const testing::TestParamInfo<AllReduceBlockCapParam>& info) {
+  return allReduceBlockCapTestName(
+      info.param.algo,
+      info.param.datatype,
+      info.param.inPlace,
+      info.param.maxBlockCap);
 }
 
 inline std::string correctnessTestName(
@@ -621,6 +693,18 @@ class CtranAllReduceCorrectnessTest
     : public CtranAllReduceTopologyTest,
       public ::testing::WithParamInterface<AllReduceParam> {};
 
+class CtranAllReduceBlockCapCorrectnessTest
+    : public CtranAllReduceTopologyTest,
+      public ::testing::WithParamInterface<AllReduceBlockCapParam> {
+ public:
+  ctran::CtranEnvs envOverrides() const override {
+    auto envs = CtranAllReduceTopologyTest::envOverrides();
+    setEnvOverride(
+        envs, "NCCL_CTRAN_MAX_NBLOCKS", std::to_string(GetParam().maxBlockCap));
+    return envs;
+  }
+};
+
 TEST_P(CtranAllReduceCorrectnessTest, Correctness) {
   auto [algo, datatype, inPlace] = GetParam();
   for (size_t bufferOffsetBytes : allReduceBufferOffsetBytes(datatype)) {
@@ -633,11 +717,26 @@ TEST_P(CtranAllReduceCorrectnessTest, Correctness) {
   }
 }
 
+TEST_P(CtranAllReduceBlockCapCorrectnessTest, Correctness) {
+  const auto& param = GetParam();
+  runCorrectnessSweep(
+      param.algo,
+      param.datatype,
+      allReduceElementCounts(param.datatype),
+      param.inPlace);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
     CtranAllReduceCorrectnessTest,
     ::testing::ValuesIn(allReduceParams()),
     correctnessTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduceBlockCap,
+    CtranAllReduceBlockCapCorrectnessTest,
+    ::testing::ValuesIn(allReduceBlockCapParams()),
+    blockCapCorrectnessTestName);
 #else
 #error "Define one CTRAN AllReduce topology: NVL_ONLY, IB_ONLY, or HYBRID"
 #endif
