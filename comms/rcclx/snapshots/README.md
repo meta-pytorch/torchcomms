@@ -164,8 +164,6 @@ After creating or updating snapshots:
 
 ```bash
 # Test stable builds for all ROCm versions
-buck2 build //comms/rcclx:rcclx-stable --modifier=rocm621
-buck2 build //comms/rcclx:rcclx-stable --modifier=rocm64
 buck2 build //comms/rcclx:rcclx-stable --modifier=rocm70
 
 # Test last-stable builds
