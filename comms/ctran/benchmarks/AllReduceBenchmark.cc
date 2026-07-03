@@ -49,10 +49,16 @@ struct BenchCase {
 std::vector<size_t> gBenchmarkSizes;
 std::vector<BenchCase> gBenchmarkCases;
 
+// 64 MiB plus one float exercises block/tree partitions with an uneven
+// TiledBuffer tail.
+static constexpr size_t kUnalignedPartitionBenchmarkBytes =
+    64UL * 1024 * 1024 + sizeof(float);
+
 std::vector<size_t> defaultBenchmarkSizes() {
   return {
       1024UL,
       8UL * 1024 * 1024,
+      kUnalignedPartitionBenchmarkBytes,
       1024UL * 1024 * 1024,
   };
 }
@@ -147,13 +153,13 @@ bool parseSizeList(
 }
 
 std::string formatSize(size_t bytes) {
-  if (bytes >= 1024UL * 1024 * 1024) {
+  if (bytes >= 1024UL * 1024 * 1024 && bytes % (1024UL * 1024 * 1024) == 0) {
     return std::to_string(bytes / (1024UL * 1024 * 1024)) + "G";
   }
-  if (bytes >= 1024UL * 1024) {
+  if (bytes >= 1024UL * 1024 && bytes % (1024UL * 1024) == 0) {
     return std::to_string(bytes / (1024UL * 1024)) + "M";
   }
-  if (bytes >= 1024UL) {
+  if (bytes >= 1024UL && bytes % 1024UL == 0) {
     return std::to_string(bytes / 1024UL) + "K";
   }
   return std::to_string(bytes) + "B";

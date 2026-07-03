@@ -98,21 +98,20 @@ __device__ __noinline__ void nvlDirectReduceScatter(
 
   comms::prims::Timeout timeout{};
 
-  // Every owner initializes its tile before receiving peer contributions. The
-  // tile view is derived from the group identity, so numBlocks=1 is just the
-  // degenerate full-segment tile.
-  common::SegmentTile myTile{};
+  const size_t myActualElems = localRank < pMin
+      ? common::actualSegElems(args.count, segmentElems, localRank)
+      : 0;
+  comms::prims::TiledBuffer<char> myPhase2Tile(
+      phase2Buf, myActualElems * sizeof(T), group);
   bool copiedLocalTile = false;
   if (localRank < pMin) {
-    const size_t myActualElems =
-        common::actualSegElems(args.count, segmentElems, localRank);
-    myTile = common::segmentTile(myActualElems * sizeof(T), group);
     const size_t mySegmentOffset =
         static_cast<size_t>(localRank) * segmentBytes;
-    const char* src = sendbuff + mySegmentOffset + myTile.offsetBytes;
-    char* dst = phase2Buf + myTile.offsetBytes;
-    if (myTile.bytes > 0 && dst != src) {
-      comms::prims::memcpy_vectorized(dst, src, myTile.bytes, group);
+    const comms::prims::TiledBuffer<const char> mySendTile(
+        sendbuff + mySegmentOffset, myActualElems * sizeof(T), group);
+    if (myPhase2Tile.bytes() > 0 && myPhase2Tile.data() != mySendTile.data()) {
+      comms::prims::memcpy_vectorized(
+          myPhase2Tile.data(), mySendTile.data(), myPhase2Tile.bytes(), group);
       copiedLocalTile = true;
     }
   }
@@ -134,7 +133,7 @@ __device__ __noinline__ void nvlDirectReduceScatter(
       "Phase 1 NVL reduce-scatter pipeline window is zero");
 
   const size_t maxTileBytes = common::maxOwnerTileBytes<T>(args, group);
-  char* myDst = phase2Buf + myTile.offsetBytes;
+  char* myDst = myPhase2Tile.data();
 
   for (size_t off = 0; off < maxTileBytes; off += pipelineWindow) {
     for (int owner = 0; owner < pMin; owner++) {
@@ -144,29 +143,29 @@ __device__ __noinline__ void nvlDirectReduceScatter(
 
       const size_t ownerActualElems =
           common::actualSegElems(args.count, segmentElems, owner);
-      const auto ownerTile =
-          common::segmentTile(ownerActualElems * sizeof(T), group);
-      if (off >= ownerTile.bytes) {
+      const size_t ownerSegmentOffset =
+          static_cast<size_t>(owner) * segmentBytes;
+      const comms::prims::TiledBuffer<const char> ownerTile(
+          sendbuff + ownerSegmentOffset, ownerActualElems * sizeof(T), group);
+      if (off >= ownerTile.bytes()) {
         continue;
       }
 
       const int ownerGlobalRank = args.localRankToGlobalRank[owner];
-      const size_t ownerSegmentOffset =
-          static_cast<size_t>(owner) * segmentBytes;
       const size_t window =
-          common::pipelineStepBytes(ownerTile.bytes, off, pipelineWindow);
+          common::pipelineStepBytes(ownerTile.bytes(), off, pipelineWindow);
       args.transports[ownerGlobalRank].p2p_nvl.send(
           group,
-          sendbuff + ownerSegmentOffset + ownerTile.offsetBytes + off,
+          ownerTile.data() + off,
           window,
           group.total_groups,
           0,
           timeout);
     }
 
-    if (localRank < pMin && off < myTile.bytes) {
+    if (localRank < pMin && off < myPhase2Tile.bytes()) {
       const size_t window =
-          common::pipelineStepBytes(myTile.bytes, off, pipelineWindow);
+          common::pipelineStepBytes(myPhase2Tile.bytes(), off, pipelineWindow);
       for (int peer = 0; peer < nLocalRanks; peer++) {
         if (peer == localRank) {
           continue;
@@ -220,19 +219,18 @@ __device__ __noinline__ void nvlDirectAllGather(
       pipelineWindow != 0, "Phase 3 NVL all-gather pipeline window is zero");
 
   const size_t maxTileBytes = common::maxOwnerTileBytes<T>(args, group);
-  common::SegmentTile myTile{};
-  if (localRank < pMin) {
-    const size_t myActualElems =
-        common::actualSegElems(args.count, segmentElems, localRank);
-    myTile = common::segmentTile(myActualElems * sizeof(T), group);
-  }
+  const size_t myActualElems = localRank < pMin
+      ? common::actualSegElems(args.count, segmentElems, localRank)
+      : 0;
+  const size_t mySegmentOffset =
+      localRank < pMin ? static_cast<size_t>(localRank) * segmentBytes : 0;
+  comms::prims::TiledBuffer<char> myRecvTile(
+      recvbuff + mySegmentOffset, myActualElems * sizeof(T), group);
 
   for (size_t off = 0; off < maxTileBytes; off += pipelineWindow) {
-    if (localRank < pMin && off < myTile.bytes) {
-      const size_t mySegmentOffset =
-          static_cast<size_t>(localRank) * segmentBytes;
+    if (localRank < pMin && off < myRecvTile.bytes()) {
       const size_t window =
-          common::pipelineStepBytes(myTile.bytes, off, pipelineWindow);
+          common::pipelineStepBytes(myRecvTile.bytes(), off, pipelineWindow);
       for (int peer = 0; peer < nLocalRanks; peer++) {
         if (peer == localRank) {
           continue;
@@ -240,7 +238,7 @@ __device__ __noinline__ void nvlDirectAllGather(
         const int peerGlobalRank = args.localRankToGlobalRank[peer];
         args.transports[peerGlobalRank].p2p_nvl.send(
             group,
-            recvbuff + mySegmentOffset + myTile.offsetBytes + off,
+            myRecvTile.data() + off,
             window,
             group.total_groups,
             0,
@@ -255,20 +253,20 @@ __device__ __noinline__ void nvlDirectAllGather(
 
       const size_t ownerActualElems =
           common::actualSegElems(args.count, segmentElems, owner);
-      const auto ownerTile =
-          common::segmentTile(ownerActualElems * sizeof(T), group);
-      if (off >= ownerTile.bytes) {
+      const size_t ownerSegmentOffset =
+          static_cast<size_t>(owner) * segmentBytes;
+      comms::prims::TiledBuffer<char> ownerTile(
+          recvbuff + ownerSegmentOffset, ownerActualElems * sizeof(T), group);
+      if (off >= ownerTile.bytes()) {
         continue;
       }
 
       const int ownerGlobalRank = args.localRankToGlobalRank[owner];
-      const size_t ownerSegmentOffset =
-          static_cast<size_t>(owner) * segmentBytes;
       const size_t window =
-          common::pipelineStepBytes(ownerTile.bytes, off, pipelineWindow);
+          common::pipelineStepBytes(ownerTile.bytes(), off, pipelineWindow);
       args.transports[ownerGlobalRank].p2p_nvl.recv(
           group,
-          recvbuff + ownerSegmentOffset + ownerTile.offsetBytes + off,
+          ownerTile.data() + off,
           window,
           group.total_groups,
           0,

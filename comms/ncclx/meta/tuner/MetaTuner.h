@@ -16,20 +16,26 @@ namespace ncclx::tuner {
 
 // One tuning rule parsed from a CSV row or JSON object. A rule overrides NCCL
 // core algorithm/protocol selection (and optionally nChannels / chunkSize) for
-// collectives whose attributes AND-match every populated field. The bytes,
-// nNodes and nLocalRanks fields are Int64Range matchers (an interval, an exact
-// value, or the "-1" wildcard that matches any value); numPipeOps / regBuff are
-// exact-or-(-1) int matches; chunkSize == 0 means "no override".
+// collectives whose attributes AND-match every populated field. The
+// bytesPerRank, nNodes and nLocalRanks fields are Int64Range matchers (an
+// interval, an exact value, or the "*" wildcard that matches any value);
+// chunkSize == 0 means "no override". bytesPerRank matches nBytes / nRanks
+// (nRanks = nNodes * nLocalRanks, taken from the comm). For
+// AllGather/ReduceScatter the tuner nBytes is the rank-scaled total, so
+// nBytes / nRanks is the per-rank shard; for AllReduce nBytes is the full
+// buffer, so it is buffer / nRanks (see matchesCollective). numPipeOps /
+// regBuff are not exposed in the config; they stay at the -1 wildcard (reserved
+// for internal matching).
 struct TuningConfig {
   ncclFunc_t collType;
-  Int64Range bytes;
+  Int64Range bytesPerRank;
   int algorithm;
   int protocol;
   int nChannels;
   Int64Range nNodes;
   Int64Range nLocalRanks;
-  int numPipeOps;
-  int regBuff;
+  int numPipeOps{-1};
+  int regBuff{-1};
   size_t chunkSize;
 
   std::string toString() const;

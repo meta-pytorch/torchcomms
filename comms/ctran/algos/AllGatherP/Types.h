@@ -23,6 +23,12 @@ struct PersistArgs {
   // should wait for its completion via the initialized_ flag, before the main
   // thread can schedule copy engine copies
   std::atomic<bool> initialized{false};
+
+  // Set once the ring's rail peer IB rkeys are populated in remoteRecvBuffs /
+  // remoteAccessKeys -- by the full-comm exchange (eager) or the gpeFn's
+  // first-replay neighbor exchange -- so later replays only re-sync.
+  // GPE-thread-only, so not atomic.
+  bool ibKeysExchanged{false};
 };
 
 struct Resource {

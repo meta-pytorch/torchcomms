@@ -55,6 +55,11 @@ static AlgoDescriptor makeAllGatherCtgraph(
         statex->nLocalRanks() > 1) {
       return false;
     }
+    if ((algo == NCCL_ALLGATHER_ALGO::ctgraph_pipeline ||
+         algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) &&
+        statex->nLocalRanks() <= 1) {
+      return false;
+    }
     if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
         !ctran::utils::isPowerOfTwo(statex->nNodes())) {
       return false;
@@ -133,6 +138,11 @@ TEST_P(CudaGraphAllGatherCtgraphExpandable, CaptureReplayVerify) {
        algo == NCCL_ALLGATHER_ALGO::ctgraph_rd) &&
       statex->nLocalRanks() > 1) {
     GTEST_SKIP() << allGatherAlgoName(algo) << " requires nLocalRanks == 1";
+  }
+  if ((algo == NCCL_ALLGATHER_ALGO::ctgraph_pipeline ||
+       algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline) &&
+      statex->nLocalRanks() <= 1) {
+    GTEST_SKIP() << allGatherAlgoName(algo) << " requires nLocalRanks > 1";
   }
   if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
       !ctran::utils::isPowerOfTwo(statex->nNodes())) {
@@ -356,6 +366,78 @@ TEST_F(CudaGraphAllGatherCtgraphDestroy, DestroyGraphCleanly) {
   ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
   ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+// Multiple independent comms each capture and replay a ctgraph AllGather
+// back-to-back without syncing between captures, so one comm's windowed
+// registration is set up while another's is still in flight.
+TEST_F(CtranCudaGraphTestBase, BackToBackMultiCommCtgraph) {
+  constexpr int kComms = 2;
+  constexpr int kReplays = 3;
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+
+  std::vector<std::unique_ptr<CtranComm>> comms;
+  std::vector<ctran::TestDeviceBuffer> sends;
+  std::vector<ctran::TestDeviceBuffer> recvs;
+  std::vector<meta::comms::CudaStream> streams;
+  std::vector<cudaGraph_t> graphs(kComms, nullptr);
+  std::vector<cudaGraphExec_t> execs(kComms, nullptr);
+
+  for (int c = 0; c < kComms; ++c) {
+    auto comm = makeCtranComm();
+    ASSERT_NE(comm, nullptr);
+    if (!ctran::allGatherPSupport(comm.get())) {
+      GTEST_SKIP() << "allGatherP not supported";
+    }
+    if (comm->statex_->nLocalRanks() <= 1) {
+      GTEST_SKIP() << "windowed pipeline AGP requires nLocalRanks > 1";
+    }
+    comms.push_back(std::move(comm));
+    sends.emplace_back(count * sizeof(int32_t));
+    recvs.emplace_back(count * nRanks * sizeof(int32_t));
+    streams.emplace_back(cudaStreamNonBlocking);
+    fillSendBuf(sends[c].get(), count, globalRank);
+  }
+
+  // Capture one graph per comm back-to-back, without syncing between captures,
+  // so the per-comm windowed-AGP setups overlap.
+  for (int c = 0; c < kComms; ++c) {
+    ASSERT_EQ(
+        cudaStreamBeginCapture(streams[c].get(), cudaStreamCaptureModeGlobal),
+        cudaSuccess);
+    ASSERT_EQ(
+        ctranAllGather(
+            sends[c].get(),
+            recvs[c].get(),
+            count,
+            commInt32,
+            comms[c].get(),
+            streams[c].get(),
+            NCCL_ALLGATHER_ALGO::ctgraph_pipeline),
+        commSuccess);
+    ASSERT_EQ(cudaStreamEndCapture(streams[c].get(), &graphs[c]), cudaSuccess);
+    ASSERT_EQ(cudaGraphInstantiate(&execs[c], graphs[c], 0), cudaSuccess);
+  }
+
+  for (int iter = 0; iter < kReplays; ++iter) {
+    for (int c = 0; c < kComms; ++c) {
+      ASSERT_EQ(cudaGraphLaunch(execs[c], streams[c].get()), cudaSuccess);
+    }
+  }
+  for (int c = 0; c < kComms; ++c) {
+    ASSERT_EQ(cudaStreamSynchronize(streams[c].get()), cudaSuccess);
+    verifyAllGather(recvs[c].get(), count, nRanks);
+  }
+
+  for (int c = 0; c < kComms; ++c) {
+    ASSERT_EQ(cudaGraphExecDestroy(execs[c]), cudaSuccess);
+    ASSERT_EQ(cudaGraphDestroy(graphs[c]), cudaSuccess);
+  }
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  for (int c = 0; c < kComms; ++c) {
+    waitAndVerifyGpeClean(comms[c].get());
+  }
 }
 
 // Reproduces the ctgraph_rdpipeline in-place corruption covered by

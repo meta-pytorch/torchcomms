@@ -12,8 +12,9 @@ namespace ncclx::tuner {
 // Minimum number of CSV columns required to form a valid rule (up to
 // nLocalRanks).
 inline constexpr size_t kMinCsvFields = 7;
-// Maximum number of CSV columns honored (numPipeOps, regBuff, chunkSize add 3).
-inline constexpr size_t kMaxCsvFields = 10;
+// Maximum number of CSV columns honored: the 7 required columns plus the
+// optional trailing chunkSize (1 more).
+inline constexpr size_t kMaxCsvFields = 8;
 
 // Splits a CSV line into trimmed fields, honoring interval brackets: a comma
 // inside () or [] (e.g. "[0,1048576]" or "(1,)") is part of an interval and

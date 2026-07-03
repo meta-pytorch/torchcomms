@@ -10,8 +10,8 @@ force a binary/conda rebuild, and a `dlopen` plugin adds packaging surface.
 
 The built-in tuner solves this by compiling a CSV/JSON-driven tuner directly into
 `libnccl.so`. It overrides core `algorithm × protocol` selection, `nChannels`,
-and (on tuner API v6 only) `chunkSize`, keyed by `(collective, message-size
-range, topology, numPipeOps, regBuff)`. The topology key is `(nNodes,
+and (on tuner API v6 only) `chunkSize`, keyed by `(collective, per-rank size
+range, topology)`. The topology key is `(nNodes,
 nLocalRanks)` where `nLocalRanks = nRanks / nNodes` is ranks per node. The override table lives in a runtime
 config file (kept in the L4x job's fbpkg, decoupled from the binary), so a tuning
 loop is just "edit the file, repackage the fbpkg, restart" — `libnccl.so` is
@@ -70,10 +70,10 @@ comm init (src/init.cc, guarded by comm->tuner != NULL)
 
 per collective (src/enqueue.cc, guarded by comm->tuner != NULL)
   -> kMetaTuner.getCollInfo(ctx, collType, nBytes, ...) // metaTunerGetCollInfo
-       AND-match each rule on collType/bytes/nNodes/nLocalRanks/
-                                numPipeOps/regBuff
-       (bytes/nNodes/nLocalRanks are Int64Range matchers with `*` = wildcard;
-        numPipeOps/regBuff are exact-or-(-1))
+       AND-match each rule on collType/bytesPerRank/nNodes/nLocalRanks
+       (bytesPerRank/nNodes/nLocalRanks are Int64Range matchers with
+        `*` = wildcard; bytesPerRank matches nBytes/nRanks, nRanks =
+        nNodes*nLocalRanks)
        first match: costTable[algo][proto] = 0.0 (skip if NCCL_ALGO_PROTO_IGNORE)
                     if nChannels != -1, override *nChannels
 
@@ -93,7 +93,7 @@ All tuner logic lives in `meta/tuner/`, shared across NCCLX versions:
 |------|------|
 | `meta/tuner/MetaTuner.h` | `TuningConfig` rule struct; `metaTunerEnabled()`, `tryLoadMetaTuner(comm)`, `extern const ncclTuner_t kMetaTuner` |
 | `meta/tuner/MetaTuner.cc` | CSV + JSON parsers, the tuner callbacks (`init`/`getCollInfo`/`finalize`/`getChunkSize`), and `kMetaTuner` definition |
-| `meta/tuner/Int64Range.{h,cc}` | Self-contained `Int64Range` interval matcher (`bytes`/`nNodes`/`nLocalRanks`) and `parseInt64Range`; no NCCL/folly dependency |
+| `meta/tuner/Int64Range.{h,cc}` | Self-contained `Int64Range` interval matcher (`bytesPerRank`/`nNodes`/`nLocalRanks`) and `parseInt64Range`; no NCCL/folly dependency |
 | `meta/tuner/tests/MetaTunerTest.cpp` | Unit tests (CSV/JSON parsing, match semantics, version gating) |
 | `meta/tuner/tests/Int64RangeTest.cpp` | `int64_range_ut` (an `ncclx_meta_unittest` that links the nccl-internal lib) for `Int64Range` parse/match edge cases; no GPU |
 | `meta/tuner/tests/example_tuner_config.{csv,json}` | Example configs |
@@ -152,7 +152,7 @@ and `loadConfigJson` (the folly path and the no-folly stub).
 
 Both `getCollInfo` and `getChunkSize` iterate rules in file order and return on
 the first AND-match. A wildcard field matches any value: `*` for the
-`bytes`/`nNodes`/`nLocalRanks` (`Int64Range`) fields, `-1` for `numPipeOps`/`regBuff`.
+`bytesPerRank`/`nNodes`/`nLocalRanks` (`Int64Range`) fields.
 `getCollInfo` never forces an `algo×proto` combo that core marked
 `NCCL_ALGO_PROTO_IGNORE`.
 
@@ -182,9 +182,9 @@ not force an API/ABI churn.
 A rule matches a collective when every populated field AND-matches. The first
 matching rule wins, so rule order encodes priority.
 
-### Interval grammar (`bytes`, `nNodes`, `nLocalRanks`)
+### Interval grammar (`bytesPerRank`, `nNodes`, `nLocalRanks`)
 
-`bytes`, `nNodes`, and `nLocalRanks` are `Int64Range` matchers backed by
+`bytesPerRank`, `nNodes`, and `nLocalRanks` are `Int64Range` matchers backed by
 `meta/tuner/Int64Range.{h,cc}` (a self-contained `int64_t` interval type with no
 NCCL/folly dependency, so it covers GB-scale byte values and is unit-tested by
 the `int64_range_ut` `ncclx_meta_unittest` target). They share one value grammar
@@ -210,23 +210,50 @@ offending value / line) and **fails comm init**. With
 `NCCLX_TUNER_IGNORE_CONFIG_ERRORS=1` it is logged and skipped while the remaining
 valid rules still load (see "Per-comm-init parsing").
 
+### Per-rank size filter (`bytesPerRank`)
+
+`bytesPerRank` is the single size field. It matches the **per-rank shard**
+`nBytes / nRanks`, where `nRanks = nNodes * nLocalRanks` (both captured in
+`metaTunerInit` from the comm, so `nRanks` always reflects the real topology even
+when a rule leaves `nNodes` / `nLocalRanks` as the `*` wildcard). A guard sets
+`nRanks = 1` if the product is non-positive, so the division is always safe, and
+a wildcard `bytesPerRank` matches any size.
+
+Why per-rank: for a fixed per-rank workload, the LL128→Simple crossover is roughly
+**constant in per-rank bytes** but scales linearly in *total* bytes with rank
+count. Keying on `bytesPerRank` lets **one** rule span every rank count,
+collapsing the per-topology rule explosion (e.g. the GB200 config goes from 20
+total-byte rules to ~4 per-rank rules; see the `nccl-tuner-from-sweep` skill's
+`gen --per-rank`).
+
+Best suited to **AllGather / ReduceScatter**: NCCL passes those collectives
+`nBytes = nRanks × count × eltsize` (the rank-scaled total), so `nBytes / nRanks`
+is exactly the per-rank shard. For **AllReduce** `nBytes` is already the full
+buffer (not scaled by ranks), so `bytesPerRank` is `buffer / nRanks` — author
+AllReduce rules with that in mind.
+
+Combining fields: every populated filter is **AND-matched**, so `bytesPerRank`
+intersects with any other set field. Setting only `bytesPerRank` (the common
+case) matches purely on per-rank size across all topologies; additionally pinning
+`nNodes` / `nLocalRanks` narrows the rule to a specific topology.
+
 ### CSV (zero-dependency, always available)
 
 ```
-collective,bytes,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBuff,chunkSize
+collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,chunkSize
 ```
 
 - `collective`: `allreduce` / `broadcast` / `reduce` / `allgather` / `reducescatter`
-- `bytes`: message-size Int64Range (interval / exact / `*` wildcard)
+- `bytesPerRank`: per-rank-size Int64Range (`nBytes / nRanks`, interval / exact /
+  `*` wildcard); see "Per-rank size filter"
 - `algorithm`: `tree` / `ring` / `collnet_direct` / `collnet_chain` / `nvls` / `nvls_tree` / `pat`
 - `protocol`: `ll` / `ll128` / `simple`
 - `channels`: `-1` keeps the NCCL default; any other value overrides `*nChannels`
 - `nNodes`: number of nodes (Int64Range)
 - `nLocalRanks`: ranks per node (`nRanks / nNodes`) (Int64Range)
-- `numPipeOps` / `regBuff`: exact int, `-1` is a wildcard
 - `chunkSize` (bytes): `0` means no override
-- `numPipeOps`, `regBuff`, `chunkSize` columns are optional (in that order); at
-  least the first 7 columns (through `nLocalRanks`) are required
+- `chunkSize` column is optional; at least the first 7 columns (through
+  `nLocalRanks`) are required.
 - The CSV split is **bracket-aware**: it tracks `()`/`[]` nesting and only splits
   on commas at depth 0, so an interval like `[0,1048576]` or `(1,)` stays a
   single column
@@ -235,7 +262,7 @@ collective,bytes,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBu
 Example (small allreduce forced to ring + ll128):
 
 ```
-allreduce,[0,1048576],ring,ll128,-1,*,*,-1,-1,0
+allreduce,[0,1048576],ring,ll128,-1,*,*
 ```
 
 ### JSON (folly-enabled build only)
@@ -247,7 +274,7 @@ and `config` holds the overrides applied on a match.
 {
   "rules": [
     {
-      "filter": { "collective": "allgather", "bytes": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
+      "filter": { "collective": "allgather", "bytesPerRank": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
       "config": { "algorithm": "tree", "protocol": "simple", "channels": 4 }
     }
   ]
@@ -260,14 +287,15 @@ overrides `channels`. Rules that should apply regardless of topology simply omit
 `nNodes` / `nLocalRanks` from `filter` (an omitted filter field is the `*`
 wildcard).
 
-- `filter` holds the match conditions: `collective`, `bytes`, `nNodes`,
-  `nLocalRanks`, `numPipeOps`, `regBuff`. Only `collective` is required; omitting
-  any other filter field means wildcard / any.
+- `filter` holds the match conditions: `collective`, `bytesPerRank`, `nNodes`,
+  `nLocalRanks`. Only `collective` is required;
+  omitting any other filter field means wildcard / any.
 - `config` holds the overrides: `algorithm`, `protocol`, `channels`,
   `chunkSize`. `algorithm` and `protocol` are required; `channels` and
   `chunkSize` are optional and omitting them means "no override".
-- `bytes` / `nNodes` / `nLocalRanks` may be a JSON integer (`N` exact), the
-  string `"*"` (wildcard), OR an interval string (`"[0,1048576]"`, `"(1,)"`); a
+- `bytesPerRank` / `nNodes` / `nLocalRanks` may be a JSON integer (`N`
+  exact), the string `"*"` (wildcard), OR an interval string (`"[0,1048576]"`,
+  `"(1,)"`); a
   bad interval string, an unknown enum, or a bad value type (`"channels": [4]`
   / `"abc"`) is a config error, handled per the policy in "Per-comm-init
   parsing" (default: fail comm init; with the ignore cvar: log + skip the rule),
@@ -314,7 +342,7 @@ identical, with version differences handled by compile macros:
   yields a clear error and empty table.
 - `getCollInfo` semantics: size-range match zeroes `table[algo][proto]`; topology
   filter (`nNodes`/`nLocalRanks`); interval matching (open-ended / endpoint
-  inclusivity / wildcard) on `bytes`/`nNodes`/`nLocalRanks`; bracket-aware CSV
+  inclusivity / wildcard) on `bytesPerRank`/`nNodes`/`nLocalRanks`; bracket-aware CSV
   split; bad-interval rule skipped; row-order priority; `nChannels` override;
   `NCCL_ALGO_PROTO_IGNORE` protection; missing/empty file leaves outputs
   untouched.
