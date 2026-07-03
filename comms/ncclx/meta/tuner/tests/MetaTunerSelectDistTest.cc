@@ -149,12 +149,13 @@ class MetaTunerSelectDistTest : public NcclxBaseTestFixture {
   }
 
   // Build a tuner CSV rule for one collective covering a broad size range.
-  // Format (MetaTuner CSV): collective,bytes,algo,proto,nChannels,nNodes,
-  // nLocalRanks. The size range is emitted as the closed bytes interval
-  // [minBytes,maxBytes]. A channels of -1 means "keep the NCCL default";
-  // nNodes/nLocalRanks default to -1, emitted as the "*" wildcard (match any).
-  // nNodes/nLocalRanks accept any Int64Range expression string via the
-  // makeRangeRule overload below.
+  // Format (MetaTuner CSV):
+  // collective,bytesPerRank,algo,proto,nChannels,nNodes, nLocalRanks. The size
+  // range is emitted as the closed per-rank interval [minBytes,maxBytes]
+  // (bytesPerRank = nBytes / nRanks). A channels of -1 means "keep the NCCL
+  // default"; nNodes/nLocalRanks default to -1, emitted as the
+  // "*" wildcard (match any). nNodes/nLocalRanks accept any Int64Range
+  // expression string via the makeRangeRule overload below.
   static std::string makeRule(
       Collective coll,
       const std::string& algo,
@@ -174,21 +175,21 @@ class MetaTunerSelectDistTest : public NcclxBaseTestFixture {
         nLocalRanks == -1 ? std::string("*") : std::to_string(nLocalRanks));
   }
 
-  // Like makeRule, but bytes / nNodes / nLocalRanks are arbitrary Int64Range
-  // expression strings (e.g. "(1,)", "[0,1048576]"), exercising interval
-  // matching end-to-end.
+  // Like makeRule, but bytesPerRank / nNodes / nLocalRanks are arbitrary
+  // Int64Range expression strings (e.g. "(1,)", "[0,1048576]"), exercising
+  // interval matching end-to-end.
   static std::string makeRangeRule(
       Collective coll,
       const std::string& algo,
       const std::string& proto,
       int channels,
-      const std::string& bytes,
+      const std::string& bytesPerRank,
       const std::string& nNodes,
       const std::string& nLocalRanks) {
     return fmt::format(
         "{},{},{},{},{},{},{}\n",
         tunerName(coll),
-        bytes,
+        bytesPerRank,
         algo,
         proto,
         channels,
@@ -472,7 +473,7 @@ TEST_F(MetaTunerSelectDistTest, NodesRangeKeyMatchesMultiNode) {
         "tree",
         "ll",
         /*channels=*/-1,
-        /*bytes=*/"*",
+        /*bytesPerRank=*/"*",
         /*nNodes=*/"(1,)",
         /*nLocalRanks=*/"*"));
     ncclx::test::NcclCommRAII commGuard(
@@ -496,7 +497,7 @@ TEST_F(MetaTunerSelectDistTest, NodesRangeKeyMatchesMultiNode) {
         "tree",
         "ll",
         /*channels=*/-1,
-        /*bytes=*/"*",
+        /*bytesPerRank=*/"*",
         /*nNodes=*/"(1,)",
         /*nLocalRanks=*/"*"));
     ncclx::test::NcclCommRAII ruleGuard(
@@ -509,10 +510,11 @@ TEST_F(MetaTunerSelectDistTest, NodesRangeKeyMatchesMultiNode) {
   }
 }
 
-// Size+topology-keyed matching: a rule keyed by BOTH a [0, 1 MiB] size range
-// AND the actual topology forces tree+LL. An in-range AllReduce (16 KiB) uses
-// LL_TREE; an out-of-range AllReduce (8 MiB > 1 MiB max) does not match the
-// rule, so the forced LL_TREE is absent (NCCL default applies).
+// Size+topology-keyed matching: a rule keyed by BOTH a [0, 1 MiB] per-rank size
+// range AND the actual topology forces tree+LL. An in-range AllReduce (16 KiB
+// total, 2 KiB per rank) uses LL_TREE; an out-of-range AllReduce (2 MiB per
+// rank > 1 MiB max) does not match the rule, so the forced LL_TREE is absent
+// (NCCL default applies).
 TEST_F(MetaTunerSelectDistTest, SizeAndTopologyKeyInRange) {
   TunerConfigFile config(makeRule(
       Collective::kAllReduce,
@@ -527,20 +529,22 @@ TEST_F(MetaTunerSelectDistTest, SizeAndTopologyKeyInRange) {
       globalRank, numRanks, localRank, bootstrap_.get());
   ncclComm_t comm = commGuard.get();
   assertTopology(comm);
-  // 4096 floats = 16 KiB, inside [0, 1 MiB].
+  // 4096 floats = 16 KiB total -> 2 KiB per rank, inside [0, 1 MiB].
   runCollective(comm, Collective::kAllReduce, 4096);
   algoStats_.verifyExact(comm, "AllReduce", "LL_TREE");
 }
 
 // Size+topology-keyed matching, out-of-range case ("unchanged vs default"
-// model): a rule with a [0, 1 MiB] size range does NOT match an 8 MiB
-// AllReduce, so the tuner ignores it. Create a no-tuner comm and run an 8 MiB
-// AllReduce on it, then create a comm carrying the out-of-range rule and run
-// the SAME 8 MiB AllReduce on it. verifyEqual asserts both comms selected the
-// same set of algorithms, proving the non-matching rule changed nothing.
+// model): a rule with a [0, 1 MiB] per-rank size range does NOT match a 16 MiB
+// AllReduce (2 MiB per rank), so the tuner ignores it. Create a no-tuner comm
+// and run a 16 MiB AllReduce on it, then create a comm carrying the
+// out-of-range rule and run the SAME 16 MiB AllReduce on it. verifyEqual
+// asserts both comms selected the same set of algorithms, proving the
+// non-matching rule changed nothing.
 TEST_F(MetaTunerSelectDistTest, SizeAndTopologyKeyOutOfRange) {
-  // 2097152 floats = 8 MiB, above the rule's 1 MiB max_bytes.
-  constexpr size_t kOutOfRangeCount = 2097152;
+  // 4194304 floats = 16 MiB total -> 2 MiB per rank (16 MiB / 8 ranks), above
+  // the rule's 1 MiB per-rank max.
+  constexpr size_t kOutOfRangeCount = 4194304;
 
   // No-tuner comm: no TunerConfigFile in scope, so the tuner is disabled and
   // NCCL uses its default selection.
@@ -550,9 +554,9 @@ TEST_F(MetaTunerSelectDistTest, SizeAndTopologyKeyOutOfRange) {
   assertTopology(noTunerComm);
   runCollective(noTunerComm, Collective::kAllReduce, kOutOfRangeCount);
 
-  // Rule comm: a rule covering only [0, 1 MiB] forcing tree+LL does not match
-  // the 8 MiB run, so the tuner ignores it. Keep both comms alive until
-  // verifyEqual reads their AlgoStats.
+  // Rule comm: a rule covering only [0, 1 MiB] per-rank forcing tree+LL does
+  // not match the 16 MiB run (2 MiB per rank), so the tuner ignores it. Keep
+  // both comms alive until verifyEqual reads their AlgoStats.
   TunerConfigFile config(makeRule(
       Collective::kAllReduce,
       "tree",

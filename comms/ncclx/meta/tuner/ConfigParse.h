@@ -140,12 +140,13 @@ inline bool isFieldSet(
 
 // Builds a TuningConfig from the already-trimmed CSV/JSON column strings. Order
 // of fields:
-//   collType,bytes,algorithm,protocol,channels,nNodes,nLocalRanks,
+//   collType,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,
 //   numPipeOps,regBuff,chunkSize
-// bytes / nNodes / nLocalRanks are Int64Range expressions (interval, exact, or
-// "*" wildcard). numPipeOps, regBuff and chunkSize are optional; absent fields
-// are passed as empty strings and fall back to their wildcard / no-override
-// defaults. Returns nullopt when any column fails to parse (an Int64Range that
+// bytesPerRank / nNodes / nLocalRanks are Int64Range expressions (interval,
+// exact, or "*" wildcard). channels, numPipeOps, regBuff and chunkSize are
+// optional; absent fields are passed as empty strings (or omitted entirely)
+// and fall back to their wildcard / no-override defaults. Returns nullopt when
+// any column fails to parse (an Int64Range that
 // does not parse, an unknown collective/algorithm/protocol token, or a numeric
 // column that is present but not a valid integer), so the caller can log an
 // ERROR and reject the rule.
@@ -157,10 +158,11 @@ inline std::optional<TuningConfig> buildConfig(
     return field.empty() ? Int64Range{} : parseInt64Range(field);
   };
 
-  const std::optional<Int64Range> bytes = parseRangeField(fields[1]);
+  const std::optional<Int64Range> bytesPerRank = parseRangeField(fields[1]);
   const std::optional<Int64Range> nNodes = parseRangeField(fields[5]);
   const std::optional<Int64Range> nLocalRanks = parseRangeField(fields[6]);
-  if (!bytes.has_value() || !nNodes.has_value() || !nLocalRanks.has_value()) {
+  if (!bytesPerRank.has_value() || !nNodes.has_value() ||
+      !nLocalRanks.has_value()) {
     return std::nullopt;
   }
 
@@ -192,7 +194,7 @@ inline std::optional<TuningConfig> buildConfig(
 
   TuningConfig config{};
   config.collType = *collType;
-  config.bytes = *bytes;
+  config.bytesPerRank = *bytesPerRank;
   config.algorithm = *algorithm;
   config.protocol = *protocol;
   config.nChannels = *channels;
