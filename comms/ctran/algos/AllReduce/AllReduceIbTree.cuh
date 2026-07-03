@@ -44,6 +44,8 @@ struct KernArgs {
   ctran::allreduce::TreeTopology tree0;
   /** Inter-node tree used for the second half of each data partition. */
   ctran::allreduce::TreeTopology tree1;
+  /** Fixed IB send/recv group count used for transport staging geometry. */
+  int ibSendRecvGroups{0};
 };
 
 } // namespace ctran::allreduce::tree
