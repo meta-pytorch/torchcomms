@@ -71,12 +71,13 @@ struct TiledBuffer {
   }
 
   /// Pointer to tile i's data (explicit indexing)
-  __device__ __forceinline__ T* __restrict__ tile_data(int tile_id) const {
+  __host__ __device__
+      __forceinline__ T* __restrict__ tile_data(int tile_id) const {
     return buf + tile_id * tile_elements;
   }
 
   /// Number of elements in tile i (last tile may be smaller)
-  __device__ __forceinline__ std::size_t tile_size(int tile_id) const {
+  __host__ __device__ __forceinline__ std::size_t tile_size(int tile_id) const {
     std::size_t offset = tile_id * tile_elements;
     if (offset >= num_elements) {
       return 0;
@@ -86,7 +87,8 @@ struct TiledBuffer {
   }
 
   /// Bytes in tile i
-  __device__ __forceinline__ std::size_t tile_bytes(int tile_id) const {
+  __host__ __device__ __forceinline__ std::size_t tile_bytes(
+      int tile_id) const {
     return tile_size(tile_id) * sizeof(T);
   }
 

@@ -18,7 +18,7 @@
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 // Shared device utilities (tileReduce, IbReduceCopy, logicalDataGroup,
-// segmentTile, actualSegElems, pipelineStepBytes, ...) live in
+// actualSegElems, pipelineStepBytes, ...) live in
 // AllReduceFusedCommon.cuh (ctran::allreduce::common). The NVL phases live in
 // AllReduceNvlDirect.cuh (ctran::allreduce::nvl::direct) and the
 // phase-sequencing orchestrator in AllReduceFused.cuh
@@ -329,10 +329,9 @@ __device__ __noinline__ void phase2IbDualTree(
 
   const size_t actualElems = actualSegElems(
       args.common.count, args.common.segmentElems, args.common.localRank);
-  const auto tile = segmentTile(actualElems * sizeof(T), blockGroup);
-  const size_t tileOffsetElems = tile.offsetBytes / sizeof(T);
-  const size_t tileElems = tile.bytes / sizeof(T);
-
+  char* phase2Buf = static_cast<char*>(args.common.phase2Buf);
+  comms::prims::TiledBuffer<char> blockTile(
+      phase2Buf, actualElems * sizeof(T), blockGroup);
   // If the whole segment has at most one element per block, lane 1 would be
   // empty for every block. Compress transport group ids to a single lane for
   // that tiny-message shape; otherwise keep the stable two-lane mapping.
@@ -341,9 +340,12 @@ __device__ __noinline__ void phase2IbDualTree(
   const int activeIbLanesPerBlock =
       useSingleLane ? 1 : ctran::allreduce::tree::kTreeLanes;
 
-  const size_t halfElems0 = useSingleLane ? tileElems : (tileElems + 1) / 2;
-  const size_t halfElems1 = useSingleLane ? 0 : tileElems - halfElems0;
-  T* phase2Buf = static_cast<T*>(args.common.phase2Buf);
+  comms::prims::TiledBuffer<char> laneTiles(
+      blockTile.data(), blockTile.bytes(), ctran::allreduce::tree::kTreeLanes);
+  const size_t halfElems0 =
+      (useSingleLane ? blockTile.bytes() : laneTiles.tile_bytes(0)) / sizeof(T);
+  const size_t halfElems1 =
+      useSingleLane ? 0 : laneTiles.tile_bytes(1) / sizeof(T);
   const int activeIbGroups = args.common.numBlocks * activeIbLanesPerBlock;
 
   auto lane0Group = blockGroup;
@@ -356,13 +358,13 @@ __device__ __noinline__ void phase2IbDualTree(
   auto lane0 = makeTreeLaneState<T>(
       args,
       args.tree0,
-      phase2Buf + tileOffsetElems,
+      reinterpret_cast<T*>(laneTiles.tile_data(0)),
       halfElems0,
       activeIbGroups);
   auto lane1 = makeTreeLaneState<T>(
       args,
       args.tree1,
-      phase2Buf + tileOffsetElems + halfElems0,
+      reinterpret_cast<T*>(laneTiles.tile_data(1)),
       halfElems1,
       activeIbGroups);
 
