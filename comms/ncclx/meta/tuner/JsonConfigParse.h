@@ -81,8 +81,6 @@ inline std::optional<TuningConfig> parseJsonRule(const folly::dynamic& rule) {
     const std::string channels = jsonIntStr(*configObj, "channels");
     const std::string nNodes = jsonRangeStr(*filterObj, "nNodes");
     const std::string nLocalRanks = jsonRangeStr(*filterObj, "nLocalRanks");
-    const std::string numPipeOps = jsonIntStr(*filterObj, "numPipeOps");
-    const std::string regBuff = jsonIntStr(*filterObj, "regBuff");
     const std::string chunkSize = jsonIntStr(*configObj, "chunkSize");
 
     // Kept in lock-step with buildConfig's index order; bytesPerRank is the
@@ -95,8 +93,6 @@ inline std::optional<TuningConfig> parseJsonRule(const folly::dynamic& rule) {
         channels,
         nNodes,
         nLocalRanks,
-        numPipeOps,
-        regBuff,
         chunkSize};
     return buildConfig(fields);
   } catch (const std::exception&) {

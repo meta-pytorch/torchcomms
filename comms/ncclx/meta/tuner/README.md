@@ -71,7 +71,7 @@ single rule is logged at ERROR and skipped while remaining valid rules load.
 ### CSV (zero-dependency, always available)
 
 ```
-collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOps,regBuff,chunkSize
+collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,chunkSize
 ```
 
 - `collective`: `allreduce` / `broadcast` / `reduce` / `allgather` /
@@ -84,8 +84,7 @@ collective,bytesPerRank,algorithm,protocol,channels,nNodes,nLocalRanks,numPipeOp
 - `channels`: `-1` keeps the NCCL default; any other value overrides it
 - `nNodes`: number of nodes (Int64Range)
 - `nLocalRanks`: ranks per node (`nRanks / nNodes`) (Int64Range)
-- `numPipeOps` / `regBuff`: exact int, `-1` is a wildcard
-- `numPipeOps`, `regBuff`, `chunkSize` columns are optional (in that order)
+- `chunkSize` column is optional
 - The CSV split is bracket-aware: commas inside `()` or `[]` are part of an
   interval and do NOT separate columns (so `[0,1048576]` is one field)
 - Lines beginning with `#` and blank lines are ignored
@@ -140,8 +139,8 @@ and `config` holds the overrides applied on a match.
 ```
 
 - `filter` — match conditions: `collective`, `bytesPerRank`, `nNodes`,
-  `nLocalRanks`, `numPipeOps`, `regBuff`. Only `collective` is required; omitting
-  any other filter field means wildcard / any.
+  `nLocalRanks`. Only `collective` is required; omitting any other filter field
+  means wildcard / any.
 - `config` — overrides: `algorithm`, `protocol`, `channels`, `chunkSize`.
   `algorithm` and `protocol` are required; `channels` and `chunkSize` are
   optional and omitting them means "no override".

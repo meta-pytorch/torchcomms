@@ -501,8 +501,7 @@ TEST_F(MetaTunerTest, StrictOutOfRangeChannelsFailsInit) {
 // Strict mode (default): a negative chunkSize would wrap to a huge size_t, so
 // it must be rejected like any other present-but-invalid numeric.
 TEST_F(MetaTunerTest, StrictNegativeChunkSizeFailsInit) {
-  expectStrictInitFails(
-      ".csv", "allreduce,[0,1024],ring,ll128,-1,*,*,-1,-1,-5\n");
+  expectStrictInitFails(".csv", "allreduce,[0,1024],ring,ll128,-1,*,*,-5\n");
 }
 
 // Strict mode (default): a non-existent config file fails comm init.
@@ -699,8 +698,8 @@ TEST_F(MetaTunerTest, MissingFileIsNoOp) {
 TEST_F(MetaTunerTest, ChunkSizeOverride) {
   const TunerConfigFile config(
       ".csv",
-      "allreduce,[0,4096],ring,ll128,-1,*,*,-1,-1,65536\n"
-      "allgather,[0,4096],ring,ll128,-1,*,*,-1,-1,0\n");
+      "allreduce,[0,4096],ring,ll128,-1,*,*,65536\n"
+      "allgather,[0,4096],ring,ll128,-1,*,*,0\n");
   void* context = initTuner(8, 1);
 
   size_t overridden = 16384;
@@ -732,8 +731,8 @@ TEST_F(MetaTunerTest, ChunkSizeOverride) {
 TEST_F(MetaTunerTest, ChunkSizeAlgoProtoKey) {
   const TunerConfigFile config(
       ".csv",
-      "allreduce,[0,4096],ring,ll128,-1,*,*,-1,-1,65536\n"
-      "allreduce,[0,4096],tree,simple,-1,*,*,-1,-1,32768\n");
+      "allreduce,[0,4096],ring,ll128,-1,*,*,65536\n"
+      "allreduce,[0,4096],tree,simple,-1,*,*,32768\n");
   void* context = initTuner(8, 1);
 
   size_t ringChunk = 16384;
@@ -784,7 +783,7 @@ TEST_F(MetaTunerTest, CsvParsingWithCommentsAndOmittedColumns) {
       "  allgather, [0, 2048], tree, simple, 4, 1, 8 \n");
   void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
 
-  // First rule (omitted numPipeOps/regBuff/chunkSize default to wildcard / 0).
+  // First rule (omitted chunkSize defaults to 0 = no override).
   CostTable allreduceTable;
   int allreduceChannels = 9;
   kMetaTuner.getCollInfo(
@@ -878,8 +877,8 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
   {
     const TunerConfigFile csv(
         ".csv",
-        "allreduce,[0,4096],ring,ll128,4,1,8,-1,-1,65536\n"
-        "allgather,[0,2048],tree,simple,-1,*,*,-1,-1,0\n"
+        "allreduce,[0,4096],ring,ll128,4,1,8,65536\n"
+        "allgather,[0,2048],tree,simple,-1,*,*,0\n"
         "reducescatter,[8388608,16777216],ring,ll128,-1,*,*\n");
     csvContext = initTuner(/* nRanks */ 8, /* nNodes */ 1);
   }

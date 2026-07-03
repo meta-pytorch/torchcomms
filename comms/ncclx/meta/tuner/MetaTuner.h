@@ -19,12 +19,13 @@ namespace ncclx::tuner {
 // collectives whose attributes AND-match every populated field. The
 // bytesPerRank, nNodes and nLocalRanks fields are Int64Range matchers (an
 // interval, an exact value, or the "*" wildcard that matches any value);
-// numPipeOps / regBuff are exact-or-(-1) int matches; chunkSize == 0 means "no
-// override". bytesPerRank matches nBytes / nRanks (nRanks = nNodes *
-// nLocalRanks, taken from the comm). For AllGather/ReduceScatter the tuner
-// nBytes is the rank-scaled total, so nBytes / nRanks is the per-rank shard;
-// for AllReduce nBytes is the full buffer, so it is buffer / nRanks (see
-// matchesCollective).
+// chunkSize == 0 means "no override". bytesPerRank matches nBytes / nRanks
+// (nRanks = nNodes * nLocalRanks, taken from the comm). For
+// AllGather/ReduceScatter the tuner nBytes is the rank-scaled total, so
+// nBytes / nRanks is the per-rank shard; for AllReduce nBytes is the full
+// buffer, so it is buffer / nRanks (see matchesCollective). numPipeOps /
+// regBuff are not exposed in the config; they stay at the -1 wildcard (reserved
+// for internal matching).
 struct TuningConfig {
   ncclFunc_t collType;
   Int64Range bytesPerRank;
@@ -33,8 +34,8 @@ struct TuningConfig {
   int nChannels;
   Int64Range nNodes;
   Int64Range nLocalRanks;
-  int numPipeOps;
-  int regBuff;
+  int numPipeOps{-1};
+  int regBuff{-1};
   size_t chunkSize;
 
   std::string toString() const;

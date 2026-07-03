@@ -162,10 +162,9 @@ ncclResult_t loadConfigCsv(
 // JSON parser, only compiled when folly is available. Parses a top-level
 // object with a "rules" array. Each rule is split into two nested objects:
 //   "filter" -- match conditions: collective, bytesPerRank, nNodes,
-//               nLocalRanks, numPipeOps, regBuff. Only "collective" is
-//               required; an omitted filter field means wildcard/any
-//               (bytesPerRank/nNodes/nLocalRanks -> *, numPipeOps/regBuff ->
-//               -1).
+//               nLocalRanks. Only "collective" is required; an omitted filter
+//               field means wildcard/any (bytesPerRank/nNodes/nLocalRanks ->
+//               *).
 //   "config" -- overrides applied on match: algorithm, protocol, channels,
 //               chunkSize. "algorithm"/"protocol" are required; "channels" and
 //               "chunkSize" are optional and omitting them means "no override"
