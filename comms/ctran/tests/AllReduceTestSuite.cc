@@ -68,13 +68,23 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     COMMCHECK_TEST(ctran::utils::commCuMemFree(ptr));
   }
 
-  static void launchInitData(
+  /** Return whether `ptr` can be safely accessed as `datatype` elements. */
+  static bool isAlignedForDatatype(const void* ptr, commDataType_t datatype) {
+    const auto alignment = commTypeSize(datatype);
+    return alignment != 0 && reinterpret_cast<uintptr_t>(ptr) % alignment == 0;
+  }
+
+  /**
+   * Initialize an aligned `datatype` buffer directly through typed CUDA stores.
+   */
+  static void launchInitDataAligned(
       void* buf,
       commDataType_t datatype,
       size_t count,
       int rank,
       int rep,
       cudaStream_t stream) {
+    ASSERT_TRUE(isAlignedForDatatype(buf, datatype));
     switch (datatype) {
       case commFloat32:
         launchInitDataKernel(
@@ -90,6 +100,34 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     }
   }
 
+  /**
+   * Initialize a possibly unaligned buffer with deterministic test data.
+   *
+   * Unaligned offset tests cannot use typed CUDA stores for setup. Stage
+   * through an aligned scratch buffer so only the AllReduce call receives the
+   * unaligned payload pointer.
+   */
+  static void launchInitData(
+      void* buf,
+      commDataType_t datatype,
+      size_t count,
+      int rank,
+      int rep,
+      cudaStream_t stream,
+      void* alignedScratch = nullptr) {
+    if (isAlignedForDatatype(buf, datatype)) {
+      launchInitDataAligned(buf, datatype, count, rank, rep, stream);
+      return;
+    }
+
+    ASSERT_NE(alignedScratch, nullptr);
+    const size_t bytes = count * commTypeSize(datatype);
+    launchInitDataAligned(alignedScratch, datatype, count, rank, rep, stream);
+    CUDACHECK_TEST(cudaMemcpyAsync(
+        buf, alignedScratch, bytes, cudaMemcpyDeviceToDevice, stream));
+  }
+
+  /** Initialize the aligned expected-output buffer for one test case. */
   static void launchInitExpected(
       void* buf,
       commDataType_t datatype,
@@ -118,6 +156,19 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
       commDataType_t datatype,
       size_t count,
       cudaStream_t stream) {
+    if (!isAlignedForDatatype(actual, datatype)) {
+      const size_t bytes = count * commTypeSize(datatype);
+      DeviceBuffer alignedActual = makeDeviceBuffer(bytes);
+      CUDACHECK_TEST(cudaMemcpyAsync(
+          alignedActual.get(),
+          actual,
+          bytes,
+          cudaMemcpyDeviceToDevice,
+          stream));
+      return computeMaxDeltaForType(
+          alignedActual.get(), expected, datatype, count, stream);
+    }
+
     switch (datatype) {
       case commFloat32:
         return computeMaxDelta(
@@ -142,6 +193,15 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
       commDataType_t datatype,
       size_t count,
       cudaStream_t stream) {
+    if (!isAlignedForDatatype(data, datatype)) {
+      const size_t bytes = count * commTypeSize(datatype);
+      DeviceBuffer alignedData = makeDeviceBuffer(bytes);
+      CUDACHECK_TEST(cudaMemcpyAsync(
+          alignedData.get(), data, bytes, cudaMemcpyDeviceToDevice, stream));
+      return computeRawBitsChecksumForType(
+          alignedData.get(), datatype, count, stream);
+    }
+
     switch (datatype) {
       case commFloat32:
         return computeRawBitsChecksum(
@@ -240,6 +300,9 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     void* const recvPtr = inPlace
         ? sendPtr
         : static_cast<char*>(recvbuf.get()) + bufferOffsetBytes;
+    DeviceBuffer sendStaging = isAlignedForDatatype(sendPtr, datatype)
+        ? nullptr
+        : makeDeviceBuffer(bytes);
 
     // Initialize expected: sum of initData across all ranks
     launchInitExpected(
@@ -260,7 +323,8 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
           count,
           globalRank,
           /*rep=*/0,
-          testStream);
+          testStream,
+          sendStaging.get());
       CUDACHECK_TEST(cudaStreamSynchronize(testStream));
 
       commResult_t res = runAllReduce(
@@ -321,17 +385,6 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     }
   }
 
-  void runOffsetCorrectnessTest(
-      enum NCCL_ALLREDUCE_ALGO algo,
-      commDataType_t datatype,
-      size_t offsetElements,
-      bool inPlace) {
-    const size_t typeBytes = commTypeSize(datatype);
-    const size_t count = 100 / typeBytes;
-    const size_t offsetBytes = offsetElements * typeBytes;
-    runCorrectnessTest(algo, datatype, count, inPlace, offsetBytes);
-  }
-
  protected:
   /** Dispatch one AllReduce call for the algorithm under test. */
   commResult_t runAllReduce(
@@ -379,41 +432,11 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
   }
 };
 
+/** Algorithm, datatype, and placement for one sweep. */
 using AllReduceParam =
-    std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, size_t, bool>;
-using AllReduceMixedOrderParam =
     std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, bool>;
-using AllReduceOffsetParam =
-    std::tuple<enum NCCL_ALLREDUCE_ALGO, commDataType_t, size_t, bool>;
 
-const std::vector<size_t>& allReduceElementCounts() {
-  static const std::vector<size_t> counts{
-      // Zero
-      0,
-      // Tiny
-      1,
-      7,
-      16,
-      // Small
-      64,
-      256,
-      1024,
-      // Medium
-      4096,
-      16384,
-      65536,
-      // Large
-      262144,
-      1048576,
-      4194304,
-      // Large + tail
-      1048576 - 7,
-      1048576 + 7,
-      4194304 - 13,
-      4194304 + 13,
-  };
-  return counts;
-}
+constexpr size_t kByteOffsetCoverageBytes = 15;
 
 const std::vector<commDataType_t>& allReduceDataTypes() {
   static const std::vector<commDataType_t> datatypes{
@@ -423,23 +446,134 @@ const std::vector<commDataType_t>& allReduceDataTypes() {
   return datatypes;
 }
 
-const std::vector<size_t>& allReduceMixedOrderElementCounts() {
-  static const std::vector<size_t> counts{
-      1,
-      1048576 + 7,
-      7,
-      65536,
-      16,
-      1048576 - 7,
-  };
+void appendUniqueCount(std::vector<size_t>& counts, size_t count) {
+  if (std::find(counts.begin(), counts.end(), count) == counts.end()) {
+    counts.push_back(count);
+  }
+}
+
+void appendUniqueOffset(std::vector<size_t>& offsets, size_t offset) {
+  if (std::find(offsets.begin(), offsets.end(), offset) == offsets.end()) {
+    offsets.push_back(offset);
+  }
+}
+
+void appendAlignedOffset(
+    std::vector<size_t>& offsets,
+    commDataType_t datatype,
+    size_t offset) {
+  if (offset % commTypeSize(datatype) == 0) {
+    appendUniqueOffset(offsets, offset);
+  }
+}
+
+std::vector<size_t> makeAllReduceElementCounts(
+    commDataType_t datatype,
+    bool includeZeroCount,
+    bool includeLargePayload) {
+  std::vector<size_t> counts;
+  const size_t elemBytes = commTypeSize(datatype);
+  for (size_t count : {
+           // Preserve the previous mixed-order sequence first.
+           size_t{1},
+           size_t{1048576 + 7},
+           size_t{7},
+           size_t{65536},
+           size_t{16},
+           size_t{1048576 - 7},
+           // Complete the previous correctness sweep.
+           size_t{0},
+           size_t{64},
+           size_t{256},
+           size_t{1024},
+           size_t{4096},
+           size_t{16384},
+           size_t{262144},
+           size_t{1048576},
+           size_t{4194304},
+           size_t{4194304 - 13},
+           size_t{4194304 + 13},
+       }) {
+    if (count == 0 && !includeZeroCount) {
+      continue;
+    }
+    appendUniqueCount(counts, count);
+  }
+
+  // Preserve the previous offset-test payload while using the shared sweep.
+  appendUniqueCount(counts, 100 / elemBytes);
+  if (includeLargePayload) {
+    appendUniqueCount(counts, (512 * 1024 * 1024) / elemBytes);
+  }
   return counts;
 }
 
-const std::vector<size_t>& allReduceOffsetElementOffsets() {
-  static const std::vector<size_t> offsets{
-      1,
-  };
-  return offsets;
+const std::vector<size_t>& allReduceElementCounts(
+    commDataType_t datatype,
+    size_t bufferOffsetBytes = 0) {
+  static const std::vector<size_t> fp32AlignedCounts =
+      makeAllReduceElementCounts(
+          commFloat32, /*includeZeroCount=*/true, /*includeLargePayload=*/true);
+  static const std::vector<size_t> fp16AlignedCounts =
+      makeAllReduceElementCounts(
+          commFloat16, /*includeZeroCount=*/true, /*includeLargePayload=*/true);
+  static const std::vector<size_t> fp32OffsetCounts =
+      makeAllReduceElementCounts(
+          commFloat32,
+          /*includeZeroCount=*/false,
+          /*includeLargePayload=*/false);
+  static const std::vector<size_t> fp16OffsetCounts =
+      makeAllReduceElementCounts(
+          commFloat16,
+          /*includeZeroCount=*/false,
+          /*includeLargePayload=*/false);
+  switch (datatype) {
+    case commFloat32:
+      return bufferOffsetBytes == 0 ? fp32AlignedCounts : fp32OffsetCounts;
+    case commFloat16:
+      return bufferOffsetBytes == 0 ? fp16AlignedCounts : fp16OffsetCounts;
+    default:
+      ADD_FAILURE() << "unsupported datatype " << datatype;
+      return bufferOffsetBytes == 0 ? fp32AlignedCounts : fp32OffsetCounts;
+  }
+}
+
+const std::vector<size_t>& allReduceBufferOffsetBytes(commDataType_t datatype) {
+  static const std::vector<size_t> fp32Offsets = [] {
+    std::vector<size_t> offsets;
+    appendUniqueOffset(offsets, 0);
+    appendUniqueOffset(offsets, static_cast<size_t>(commTypeSize(commFloat32)));
+    appendAlignedOffset(offsets, commFloat32, kByteOffsetCoverageBytes);
+    return offsets;
+  }();
+  static const std::vector<size_t> fp16Offsets = [] {
+    std::vector<size_t> offsets;
+    appendUniqueOffset(offsets, 0);
+    appendUniqueOffset(offsets, static_cast<size_t>(commTypeSize(commFloat16)));
+    appendAlignedOffset(offsets, commFloat16, kByteOffsetCoverageBytes);
+    return offsets;
+  }();
+  switch (datatype) {
+    case commFloat32:
+      return fp32Offsets;
+    case commFloat16:
+      return fp16Offsets;
+    default:
+      ADD_FAILURE() << "unsupported datatype " << datatype;
+      return fp32Offsets;
+  }
+}
+
+const std::vector<AllReduceParam>& allReduceParams() {
+  static const std::vector<AllReduceParam> params = [] {
+    std::vector<AllReduceParam> result;
+    for (commDataType_t datatype : allReduceDataTypes()) {
+      result.emplace_back(NCCL_ALLREDUCE_ALGO::ctree, datatype, false);
+      result.emplace_back(NCCL_ALLREDUCE_ALGO::ctree, datatype, true);
+    }
+    return result;
+  }();
+  return params;
 }
 
 std::string dataTypeTestName(commDataType_t datatype) {
@@ -456,47 +590,15 @@ std::string dataTypeTestName(commDataType_t datatype) {
 std::string allReduceTestName(
     enum NCCL_ALLREDUCE_ALGO algo,
     commDataType_t datatype,
-    size_t count,
-    bool inPlace) {
-  return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) + "_" +
-      std::to_string(count) + "elements_" +
-      (inPlace ? "InPlace" : "OutOfPlace");
-}
-
-std::string allReduceMixedOrderTestName(
-    enum NCCL_ALLREDUCE_ALGO algo,
-    commDataType_t datatype,
     bool inPlace) {
   return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
-      "_MixedOrder_" + (inPlace ? "InPlace" : "OutOfPlace");
-}
-
-std::string allReduceOffsetTestName(
-    enum NCCL_ALLREDUCE_ALGO algo,
-    commDataType_t datatype,
-    size_t offsetElements,
-    bool inPlace) {
-  return allReduceAlgoName(algo) + "_" + dataTypeTestName(datatype) +
-      "_100B_Offset" + std::to_string(offsetElements) + "Element_" +
-      (inPlace ? "InPlace" : "OutOfPlace");
-}
-
-inline std::string mixedOrderTestName(
-    const testing::TestParamInfo<AllReduceMixedOrderParam>& info) {
-  auto [algo, datatype, inPlace] = info.param;
-  return allReduceMixedOrderTestName(algo, datatype, inPlace);
-}
-
-inline std::string offsetTestName(
-    const testing::TestParamInfo<AllReduceOffsetParam>& info) {
-  auto [algo, datatype, offsetElements, inPlace] = info.param;
-  return allReduceOffsetTestName(algo, datatype, offsetElements, inPlace);
+      "_Sweep_" + (inPlace ? "InPlace" : "OutOfPlace");
 }
 
 inline std::string correctnessTestName(
     const testing::TestParamInfo<AllReduceParam>& info) {
-  auto [algo, datatype, count, inPlace] = info.param;
-  return allReduceTestName(algo, datatype, count, inPlace);
+  auto [algo, datatype, inPlace] = info.param;
+  return allReduceTestName(algo, datatype, inPlace);
 }
 
 #if defined(CTRAN_ALLREDUCE_TEST_NVL_ONLY) || \
@@ -518,57 +620,24 @@ class CtranAllReduceTopologyTest : public AllReduceTestSuite {
 class CtranAllReduceCorrectnessTest
     : public CtranAllReduceTopologyTest,
       public ::testing::WithParamInterface<AllReduceParam> {};
-class CtranAllReduceMixedOrderTest
-    : public CtranAllReduceTopologyTest,
-      public ::testing::WithParamInterface<AllReduceMixedOrderParam> {};
-class CtranAllReduceOffsetTest
-    : public CtranAllReduceTopologyTest,
-      public ::testing::WithParamInterface<AllReduceOffsetParam> {};
 
 TEST_P(CtranAllReduceCorrectnessTest, Correctness) {
-  auto [algo, datatype, count, inPlace] = GetParam();
-  runCorrectnessTest(algo, datatype, count, inPlace);
-}
-
-TEST_P(CtranAllReduceMixedOrderTest, Correctness) {
   auto [algo, datatype, inPlace] = GetParam();
-  runCorrectnessSweep(
-      algo, datatype, allReduceMixedOrderElementCounts(), inPlace);
-}
-
-TEST_P(CtranAllReduceOffsetTest, Correctness) {
-  auto [algo, datatype, offsetElements, inPlace] = GetParam();
-  runOffsetCorrectnessTest(algo, datatype, offsetElements, inPlace);
+  for (size_t bufferOffsetBytes : allReduceBufferOffsetBytes(datatype)) {
+    runCorrectnessSweep(
+        algo,
+        datatype,
+        allReduceElementCounts(datatype, bufferOffsetBytes),
+        inPlace,
+        bufferOffsetBytes);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduce,
     CtranAllReduceCorrectnessTest,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceElementCounts()),
-        ::testing::Bool()),
+    ::testing::ValuesIn(allReduceParams()),
     correctnessTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    CtranAllReduceMixedOrderTest,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::Bool()),
-    mixedOrderTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
-    CtranAllReduceOffsetTest,
-    ::testing::Combine(
-        ::testing::Values(NCCL_ALLREDUCE_ALGO::ctree),
-        ::testing::ValuesIn(allReduceDataTypes()),
-        ::testing::ValuesIn(allReduceOffsetElementOffsets()),
-        ::testing::Bool()),
-    offsetTestName);
 #else
 #error "Define one CTRAN AllReduce topology: NVL_ONLY, IB_ONLY, or HYBRID"
 #endif
