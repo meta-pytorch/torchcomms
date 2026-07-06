@@ -126,7 +126,8 @@ std::unique_ptr<CtranIb> createCtranIb(
     AbortPtr abortCtrl,
     std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-    std::optional<int> maxNumCqe = std::nullopt) {
+    std::optional<int> maxNumCqe = std::nullopt,
+    std::optional<int> maxNumNic = std::nullopt) {
   const uint64_t commHash = 0x12345678;
   const std::string commDesc = "test";
 
@@ -145,7 +146,8 @@ std::unique_ptr<CtranIb> createCtranIb(
       qpServerAddr,
       abortCtrl,
       socketFactory,
-      maxNumCqe);
+      maxNumCqe,
+      maxNumNic);
 }
 // Helper class to run two-rank tests with address exchange
 class TwoRankTestHelper {
@@ -246,7 +248,8 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
       AbortPtr abortCtrl,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt) {
+      std::optional<int> maxNumCqe = std::nullopt,
+      std::optional<int> maxNumNic = std::nullopt) {
     const uint64_t commHash = 0x12345678;
     const std::string commDesc = "test";
 
@@ -265,7 +268,8 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
         qpServerAddr,
         abortCtrl,
         socketFactory,
-        maxNumCqe);
+        maxNumCqe,
+        maxNumNic);
   }
 };
 
@@ -1462,4 +1466,36 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumCqe) {
   unsetenv("NCCL_CTRAN_IB_MAX_NUM_CQE");
   ncclCvarInit();
   EXPECT_EQ(makeIb(2048)->getMaxCqe(), 2048);
+}
+
+// Test maxNumNic: NCCL_CTRAN_IB_DEVICES_PER_RANK fallback and per-transport
+// override. maxNumNic caps the number of NICs a transport initializes, so a
+// valid override never exceeds the device-count cvar.
+TEST_F(CtranIbBootstrapCommonTest, MaxNumNic) {
+  const int defaultNumNics = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+
+  auto makeIb = [&](std::optional<int> maxNumNic = std::nullopt) {
+    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    return createCtranIb(
+        /*rank=*/0,
+        CtranIb::BootstrapMode::kDefaultServer,
+        abortCtrl,
+        std::nullopt,
+        nullptr,
+        std::nullopt /* maxNumCqe */,
+        maxNumNic);
+  };
+
+  // Default (nullopt) falls through to NCCL_CTRAN_IB_DEVICES_PER_RANK
+  EXPECT_EQ(makeIb()->getNumNics(), defaultNumNics);
+  EXPECT_EQ(makeIb(std::nullopt)->getNumNics(), defaultNumNics);
+
+  // Per-transport override caps NIC usage. Capping to a single NIC is always
+  // valid since default init already uses device 0.
+  EXPECT_EQ(makeIb(1)->getNumNics(), 1);
+
+  // Override equal to the cvar keeps all NICs; an override larger than the cvar
+  // is clamped down to NCCL_CTRAN_IB_DEVICES_PER_RANK.
+  EXPECT_EQ(makeIb(defaultNumNics)->getNumNics(), defaultNumNics);
+  EXPECT_EQ(makeIb(defaultNumNics + 100)->getNumNics(), defaultNumNics);
 }

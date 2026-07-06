@@ -19,15 +19,15 @@ LocalVirtualConn::LocalVirtualConn(
     CommLogData commLogData)
     : devices_(devices), commLogData_(std::move(commLogData)) {
   FB_CHECKABORT(
-      devices_.size() == NCCL_CTRAN_IB_DEVICES_PER_RANK,
+      devices_.size() <= NCCL_CTRAN_IB_DEVICES_PER_RANK,
       "Invalid number of devices {} received in flush virtual connection compared to NCCL_CTRAN_IB_DEVICES_PER_RANK {}",
       devices_.size(),
       NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  ibvMrs_.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  ibvQps_.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  sgs_.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  ibvMrs_.reserve(devices_.size());
+  ibvQps_.reserve(devices_.size());
+  sgs_.resize(devices_.size());
 
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+  for (int device = 0; device < devices_.size(); device++) {
     auto maybeMr = devices_[device].ibvPd->regMr(
         &buf_, sizeof(int), ibverbx::IBV_ACCESS_LOCAL_WRITE);
     FOLLY_EXPECTED_CHECKTHROW_EX(maybeMr, commLogData_);
@@ -109,7 +109,7 @@ commResult_t LocalVirtualConn::iflush(
     const void* ibRegElem,
     CtranIbRequest* req) {
   auto mrs = reinterpret_cast<const std::vector<ibverbx::IbvMr>*>(ibRegElem);
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+  for (int device = 0; device < devices_.size(); device++) {
     ibverbx::ibv_send_wr wr;
     memset(&wr, 0, sizeof(wr));
     wr.wr_id = 0;
@@ -133,9 +133,8 @@ commResult_t LocalVirtualConn::iflush(
 
   // Push one entry per device CQE. Only the last carries the actual req;
   // earlier entries are nullptr so processCqe drains them without completing.
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
-    outstandingReqs_.push_back(
-        device == NCCL_CTRAN_IB_DEVICES_PER_RANK - 1 ? req : nullptr);
+  for (int device = 0; device < devices_.size(); device++) {
+    outstandingReqs_.push_back(device == devices_.size() - 1 ? req : nullptr);
   }
 
   return commSuccess;
