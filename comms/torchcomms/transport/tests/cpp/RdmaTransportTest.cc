@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 
 #include <folly/futures/Future.h>
@@ -58,7 +59,8 @@ class RdmaTransportTest : public ::testing::Test {
   // Common thread function that handles both server and client logic for write
   void runRdmaTransportThreadWrite(
       bool isServer,
-      ThreadSyncObjects& syncObjects) {
+      ThreadSyncObjects& syncObjects,
+      std::optional<int> maxNumNic = std::nullopt) {
     const size_t bufferSize = 8192;
     const int cudaDev = isServer ? 0 : 1;
     // Set CUDA device
@@ -66,7 +68,10 @@ class RdmaTransportTest : public ::testing::Test {
 
     // Create RdmaTransport instance
     auto transport = std::make_unique<torch::comms::RdmaTransport>(
-        cudaDev, evbThread_->getEventBase());
+        cudaDev,
+        evbThread_->getEventBase(),
+        std::nullopt /* maxNumCqe */,
+        maxNumNic);
 
     // Bind and get URL
     std::string myUrl = transport->bind();
@@ -525,6 +530,52 @@ TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
       [&]() { runRdmaTransportThreadWrite(false, clientSyncObjects); });
 
   // Wait for both threads to complete
+  serverThread.join();
+  clientThread.join();
+
+  // Verify the communication was successful
+  bool success = std::move(communicationFuture).get();
+  EXPECT_TRUE(success);
+}
+
+// Same bind -> connect -> write round-trip as above, but caps each transport to
+// a single NIC (maxNumNic=1). This mirrors the shard_service default
+// (kDefaultMaxNumNic=1) and guards the transfer path when maxNumNic <
+// NCCL_CTRAN_IB_DEVICES_PER_RANK.
+TEST_F(RdmaTransportTest, ServerClientDataTransferWriteMaxNumNic) {
+  // Promise/future pairs for exchanging URLs between threads
+  auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
+  auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
+  auto [memoryInfoPromise, memoryInfoFuture] =
+      folly::makePromiseContract<RdmaRemoteBuffer>();
+  auto [communicationResult, communicationFuture] =
+      folly::makePromiseContract<bool>();
+
+  // Setup synchronization objects for server (CUDA device 0)
+  ThreadSyncObjects serverSyncObjects{
+      std::move(urlPromise0),
+      std::move(urlFuture1),
+      folly::Promise<RdmaRemoteBuffer>(), // server doesn't export memory
+      std::move(memoryInfoFuture),
+      std::move(communicationResult)};
+
+  // Setup synchronization objects for client (CUDA device 1)
+  ThreadSyncObjects clientSyncObjects{
+      std::move(urlPromise1),
+      std::move(urlFuture0),
+      std::move(memoryInfoPromise),
+      folly::SemiFuture<RdmaRemoteBuffer>::makeEmpty(), // client doesn't import
+                                                        // memory
+      folly::Promise<bool>()}; // client doesn't set communication result
+
+  constexpr int kMaxNumNic = 1;
+  std::thread serverThread([&]() {
+    runRdmaTransportThreadWrite(true, serverSyncObjects, kMaxNumNic);
+  });
+  std::thread clientThread([&]() {
+    runRdmaTransportThreadWrite(false, clientSyncObjects, kMaxNumNic);
+  });
+
   serverThread.join();
   clientThread.join();
 
