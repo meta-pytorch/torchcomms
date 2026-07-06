@@ -29,12 +29,15 @@ struct Transport;
  *
  * IMPORTANT: All ranks must use identical configuration values.
  *
- * Memory per rank = (nRanks - 1) × pipelineDepth × dataBufferSize
+ * For the fixed-channel tile protocol:
+ *   dataBufferSize = maxNumChannels * perChannelSize
+ *
+ * Memory per rank = (nRanks - 1) * pipelineDepth * dataBufferSize
  */
 struct MultiPeerNvlTransportConfig {
-  // Size of staging buffer per pipeline slot (bytes).
-  // Larger transfers split into multiple steps of this size.
-  // Typical: 1-256 MB depending on message sizes.
+  // Size of staging buffer per pipeline slot across all channels (bytes).
+  // When maxNumChannels > 0, this is derived from perChannelSize and
+  // maxNumChannels during host transport construction.
   std::size_t dataBufferSize{0};
 
   // Chunk size for parallel processing (bytes).
@@ -59,10 +62,14 @@ struct MultiPeerNvlTransportConfig {
   // Typical: 1 for tile sendrecv dynamic block count support.
   std::size_t p2pBarrierCount{0};
 
-  // Maximum block count for the tile sendrecv protocol.
-  // Allocates persistent step state and dedicated tile signals internally.
+  // Maximum number of channels for the tile sendrecv protocol.
+  // Allocates one NvlChannelState per channel per peer (cursors + signals).
   // send/recv use these without user-managed state.
-  int tile_max_groups{128};
+  int maxNumChannels{64};
+
+  // Size of each channel's staging slice per pipeline slot (bytes).
+  // Must be 16-byte aligned when maxNumChannels > 0.
+  std::size_t perChannelSize{0};
 
   // If true, use dual chunk state buffers (one on each side) for local polling
   // on both sender and receiver. If false (default), use single chunk state
@@ -405,12 +412,12 @@ class MultiPeerNvlTransport {
   std::size_t perPeerLl128BufferSize_{0};
   std::size_t perPeerBarrierBufferSize_{0};
 
-  // Tile protocol state (allocated when tile_max_groups > 0)
-  std::unique_ptr<meta::comms::DeviceBuffer>
-      tileStepStateBuffer_; // not exchanged
-  std::unique_ptr<GpuMemHandler>
-      tileSignalHandler_; // 2*maxBlocks signals, exchanged
-  std::size_t perPeerTileSignalSize_{0};
+  // Per-peer NvlChannelState arrays (length = maxNumChannels per peer).
+  // The whole buffer is IPC-exchanged: the remote sender writes data_ready into
+  // this rank's local endpoint, and the remote receiver writes slot_free.
+  // Allocated when maxNumChannels > 0.
+  std::unique_ptr<GpuMemHandler> channelStateHandler_;
+  std::size_t perPeerChannelStateSize_{0};
   std::size_t perPeerLlBufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized

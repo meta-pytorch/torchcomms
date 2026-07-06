@@ -26,6 +26,10 @@ bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
 }
 
+int ctranPipesNvlMaxNumChannels() {
+  return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
+}
+
 } // namespace
 
 commResult_t ctran::ctranPreparePipesTrace(
@@ -90,14 +94,11 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         ? static_cast<size_t>(pc.nvlChunkSize)
         : static_cast<size_t>(NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE);
 
+    config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
+
     config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
         ? (pc.useDualStateBuffer == 1)
         : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
-    if (hierAgOverlapEnabled) {
-      config.nvlConfig.tile_max_groups = std::max(
-          config.nvlConfig.tile_max_groups,
-          static_cast<int>(NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS));
-    }
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
@@ -231,12 +232,13 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} useDualStateBuffer={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} nvlMaxNumChannels={} useDualStateBuffer={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
         config.nvlConfig.dataBufferSize,
         config.nvlConfig.chunkSize,
+        config.nvlConfig.maxNumChannels,
         config.nvlConfig.useDualStateBuffer,
         hierAgOverlapEnabled,
         config.disableIb,
