@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -43,10 +44,21 @@ constexpr uint32_t kReductionNormalInputSeed = 67890;
 constexpr const char* kPrintActualOutputEnv =
     "REDUCTION_NUMERICAL_PRINT_ACTUAL";
 
-enum class InputDistribution { Uniform, Normal };
+// Uniform and Normal are deterministic random draws; Corner is a fixed set of
+// edge-case values (zeros, signed zeros, min normal, subnormal, and an O(1)
+// cancellation pair +/-1.0) rather than a random distribution.
+enum class InputDistribution { Uniform, Normal, Corner };
 
 inline std::string inputDistributionName(InputDistribution distribution) {
-  return distribution == InputDistribution::Normal ? "Normal" : "Uniform";
+  switch (distribution) {
+    case InputDistribution::Normal:
+      return "Normal";
+    case InputDistribution::Corner:
+      return "Corner";
+    case InputDistribution::Uniform:
+      return "Uniform";
+  }
+  return "Uniform";
 }
 
 struct AllCloseTolerance {
@@ -61,9 +73,45 @@ void appendRandomInputs(
     int rank,
     int lane,
     InputDistribution distribution = InputDistribution::Uniform) {
-  // The element at local index i is the i-th sample from a deterministic
-  // generator seeded by (base seed for the distribution, rank, lane). AllReduce
-  // and Reduce use one lane; ReduceScatter appends one lane per output rank.
+  // The element at local index i is a deterministic value keyed by (rank,
+  // lane). Uniform and Normal draw from a seeded generator (distinct base seed
+  // per distribution); Corner uses a fixed edge-case pattern. AllReduce and
+  // Reduce use one lane; ReduceScatter appends one lane per output rank.
+  using HostT = typename DataTypeTraits<T>::HostT;
+  input.reserve(input.size() + count);
+
+  if (distribution == InputDistribution::Corner) {
+    // Subnormal/edge-of-range values, rotated per (rank, lane). Focused on the
+    // subnormal regime (zeros, signed zeros, smallest and mid subnormals, min
+    // normal) plus an O(1) cancellation pair; intentionally avoids large
+    // magnitudes so this probes subnormal handling and flush-to-zero rather
+    // than cross-magnitude cancellation. FP32-oriented; BF16 subnormal behavior
+    // is still under review.
+    constexpr double kFloatMinNormal =
+        static_cast<double>(std::numeric_limits<float>::min());
+    static const double kCornerValues[] = {
+        0.0,
+        -0.0,
+        std::numeric_limits<float>::denorm_min(),
+        -std::numeric_limits<float>::denorm_min(),
+        kFloatMinNormal * 0.5, // a subnormal between denorm_min and min normal
+        -kFloatMinNormal * 0.5,
+        kFloatMinNormal,
+        -kFloatMinNormal,
+        1.0,
+        -1.0,
+    };
+    constexpr size_t kNumCorner =
+        sizeof(kCornerValues) / sizeof(kCornerValues[0]);
+    const size_t offset = static_cast<size_t>(rank + lane);
+    for (size_t i = 0; i < count; ++i) {
+      input.push_back(
+          DataTypeTraits<T>::toDevice(
+              static_cast<HostT>(kCornerValues[(i + offset) % kNumCorner])));
+    }
+    return;
+  }
+
   const uint32_t baseSeed = distribution == InputDistribution::Normal
       ? kReductionNormalInputSeed
       : kReductionInputSeed;
@@ -73,8 +121,6 @@ void appendRandomInputs(
       static_cast<uint32_t>(lane),
   };
   std::mt19937_64 generator(seed);
-  using HostT = typename DataTypeTraits<T>::HostT;
-  input.reserve(input.size() + count);
   if (distribution == InputDistribution::Normal) {
     std::normal_distribution<double> normal(0.0, 1.0);
     for (size_t i = 0; i < count; ++i) {

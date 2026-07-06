@@ -61,8 +61,8 @@ struct ReduceNumericalParam {
         datatype == ncclFloat32 ? "Float32" : "Bfloat16";
     std::string base =
         algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
-    if (distribution == ncclx::test::numerics::InputDistribution::Normal) {
-      base += "_Normal";
+    if (distribution != ncclx::test::numerics::InputDistribution::Uniform) {
+      base += "_" + ncclx::test::numerics::inputDistributionName(distribution);
     }
     return base;
   }
@@ -241,7 +241,12 @@ const auto kReduceNumericalParams = ::testing::Values(
         .algo = ReduceNumericalAlgo::Ring,
         .count = 1024,
         .datatype = ncclBfloat16,
-        .distribution = ncclx::test::numerics::InputDistribution::Normal}
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    ReduceNumericalParam{
+        .algo = ReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Corner}
 #ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
     ,
     ReduceNumericalParam{
