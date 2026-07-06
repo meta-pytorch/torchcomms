@@ -34,7 +34,7 @@ run_tests () {
         FinalizeWarningTest.py
         FSDPCommTest.py
         FullgraphCompileAutogradTest.py
-#        FullgraphCompileTest.py  # Disable until resolution tracked in https://jira.devtools.intel.com/browse/PYTORCHDGQ-9447
+       FullgraphCompileTest.py
         GatherTest.py
         MemPoolTest.py
         MultiCommTest.py
