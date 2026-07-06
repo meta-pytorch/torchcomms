@@ -21,7 +21,7 @@ export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 ulimit -n 65535
 
-python3 -m pip install --pre torch==2.14.0.dev20260701+xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
+python3 -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
 #Build and run XCCL C++ unit tests (mock-based, no XPU hardware required)
 cd torchcomms
