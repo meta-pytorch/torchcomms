@@ -10,13 +10,11 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
-#include "comms/prims/core/ChunkState.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-using comms::prims::ChunkState;
 using comms::prims::DeviceSpan;
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
@@ -111,14 +109,8 @@ static const std::string kCtranAlgoInitResources{
     "CtranAlgoInitResources - lazy connect init"};
 
 namespace {
-inline size_t getPerPeerChunkStatesSize() {
-  static size_t size = sizeof(ChunkState) * CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS;
-  return size;
-}
-
-// Helper to calculate sync and staging buffer and chunkState pointers for a
-// given peer
-std::tuple<CtranAlgoDeviceSync*, void*, void*> partitionDevShm(
+// Helper to calculate sync and staging buffer pointers for a given peer
+std::tuple<CtranAlgoDeviceSync*, void*> partitionDevShm(
     void* mappedDevShmPtr,
     int nLocalRanks,
     int pos,
@@ -126,13 +118,9 @@ std::tuple<CtranAlgoDeviceSync*, void*, void*> partitionDevShm(
   char* regionPtr_d = reinterpret_cast<char*>(mappedDevShmPtr);
   void* bufBase_d =
       regionPtr_d + (nLocalRanks - 1) * sizeof(CtranAlgoDeviceSync);
-  void* chunkStateBase_d = reinterpret_cast<char*>(bufBase_d) +
-      (nLocalRanks - 1) * nvlSharedDevbufSize;
   void* sync = regionPtr_d + pos * sizeof(CtranAlgoDeviceSync);
   void* buf = reinterpret_cast<char*>(bufBase_d) + pos * nvlSharedDevbufSize;
-  void* chunkState = reinterpret_cast<char*>(chunkStateBase_d) +
-      pos * getPerPeerChunkStatesSize();
-  return {reinterpret_cast<CtranAlgoDeviceSync*>(sync), buf, chunkState};
+  return {reinterpret_cast<CtranAlgoDeviceSync*>(sync), buf};
 }
 } // namespace
 
@@ -214,8 +202,6 @@ commResult_t CtranAlgo::initKernelResources() {
     auto& localSyncsMap = devState_.localSyncsMap;
     auto& remoteStagingBufsMap = devState_.remoteStagingBufsMap;
     auto& localStagingBufsMap = devState_.localStagingBufsMap;
-    auto& remoteChunkStatesMap = devState_.remoteChunkStatesMap;
-    auto& localChunkStatesMap = devState_.localChunkStatesMap;
     auto& peerBcastBufsMap = devState_.peerBcastBufsMap;
 
     for (int i = 0; i < nLocalRanks; i++) {
@@ -226,30 +212,27 @@ commResult_t CtranAlgo::initKernelResources() {
         remoteStagingBufsMap[i] = nullptr;
       } else {
         int localPos = LOCAL_RANK_TO_DEV_REGION_POS(i, localRank);
-        auto [localSync, localBuf, localChunkState] = partitionDevShm(
+        auto [localSync, localBuf] = partitionDevShm(
             this->sharedRes_->mappedDevShmPtrs[localRank],
             nLocalRanks,
             localPos,
             nvlSharedDevbufSize);
         localSyncsMap[i] = localSync;
         localStagingBufsMap[i] = localBuf;
-        localChunkStatesMap[i] = localChunkState;
 
         int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, i);
-        auto [remoteSync, remoteBuf, remoteChunkState] = partitionDevShm(
+        auto [remoteSync, remoteBuf] = partitionDevShm(
             this->sharedRes_->mappedDevShmPtrs[i],
             nLocalRanks,
             remotePos,
             nvlSharedDevbufSize);
         remoteSyncsMap[i] = remoteSync;
         remoteStagingBufsMap[i] = remoteBuf;
-        remoteChunkStatesMap[i] = remoteChunkState;
       }
 
       // Next chunk is for bcastBuf
       peerBcastBufsMap[i] = (char*)this->sharedRes_->mappedDevShmPtrs[i] +
-          (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
-           getPerPeerChunkStatesSize()) *
+          (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) *
               (nLocalRanks - 1);
       CLOGF_TRACE(
           INIT,
@@ -294,16 +277,10 @@ commResult_t CtranAlgo::initKernelResources() {
     }
 
     comms::prims::LocalState localState{
-        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
-        .receiverStateBuffer = DeviceSpan<ChunkState>(
-            static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
-            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer])};
 
     comms::prims::RemoteState remoteState{
-        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
-        .receiverStateBuffer = DeviceSpan<ChunkState>(
-            static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
-            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer])};
 
     // Construct the object on CPU and copy to device memory
     comms::prims::P2pNvlTransportDevice transport(
@@ -331,13 +308,12 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
 
   // Create local shared memory region
   // The memory region on each owner rank is divided to (localRanks -1) sets of
-  // bufState, buf, chunkState for each peer, excluding the owner. The format is
-  // as below with N localRanks.
-  // |bufState_0|bufState_1|...|bufState_N-2|buf_0|buf_1|...|buf_N-2|chunkState_0|chunkState_1|...|chunkState_N-2|
+  // bufState and buf for each peer, excluding the owner. The format is as
+  // below with N localRanks.
+  // |bufState_0|bufState_1|...|bufState_N-2|buf_0|buf_1|...|buf_N-2|
   std::vector<ctran::utils::CtranIpcDesc> ipcDescs(nLocalRanks);
-  size_t shmSize = (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize +
-                    getPerPeerChunkStatesSize()) *
-          (nLocalRanks - 1) +
+  size_t shmSize =
+      (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) * (nLocalRanks - 1) +
       NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
 
   DevMemType memType = DevMemType::kCumem;
@@ -381,20 +357,6 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
             statePtr_d,
             &syncInitialVal,
             sizeof(CtranAlgoDeviceSync),
-            cudaMemcpyHostToDevice),
-        comm->logMetaData_);
-
-    void* chunkStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
-        (nLocalRanks - 1) *
-            (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize) +
-        pos * getPerPeerChunkStatesSize();
-    std::vector<ChunkState> initStates(
-        CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS, ChunkState());
-    FB_CUDACHECKTHROW_EX(
-        cudaMemcpy(
-            chunkStatePtr_d,
-            initStates.data(),
-            getPerPeerChunkStatesSize(),
             cudaMemcpyHostToDevice),
         comm->logMetaData_);
   }

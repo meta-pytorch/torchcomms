@@ -19,26 +19,6 @@ enum class GroupType {
   BLOCK // Full block groups (all threads in block)
 };
 
-void testSend(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1,
-    cudaStream_t stream = nullptr);
-
-void testRecv(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1,
-    cudaStream_t stream = nullptr);
-
 void testTileSend(
     const P2pNvlTransportDevice& p2p,
     void* src_d,
@@ -58,76 +38,6 @@ void testTileRecv(
     int numBlocks,
     int blockSize,
     cudaStream_t stream = nullptr);
-
-// Multiple sequential sends within a single kernel
-void testMultiSend(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    int numSends,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
-
-// Multiple sequential recvs within a single kernel
-void testMultiRecv(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    int numRecvs,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
-
-// Send then recv within a single kernel (for pipelined bidirectional)
-void testSendRecv(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
-
-// Recv then send within a single kernel (paired with testSendRecv)
-void testRecvSend(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
-
-// Weighted partition send/recv - partitions groups according to weights
-// sendWeight:recvWeight controls the ratio of groups assigned to send vs recv
-void testWeightedSendRecv(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    uint32_t sendWeight,
-    uint32_t recvWeight,
-    GroupType groupType = GroupType::WARP);
-
-// Weighted partition recv/send - partitions groups according to weights
-// recvWeight:sendWeight controls the ratio of groups assigned to recv vs send
-void testWeightedRecvSend(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    uint32_t recvWeight,
-    uint32_t sendWeight,
-    GroupType groupType = GroupType::WARP);
 
 void testTileMultiCallSendRecv(
     P2pNvlTransportDevice p2p,
@@ -289,18 +199,6 @@ void testPutWithSignal(
     int numBlocks,
     int blockSize,
     GroupType groupType = GroupType::WARP);
-
-// forward_group: fused recv-and-forward (reads from predecessor staging buffer,
-// writes to local dst and successor's remote staging buffer simultaneously)
-void testForward(
-    P2pNvlTransportDevice* pred,
-    P2pNvlTransportDevice* succ,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType = GroupType::WARP,
-    cudaStream_t stream = nullptr);
 
 // Test wait() - one-sided wait for peer to write to dst_d and signal
 void testWait(

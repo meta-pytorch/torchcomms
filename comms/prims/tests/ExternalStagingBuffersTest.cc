@@ -298,14 +298,6 @@ TEST_F(ExternalStagingBuffersTestFixture, StateAndSignalBuffersStillAllocated) {
     }
     auto p2p = transport.buildP2pTransportDevice(peer);
 
-    // State buffer spans should be non-empty (internally allocated)
-    EXPECT_FALSE(p2p.getLocalState().receiverStateBuffer.empty())
-        << "Rank " << globalRank << ": local state buffer for peer " << peer
-        << " should not be empty";
-    EXPECT_FALSE(p2p.getRemoteState().receiverStateBuffer.empty())
-        << "Rank " << globalRank << ": remote state buffer for peer " << peer
-        << " should not be empty";
-
     // Signal buffer spans should be non-empty (internally allocated)
     EXPECT_FALSE(p2p.getLocalState().signalBuffer.empty())
         << "Rank " << globalRank << ": local signal buffer for peer " << peer

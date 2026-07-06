@@ -1517,10 +1517,9 @@ cvars:
    type        : uint64_t
    default     : 128
    description : |-
-     Maximum chunks of a staging buffer in P2P NVL copy-based kernel, this is
-     used to allocate IPC buffer for chunk states. The value = 16M/128k (maximum
-     staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
-     is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
+     Maximum chunks of a staging buffer in P2P NVL copy-based kernel. The value
+     = 16M/128k (maximum staging buffer / minimum chunk size). Currently unused
+     after the cooperative chunk-state path was removed.
 
  - name        : NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH
    type        : size_t
@@ -1897,14 +1896,6 @@ cvars:
    description : |-
      Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
      Controls the granularity of parallel copy operations over NVLink.
-
- - name        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER
-   type        : bool
-   default     : false
-   description : |-
-     Enable dual state buffer mode for NVL transport in Pipes
-     MultiPeerTransport. When enabled, uses two chunk state buffers
-     instead of one, allowing overlap of copy and signal operations.
 
  - name        : NCCL_CTRAN_PIPES_DISABLE_IB
    type        : bool

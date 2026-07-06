@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
@@ -201,16 +202,26 @@ __device__ __forceinline__ void all_to_allv(
   // Perform peer send/recv based on partition_id from first partition
   bool is_send = (partition_id == 0);
   if (is_send) {
-    transport.p2p_nvl.send_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
         send_info.nbytes,
+        group_per_peer);
+    transport.p2p_nvl.send(
+        group_per_peer,
+        tiles.tile_data(group_per_peer.group_id),
+        tiles.tile_bytes(group_per_peer.group_id),
+        /*max_signal_bytes=*/0,
         timeout);
   } else {
-    transport.p2p_nvl.recv_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,
+        group_per_peer);
+    transport.p2p_nvl.recv(
+        group_per_peer,
+        tiles.tile_data(group_per_peer.group_id),
+        tiles.tile_bytes(group_per_peer.group_id),
+        /*max_signal_bytes=*/0,
         timeout);
   }
 

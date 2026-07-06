@@ -71,38 +71,6 @@ struct MultiPeerNvlTransportConfig {
   // Must be 16-byte aligned when maxNumChannels > 0.
   std::size_t perChannelSize{0};
 
-  // If true, use dual chunk state buffers (one on each side) for local polling
-  // on both sender and receiver. If false (default), use single chunk state
-  // buffer on receiver side only.
-  //
-  // Single State Mode (default):
-  //   - 1 ChunkState per chunk, stored on receiver side
-  //   - Sender polls over NVLink (slower), receiver polls locally (faster)
-  //   - Lower memory usage
-  //
-  // Dual State Mode:
-  //   - 2 ChunkStates per chunk: receiverState (for data-ready signal),
-  //     senderState (for ready-to-send signal)
-  //   - Both sender and receiver poll locally (faster on both sides)
-  //   - Higher memory usage, better performance for high-throughput workloads
-  //
-  // DUAL STATE MODE - STATE MACHINE:
-  //   Sender: poll local senderState for READY_TO_SEND → send data →
-  //           mark local senderState as UNREADY → signal receiver's
-  //           receiverState
-  //   Receiver: poll local receiverState for stepId → read data →
-  //           mark local receiverState as UNREADY → signal sender's senderState
-  //                                                  as READY_TO_SEND
-  //
-  // DUAL STATE MODE - STRIDED CHUNK ASSIGNMENT REQUIREMENT:
-  //   Dual state mode MUST use for_each_item_strided for chunk
-  //   distribution. The UNREADY state uses plain write + group.sync() for
-  //   efficiency (st.release.gpu is too slow). This write is only visible
-  //   within the same thread group. Strided ensures chunk K is ALWAYS
-  //   assigned to group (K % total_groups), making the unready write visible
-  //   after group.sync().
-  bool useDualStateBuffer{false};
-
   // Size of LL128 packet buffer per peer (bytes).
   // When > 0, allocates LL128 buffers and enables
   // ll128_send_group/recv_group/forward_groups on P2pNvlTransportDevice. When
@@ -382,12 +350,11 @@ class MultiPeerNvlTransport {
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
-  // GpuMemHandler-based memory for data, state, signal, and LL128 buffers
+  // GpuMemHandler-based memory for data, signal, and LL128 buffers
   // Automatically uses fabric handles on H100+/CUDA12.3+, falls back to cudaIpc
   // dataBufferHandler_ is only allocated when external data buffers are NOT
   // used. It is allocated lazily in exchange() rather than in the constructor.
   std::unique_ptr<GpuMemHandler> dataBufferHandler_;
-  std::unique_ptr<GpuMemHandler> stateBufferHandler_;
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
   std::unique_ptr<GpuMemHandler>
       ll128BufferHandler_; // nullptr when ll128BufferSize == 0
@@ -407,7 +374,6 @@ class MultiPeerNvlTransport {
 
   // Per-peer buffer sizes for offset calculation
   std::size_t perPeerDataBufferSize_{0};
-  std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
   std::size_t perPeerLl128BufferSize_{0};
   std::size_t perPeerBarrierBufferSize_{0};
