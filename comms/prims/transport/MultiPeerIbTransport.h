@@ -96,6 +96,11 @@ struct MultipeerIbTransportConfig {
   // block_id < maxGroups.
   int maxGroups{64};
 
+  // Legacy block-owned QP count for IBRC. IBGDA send/recv uses
+  // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
+  // fixed-channel shape in the following stack diff.
+  int qpsPerBlockPerNic{1};
+
   // Send/recv configuration. When set, the transport allocates a private
   // pipelined staging ring plus private signal/counter state for send()/recv().
   // When nullopt (default), only the raw put/signal APIs are available.
@@ -119,17 +124,21 @@ struct MultipeerIbTransportConfig {
   uint32_t qpDepth{1024};
 #endif
 
-  // Number of main QPs owned by one physical block on each NIC. IBGDA executes
-  // on the selected QP directly; IBRC enqueues to the selected QP's CPU-proxy
-  // command queue.
-  int qpsPerBlockPerNic{1};
-
   // Number of main QPs per fixed-channel IB connection, where one connection is
-  // a (channel, direction, NIC) tuple. Companion QPs are not multiplied by this
-  // value; IBGDA allocates one companion QP per (channel, direction, NIC).
+  // a (channel, direction, NIC) tuple. IBGDA companion QPs use the same slot
+  // geometry as main QPs because device-side lane selection indexes both with
+  // qpsPerConnection.
   int qpsPerConnection{1};
 
   int numQpsPerPeerPerNic() const {
+    if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
+      throw std::invalid_argument(
+          "maxGroups and qpsPerBlockPerNic must be >= 0");
+    }
+    if (maxGroups != 0 &&
+        qpsPerBlockPerNic > std::numeric_limits<int>::max() / maxGroups) {
+      throw std::overflow_error("maxGroups * qpsPerBlockPerNic overflows int");
+    }
     return maxGroups * qpsPerBlockPerNic;
   }
 
@@ -151,23 +160,33 @@ struct MultipeerIbTransportConfig {
       throw std::invalid_argument(
           "max_num_channels and qpsPerConnection must be >= 0");
     }
+    const int directionCount = fixedChannelDirectionCount();
     if (max_num_channels != 0 &&
-        qpsPerConnection > std::numeric_limits<int>::max() / kIbDirections /
+        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
                 max_num_channels) {
       throw std::overflow_error(
-          "max_num_channels * 2 * qpsPerConnection overflows int");
+          "max_num_channels * direction_count * qpsPerConnection overflows int");
     }
-    return max_num_channels * 2 * qpsPerConnection;
+    return max_num_channels * directionCount * qpsPerConnection;
   }
 
   int fixedChannelCompanionQpsPerPeerPerNic() const {
-    if (max_num_channels < 0) {
-      throw std::invalid_argument("max_num_channels must be >= 0");
+    if (max_num_channels < 0 || qpsPerConnection < 0) {
+      throw std::invalid_argument(
+          "max_num_channels and qpsPerConnection must be >= 0");
     }
-    if (max_num_channels > std::numeric_limits<int>::max() / 2) {
-      throw std::overflow_error("max_num_channels * 2 overflows int");
+    const int directionCount = fixedChannelDirectionCount();
+    if (max_num_channels != 0 &&
+        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
+                max_num_channels) {
+      throw std::overflow_error(
+          "max_num_channels * direction_count * qpsPerConnection overflows int");
     }
-    return max_num_channels * 2;
+    return max_num_channels * directionCount * qpsPerConnection;
+  }
+
+  int fixedChannelDirectionCount() const {
+    return sendRecv.has_value() ? kIbDirections : 1;
   }
 
   // mlx5 Data-Direct: register MRs through the NIC's data-direct (BAR1) PCIe

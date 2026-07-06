@@ -94,14 +94,6 @@ struct NicDeviceIbgdaResources {
   }
 };
 
-inline constexpr int kIbgdaMaxQpLanesPerBlock = 64;
-
-struct IbgdaBlockQpState {
-  uint32_t put_rr{0};
-  uint64_t pending_flush_lanes_mask{0};
-  uint64_t last_flush_wqe[kIbgdaMaxQpLanesPerBlock]{};
-};
-
 /**
  * P2pIbgdaTransportDevice - Device-side per-peer RDMA transport handle
  *
@@ -177,8 +169,8 @@ class P2pIbgdaTransportDevice {
    *
    * @param nicDevices          GPU span of per-NIC bundles (length =
    *                              numNics). Each NicDeviceIbgdaResources owns
-   *                              maxGroups * qpsPerBlockPerNic main QPs and
-   *                              maxGroups companion QPs.
+   *                              maxChannels * qpDirectionCount *
+   *                              qpsPerConnection main and companion QPs.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
    *                              targets the peer's local signal inbox.
    *                              Used by the slot-index signal API.
@@ -205,9 +197,10 @@ class P2pIbgdaTransportDevice {
       IbgdaLocalBuffer ownedCounterBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
-      int maxGroups = 0,
-      int qpsPerBlockPerNic = 1,
-      DeviceSpan<IbgdaBlockQpState> blockQpState = {},
+      int maxChannels = 0,
+      int qpsPerConnection = 1,
+      int qpDirectionCount = kIbDirections,
+      DeviceSpan<IbLocalChannel> localChannels = {},
       IbSendRecvState sendRecvState = {})
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
@@ -215,9 +208,10 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_(ownedCounterBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
-        maxGroups_(maxGroups),
-        qpsPerBlockPerNic_(qpsPerBlockPerNic),
-        blockQpState_(blockQpState),
+        maxChannels_(maxChannels),
+        qpsPerConnection_(qpsPerConnection),
+        qpDirectionCount_(qpDirectionCount),
+        localChannels_(localChannels),
         sendRecv_(sendRecvState) {}
 
   // =========================================================================
@@ -300,8 +294,8 @@ class P2pIbgdaTransportDevice {
 
   /**
    * put (thread-scope, slot-index) - Single-thread variant of slot-index put.
-   * Caller is responsible for gating to one thread. Uses the caller's physical
-   * block-owned QP resources.
+   * Caller is responsible for gating to one thread. Fixed-channel callers must
+   * use the group-scope APIs because the solo group id is not a channel id.
    * Args match the group-scope overload.
    */
   __device__ void put(
@@ -342,8 +336,9 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * signal (thread-scope, slot-index) - Single-thread variant. Uses the
-   * caller's physical block-owned QP resources.
+   * signal (thread-scope, slot-index) - Single-thread variant. Fixed-channel
+   * callers must use the group-scope APIs because the solo group id is not a
+   * channel id.
    */
   __device__ void signal(int signalId, uint64_t signalVal = 1) {
     ThreadGroup solo = make_thread_solo();
@@ -517,7 +512,9 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * put (thread-scope) - Single-thread variant. Caller gates.
+   * put (thread-scope) - Single-thread variant. Caller gates. Fixed-channel
+   * callers must use the group-scope APIs because the solo group id is not a
+   * channel id.
    *
    * signalBuf intentionally not defaulted (see group-scope sibling above).
    */
@@ -591,10 +588,11 @@ class P2pIbgdaTransportDevice {
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      IbgdaLane lane = control_lane(group.block_id);
+      IbgdaLane lane = control_lane(group, direction);
       const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
       record_signal_wqe(lane, signalTicket);
     }
@@ -671,14 +669,18 @@ class P2pIbgdaTransportDevice {
    *
    * Flush waits for the block's recorded data put and signal WQEs. Counter
    * WQEs are local-tracking operations and are intentionally not part of the
-   * flush set.
+   * flush set. Raw put/signal/fence users default to the Send direction;
+   * receive-direction drains are only needed by protocols that explicitly post
+   * receive-direction data WQEs.
    *
    * @param group Thread group; all threads must call. Leader waits, all sync.
    */
-  __device__ void flush(ThreadGroup& group) {
+  __device__ void flush(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      drain_flush_lanes(group.block_id);
+      drain_flush_lanes(group, direction);
     }
     group.sync();
   }
@@ -697,8 +699,10 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group; all threads must call.
    */
-  __device__ void fence(ThreadGroup& group) {
-    flush(group);
+  __device__ void fence(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
+    flush(group, direction);
   }
 
   /** fence (thread-scope) - Single-thread variant. */
@@ -780,7 +784,11 @@ class P2pIbgdaTransportDevice {
     uint32_t nic_id{0};
     uint32_t qp_index{0};
     uint32_t lane_ordinal{0};
-    uint32_t block_id{0};
+    uint32_t channel_id{0};
+    uint32_t qp_slot_per_nic{0};
+    uint32_t companion_slot_per_nic{0};
+    IbDirection direction{IbDirection::Send};
+    IbQpState* qp_state{nullptr};
     doca_gpu_dev_verbs_qp* qp{nullptr};
     doca_gpu_dev_verbs_qp* companion_qp{nullptr};
   };
@@ -801,11 +809,12 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
-  __device__ __forceinline__ void validate_block_id(uint32_t blockId) const {
+  __device__ __forceinline__ void validate_channel_id(
+      uint32_t channelId) const {
     if (blockIdx.y != 0 || blockIdx.z != 0 || blockDim.y != 1 ||
         blockDim.z != 1) {
       printf(
-          "[PIPES] FATAL: IBGDA per-block QP selection currently supports "
+          "[PIPES] FATAL: IBGDA channel QP selection currently supports "
           "only 1D grids and 1D thread blocks, got blockIdx=(%u,%u,%u) "
           "blockDim=(%u,%u,%u)\n",
           blockIdx.x,
@@ -816,12 +825,13 @@ class P2pIbgdaTransportDevice {
           blockDim.z);
       PIPES_DEVICE_TRAP();
     }
-    if (blockId >= static_cast<uint32_t>(maxGroups_) || blockQpState_.empty()) {
+    if (channelId >= static_cast<uint32_t>(maxChannels_) ||
+        localChannels_.empty()) {
       printf(
-          "[PIPES] FATAL: IBGDA block_id=%u out of range [0, %d) "
-          "or block QP state missing\n",
-          blockId,
-          maxGroups_);
+          "[PIPES] FATAL: IBGDA channel_id=%u out of range [0, %d) "
+          "or channel state missing\n",
+          channelId,
+          maxChannels_);
       PIPES_DEVICE_TRAP();
     }
   }
@@ -834,12 +844,22 @@ class P2pIbgdaTransportDevice {
           "cluster-scope ThreadGroup yet\n");
       PIPES_DEVICE_TRAP();
     }
-    validate_block_id(group.block_id);
+    validate_channel_id(group.group_id);
   }
 
-  __device__ __forceinline__ IbgdaLane
-  lane_from_ordinal(uint32_t blockId, uint32_t laneOrdinal) const {
-    validate_block_id(blockId);
+  __device__ __forceinline__ IbQpState& qp_state(
+      uint32_t channelId,
+      IbDirection direction) const {
+    validate_channel_id(channelId);
+    auto& channel = localChannels_[channelId];
+    return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
+  }
+
+  __device__ __forceinline__ IbgdaLane lane_from_ordinal(
+      uint32_t channelId,
+      IbDirection direction,
+      uint32_t laneOrdinal) const {
+    validate_channel_id(channelId);
     const uint32_t numNics = static_cast<uint32_t>(nicDevices_.size());
     if (numNics == 0) {
       printf(
@@ -858,17 +878,33 @@ class P2pIbgdaTransportDevice {
     }
     const uint32_t nicId = laneOrdinal % numNics;
     const uint32_t qpIndex = laneOrdinal / numNics;
-    const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
-    const uint32_t qpId = blockId * qpsPerBlockPerNic_ + qpIndex;
-    if (qpIndex >= static_cast<uint32_t>(qpsPerBlockPerNic_) ||
-        qpId >= nic.qps.size() || blockId >= nic.companion_qps.size()) {
+    const uint32_t directionIndex = static_cast<uint32_t>(direction);
+    if (directionIndex >= static_cast<uint32_t>(qpDirectionCount_)) {
       printf(
-          "[PIPES] FATAL: invalid IBGDA lane block=%u nic=%u qpIndex=%u "
-          "qpsPerBlockPerNic=%d qps=%u companionQps=%u\n",
-          blockId,
+          "[PIPES] FATAL: IBGDA direction=%u is unavailable for "
+          "qpDirectionCount=%d\n",
+          directionIndex,
+          qpDirectionCount_);
+      PIPES_DEVICE_TRAP();
+    }
+    const uint32_t qpSlotPerNic =
+        ((channelId * static_cast<uint32_t>(qpDirectionCount_) +
+          directionIndex) *
+         static_cast<uint32_t>(qpsPerConnection_)) +
+        qpIndex;
+    const uint32_t companionSlotPerNic = qpSlotPerNic;
+    const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
+    if (qpIndex >= static_cast<uint32_t>(qpsPerConnection_) ||
+        qpSlotPerNic >= nic.qps.size() ||
+        companionSlotPerNic >= nic.companion_qps.size()) {
+      printf(
+          "[PIPES] FATAL: invalid IBGDA lane channel=%u direction=%u nic=%u "
+          "qpIndex=%u qpsPerConnection=%d qps=%u companionQps=%u\n",
+          channelId,
+          directionIndex,
           nicId,
           qpIndex,
-          qpsPerBlockPerNic_,
+          qpsPerConnection_,
           static_cast<unsigned>(nic.qps.size()),
           static_cast<unsigned>(nic.companion_qps.size()));
       PIPES_DEVICE_TRAP();
@@ -877,14 +913,18 @@ class P2pIbgdaTransportDevice {
         .nic_id = nicId,
         .qp_index = qpIndex,
         .lane_ordinal = laneOrdinal,
-        .block_id = blockId,
-        .qp = nic.qps[qpId],
-        .companion_qp = nic.companion_qps[blockId]};
+        .channel_id = channelId,
+        .qp_slot_per_nic = qpSlotPerNic,
+        .companion_slot_per_nic = companionSlotPerNic,
+        .direction = direction,
+        .qp_state = &qp_state(channelId, direction),
+        .qp = nic.qps[qpSlotPerNic],
+        .companion_qp = nic.companion_qps[companionSlotPerNic]};
   }
 
   __device__ __forceinline__ uint32_t
-  select_put_lane_ordinal(uint32_t blockId) {
-    validate_block_id(blockId);
+  select_put_lane_ordinal(uint32_t channelId, IbDirection direction) {
+    validate_channel_id(channelId);
     if (nicDevices_.empty()) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
@@ -901,24 +941,28 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
     const uint32_t numLanes =
-        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+        static_cast<uint32_t>(nicDevices_.size() * qpsPerConnection_);
     if (numLanes == 1) {
       return 0;
     }
-    uint32_t seq = atomicAdd(&blockQpState_[blockId].put_rr, 1U);
+    uint32_t seq = qp_state(channelId, direction).cursor++;
     return seq % numLanes;
   }
 
-  __device__ __forceinline__ IbgdaLane select_put_lane(uint32_t blockId) {
-    return lane_from_ordinal(blockId, select_put_lane_ordinal(blockId));
+  __device__ __forceinline__ IbgdaLane
+  select_put_lane(ThreadGroup& group, IbDirection direction) {
+    const uint32_t channelId = group.group_id;
+    return lane_from_ordinal(
+        channelId, direction, select_put_lane_ordinal(channelId, direction));
   }
 
-  __device__ __forceinline__ IbgdaLane control_lane(uint32_t blockId) const {
-    return lane_from_ordinal(blockId, 0);
+  __device__ __forceinline__ IbgdaLane
+  control_lane(ThreadGroup& group, IbDirection direction) const {
+    return lane_from_ordinal(group.group_id, direction, 0);
   }
 
   __device__ __forceinline__ uint32_t num_qp_lanes() const {
-    return static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+    return static_cast<uint32_t>(nicDevices_.size() * qpsPerConnection_);
   }
 
   __device__ __forceinline__ void atomic_max_u64(uint64_t* ptr, uint64_t val) {
@@ -949,9 +993,9 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ void record_flush_wqe(
       const IbgdaLane& lane,
       uint64_t ticket) {
-    auto& state = blockQpState_[lane.block_id];
-    atomic_max_u64(&state.last_flush_wqe[lane.lane_ordinal], ticket);
-    atomic_or_u64(&state.pending_flush_lanes_mask, 1ULL << lane.lane_ordinal);
+    auto& state = *lane.qp_state;
+    atomic_max_u64(&state.lastFlushWqe[lane.lane_ordinal], ticket);
+    atomic_or_u64(&state.pendingFlushLanesMask, 1ULL << lane.lane_ordinal);
   }
 
   __device__ __forceinline__ void record_signal_wqe(
@@ -984,24 +1028,25 @@ class P2pIbgdaTransportDevice {
     }
   }
 
-  __device__ void
-  wait_lanes(uint32_t blockId, uint64_t mask, const uint64_t* tickets) {
-    const uint32_t numLanes =
-        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+  __device__ void wait_lanes(
+      uint32_t channelId,
+      IbDirection direction,
+      uint64_t mask,
+      const uint64_t* tickets) {
+    const uint32_t numLanes = num_qp_lanes();
     for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
       if ((mask & (1ULL << laneId)) == 0) {
         continue;
       }
-      IbgdaLane lane = lane_from_ordinal(blockId, laneId);
+      IbgdaLane lane = lane_from_ordinal(channelId, direction, laneId);
       wait_local_on_qp(lane.qp, tickets[laneId]);
     }
   }
 
-  __device__ void drain_flush_lanes(uint32_t blockId) {
-    auto& state = blockQpState_[blockId];
-    const uint64_t mask =
-        atomic_exchange_u64(&state.pending_flush_lanes_mask, 0);
-    wait_lanes(blockId, mask, state.last_flush_wqe);
+  __device__ void drain_flush_lanes(ThreadGroup& group, IbDirection direction) {
+    auto& state = qp_state(group.group_id, direction);
+    const uint64_t mask = atomic_exchange_u64(&state.pendingFlushLanesMask, 0);
+    wait_lanes(group.group_id, direction, mask, state.lastFlushWqe);
   }
 
   __device__ void put_impl(
@@ -1028,7 +1073,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       validate_group_scope(group);
       const bool hasCounter = counterBuf.ptr != nullptr;
-      IbgdaLane lane = select_put_lane(group.block_id);
+      IbgdaLane lane = select_put_lane(group, IbDirection::Send);
       if (hasSignal && hasCounter) {
         const auto tickets = put_signal_counter_single_impl(
             lane,
@@ -1082,10 +1127,11 @@ class P2pIbgdaTransportDevice {
     uint64_t lastPutWqeIdx = 0;
     if (group.is_leader()) {
       validate_group_scope(group);
-      laneOrdinal = select_put_lane_ordinal(group.block_id);
+      laneOrdinal = select_put_lane_ordinal(group.group_id, IbDirection::Send);
     }
     laneOrdinal = group.broadcast<uint32_t>(laneOrdinal);
-    IbgdaLane lane = lane_from_ordinal(group.block_id, laneOrdinal);
+    IbgdaLane lane =
+        lane_from_ordinal(group.group_id, IbDirection::Send, laneOrdinal);
 
     lastPutWqeIdx =
         put_cooperative_data_impl(group, lane, localBuf, remoteBuf, nbytes);
@@ -2471,9 +2517,10 @@ class P2pIbgdaTransportDevice {
 
   int numSignalSlots_{0};
   int numCounterSlots_{0};
-  int maxGroups_{0};
-  int qpsPerBlockPerNic_{1};
-  DeviceSpan<IbgdaBlockQpState> blockQpState_{};
+  int maxChannels_{0};
+  int qpsPerConnection_{1};
+  int qpDirectionCount_{kIbDirections};
+  DeviceSpan<IbLocalChannel> localChannels_{};
 
   IbSendRecvDevice sendRecv_{};
 };
