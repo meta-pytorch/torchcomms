@@ -34,6 +34,8 @@ struct ReduceNumericalParam {
   ReduceNumericalAlgo algo;
   size_t count;
   ncclDataType_t datatype;
+  ncclx::test::numerics::InputDistribution distribution =
+      ncclx::test::numerics::InputDistribution::Uniform;
 
   std::string name() const {
     std::string algoName;
@@ -57,7 +59,12 @@ struct ReduceNumericalParam {
 
     const std::string dtypeName =
         datatype == ncclFloat32 ? "Float32" : "Bfloat16";
-    return algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    std::string base =
+        algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    if (distribution == ncclx::test::numerics::InputDistribution::Normal) {
+      base += "_Normal";
+    }
+    return base;
   }
 };
 
@@ -100,7 +107,7 @@ class ReduceNumericalTest
 
     std::vector<T> original;
     ncclx::test::numerics::appendRandomInputs<T>(
-        original, param.count, globalRank, kRoot);
+        original, param.count, globalRank, kRoot, param.distribution);
     CUDACHECK_TEST(cudaMemcpyAsync(
         originalDevice,
         original.data(),
@@ -224,7 +231,17 @@ const auto kReduceNumericalParams = ::testing::Values(
     ReduceNumericalParam{
         .algo = ReduceNumericalAlgo::CtranUnsupported,
         .count = 1024,
-        .datatype = ncclFloat32}
+        .datatype = ncclFloat32},
+    ReduceNumericalParam{
+        .algo = ReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    ReduceNumericalParam{
+        .algo = ReduceNumericalAlgo::Ring,
+        .count = 1024,
+        .datatype = ncclBfloat16,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal}
 #ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
     ,
     ReduceNumericalParam{
