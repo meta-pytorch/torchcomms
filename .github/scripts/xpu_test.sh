@@ -19,7 +19,8 @@ export USE_NCCLX=OFF
 export USE_GLOO=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
-ulimit -n 65535
+ulimit -n 65535 # Increase the open file descriptor limit to avoid oneCCL/Level Zero
+# initialization failures ("pidfd_getfd failed: Too many open files")
 
 python3 -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
