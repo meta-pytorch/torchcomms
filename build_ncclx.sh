@@ -215,39 +215,6 @@ function build_third_party {
     fi
   fi
 
-  if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
-    build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
-    build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
-    build_fb_oss_library "https://github.com/facebook/wangle.git" "$third_party_tag" wangle "-DBUILD_TESTS=OFF"
-    build_fb_oss_library "https://github.com/facebook/fbthrift.git" "$third_party_tag" thrift
-  fi
-  popd
-}
-
-function build_comms_tracing_service {
-  local include_prefix="comms/analyzer/if"
-  local base_dir="${PWD}"
-  local build_dir=/tmp/build/comms_tracing_service
-
-  mkdir -p "$build_dir"
-  pushd "$build_dir"
-  # set up the directory structure
-  mkdir -p "$include_prefix"
-  cp -r "${base_dir}/${include_prefix}"/* "$include_prefix"
-  mv "$include_prefix"/CMakeLists.txt .
-
-  if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
-    # Reuse thrift cmake build tree (source build path)
-    cp -r /tmp/third-party/thrift/build .
-  else
-    # fbthrift installed via conda — cmake finds it via CMAKE_PREFIX_PATH
-    mkdir -p build
-  fi
-
-  # build the thrift service library
-  cd build
-  do_cmake_build ..
-
   popd
 }
 
@@ -291,7 +258,6 @@ THIRD_PARTY_LDFLAGS=""
 if [[ -z "${NCCL_BUILD_SKIP_DEPS}" ]]; then
   echo "Building dependencies"
   build_third_party
-  build_comms_tracing_service
 fi
 
 # Generate nccl_cvars files (these are no longer checked into the repo)
@@ -331,41 +297,6 @@ echo "Successfully generated nccl_cvars files in $CVARS_DIR"
 
 # set up the third-party ldflags
 export PKG_CONFIG_PATH="${CONDA_LIB_DIR}"/pkgconfig
-THRIFT_SERVICE_LDFLAGS=(
-  "-l:libcomms_tracing_service.a"
-  "-Wl,--start-group"
-  "-l:libasync.a"
-  "-l:libconcurrency.a"
-  "-l:libthrift-core.a"
-  "-l:libthriftanyrep.a"
-  "-l:libthriftcpp2.a"
-)
-
-# libthrift_dynamic_value.a and libthrift_path.a are only available in fbthrift main branch
-# (used by feedstock build), not in the pinned v2026.01.19.00 tag (used by OSS build)
-if [[ -n "${NCCL_FEEDSTOCK_BUILD}" ]]; then
-  THRIFT_SERVICE_LDFLAGS+=(
-    "-l:libthrift_dynamic_value.a"
-    "-l:libthrift_path.a"
-  )
-fi
-
-THRIFT_SERVICE_LDFLAGS+=(
-  "-l:libthriftmetadata.a"
-  "-l:libthriftprotocol.a"
-  "-l:libthrifttype.a"
-  "-l:libthrifttyperep.a"
-  "-l:librpcmetadata.a"
-  "-l:libruntime.a"
-  "-l:libserverdbginfo.a"
-  "-l:libtransport.a"
-  "-l:libcommon.a"
-  "-Wl,--end-group"
-  "-l:libwangle.a"
-  "-l:libfizz.a"
-  "-l:libxxhash.a"
-)
-THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static absl_log absl_check) "
 # liburing: folly's cmake config declares this dependency but pkg-config omits
@@ -374,10 +305,10 @@ if pkg-config --exists liburing 2>/dev/null; then
   THIRD_PARTY_LDFLAGS+="-luring "
 fi
 # libfmt: NCCLX's own objects use FMT_HEADER_ONLY=1, but the prebuilt
-# folly/thrift static libs were built without it and contain unresolved
-# references to non-inline fmt::v9::detail symbols (is_printable,
-# thousands_sep_impl, locale_ref::get<std::locale>). The conda libfolly.pc
-# does not list fmt as a dep, so add -lfmt explicitly.
+# folly static libs were built without it and contain unresolved references
+# to non-inline fmt::v9::detail symbols (is_printable, thousands_sep_impl,
+# locale_ref::get<std::locale>). The conda libfolly.pc does not list fmt as
+# a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
   THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
 else
