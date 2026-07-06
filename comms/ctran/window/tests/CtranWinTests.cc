@@ -777,6 +777,68 @@ TEST_F(CtranWinTest, multiSegmentWindowRegister) {
   COMMCHECK_TEST(commMemFreeDisjoint(disjointBuf, segSizes));
 }
 
+TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
+  // Reproduces a leak in ctranWinRegister: it constructs the CtranWin with a
+  // raw `new`, then FB_COMMCHECK(exchange()). If exchange() fails, the early
+  // return never deletes the window nor calls free(), so the window and any
+  // resources it already acquired leak. In particular exchange() first
+  // registers the internal signal buffer via regMem (caching one RegCache
+  // segment) and only afterwards registers the user data buffer; a failure in
+  // that later step leaks the already-cached signal-buffer segment.
+  //
+  // Trigger: register a genuine cumem device buffer with a size far larger
+  // than its actual mapped allocation. The user-buffer registration walks the
+  // range past the mapped VA (cuMemGetAddressRange) and returns an error,
+  // after the signal-buffer segment has already been cached. The buffer must
+  // be a real cumem allocation so getDevMemType returns kCumem and the range
+  // discovery takes the cumem path; a cudaMalloc/host over-range buffer does
+  // not reliably error there.
+  //
+  // With the RAII guard fix, the failed register frees the window (and its
+  // signal-buffer segment), so getSegments() returns to baseline.
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip over-range user buffer test";
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  // Allocate a modest, real cumem device buffer. The registration below passes
+  // a size far beyond this, so pinRange walks past the mapped VA and errors.
+  const size_t allocBytes = 2 * 1024 * 1024; // 2MB
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  void* cumemBuf = commMemAlloc(allocBytes, bufType, segments);
+  ASSERT_NE(cumemBuf, nullptr);
+
+  // Register with a size 1GB beyond the 2MB mapped allocation. This is safely
+  // past the cumem granularity-rounded mapped range, guaranteeing over-range.
+  const size_t oversizedBytes = allocBytes + (1UL << 30);
+
+  auto regCache = ctran::RegCache::getInstance();
+  const size_t segsBefore = regCache->getSegments().size();
+
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  const auto res =
+      ctranWinRegister(cumemBuf, oversizedBytes, comm.get(), &win, hints);
+  EXPECT_NE(res, commSuccess);
+  EXPECT_EQ(win, nullptr);
+
+  EXPECT_EQ(regCache->getSegments().size(), segsBefore)
+      << "ctranWinRegister leaked a RegCache segment on exchange() failure";
+
+  // Free the ACTUAL allocated buffer (allocBytes, not the oversized size).
+  commMemFree(cumemBuf, allocBytes, bufType);
+  segments.erase(
+      std::remove_if(
+          segments.begin(),
+          segments.end(),
+          [cumemBuf](const TestMemSegment& seg) {
+            return seg.ptr == cumemBuf;
+          }),
+      segments.end());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranWinInstance,
     CtranWinTestParam,
