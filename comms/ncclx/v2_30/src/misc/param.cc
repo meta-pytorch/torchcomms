@@ -22,7 +22,6 @@
 
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/InitFolly.h"
 
@@ -81,7 +80,6 @@ void initEnv() {
     ncclCvarInit();
     initEnvFunc();
     initNcclLogger();
-    ncclx::NCCLXCommsTracingServiceUtil::startService();
   });
 }
 
