@@ -97,28 +97,6 @@ actualSegElems(size_t count, size_t segmentElems, int rank) {
 }
 
 /**
- * Tile view for one logical segment owned by the current num-block group.
- */
-struct SegmentTile {
-  size_t offsetBytes;
-  size_t bytes;
-};
-
-__device__ __forceinline__ SegmentTile
-segmentTileForBlock(size_t totalBytes, int numBlocks, int blockId) {
-  comms::prims::TiledBuffer<char> tile(nullptr, totalBytes, numBlocks);
-  return SegmentTile{
-      .offsetBytes = static_cast<size_t>(blockId) * tile.tile_elements,
-      .bytes = tile.tile_bytes(blockId),
-  };
-}
-
-__device__ __forceinline__ SegmentTile
-segmentTile(size_t totalBytes, const comms::prims::ThreadGroup& group) {
-  return segmentTileForBlock(totalBytes, group.total_groups, group.group_id);
-}
-
-/**
  * Return the largest owner tile participating in local NVL exchange.
  */
 template <typename T>
@@ -129,8 +107,10 @@ __device__ __forceinline__ size_t maxOwnerTileBytes(
   for (int owner = 0; owner < args.pMin; owner++) {
     const size_t ownerElems =
         actualSegElems(args.count, args.segmentElems, owner);
-    const auto ownerTile = segmentTile(ownerElems * sizeof(T), group);
-    maxBytes = ownerTile.bytes > maxBytes ? ownerTile.bytes : maxBytes;
+    const comms::prims::TiledBuffer<char> ownerTile(
+        nullptr, ownerElems * sizeof(T), group);
+    const size_t ownerTileBytes = ownerTile.bytes();
+    maxBytes = ownerTileBytes > maxBytes ? ownerTileBytes : maxBytes;
   }
   return maxBytes;
 }

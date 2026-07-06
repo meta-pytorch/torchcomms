@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
 #include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
 
@@ -82,7 +84,6 @@ struct CommonKernArgs {
   int localRank;
   /** Number of logical data partitions processed by CUDA blocks per GPU. */
   int numBlocks;
-
   /** Collective datatype implemented by the kernel dispatch. */
   commDataType_t datatype;
   /** Reduction operation implemented by the kernel dispatch. */

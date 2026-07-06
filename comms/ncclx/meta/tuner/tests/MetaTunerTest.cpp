@@ -124,11 +124,13 @@ TEST_F(MetaTunerTest, EnabledWhenCvarSet) {
 }
 
 // Case 2: size-range match sets the targeted entry to 0.0, others unchanged;
-// out-of-range leaves the whole table unchanged.
+// out-of-range leaves the whole table unchanged. nRanks=1 so bytesPerRank ==
+// nBytes here, isolating the Int64Range match from the per-rank division (the
+// division itself is covered by BytesPerRankFilter).
 TEST_F(MetaTunerTest, SizeRangeMatch) {
   const TunerConfigFile config(
       ".csv", "allreduce,[1024,4096],ring,ll128,-1,*,*\n");
-  void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
+  void* context = initTuner(/* nRanks */ 1, /* nNodes */ 1);
 
   CostTable inRange;
   int nChannels = 1;
@@ -270,12 +272,14 @@ bool ruleMatched(
   return table.at(NCCL_ALGO_RING, NCCL_PROTO_LL128) == 0.0F;
 }
 
-// Int64Range bytes matching: a half-open interval [1024,4096) matches its lower
-// endpoint, an interior value, and excludes its upper endpoint and below-range.
+// Int64Range bytesPerRank matching: a half-open interval [1024,4096) matches
+// its lower endpoint, an interior value, and excludes its upper endpoint and
+// below-range. nRanks=1 so bytesPerRank == nBytes (per-rank division covered by
+// BytesPerRankFilter).
 TEST_F(MetaTunerTest, BytesIntervalEndpoints) {
   const TunerConfigFile config(
       ".csv", "allreduce,[1024,4096),ring,ll128,-1,*,*\n");
-  void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
+  void* context = initTuner(/* nRanks */ 1, /* nNodes */ 1);
 
   EXPECT_FALSE(ruleMatched(context, ncclFuncAllReduce, 1023));
   EXPECT_TRUE(ruleMatched(context, ncclFuncAllReduce, 1024));
@@ -285,10 +289,12 @@ TEST_F(MetaTunerTest, BytesIntervalEndpoints) {
   kMetaTuner.finalize(context);
 }
 
-// Open-ended bytes interval (1024,) matches everything strictly above 1024.
+// Open-ended bytesPerRank interval (1024,) matches everything strictly above
+// 1024. nRanks=1 so bytesPerRank == nBytes (per-rank division covered by
+// BytesPerRankFilter).
 TEST_F(MetaTunerTest, BytesOpenEndedAbove) {
   const TunerConfigFile config(".csv", "allreduce,(1024,),ring,ll128,-1,*,*\n");
-  void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
+  void* context = initTuner(/* nRanks */ 1, /* nNodes */ 1);
 
   EXPECT_FALSE(ruleMatched(context, ncclFuncAllReduce, 1024));
   EXPECT_TRUE(ruleMatched(context, ncclFuncAllReduce, 1025));
@@ -297,7 +303,7 @@ TEST_F(MetaTunerTest, BytesOpenEndedAbove) {
   kMetaTuner.finalize(context);
 }
 
-// Wildcard bytes (*) matches any size.
+// Wildcard bytesPerRank (*) matches any size.
 TEST_F(MetaTunerTest, BytesWildcardMatchesAll) {
   const TunerConfigFile config(".csv", "allreduce,*,ring,ll128,-1,*,*\n");
   void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
@@ -336,8 +342,68 @@ TEST_F(MetaTunerTest, LocalRanksRangeKeyed) {
   kMetaTuner.finalize(outOfRange);
 }
 
-// Bracket-aware CSV split: commas inside the bytes interval do not split the
-// column, so a row with [0,4096] and topology fields parses into the right
+// bytesPerRank filter: a single rule keyed on bytesPerRank=[8MiB,16MiB] (every
+// other field wildcard) matches a collective iff nBytes/nRanks is in range --
+// across DIFFERENT topologies that share a per-rank size. nRanks = nNodes *
+// nLocalRanks, so one per-rank rule spans rank counts where a total-bytes rule
+// would need one rule per topology (the whole point of bytesPerRank).
+TEST_F(MetaTunerTest, BytesPerRankFilter) {
+  constexpr size_t kMiB = 1024 * 1024;
+  const TunerConfigFile config(
+      ".csv", "allgather,[8388608,16777216],ring,ll128,-1,*,*\n");
+
+  // Topology A: 8 ranks / 1 node -> nRanks = 8.
+  void* topoA = initTuner(/* nRanks */ 8, /* nNodes */ 1);
+  // Topology B: 16 ranks / 2 nodes -> nRanks = 16.
+  void* topoB = initTuner(/* nRanks */ 16, /* nNodes */ 2);
+
+  // Same per-rank size (10 MiB, in [8,16]) on both topologies -> both match,
+  // even though the total bytes differ -- one rule spans both rank counts.
+  EXPECT_TRUE(ruleMatched(topoA, ncclFuncAllGather, 10 * kMiB * 8));
+  EXPECT_TRUE(ruleMatched(topoB, ncclFuncAllGather, 10 * kMiB * 16));
+
+  // Endpoint inclusivity: per-rank == 8 MiB (lower bound) matches; below
+  // misses.
+  EXPECT_TRUE(ruleMatched(topoA, ncclFuncAllGather, 8 * kMiB * 8));
+  EXPECT_FALSE(ruleMatched(topoA, ncclFuncAllGather, 4 * kMiB * 8));
+  // Above the upper bound misses too (32 MiB/rank).
+  EXPECT_FALSE(ruleMatched(topoB, ncclFuncAllGather, 32 * kMiB * 16));
+
+  // The discriminating case: ONE total size (80 MiB) maps to 10 MiB/rank on
+  // topoA (8 ranks, in range -> match) but 5 MiB/rank on topoB (16 ranks, below
+  // range -> no match). A total-bytes rule could not tell these apart.
+  EXPECT_TRUE(ruleMatched(topoA, ncclFuncAllGather, 80 * kMiB));
+  EXPECT_FALSE(ruleMatched(topoB, ncclFuncAllGather, 80 * kMiB));
+
+  kMetaTuner.finalize(topoA);
+  kMetaTuner.finalize(topoB);
+}
+
+// Per-rank rules generated with nLocalRanks=(1,) must NOT match nolocal /
+// IB-only comms (nLocalRanks==1), which use PAT/Simple rather than ring/ll128,
+// even when the per-rank size is in range. Guards the gen --per-rank nolocal
+// carve-out: a wildcard nLocalRanks would otherwise force ll128 on nolocal.
+TEST_F(MetaTunerTest, PerRankExcludesNolocal) {
+  constexpr size_t kMiB = 1024 * 1024;
+  const TunerConfigFile config(
+      ".csv", "allgather,[8388608,16777216],ring,ll128,-1,(1,),(1,)\n");
+
+  // NVLink topology (16 ranks / 2 nodes -> nLocalRanks=8 > 1): per-rank 10 MiB
+  // is in range and nLocalRanks=(1,) is satisfied -> match.
+  void* nvlink = initTuner(/* nRanks */ 16, /* nNodes */ 2);
+  EXPECT_TRUE(ruleMatched(nvlink, ncclFuncAllGather, 10 * kMiB * 16));
+  kMetaTuner.finalize(nvlink);
+
+  // nolocal topology (8 ranks / 8 nodes -> nLocalRanks=1): same per-rank size
+  // (10 MiB, in range) and nNodes>1, but nLocalRanks=(1,) excludes it -> no
+  // match.
+  void* nolocal = initTuner(/* nRanks */ 8, /* nNodes */ 8);
+  EXPECT_FALSE(ruleMatched(nolocal, ncclFuncAllGather, 10 * kMiB * 8));
+  kMetaTuner.finalize(nolocal);
+}
+
+// Bracket-aware CSV split: commas inside the bytesPerRank interval do not split
+// the column, so a row with [0,4096] and topology fields parses into the right
 // columns. The rule matches the topology it targets and not another.
 TEST_F(MetaTunerTest, BracketAwareCsvSplit) {
   const TunerConfigFile config(
@@ -345,7 +411,8 @@ TEST_F(MetaTunerTest, BracketAwareCsvSplit) {
 
   void* matching = initTuner(/* nRanks */ 16, /* nNodes */ 2);
   EXPECT_TRUE(ruleMatched(matching, ncclFuncAllReduce, 1024));
-  EXPECT_FALSE(ruleMatched(matching, ncclFuncAllReduce, 8192)); // above bytes
+  // nBytes/nRanks = 131072/16 = 8192 > 4096 -> above the per-rank range.
+  EXPECT_FALSE(ruleMatched(matching, ncclFuncAllReduce, 131072));
   kMetaTuner.finalize(matching);
 
   void* wrongTopo = initTuner(/* nRanks */ 8, /* nNodes */ 1);
@@ -434,8 +501,7 @@ TEST_F(MetaTunerTest, StrictOutOfRangeChannelsFailsInit) {
 // Strict mode (default): a negative chunkSize would wrap to a huge size_t, so
 // it must be rejected like any other present-but-invalid numeric.
 TEST_F(MetaTunerTest, StrictNegativeChunkSizeFailsInit) {
-  expectStrictInitFails(
-      ".csv", "allreduce,[0,1024],ring,ll128,-1,*,*,-1,-1,-5\n");
+  expectStrictInitFails(".csv", "allreduce,[0,1024],ring,ll128,-1,*,*,-5\n");
 }
 
 // Strict mode (default): a non-existent config file fails comm init.
@@ -632,8 +698,8 @@ TEST_F(MetaTunerTest, MissingFileIsNoOp) {
 TEST_F(MetaTunerTest, ChunkSizeOverride) {
   const TunerConfigFile config(
       ".csv",
-      "allreduce,[0,4096],ring,ll128,-1,*,*,-1,-1,65536\n"
-      "allgather,[0,4096],ring,ll128,-1,*,*,-1,-1,0\n");
+      "allreduce,[0,4096],ring,ll128,-1,*,*,65536\n"
+      "allgather,[0,4096],ring,ll128,-1,*,*,0\n");
   void* context = initTuner(8, 1);
 
   size_t overridden = 16384;
@@ -665,8 +731,8 @@ TEST_F(MetaTunerTest, ChunkSizeOverride) {
 TEST_F(MetaTunerTest, ChunkSizeAlgoProtoKey) {
   const TunerConfigFile config(
       ".csv",
-      "allreduce,[0,4096],ring,ll128,-1,*,*,-1,-1,65536\n"
-      "allreduce,[0,4096],tree,simple,-1,*,*,-1,-1,32768\n");
+      "allreduce,[0,4096],ring,ll128,-1,*,*,65536\n"
+      "allreduce,[0,4096],tree,simple,-1,*,*,32768\n");
   void* context = initTuner(8, 1);
 
   size_t ringChunk = 16384;
@@ -717,7 +783,7 @@ TEST_F(MetaTunerTest, CsvParsingWithCommentsAndOmittedColumns) {
       "  allgather, [0, 2048], tree, simple, 4, 1, 8 \n");
   void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
 
-  // First rule (omitted numPipeOps/regBuff/chunkSize default to wildcard / 0).
+  // First rule (omitted chunkSize defaults to 0 = no override).
   CostTable allreduceTable;
   int allreduceChannels = 9;
   kMetaTuner.getCollInfo(
@@ -811,26 +877,31 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
   {
     const TunerConfigFile csv(
         ".csv",
-        "allreduce,[0,4096],ring,ll128,4,1,8,-1,-1,65536\n"
-        "allgather,[0,2048],tree,simple,-1,*,*,-1,-1,0\n");
+        "allreduce,[0,4096],ring,ll128,4,1,8,65536\n"
+        "allgather,[0,2048],tree,simple,-1,*,*,0\n"
+        "reducescatter,[8388608,16777216],ring,ll128,-1,*,*\n");
     csvContext = initTuner(/* nRanks */ 8, /* nNodes */ 1);
   }
 
   void* jsonContext = nullptr;
   {
-    // The allreduce row exercises a JSON integer `bytes` field interpreted as
-    // an exact value via the int|string path; the allgather row omits `bytes`
-    // (defaults to the * wildcard). The CSV authors the equivalent intervals.
+    // The allreduce row exercises a JSON `bytesPerRank` interval string with a
+    // pinned topology; the allgather row omits `bytesPerRank` (defaults to the
+    // * wildcard). The reducescatter row keys purely on `bytesPerRank`. The CSV
+    // authors the equivalent rules.
     const TunerConfigFile json(
         ".json",
         R"({
           "rules": [
-            {"filter": {"collective": "allreduce", "bytes": "[0,4096]",
+            {"filter": {"collective": "allreduce", "bytesPerRank": "[0,4096]",
                         "nNodes": 1, "nLocalRanks": 8},
              "config": {"algorithm": "ring", "protocol": "ll128",
                         "channels": 4, "chunkSize": 65536}},
-            {"filter": {"collective": "allgather", "bytes": "[0,2048]"},
-             "config": {"algorithm": "tree", "protocol": "simple"}}
+            {"filter": {"collective": "allgather", "bytesPerRank": "[0,2048]"},
+             "config": {"algorithm": "tree", "protocol": "simple"}},
+            {"filter": {"collective": "reducescatter",
+                        "bytesPerRank": "[8388608,16777216]"},
+             "config": {"algorithm": "ring", "protocol": "ll128"}}
           ]
         })");
     jsonContext = initTuner(/* nRanks */ 8, /* nNodes */ 1);
@@ -860,6 +931,27 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
   EXPECT_EQ(csvRow1, (RuleProbe{0.0F, -1}));
 #endif
 
+  // Row 2 keys on bytesPerRank=[8MiB,16MiB]; at nRanks=8 a 80 MiB total is
+  // 10 MiB/rank (in range), so CSV and JSON must force ring/ll128 identically.
+  const RuleProbe csvRow2 = probeRule(
+      csvContext,
+      ncclFuncReduceScatter,
+      80 * 1024 * 1024,
+      NCCL_ALGO_RING,
+      NCCL_PROTO_LL128);
+  const RuleProbe jsonRow2 = probeRule(
+      jsonContext,
+      ncclFuncReduceScatter,
+      80 * 1024 * 1024,
+      NCCL_ALGO_RING,
+      NCCL_PROTO_LL128);
+  EXPECT_EQ(csvRow2, jsonRow2);
+#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+  EXPECT_EQ(csvRow2, (RuleProbe{0.0F, -1, 0}));
+#else
+  EXPECT_EQ(csvRow2, (RuleProbe{0.0F, -1}));
+#endif
+
   kMetaTuner.finalize(jsonContext);
   kMetaTuner.finalize(csvContext);
 }
@@ -877,7 +969,7 @@ TEST_F(MetaTunerTest, JsonUnsupportedInNoFollyBuild) {
     const EnvRAII<bool> ignoreGuard(NCCLX_TUNER_IGNORE_CONFIG_ERRORS, true);
     const TunerConfigFile json(
         ".json",
-        R"({"rules": [{"filter": {"collective": "allreduce", "bytes": "[0,4096]"},
+        R"({"rules": [{"filter": {"collective": "allreduce", "bytesPerRank": "[0,4096]"},
             "config": {"algorithm": "ring", "protocol": "ll128"}}]})");
     void* context = initTuner(/* nRanks */ 8, /* nNodes */ 1);
 
@@ -947,12 +1039,13 @@ TEST_F(MetaTunerTest, ExampleCsvConfigLoads) {
   EXPECT_EQ(smallTable.at(NCCL_ALGO_RING, NCCL_PROTO_LL128), 0.0F);
 
 #ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
-  // Large allreduce: ring/simple carries a 524288-byte chunkSize override.
+  // Large allreduce: per-rank shard above 1 MiB (16 MiB total / 8 ranks =
+  // 2 MiB/rank) -> ring/simple carries a 524288-byte chunkSize override.
   size_t chunkSize = 16384;
   kMetaTuner.getChunkSize(
       context,
       ncclFuncAllReduce,
-      /* nBytes */ 2097152,
+      /* nBytes */ 16777216,
       NCCL_ALGO_RING,
       NCCL_PROTO_SIMPLE,
       /* nChannels */ 1,

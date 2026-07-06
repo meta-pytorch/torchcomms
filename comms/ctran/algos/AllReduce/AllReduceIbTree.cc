@@ -270,15 +270,14 @@ commResult_t ctranAllReduceTree(
       return result;
     }
 
-    const int maxIbGroups = NCCL_CTRAN_IB_MAX_GROUPS;
     const int requiredIbGroups = numBlocks * ctran::allreduce::tree::kTreeLanes;
-    if (requiredIbGroups > maxIbGroups) {
+    if (requiredIbGroups > NCCL_CTRAN_IB_MAX_GROUPS) {
       CLOGF(
           ERR,
           "AllReduce ctree requires {} IBGDA send/recv groups, exceeding "
           "NCCL_CTRAN_IB_MAX_GROUPS={}",
           requiredIbGroups,
-          maxIbGroups);
+          NCCL_CTRAN_IB_MAX_GROUPS);
       return commInvalidArgument;
     }
   }
@@ -317,6 +316,7 @@ commResult_t ctranAllReduceTree(
           comm));
   kernArgs.tree0 = tree0;
   kernArgs.tree1 = tree1;
+  kernArgs.ibSendRecvGroups = NCCL_CTRAN_IB_MAX_GROUPS;
 
   return fused::submit_fused_kernel(
       comm,

@@ -40,11 +40,11 @@ inline std::string jsonIntStr(const folly::dynamic& object, const char* key) {
   return std::to_string(value->asInt());
 }
 
-// bytes / nNodes / nLocalRanks may be a JSON integer (exact), the string "*"
-// (wildcard), OR an interval string (e.g. "[0,1048576]", "(1,)"). Render
-// either form to the string the Int64Range parser consumes. An omitted key
-// maps to an empty string, which buildConfig treats as the wildcard (matches
-// any) -- identical to an omitted CSV column.
+// bytesPerRank / nNodes / nLocalRanks may be a JSON integer (exact), the
+// string "*" (wildcard), OR an interval string (e.g. "[0,1048576]", "(1,)").
+// Render either form to the string the Int64Range parser consumes. An omitted
+// key maps to an empty string, which buildConfig treats as the wildcard
+// (matches any) -- identical to an omitted CSV column.
 inline std::string jsonRangeStr(const folly::dynamic& object, const char* key) {
   const auto* value = object.get_ptr(key);
   if (value == nullptr) {
@@ -75,26 +75,24 @@ inline std::optional<TuningConfig> parseJsonRule(const folly::dynamic& rule) {
     // Reuse the CSV column builder so JSON and CSV always parse to identical
     // TuningConfig values for an equivalent table.
     const std::string collType = jsonStringOr(*filterObj, "collective", "");
-    const std::string bytes = jsonRangeStr(*filterObj, "bytes");
+    const std::string bytesPerRank = jsonRangeStr(*filterObj, "bytesPerRank");
     const std::string algorithm = jsonStringOr(*configObj, "algorithm", "");
     const std::string protocol = jsonStringOr(*configObj, "protocol", "");
     const std::string channels = jsonIntStr(*configObj, "channels");
     const std::string nNodes = jsonRangeStr(*filterObj, "nNodes");
     const std::string nLocalRanks = jsonRangeStr(*filterObj, "nLocalRanks");
-    const std::string numPipeOps = jsonIntStr(*filterObj, "numPipeOps");
-    const std::string regBuff = jsonIntStr(*filterObj, "regBuff");
     const std::string chunkSize = jsonIntStr(*configObj, "chunkSize");
 
+    // Kept in lock-step with buildConfig's index order; bytesPerRank is the
+    // size field at index 1 (where total bytes used to be).
     const std::vector<std::string_view> fields{
         collType,
-        bytes,
+        bytesPerRank,
         algorithm,
         protocol,
         channels,
         nNodes,
         nLocalRanks,
-        numPipeOps,
-        regBuff,
         chunkSize};
     return buildConfig(fields);
   } catch (const std::exception&) {
