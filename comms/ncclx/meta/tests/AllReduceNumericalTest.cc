@@ -36,6 +36,8 @@ struct AllReduceNumericalParam {
   AllReduceNumericalAlgo algo;
   size_t count;
   ncclDataType_t datatype;
+  ncclx::test::numerics::InputDistribution distribution =
+      ncclx::test::numerics::InputDistribution::Uniform;
 
   std::string name() const {
     std::string algoName;
@@ -53,7 +55,12 @@ struct AllReduceNumericalParam {
 
     const std::string dtypeName =
         datatype == ncclFloat32 ? "Float32" : "Bfloat16";
-    return algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    std::string base =
+        algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    if (distribution == ncclx::test::numerics::InputDistribution::Normal) {
+      base += "_Normal";
+    }
+    return base;
   }
 };
 
@@ -88,7 +95,7 @@ class AllReduceNumericalTest
 
     std::vector<T> original;
     ncclx::test::numerics::appendRandomInputs<T>(
-        original, param.count, globalRank, 0);
+        original, param.count, globalRank, 0, param.distribution);
     CUDACHECK_TEST(cudaMemcpyAsync(
         originalDevice,
         original.data(),
@@ -235,7 +242,17 @@ const auto kAllReduceNumericalParams = ::testing::Values(
     AllReduceNumericalParam{
         .algo = AllReduceNumericalAlgo::CtranDirect,
         .count = 4099,
-        .datatype = ncclBfloat16}
+        .datatype = ncclBfloat16},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 1024,
+        .datatype = ncclBfloat16,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal}
 #ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
     ,
     AllReduceNumericalParam{

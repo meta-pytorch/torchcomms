@@ -35,10 +35,19 @@ constexpr double kFp32Atol = 1e-5;
 constexpr double kBfloat16Rtol = 2e-2;
 constexpr double kBfloat16Atol = 3e-2;
 
-// Arbitrary fixed seed for reproducible random test inputs.
+// Arbitrary fixed seeds for reproducible random test inputs. Each input
+// distribution uses a distinct base seed so its stream is disjoint from the
+// others; the Uniform seed is unchanged so Uniform inputs stay bit-stable.
 constexpr uint32_t kReductionInputSeed = 12345;
+constexpr uint32_t kReductionNormalInputSeed = 67890;
 constexpr const char* kPrintActualOutputEnv =
     "REDUCTION_NUMERICAL_PRINT_ACTUAL";
+
+enum class InputDistribution { Uniform, Normal };
+
+inline std::string inputDistributionName(InputDistribution distribution) {
+  return distribution == InputDistribution::Normal ? "Normal" : "Uniform";
+}
 
 struct AllCloseTolerance {
   double rtol{0.0};
@@ -50,23 +59,34 @@ void appendRandomInputs(
     std::vector<T>& input,
     size_t count,
     int rank,
-    int lane) {
+    int lane,
+    InputDistribution distribution = InputDistribution::Uniform) {
   // The element at local index i is the i-th sample from a deterministic
-  // uniform generator seeded by (kReductionInputSeed, rank, lane). AllReduce
+  // generator seeded by (base seed for the distribution, rank, lane). AllReduce
   // and Reduce use one lane; ReduceScatter appends one lane per output rank.
+  const uint32_t baseSeed = distribution == InputDistribution::Normal
+      ? kReductionNormalInputSeed
+      : kReductionInputSeed;
   std::seed_seq seed{
-      kReductionInputSeed,
+      baseSeed,
       static_cast<uint32_t>(rank),
       static_cast<uint32_t>(lane),
   };
   std::mt19937_64 generator(seed);
-  std::uniform_real_distribution<double> distribution(-1.0, 1.0);
+  using HostT = typename DataTypeTraits<T>::HostT;
   input.reserve(input.size() + count);
-  for (size_t i = 0; i < count; ++i) {
-    input.push_back(
-        DataTypeTraits<T>::toDevice(
-            static_cast<typename DataTypeTraits<T>::HostT>(
-                distribution(generator))));
+  if (distribution == InputDistribution::Normal) {
+    std::normal_distribution<double> normal(0.0, 1.0);
+    for (size_t i = 0; i < count; ++i) {
+      input.push_back(
+          DataTypeTraits<T>::toDevice(static_cast<HostT>(normal(generator))));
+    }
+  } else {
+    std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+    for (size_t i = 0; i < count; ++i) {
+      input.push_back(
+          DataTypeTraits<T>::toDevice(static_cast<HostT>(uniform(generator))));
+    }
   }
 }
 
