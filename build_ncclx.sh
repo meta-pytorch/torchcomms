@@ -159,7 +159,7 @@ function build_third_party {
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
     rm -f "${CONDA_PREFIX}"/*.cmake 2>/dev/null || true
   fi
-  local third_party_tag="v2026.01.19.00"
+  local third_party_tag="v2026.06.29.00"
 
   mkdir -p /tmp/third-party
   pushd /tmp/third-party
@@ -379,6 +379,7 @@ pushd "${NCCL_HOME}"
 function build_nccl {
   make VERBOSE=1 -j$(nproc) \
     src.build \
+    CXXSTD="-std=c++20" \
     BUILDDIR="$BUILDDIR" \
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
@@ -396,6 +397,7 @@ function build_nccl {
 function build_and_install_nccl {
 make VERBOSE=1 -j$(nproc) \
     src.install \
+    CXXSTD="-std=c++20" \
     BUILDDIR="$BUILDDIR" \
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
