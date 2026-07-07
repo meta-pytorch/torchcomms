@@ -190,9 +190,7 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         try:
             torch.set_default_device(local_device_str)
             cpu_tensor = torch.ones(4, dtype=torch.float32, device="cpu")
-            gpu_tensor = torch.ones(
-                4, dtype=torch.float32, device=local_device_str
-            )
+            gpu_tensor = torch.ones(4, dtype=torch.float32, device=local_device_str)
             dist.all_reduce(cpu_tensor)
             dist.all_reduce(gpu_tensor)
             self.assertEqual(cpu_tensor[0].item(), float(world_size))
