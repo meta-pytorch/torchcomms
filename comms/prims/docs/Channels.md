@@ -119,10 +119,11 @@ set of RDMA targets this rank can write: peer `DATA_READY`, peer `SLOT_FREE`,
 and peer recv staging.
 
 QP resources are selected by `(channel_id, direction, NIC, qp_index)`.
-`qpsPerConnection` means QPs per `(channel_id, direction, NIC)`. IBGDA
-companion QPs are per `(channel_id, direction, NIC)` and are not multiplied by
-`qpsPerConnection`.
+`qpsPerConnection` means QPs per `(channel_id, direction, NIC)`. IBGDA main
+and companion QPs use the same slot geometry because device lane selection
+indexes both resources by `qp_index`.
 
 Public raw put/signal APIs default to the Send direction. Send/recv/forward
 internals use explicit directions: data puts and `DATA_READY` use Send, while
-recv-side `SLOT_FREE` uses Recv.
+recv-side `SLOT_FREE` uses Recv. Raw put/signal transports allocate only Send
+QPs; send/recv transports allocate Send and Recv QPs.

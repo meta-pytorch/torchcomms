@@ -247,6 +247,39 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
   if (config_.sendRecv.has_value() && config_.sendRecv->maxGroups == 0) {
     config_.sendRecv->maxGroups = config_.maxGroups;
   }
+  if (config_.perChannelSize == 0 && config_.sendRecv.has_value()) {
+    config_.max_num_channels = config_.sendRecv->maxGroups;
+    if (config_.max_num_channels <= 0) {
+      throw std::invalid_argument(
+          "sendRecv.maxGroups must be positive for fixed-channel IB");
+    }
+    config_.pipelineDepth = config_.sendRecv->pipelineDepth;
+    const auto channels = static_cast<std::size_t>(config_.max_num_channels);
+    if (config_.dataBufferSize % channels != 0) {
+      throw std::invalid_argument(
+          "IB fixed-channel dataBufferSize must be divisible by max_num_channels");
+    }
+    config_.perChannelSize = config_.dataBufferSize / channels;
+  }
+  if (config_.perChannelSize > 0) {
+    if (config_.max_num_channels <= 0) {
+      throw std::invalid_argument(
+          "max_num_channels must be positive when perChannelSize is set");
+    }
+    if (config_.perChannelSize < 16) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be >= 16");
+    }
+    if (config_.perChannelSize % 16 != 0) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be 16-byte aligned");
+    }
+    config_.dataBufferSize = config_.fixedChannelDataBufferSize();
+    config_.sendRecv = MultipeerIbTransportConfig::SendRecvConfig{
+        .maxGroups = config_.max_num_channels,
+        .pipelineDepth = config_.pipelineDepth};
+    config_.maxGroups = config_.max_num_channels;
+  }
   if (myRank_ < 0 || myRank_ >= nRanks_) {
     throw std::invalid_argument("Invalid rank");
   }
@@ -1840,7 +1873,8 @@ void MultiPeerIbTransportBase::validatePeerTopology(
               peerInfo.numNics,
               numNics_));
     }
-    const int expectedNumQpsPerPeerPerNic = config_.numQpsPerPeerPerNic();
+    const int expectedNumQpsPerPeerPerNic =
+        config_.fixedChannelMainQpsPerPeerPerNic();
     if (peerInfo.numQpsPerPeerPerNic != expectedNumQpsPerPeerPerNic) {
       throw std::runtime_error(
           fmt::format(
@@ -1850,8 +1884,8 @@ void MultiPeerIbTransportBase::validatePeerTopology(
               peerInfo.numQpsPerPeerPerNic,
               expectedNumQpsPerPeerPerNic));
     }
-    if (peerInfo.maxGroups != config_.maxGroups ||
-        peerInfo.qpsPerBlockPerNic != config_.qpsPerBlockPerNic) {
+    if (peerInfo.maxGroups != config_.max_num_channels ||
+        peerInfo.qpsPerBlockPerNic != config_.qpsPerConnection) {
       throw std::runtime_error(
           fmt::format(
               "Peer rank {} reports maxGroups={} qpsPerBlockPerNic={} but "
@@ -1859,8 +1893,8 @@ void MultiPeerIbTransportBase::validatePeerTopology(
               peerRank,
               peerInfo.maxGroups,
               peerInfo.qpsPerBlockPerNic,
-              config_.maxGroups,
-              config_.qpsPerBlockPerNic));
+              config_.max_num_channels,
+              config_.qpsPerConnection));
     }
   }
 }
