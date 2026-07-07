@@ -140,6 +140,8 @@ jobs:
             --tty \
             --detach \
             --privileged \
+            -v /dev/dri:/dev/dri \
+            -v /dev/dri/by-path:/dev/dri/by-path \
             -v "${GITHUB_WORKSPACE}:/var/lib/jenkins/workspace" \
             -v "${DLE_PATH}:${DLE_PATH}" \
             -w /var/lib/jenkins/workspace \
