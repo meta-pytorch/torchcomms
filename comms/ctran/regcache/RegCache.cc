@@ -593,7 +593,8 @@ void ctran::RegCache::resetExternalRegMemFn() {
 
 ctran::regcache::RegElem* ctran::RegCache::searchRegElem(
     const void* ptr,
-    const size_t len) {
+    const size_t len,
+    bool acquireRef) {
   ctran::regcache::RegElem* regHdl = nullptr;
 
   auto regElemsMaps = regElemsMaps_.rlock();
@@ -616,6 +617,10 @@ ctran::regcache::RegElem* ctran::RegCache::searchRegElem(
       // Lookup hit
       regHdl = searchRegElem.get();
       searchRegElem->lookupHit_++;
+      if (acquireRef) {
+        // Atomic increment: safe under the shared read lock.
+        regHdl->refCount.fetch_add(1, std::memory_order_relaxed);
+      }
       break;
     }
   }
@@ -918,7 +923,8 @@ commResult_t ctran::RegCache::registerSegmentsTogether(
     std::vector<ctran::regcache::Segment*>& segments,
     const std::vector<bool>& backends,
     bool ncclManaged,
-    ctran::regcache::RegElem** regHdl) {
+    ctran::regcache::RegElem** regHdl,
+    bool acquireRef) {
   // Create a new registration element for the segments
   auto newRegElem = std::make_unique<ctran::regcache::RegElem>(
       ptr, len, cudaDev, segments, ncclManaged);
@@ -932,6 +938,12 @@ commResult_t ctran::RegCache::registerSegmentsTogether(
   auto regElemsMaps = regElemsMaps_.wlock();
   auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
   auto& segToRegElemsMap = regElemsMaps->segToRegElemsMap;
+
+  // The RegElem already holds the registration's ref (refCount starts at 1).
+  // If the caller is a scoped acquire, add its ref while holding the map lock.
+  if (acquireRef) {
+    regHdlPtr->refCount.fetch_add(1, std::memory_order_relaxed);
+  }
 
   regHdlToElemMap.emplace(regHdlPtr, std::move(newRegElem));
   // Correlate the regElem with all associated segments to deregister it
@@ -953,7 +965,8 @@ commResult_t ctran::RegCache::regRangeCached(
     const std::vector<bool>& backends,
     bool& didRegister,
     ctran::regcache::RegElem** regHdl,
-    bool ncclManaged) {
+    bool ncclManaged,
+    bool acquireRef) {
   auto dur = CtranMapperTimer();
   SetCudaDevRAII setCudaDev(cudaDev);
   auto timerBegin = std::chrono::steady_clock::now();
@@ -962,7 +975,7 @@ commResult_t ctran::RegCache::regRangeCached(
     // FAST PATH: find whether range has already been registered in
     // regElemsMaps. regElemsMaps should not be wlocked while performing
     // expensive registration/deregistration.
-    *regHdl = searchRegElem(ptr, len);
+    *regHdl = searchRegElem(ptr, len, acquireRef);
     // Lookup hit
     if (*regHdl) {
       return commSuccess;
@@ -983,7 +996,7 @@ commResult_t ctran::RegCache::regRangeCached(
 
     // While holding the global lock, let's check again no one else has
     // registered the range.
-    *regHdl = searchRegElem(ptr, len);
+    *regHdl = searchRegElem(ptr, len, acquireRef);
     if (*regHdl) {
       return commSuccess;
     }
@@ -1032,7 +1045,8 @@ commResult_t ctran::RegCache::regRangeCached(
           segments,
           backends,
           ncclManaged,
-          regHdl));
+          regHdl,
+          acquireRef));
       didRegister = true;
     } else {
       // - WORST PATH: if any one is not found, return nullptr to trigger
@@ -1170,6 +1184,21 @@ commResult_t ctran::RegCache::freeSegment(
           continue;
         }
 
+        // Remove the registration's ref. Any remaining count means live
+        // ScopedRegHdl owners, which violates the lifetime contract because the
+        // segment/memory is being freed underneath them.
+        const auto prev =
+            regIt->second->refCount.fetch_sub(1, std::memory_order_acq_rel);
+        const auto after = prev - 1;
+        if (after > 0) {
+          CLOGF(
+              ERR,
+              "freeSegment: tearing down RegElem [buf {} len {}] that still has {} live ScopedRegHdl owner(s). This violates the scoped-registration lifetime contract: the buffer memory must outlive all ScopedRegHdl scopes.",
+              regIt->second->buf,
+              regIt->second->len,
+              after);
+        }
+
         // Remove regElem from global cache and to be deregistered
         regElems.push_back(std::move(regIt->second));
         regHdlToElemMap.erase(regIt);
@@ -1214,6 +1243,145 @@ commResult_t ctran::RegCache::deregElem(ctran::regcache::RegElem* regElem) {
   FB_COMMCHECK(regElem->doDeregister(externalDeregMemFn_));
   profiler.wlock()->record(ctran::regcache::EventType::kDeregMemEvent, dur);
   return commSuccess;
+}
+
+void ctran::RegCache::releaseScopedRegHdl(ctran::regcache::RegElem* regHdl) {
+  // Pure SW-only release: drop the scope's ref (atomic decrement). Never
+  // deregisters, deletes, or touches CUDA, so it is safe to run from a CUDA
+  // graph-destroy callback. The registration's own ref (dropped only by
+  // freeSegment/deregRange on a user thread) keeps the RegElem alive, so a
+  // scoped release can never drive refCount to 0.
+  //
+  // A read lock is enough: we only look up the map, we never modify it. The
+  // rlock excludes freeSegment's wlock, so the found RegElem cannot be freed
+  // underneath the decrement.
+  if (regHdl == nullptr) {
+    return;
+  }
+
+  auto regElemsMaps = regElemsMaps_.rlock();
+  // NOTE: regHdl may be a dangling pointer here if a buffer-release path
+  // (freeSegment/globalDeregister) already force-freed the RegElem while this
+  // scope was still live. It is therefore used ONLY as a map key below and is
+  // NEVER dereferenced; a not-found lookup safely no-ops.
+  auto it = regElemsMaps->regHdlToElemMap.find(regHdl);
+  if (it == regElemsMaps->regHdlToElemMap.end()) {
+    CLOGF(
+        WARN,
+        "releaseScopedRegHdl: regElem {} not found (may have been force-freed by a buffer-release path)",
+        (void*)regHdl);
+    return;
+  }
+
+  const auto prev =
+      it->second->refCount.fetch_sub(1, std::memory_order_acq_rel);
+  const auto after = prev - 1;
+  FB_CHECKABORT(
+      after >= 1,
+      "scoped release drove refCount below the registration baseline for RegElem {} (cnt {})",
+      (void*)regHdl,
+      after);
+}
+
+commResult_t ctran::RegCache::acquireScopedRegister(
+    const void* buf,
+    size_t len,
+    int cudaDev,
+    const std::vector<bool>& backends,
+    ctran::ScopedRegHdl& scopedRegHdl) {
+  if (buf == nullptr || len == 0) {
+    CLOGF(ERR, "acquireScopedRegister: invalid buf {} len {}", (void*)buf, len);
+    return commInvalidUsage;
+  }
+
+  // Acquire one RegElem ref. The buffer's segment must already be cached by the
+  // allocator; regRangeCached returns nullptr otherwise.
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData scopedLogData{};
+  scopedLogData.commDesc = "scopedRegister";
+  const auto regResult = regRangeCached(
+      buf,
+      len,
+      cudaDev,
+      "scopedRegister",
+      scopedLogData,
+      backends,
+      didRegister,
+      &regHdl,
+      true /* ncclManaged */,
+      true /* acquireRef */);
+
+  if (regResult != commSuccess || regHdl == nullptr) {
+    CLOGF(
+        ERR,
+        "acquireScopedRegister: buffer [buf {} len {}] is not backed by a cached "
+        "segment. Scoped registration requires the buffer's memory to be pre-registered "
+        "by the allocator (globalRegister / CCA memory hook) before use. Ensure the "
+        "allocator registers memory after allocation and deregisters before free.",
+        (void*)buf,
+        len);
+    return commInvalidUsage;
+  }
+
+  scopedRegHdl.regCache_ = this;
+  scopedRegHdl.regHdl_ = regHdl;
+  return commSuccess;
+}
+
+ctran::ScopedRegHdl::ScopedRegHdl(ctran::ScopedRegHdl&& other) noexcept
+    : regCache_(other.regCache_), regHdl_(other.regHdl_) {
+  other.regCache_ = nullptr;
+  other.regHdl_ = nullptr;
+}
+
+ctran::ScopedRegHdl& ctran::ScopedRegHdl::operator=(
+    ctran::ScopedRegHdl&& other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  // Release the current handle before taking over the other.
+  if (regCache_ != nullptr) {
+    regCache_->releaseScopedRegHdl(regHdl_);
+  }
+  regCache_ = other.regCache_;
+  regHdl_ = other.regHdl_;
+  other.regCache_ = nullptr;
+  other.regHdl_ = nullptr;
+  return *this;
+}
+
+ctran::ScopedRegHdl::~ScopedRegHdl() {
+  if (regCache_ == nullptr) {
+    return;
+  }
+  // Best-effort SW-only cleanup; never throw out of the destructor.
+  try {
+    regCache_->releaseScopedRegHdl(regHdl_);
+  } catch (const std::exception& e) {
+    CLOGF(ERR, "~ScopedRegHdl: cleanup failed: {}", e.what());
+  }
+  regCache_ = nullptr;
+  regHdl_ = nullptr;
+}
+
+ctran::regcache::RegElem* ctran::ScopedRegHdl::get() const {
+  return regHdl_;
+}
+
+ctran::ScopedRegHdl::operator bool() const {
+  return regCache_ != nullptr && regHdl_ != nullptr;
+}
+
+std::string ctran::ScopedRegHdl::toString() const {
+  if (regCache_ == nullptr || regHdl_ == nullptr) {
+    return "ScopedRegHdl{empty}";
+  }
+  return fmt::format(
+      "ScopedRegHdl{{regHdl: {}, buf: {}, len: {}}}",
+      (void*)regHdl_,
+      regHdl_->buf,
+      regHdl_->len);
 }
 
 commResult_t ctran::RegCache::regRange(
@@ -1302,7 +1470,33 @@ commResult_t ctran::RegCache::regDynamic(
   return commSuccess;
 }
 
-commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
+namespace {
+// Remove regHdl from every segToRegElemsMap entry for its segments, erasing
+// any entry whose vector becomes empty.
+void removeRegElemFromSegCorrelations(
+    ctran::regcache::RegElem* regHdl,
+    const std::vector<ctran::regcache::Segment*>& segments,
+    std::unordered_map<
+        ctran::regcache::Segment*,
+        std::vector<ctran::regcache::RegElem*>>& segToRegElemsMap) {
+  for (auto seg : segments) {
+    auto segIt = segToRegElemsMap.find(seg);
+    if (segIt != segToRegElemsMap.end()) {
+      auto& regElemsVec = segIt->second;
+      regElemsVec.erase(
+          std::remove(regElemsVec.begin(), regElemsVec.end(), regHdl),
+          regElemsVec.end());
+      if (regElemsVec.empty()) {
+        segToRegElemsMap.erase(segIt);
+      }
+    }
+  }
+}
+} // namespace
+
+commResult_t ctran::RegCache::deregRange(
+    ctran::regcache::RegElem* regHdl,
+    bool releaseRef) {
   std::unique_ptr<ctran::regcache::RegElem> regElem = nullptr;
   // Global lock to update regElemsMaps_.
   // Unlock before deregistration, avoid long holding time of the lock.
@@ -1315,6 +1509,30 @@ commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
       CLOGF(ERR, "deregRange: regElem {} not found", (void*)regHdl);
       return commInvalidUsage;
     }
+
+    // When releasing a scoped ref, decrement first and only tear down on the
+    // last reference. Other references keep the registration alive.
+    if (releaseRef) {
+      const auto prev =
+          it->second->refCount.fetch_sub(1, std::memory_order_acq_rel);
+      const auto after = prev - 1;
+      FB_CHECKABORT(
+          after >= 0,
+          "Unexpected negative refCount {} in RegElem {}",
+          after,
+          (void*)regHdl);
+      if (after > 0) {
+        return commSuccess;
+      }
+    }
+
+    // Remove the regElem from every segment correlation entry so no dangling
+    // pointer remains after ownership moves out of the live map. Dynamic
+    // RegElems carry no segments_, so this only matters for the cached
+    // (releaseRef) path.
+    removeRegElemFromSegCorrelations(
+        regHdl, regHdl->segments_, regElemsMaps->segToRegElemsMap);
+
     // Remove regElem from global cache and return ownership to caller for any
     // remote registration release
     regElem = std::move(it->second);
@@ -1552,7 +1770,6 @@ commResult_t ctran::RegCache::deregAll() {
   {
     auto regElemsMaps = regCache->regElemsMaps_.wlock();
     auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
-    auto& segToRegElemsMap = regElemsMaps->segToRegElemsMap;
 
     // Iterate through all regElems and collect non-dynamic ones for
     // deregistration
@@ -1567,19 +1784,8 @@ commResult_t ctran::RegCache::deregAll() {
       }
 
       // Remove from segToRegElemsMap
-      for (auto seg : regElem->segments_) {
-        auto segIt = segToRegElemsMap.find(seg);
-        if (segIt != segToRegElemsMap.end()) {
-          auto& regElemsVec = segIt->second;
-          regElemsVec.erase(
-              std::remove(
-                  regElemsVec.begin(), regElemsVec.end(), regElem.get()),
-              regElemsVec.end());
-          if (regElemsVec.empty()) {
-            segToRegElemsMap.erase(segIt);
-          }
-        }
-      }
+      removeRegElemFromSegCorrelations(
+          regElem.get(), regElem->segments_, regElemsMaps->segToRegElemsMap);
 
       // Transfer ownership to toDeregister vector and remove from map
       toDeregister.push_back(std::move(regElem));
