@@ -13,6 +13,27 @@ try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
 
+    def _disable_unsafe_reordering_passes() -> None:
+        """Disable inductor passes that reorder torchcomms ops.
+
+        Inductor's simple_overlap pass (on by default since PyTorch 2.14
+        nightly dev20260625, pytorch/pytorch#184240) hoists collectives above
+        any node it doesn't recognize as a collective. torchcomms ops rely on
+        with_effects tokens for ordering, but the effect-chain StarDeps are
+        dropped on the scheduler floor due to a buffer-vs-operation name
+        mismatch in the with_effects lowering, so the pass freely reorders
+        blocking send/recv pairs and deadlocks ranks. Disable it until the
+        upstream fix lands.
+        """
+        from torch._inductor import config as inductor_config
+
+        dist_opts = getattr(inductor_config, "aten_distributed_optimizations", None)
+        if getattr(dist_opts, "enable_simple_overlap", None):
+            dist_opts.enable_simple_overlap = False
+            logger.info(
+                "Disabled inductor simple_overlap pass (unsafe with torchcomms ops)"
+            )
+
     def register_torchcomms_lowerings():
         from torchcomms.functional import collectives
 
@@ -20,6 +41,8 @@ try:  # noqa: C901
         if collectives is None:
             logger.warning("torchcomms.functional.collectives not available")
             return
+
+        _disable_unsafe_reordering_passes()
 
         try:
             from torchcomms.functional.registry import _REGISTERED_COLLECTIVES
