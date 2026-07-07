@@ -734,9 +734,13 @@ commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
       FB_CHECKABORT(
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
-      FB_COMMCHECK(
-          ctran::IpcRegCache::getInstance()->releaseRemReg(
-              rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
+      auto ipcRegCache = ctran::IpcRegCache::getInstance();
+      if (ipcRegCache) {
+        FB_COMMCHECK(ipcRegCache->releaseRemReg(
+            rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
+        // actual release of deferred deregistrations
+        ipcRegCache->cleanupInvalidImports();
+      }
       break;
     }
     default:
