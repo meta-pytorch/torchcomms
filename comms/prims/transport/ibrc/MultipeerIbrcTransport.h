@@ -143,7 +143,7 @@ class MultipeerIbrcTransport
     std::vector<PeerQpResource> qpResources;
     std::vector<IbrcCmdQueueHost> cmdQueues;
     MappedAllocation cmdQueueDevices;
-    MappedAllocation blockQpState;
+    MappedAllocation channelState;
     bool qpsConnected{false};
     bool cmdQueuesAllocated{false};
   };
