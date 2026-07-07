@@ -135,14 +135,10 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
     // Sender transport on GPU0: only needs remoteState_.ll128Buffer
     LocalState localState0{
         .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
         .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
     };
     RemoteState remoteState0{
         .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
         .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
         .ll128Buffer = ll128Buffer,
     };
@@ -152,15 +148,11 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
     // Receiver transport on GPU1: only needs localState_.ll128Buffer
     LocalState localState1{
         .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
         .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
         .ll128Buffer = ll128Buffer,
     };
     RemoteState remoteState1{
         .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
         .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
     };
     P2pNvlTransportDevice transport1(
@@ -527,14 +519,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpu) {
   // Transport on GPU 0: signals to GPU 1's buffer, waits on GPU 0's buffer
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -552,14 +540,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpu) {
   // Transport on GPU 1: signals to GPU 0's buffer, waits on GPU 1's buffer
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(
@@ -633,14 +617,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuMultipleIds) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -657,14 +637,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuMultipleIds) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(
@@ -742,14 +718,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuAdd) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -766,14 +738,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuAdd) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(
@@ -841,14 +809,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuBlockGroups) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -865,14 +829,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuBlockGroups) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(
@@ -950,14 +910,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -974,14 +930,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(
@@ -1075,14 +1027,10 @@ TEST_F(P2pNvlTransportDeviceTestFixture, PutPerGroup) {
   };
   LocalState localState{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
   };
   RemoteState remoteState{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
   };
   P2pNvlTransportDevice transport(0, 0, options, localState, remoteState);
@@ -1144,14 +1092,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   P2pNvlTransportDevice transport0(
@@ -1167,14 +1111,10 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer1, numSignals),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(signalBuffer0, numSignals),
   };
   P2pNvlTransportDevice transport1(

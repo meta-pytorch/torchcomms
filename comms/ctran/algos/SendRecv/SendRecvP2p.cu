@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
@@ -18,7 +19,13 @@ __device__ __forceinline__ void sendImpl(
   for (auto i = 0; i < numSends; i++) {
     const auto nbytes = sends[i].nbytes;
     const auto peerLocalRank = sends[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].send_group(group, sends[i].buff, nbytes);
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(sends[i].buff), nbytes, group);
+    nvlTransportsBase[peerLocalRank].send(
+        group,
+        tiles.tile_data(group.group_id),
+        tiles.tile_bytes(group.group_id),
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -30,7 +37,13 @@ __device__ __forceinline__ void recvImpl(
   for (auto i = 0; i < numRecvs; i++) {
     const auto nbytes = recvs[i].nbytes;
     const auto peerLocalRank = recvs[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].recv_group(group, recvs[i].buff, nbytes);
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(recvs[i].buff), nbytes, group);
+    nvlTransportsBase[peerLocalRank].recv(
+        group,
+        tiles.tile_data(group.group_id),
+        tiles.tile_bytes(group.group_id),
+        /*max_signal_bytes=*/0);
   }
 }
 

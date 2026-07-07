@@ -5,7 +5,6 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <stdexcept>
-#include "comms/prims/core/ChunkState.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TimeoutUtils.h"
@@ -23,18 +22,6 @@ namespace comms::prims::test {
           __FILE__ + ":" + std::to_string(__LINE__));                      \
     }                                                                      \
   } while (0)
-
-// Kernel that waits on ChunkState that will never become ready
-// This should trigger a timeout and call __trap()
-__global__ void chunkStateTimeoutKernel(ChunkState* state, Timeout timeout) {
-  // Start the timeout timer - captures clock64() once at kernel entry
-  timeout.start();
-  auto group = make_thread_group(SyncScope::WARP);
-
-  // State is initialized to READY_TO_SEND (-1), so waiting for stepId=0
-  // will spin forever unless timeout triggers
-  state->wait_ready_to_recv(group, 0, timeout);
-}
 
 // Kernel that waits on SignalState that will never be signaled
 // This should trigger a timeout and call __trap()
@@ -61,31 +48,6 @@ __global__ void noTimeoutKernel(Timeout timeout) {
     printf("CUDA TIMEOUT ERROR: Unexpected timeout in noTimeoutKernel\n");
     __trap();
   }
-}
-
-void launchChunkStateTimeoutKernel(int device, uint32_t timeout_ms) {
-  CUDA_CHECK(cudaSetDevice(device));
-
-  // Allocate ChunkState on device
-  ChunkState* d_state;
-  CUDA_CHECK(cudaMalloc(&d_state, sizeof(ChunkState)));
-
-  // Initialize to READY_TO_SEND (default constructor state)
-  ChunkState h_state;
-  CUDA_CHECK(cudaMemcpy(
-      d_state, &h_state, sizeof(ChunkState), cudaMemcpyHostToDevice));
-
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
-
-  // Launch kernel with a full warp - should trap due to timeout
-  // Intentionally unchecked - we expect the kernel to trap
-  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  chunkStateTimeoutKernel<<<1, 32>>>(d_state, timeout);
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
-
-  // Don't free - device will be reset by test
 }
 
 void launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms) {
@@ -124,20 +86,6 @@ void launchNoTimeoutKernel(int device, uint32_t timeout_ms) {
   CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-// Kernel that uses ThreadGroup-based timeout checking for ChunkState
-// This tests the new check(ThreadGroup&) method with leader-only checking
-__global__ void chunkStateThreadGroupTimeoutKernel(
-    ChunkState* state,
-    Timeout timeout) {
-  timeout.start();
-  auto group = make_thread_group(SyncScope::WARP);
-
-  // State is initialized to READY_TO_SEND (-1), so waiting for stepId=0
-  // will spin forever unless timeout triggers
-  // Uses ThreadGroup-based wait which calls timeout.check(group)
-  state->wait_ready_to_recv(group, 0, timeout);
-}
-
 // Kernel that uses ThreadGroup-based timeout checking for SignalState
 __global__ void signalStateThreadGroupTimeoutKernel(
     SignalState* state,
@@ -171,32 +119,6 @@ __global__ void timeoutTrapKernel(Timeout timeout) {
       __trap();
     }
   }
-}
-
-void launchChunkStateThreadGroupTimeoutKernel(int device, uint32_t timeout_ms) {
-  CUDA_CHECK(cudaSetDevice(device));
-
-  // Allocate ChunkState on device
-  ChunkState* d_state;
-  CUDA_CHECK(cudaMalloc(&d_state, sizeof(ChunkState)));
-
-  // Initialize to READY_TO_SEND (default constructor state)
-  ChunkState h_state;
-  CUDA_CHECK(cudaMemcpy(
-      d_state, &h_state, sizeof(ChunkState), cudaMemcpyHostToDevice));
-
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
-
-  // Launch kernel with a full warp - should trap due to timeout
-  // Leader-only checking means only thread 0 calls clock64()
-  // Intentionally unchecked - we expect the kernel to trap
-  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  chunkStateThreadGroupTimeoutKernel<<<1, 32>>>(d_state, timeout);
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
-
-  // Don't free - device will be reset by test
 }
 
 void launchSignalStateThreadGroupTimeoutKernel(

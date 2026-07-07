@@ -225,8 +225,8 @@ class ThreadGroupStridedTest
 //
 // Why this matters:
 // - STRIDED pattern ensures consistent chunk-to-group mapping
-// - Useful when groups maintain local state for specific chunks
-// - e.g., ChunkState tracking where each group "owns" certain chunks
+// - Useful when groups maintain local state for specific chunks (each group
+//   "owns" the chunks it processes across iterations).
 //
 // Test setup:
 // - Configurable number of work items (even or uneven distribution)
