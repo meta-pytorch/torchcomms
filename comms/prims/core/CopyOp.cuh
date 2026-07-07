@@ -84,8 +84,13 @@ struct TileReduce {
   }
 };
 
+// Register/tile-staged reduce.
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduceStaged {
+  __host__ __device__ static constexpr std::size_t smem_bytes() {
+    return 0;
+  }
+
   template <typename... Args>
   __device__ __forceinline__ static void send(
       char* staging,
