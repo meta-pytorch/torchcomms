@@ -181,7 +181,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       return commInvalidArgument;
     }
     config.ibConfig.maxGroups = static_cast<int>(NCCL_CTRAN_IB_MAX_GROUPS);
-    config.ibConfig.qpsPerBlockPerNic =
+    config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
     if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {

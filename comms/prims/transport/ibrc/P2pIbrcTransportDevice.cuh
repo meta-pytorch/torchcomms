@@ -247,6 +247,15 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ void signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      IbDirection direction) {
+    (void)direction;
+    signal(group, signalBuf, signalVal);
+  }
+
+  __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
     ThreadGroup solo = make_thread_solo();
@@ -435,6 +444,11 @@ class P2pIbrcTransportDevice {
     group.sync();
   }
 
+  __device__ void flush(ThreadGroup& group, IbDirection direction) {
+    (void)direction;
+    flush(group);
+  }
+
   __device__ void flush() {
     ThreadGroup solo = make_thread_solo();
     flush(solo);
@@ -442,6 +456,10 @@ class P2pIbrcTransportDevice {
 
   __device__ void fence(ThreadGroup& group) {
     flush(group);
+  }
+
+  __device__ void fence(ThreadGroup& group, IbDirection direction) {
+    flush(group, direction);
   }
 
   __device__ void fence() {
