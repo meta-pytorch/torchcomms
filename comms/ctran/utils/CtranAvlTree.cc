@@ -55,9 +55,14 @@ commResult_t CtranAvlTree::remove(void* hdl) {
     return commInvalidUsage;
   }
 
-  // First try to remove from AVL tree
+  // First try to remove from AVL tree. Guard against a null root_: the tree may
+  // be empty while the element still lives in the fallback list_ (e.g. the only
+  // tree node was removed first). In that case removed stays false and control
+  // falls through to the list removal path below.
   bool removed = false;
-  this->root_ = this->root_->remove(e, &removed);
+  if (this->root_ != nullptr) {
+    this->root_ = this->root_->remove(e, &removed);
+  }
   if (removed) {
     delete e;
   } else {
