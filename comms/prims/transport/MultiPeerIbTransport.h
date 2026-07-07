@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -67,6 +68,21 @@ struct MultipeerIbTransportConfig {
   // interpret it as the size of one logical staging slot.
   std::size_t dataBufferSize{0};
 
+  // Fixed-channel send/recv staging slice size in bytes. When this is nonzero,
+  // send/recv staging geometry is:
+  //   dataBufferSize = perChannelSize * max_num_channels
+  // where dataBufferSize is the derived size of one pipeline slot across all
+  // channels.
+  std::size_t perChannelSize{0};
+
+  // Maximum number of logical IB channels per peer in the fixed-channel model.
+  // A channel is selected by ThreadGroup::group_id. For IB, QP ownership is
+  // scoped by (channel, direction, NIC).
+  int max_num_channels{64};
+
+  // Fixed-channel send/recv pipeline depth.
+  int pipelineDepth{2};
+
   // Number of signal slots managed by the transport (per peer), for the
   // slot-index API. Independent of send/recv's private signal buffers.
   int numSignalSlots{0};
@@ -108,8 +124,50 @@ struct MultipeerIbTransportConfig {
   // command queue.
   int qpsPerBlockPerNic{1};
 
+  // Number of main QPs per fixed-channel IB connection, where one connection is
+  // a (channel, direction, NIC) tuple. Companion QPs are not multiplied by this
+  // value; IBGDA allocates one companion QP per (channel, direction, NIC).
+  int qpsPerConnection{1};
+
   int numQpsPerPeerPerNic() const {
     return maxGroups * qpsPerBlockPerNic;
+  }
+
+  std::size_t fixedChannelDataBufferSize() const {
+    if (max_num_channels < 0) {
+      throw std::invalid_argument("max_num_channels must be >= 0");
+    }
+    const auto channels = static_cast<std::size_t>(max_num_channels);
+    if (channels != 0 &&
+        perChannelSize > std::numeric_limits<std::size_t>::max() / channels) {
+      throw std::overflow_error(
+          "perChannelSize * max_num_channels overflows size_t");
+    }
+    return perChannelSize * channels;
+  }
+
+  int fixedChannelMainQpsPerPeerPerNic() const {
+    if (max_num_channels < 0 || qpsPerConnection < 0) {
+      throw std::invalid_argument(
+          "max_num_channels and qpsPerConnection must be >= 0");
+    }
+    if (max_num_channels != 0 &&
+        qpsPerConnection > std::numeric_limits<int>::max() / kIbDirections /
+                max_num_channels) {
+      throw std::overflow_error(
+          "max_num_channels * 2 * qpsPerConnection overflows int");
+    }
+    return max_num_channels * 2 * qpsPerConnection;
+  }
+
+  int fixedChannelCompanionQpsPerPeerPerNic() const {
+    if (max_num_channels < 0) {
+      throw std::invalid_argument("max_num_channels must be >= 0");
+    }
+    if (max_num_channels > std::numeric_limits<int>::max() / 2) {
+      throw std::overflow_error("max_num_channels * 2 overflows int");
+    }
+    return max_num_channels * 2;
   }
 
   // mlx5 Data-Direct: register MRs through the NIC's data-direct (BAR1) PCIe

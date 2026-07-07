@@ -92,8 +92,37 @@ a later kernel uses fewer active groups.
 
 ## IB
 
-IB transports still use per-call active group geometry today. Their staging
-slice width can depend on the active block count for that call, so users must
-preserve the transport's synchronization contract when changing active blocks
-between calls. NVLink avoids that dynamic-layout hazard by making channels
-fixed at transport initialization.
+IB transports are moving to the same fixed-channel model. In this model, an IB
+channel is selected by `ThreadGroup::group_id`, but the concurrent ownership
+unit is:
+
+```text
+(peer, channel_id, direction)
+```
+
+`direction` is `Send` or `Recv`. One group may actively use the Send side of a
+channel while another group uses the Recv side of the same channel. Concurrent
+duplicate use of the same `(peer, channel_id, direction)` is caller error and
+the transport does not serialize it.
+
+Unlike NVLink, an IB channel owns both protocol state and NIC posting
+bookkeeping. The local channel carries:
+
+- send and recv progress slots
+- local `DATA_READY`, `SLOT_FREE`, and `NIC_DONE` wait/completion buffers. The
+  `NIC_DONE` wait view and completion-target view are separate because IBRC
+  waits from the GPU while the CPU proxy completes through a host alias.
+- send-side and recv-side QP selection/flush state
+
+The remote channel is not a pointer to the peer's full local channel. It is a
+set of RDMA targets this rank can write: peer `DATA_READY`, peer `SLOT_FREE`,
+and peer recv staging.
+
+QP resources are selected by `(channel_id, direction, NIC, qp_index)`.
+`qpsPerConnection` means QPs per `(channel_id, direction, NIC)`. IBGDA
+companion QPs are per `(channel_id, direction, NIC)` and are not multiplied by
+`qpsPerConnection`.
+
+Public raw put/signal APIs default to the Send direction. Send/recv/forward
+internals use explicit directions: data puts and `DATA_READY` use Send, while
+recv-side `SLOT_FREE` uses Recv.
