@@ -37,16 +37,6 @@ class TimeoutTrapTest : public ::testing::Test {
   }
 };
 
-// Test that ChunkState::wait_ready_to_recv times out and traps
-TEST_F(TimeoutTrapTest, ChunkStateWaitReadyToRecvTimeout) {
-  // Use a short timeout (10ms) - should trigger quickly
-  launchChunkStateTimeoutKernel(0, 10);
-
-  cudaError_t err = cudaGetLastError();
-  EXPECT_TRUE(isExpectedTrapError(err))
-      << "Expected trap error, got: " << cudaGetErrorString(err);
-}
-
 // Test that SignalState::wait_until times out and traps
 TEST_F(TimeoutTrapTest, SignalStateWaitUntilTimeout) {
   // Use a short timeout (10ms) - should trigger quickly
@@ -67,17 +57,6 @@ TEST_F(TimeoutTrapTest, NoTimeoutWhenKernelCompletes) {
   cudaError_t err = cudaGetLastError();
   EXPECT_EQ(err, cudaSuccess)
       << "Expected success, got: " << cudaGetErrorString(err);
-}
-
-// Test that ChunkState with ThreadGroup-based timeout checking works
-TEST_F(TimeoutTrapTest, ChunkStateThreadGroupTimeout) {
-  // Use a short timeout (10ms) - should trigger quickly
-  // This tests the leader-only check(ThreadGroup&) path
-  launchChunkStateThreadGroupTimeoutKernel(0, 10);
-
-  cudaError_t err = cudaGetLastError();
-  EXPECT_TRUE(isExpectedTrapError(err))
-      << "Expected trap error, got: " << cudaGetErrorString(err);
 }
 
 // Test that SignalState with ThreadGroup-based timeout checking works

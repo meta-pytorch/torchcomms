@@ -724,7 +724,10 @@ TEST(MultiPeerTransportDisableIbTest, ThrowsWhenPeerNotNvlReachable) {
   // Rank 1 is NVL-reachable, rank 2 is NOT.
   auto topo = makeTopology(kMyRank, {1});
 
-  MultiPeerTransportConfig config{.disableIb = true};
+  MultiPeerTransportConfig config{
+      .nvlConfig = {.maxNumChannels = 0},
+      .disableIb = true,
+  };
   auto bootstrap = std::make_shared<MockBootstrap>();
 
   EXPECT_THROW(
@@ -740,7 +743,10 @@ TEST(MultiPeerTransportDisableIbTest, ErrorMessageContainsRank) {
   // No NVL peers — rank 1 is unreachable.
   auto topo = makeTopology(kMyRank, {});
 
-  MultiPeerTransportConfig config{.disableIb = true};
+  MultiPeerTransportConfig config{
+      .nvlConfig = {.maxNumChannels = 0},
+      .disableIb = true,
+  };
   auto bootstrap = std::make_shared<MockBootstrap>();
 
   try {
@@ -760,7 +766,10 @@ TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
   // All peers NVL-reachable.
   auto topo = makeTopology(kMyRank, {1, 2});
 
-  MultiPeerTransportConfig config{.disableIb = true};
+  MultiPeerTransportConfig config{
+      .nvlConfig = {.maxNumChannels = 0},
+      .disableIb = true,
+  };
   auto bootstrap = std::make_shared<MockBootstrap>();
 
   // Construction succeeds up to the disableIb validation. NVL transport

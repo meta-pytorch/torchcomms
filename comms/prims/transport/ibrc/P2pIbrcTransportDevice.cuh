@@ -71,9 +71,9 @@ class P2pIbrcTransportDevice {
   __host__ __device__ P2pIbrcTransportDevice(
       DeviceSpan<IbrcCmdQueueDevice> queues,
       uint32_t nics,
-      uint32_t maxGroups,
-      uint32_t qpsPerBlockPerNic,
-      DeviceSpan<IbrcBlockQpState> blockQpState,
+      uint32_t maxChannels,
+      uint32_t qpsPerConnection,
+      DeviceSpan<IbLocalChannel> localChannels,
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
       IbgdaLocalBuffer ownedCounterDeviceBuf = {},
@@ -83,9 +83,9 @@ class P2pIbrcTransportDevice {
       IbSendRecvState sendRecvState = {})
       : cmdQueues(queues),
         numNics(nics),
-        maxGroups_(maxGroups),
-        qpsPerBlockPerNic_(qpsPerBlockPerNic),
-        blockQpState_(blockQpState),
+        maxChannels_(maxChannels),
+        qpsPerConnection_(qpsPerConnection),
+        localChannels_(localChannels),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
         ownedCounterDeviceBuf_(ownedCounterDeviceBuf),
@@ -223,16 +223,20 @@ class P2pIbrcTransportDevice {
     return read_counter(counter_device_slot(counterId));
   }
 
+  // Public raw put/signal/flush/fence APIs default to the Send direction.
+  // Recv-direction operations are reserved for the send/recv protocol internals
+  // that explicitly pass IbDirection::Recv.
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       if (signalBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: signal buffer is null");
       }
       validate_group_scope(group);
-      const uint32_t queueId = control_queue_id(group.block_id);
+      const uint32_t queueId = control_queue_id(group, direction);
       const uint32_t nicId = nic_for_queue(queueId);
       IbrcDesc desc{};
       desc.signal_addr = reinterpret_cast<uint64_t>(signalBuf.ptr);
@@ -248,9 +252,10 @@ class P2pIbrcTransportDevice {
 
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      IbDirection direction = IbDirection::Send) {
     ThreadGroup solo = make_thread_solo();
-    signal(solo, signalBuf, signalVal);
+    signal(solo, signalBuf, signalVal, direction);
   }
 
   __device__ void put(
@@ -275,7 +280,7 @@ class P2pIbrcTransportDevice {
 
     if (group.is_leader()) {
       validate_group_scope(group);
-      const uint32_t queueId = select_put_queue_id(group.block_id);
+      const uint32_t queueId = select_put_queue_id(group, IbDirection::Send);
       const uint32_t nicId = nic_for_queue(queueId);
       IbrcDesc desc{};
       desc.op = static_cast<uint16_t>(hasData ? IbrcOp::PUT : IbrcOp::SIGNAL);
@@ -427,25 +432,29 @@ class P2pIbrcTransportDevice {
     return load_acquire_system_u64(counterBuf.ptr);
   }
 
-  __device__ void flush(ThreadGroup& group) {
+  __device__ void flush(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      drain_block_queues(group.block_id);
+      drain_channel_queues(group, direction);
     }
     group.sync();
   }
 
-  __device__ void flush() {
+  __device__ void flush(IbDirection direction = IbDirection::Send) {
     ThreadGroup solo = make_thread_solo();
-    flush(solo);
+    flush(solo, direction);
   }
 
-  __device__ void fence(ThreadGroup& group) {
-    flush(group);
+  __device__ void fence(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
+    flush(group, direction);
   }
 
-  __device__ void fence() {
-    flush();
+  __device__ void fence(IbDirection direction = IbDirection::Send) {
+    flush(direction);
   }
 
   // ===========================================================================
@@ -588,19 +597,20 @@ class P2pIbrcTransportDevice {
 
  private:
   __device__ __forceinline__ uint32_t num_qp_lanes() const {
-    return numNics * qpsPerBlockPerNic_;
+    return numNics * qpsPerConnection_;
   }
 
   __device__ __forceinline__ uint32_t num_qps_per_peer_per_nic() const {
-    return maxGroups_ * qpsPerBlockPerNic_;
+    return maxChannels_ * kIbDirections * qpsPerConnection_;
   }
 
-  __device__ __forceinline__ void validate_block_id(uint32_t blockId) const {
+  __device__ __forceinline__ void validate_channel_id(
+      uint32_t channelId) const {
 #if PIPES_IS_DEVICE_COMPILE
     if (blockIdx.y != 0 || blockIdx.z != 0 || blockDim.y != 1 ||
         blockDim.z != 1) {
       printf(
-          "P2pIbrcTransportDevice: block-owned QP selection currently "
+          "P2pIbrcTransportDevice: channel QP selection currently "
           "supports only 1D grids and 1D thread blocks, got "
           "blockIdx=(%u,%u,%u) blockDim=(%u,%u,%u)\n",
           blockIdx.x,
@@ -615,16 +625,16 @@ class P2pIbrcTransportDevice {
     if (cmdQueues.empty()) {
       trap("P2pIbrcTransportDevice: no command queues");
     }
-    if (numNics == 0 || qpsPerBlockPerNic_ == 0 || maxGroups_ == 0 ||
-        blockQpState_.empty() || blockId >= maxGroups_) {
+    if (numNics == 0 || qpsPerConnection_ == 0 || maxChannels_ == 0 ||
+        localChannels_.empty() || channelId >= maxChannels_) {
       printf(
-          "P2pIbrcTransportDevice: invalid block-owned QP state block_id=%u "
-          "maxGroups=%u qpsPerBlockPerNic=%u numNics=%u stateSize=%u\n",
-          blockId,
-          maxGroups_,
-          qpsPerBlockPerNic_,
+          "P2pIbrcTransportDevice: invalid channel QP state channel_id=%u "
+          "maxChannels=%u qpsPerConnection=%u numNics=%u stateSize=%u\n",
+          channelId,
+          maxChannels_,
+          qpsPerConnection_,
           numNics,
-          static_cast<unsigned>(blockQpState_.size()));
+          static_cast<unsigned>(localChannels_.size()));
       PIPES_DEVICE_TRAP();
     }
   }
@@ -634,19 +644,32 @@ class P2pIbrcTransportDevice {
     if (group.scope == SyncScope::CLUSTER) {
       trap("P2pIbrcTransportDevice: cluster-scope ThreadGroup unsupported");
     }
-    validate_block_id(group.block_id);
+    validate_channel_id(group.group_id);
   }
 
-  __device__ __forceinline__ uint32_t
-  queue_for_lane(uint32_t blockId, uint32_t laneOrdinal) const {
-    validate_block_id(blockId);
+  __device__ __forceinline__ IbQpState& qp_state(
+      uint32_t channelId,
+      IbDirection direction) const {
+    validate_channel_id(channelId);
+    auto& channel = localChannels_[channelId];
+    return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
+  }
+
+  __device__ __forceinline__ uint32_t queue_for_lane(
+      uint32_t channelId,
+      IbDirection direction,
+      uint32_t laneOrdinal) const {
+    validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
     if (laneOrdinal >= lanes) {
       trap("P2pIbrcTransportDevice: lane ordinal out of range");
     }
     const uint32_t nicId = laneOrdinal % numNics;
     const uint32_t qpIndex = laneOrdinal / numNics;
-    const uint32_t qpSlot = blockId * qpsPerBlockPerNic_ + qpIndex;
+    const uint32_t directionIndex = static_cast<uint32_t>(direction);
+    const uint32_t qpSlot =
+        ((channelId * kIbDirections + directionIndex) * qpsPerConnection_) +
+        qpIndex;
     if (qpSlot >= num_qps_per_peer_per_nic()) {
       trap("P2pIbrcTransportDevice: QP slot out of range");
     }
@@ -657,19 +680,22 @@ class P2pIbrcTransportDevice {
     return queueId;
   }
 
-  __device__ __forceinline__ uint32_t control_queue_id(uint32_t blockId) const {
-    return queue_for_lane(blockId, 0);
+  __device__ __forceinline__ uint32_t
+  control_queue_id(const ThreadGroup& group, IbDirection direction) const {
+    return queue_for_lane(group.group_id, direction, 0);
   }
 
-  __device__ __forceinline__ uint32_t select_put_queue_id(uint32_t blockId) {
-    validate_block_id(blockId);
+  __device__ __forceinline__ uint32_t
+  select_put_queue_id(const ThreadGroup& group, IbDirection direction) {
+    const uint32_t channelId = group.group_id;
+    validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
     if (lanes == 1) {
-      return control_queue_id(blockId);
+      return control_queue_id(group, direction);
     }
     const uint32_t seq =
-        fetch_add_system_u32(&blockQpState_[blockId].put_rr, 1U);
-    return queue_for_lane(blockId, seq % lanes);
+        fetch_add_system_u32(&qp_state(channelId, direction).cursor, 1U);
+    return queue_for_lane(channelId, direction, seq % lanes);
   }
 
   __device__ __forceinline__ uint32_t nic_for_queue(uint32_t queueId) const {
@@ -692,19 +718,26 @@ class P2pIbrcTransportDevice {
     }
   }
 
-  __device__ void drain_block_queues(uint32_t blockId) const {
-    validate_block_id(blockId);
+  __device__ void drain_channel_queues(
+      const ThreadGroup& group,
+      IbDirection direction) const {
+    const uint32_t channelId = group.group_id;
+    validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
     for (uint32_t lane = 0; lane < lanes; ++lane) {
-      drain_queue(cmdQueues[queue_for_lane(blockId, lane)]);
+      drain_queue(cmdQueues[queue_for_lane(channelId, direction, lane)]);
     }
   }
 
-  __device__ void check_block_status(uint32_t blockId) const {
-    validate_block_id(blockId);
+  __device__ void check_channel_status(uint32_t channelId) const {
+    validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
-    for (uint32_t lane = 0; lane < lanes; ++lane) {
-      check_status(cmdQueues[queue_for_lane(blockId, lane)]);
+    for (uint32_t dir = 0; dir < kIbDirections; ++dir) {
+      for (uint32_t lane = 0; lane < lanes; ++lane) {
+        check_status(
+            cmdQueues[queue_for_lane(
+                channelId, static_cast<IbDirection>(dir), lane)]);
+      }
     }
   }
 
@@ -759,7 +792,7 @@ class P2pIbrcTransportDevice {
     if (group.is_leader()) {
       validate_group_scope(group);
       while (load_acquire_system_u64(ptr) < expected) {
-        check_block_status(group.block_id);
+        check_channel_status(group.group_id);
         if (timeout.checkExpired()) {
           printf(
               "P2pIbrcTransportDevice: wait_%s timed out expected=%llu\n",
@@ -889,9 +922,9 @@ class P2pIbrcTransportDevice {
 
   DeviceSpan<IbrcCmdQueueDevice> cmdQueues{};
   uint32_t numNics{0};
-  uint32_t maxGroups_{0};
-  uint32_t qpsPerBlockPerNic_{0};
-  DeviceSpan<IbrcBlockQpState> blockQpState_{};
+  uint32_t maxChannels_{0};
+  uint32_t qpsPerConnection_{0};
+  DeviceSpan<IbLocalChannel> localChannels_{};
   IbgdaRemoteBuffer ownedRemoteSignalBuf_{};
   IbgdaLocalBuffer ownedLocalSignalBuf_{};
   IbgdaLocalBuffer ownedCounterDeviceBuf_{};

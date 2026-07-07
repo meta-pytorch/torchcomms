@@ -26,6 +26,10 @@ bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
 }
 
+int ctranPipesNvlMaxNumChannels() {
+  return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
+}
+
 } // namespace
 
 commResult_t ctran::ctranPreparePipesTrace(
@@ -90,14 +94,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         ? static_cast<size_t>(pc.nvlChunkSize)
         : static_cast<size_t>(NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE);
 
-    config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
-        ? (pc.useDualStateBuffer == 1)
-        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
-    if (hierAgOverlapEnabled) {
-      config.nvlConfig.tile_max_groups = std::max(
-          config.nvlConfig.tile_max_groups,
-          static_cast<int>(NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS));
-    }
+    config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
@@ -184,7 +181,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       return commInvalidArgument;
     }
     config.ibConfig.maxGroups = static_cast<int>(NCCL_CTRAN_IB_MAX_GROUPS);
-    config.ibConfig.qpsPerBlockPerNic =
+    config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
     if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
@@ -231,13 +228,13 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} useDualStateBuffer={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} nvlMaxNumChannels={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
         config.nvlConfig.dataBufferSize,
         config.nvlConfig.chunkSize,
-        config.nvlConfig.useDualStateBuffer,
+        config.nvlConfig.maxNumChannels,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,
@@ -404,7 +401,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
 
   // Wire SharedResource staging buffers to MultiPeerTransport as external
   // data buffers, then exchange. This lets MultiPeerNvlTransport manage
-  // ChunkState and signal buffers internally while reusing the staging
+  // its signal/channel-state buffers internally while reusing the staging
   // buffers already allocated and IPC-shared via SharedResource.
   FB_CHECKABORT(
       algo->sharedRes_ != nullptr,
