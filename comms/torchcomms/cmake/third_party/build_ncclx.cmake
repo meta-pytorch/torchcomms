@@ -3,7 +3,7 @@
 include_guard(GLOBAL)
 
 # When USE_NCCLX is enabled and we're not using system libs, run build_ncclx.sh
-# to build gflags/glog/fmt/folly/fbthrift/NCCLX into CONDA_PREFIX. This must
+# to build gflags/glog/fmt/folly/NCCLX into CONDA_PREFIX. This must
 # happen before the other third-party includes so find_package() can discover
 # the libraries that build_ncclx.sh installs.
 if(USE_NCCLX AND NOT USE_SYSTEM_LIBS)
