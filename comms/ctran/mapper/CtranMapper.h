@@ -452,13 +452,18 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
    */
   commResult_t intraAllGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -474,6 +479,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
    */
   commResult_t allGatherCtrl(
       const void* buf,
@@ -481,7 +490,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const std::vector<int>& ranks,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -497,13 +507,18 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
    */
   commResult_t allGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
@@ -1064,6 +1079,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
  private:
+  commResult_t allGatherCtrlImpl(
+      const void* buf,
+      void* hdl,
+      const std::vector<int>& ranks,
+      std::vector<void*>& remoteBufs,
+      std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+      CtranMapperBackend backend,
+      bool recordExport = true);
+
   [[noreturn]] inline void throwCommAbortException(
       const std::string& abortContext) {
     auto commAbort = comm->getAbort();
@@ -1252,7 +1276,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       void* hdl,
       ControlMsg& msg,
       std::vector<ctran::utils::CtranIpcSegDesc>* extraSegments,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET) {
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
     // TODO: Enforce that a communicator can only export memory it registered
     // itself except the memory registered by globalRegister. Currently any comm
@@ -1287,8 +1312,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
       }
 
-      // Record the exported remote rank to notify at deregistration
-      if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+      // Record the exported remote rank to notify at deregistration.
+      if (recordExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         exportRegCache_.wlock()->record(regElem, rank);
       }
 

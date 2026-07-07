@@ -1000,7 +1000,8 @@ commResult_t CtranMapper::intraAllGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport) {
   const auto& statex = comm->statex_;
   const int nLocalRanks = statex->nLocalRanks();
 
@@ -1010,7 +1011,7 @@ commResult_t CtranMapper::intraAllGatherCtrl(
   }
 
   return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend, recordExport);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -1018,14 +1019,15 @@ commResult_t CtranMapper::allGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport) {
   const int nRanks = comm->statex_->nRanks();
   std::vector<int> ranks(nRanks);
   for (int i = 0; i < nRanks; i++) {
     ranks[i] = i;
   }
-  return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+  return this->allGatherCtrlImpl(
+      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend, recordExport);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -1034,7 +1036,20 @@ commResult_t CtranMapper::allGatherCtrl(
     const std::vector<int>& ranks,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport) {
+  return this->allGatherCtrlImpl(
+      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend, recordExport);
+}
+
+commResult_t CtranMapper::allGatherCtrlImpl(
+    const void* buf,
+    void* hdl,
+    const std::vector<int>& ranks,
+    std::vector<void*>& remoteBufs,
+    std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+    CtranMapperBackend backend,
+    bool recordExport) {
   const int rank = comm->statex_->rank();
 
   // Skip if rank is not in the ranks list
@@ -1093,8 +1108,9 @@ commResult_t CtranMapper::allGatherCtrl(
             hdl,
             nvlSendMsg,
             &nvlExtraSegments,
-            peerBackends[i]));
-      } else if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+            peerBackends[i],
+            recordExport));
+      } else if (recordExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         // exportMem not called for this peer, record explicitly
         exportRegCache_.wlock()->record(regElem, peerList[i]);
       }
