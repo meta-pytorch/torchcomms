@@ -194,6 +194,7 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
         .chunkSize = 1,
         .pipelineDepth = 1,
         .p2pSignalCount = signalCount,
+        .maxNumChannels = 0,
     };
 
     comms::prims::MultiPeerNvlTransport transport(
@@ -220,6 +221,7 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
         .chunkSize = 1,
         .pipelineDepth = 1,
         .p2pSignalCount = signalCount,
+        .maxNumChannels = 0,
     };
 
     comms::prims::MultiPeerNvlTransport transport(
