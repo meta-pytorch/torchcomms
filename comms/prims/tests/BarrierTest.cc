@@ -296,15 +296,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
   // Transport on GPU 0: writes to GPU 1's barrier, waits on GPU 0's barrier
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
@@ -323,15 +319,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
   // Transport on GPU 1: writes to GPU 0's barrier, waits on GPU 1's barrier
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
@@ -402,15 +394,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
@@ -428,15 +416,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
@@ -519,15 +503,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
@@ -545,15 +525,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
@@ -633,15 +609,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
@@ -659,15 +631,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
 
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
@@ -762,15 +730,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   // GPU 0 will use put() to copy from dataBuffer0 to dataBuffer1 via P2P
   LocalState localState0{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
@@ -789,15 +753,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   // Transport on GPU 1: local=barrier1, remote=barrier0
   LocalState localState1{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };

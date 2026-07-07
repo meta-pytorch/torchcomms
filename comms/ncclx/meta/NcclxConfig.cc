@@ -179,13 +179,6 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
   {
-    std::string val = getHintStr("pipesUseDualStateBuffer");
-    if (!val.empty()) {
-      pipesUseDualStateBuffer = parseHintBool(
-          "pipesUseDualStateBuffer", NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER);
-    }
-  }
-  {
     std::string val = getHintStr("pipesIbgdaDataBufferSize");
     if (!val.empty()) {
       try {
@@ -399,7 +392,6 @@ void ncclxLogCommConfig(ncclComm_t comm) {
       append(fmt::format("vCliqueSize={}", xCfg->vCliqueSize));
     }
     appendIfSet("pipesNvlChunkSize", xCfg->pipesNvlChunkSize);
-    appendIfSet("pipesUseDualStateBuffer", xCfg->pipesUseDualStateBuffer);
     appendIfSet("pipesIbgdaDataBufferSize", xCfg->pipesIbgdaDataBufferSize);
     appendIfSet("ncclBuffSize", xCfg->ncclBuffSize);
     appendIfSet("ibSplitDataOnQps", xCfg->ibSplitDataOnQps);

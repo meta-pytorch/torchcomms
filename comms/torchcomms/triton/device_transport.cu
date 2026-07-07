@@ -9,6 +9,7 @@
 #include <cstddef>
 
 #include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 using namespace comms::prims;
@@ -28,54 +29,6 @@ unsupported_transport(const char* op, TransportType type, int peer) {
 } // namespace
 
 extern "C" {
-
-// --- Data Transfer ---
-
-__device__ __noinline__ int torchcomms_transport_send_groups(
-    void* handle_ptr,
-    int peer,
-    void* src_ptr,
-    unsigned long long nbytes) {
-  auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
-  auto group = make_block_group();
-  const TransportType type = handle->get_type(peer);
-  switch (type) {
-    case TransportType::P2P_NVL:
-      handle->get_nvl(peer).send_group(
-          group, src_ptr, static_cast<std::size_t>(nbytes));
-      break;
-    case TransportType::P2P_IBGDA:
-      unsupported_transport("send_groups", type, peer);
-      break;
-    default:
-      unsupported_transport("send_groups", type, peer);
-      break;
-  }
-  return 0;
-}
-
-__device__ __noinline__ int torchcomms_transport_recv_groups(
-    void* handle_ptr,
-    int peer,
-    void* dst_ptr,
-    unsigned long long nbytes) {
-  auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
-  auto group = make_block_group();
-  const TransportType type = handle->get_type(peer);
-  switch (type) {
-    case TransportType::P2P_NVL:
-      handle->get_nvl(peer).recv_group(
-          group, dst_ptr, static_cast<std::size_t>(nbytes));
-      break;
-    case TransportType::P2P_IBGDA:
-      unsupported_transport("recv_groups", type, peer);
-      break;
-    default:
-      unsupported_transport("recv_groups", type, peer);
-      break;
-  }
-  return 0;
-}
 
 // --- Signaling ---
 

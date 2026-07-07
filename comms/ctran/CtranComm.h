@@ -34,13 +34,11 @@ using meta::comms::CommBackend;
 // -1 means use CVAR default.
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
-  int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
   bool ibLazyConnect{false};
   int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
     return nvlChunkSize == other.nvlChunkSize &&
-        useDualStateBuffer == other.useDualStateBuffer &&
         ibLazyConnect == other.ibLazyConnect &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }

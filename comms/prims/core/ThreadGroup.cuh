@@ -386,11 +386,10 @@ struct ThreadGroup {
    *
    * WHY STRIDED:
    * This ensures that within a kernel, the same chunk/item is ALWAYS assigned
-   * to the same group. This is useful when groups maintain local state for
-   * specific chunks (e.g., ChunkState tracking). Unlike contiguous assignment
-   * where item-to-group mapping depends on total_items, strided provides
-   * a deterministic mapping: item K is always assigned to group (K %
-   * total_groups).
+   * to the same group. This is useful when groups maintain per-chunk local
+   * state. Unlike contiguous assignment where item-to-group mapping depends
+   * on total_items, strided provides a deterministic mapping: item K is
+   * always assigned to group (K % total_groups).
    *
    * MAPPING FORMULA:
    * Group K processes items: {K + i * total_groups | i = 0, 1, 2, ...}
