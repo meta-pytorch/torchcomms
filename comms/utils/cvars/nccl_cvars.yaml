@@ -1162,13 +1162,6 @@ cvars:
      When enabled, dedicated IB blocks publish chunk-ready counters and
      dedicated NVLink blocks fan out chunks as soon as they arrive.
 
- - name        : NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS
-   type        : int
-   default     : 16
-   description : |-
-     Number of CUDA thread blocks for the experimental overlapped
-     cthierarchical_ring AllGather NVLink fanout role.
-
  - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
    type        : uint64_t
    default     : 0

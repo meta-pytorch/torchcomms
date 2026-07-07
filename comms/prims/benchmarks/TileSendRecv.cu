@@ -11,7 +11,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int active_blocks,
     std::size_t max_signal_bytes,
     Timeout timeout) {
   timeout.start();
@@ -26,7 +25,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        active_blocks,
         max_signal_bytes,
         timeout);
   } else {
@@ -34,7 +32,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        active_blocks,
         max_signal_bytes,
         timeout);
   }
@@ -44,7 +41,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
 // Dynamic block count variant — uses transport-internal tile state
 // =============================================================================
 //
-// Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups in
+// Requires maxNumChannels > 0 and p2pBarrierCount >= maxNumChannels in
 // transport config.
 //
 // DYNAMIC BLOCK COUNT: BARRIER CORRECTNESS
@@ -95,7 +92,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int active_blocks,
     bool needsBarrier,
     Timeout timeout) {
   timeout.start();
@@ -113,7 +109,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        active_blocks,
         /*max_signal_bytes=*/0,
         timeout);
   } else {
@@ -121,7 +116,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        active_blocks,
         /*max_signal_bytes=*/0,
         timeout);
   }
@@ -152,11 +146,64 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
 // step_state[i]). Rank 0's send/recv similarly use distinct halves on
 // the same transport.
 
+// =============================================================================
+// Bidir-CTA variant — one block does BOTH send and recv via multiwarp groups.
+// =============================================================================
+//
+// Each block creates two half-block multiwarp groups and interleaves them:
+//   - role 0 (first half-block): cooperative send on this block's channel
+//   - role 1 (second half-block): cooperative recv on the same channel
+//
+// make_multiwarp_group(blockDim.x / 2) gives two groups per CTA. Then
+// partition_interleaved(2) maps group 0 to role 0 / channel k and group 1
+// to role 1 / channel k, so both halves use the same channel index. Send and
+// recv touch INDEPENDENT signals (remote_ch.data_ready vs
+// remote_ch.slot_free)
+// and different memory regions (remote staging vs local staging), so the same
+// channel handles bidir traffic without conflict.
+//
+// Compared to the 2-role partition() variant (`p2pTileSendRecv`), this
+// kernel uses HALF the blocks (gridDim = numSendBlocks instead of
+// 2 * numSendBlocks) but each block has HALF the threads per role, so
+// per-tile threadcount is the same. The point is to test whether fewer
+// CTAs with thread-level role split gives better NVLink BW on H100 (per
+// the redesign brainstorm — see ~/gdrive/workstreams/ctranfoundation/
+// channels/design.md).
+
+__global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes,
+    Timeout timeout) {
+  timeout.start();
+
+  auto group = make_multiwarp_group(blockDim.x / 2);
+  auto [role, sub] = group.partition_interleaved(2);
+
+  const int blockId = sub.group_id;
+
+  if (role == 0) {
+    p2p.send(
+        sub,
+        sendTiles.tile_data(blockId),
+        sendTiles.tile_bytes(blockId),
+        max_signal_bytes,
+        timeout);
+  } else {
+    p2p.recv(
+        sub,
+        recvTiles.tile_data(blockId),
+        recvTiles.tile_bytes(blockId),
+        max_signal_bytes,
+        timeout);
+  }
+}
+
 __global__ __launch_bounds__(512, 1) void p2pTileForward(
     P2pNvlTransportDevice p2p_pred,
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
-    int active_blocks,
     std::size_t max_signal_bytes,
     Timeout timeout) {
   timeout.start();
@@ -169,7 +216,6 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
       dstTiles.tile_data(blockId),
       dstTiles.tile_bytes(blockId),
       p2p_succ,
-      active_blocks,
       max_signal_bytes,
       timeout);
 }

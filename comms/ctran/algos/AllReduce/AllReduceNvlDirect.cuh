@@ -155,12 +155,7 @@ __device__ __noinline__ void nvlDirectReduceScatter(
       const size_t window =
           common::pipelineStepBytes(ownerTile.bytes(), off, pipelineWindow);
       args.transports[ownerGlobalRank].p2p_nvl.send(
-          group,
-          ownerTile.data() + off,
-          window,
-          group.total_groups,
-          0,
-          timeout);
+          group, ownerTile.data() + off, window, 0, timeout);
     }
 
     if (localRank < pMin && off < myPhase2Tile.bytes()) {
@@ -172,13 +167,7 @@ __device__ __noinline__ void nvlDirectReduceScatter(
         }
         const int peerGlobalRank = args.localRankToGlobalRank[peer];
         args.transports[peerGlobalRank].p2p_nvl.recv<NvlReduceCopy<T>>(
-            group,
-            myDst + off,
-            window,
-            group.total_groups,
-            0,
-            timeout,
-            myDst + off);
+            group, myDst + off, window, 0, timeout, myDst + off);
       }
     }
   }
@@ -237,12 +226,7 @@ __device__ __noinline__ void nvlDirectAllGather(
         }
         const int peerGlobalRank = args.localRankToGlobalRank[peer];
         args.transports[peerGlobalRank].p2p_nvl.send(
-            group,
-            myRecvTile.data() + off,
-            window,
-            group.total_groups,
-            0,
-            timeout);
+            group, myRecvTile.data() + off, window, 0, timeout);
       }
     }
 
@@ -265,12 +249,7 @@ __device__ __noinline__ void nvlDirectAllGather(
       const size_t window =
           common::pipelineStepBytes(ownerTile.bytes(), off, pipelineWindow);
       args.transports[ownerGlobalRank].p2p_nvl.recv(
-          group,
-          ownerTile.data() + off,
-          window,
-          group.total_groups,
-          0,
-          timeout);
+          group, ownerTile.data() + off, window, 0, timeout);
     }
   }
 }

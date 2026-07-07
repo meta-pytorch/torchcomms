@@ -60,7 +60,8 @@ class HierarchicalAllGatherTest : public AllGatherTestBase {
           .chunkSize = 1024 * 1024,
           .pipelineDepth = 2,
           .p2pSignalCount = static_cast<std::size_t>(kNumBlocks),
-          .tile_max_groups = kNumBlocks,
+          .maxNumChannels = kNumBlocks,
+          .perChannelSize = (1024 * 1024) / kNumBlocks,
           .memSharingMode = MemSharingMode::kCudaIpc,
       };
       std::vector<int> nvlRankToGlobal(kNvlSize);

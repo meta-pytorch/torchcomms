@@ -521,10 +521,8 @@ class P2pLlBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       // LL/LL128 use their own dedicated buffers, not the staging buffer
       // or tile protocol. Zero out staging/tile config to skip allocation.
       comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-          .dataBufferSize = 0,
-          .chunkSize = 0,
           .pipelineDepth = 1,
-          .tile_max_groups = 0,
+          .maxNumChannels = 0,
           .ll128BufferSize =
               ll128Eligible ? comms::prims::ll128_buffer_size(cfg.nBytes) : 0,
           .llBufferSize = comms::prims::ll_buffer_size(cfg.nBytes),
@@ -582,10 +580,8 @@ class P2pLlBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       const bool ll128Eligible = (cfg.nBytes % 16 == 0);
 
       comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-          .dataBufferSize = 0,
-          .chunkSize = 0,
           .pipelineDepth = 1,
-          .tile_max_groups = 0,
+          .maxNumChannels = 0,
           .ll128BufferSize =
               ll128Eligible ? comms::prims::ll128_buffer_size(cfg.nBytes) : 0,
           .llBufferSize = comms::prims::ll_buffer_size(cfg.nBytes),

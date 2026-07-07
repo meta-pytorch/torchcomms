@@ -84,8 +84,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
           continue;
         }
         auto peer = peers[peer_rank];
-        peer.send(
-            group, send_src, window, group.total_groups, max_sig, timeout);
+        peer.send(group, send_src, window, max_sig, timeout);
       }
 
       for (int peer_rank = 0; peer_rank < nvl_size; ++peer_rank) {
@@ -97,7 +96,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
                 sendcount +
             tile_offset + off;
         auto peer = peers[peer_rank];
-        peer.recv(group, dst, window, group.total_groups, max_sig, timeout);
+        peer.recv(group, dst, window, max_sig, timeout);
       }
     }
   }

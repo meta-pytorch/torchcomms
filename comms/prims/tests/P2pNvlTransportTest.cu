@@ -41,38 +41,24 @@ __global__ void testTileSendKernel(
     P2pNvlTransportDevice p2p,
     void* src_d,
     size_t nbytes,
-    int activeBlocks,
     size_t maxSignalBytes,
     Timeout timeout) {
   timeout.start();
   auto group = make_block_group();
   TiledBuffer<char> tiles(reinterpret_cast<char*>(src_d), nbytes, group);
-  p2p.send(
-      group,
-      tiles.data(),
-      tiles.bytes(),
-      activeBlocks,
-      maxSignalBytes,
-      timeout);
+  p2p.send(group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
 }
 
 __global__ void testTileRecvKernel(
     P2pNvlTransportDevice p2p,
     void* dst_d,
     size_t nbytes,
-    int activeBlocks,
     size_t maxSignalBytes,
     Timeout timeout) {
   timeout.start();
   auto group = make_block_group();
   TiledBuffer<char> tiles(reinterpret_cast<char*>(dst_d), nbytes, group);
-  p2p.recv(
-      group,
-      tiles.data(),
-      tiles.bytes(),
-      activeBlocks,
-      maxSignalBytes,
-      timeout);
+  p2p.recv(group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
 }
 
 // Kernel that performs multiple sequential sends within a single kernel launch
@@ -175,7 +161,6 @@ __device__ void wait_for_second_call_signal(
     P2pNvlTransportDevice& p2p,
     ThreadGroup& group,
     int blockId,
-    int activeBlocks,
     size_t bytesPerCall,
     size_t maxSignalBytes,
     bool enabled,
@@ -184,8 +169,7 @@ __device__ void wait_for_second_call_signal(
     return;
   }
   const size_t protocolBytes = (bytesPerCall + 15ULL) & ~15ULL;
-  const size_t perBlockSlotSize =
-      (p2p.options().dataBufferSize / activeBlocks) & ~15ULL;
+  const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t chunkSize =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
@@ -193,7 +177,7 @@ __device__ void wait_for_second_call_signal(
   const size_t effectiveChunk = chunkSize > 0 ? chunkSize : perBlockSlotSize;
   const uint64_t secondCallStarted = protocolBytes +
       (protocolBytes < effectiveChunk ? protocolBytes : effectiveChunk);
-  p2p.tile_state().local_signals[blockId].wait_until(
+  p2p.local_channel_at(blockId).data_ready.wait_until(
       group, CmpOp::CMP_GE, secondCallStarted, timeout);
 }
 
@@ -201,7 +185,6 @@ __global__ void testTileMultiCallSendRecvKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int activeBlocks,
     int numCalls,
     size_t bytesPerCall,
     size_t maxSignalBytes,
@@ -220,7 +203,6 @@ __global__ void testTileMultiCallSendRecvKernel(
           sub,
           sendTile + i * bytesPerCall,
           bytesPerCall,
-          activeBlocks,
           maxSignalBytes,
           timeout);
     }
@@ -229,7 +211,6 @@ __global__ void testTileMultiCallSendRecvKernel(
         p2p,
         sub,
         blockId,
-        activeBlocks,
         bytesPerCall,
         maxSignalBytes,
         waitForSecondCallSignal,
@@ -240,7 +221,6 @@ __global__ void testTileMultiCallSendRecvKernel(
           sub,
           recvTile + i * bytesPerCall,
           bytesPerCall,
-          activeBlocks,
           maxSignalBytes,
           timeout);
     }
@@ -251,7 +231,6 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t firstMaxSignalBytes,
@@ -266,18 +245,11 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
 
   if (role == 0) {
     char* sendTile = sendTiles.tile_data(blockId);
-    p2p.send(
-        sub,
-        sendTile,
-        firstCallBytes,
-        activeBlocks,
-        firstMaxSignalBytes,
-        timeout);
+    p2p.send(sub, sendTile, firstCallBytes, firstMaxSignalBytes, timeout);
     p2p.send(
         sub,
         sendTile + firstCallBytes,
         secondCallBytes,
-        activeBlocks,
         secondMaxSignalBytes,
         timeout);
   } else {
@@ -285,24 +257,16 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
         p2p,
         sub,
         blockId,
-        activeBlocks,
         firstCallBytes,
         secondMaxSignalBytes,
         waitForSecondCallSignal,
         timeout);
     char* recvTile = recvTiles.tile_data(blockId);
-    p2p.recv(
-        sub,
-        recvTile,
-        firstCallBytes,
-        activeBlocks,
-        firstMaxSignalBytes,
-        timeout);
+    p2p.recv(sub, recvTile, firstCallBytes, firstMaxSignalBytes, timeout);
     p2p.recv(
         sub,
         recvTile + firstCallBytes,
         secondCallBytes,
-        activeBlocks,
         secondMaxSignalBytes,
         timeout);
   }
@@ -311,7 +275,6 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
 __global__ void testTileMultiCallSendOnlyKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
-    int activeBlocks,
     int numCalls,
     size_t bytesPerCall,
     size_t maxSignalBytes,
@@ -326,7 +289,6 @@ __global__ void testTileMultiCallSendOnlyKernel(
         group,
         sendTile + i * bytesPerCall,
         bytesPerCall,
-        activeBlocks,
         maxSignalBytes,
         timeout);
   }
@@ -335,7 +297,6 @@ __global__ void testTileMultiCallSendOnlyKernel(
 __global__ void testTileTwoCallSendOnlyKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
@@ -345,13 +306,11 @@ __global__ void testTileTwoCallSendOnlyKernel(
   auto group = make_block_group();
   const int blockId = group.group_id;
   char* sendTile = sendTiles.tile_data(blockId);
-  p2p.send(
-      group, sendTile, firstCallBytes, activeBlocks, maxSignalBytes, timeout);
+  p2p.send(group, sendTile, firstCallBytes, maxSignalBytes, timeout);
   p2p.send(
       group,
       sendTile + firstCallBytes,
       secondCallBytes,
-      activeBlocks,
       maxSignalBytes,
       timeout);
 }
@@ -359,20 +318,21 @@ __global__ void testTileTwoCallSendOnlyKernel(
 __device__ void check_wrapped_substep_with_existing_signals(
     P2pNvlTransportDevice& p2p,
     ThreadGroup& group,
-    int activeBlocks,
     size_t maxSignalBytes,
     unsigned char sentinel,
     int* observedEarlyOverwrite,
     const Timeout& timeout) {
   const size_t slotSize = p2p.options().dataBufferSize;
-  const size_t perBlockSlotSize = (slotSize / activeBlocks) & ~15ULL;
+  const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t effectiveChunk =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
       : perBlockSlotSize;
   const size_t pipelineBytes = perBlockSlotSize * p2p.options().pipelineDepth;
+  // blockId 0 by construction in this test (kernel launched with 2 blocks,
+  // block 0 is sender/forwarder, block 1 is this checker).
   const uint64_t streamStart =
-      static_cast<uint64_t>(p2p.tile_state().step_state[0]);
+      static_cast<uint64_t>(p2p.local_channel_at(0).send_cursor);
   const uint64_t firstStreamEnd = streamStart + effectiveChunk;
   const uint64_t firstAckValue = firstStreamEnd - pipelineBytes;
   const uint64_t targetStreamStart = firstStreamEnd;
@@ -384,23 +344,21 @@ __device__ void check_wrapped_substep_with_existing_signals(
   const size_t targetOffset = targetSlot * slotSize + targetChunkOff;
   const uint64_t targetStreamEnd = targetStreamStart + effectiveChunk;
   const uint64_t targetAckValue = targetStreamEnd - pipelineBytes;
-  const int tailSignalId = 0;
-  const int headSignalId = p2p.tile_state().tile_max_groups;
 
   // Drive the existing head signal to the minimum threshold that releases only
   // the first wrapped chunk. Real recv() may coalesce head updates at slot
   // boundaries; this test is intentionally isolating the sender/forwarder wait
   // predicate for the following nonzero wrapped substep.
-  p2p.tile_state().local_signals[headSignalId].signal(
+  p2p.local_channel_at(0).slot_free.signal(
       group, SignalOp::SIGNAL_SET, firstAckValue);
-  p2p.tile_state().remote_signals[tailSignalId].wait_until(
+  p2p.remote_channel_at(0).data_ready.wait_until(
       group, CmpOp::CMP_GE, firstStreamEnd, timeout);
 
   if (group.is_leader()) {
     const auto observed =
         static_cast<unsigned char>(p2p.remote_state().dataBuffer[targetOffset]);
     *observedEarlyOverwrite = observed == sentinel ? 0 : 1;
-    p2p.tile_state().local_signals[headSignalId].signal(
+    p2p.local_channel_at(0).slot_free.signal(
         SignalOp::SIGNAL_SET, targetAckValue);
   }
 }
@@ -408,7 +366,6 @@ __device__ void check_wrapped_substep_with_existing_signals(
 __global__ void testTileSendWaitsForWrappedSubstepAckKernel(
     P2pNvlTransportDevice p2p,
     const char* sendData,
-    int activeBlocks,
     size_t nbytes,
     size_t maxSignalBytes,
     unsigned char sentinel,
@@ -418,16 +375,10 @@ __global__ void testTileSendWaitsForWrappedSubstepAckKernel(
 
   auto group = make_block_group();
   if (blockIdx.x == 0) {
-    p2p.send(group, sendData, nbytes, activeBlocks, maxSignalBytes, timeout);
+    p2p.send(group, sendData, nbytes, maxSignalBytes, timeout);
   } else {
     check_wrapped_substep_with_existing_signals(
-        p2p,
-        group,
-        activeBlocks,
-        maxSignalBytes,
-        sentinel,
-        observedEarlyOverwrite,
-        timeout);
+        p2p, group, maxSignalBytes, sentinel, observedEarlyOverwrite, timeout);
   }
 }
 
@@ -435,7 +386,6 @@ __global__ void testTileForwardWaitsForWrappedSubstepAckKernel(
     P2pNvlTransportDevice pred,
     P2pNvlTransportDevice succ,
     char* dst,
-    int activeBlocks,
     size_t nbytes,
     size_t maxSignalBytes,
     unsigned char sentinel,
@@ -445,23 +395,15 @@ __global__ void testTileForwardWaitsForWrappedSubstepAckKernel(
 
   auto group = make_block_group();
   if (blockIdx.x == 0) {
-    pred.forward(
-        group, dst, nbytes, succ, activeBlocks, maxSignalBytes, timeout);
+    pred.forward(group, dst, nbytes, succ, maxSignalBytes, timeout);
   } else {
     check_wrapped_substep_with_existing_signals(
-        succ,
-        group,
-        activeBlocks,
-        maxSignalBytes,
-        sentinel,
-        observedEarlyOverwrite,
-        timeout);
+        succ, group, maxSignalBytes, sentinel, observedEarlyOverwrite, timeout);
   }
 }
 
 __global__ void testPrepareTileStagingKernel(
     P2pNvlTransportDevice p2p,
-    int activeBlocks,
     int numCalls,
     size_t bytesPerCall,
     size_t maxSignalBytes,
@@ -474,7 +416,7 @@ __global__ void testPrepareTileStagingKernel(
   char* staging = p2p.local_state().dataBuffer;
 
   const size_t slotSize = p2p.options().dataBufferSize;
-  const size_t perBlockSlotSize = (slotSize / activeBlocks) & ~15ULL;
+  const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t chunkSize =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
@@ -515,14 +457,13 @@ __global__ void testPrepareTileStagingKernel(
 
   group.sync();
   if (group.is_leader()) {
-    p2p.tile_state().local_signals[blockId].signal(
+    p2p.local_channel_at(blockId).data_ready.signal(
         SignalOp::SIGNAL_SET, baseByte);
   }
 }
 
 __global__ void testPrepareTileTwoCallStagingKernel(
     P2pNvlTransportDevice p2p,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
@@ -535,7 +476,7 @@ __global__ void testPrepareTileTwoCallStagingKernel(
   char* staging = p2p.local_state().dataBuffer;
 
   const size_t slotSize = p2p.options().dataBufferSize;
-  const size_t perBlockSlotSize = (slotSize / activeBlocks) & ~15ULL;
+  const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t effectiveChunk =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
@@ -576,7 +517,7 @@ __global__ void testPrepareTileTwoCallStagingKernel(
 
   group.sync();
   if (group.is_leader()) {
-    p2p.tile_state().local_signals[blockId].signal(
+    p2p.local_channel_at(blockId).data_ready.signal(
         SignalOp::SIGNAL_SET, baseByte);
   }
 }
@@ -584,7 +525,6 @@ __global__ void testPrepareTileTwoCallStagingKernel(
 __global__ void testTileMultiCallRecvOnlyKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> recvTiles,
-    int activeBlocks,
     int numCalls,
     size_t bytesPerCall,
     size_t maxSignalBytes,
@@ -599,7 +539,6 @@ __global__ void testTileMultiCallRecvOnlyKernel(
         group,
         recvTile + i * bytesPerCall,
         bytesPerCall,
-        activeBlocks,
         maxSignalBytes,
         timeout);
   }
@@ -608,7 +547,6 @@ __global__ void testTileMultiCallRecvOnlyKernel(
 __global__ void testTileTwoCallRecvOnlyKernel(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> recvTiles,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
@@ -618,13 +556,11 @@ __global__ void testTileTwoCallRecvOnlyKernel(
   auto group = make_block_group();
   const int blockId = group.group_id;
   char* recvTile = recvTiles.tile_data(blockId);
-  p2p.recv(
-      group, recvTile, firstCallBytes, activeBlocks, maxSignalBytes, timeout);
+  p2p.recv(group, recvTile, firstCallBytes, maxSignalBytes, timeout);
   p2p.recv(
       group,
       recvTile + firstCallBytes,
       secondCallBytes,
-      activeBlocks,
       maxSignalBytes,
       timeout);
 }
@@ -633,7 +569,6 @@ __global__ void testTileMultiCallForwardKernel(
     P2pNvlTransportDevice pred,
     P2pNvlTransportDevice succ,
     TiledBuffer<char> dstTiles,
-    int activeBlocks,
     int numCalls,
     size_t bytesPerCall,
     size_t maxSignalBytes,
@@ -647,7 +582,6 @@ __global__ void testTileMultiCallForwardKernel(
       pred,
       group,
       blockId,
-      activeBlocks,
       bytesPerCall,
       maxSignalBytes,
       waitForSecondCallSignal,
@@ -660,7 +594,6 @@ __global__ void testTileMultiCallForwardKernel(
         dstTile + i * bytesPerCall,
         bytesPerCall,
         succ,
-        activeBlocks,
         maxSignalBytes,
         timeout);
   }
@@ -670,7 +603,6 @@ __global__ void testTileTwoCallForwardKernel(
     P2pNvlTransportDevice pred,
     P2pNvlTransportDevice succ,
     TiledBuffer<char> dstTiles,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t maxSignalBytes,
@@ -680,20 +612,12 @@ __global__ void testTileTwoCallForwardKernel(
   auto group = make_block_group();
   const int blockId = group.group_id;
   char* dstTile = dstTiles.tile_data(blockId);
-  pred.forward(
-      group,
-      dstTile,
-      firstCallBytes,
-      succ,
-      activeBlocks,
-      maxSignalBytes,
-      timeout);
+  pred.forward(group, dstTile, firstCallBytes, succ, maxSignalBytes, timeout);
   pred.forward(
       group,
       dstTile + firstCallBytes,
       secondCallBytes,
       succ,
-      activeBlocks,
       maxSignalBytes,
       timeout);
 }
@@ -702,7 +626,6 @@ __global__ void testTileTwoCallVariableSignalForwardKernel(
     P2pNvlTransportDevice pred,
     P2pNvlTransportDevice succ,
     TiledBuffer<char> dstTiles,
-    int activeBlocks,
     size_t firstCallBytes,
     size_t secondCallBytes,
     size_t firstMaxSignalBytes,
@@ -714,19 +637,12 @@ __global__ void testTileTwoCallVariableSignalForwardKernel(
   const int blockId = group.group_id;
   char* dstTile = dstTiles.tile_data(blockId);
   pred.forward(
-      group,
-      dstTile,
-      firstCallBytes,
-      succ,
-      activeBlocks,
-      firstMaxSignalBytes,
-      timeout);
+      group, dstTile, firstCallBytes, succ, firstMaxSignalBytes, timeout);
   pred.forward(
       group,
       dstTile + firstCallBytes,
       secondCallBytes,
       succ,
-      activeBlocks,
       secondMaxSignalBytes,
       timeout);
 }
@@ -772,14 +688,13 @@ void testTileSend(
     const P2pNvlTransportDevice& p2p,
     void* src_d,
     size_t nbytes,
-    int activeBlocks,
     size_t maxSignalBytes,
     Timeout timeout,
     int numBlocks,
     int blockSize,
     cudaStream_t stream) {
   testTileSendKernel<<<numBlocks, blockSize, 0, stream>>>(
-      p2p, src_d, nbytes, activeBlocks, maxSignalBytes, timeout);
+      p2p, src_d, nbytes, maxSignalBytes, timeout);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -787,14 +702,13 @@ void testTileRecv(
     const P2pNvlTransportDevice& p2p,
     void* dst_d,
     size_t nbytes,
-    int activeBlocks,
     size_t maxSignalBytes,
     Timeout timeout,
     int numBlocks,
     int blockSize,
     cudaStream_t stream) {
   testTileRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
-      p2p, dst_d, nbytes, activeBlocks, maxSignalBytes, timeout);
+      p2p, dst_d, nbytes, maxSignalBytes, timeout);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -841,7 +755,6 @@ void testTileMultiCallSendRecv(
       p2p,
       sendTiles,
       recvTiles,
-      activeBlocks,
       numCalls,
       bytesPerCall,
       maxSignalBytes,
@@ -871,7 +784,6 @@ void testTileTwoCallVariableSignalSendRecv(
       p2p,
       sendTiles,
       recvTiles,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       firstMaxSignalBytes,
@@ -891,13 +803,7 @@ void testTileMultiCallSendOnly(
     int blockSize,
     cudaStream_t stream) {
   testTileMultiCallSendOnlyKernel<<<activeBlocks, blockSize, 0, stream>>>(
-      p2p,
-      sendTiles,
-      activeBlocks,
-      numCalls,
-      bytesPerCall,
-      maxSignalBytes,
-      Timeout());
+      p2p, sendTiles, numCalls, bytesPerCall, maxSignalBytes, Timeout());
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -913,7 +819,6 @@ void testTileTwoCallSendOnly(
   testTileTwoCallSendOnlyKernel<<<activeBlocks, blockSize, 0, stream>>>(
       p2p,
       sendTiles,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       maxSignalBytes,
@@ -924,7 +829,6 @@ void testTileTwoCallSendOnly(
 void testTileSendWaitsForWrappedSubstepAck(
     P2pNvlTransportDevice p2p,
     const char* sendData,
-    int activeBlocks,
     size_t nbytes,
     size_t maxSignalBytes,
     unsigned char sentinel,
@@ -934,7 +838,6 @@ void testTileSendWaitsForWrappedSubstepAck(
   testTileSendWaitsForWrappedSubstepAckKernel<<<2, blockSize, 0, stream>>>(
       p2p,
       sendData,
-      activeBlocks,
       nbytes,
       maxSignalBytes,
       sentinel,
@@ -947,7 +850,6 @@ void testTileForwardWaitsForWrappedSubstepAck(
     P2pNvlTransportDevice pred,
     P2pNvlTransportDevice succ,
     char* dst,
-    int activeBlocks,
     size_t nbytes,
     size_t maxSignalBytes,
     unsigned char sentinel,
@@ -958,7 +860,6 @@ void testTileForwardWaitsForWrappedSubstepAck(
       pred,
       succ,
       dst,
-      activeBlocks,
       nbytes,
       maxSignalBytes,
       sentinel,
@@ -977,13 +878,7 @@ void testPrepareTileStaging(
     int blockSize,
     cudaStream_t stream) {
   testPrepareTileStagingKernel<<<activeBlocks, blockSize, 0, stream>>>(
-      p2p,
-      activeBlocks,
-      numCalls,
-      bytesPerCall,
-      maxSignalBytes,
-      sourceRank,
-      Timeout());
+      p2p, numCalls, bytesPerCall, maxSignalBytes, sourceRank, Timeout());
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -998,7 +893,6 @@ void testPrepareTileTwoCallStaging(
     cudaStream_t stream) {
   testPrepareTileTwoCallStagingKernel<<<activeBlocks, blockSize, 0, stream>>>(
       p2p,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       maxSignalBytes,
@@ -1017,13 +911,7 @@ void testTileMultiCallRecvOnly(
     int blockSize,
     cudaStream_t stream) {
   testTileMultiCallRecvOnlyKernel<<<activeBlocks, blockSize, 0, stream>>>(
-      p2p,
-      recvTiles,
-      activeBlocks,
-      numCalls,
-      bytesPerCall,
-      maxSignalBytes,
-      Timeout());
+      p2p, recvTiles, numCalls, bytesPerCall, maxSignalBytes, Timeout());
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1039,7 +927,6 @@ void testTileTwoCallRecvOnly(
   testTileTwoCallRecvOnlyKernel<<<activeBlocks, blockSize, 0, stream>>>(
       p2p,
       recvTiles,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       maxSignalBytes,
@@ -1062,7 +949,6 @@ void testTileMultiCallForward(
       pred,
       succ,
       dstTiles,
-      activeBlocks,
       numCalls,
       bytesPerCall,
       maxSignalBytes,
@@ -1085,7 +971,6 @@ void testTileTwoCallForward(
       pred,
       succ,
       dstTiles,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       maxSignalBytes,
@@ -1112,7 +997,6 @@ void testTileTwoCallVariableSignalForward(
       pred,
       succ,
       dstTiles,
-      activeBlocks,
       firstCallBytes,
       secondCallBytes,
       firstMaxSignalBytes,

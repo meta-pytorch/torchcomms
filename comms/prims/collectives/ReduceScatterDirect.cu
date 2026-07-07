@@ -62,7 +62,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
       const char* send_src =
           input_base + peer_rank * chunk_bytes + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, group.total_groups, max_sig, timeout);
+      peer.send(group, send_src, window, max_sig, timeout);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -71,8 +71,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
       }
       char* dst = output_base + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.template recv<ReduceOp>(
-          group, dst, window, group.total_groups, max_sig, timeout, dst);
+      peer.template recv<ReduceOp>(group, dst, window, max_sig, timeout, dst);
     }
   }
 #endif
