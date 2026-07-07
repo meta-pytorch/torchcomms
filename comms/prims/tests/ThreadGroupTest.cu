@@ -571,6 +571,63 @@ void testMultiwarpGroup(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+__global__ void testConfigurableMultiwarpGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* threadIdsInGroup,
+    uint32_t* groupSizes,
+    uint32_t* totalGroups,
+    uint32_t* scopes,
+    uint32_t groupSize,
+    uint32_t* errorCount) {
+  auto group = make_multiwarp_group(groupSize);
+
+  const uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  const uint32_t threadsPerBlock = blockDim.x * blockDim.y * blockDim.z;
+  const uint32_t globalTid = blockIdx.x * threadsPerBlock + tid;
+  const uint32_t groupsPerBlock = threadsPerBlock / groupSize;
+  const uint32_t expectedGroupId =
+      blockIdx.x * groupsPerBlock + tid / groupSize;
+  const uint32_t expectedTotalGroups = gridDim.x * groupsPerBlock;
+  const SyncScope expectedScope =
+      groupSize == kWarpSize ? SyncScope::WARP : SyncScope::MULTIWARP;
+
+  groupIds[globalTid] = group.group_id;
+  threadIdsInGroup[globalTid] = group.thread_id_in_group;
+  groupSizes[globalTid] = group.group_size;
+  totalGroups[globalTid] = group.total_groups;
+  scopes[globalTid] = static_cast<uint32_t>(group.scope);
+
+  if (group.group_id != expectedGroupId ||
+      group.thread_id_in_group != tid % groupSize ||
+      group.group_size != groupSize ||
+      group.total_groups != expectedTotalGroups ||
+      group.block_id != blockIdx.x || group.scope != expectedScope) {
+    atomicAdd(errorCount, 1);
+  }
+}
+
+void testConfigurableMultiwarpGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t* totalGroups_d,
+    uint32_t* scopes_d,
+    uint32_t groupSize,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testConfigurableMultiwarpGroupKernel<<<numBlocks, blockSize>>>(
+      groupIds_d,
+      threadIdsInGroup_d,
+      groupSizes_d,
+      totalGroups_d,
+      scopes_d,
+      groupSize,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 // Test multiwarp synchronization using named barriers
 // This test verifies that all 128 threads in a multiwarp synchronize correctly.
 // Each thread writes a value, then after sync, verifies all threads wrote.

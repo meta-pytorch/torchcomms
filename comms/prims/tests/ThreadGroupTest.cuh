@@ -145,6 +145,17 @@ void testMultiwarpGroup(
     int numBlocks,
     int blockSize);
 
+void testConfigurableMultiwarpGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t* totalGroups_d,
+    uint32_t* scopes_d,
+    uint32_t groupSize,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 // Tests multiwarp synchronization using named barriers
 // Verifies:
 // - All 128 threads in a multiwarp synchronize correctly

@@ -1986,6 +1986,142 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.testName;
     });
 
+struct ConfigurableMultiwarpTestParams {
+  int numBlocks;
+  int blockSize;
+  uint32_t groupSize;
+  std::string testName;
+};
+
+class ThreadGroupConfigurableMultiwarpTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<ConfigurableMultiwarpTestParams> {};
+
+TEST_P(ThreadGroupConfigurableMultiwarpTest, CreatesExpectedGroups) {
+  const auto& params = GetParam();
+  const uint32_t totalThreads = params.numBlocks * params.blockSize;
+
+  DeviceBuffer groupIdsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer totalGroupsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer scopesBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto totalGroups_d = static_cast<uint32_t*>(totalGroupsBuffer.get());
+  auto scopes_d = static_cast<uint32_t*>(scopesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(groupSizes_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(totalGroups_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(scopes_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testConfigurableMultiwarpGroup(
+      groupIds_d,
+      threadIds_d,
+      groupSizes_d,
+      totalGroups_d,
+      scopes_d,
+      params.groupSize,
+      errorCount_d,
+      params.numBlocks,
+      params.blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0);
+
+  std::vector<uint32_t> groupIds_h(totalThreads);
+  std::vector<uint32_t> threadIds_h(totalThreads);
+  std::vector<uint32_t> groupSizes_h(totalThreads);
+  std::vector<uint32_t> totalGroups_h(totalThreads);
+  std::vector<uint32_t> scopes_h(totalThreads);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      threadIds_h.data(),
+      threadIds_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      totalGroups_h.data(),
+      totalGroups_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      scopes_h.data(),
+      scopes_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t groupsPerBlock = params.blockSize / params.groupSize;
+  const uint32_t expectedTotalGroups = params.numBlocks * groupsPerBlock;
+  const uint32_t expectedScope = static_cast<uint32_t>(
+      params.groupSize == kWarpSize ? SyncScope::WARP : SyncScope::MULTIWARP);
+
+  for (uint32_t globalTid = 0; globalTid < totalThreads; globalTid++) {
+    const uint32_t tid = globalTid % params.blockSize;
+    const uint32_t blockId = globalTid / params.blockSize;
+    const uint32_t expectedGroupId =
+        blockId * groupsPerBlock + tid / params.groupSize;
+
+    EXPECT_EQ(groupIds_h[globalTid], expectedGroupId);
+    EXPECT_EQ(threadIds_h[globalTid], tid % params.groupSize);
+    EXPECT_EQ(groupSizes_h[globalTid], params.groupSize);
+    EXPECT_EQ(totalGroups_h[globalTid], expectedTotalGroups);
+    EXPECT_EQ(scopes_h[globalTid], expectedScope);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ConfigurableMultiwarpConfigs,
+    ThreadGroupConfigurableMultiwarpTest,
+    ::testing::Values(
+        ConfigurableMultiwarpTestParams{
+            .numBlocks = 3,
+            .blockSize = 256,
+            .groupSize = 32,
+            .testName = "WarpSizedGroups"},
+        ConfigurableMultiwarpTestParams{
+            .numBlocks = 2,
+            .blockSize = 256,
+            .groupSize = 64,
+            .testName = "TwoWarpGroups"},
+        ConfigurableMultiwarpTestParams{
+            .numBlocks = 4,
+            .blockSize = 512,
+            .groupSize = 128,
+            .testName = "FourWarpGroups"},
+        ConfigurableMultiwarpTestParams{
+            .numBlocks = 3,
+            .blockSize = 512,
+            .groupSize = 256,
+            .testName = "EightWarpGroups"},
+        ConfigurableMultiwarpTestParams{
+            .numBlocks = 2,
+            .blockSize = 1024,
+            .groupSize = 512,
+            .testName = "SixteenWarpGroups"}),
+    [](const ::testing::TestParamInfo<ConfigurableMultiwarpTestParams>& info) {
+      return info.param.testName;
+    });
+
 // =============================================================================
 // Block Cluster Tests (Hopper SM90+ cluster synchronization)
 // =============================================================================
