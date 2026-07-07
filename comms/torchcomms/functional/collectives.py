@@ -180,13 +180,16 @@ if lib is not None:  # noqa: C901
         )
 
     # Collective Registrations
-    from torch._library.opaque_object import MemberType, register_opaque_type
-    from torchcomms.functional.param_parsing import ParamKind, ParamSpec
+    from torch._library.opaque_object import MemberType
+    from torchcomms.functional.param_parsing import (
+        ParamKind,
+        ParamSpec,
+        register_opaque_reference_type,
+    )
 
     # Register TorchComm as opaque type with constant methods
-    register_opaque_type(
+    register_opaque_reference_type(
         TorchComm,
-        typ="reference",
         members={
             "get_rank": MemberType.USE_REAL,
             "get_size": MemberType.USE_REAL,
@@ -196,9 +199,8 @@ if lib is not None:  # noqa: C901
     )
 
     # Register TorchCommWindow as opaque type with constant methods
-    register_opaque_type(
+    register_opaque_reference_type(
         TorchCommWindow,
-        typ="reference",
         members={
             "get_size": MemberType.USE_REAL,
             "dtype": MemberType.USE_REAL,

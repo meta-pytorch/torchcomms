@@ -106,26 +106,7 @@ if(USE_SYSTEM_LIBS)
 else()
     target_link_libraries(torchcomms_transport_cca_hook PRIVATE
         ${NCCLX_STATIC_LIB}
-        "-l:libcomms_tracing_service.a"
-        "-Wl,--start-group"
-        "-l:libasync.a"
-        "-l:libconcurrency.a"
-        "-l:libthrift-core.a"
-        "-l:libthriftanyrep.a"
-        "-l:libthriftcpp2.a"
-        "-l:libthriftmetadata.a"
-        "-l:libthriftprotocol.a"
-        "-l:libthrifttype.a"
-        "-l:libthrifttyperep.a"
-        "-l:librpcmetadata.a"
-        "-l:libruntime.a"
-        "-l:libserverdbginfo.a"
-        "-l:libtransport.a"
-        "-l:libcommon.a"
-        "-Wl,--end-group"
         "-l:libfolly.a"
-        "-l:libwangle.a"
-        "-l:libfizz.a"
         "-l:libcrypto.a"
         "-l:libssl.a"
         "-l:libxxhash.a"
@@ -153,8 +134,8 @@ if(CUDA_FOUND)
     target_link_libraries(torchcomms_transport_cca_hook PRIVATE CUDA::cudart)
 endif()
 
-# Link absl LAST — after the ncclx archive and the thrift / folly archives
-# above, for the same ordering reasons documented in ncclx/CMakeLists.txt.
+# Link absl LAST — after the ncclx archive and the folly archives above,
+# for the same ordering reasons documented in ncclx/CMakeLists.txt.
 target_link_libraries(torchcomms_transport_cca_hook PRIVATE
     "-Wl,--start-group"
     ${ABSL_LDFLAGS}
