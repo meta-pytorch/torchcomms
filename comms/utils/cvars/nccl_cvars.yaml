@@ -2900,29 +2900,6 @@ cvars:
    description : |-
      Enable top level nccl comm register/deregister call logging.
 
- - name        : NCCL_COMM_TRACING_SERVICE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable thrift server for analyzer debugging. NCCL_COMMS_TRACING_SERVICE_PORTS
-     must also be set
-
- - name        : NCCL_COMMS_TRACING_SERVICE_PORTS
-   type        : stringlist
-   default     :
-   description : |-
-     Comma separated list of ports to use for comms tracing service.
-     Local rank i will use port i in the list.
-
- - name        : NCCL_COMM_TRACING_SERVICE_WARN_ON_PORT_CONFLICT
-   type        : bool
-   default     : false
-   description : |-
-     By default, the tracing service will crash the main process,
-     if it cannot start due to port conflict.
-     This flag allows users to choose to only log a warning in that case,
-     and the main process will continue to run.
-
  - name        : NCCL_NET_GDR_C2C
    type        : bool
    default     : false
