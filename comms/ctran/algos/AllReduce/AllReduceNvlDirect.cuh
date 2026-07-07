@@ -61,7 +61,7 @@ struct NvlReduceCopy {
       }
       group.sync();
     }
-    common::tileReduce<T, common::kNvlTileElems, common::kBlockSize>(
+    common::tileReduce<T, common::TileElems<T>::k, common::kBlockSize>(
         out, staged, nelems, group);
 #endif
   }
