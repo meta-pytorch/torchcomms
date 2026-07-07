@@ -14,8 +14,8 @@
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/transport/P2pIbTransportDevice.cuh"
 #include "comms/prims/transport/Transport.cuh"
-#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 // Shared device utilities (tileReduce, IbReduceCopy, logicalDataGroup,
 // actualSegElems, pipelineStepBytes, ...) live in
@@ -24,6 +24,12 @@
 // phase-sequencing orchestrator in AllReduceFused.cuh
 // (ctran::allreduce::fused).
 using namespace ctran::allreduce::common;
+
+__device__ __forceinline__ comms::prims::P2pIbTransportDevice* ibTransport(
+    const ctran::allreduce::tree::KernArgs& args,
+    int rank) {
+  return &args.common.transports[rank].p2p_ib;
+}
 
 enum class TreeLanePhase : uint8_t {
   ReduceLeafSend,
@@ -134,10 +140,10 @@ __device__ __forceinline__ TreeLaneProgressState<T> makeTreeLaneState(
   // per-peer. If per-peer buffer sizes diverge, active edges must agree.
   state.pipelineWindow = state.dataBytes;
   if (!tree.isLeaf && tree.numChildren > 0) {
-    auto* t = args.common.transports[tree.childRanks[0]].p2p_ib.ibgda;
+    auto* t = ibTransport(args, tree.childRanks[0]);
     state.pipelineWindow = t->pipeline_window(activeBlocks);
   } else if (!tree.isRoot && tree.parentRank >= 0) {
-    auto* t = args.common.transports[tree.parentRank].p2p_ib.ibgda;
+    auto* t = ibTransport(args, tree.parentRank);
     state.pipelineWindow = t->pipeline_window(activeBlocks);
   }
   PIPES_DEVICE_CHECK_MSG(
@@ -150,7 +156,7 @@ template <typename T>
 __device__ __forceinline__ comms::prims::IbgdaSendRecvProgressStatus
 progressLaneSend(
     TreeLaneProgressState<T>& state,
-    comms::prims::P2pIbgdaTransportDevice* transport,
+    comms::prims::P2pIbTransportDevice* transport,
     const char* src,
     size_t bytes,
     comms::prims::ThreadGroup& group,
@@ -168,7 +174,7 @@ template <typename T, typename CopyOp = comms::prims::Memcpy>
 __device__ __forceinline__ comms::prims::IbgdaSendRecvProgressStatus
 progressLaneRecv(
     TreeLaneProgressState<T>& state,
-    comms::prims::P2pIbgdaTransportDevice* transport,
+    comms::prims::P2pIbTransportDevice* transport,
     char* dst,
     size_t bytes,
     comms::prims::ThreadGroup& group,
@@ -200,8 +206,7 @@ progressTreeLane(
 
   switch (state.phase) {
     case TreeLanePhase::ReduceLeafSend: {
-      auto* parentTransport =
-          args.common.transports[state.tree.parentRank].p2p_ib.ibgda;
+      auto* parentTransport = ibTransport(args, state.tree.parentRank);
       const auto status = progressLaneSend(
           state, parentTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
@@ -220,8 +225,7 @@ progressTreeLane(
         return IbgdaSendRecvProgressStatus::Progressed;
       }
       auto* childTransport =
-          args.common.transports[state.tree.childRanks[state.childIdx]]
-              .p2p_ib.ibgda;
+          ibTransport(args, state.tree.childRanks[state.childIdx]);
       const auto status = progressLaneRecv<T, IbReduceCopy<T>>(
           state, childTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
@@ -239,8 +243,7 @@ progressTreeLane(
       return status;
     }
     case TreeLanePhase::ReduceInternalSend: {
-      auto* parentTransport =
-          args.common.transports[state.tree.parentRank].p2p_ib.ibgda;
+      auto* parentTransport = ibTransport(args, state.tree.parentRank);
       const auto status = progressLaneSend(
           state, parentTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
@@ -256,8 +259,7 @@ progressTreeLane(
         return IbgdaSendRecvProgressStatus::Progressed;
       }
       auto* childTransport =
-          args.common.transports[state.tree.childRanks[state.childIdx]]
-              .p2p_ib.ibgda;
+          ibTransport(args, state.tree.childRanks[state.childIdx]);
       const auto status =
           progressLaneSend(state, childTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
@@ -271,8 +273,7 @@ progressTreeLane(
       return status;
     }
     case TreeLanePhase::BcastInternalRecv: {
-      auto* parentTransport =
-          args.common.transports[state.tree.parentRank].p2p_ib.ibgda;
+      auto* parentTransport = ibTransport(args, state.tree.parentRank);
       const auto status = progressLaneRecv(
           state, parentTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
@@ -284,8 +285,7 @@ progressTreeLane(
       return status;
     }
     case TreeLanePhase::BcastLeafRecv: {
-      auto* parentTransport =
-          args.common.transports[state.tree.parentRank].p2p_ib.ibgda;
+      auto* parentTransport = ibTransport(args, state.tree.parentRank);
       const auto status = progressLaneRecv(
           state, parentTransport, data, window, group, timeout);
       if (status == IbgdaSendRecvProgressStatus::Done) {
