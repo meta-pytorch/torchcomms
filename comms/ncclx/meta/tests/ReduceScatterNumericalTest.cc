@@ -34,6 +34,8 @@ struct ReduceScatterNumericalParam {
   ReduceScatterNumericalAlgo algo;
   size_t count;
   ncclDataType_t datatype;
+  ncclx::test::numerics::InputDistribution distribution =
+      ncclx::test::numerics::InputDistribution::Uniform;
 
   std::string name() const {
     std::string algoName;
@@ -51,7 +53,12 @@ struct ReduceScatterNumericalParam {
 
     const std::string dtypeName =
         datatype == ncclFloat32 ? "Float32" : "Bfloat16";
-    return algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    std::string base =
+        algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    if (distribution != ncclx::test::numerics::InputDistribution::Uniform) {
+      base += "_" + ncclx::test::numerics::inputDistributionName(distribution);
+    }
+    return base;
   }
 };
 
@@ -89,7 +96,7 @@ class ReduceScatterNumericalTest
     std::vector<T> original;
     for (int outputRank = 0; outputRank < numRanks; ++outputRank) {
       ncclx::test::numerics::appendRandomInputs<T>(
-          original, param.count, globalRank, outputRank);
+          original, param.count, globalRank, outputRank, param.distribution);
     }
     CUDACHECK_TEST(cudaMemcpyAsync(
         originalDevice,
@@ -97,7 +104,9 @@ class ReduceScatterNumericalTest
         sendCount * sizeof(T),
         cudaMemcpyDefault,
         stream_));
-    const auto reference = [&]() {
+    std::vector<double> reference(param.count, 0.0);
+    std::vector<T> bf16Hop(param.count);
+    {
       ncclx::test::NcclCommRAII referenceComm{
           globalRank, numRanks, localRank, bootstrap_.get()};
       const auto gathered = ncclx::test::numerics::gatherInputs(
@@ -107,18 +116,18 @@ class ReduceScatterNumericalTest
           referenceComm,
           stream_,
           numRanks);
-      std::vector<double> result(param.count, 0.0);
+      std::vector<double> contributions(numRanks);
+      const size_t chunkOffset = static_cast<size_t>(globalRank) * param.count;
       for (size_t i = 0; i < param.count; ++i) {
         for (int rank = 0; rank < numRanks; ++rank) {
           const size_t rankOffset = static_cast<size_t>(rank) * sendCount;
-          const size_t chunkOffset =
-              static_cast<size_t>(globalRank) * param.count;
-          result[i] += static_cast<double>(DataTypeTraits<T>::toHost(
+          contributions[rank] = static_cast<double>(DataTypeTraits<T>::toHost(
               gathered[rankOffset + chunkOffset + i]));
+          reference[i] += contributions[rank];
         }
+        bf16Hop[i] = ncclx::test::numerics::bf16HopReduce<T>(contributions);
       }
-      return result;
-    }();
+    }
 
     std::optional<EnvRAII<enum NCCL_REDUCESCATTER_ALGO>> reduceScatterAlgoGuard;
     std::optional<SysEnvRAII> ncclAlgoGuard;
@@ -165,6 +174,12 @@ class ReduceScatterNumericalTest
         globalRank,
         "ReduceScatter",
         param.name());
+    ncclx::test::numerics::printReferenceBytes(
+        reference, globalRank, "ReduceScatter", param.name());
+    if (param.datatype == ncclBfloat16) {
+      ncclx::test::numerics::printBf16HopBytes(
+          bf16Hop, globalRank, "ReduceScatter", param.name());
+    }
 
     const size_t mismatches = ncclx::test::numerics::countMismatches(
         actualDevice, reference, stream_, globalRank, param.name());
@@ -227,7 +242,22 @@ const auto kReduceScatterNumericalParams = ::testing::Values(
     ReduceScatterNumericalParam{
         .algo = ReduceScatterNumericalAlgo::CtranDirect,
         .count = 4099,
-        .datatype = ncclBfloat16}
+        .datatype = ncclBfloat16},
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::Ring,
+        .count = 1024,
+        .datatype = ncclBfloat16,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    ReduceScatterNumericalParam{
+        .algo = ReduceScatterNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Corner}
 #ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
     ,
     ReduceScatterNumericalParam{

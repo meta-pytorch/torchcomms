@@ -166,26 +166,7 @@ else()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
         ${TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS}
-        "-l:libcomms_tracing_service.a"
-        "-Wl,--start-group"
-        "-l:libasync.a"
-        "-l:libconcurrency.a"
-        "-l:libthrift-core.a"
-        "-l:libthriftanyrep.a"
-        "-l:libthriftcpp2.a"
-        "-l:libthriftmetadata.a"
-        "-l:libthriftprotocol.a"
-        "-l:libthrifttype.a"
-        "-l:libthrifttyperep.a"
-        "-l:librpcmetadata.a"
-        "-l:libruntime.a"
-        "-l:libserverdbginfo.a"
-        "-l:libtransport.a"
-        "-l:libcommon.a"
-        "-Wl,--end-group"
         "-l:libfolly.a"
-        "-l:libwangle.a"
-        "-l:libfizz.a"
         "-l:libcrypto.a"
         "-l:libssl.a"
         "-l:libxxhash.a"
@@ -212,8 +193,8 @@ if(CUDA_FOUND)
     target_link_libraries(torchcomms_comms_ncclx PRIVATE CUDA::cudart)
 endif()
 
-# Link absl LAST — after the ncclx archive (NCCLX_STATIC_LIB) and the thrift /
-# folly archives above. The static absl_log_internal_* members that satisfy
+# Link absl LAST — after the ncclx archive (NCCLX_STATIC_LIB) and the folly
+# archives above. The static absl_log_internal_* members that satisfy
 # ncclx's LOG / CHECK references (e.g. absl::log_internal::kCharNull) are only
 # pulled in if an undefined reference is already pending when the linker reaches
 # them; placed before the ncclx archive they'd be dropped, leaving the symbol

@@ -54,16 +54,6 @@ TEST_F(CommsMonitorTest, TestRegisterDeregisterComm) {
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), refNum + 1);
 }
 
-TEST_F(CommsMonitorTest, TestNcclTopoInfoFromNcclComm) {
-  ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-
-  auto topoInfo = getTopoInfoFromNcclComm(comm.get());
-  EXPECT_GE(topoInfo.nChannels(), 1);
-  ASSERT_GE(topoInfo.rings()->size(), 1);
-  ASSERT_GE(topoInfo.treeInfos()->size(), 1);
-}
-
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);

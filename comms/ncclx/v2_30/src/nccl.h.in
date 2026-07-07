@@ -1141,9 +1141,6 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
 ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
     const std::unordered_map<std::string, std::string>& hints = {});
 
-#define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
-ncclResult_t ncclCommsTracingServicePort(int& port);
-
 // NCCL_HAS_DUMP_ALGO_STAT controls whether dumpAlgoStat() is available.
 // To disable (e.g., when using a shim with a
 // different ncclComm layout), compile with -DNCCL_HAS_DUMP_ALGO_STAT=0.

@@ -369,7 +369,8 @@ CtranIb::CtranIb(
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe) {
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic) {
   init(
       nullptr,
       rank,
@@ -381,7 +382,8 @@ CtranIb::CtranIb(
       qpServerAddr,
       abortCtrl,
       socketFactory,
-      maxNumCqe);
+      maxNumCqe,
+      maxNumNic);
 
   CLOGF_SUBSYS(
       INFO,
@@ -406,7 +408,8 @@ void CtranIb::init(
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe) {
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic) {
   bool foundPort = false;
   this->comm = comm;
   this->rank = rank;
@@ -422,8 +425,12 @@ void CtranIb::init(
       .nRanks = comm ? comm->statex_->nRanks() : 1};
   this->enableLocalFlush_ = enableLocalFlush;
   this->bootstrapMode = bootstrapMode;
-  this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  this->numNics = maxNumNic
+      ? std::min(*maxNumNic, NCCL_CTRAN_IB_DEVICES_PER_RANK)
+      : NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  FB_CHECKTHROW_EX_LOGDATA(this->numNics > 0, ncclLogData, "numNics > 0");
+  this->devices.resize(this->numNics);
+  this->cqs.reserve(this->numNics);
   FB_COMMCHECKTHROW_EX(this->setPgToTrafficClassMap(), this->ncclLogData);
 
   auto s = CtranIbSingleton::getInstance();
@@ -479,7 +486,7 @@ void CtranIb::init(
         this->commDesc);
   }
 
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; ++device) {
+  for (int device = 0; device < numNics; ++device) {
     int singletonDevIdx =
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
@@ -632,15 +639,14 @@ void CtranIb::init(
     CLOGF(ERR, msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
   }
-  vcLayout_ =
-      ctran::ib::VcLayout(NCCL_CTRAN_IB_DEVICES_PER_RANK, maxVcsPerPeer);
+  vcLayout_ = ctran::ib::VcLayout(numNics, maxVcsPerPeer);
   CLOGF_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: VC layout: {} (numNics={}, NCCL_CTRAN_IB_MAX_QPS={}). "
       "Per-VC data-QP count is determined per connection class inside CtranIbVirtualConn.",
       vcLayout_.describe(),
-      NCCL_CTRAN_IB_DEVICES_PER_RANK,
+      numNics,
       NCCL_CTRAN_IB_MAX_QPS);
 
   // Optionally start internal bootstrap service.
@@ -961,12 +967,12 @@ commResult_t CtranIb::initRemoteTransStates(void) {
   // resources; We still need per-object lock here to ensure the internal
   // listenThread doesn't read garbage data
 
-  this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  this->cqs.reserve(this->numNics);
 
   // create a new cq
   {
     std::unique_lock<std::mutex> lock(cqMutex);
-    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    for (int device = 0; device < numNics; device++) {
       auto createCqResult =
           devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
       FOLLY_EXPECTED_CHECK(createCqResult);

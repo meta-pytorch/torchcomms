@@ -187,7 +187,8 @@ struct RdmaTransport::Work {
 RdmaTransport::RdmaTransport(
     int cudaDev,
     folly::EventBase* evb,
-    std::optional<int> maxNumCqe)
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
   // Create IB Instance
@@ -201,7 +202,8 @@ RdmaTransport::RdmaTransport(
       std::nullopt /* qpServerAddr */,
       ::ctran::utils::createAbort(/*enabled=*/false),
       nullptr /* socketFactory */,
-      maxNumCqe);
+      maxNumCqe,
+      maxNumNic);
 
   if (evb_) {
     // Optionally create progress timeout; skip it if the transport is never
@@ -285,6 +287,10 @@ bool RdmaTransport::connected() const {
 
 int RdmaTransport::getMaxCqe() const {
   return ib_->getMaxCqe();
+}
+
+int RdmaTransport::getNumNics() const {
+  return ib_->getNumNics();
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(

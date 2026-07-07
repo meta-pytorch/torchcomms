@@ -332,7 +332,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
   explicit RdmaTransport(
       int cudaDev,
       folly::EventBase* evb = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt);
+      std::optional<int> maxNumCqe = std::nullopt,
+      std::optional<int> maxNumNic = std::nullopt);
 
   ~RdmaTransport();
 
@@ -370,6 +371,11 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * Return the effective max CQ entries configured for this transport.
    */
   int getMaxCqe() const;
+
+  /*
+   * Return the effective number of NICs configured for this transport.
+   */
+  int getNumNics() const;
 
   /*
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer

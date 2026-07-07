@@ -16,7 +16,12 @@ from torchcomms.functional import (
 )
 
 if is_torch_compile_supported():
-    from torch._opaque_base import OpaqueBaseMeta
+    try:
+        # PyTorch 2.14+ renamed torch._opaque_base to torch._custom_class_base
+        # (pytorch/pytorch#188456)
+        from torch._custom_class_base import OpaqueBaseMeta
+    except ImportError:
+        from torch._opaque_base import OpaqueBaseMeta
 
     # make the metaclass available to the pybind module
     sys.modules["torchcomms._opaque_meta"] = type(

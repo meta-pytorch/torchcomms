@@ -36,6 +36,8 @@ struct AllReduceNumericalParam {
   AllReduceNumericalAlgo algo;
   size_t count;
   ncclDataType_t datatype;
+  ncclx::test::numerics::InputDistribution distribution =
+      ncclx::test::numerics::InputDistribution::Uniform;
 
   std::string name() const {
     std::string algoName;
@@ -53,7 +55,12 @@ struct AllReduceNumericalParam {
 
     const std::string dtypeName =
         datatype == ncclFloat32 ? "Float32" : "Bfloat16";
-    return algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    std::string base =
+        algoName + "_" + dtypeName + "_Count_" + std::to_string(count);
+    if (distribution != ncclx::test::numerics::InputDistribution::Uniform) {
+      base += "_" + ncclx::test::numerics::inputDistributionName(distribution);
+    }
+    return base;
   }
 };
 
@@ -88,14 +95,16 @@ class AllReduceNumericalTest
 
     std::vector<T> original;
     ncclx::test::numerics::appendRandomInputs<T>(
-        original, param.count, globalRank, 0);
+        original, param.count, globalRank, 0, param.distribution);
     CUDACHECK_TEST(cudaMemcpyAsync(
         originalDevice,
         original.data(),
         param.count * sizeof(T),
         cudaMemcpyDefault,
         stream_));
-    const auto reference = [&]() {
+    std::vector<double> reference(param.count, 0.0);
+    std::vector<T> bf16Hop(param.count);
+    {
       ncclx::test::NcclCommRAII referenceComm{
           globalRank, numRanks, localRank, bootstrap_.get()};
       const auto gathered = ncclx::test::numerics::gatherInputs(
@@ -105,15 +114,16 @@ class AllReduceNumericalTest
           referenceComm,
           stream_,
           numRanks);
-      std::vector<double> result(param.count, 0.0);
+      std::vector<double> contributions(numRanks);
       for (size_t i = 0; i < param.count; ++i) {
         for (int rank = 0; rank < numRanks; ++rank) {
-          result[i] += static_cast<double>(DataTypeTraits<T>::toHost(
+          contributions[rank] = static_cast<double>(DataTypeTraits<T>::toHost(
               gathered[static_cast<size_t>(rank) * param.count + i]));
+          reference[i] += contributions[rank];
         }
+        bf16Hop[i] = ncclx::test::numerics::bf16HopReduce<T>(contributions);
       }
-      return result;
-    }();
+    }
 
     std::optional<SysEnvRAII> ncclAlgoGuard;
     if (param.algo == AllReduceNumericalAlgo::Ring) {
@@ -164,6 +174,12 @@ class AllReduceNumericalTest
         globalRank,
         "AllReduce",
         param.name());
+    ncclx::test::numerics::printReferenceBytes(
+        reference, globalRank, "AllReduce", param.name());
+    if (param.datatype == ncclBfloat16) {
+      ncclx::test::numerics::printBf16HopBytes(
+          bf16Hop, globalRank, "AllReduce", param.name());
+    }
 
     const size_t mismatches = ncclx::test::numerics::countMismatches(
         actualDevice, reference, stream_, globalRank, param.name());
@@ -226,7 +242,22 @@ const auto kAllReduceNumericalParams = ::testing::Values(
     AllReduceNumericalParam{
         .algo = AllReduceNumericalAlgo::CtranDirect,
         .count = 4099,
-        .datatype = ncclBfloat16}
+        .datatype = ncclBfloat16},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 1024,
+        .datatype = ncclBfloat16,
+        .distribution = ncclx::test::numerics::InputDistribution::Normal},
+    AllReduceNumericalParam{
+        .algo = AllReduceNumericalAlgo::Ring,
+        .count = 8193,
+        .datatype = ncclFloat32,
+        .distribution = ncclx::test::numerics::InputDistribution::Corner}
 #ifdef REDUCTION_NUMERICAL_LARGE_COUNT_TEST
     ,
     AllReduceNumericalParam{
