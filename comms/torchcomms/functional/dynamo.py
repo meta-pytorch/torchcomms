@@ -337,6 +337,10 @@ class AsyncWorkVariable(VariableTracker):
             return AsyncWorkWaitMethod(self)
         raise AttributeError(f"AsyncWorkVariable has no attribute {name}")
 
+    # PyTorch 2.14+ dispatches attribute access to getattro_impl instead of
+    # var_getattr (pytorch/pytorch#186013); support both.
+    getattro_impl = var_getattr
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -624,8 +628,15 @@ def _patch_var_getattr() -> None:
     from torch._dynamo.source import AttrSource
     from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
+    # PyTorch 2.14+ renamed var_getattr to getattro_impl
+    # (pytorch/pytorch#186013); patch whichever the installed version has.
+    if hasattr(TorchScriptObjectVariable, "getattro_impl"):
+        getattr_method_name = "getattro_impl"
+    else:
+        getattr_method_name = "var_getattr"
+
     # Store the original method
-    original_var_getattr = TorchScriptObjectVariable.var_getattr
+    original_var_getattr = getattr(TorchScriptObjectVariable, getattr_method_name)
 
     def patched_var_getattr(
         self: TorchScriptObjectVariable,
@@ -668,10 +679,10 @@ def _patch_var_getattr() -> None:
         return original_var_getattr(self, tx, name)
 
     # Apply the patch
-    TorchScriptObjectVariable.var_getattr = patched_var_getattr  # type: ignore[method-assign]
+    setattr(TorchScriptObjectVariable, getattr_method_name, patched_var_getattr)
 
     logger.info(
-        f"Patched TorchScriptObjectVariable.var_getattr for {len(_METHOD_TO_OP)} collective methods"
+        f"Patched TorchScriptObjectVariable.{getattr_method_name} for {len(_METHOD_TO_OP)} collective methods"
     )
 
 
