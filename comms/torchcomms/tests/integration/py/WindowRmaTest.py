@@ -57,7 +57,10 @@ class WindowRmaTest(unittest.TestCase):
         self.rank = self.torchcomm.get_rank()
         self.num_ranks = self.torchcomm.get_size()
         self.device = self.torchcomm.get_device()
-        self.allocator = self.torchcomm.get_mem_allocator()
+        try:
+            self.allocator = self.torchcomm.get_mem_allocator()
+        except RuntimeError:
+            self.allocator = None
 
         # Probe NCCL symmetric-window support. NCCL_WIN_COLL_SYMMETRIC needs a
         # transport that can expose VMM-backed memory across ranks (NVLink
@@ -219,6 +222,100 @@ class WindowRmaTest(unittest.TestCase):
         win.tensor_deregister()
         del win
         del pool
+
+    def _new_window_lifecycle_test(self):
+        """Test full window lifecycle: create, register, verify, deregister."""
+        num_elements = 1024
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        self.assertIsNotNone(win)
+
+        win.tensor_register(buf)
+
+        expected_size = num_elements * buf.element_size()
+        self.assertEqual(win.get_size(), expected_size)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
+    def _new_window_create_with_tensor_test(self):
+        """new_window(tensor) registers the tensor during creation."""
+        num_elements = 512
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window(buf)
+
+        expected_size = num_elements * buf.element_size()
+        self.assertEqual(win.get_size(), expected_size)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
+    def _register_error_handling_test(self):
+        """Double register raises, deregister without register raises."""
+        num_elements = 256
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+
+        with self.assertRaises(RuntimeError):
+            win.tensor_register(buf)
+
+        win.tensor_deregister()
+
+        with self.assertRaises(RuntimeError):
+            win.tensor_deregister()
+
+        del win
+        torch.cuda.synchronize()
+
+    def _asymmetric_window_lifecycle_test(self):
+        """Test window lifecycle with different buffer sizes per rank."""
+        num_elements = 1024 * (self.rank + 1)
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+
+        expected_size = num_elements * buf.element_size()
+        self.assertEqual(win.get_size(), expected_size)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
+
+    def _window_put_basic_test(self):
+        """Test that put() returns valid work and completes (sync and async)."""
+        num_elements = 1024
+        buf = torch.zeros(num_elements, dtype=torch.float32, device=self.device)
+
+        win = self.torchcomm.new_window()
+        win.tensor_register(buf)
+        self.assertEqual(win.get_size(), num_elements * buf.element_size())
+
+        input_tensor = (
+            torch.ones(num_elements, dtype=torch.float32, device=self.device)
+            * self.rank
+        )
+        dst_rank = (self.rank + 1) % self.num_ranks
+
+        work = win.put(input_tensor, dst_rank, 0, False)
+        self.assertIsNotNone(work)
+        work.wait()
+        self.torchcomm.barrier(False)
+
+        async_work = win.put(input_tensor, dst_rank, 0, True)
+        self.assertIsNotNone(async_work)
+        async_work.wait()
+        self.torchcomm.barrier(False)
+
+        win.tensor_deregister()
+        del win
+        torch.cuda.synchronize()
 
     @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_all_tests(self):
