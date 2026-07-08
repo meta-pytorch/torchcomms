@@ -585,8 +585,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  SendOptions sopts;
+  sopts.timeout = options_->timeout;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->send(tensors.at(0), dstRank, /*async_op=*/true), tensors);
+      comm_->send(tensors.at(0), dstRank, /*async_op=*/true, sopts), tensors);
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
@@ -603,8 +605,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  RecvOptions ropts;
+  ropts.timeout = options_->timeout;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true), tensors);
+      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true, ropts), tensors);
 }
 
 void BackendWrapper::startCoalescing() {
