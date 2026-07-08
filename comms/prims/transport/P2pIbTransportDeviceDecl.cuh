@@ -69,7 +69,7 @@ __device__ __forceinline__ void trace_ibgda_event(
  * `send`/`recv`/`forward`, the resumable `init_*_progress` /
  * `progress_*_once` pair, and all of their private helpers. The send/recv
  * algorithm is independent of the underlying transport: it only needs the
- * common explicit-buffer IB device ops `put` (fused signal+counter),
+ * common explicit-buffer IB device ops `put`,
  * `signal`, `wait_signal`, `wait_counter`, `read_signal`, and `read_counter`.
  *
  * Every public method takes the owning transport as a `Transport& transport`
@@ -1917,6 +1917,8 @@ struct P2pIbTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args);
+
+  __host__ __device__ const IbSendRecvState& send_recv_state() const;
 
   // Per-block pipelined staging window — forwarded to the active backend.
   __device__ __forceinline__ std::size_t pipeline_window(

@@ -19,9 +19,9 @@ __device__ __forceinline__ std::size_t benchmark_align_protocol_bytes(
 }
 
 __device__ __forceinline__ std::size_t section_bytes(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     std::size_t totalBytes) {
-  return min(transport->send_recv_state().dataBufferSize, totalBytes);
+  return min(transport.send_recv_state().dataBufferSize, totalBytes);
 }
 
 __device__ __forceinline__ std::size_t
@@ -50,7 +50,7 @@ protocol_bytes_for_tiled_group_per_launch(
 } // namespace
 
 __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t totalBytes,
@@ -73,18 +73,18 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
 
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
-      transport->send(
+      transport.send(
           sub, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
-      transport->recv(
+      transport.recv(
           sub, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
     }
   }
 }
 
 void launch_ibgda_send_recv(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t nbytes,
@@ -102,7 +102,7 @@ void launch_ibgda_send_recv(
 
 #ifndef __HIP_PLATFORM_AMD__
 __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t totalBytes,
@@ -121,9 +121,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
 
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
-      transport->init_send_progress(
+      transport.init_send_progress(
           sub, tiles.bytes(), numBlocks, maxSignalBytes);
-      while (transport->progress_send_once(
+      while (transport.progress_send_once(
                  sub,
                  tiles.data(),
                  tiles.bytes(),
@@ -133,9 +133,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
       }
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
-      transport->init_recv_progress(
+      transport.init_recv_progress(
           sub, tiles.bytes(), numBlocks, maxSignalBytes);
-      while (transport->progress_recv_once(
+      while (transport.progress_recv_once(
                  sub,
                  tiles.data(),
                  tiles.bytes(),
@@ -149,7 +149,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
 #endif
 
 void launch_ibgda_progress_send_recv(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t nbytes,
@@ -180,7 +180,7 @@ void launch_ibgda_progress_send_recv(
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t firstBytes,
@@ -196,7 +196,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
 
   if (isSender) {
     TiledBuffer<char> first(src, firstBytes, sub);
-    transport->send(
+    transport.send(
         sub,
         first.data(),
         first.bytes(),
@@ -204,7 +204,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
         firstMaxSignalBytes,
         timeout);
     TiledBuffer<char> second(src + firstBytes, secondBytes, sub);
-    transport->send(
+    transport.send(
         sub,
         second.data(),
         second.bytes(),
@@ -213,7 +213,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
         timeout);
   } else {
     TiledBuffer<char> first(dst, firstBytes, sub);
-    transport->recv(
+    transport.recv(
         sub,
         first.data(),
         first.bytes(),
@@ -221,7 +221,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
         firstMaxSignalBytes,
         timeout);
     TiledBuffer<char> second(dst + firstBytes, secondBytes, sub);
-    transport->recv(
+    transport.recv(
         sub,
         second.data(),
         second.bytes(),
@@ -232,7 +232,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
 }
 
 void launch_ibgda_send_recv_two_call(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t firstBytes,
@@ -260,7 +260,7 @@ void launch_ibgda_send_recv_two_call(
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_send_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t totalBytes,
     int numBlocks,
@@ -273,13 +273,13 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
-    transport->send(
+    transport.send(
         group, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
   }
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t totalBytes,
     int numBlocks,
@@ -292,13 +292,13 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
-    transport->recv(
+    transport.recv(
         group, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
   }
 }
 
 void launch_ibgda_send(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t nbytes,
     int numBlocks,
@@ -314,7 +314,7 @@ void launch_ibgda_send(
 }
 
 void launch_ibgda_recv(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t nbytes,
     int numBlocks,
@@ -427,7 +427,7 @@ void launch_ibgda_reset_send_recv(
 
 #ifndef __HIP_PLATFORM_AMD__
 __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t totalBytes,
     int numBlocks,
@@ -440,9 +440,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
-    transport->init_send_progress(
+    transport.init_send_progress(
         group, tiles.bytes(), numBlocks, maxSignalBytes);
-    while (transport->progress_send_once(
+    while (transport.progress_send_once(
                group,
                tiles.data(),
                tiles.bytes(),
@@ -454,7 +454,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t totalBytes,
     int numBlocks,
@@ -467,9 +467,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
-    transport->init_recv_progress(
+    transport.init_recv_progress(
         group, tiles.bytes(), numBlocks, maxSignalBytes);
-    while (transport->progress_recv_once(
+    while (transport.progress_recv_once(
                group,
                tiles.data(),
                tiles.bytes(),
@@ -482,7 +482,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
 #endif
 
 void launch_ibgda_progress_send(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t nbytes,
     int numBlocks,
@@ -511,7 +511,7 @@ void launch_ibgda_progress_send(
 }
 
 void launch_ibgda_progress_recv(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t nbytes,
     int numBlocks,
@@ -540,17 +540,17 @@ void launch_ibgda_progress_recv(
 }
 
 __global__ void ibgda_snapshot_step_state_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int64_t* dst,
     int count) {
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < count) {
-    dst[idx] = transport->send_recv_state().state[idx].nextStep;
+    dst[idx] = transport.send_recv_state().state[idx].nextStep;
   }
 }
 
 void launch_ibgda_snapshot_step_state(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     int64_t* dst,
     int count,
     cudaStream_t stream) {
