@@ -96,10 +96,6 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
 
-    config.nvlConfig.useDualStateBuffer = (pc.useDualStateBuffer >= 0)
-        ? (pc.useDualStateBuffer == 1)
-        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER;
-
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
       if (NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE > 0) {
@@ -232,14 +228,13 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} nvlMaxNumChannels={} useDualStateBuffer={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} nvlMaxNumChannels={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
         config.nvlConfig.dataBufferSize,
         config.nvlConfig.chunkSize,
         config.nvlConfig.maxNumChannels,
-        config.nvlConfig.useDualStateBuffer,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,
@@ -406,7 +401,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
 
   // Wire SharedResource staging buffers to MultiPeerTransport as external
   // data buffers, then exchange. This lets MultiPeerNvlTransport manage
-  // ChunkState and signal buffers internally while reusing the staging
+  // its signal/channel-state buffers internally while reusing the staging
   // buffers already allocated and IPC-shared via SharedResource.
   FB_CHECKABORT(
       algo->sharedRes_ != nullptr,

@@ -66,7 +66,7 @@ Baseline modifications are documented in `meta/baseline_modification_docs/PerCom
 
 **1. Hint-only fields (no flat `ncclConfig_t` fields)**
 
-Follows the established pattern used by `pipesNvlChunkSize`, `pipesUseDualStateBuffer`, and `vCliqueSize`. Avoids ABI changes and keeps `NCCL_CONFIG_INITIALIZER` unchanged.
+Follows the established pattern used by `pipesNvlChunkSize` and `vCliqueSize`. Avoids ABI changes and keeps `NCCL_CONFIG_INITIALIZER` unchanged.
 
 **2. Static variable side-channel for IB config**
 

@@ -6,17 +6,11 @@
 
 namespace comms::prims::test {
 
-// Test kernel that spins forever, should trigger timeout
-void launchChunkStateTimeoutKernel(int device, uint32_t timeout_ms);
-
 // Test kernel that spins forever on SignalState, should trigger timeout
 void launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms);
 
 // Test kernel that completes before timeout (should NOT trap)
 void launchNoTimeoutKernel(int device, uint32_t timeout_ms);
-
-// Test kernel that uses ThreadGroup-based timeout checking for ChunkState
-void launchChunkStateThreadGroupTimeoutKernel(int device, uint32_t timeout_ms);
 
 // Test kernel that uses ThreadGroup-based timeout checking for SignalState
 void launchSignalStateThreadGroupTimeoutKernel(int device, uint32_t timeout_ms);
