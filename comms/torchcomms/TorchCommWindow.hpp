@@ -67,6 +67,15 @@ class TorchCommWindow {
       bool asyncOp,
       const WaitSignalOptions& options = {}) = 0;
 
+  virtual c10::intrusive_ptr<TorchWork> get(
+      at::Tensor& /*tensor*/,
+      int /*srcRank*/,
+      size_t /*sourceOffsetNelems*/,
+      bool /*asyncOp*/,
+      const GetOptions& /*options*/ = {}) {
+    throw std::runtime_error("get is not yet supported by this backend");
+  }
+
   virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
   // ==========================================================================
