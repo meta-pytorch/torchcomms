@@ -20,6 +20,7 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/ctran/utils/MemFence.h"
 
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -990,6 +991,7 @@ void CtranGpe::Impl::gpeThreadFn() {
 
 void KernelElem::unuse() {
   CHECK_KELEM_NGROUPS(this);
+  wcStoreFence();
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
@@ -1039,7 +1041,7 @@ void KernelElem::free() {
     return;
   }
 
-  // Free
+  wcStoreFence();
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
@@ -1051,7 +1053,7 @@ void KernelElem::free() {
 }
 
 bool KernelElem::isFree() {
-  if (persistent_) {
+  if (persistent_.load(std::memory_order_acquire)) {
     return false;
   }
   CHECK_KELEM_NGROUPS(this);
@@ -1060,6 +1062,7 @@ bool KernelElem::isFree() {
     allFree &= (this->status[i] == KernelElem::ElemStatus::RESET);
   }
   if (allFree) {
+    wcAcquireFence();
     CLOGF_TRACE(
         COLL,
         "CTRAN-GPE: elem {} isFree = true with ngroups {}",
