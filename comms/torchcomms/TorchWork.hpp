@@ -82,7 +82,17 @@ class TorchWork : public c10::intrusive_ptr_target {
   using WorkHook = std::function<void()>;
 
   void registerWorkStartHook(WorkHook hook) {
-    start_hooks_.push_back(std::move(hook));
+    // If work already started (or finished), fire the hook immediately rather
+    // than enqueuing it (it would never fire otherwise). Mirrors
+    // registerWorkEndHook's terminal-state fallback. This handles backends
+    // (e.g. MCCL) whose ctor sets INPROGRESS before the post-hook registers
+    // the start hook; without this the start event is lost (clog has no "S").
+    // Any status other than NOT_STARTED means the start transition has fired.
+    if (status() != WorkStatus::NOT_STARTED) {
+      hook();
+    } else {
+      start_hooks_.push_back(std::move(hook));
+    }
   }
 
   void registerWorkEndHook(WorkHook hook) {
