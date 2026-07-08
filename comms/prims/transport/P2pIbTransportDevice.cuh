@@ -560,6 +560,14 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
   }
 }
 
+__host__ __device__ __forceinline__ const IbSendRecvState&
+P2pIbTransportDevice::send_recv_state() const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->send_recv_state();
+  }
+  return ibgda->send_recv_state();
+}
+
 __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window(
     int active_blocks) const {
   if (type == P2pIbBackendType::IBRC) {
