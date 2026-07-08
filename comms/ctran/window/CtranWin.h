@@ -57,11 +57,13 @@ struct CtranWin {
   void* winDataPtr{nullptr};
   // The pointer of the signal buffer of this window
   uint64_t* winSignalPtr{nullptr};
-  // Stores signal values for waiting, used to track progress
-  std::deque<std::atomic<uint64_t>> waitSignalVal{};
 
-  // Stores signal values for sent signals, used to track progress
-  std::deque<std::atomic<uint64_t>> signalVal{};
+  // Per-peer signal counters in mapped pinned host memory. Accessible from
+  // both GPU kernels (atomicAdd to get monotonic signal values) and the CPU
+  // GPE thread (volatile read for IB RDMA atomicSet). Initialized to 0;
+  // kernels/host use fetch_add(1)+1 to produce values 1, 2, 3, ...
+  uint64_t* signalCounters{nullptr};
+  uint64_t* waitCounters{nullptr};
 
   CtranWin(
       CtranComm* comm,
@@ -87,22 +89,11 @@ struct CtranWin {
     return opCount;
   }
 
-  inline uint64_t ctranNextWaitSignalVal(int peer) {
-    FB_CHECKTHROW_EX_NOCOMM(
-        peer < signalSize,
-        "peer rank {} exceed window signal buffer size {}",
-        peer,
-        signalSize);
-    return waitSignalVal[peer].fetch_add(1, std::memory_order_relaxed);
-  }
-
-  inline uint64_t ctranNextSignalVal(int peer) {
-    FB_CHECKTHROW_EX_NOCOMM(
-        peer < signalSize,
-        "peer rank {} exceed window signal buffer size {}",
-        peer,
-        signalSize);
-    return signalVal[peer].fetch_add(1, std::memory_order_relaxed);
+  // Atomically increment and return the per-peer wait counter.
+  // Used by the host for cuStreamWaitValue64 (eager path only).
+  // Signal counters are always incremented by the kernel.
+  inline uint64_t nextWaitCounter(int peer) {
+    return __atomic_fetch_add(&waitCounters[peer], 1, __ATOMIC_RELAXED) + 1;
   }
 
   commResult_t allocate(void* userBufPtr = nullptr);

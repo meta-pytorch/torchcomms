@@ -18,6 +18,7 @@
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 #endif
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
@@ -159,12 +160,6 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
         commInternalError, "CtranWin: comm is nullptr when creating window.");
   }
   signalSize = comm->statex_.get()->nRanks();
-  signalVal.resize(signalSize);
-  waitSignalVal.resize(signalSize);
-  for (auto& val : signalVal)
-    val.store(1);
-  for (auto& val : waitSignalVal)
-    val.store(1);
 }
 
 commResult_t CtranWin::exchange() {
@@ -364,6 +359,25 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
     winSignalPtr = reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr));
   }
 
+  {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    auto counterBytes = signalSize * sizeof(uint64_t);
+
+    FB_CUDACHECK(
+        cudaHostAlloc(&signalCounters, counterBytes, cudaHostAllocMapped));
+    FB_CUDACHECK(
+        cudaHostAlloc(&waitCounters, counterBytes, cudaHostAllocMapped));
+    memset(signalCounters, 0, counterBytes);
+    memset(waitCounters, 0, counterBytes);
+
+    if (isGpuMem()) {
+      FB_CUDACHECK(cudaMemset(winSignalPtr, 0, signalBytes));
+    } else {
+      memset(winSignalPtr, 0, signalBytes);
+    }
+  }
+
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -461,6 +475,15 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
 #endif
+
+  if (signalCounters) {
+    cudaFreeHost(signalCounters);
+    signalCounters = nullptr;
+  }
+  if (waitCounters) {
+    cudaFreeHost(waitCounters);
+    waitCounters = nullptr;
+  }
 
   freeMem(winBasePtr);
 

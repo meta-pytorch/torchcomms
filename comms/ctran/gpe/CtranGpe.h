@@ -228,18 +228,19 @@ struct OpElem {
       size_t count;
       commDataType_t datatype;
       uint64_t* signalAddr;
-      uint64_t signalVal;
+      uint64_t* signalCounter;
       int peerRank;
       ctran::CtranWin* win;
     } putsignal;
     struct {
       const uint64_t* signalAddr;
-      uint64_t cmpVal;
+      uint64_t* signalCounter;
       ctran::CtranWin* win;
     } waitsignal;
     struct {
+      // Remote peer's signal buffer slot for RDMA atomicSet (IB path).
       uint64_t* signalAddr;
-      uint64_t signalVal;
+      uint64_t* signalCounter;
       int peerRank;
       ctran::CtranWin* win;
     } signal;

@@ -22,17 +22,24 @@ struct KernelGetArgs {
 
 } // namespace ctran::rma
 
-struct CtranKernelPutSignalArgs {
+struct CtranKernelSignalArgs {
   uint64_t* signalAddr;
-  uint64_t signalVal;
+  // Per-peer signal counter in mapped pinned host memory. The kernel
+  // atomically increments this counter and uses the result as the signal
+  // value to store at signalAddr.
+  uint64_t* signalCounter;
+  // Whether the counter increment needs system-wide visibility (true for
+  // IB path where the GPE host thread reads the counter, false for NVL
+  // where only same-device kernels read it).
+  bool signalCounterSystemScope;
 };
+
+using CtranKernelPutSignalArgs = CtranKernelSignalArgs;
 
 struct CtranKernelWaitSignalArgs {
   uint64_t* signalAddr;
-  uint64_t cmpVal;
-};
-
-struct CtranKernelSignalArgs {
-  uint64_t* signalAddr;
-  uint64_t signalVal;
+  // Per-peer signal counter in mapped pinned host memory. The kernel
+  // atomically increments this counter and spins on signalAddr until
+  // the value reaches the counter result.
+  uint64_t* signalCounter;
 };
