@@ -12,6 +12,8 @@
 #include "transport.h"
 #include "group.h"
 #include "api_trace.h"
+#include "rccl_vars.h"
+#include "MetaFactory.h"
 #ifdef ENABLE_MSCCLPP
 #include "mscclpp/mscclpp_nccl.h"
 #endif
@@ -123,13 +125,24 @@ NCCL_API(ncclResult_t, ncclCommRegister, const ncclComm_t comm, void* buff, size
 ncclResult_t ncclCommRegister_impl(const ncclComm_t comm, void* buff, size_t size, void** handle) {
   ncclResult_t ret = ncclSuccess;
 
+  // Route through CTRAN's commRegister so the buffer is inserted into CTRAN's
+  // regcache. Without this, buffers registered via ncclCommRegister (e.g. from
+  // ProcessGroupNCCLX::registerMemPool) are invisible to CTRAN and algorithms
+  // such as allGatherPInit fail to find them. Mirrors NCCLX register.cc.
+  // Ref: MAST aps-f1094287477-1094294264.
+  *handle = NULL;
+  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get())) {
+    NCCLCHECKGOTO(metaCommToNccl(comm->ctranComm_->ctran_->commRegister(buff, size, handle)), ret, end);
+    goto end;
+  }
+
   if (!ncclParamLocalRegister())
     *handle = NULL;
   else {
     #ifdef ENABLE_MSCCLPP
     if (comm->mscclppCompatible) {
       if (comm->mscclCompatible && size > 0){
-        bool isManagedBuffer = false; 
+        bool isManagedBuffer = false;
         CUDACHECK(hipPointerGetAttribute(&isManagedBuffer, HIP_POINTER_ATTRIBUTE_IS_MANAGED, const_cast<void*>(buff)));
         if(!isManagedBuffer){
           INFO(NCCL_INIT, "MSCCL++: ncclCommRegister");
@@ -183,6 +196,15 @@ exit:
 NCCL_API(ncclResult_t, ncclCommDeregister, const ncclComm_t comm, void* handle);
 ncclResult_t ncclCommDeregister_impl(const ncclComm_t comm, void *handle) {
   NCCLCHECK(Recorder::instance().record(rrCommDeregister, comm, handle));
+
+  // Symmetric with ncclCommRegister_impl: when CTRAN is enabled and
+  // initialized, the handle came from CTRAN and must be returned to it.
+  // Reinterpreting a CTRAN handle as ncclReg* would corrupt memory.
+  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get())) {
+    if (handle == NULL) return ncclSuccess;
+    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commDeregister(handle)));
+    return ncclSuccess;
+  }
 
   #ifdef ENABLE_MSCCLPP
   if (comm->mscclppCompatible) {
