@@ -319,6 +319,14 @@ bool CtranWin::allGatherPSupported(CtranComm* comm) {
   return true;
 }
 
+bool CtranWin::allToAllWinSupported(CtranComm* comm) {
+  return allGatherPSupported(comm);
+}
+
+bool CtranWin::broadcastWinSupported(CtranComm* comm) {
+  return allGatherPSupported(comm);
+}
+
 commResult_t CtranWin::allocate(void* userBufPtr) {
   auto statex = comm->statex_.get();
   const auto myRank = statex->rank();

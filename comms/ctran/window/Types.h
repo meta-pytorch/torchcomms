@@ -16,6 +16,7 @@ enum OpCountType {
   kWaitSignal = 2,
   kSignal = 3,
   kGet = 4,
+  kFetchAdd = 5,
 };
 
 struct RemWinInfo {

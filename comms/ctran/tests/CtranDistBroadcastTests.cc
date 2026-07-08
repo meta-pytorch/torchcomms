@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/window/CtranWin.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -195,6 +196,55 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
   }
 
   releaseBuf(base, bufSize, memType);
+}
+
+TEST_F(CtranBroadcastTest, WinBroadcast) {
+  if (!ctran::CtranWin::broadcastWinSupported(ctranComm.get())) {
+    GTEST_SKIP() << "broadcastWin not supported on this topology";
+  }
+
+  const size_t count = 4096;
+  const commDataType_t dt = commFloat32;
+  const size_t bufNbytes = count * commTypeSize(dt);
+  const int root = 0;
+
+  void* winBase = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&winBase, bufNbytes));
+  ctran::CtranWin* win = nullptr;
+  ASSERT_EQ(
+      ctranWinRegister(winBase, bufNbytes, ctranComm.get(), &win), commSuccess);
+
+  void* sendBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendBuf, bufNbytes));
+
+  CtranPersistentRequest* pRequest = nullptr;
+  ASSERT_EQ(
+      ctran::BroadcastWinInit(win, dt, ctranComm.get(), testStream, pRequest),
+      commSuccess);
+  ASSERT_NE(pRequest, nullptr);
+
+  for (int iter = 0; iter < 3; iter++) {
+    CUDACHECK_TEST(cudaMemsetAsync(winBase, 0, bufNbytes, testStream));
+    if (globalRank == root) {
+      CUDACHECK_TEST(cudaMemsetAsync(sendBuf, 1, bufNbytes, testStream));
+    }
+
+    ASSERT_EQ(
+        ctran::BroadcastWinExec(sendBuf, count, root, pRequest), commSuccess);
+    CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+    ulong errs =
+        checkChunkValue(reinterpret_cast<char*>(winBase), bufNbytes, (char)1);
+    EXPECT_EQ(errs, 0) << "rank " << globalRank << " iter " << iter;
+  }
+
+  auto destroyRes = ctran::BroadcastWinDestroy(pRequest);
+  ASSERT_EQ(destroyRes, commSuccess);
+  delete pRequest;
+
+  ASSERT_EQ(ctranWinFree(win), commSuccess);
+  CUDACHECK_TEST(cudaFree(sendBuf));
+  CUDACHECK_TEST(cudaFree(winBase));
 }
 
 // test various size and various num of max QP, intentionally make some sizes

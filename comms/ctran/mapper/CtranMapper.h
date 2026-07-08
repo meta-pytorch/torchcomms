@@ -667,6 +667,16 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return atomicSetImpl(dbuf, val, peerRank, config, req);
   }
 
+  inline commResult_t ifetchAndAdd(
+      const void* sbuf,
+      void* dbuf,
+      uint64_t addVal,
+      int peerRank,
+      CtranMapperConfig config,
+      CtranMapperRequest* req) {
+    return ifetchAndAddImpl(sbuf, dbuf, addVal, peerRank, config, req);
+  }
+
   /* Post a Flush op to ensure data received from the network is visible from
    * all GPU threads.
    * Input arguments:
@@ -1090,6 +1100,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       case CtranMapperRequest::ReqType::IB_PUT:
       case CtranMapperRequest::ReqType::IB_GET:
       case CtranMapperRequest::ReqType::ATOMIC_SET:
+      case CtranMapperRequest::ReqType::FETCH_AND_ADD:
       case CtranMapperRequest::ReqType::TCPDM_PUT:
       case CtranMapperRequest::ReqType::SEND_SYNC_CTRL:
       case CtranMapperRequest::ReqType::RECV_SYNC_CTRL:
@@ -1984,6 +1995,45 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         dbuf);
     FB_COMMCHECK(this->ctranIb->iatomicSet(
         dbuf, val, peerRank, remoteAccessKey.ibKey, ibReqPtr));
+    return commSuccess;
+  }
+
+  inline commResult_t ifetchAndAddImpl(
+      const void* sbuf,
+      void* dbuf,
+      uint64_t addVal,
+      int peerRank,
+      CtranMapperConfig config,
+      CtranMapperRequest* req) {
+    const auto& remoteAccessKey = config.remoteAccessKey_;
+    if (remoteAccessKey.backend != CtranMapperBackend::IB) {
+      CLOGF(ERR, "CTRAN-MAPPER: ifetchAndAdd only supports IB backend");
+      return commInternalError;
+    }
+    if (req != nullptr) {
+      req->type = CtranMapperRequest::ReqType::FETCH_AND_ADD;
+      req->peer = peerRank;
+      req->backend = CtranMapperBackend::IB;
+      req->setConfig(config);
+    }
+    auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(config.memHdl_);
+    auto regLk = regElem->stateMnger.rlock();
+    CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
+    CLOGF_TRACE(
+        COLL,
+        "CTRAN-MAPPER: Post IB FETCH_AND_ADD to rank {}: addVal {} dbuf {} sbuf {}",
+        peerRank,
+        addVal,
+        dbuf,
+        sbuf);
+    FB_COMMCHECK(this->ctranIb->ifetchAndAdd(
+        sbuf,
+        dbuf,
+        addVal,
+        peerRank,
+        regElem->ibRegElem,
+        remoteAccessKey.ibKey,
+        ibReqPtr));
     return commSuccess;
   }
 

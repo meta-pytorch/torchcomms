@@ -217,6 +217,15 @@ commResult_t ctranGet(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranFetchAdd(
+    void* resultBuf,
+    uint64_t addVal,
+    size_t targetIndex,
+    int peer,
+    ctran::CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 void ctranGroupTrackDefaultOp(CtranComm* comm);
 
 namespace ctran {
@@ -272,6 +281,39 @@ commResult_t AllToAllPExec(
     CtranPersistentRequest* request);
 
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
+
+/* Window-based alltoall using the same CE+IB algorithm as AllToAllP.
+ * Buffer metadata is sourced from CtranWin (post-exchange) instead of
+ * PersistArgs. The window must have been allocated and exchanged before init.
+ */
+commResult_t AllToAllWinInit(
+    CtranWin* win,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+
+commResult_t AllToAllWinExec(
+    const void* sendbuff,
+    const size_t count,
+    CtranPersistentRequest* request);
+
+commResult_t AllToAllWinDestroy(CtranPersistentRequest* request);
+
+commResult_t BroadcastWinInit(
+    CtranWin* win,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+
+commResult_t BroadcastWinExec(
+    const void* sendbuff,
+    const size_t count,
+    int root,
+    CtranPersistentRequest* request);
+
+commResult_t BroadcastWinDestroy(CtranPersistentRequest* request);
 
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.

@@ -55,13 +55,15 @@ struct OpElem {
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
+    BROADCASTP,
     REDUCESCATTER,
     PUTNOTIFY,
     WAITNOTIFY,
     PUTSIGNAL,
     WAITSIGNAL,
     SIGNAL,
-    GET
+    GET,
+    FETCHADD
   } type;
   cudaStream_t stream;
 
@@ -201,6 +203,14 @@ struct OpElem {
       std::unordered_map<int, KernelElem*> waitNotifyMap;
     } broadcast;
     struct {
+      void* pArgs;
+      const void* sendbuff;
+      size_t count;
+      int root;
+      std::unordered_map<int, KernelElem*> putNotifyMap;
+      std::unordered_map<int, KernelElem*> waitNotifyMap;
+    } broadcastP;
+    struct {
       const void* sendbuff;
       void* recvbuff;
       size_t recvcount;
@@ -251,6 +261,13 @@ struct OpElem {
       int peerRank;
       ctran::CtranWin* win;
     } get;
+    struct {
+      void* resultBuf;
+      size_t targetIndex;
+      uint64_t addVal;
+      int peerRank;
+      ctran::CtranWin* win;
+    } fetchadd;
   };
 
  public:
@@ -302,7 +319,8 @@ struct KernelConfig {
     PUTSIGNAL,
     WAITSIGNAL,
     SIGNAL,
-    GET
+    GET,
+    FETCHADD
   } type;
   unsigned int numBlocks{1};
   unsigned int numThreads{1};

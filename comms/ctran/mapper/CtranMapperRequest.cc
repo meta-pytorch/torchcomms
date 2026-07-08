@@ -10,7 +10,8 @@ static std::unordered_map<CtranMapperRequest::ReqType, std::string> reqTypeStr =
      {CtranMapperRequest::ReqType::SEND_SYNC_CTRL, "SEND_SYNC_CTRL"},
      {CtranMapperRequest::ReqType::RECV_SYNC_CTRL, "RECV_SYNC_CTRL"},
      {CtranMapperRequest::ReqType::IB_PUT, "IB_PUT"},
-     {CtranMapperRequest::ReqType::NVL_PUT, "NVL_PUT"}};
+     {CtranMapperRequest::ReqType::NVL_PUT, "NVL_PUT"},
+     {CtranMapperRequest::ReqType::FETCH_AND_ADD, "FETCH_AND_ADD"}};
 
 const std::string getReqTypeStr(CtranMapperRequest::ReqType type) {
   return reqTypeStr[type];

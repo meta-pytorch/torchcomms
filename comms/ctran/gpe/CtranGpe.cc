@@ -162,6 +162,11 @@ OpElem::OpElem(
       new (&this->broadcast.putNotifyMap) std::unordered_map<int, KernelElem*>;
       new (&this->broadcast.waitNotifyMap) std::unordered_map<int, KernelElem*>;
       break;
+    case BROADCASTP:
+      new (&this->broadcastP.putNotifyMap) std::unordered_map<int, KernelElem*>;
+      new (&this->broadcastP.waitNotifyMap)
+          std::unordered_map<int, KernelElem*>;
+      break;
     case REDUCESCATTER:
       new (&this->reducescatter.intraReduce) std::vector<KernelElem*>;
       this->reducescatter.intraReduce.resize(comm_->statex_->nNodes(), nullptr);
@@ -229,6 +234,20 @@ OpElem::~OpElem() {
         }
       }
       this->broadcast.waitNotifyMap.~unordered_map();
+      break;
+    case BROADCASTP:
+      for (auto& pair : this->broadcastP.putNotifyMap) {
+        if (pair.second != nullptr) {
+          pair.second->free();
+        }
+      }
+      this->broadcastP.putNotifyMap.~unordered_map();
+      for (auto& pair : this->broadcastP.waitNotifyMap) {
+        if (pair.second != nullptr) {
+          pair.second->free();
+        }
+      }
+      this->broadcastP.waitNotifyMap.~unordered_map();
       break;
     case REDUCESCATTER:
       for (auto elem : this->reducescatter.intraReduce) {
