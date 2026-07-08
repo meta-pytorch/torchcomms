@@ -343,19 +343,9 @@ commResult_t ctranAllGatherHierarchicalRing(
 
   const bool useOverlap = NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nLocalRanks > 1;
   const int numBlocks = static_cast<int>(NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS);
-  const int nvlNumBlocks = static_cast<int>(NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS);
+  const int nvlNumBlocks =
+      NCCL_CTRAN_MAX_NBLOCKS > 0 ? static_cast<int>(NCCL_CTRAN_MAX_NBLOCKS) : 1;
   FB_COMMCHECK(validateHierarchicalRingParams(comm, numBlocks));
-  if (useOverlap) {
-    if (nvlNumBlocks <= 0) {
-      CLOGF_SUBSYS(
-          WARN,
-          COLL,
-          "AllGather {} requires positive NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS; got {}",
-          allGatherAlgoName(myAlgo),
-          nvlNumBlocks);
-      return commInvalidArgument;
-    }
-  }
 
   auto* mpt = comm->multiPeerTransport_.get();
   auto ibRings = comms::prims::make_standard_rings(nNodes, node, 1);

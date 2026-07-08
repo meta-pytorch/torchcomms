@@ -152,7 +152,23 @@ __global__ void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int active_blocks,
+    std::size_t max_signal_bytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * p2pTileSendRecvBidirCta — Bidirectional in a single block via half-block
+ * multiwarp groups.
+ *
+ * Each block splits its threads into a sender half (role 0) and a recv
+ * half (role 1). Both halves use the same channel after
+ * partition_interleaved(2); they touch independent signals so there's no
+ * conflict. Launches with `numSendBlocks` total blocks (half of what
+ * `p2pTileSendRecv` requires for the same channel count).
+ */
+__global__ void p2pTileSendRecvBidirCta(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes = 0,
     Timeout timeout = Timeout());
 
@@ -160,7 +176,7 @@ __global__ void p2pTileSendRecv(
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
  * with support for dynamic block count changes.
  *
- * Requires tile_max_groups > 0 and p2pBarrierCount >= tile_max_groups.
+ * Requires maxNumChannels > 0 and p2pBarrierCount >= maxNumChannels.
  * StepState, signals, and maxBlocks are managed internally by the transport.
  *
  * Signal layout uses maxBlocks (constant across launches) so that block k
@@ -182,7 +198,6 @@ __global__ void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    int active_blocks,
     bool needsBarrier,
     Timeout timeout = Timeout());
 
@@ -203,8 +218,6 @@ __global__ void p2pTileSendRecvDynamic(
  * @param p2p_pred   Transport to predecessor (read source staging)
  * @param p2p_succ   Transport to successor (write target staging)
  * @param dstTiles   Tiled view of the local output buffer
- * @param active_blocks Number of blocks calling forward concurrently.
- *                      0 means use tile_max_groups.
  * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
  * @param timeout    Optional timeout for signal waits
  */
@@ -212,7 +225,6 @@ __global__ void p2pTileForward(
     P2pNvlTransportDevice p2p_pred,
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
-    int active_blocks,
     std::size_t max_signal_bytes = 0,
     Timeout timeout = Timeout());
 
