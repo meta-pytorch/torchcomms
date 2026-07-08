@@ -255,6 +255,18 @@ commResult_t allGatherPExec(
 commResult_t allGatherPDestroy(CtranPersistentRequest* request);
 bool allGatherPSupport(CtranComm* comm);
 
+commResult_t allGatherWinInit(
+    CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+commResult_t allGatherWinExec(
+    const void* sendbuff,
+    const size_t count,
+    commDataType_t datatype,
+    CtranPersistentRequest* request);
+commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
+
 bool AllToAllPSupport(CtranComm* comm);
 
 commResult_t AllToAllPInit(
