@@ -262,9 +262,114 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
 
   const bool is_ib_block = base_group.group_id < args.ib_num_blocks;
   if (is_ib_block) {
+    const int W = args.ib_size;
+
+    if (args.use_direct && W > 1) {
+      // Decomposed direct/star inter-node exchange. Instead of one block
+      // issuing the W-1 peer sends and recvs of a chunk serially, distribute
+      // the (chunk, peer) transfers across IB blocks so they run concurrently.
+      // The host sizes ib_num_blocks ~= total_chunks * W for this band, so each
+      // (chunk, peer) task lands on its own block. The transport staging slot
+      // is keyed by chunk only (passed as group_id): it is identical on every
+      // rank and each peer uses an independent transport, so sender and
+      // receiver always agree on the slot. Sends are posted for all tasks
+      // before any recv (single-window chunks => non-blocking puts), preserving
+      // the deadlock-free post-all-sends-then-recv schedule of the per-chunk
+      // path.
+      const std::size_t ib_tasks = total_chunks * static_cast<std::size_t>(W);
+
+      // Phase A: copy own slice (peer == self) and post all peer sends.
+      for (std::size_t task = base_group.group_id; task < ib_tasks;
+           task += args.ib_num_blocks) {
+        const std::size_t chunk = task / static_cast<std::size_t>(W);
+        const int m = static_cast<int>(task % static_cast<std::size_t>(W));
+        const std::size_t off = chunk * chunk_bytes;
+        const std::size_t bytes = (off + chunk_bytes <= args.sendcount)
+            ? chunk_bytes
+            : (args.sendcount - off);
+        const char* send_src = args.sendbuf + off;
+        auto group = make_sub_block_group(
+            base_group, static_cast<uint32_t>(chunk), args.ib_num_blocks);
+        if (m == args.ib_rank) {
+          char* own_dst = args.recvbuf +
+              (static_cast<std::size_t>(args.ib_rank) * args.nvl_size +
+               args.nvl_rank) *
+                  args.sendcount +
+              off;
+          trace_hierarchical_allgather(
+              args.trace,
+              group,
+              PipesTraceEventType::kHierAgIbChunkBegin,
+              chunk,
+              args.ib_rank);
+          memcpy_vectorized(own_dst, send_src, bytes, group);
+          if (args.use_finer_nvl_handoff) {
+            publish_ready(
+                group,
+                args.ready_counters,
+                static_cast<std::size_t>(args.ib_rank) * total_chunks + chunk,
+                args.ready_sequence);
+          }
+        } else {
+          args.ib_peers[m]->template send<Memcpy>(
+              group,
+              send_src,
+              bytes,
+              args.ib_num_blocks,
+              args.ib_signaling_data_size,
+              timeout);
+        }
+      }
+
+      // Phase B: receive every peer column and publish readiness.
+      for (std::size_t task = base_group.group_id; task < ib_tasks;
+           task += args.ib_num_blocks) {
+        const std::size_t chunk = task / static_cast<std::size_t>(W);
+        const int m = static_cast<int>(task % static_cast<std::size_t>(W));
+        const std::size_t off = chunk * chunk_bytes;
+        const std::size_t bytes = (off + chunk_bytes <= args.sendcount)
+            ? chunk_bytes
+            : (args.sendcount - off);
+        auto group = make_sub_block_group(
+            base_group, static_cast<uint32_t>(chunk), args.ib_num_blocks);
+        if (m == args.ib_rank) {
+          if (!args.use_finer_nvl_handoff) {
+            publish_ready(
+                group,
+                args.ready_counters,
+                static_cast<std::size_t>(args.ib_rank) * total_chunks + chunk,
+                args.ready_sequence);
+          }
+          trace_hierarchical_allgather(
+              args.trace,
+              group,
+              PipesTraceEventType::kHierAgIbChunkReady,
+              chunk,
+              args.ib_rank);
+          continue;
+        }
+        char* dst = args.recvbuf +
+            (static_cast<std::size_t>(m) * args.nvl_size + args.nvl_rank) *
+                args.sendcount +
+            off;
+        args.ib_peers[m]->template recv<Memcpy>(
+            group,
+            dst,
+            bytes,
+            args.ib_num_blocks,
+            args.ib_signaling_data_size,
+            timeout);
+        publish_ready(
+            group,
+            args.ready_counters,
+            static_cast<std::size_t>(m) * total_chunks + chunk,
+            args.ready_sequence);
+      }
+      return;
+    }
+
     auto group = make_sub_block_group(
         base_group, base_group.group_id, args.ib_num_blocks);
-    const int W = args.ib_size;
 
     for (std::size_t chunk = group.group_id; chunk < total_chunks;
          chunk += group.total_groups) {
