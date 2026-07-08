@@ -13,6 +13,11 @@ namespace comms::prims {
 
 class P2pIbgdaTransportDevice;
 
+// Max number of inter-node (IB) peers addressable by the direct/star small-
+// message path. The testbed is 4 nodes; this is sized generously and the host
+// falls back to the ring when nNodes exceeds it.
+inline constexpr int kHierarchicalAgMaxNodes = 32;
+
 struct DirectAllgatherNvlArgs {
   int my_rank{0};
   int num_ranks{0};
@@ -62,6 +67,13 @@ struct HierarchicalAllgatherOverlapArgs {
   char* recvbuf{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
+  // Direct/star inter-node IB phase for small messages: when use_direct is set,
+  // each rank sends its own slice directly to the same nvl_rank on every other
+  // node (ib_peers[node]) and receives theirs, replacing the W-1 sequential
+  // store-and-forward ring hops with a single parallel hop. ib_peers[ib_rank]
+  // is unused (self).
+  bool use_direct{false};
+  P2pIbgdaTransportDevice* ib_peers[kHierarchicalAgMaxNodes]{};
   PipesTraceHandle trace{};
 };
 

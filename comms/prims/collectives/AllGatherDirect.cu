@@ -301,6 +301,67 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
         continue;
       }
 
+      if (args.use_direct) {
+        // Direct/star inter-node exchange: copy own slice locally, send it to
+        // every other node, then receive every other node's slice. One
+        // parallel hop on independent QPs instead of the W-1 sequential
+        // store-and-forward ring hops. Host gates this to small messages so
+        // each chunk fits within one IB pipeline window, which keeps the
+        // post-all-sends-then-recv schedule deadlock-free (send backpressure
+        // references only already-drained data, exactly as the ring does).
+        memcpy_vectorized(own_dst, send_src, bytes, group);
+        for (int m = 0; m < W; m++) {
+          if (m == args.ib_rank) {
+            continue;
+          }
+          args.ib_peers[m]->template send<Memcpy>(
+              group,
+              send_src,
+              bytes,
+              args.ib_num_blocks,
+              args.ib_signaling_data_size,
+              timeout);
+        }
+        for (int m = 0; m < W; m++) {
+          if (m == args.ib_rank) {
+            continue;
+          }
+          char* dst = args.recvbuf +
+              (static_cast<std::size_t>(m) * args.nvl_size + args.nvl_rank) *
+                  args.sendcount +
+              off;
+          args.ib_peers[m]->template recv<Memcpy>(
+              group,
+              dst,
+              bytes,
+              args.ib_num_blocks,
+              args.ib_signaling_data_size,
+              timeout);
+        }
+        publish_ready(
+            group,
+            args.ready_counters,
+            static_cast<std::size_t>(args.ib_rank) * total_chunks + chunk,
+            args.ready_sequence);
+        for (int m = 0; m < W; m++) {
+          if (m == args.ib_rank) {
+            continue;
+          }
+          publish_ready(
+              group,
+              args.ready_counters,
+              static_cast<std::size_t>(m) * total_chunks + chunk,
+              args.ready_sequence);
+        }
+        trace_hierarchical_allgather(
+            args.trace,
+            group,
+            PipesTraceEventType::kHierAgIbChunkReady,
+            chunk,
+            args.ib_rank);
+        continue;
+      }
+
       const auto& topo = args.ib_ring;
       auto& prev = *topo.prev;
       auto& next = *topo.next;

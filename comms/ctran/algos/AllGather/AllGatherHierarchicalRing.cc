@@ -25,11 +25,34 @@ using ::meta::comms::colltrace::CollTraceHandleTriggerState;
 
 namespace {
 
+constexpr size_t kHierarchicalAgOverlapChunk64KiB = 64 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk128KiB = 128 * 1024;
+constexpr size_t kHierarchicalAgOverlapChunk256KiB = 256 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk512KiB = 512 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk1MiB = 1024 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk2MiB = 2 * 1024 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk4MiB = 4 * 1024 * 1024;
 constexpr size_t kHierarchicalAgOverlapChunk8MiB = 8 * 1024 * 1024;
+// At/above this message size we target more (smaller) chunks to deepen the
+// IB/NVL pipeline overlap. Below it, fewer chunks are better because the band
+// is critical-path bound (more chunks regress 4..16MB — see EXP2/EXP4).
+constexpr size_t kHierarchicalAgLargeMsgThreshold = 32 * 1024 * 1024;
+// At/above this (very large) size we deepen the pipeline further (divisor 32 =>
+// ~32 chunks), matching the >=256MiB regime that already reaches NCCL parity.
+// Byte-identical for >=256MiB (chunk caps at 8MiB under either divisor), so
+// only 64MiB/128MiB change vs the 32MiB-threshold divisor.
+constexpr size_t kHierarchicalAgVeryLargeMsgThreshold = 64 * 1024 * 1024;
+// At/below this message size the inter-node IB phase uses a direct/star
+// exchange (one parallel hop to every other node) instead of the W-1-hop
+// store-and-forward ring, cutting the latency-bound critical path. Bandwidth is
+// identical to the ring (each node still egresses W-1 slices), so this only
+// helps the latency-bound small/mid band and never hurts the bandwidth-bound
+// large sizes. Gated small so each chunk <= the IB pipeline window, which keeps
+// the post-all-sends-then-recv schedule deadlock-free (send backpressure then
+// references only already-drained data, exactly as the ring relies on). At this
+// bound the heuristic chunk is <=512KiB (sendBytes/8), well within the 8MiB IB
+// pipeline window, so every send stays single-window.
+constexpr size_t kHierarchicalAgDirectMaxBytes = 4 * 1024 * 1024;
 
 bool rangesOverlap(
     uintptr_t lhs,
@@ -87,7 +110,26 @@ commResult_t validateAllGatherBufferLayout(
 }
 
 size_t selectHierarchicalAgOverlapChunkBytes(size_t sendBytes) {
-  const size_t targetChunkBytes = (sendBytes + 7) / 8;
+  // Tiered chunk count to deepen IB/NVL overlap with message size: ~8 chunks
+  // below 32MiB (critical-path bound — extra chunks regress 4..16MB,
+  // EXP2/EXP4), ~16 chunks at 32MiB, ~32 chunks at >=64MiB (approaching the
+  // >=256MiB regime that already reaches parity). Byte-identical for <32MiB and
+  // >=256MiB (chunk caps at 8MiB), so only 32MiB (16) and 64/128MiB (32) differ
+  // from divisor 8.
+  const size_t divisor = (sendBytes >= kHierarchicalAgVeryLargeMsgThreshold)
+      ? 32
+      : (sendBytes >= kHierarchicalAgLargeMsgThreshold) ? 16
+                                                        : 8;
+  const size_t targetChunkBytes = (sendBytes + divisor - 1) / divisor;
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk64KiB) {
+    return kHierarchicalAgOverlapChunk64KiB;
+  }
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk128KiB) {
+    return kHierarchicalAgOverlapChunk128KiB;
+  }
+  if (targetChunkBytes <= kHierarchicalAgOverlapChunk256KiB) {
+    return kHierarchicalAgOverlapChunk256KiB;
+  }
   if (targetChunkBytes <= kHierarchicalAgOverlapChunk512KiB) {
     return kHierarchicalAgOverlapChunk512KiB;
   }
@@ -453,6 +495,22 @@ commResult_t ctranAllGatherHierarchicalRing(
       }
       new (&overlapParams.nvl_peers[peer])
           comms::prims::P2pNvlTransportDevice(params.nvl_peers[peer]);
+    }
+
+    // Small-message latency optimization: use a direct/star inter-node IB
+    // exchange instead of the W-1-hop ring. Each rank talks directly to the
+    // same nvl_rank on every other node. See kHierarchicalAgDirectMaxBytes.
+    overlapParams.use_direct = (sendBytes <= kHierarchicalAgDirectMaxBytes) &&
+        (nNodes <= comms::prims::kHierarchicalAgMaxNodes);
+    if (overlapParams.use_direct) {
+      for (int peerNode = 0; peerNode < nNodes; ++peerNode) {
+        if (peerNode == node) {
+          continue;
+        }
+        const int peerGlobal = peerNode * nLocalRanks + localRank;
+        overlapParams.ib_peers[peerNode] =
+            mpt->get_p2p_ibgda_transport_device(peerGlobal);
+      }
     }
 
     const size_t totalChunks =
