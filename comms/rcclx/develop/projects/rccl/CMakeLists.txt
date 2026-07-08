@@ -907,6 +907,12 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "NvlMemExchange\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemAllocation\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemMapping\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
+# Exclude MultimemHandler — it is NVIDIA-only (NVSwitch multicast) and owns a
+# std::unique_ptr<CuMemMapping>, so its TU emits an out-of-line reference to
+# CuMemMapping::~CuMemMapping(), whose definition lives in the excluded
+# CuMemMapping.cc. Leaving it in compiles clean but leaves that symbol
+# undefined in librccl at load time. No other compiled source references it.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultimemHandler\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
 # Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
