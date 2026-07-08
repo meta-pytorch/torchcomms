@@ -61,7 +61,8 @@ struct OpElem {
     PUTSIGNAL,
     WAITSIGNAL,
     SIGNAL,
-    GET
+    GET,
+    FETCHADD
   } type;
   cudaStream_t stream;
 
@@ -251,6 +252,13 @@ struct OpElem {
       int peerRank;
       ctran::CtranWin* win;
     } get;
+    struct {
+      void* resultBuf;
+      size_t targetIndex;
+      uint64_t addVal;
+      int peerRank;
+      ctran::CtranWin* win;
+    } fetchadd;
   };
 
  public:
@@ -302,7 +310,8 @@ struct KernelConfig {
     PUTSIGNAL,
     WAITSIGNAL,
     SIGNAL,
-    GET
+    GET,
+    FETCHADD
   } type;
   unsigned int numBlocks{1};
   unsigned int numThreads{1};

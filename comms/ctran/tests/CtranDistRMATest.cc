@@ -673,6 +673,164 @@ TEST_P(RMATestSignalParam, winSignalWait) {
   CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
 }
 
+class RMAAtomicTestParam
+    : public CtranRMATest,
+      public ::testing::WithParamInterface<std::tuple<size_t, MemAllocType>> {};
+
+// Basic fetchAdd: each rank atomically increments a counter on the next peer.
+// Verifies both the final counter value and that fetched old values are
+// monotonically increasing (single writer per slot).
+TEST_P(RMAAtomicTestParam, winFetchAdd) {
+  const auto& [kNumIters, bufType] = GetParam();
+  const bool userBuf = true;
+
+  auto statex = ctranComm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  cudaStream_t atomic_stream;
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&atomic_stream, cudaStreamNonBlocking));
+
+  const auto rank = statex->rank();
+  const auto numRanks = statex->nRanks();
+
+  // Allocate window with one uint64_t counter per rank
+  size_t sizeBytes = numRanks * sizeof(uint64_t);
+  meta::comms::Hints hints;
+  CtranWin* win = nullptr;
+  void* winBase = nullptr;
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
+
+  CUDACHECK_TEST(cudaMemset(winBase, 0, sizeBytes));
+  barrier();
+
+  // Collect fetched old values to verify monotonicity
+  uint64_t* resultBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&resultBuf, kNumIters * sizeof(uint64_t)));
+
+  int nextPeer = (rank + 1) % numRanks;
+
+  // Each rank does kNumIters fetchAdd(1) on the next peer's counter[rank]
+  for (size_t iter = 0; iter < kNumIters; iter++) {
+    COMMCHECK_TEST(ctranFetchAdd(
+        resultBuf + iter,
+        1,
+        rank,
+        nextPeer,
+        win,
+        ctranComm.get(),
+        atomic_stream));
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(atomic_stream));
+  barrier();
+
+  // Verify final counter value on local window
+  int prevPeer = (rank + numRanks - 1) % numRanks;
+  uint64_t hostVal = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &hostVal,
+      reinterpret_cast<uint64_t*>(winBase) + prevPeer,
+      sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(hostVal, kNumIters)
+      << "Rank " << rank << ": counter at slot[" << prevPeer << "] expected "
+      << kNumIters << " got " << hostVal;
+
+  // Verify fetched old values are monotonically increasing: 0, 1, 2, ...
+  // Since this rank is the only writer to slot[rank] on nextPeer, the
+  // returned sequence must be consecutive.
+  std::vector<uint64_t> hostResults(kNumIters);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostResults.data(),
+      resultBuf,
+      kNumIters * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < kNumIters; i++) {
+    EXPECT_EQ(hostResults[i], i)
+        << "Rank " << rank << ": fetchAdd iter " << i << " returned "
+        << hostResults[i] << " expected " << i;
+  }
+
+  CUDACHECK_TEST(cudaFree(resultBuf));
+  auto res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
+  CUDACHECK_TEST(cudaStreamDestroy(atomic_stream));
+}
+
+// Multi-rank contention: all ranks atomically add to a single counter on
+// rank 0's window at slot[0]. Verifies the final counter equals
+// (numRanks - 1) * kNumIters.
+TEST_P(RMAAtomicTestParam, winFetchAddContention) {
+  const auto& [kNumIters, bufType] = GetParam();
+  const bool userBuf = true;
+
+  auto statex = ctranComm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  cudaStream_t atomic_stream;
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&atomic_stream, cudaStreamNonBlocking));
+
+  const auto rank = statex->rank();
+  const auto numRanks = statex->nRanks();
+
+  size_t sizeBytes = sizeof(uint64_t);
+  CtranWin* win = nullptr;
+  void* winBase = nullptr;
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, {});
+
+  CUDACHECK_TEST(cudaMemset(winBase, 0, sizeBytes));
+  barrier();
+
+  uint64_t* resultBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&resultBuf, sizeof(uint64_t)));
+
+  // All non-zero ranks atomically add to rank 0's counter
+  if (rank != 0) {
+    for (size_t iter = 0; iter < kNumIters; iter++) {
+      COMMCHECK_TEST(ctranFetchAdd(
+          resultBuf, 1, 0, 0, win, ctranComm.get(), atomic_stream));
+    }
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(atomic_stream));
+  barrier();
+
+  // Rank 0 verifies the final value
+  if (rank == 0) {
+    uint64_t hostVal = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &hostVal, winBase, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+    uint64_t expected = static_cast<uint64_t>(numRanks - 1) * kNumIters;
+    EXPECT_EQ(hostVal, expected) << "Rank 0: contention counter expected "
+                                 << expected << " got " << hostVal;
+  }
+
+  CUDACHECK_TEST(cudaFree(resultBuf));
+  auto res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
+  CUDACHECK_TEST(cudaStreamDestroy(atomic_stream));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RMAAtomicTestInstance,
+    RMAAtomicTestParam,
+    ::testing::Combine(
+        ::testing::Values(10, 100),
+        ::testing::Values(
+            MemAllocType::kMemCuMemAlloc,
+            MemAllocType::kMemCudaMalloc)),
+    [](const ::testing::TestParamInfo<RMAAtomicTestParam::ParamType>& info) {
+      const auto kNumIters = std::get<0>(info.param);
+      const auto bufType = std::get<1>(info.param);
+      std::string name = fmt::format(
+          "numIters{}_{}", kNumIters, testMemAllocTypeToStr(bufType));
+      return name;
+    });
+
 INSTANTIATE_TEST_SUITE_P(
     RMATestInstance,
     CtranRMATestParam,
