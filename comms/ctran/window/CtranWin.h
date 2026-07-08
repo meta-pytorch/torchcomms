@@ -63,6 +63,11 @@ struct CtranWin {
   // Stores signal values for sent signals, used to track progress
   std::deque<std::atomic<uint64_t>> signalVal{};
 
+  // Scratch buffer for IB fetch-and-add when caller passes nullptr resultBuf.
+  // Allocated and registered at window creation, deregistered at destruction.
+  void* atomicFetchBuf{nullptr};
+  void* atomicFetchBufMemHdl{nullptr};
+
   CtranWin(
       CtranComm* comm,
       size_t dataSize,

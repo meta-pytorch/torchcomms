@@ -18,6 +18,7 @@
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 #endif
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
@@ -381,6 +382,16 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       statex->nNodes(),
       statex->nRanks(),
       statex->nLocalRanks());
+
+  if (isAtomicCapable()) {
+    meta::comms::StreamCaptureModeGuard captureGuard{
+        cudaStreamCaptureModeRelaxed};
+    FB_CUDACHECK(cudaMallocHost(&atomicFetchBuf, sizeof(uint64_t)));
+    bool reg = false;
+    FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
+        atomicFetchBuf, sizeof(uint64_t), &atomicFetchBufMemHdl, &reg));
+  }
+
   return commSuccess;
 }
 
@@ -461,6 +472,15 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
 #endif
+
+  if (atomicFetchBuf != nullptr) {
+    if (atomicFetchBufMemHdl != nullptr) {
+      FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(atomicFetchBufMemHdl));
+      atomicFetchBufMemHdl = nullptr;
+    }
+    FB_CUDACHECK(cudaFreeHost(atomicFetchBuf));
+    atomicFetchBuf = nullptr;
+  }
 
   freeMem(winBasePtr);
 

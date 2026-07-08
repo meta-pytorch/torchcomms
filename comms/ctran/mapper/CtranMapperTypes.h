@@ -111,7 +111,8 @@ class CtranMapperRequest {
     NVL_PUT,
     TCPDM_PUT,
     COPY,
-    ATOMIC_SET
+    ATOMIC_SET,
+    FETCH_AND_ADD
   };
   CtranMapperRequest() {
     CtranMapperRequest(SEND_CTRL, -1, CtranMapperBackend::IB);
