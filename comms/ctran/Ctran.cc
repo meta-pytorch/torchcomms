@@ -11,6 +11,7 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/LogInit.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -194,13 +195,24 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
 void CtranComm::destroy() {
   cudagraphDeferredCleanup.runAll();
 
+  // Free the lazily-allocated small-message AllReduce-ring staging buffers.
+  if (smallMsgStageSrc_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageSrc_));
+    smallMsgStageSrc_ = nullptr;
+  }
+  if (smallMsgStageDst_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageDst_));
+    smallMsgStageDst_ = nullptr;
+  }
+  smallMsgStageBytes_ = 0;
+
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
 #if defined(ENABLE_PRIMS)
   pipesTrace_.reset();
   if (hierarchicalAgReadyCounters_ != nullptr) {
-    cudaFree(hierarchicalAgReadyCounters_);
+    FB_CUDACHECKIGNORE(cudaFree(hierarchicalAgReadyCounters_));
     hierarchicalAgReadyCounters_ = nullptr;
     hierarchicalAgReadyCounterCount_ = 0;
   }
