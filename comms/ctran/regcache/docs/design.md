@@ -109,6 +109,7 @@ RegElem
   isDynamic_ : bool         -- true for one-time uncached registrations
   type_      : DevMemType   -- memory type of the registered range
   ncclManaged_: bool        -- whether NCCL allocated this buffer
+  refCount    : atomic<int64_t>  -- lifetime refcount; allocator holds one ref for lookup consumers (see Scoped Registration)
 ```
 
 ### RegCache (class)
@@ -327,6 +328,71 @@ cleanup:
   -> CtranMapper::deregMem (notify remote peers + freeSegment)
   -> cudaFree
 ```
+
+## Scoped Registration
+
+Ctran's persistent collectives (persistent AllGatherP, "AGP") and window
+collectives hold a registration for the lifetime of an operation, request, or
+window — not the lifetime of the underlying memory — and must release it safely,
+including from a CUDA graph-destroy callback where no CUDA calls are allowed.
+Move-only RAII owners provide this on top of the existing cache without
+disturbing the allocator (CCA) hook or the existing, non-refcounted lookup APIs.
+
+`globalRegister` / `globalDeregister` are the allocator-hook APIs. They are keyed
+on BUFFER (memory) lifetime — the allocator calls them around a buffer's
+allocation and free — and `globalDeregister` force-frees the cached segment and
+all of its registrations. They are therefore NOT suitable for scoped
+registration inside Ctran: a persistent collective or window has an operation /
+request / window lifetime, not a memory lifetime, and calling `globalDeregister`
+from that code would tear down allocator-owned state that other consumers may
+still need. Ctran-internal scopes must use `acquireScopedRegister` /
+`ScopedRegHdl` (below) instead; `globalRegister` / `globalDeregister` must be
+called ONLY from the allocator side (the CCA memory hook), never from collective
+or window code.
+
+### Local registration: `ScopedRegHdl`
+
+Lifecycle (`RegElem::refCount`):
+
+- The allocator owns one reference to each `RegElem`. It is created with
+  `refCount = 1` when the registration is first cached (via `globalRegister` /
+  the CCA hook); this one reference stands in for the allocator's non-refcounted
+  lookup consumers (`searchRegHandle` / `searchIbRegHandle` / `getRegHandle`),
+  which borrow the `RegElem*` without touching `refCount`.
+- `RegCache::acquireScopedRegister(buf, len, cudaDev, backends, &hdl)` resolves
+  the cached `RegElem`, increments `refCount`, and returns a move-only
+  `ScopedRegHdl` owning that one ADDITIONAL reference.
+- `~ScopedRegHdl` performs a pure software decrement (`releaseScopedRegHdl`)
+  under the `regElemsMaps_` read lock — no deregistration, no delete, no CUDA —
+  so it is safe to run from a graph-destroy callback.
+- The allocator's reference is dropped only by user-thread teardown paths
+  (`freeSegment`, invoked by `globalDeregister`, or `deregRange`). A scoped
+  release can therefore never drop the last reference: a `ScopedRegHdl` is never
+  the sole owner and never retires the registration.
+
+Compatibility with the allocator (CCA) hook:
+
+- The allocator hook owns memory lifetime: `globalRegister` caches the segment
+  and creates the `RegElem` with the allocator's one reference; `globalDeregister`
+  drops that reference (`freeSegment` → backend dereg) right before the memory is
+  freed.
+- `acquireScopedRegister` REQUIRES the buffer's segment to already be
+  allocator-cached and returns `commInvalidUsage` otherwise — it never caches or
+  frees segments. A scoped acquire/release only adjusts the extra reference, so
+  it can neither race nor double-free allocator-owned state; the allocator
+  remains the sole owner of the registration's lifetime. If a buffer is freed
+  while a scoped reference is still live, `freeSegment` logs a
+  contract-violation error and tears down anyway (the memory is going away).
+
+Compatibility with the existing (non-refcounted) lookup APIs:
+
+- `searchRegHandle` / `searchIbRegHandle` / `getRegHandle` return a borrowed
+  `RegElem*` WITHOUT touching `refCount`. These are the established production
+  callers (e.g. collective-time handle lookup) and are intentionally left
+  non-refcounted to avoid changing their behavior. The allocator's single
+  reference already covers these lookups; only `ScopedRegHdl` adds or removes
+  further references, so a scoped owner and these borrowed lookups safely share
+  the same cached `RegElem`.
 
 ## Component Interactions
 

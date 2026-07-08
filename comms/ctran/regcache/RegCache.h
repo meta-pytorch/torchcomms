@@ -3,7 +3,10 @@
 
 #include <fmt/format.h>
 #include <folly/Synchronized.h>
+#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <unordered_map>
 
@@ -158,6 +161,32 @@ struct RegElem {
     type_ = segments.at(0)->getType();
   };
 
+  // Reference count controlling this RegElem's lifetime. A RegElem exists only
+  // once the buffer is actually registered, and that registration holds one
+  // reference, so refCount starts at 1. Each live ScopedRegHdl adds one more.
+  //
+  // The preexisting RegElem consumers (searchRegHandle / searchIbRegHandle /
+  // getRegHandle) do NOT rely on refCount. They rely on the allocator-hook
+  // contract: any lookup issued after the buffer's allocation hook
+  // (globalRegister) and before its free hook (globalDeregister) is safe.
+  // Consequently a ScopedRegHdl reference layered on top never triggers an
+  // actual deregistration, and a scoped release can never drop the last
+  // reference. Deregistration happens only when the allocator's free hook
+  // (globalDeregister) runs, or when the RegCache shuts down.
+  //
+  // Atomic so a scoped acquire can increment it under the shared read lock.
+  std::atomic<int64_t> refCount{1};
+
+  // Process-unique monotonic id assigned at construction. Used to validate a
+  // ScopedRegHdl's identity so that a reused heap address (a new RegElem
+  // occupying a force-freed RegElem's old address) is not mistaken for the
+  // original registration. The counter is a function-local static (NOT a global
+  // variable), so it satisfies facebook-avoid-non-const-global-variables.
+  const uint64_t regId_{[] {
+    static std::atomic<uint64_t> counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
+  }()};
+
   std::size_t numSegments() const {
     return segments_.size();
   }
@@ -267,6 +296,38 @@ class Profiler {
 
 } // namespace regcache
 
+// Move-only RAII owner of a scoped local registration acquired via
+// RegCache::acquireScopedRegister(). It owns ONLY a RegElem reference (one live
+// ScopedRegHdl ref counted in RegElem::refCount); it does not cache or
+// ref-count segments. The registration itself holds a reference; a scoped
+// handle adds one on top and never triggers a deregistration. The destructor
+// performs a pure SW-only ref decrement (graph-destroy safe): it never touches
+// CUDA and never deregisters. A scoped release can never drop the last
+// reference, so the registration persists (cached and reusable) until the
+// allocator frees the segment via freeSegment/deregRange.
+class ScopedRegHdl {
+ public:
+  ScopedRegHdl() = default;
+  ScopedRegHdl(ScopedRegHdl&& other) noexcept;
+  ScopedRegHdl& operator=(ScopedRegHdl&& other) noexcept;
+  ScopedRegHdl(const ScopedRegHdl&) = delete;
+  ScopedRegHdl& operator=(const ScopedRegHdl&) = delete;
+  ~ScopedRegHdl();
+
+  regcache::RegElem* get() const;
+  explicit operator bool() const;
+  std::string toString() const;
+
+ private:
+  friend class RegCache;
+
+  RegCache* regCache_{nullptr};
+  regcache::RegElem* regHdl_{nullptr};
+  uint64_t regId_{0};
+  const void* buf_{nullptr};
+  size_t len_{0};
+};
+
 /**
  * Singleton class to hold the IB network resources that are reused by all
  * communicators in the lifetime of program.
@@ -303,6 +364,20 @@ class RegCache {
       size_t len,
       bool skipRemRelease = false,
       int deviceId = -1);
+
+  // Acquire a scoped local registration for [buf, buf + len). The buffer's
+  // underlying segment MUST already be cached by the allocator (globalRegister
+  // / CCA memory hook); this API does not cache segments. On success it takes
+  // one RegElem ref (counted in RegElem::refCount) and the returned
+  // ScopedRegHdl owns that ref, releasing it SW-only in its destructor. If the
+  // buffer is not backed by a cached segment, commInvalidUsage is returned and
+  // the ScopedRegHdl stays empty.
+  commResult_t acquireScopedRegister(
+      const void* buf,
+      size_t len,
+      int cudaDev,
+      const std::vector<bool>& backends,
+      ScopedRegHdl& scopedRegHdl);
 
   // Thread-safe functions to cache a buffer range into the global cache.
   // This function uses pinRange to discover all physical segments underlying
@@ -345,6 +420,9 @@ class RegCache {
   // output:
   //   - didRegister: whether regRangeCached registered regHdl, or just found it
   //   - regHdl: the registration handle
+  // If acquireRef is true, the returned RegElem's scoped refcount is
+  // incremented while holding the map lock (typically for a ScopedRegHdl, which
+  // releases it via its destructor).
   commResult_t regRangeCached(
       const void* ptr,
       const size_t len,
@@ -354,7 +432,8 @@ class RegCache {
       const std::vector<bool>& backends,
       bool& didRegister,
       regcache::RegElem** regHdl,
-      bool ncclManaged = false);
+      bool ncclManaged = false,
+      bool acquireRef = false);
 
   // Thread-safe function to directly register a buffer range without consulting
   // the reusable segment/regElem cache. It registers every pinned physical
@@ -393,7 +472,9 @@ class RegCache {
   // communicator uses it.
   // input:
   //   - regHdl: the direct registration handle
-  commResult_t deregRange(regcache::RegElem* regHdl);
+  //   - releaseRef: if true, decrement the RegElem's refcount first and only
+  //                 proceed to backend deregistration when it reaches 0.
+  commResult_t deregRange(regcache::RegElem* regHdl, bool releaseRef = false);
 
   // Thread-safe function to deregister a dynamic registration. Compatibility
   // wrapper around deregRange() for existing callers.
@@ -544,6 +625,8 @@ class RegCache {
   folly::Synchronized<regcache::Profiler> profiler;
 
  private:
+  friend class ScopedRegHdl;
+
   // Hold a reference to CtranIbSingleton to ensure proper destruction order.
   // By holding this shared_ptr, we guarantee CtranIbSingleton stays alive
   // as long as RegCache exists, preventing use-after-free during
@@ -587,7 +670,11 @@ class RegCache {
   void asyncRegThreadFn(int cudaDev);
 
   // Thread-safe function to search given <ptr, len> range in regElem cache.
-  regcache::RegElem* searchRegElem(const void* ptr, const size_t len);
+  // If acquireRef is true, atomically increments the found RegElem's refCount
+  // on a lookup hit (safe under the shared read lock because refCount is
+  // atomic).
+  regcache::RegElem*
+  searchRegElem(const void* ptr, const size_t len, bool acquireRef = false);
 
   // Helper function to perform backend registration for a set of segments.
   // Creates a RegElem, registers with backends, and updates regElemsMaps.
@@ -603,9 +690,15 @@ class RegCache {
       std::vector<regcache::Segment*>& segments,
       const std::vector<bool>& backends,
       bool ncclManaged,
-      regcache::RegElem** regHdl);
+      regcache::RegElem** regHdl,
+      bool acquireRef = false);
 
   commResult_t deregElem(regcache::RegElem* regElem);
+
+  // SW-only scoped-ref release used by ~ScopedRegHdl; graph-destroy safe. The
+  // regId identifies the RegElem captured at acquire time so a reused heap
+  // address is rejected. See .cc for details.
+  void releaseScopedRegHdl(regcache::RegElem* regHdl, const uint64_t regId);
 };
 
 static inline void CHECK_VALID_REGCACHE(std::shared_ptr<RegCache> regCache) {

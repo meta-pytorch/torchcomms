@@ -1660,6 +1660,425 @@ TEST_F(RegCacheTest, ExternalRegMemFailureIsHandledGracefully) {
   CUDACHECK_TEST(cudaFree(buf));
 }
 
+// Baseline-1 model: globalRegister caches + eager-registers (refcnt baseline
+// 1). A scoped acquire bumps it to 2; releasing the scope decrements back to 1
+// but NEVER dereg's (baseline keeps it alive). The registration persists and is
+// reusable after the scope ends; only globalDeregister tears it down.
+TEST_F(RegCacheTest, ScopedRegisterSingleAcquireRelease) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Allocator pre-caches the segment and eager-registers (scoped acquire
+  // requires the segment to be pre-cached).
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  EXPECT_EQ(regCache->getSegments().size(), 1);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+  {
+    ctran::ScopedRegHdl scopedRegHdl;
+    EXPECT_EQ(
+        regCache->acquireScopedRegister(
+            buf, bufSize, cudaDev, backends, scopedRegHdl),
+        commSuccess);
+    EXPECT_TRUE(static_cast<bool>(scopedRegHdl));
+    EXPECT_NE(scopedRegHdl.get(), nullptr);
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  }
+
+  // Scoped release is a pure SW decrement: the registration and its segment
+  // remain live (the regcache baseline ref keeps them).
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  EXPECT_EQ(regCache->getSegments().size(), 1);
+
+  // Only globalDeregister tears down the allocator-owned registration/segment.
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+  EXPECT_EQ(regCache->getSegments().size(), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Nested scoped acquires on the same buffer add refs (baseline 1 -> 2 -> 3);
+// releasing them decrements back toward the baseline. Dereg happens only via
+// globalDeregister, never through scope release.
+TEST_F(RegCacheTest, ScopedRegisterNestedAcquire) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+
+  auto outer = std::make_unique<ctran::ScopedRegHdl>();
+  EXPECT_EQ(
+      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, *outer),
+      commSuccess);
+  auto* regElem = outer->get();
+  ASSERT_NE(regElem, nullptr);
+  // baseline 1 + outer = 2
+  EXPECT_EQ(regElem->refCount.load(), 2);
+
+  {
+    ctran::ScopedRegHdl inner;
+    EXPECT_EQ(
+        regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, inner),
+        commSuccess);
+    // Both handles refer to the same reused registration; refcnt 1 + 2 = 3.
+    EXPECT_EQ(inner.get(), regElem);
+    EXPECT_EQ(regElem->refCount.load(), 3);
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  }
+
+  // Inner released one ref (back to 2); registration stays live.
+  EXPECT_EQ(regElem->refCount.load(), 2);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // Releasing the last scoped handle returns to the baseline (1); still live.
+  outer.reset();
+  EXPECT_EQ(regElem->refCount.load(), 1);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // Only globalDeregister removes the baseline ref and tears it down.
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Sequential acquire/release cycles each go baseline 1 -> 2 -> 1; the
+// registration persists across cycles and is torn down only by
+// globalDeregister.
+TEST_F(RegCacheTest, ScopedRegisterSequentialAcquire) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+
+  for (int i = 0; i < 2; i++) {
+    {
+      ctran::ScopedRegHdl scopedRegHdl;
+      EXPECT_EQ(
+          regCache->acquireScopedRegister(
+              buf, bufSize, cudaDev, backends, scopedRegHdl),
+          commSuccess);
+      auto* regElem = scopedRegHdl.get();
+      ASSERT_NE(regElem, nullptr);
+      EXPECT_EQ(regElem->refCount.load(), 2);
+      EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+    }
+    // Scope released back to baseline; still registered and reusable.
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  }
+
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// After globalRegister(forceReg) + scoped acquire/release, BOTH the
+// registration and its segment are preserved (baseline ref keeps them).
+// globalDeregister then removes them.
+TEST_F(RegCacheTest, ScopedRegisterPreservesGlobalRegistration) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+
+  // Global forceReg caches the segment and eager-registers the RegElem.
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  {
+    ctran::ScopedRegHdl scopedRegHdl;
+    EXPECT_EQ(
+        regCache->acquireScopedRegister(
+            buf, bufSize, cudaDev, backends, scopedRegHdl),
+        commSuccess);
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  }
+
+  // Scoped release drops only the scope's ref; both the registration AND the
+  // segment remain (baseline ref).
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  EXPECT_EQ(regCache->getSegments().size(), 1);
+
+  // globalDeregister force-frees the remaining allocator-owned state.
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+  EXPECT_EQ(regCache->getSegments().size(), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// CONTRACT: scoped acquire on a buffer whose segment was NOT cached by the
+// allocator returns commInvalidUsage and leaves the ScopedRegHdl empty.
+TEST_F(RegCacheTest, ScopedRegisterUncachedSegmentReturnsError) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+  ctran::ScopedRegHdl scopedRegHdl;
+  EXPECT_EQ(
+      regCache->acquireScopedRegister(
+          buf, bufSize, cudaDev, backends, scopedRegHdl),
+      commInvalidUsage);
+
+  // The handle must stay empty since nothing was acquired.
+  EXPECT_FALSE(static_cast<bool>(scopedRegHdl));
+  EXPECT_EQ(scopedRegHdl.get(), nullptr);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// CONTRACT: globalDeregister while a scoped registration is still alive
+// violates the lifetime contract. It emits a clear error and force-frees the
+// RegElem; the still-live ScopedRegHdl must then destruct without crashing (it
+// safely no-ops because its RegElem is already gone).
+TEST_F(RegCacheTest, GlobalDeregisterWhileScopedAliveReportsError) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+  {
+    ctran::ScopedRegHdl scopedRegHdl;
+    EXPECT_EQ(
+        regCache->acquireScopedRegister(
+            buf, bufSize, cudaDev, backends, scopedRegHdl),
+        commSuccess);
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+    // Force-free the buffer while the scoped handle is still alive (refcnt 2:
+    // baseline + scope). freeSegment removes the baseline ref, sees a remaining
+    // scoped owner, logs the contract-violation ERR, and tears down anyway
+    // because the memory is being freed.
+    EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+    EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+    EXPECT_EQ(regCache->getSegments().size(), 0);
+
+    // The scoped handle destructs here: its RegElem was already force-freed, so
+    // releaseScopedRegHdl safely no-ops with a WARN (no UAF/abort).
+  }
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Read-only search/get callsites (acquireRef=false, the default) do not take a
+// scoped ref, so they require no matching release.
+TEST_F(RegCacheTest, RegRangeCachedNoAcquireRefNeedsNoRelease) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Cache and eagerly register with the default acquireRef=false path.
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+  EXPECT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+
+  // A borrowed lookup is read-only: freeSegment tears down without any scoped
+  // release, i.e. refcnt was never incremented.
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems),
+      commSuccess);
+  EXPECT_TRUE(freed);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// When acquireScopedRegister is the FIRST to register a cached-but-unregistered
+// buffer, it creates the RegElem via the create path. The registration holds
+// the baseline ref (1) and the scope adds one, so refCount ends at 2. Releasing
+// the scope returns to 1 (still registered); only globalDeregister tears it
+// down.
+TEST_F(RegCacheTest, ScopedRegisterFirstAcquireCreatesRegElem) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Cache the segment WITHOUT eager-registering, so no RegElem pre-exists.
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+  {
+    ctran::ScopedRegHdl scopedRegHdl;
+    // Scoped acquire is the first to register: it creates the RegElem.
+    EXPECT_EQ(
+        regCache->acquireScopedRegister(
+            buf, bufSize, cudaDev, backends, scopedRegHdl),
+        commSuccess);
+    auto* regElem = scopedRegHdl.get();
+    ASSERT_NE(regElem, nullptr);
+    // Registration baseline 1 + scoped 1 = 2.
+    EXPECT_EQ(regElem->refCount.load(), 2);
+    EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+  }
+
+  // Scope release drops the scoped ref back to the baseline; still registered.
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // globalDeregister removes the baseline ref and tears it down.
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// ScopedRegHdl move construction transfers ownership without changing refCount
+// (no ref added or dropped). Move assignment releases the target's current ref
+// first, then takes over the source. Self-assignment is a no-op. A moved-from
+// handle is empty and destructs as a no-op.
+TEST_F(RegCacheTest, ScopedRegisterMoveSemantics) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+
+  ctran::ScopedRegHdl a;
+  EXPECT_EQ(
+      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, a),
+      commSuccess);
+  auto* regElem = a.get();
+  ASSERT_NE(regElem, nullptr);
+  EXPECT_EQ(regElem->refCount.load(), 2); // baseline + a
+
+  // Move construction: b takes a's ref, refcnt unchanged, a becomes empty.
+  ctran::ScopedRegHdl b(std::move(a));
+  EXPECT_EQ(regElem->refCount.load(), 2);
+  EXPECT_FALSE(static_cast<bool>(a));
+  EXPECT_EQ(a.get(), nullptr);
+  EXPECT_EQ(b.get(), regElem);
+
+  // Self-move-assignment is a no-op (guarded); ref unchanged.
+  ctran::ScopedRegHdl& bRef = b;
+  b = std::move(bRef);
+  EXPECT_EQ(regElem->refCount.load(), 2);
+  EXPECT_EQ(b.get(), regElem);
+
+  // Acquire a second independent ref into c (refcnt 2 -> 3).
+  ctran::ScopedRegHdl c;
+  EXPECT_EQ(
+      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, c),
+      commSuccess);
+  EXPECT_EQ(regElem->refCount.load(), 3);
+
+  // Move-assign b into c: c releases its own ref first (3 -> 2), then takes b.
+  c = std::move(b);
+  EXPECT_EQ(regElem->refCount.load(), 2);
+  EXPECT_FALSE(static_cast<bool>(b));
+  EXPECT_EQ(c.get(), regElem);
+
+  // c destructs at scope end (2 -> 1); a and b are empty no-ops.
+  {
+    ctran::ScopedRegHdl consume(std::move(c));
+    EXPECT_EQ(regElem->refCount.load(), 2);
+  }
+  EXPECT_EQ(regElem->refCount.load(), 1);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  EXPECT_EQ(regCache->globalDeregister(buf, bufSize), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// deregRange(releaseRef=true) is the user-thread teardown primitive: it
+// decrements refCount and only tears the RegElem down when the count reaches 0.
+// With refCount above baseline it returns early (registration stays live); the
+// final call (baseline) proceeds to backend deregistration.
+TEST_F(RegCacheTest, DeregRangeReleaseRefDecrementsThenTearsDown) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  EXPECT_EQ(regCache->globalRegister(buf, bufSize, true), commSuccess);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false); // IB only
+  backends[CommBackend::IB] = true;
+
+  // Bump the scoped ref via acquireRef=true (baseline 1 -> 2).
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  EXPECT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl,
+          true /* ncclManaged */,
+          true /* acquireRef */),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+  EXPECT_EQ(regHdl->refCount.load(), 2);
+
+  // First releaseRef decrement: refcnt 2 -> 1, returns early, still registered.
+  EXPECT_EQ(regCache->deregRange(regHdl, true /* releaseRef */), commSuccess);
+  EXPECT_EQ(regHdl->refCount.load(), 1);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // Second releaseRef decrement drops the baseline (1 -> 0) and tears down.
+  EXPECT_EQ(regCache->deregRange(regHdl, true /* releaseRef */), commSuccess);
+  EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);
