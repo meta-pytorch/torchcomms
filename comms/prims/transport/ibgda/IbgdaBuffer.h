@@ -508,4 +508,37 @@ struct IbSendRecvState {
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
 };
 
+enum class IbDirection : uint8_t {
+  Send = 0,
+  Recv = 1,
+};
+
+inline constexpr int kIbDirections = 2;
+inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
+
+struct IbQpState {
+  uint32_t cursor{0};
+  uint64_t pendingFlushLanesMask{0};
+  uint64_t lastFlushWqe[kIbMaxQpLanesPerChannelDirection]{};
+};
+
+struct IbLocalChannel {
+  IbSendRecvState::ProgressSlot sendProgress;
+  IbSendRecvState::ProgressSlot recvProgress;
+
+  IbgdaLocalBuffer dataReady;
+  IbgdaLocalBuffer slotFree;
+  IbgdaLocalBuffer nicDoneWait;
+  IbgdaLocalBuffer nicDoneCompletion;
+
+  IbQpState sendQp;
+  IbQpState recvQp;
+};
+
+struct IbRemoteChannel {
+  IbgdaRemoteBuffer dataReady;
+  IbgdaRemoteBuffer slotFree;
+  IbgdaRemoteBuffer recvStaging;
+};
+
 } // namespace comms::prims
