@@ -1398,7 +1398,7 @@ ncclResult_t setGlobalHint(std::string key, std::string val);
  *
  * Update mutable configuration fields on a live communicator. Only
  * algorithm-selection hint keys (sendrecvAlgo, allgatherAlgo, allreduceAlgo,
- * alltoallvAlgo, rmaAlgo) may be changed after communicator creation.
+ * alltoallvAlgo) may be changed after communicator creation.
  *
  * The config parameter must be initialized with NCCL_CONFIG_INITIALIZER. All
  * flat ncclConfig_t fields must remain at their undefined defaults; only the

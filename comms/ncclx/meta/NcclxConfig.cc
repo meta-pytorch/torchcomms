@@ -32,7 +32,6 @@ Config::Config(const ncclConfig_t* config) {
   allgatherAlgo = NCCL_ALLGATHER_ALGO;
   allreduceAlgo = NCCL_ALLREDUCE_ALGO;
   alltoallvAlgo = NCCL_ALLTOALLV_ALGO;
-  rmaAlgo = NCCL_RMA_ALGO;
 
   if (!config) {
     WARN("ncclx::Config: config is null");
@@ -288,7 +287,6 @@ Config::Config(const ncclConfig_t* config) {
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
-  parseAlgoHint("rmaAlgo", rmaAlgo);
 }
 
 ncclResult_t Config::update(const ncclx::Hints* hints) {
@@ -322,7 +320,6 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
-  parseAlgoHint("rmaAlgo", rmaAlgo);
 
   return ncclSuccess;
 }
@@ -389,7 +386,6 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
     appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);
     appendAlgo("alltoallvAlgo", xCfg->alltoallvAlgo);
-    appendAlgo("rmaAlgo", xCfg->rmaAlgo);
     auto appendIfSet = [&](const char* name, const auto& opt) {
       if (opt.has_value()) {
         append(fmt::format("{}={}", name, *opt));
@@ -509,7 +505,6 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
   appendIfSet("allgatherAlgo", cfg->allgatherAlgo);
   appendIfSet("allreduceAlgo", cfg->allreduceAlgo);
   appendIfSet("alltoallvAlgo", cfg->alltoallvAlgo);
-  appendIfSet("rmaAlgo", cfg->rmaAlgo);
 
   if (!updated.empty()) {
     INFO(
