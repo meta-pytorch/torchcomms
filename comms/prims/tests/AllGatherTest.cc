@@ -240,10 +240,10 @@ INSTANTIATE_TEST_SUITE_P(
             .numIntsPerRank = 16,
             .testName = "4b_256t_64B"},
         AllGatherTestParams{
-            .numBlocks = 7,
+            .numBlocks = 8,
             .blockSize = 256,
             .numIntsPerRank = 64,
-            .testName = "7b_256t_256B"},
+            .testName = "8b_256t_256B"},
         AllGatherTestParams{
             .numBlocks = 8,
             .blockSize = 512,

@@ -20,20 +20,6 @@ extern "C" {
 
 typedef void* TorchCommsTransportHandle;
 
-// --- Data Transfer (grid-collective, NVLink only) ---
-
-__device__ int torchcomms_transport_send_groups(
-    TorchCommsTransportHandle handle,
-    int peer,
-    void* src_ptr,
-    unsigned long long nbytes);
-
-__device__ int torchcomms_transport_recv_groups(
-    TorchCommsTransportHandle handle,
-    int peer,
-    void* dst_ptr,
-    unsigned long long nbytes);
-
 // --- Signaling ---
 
 // op: 0=SIGNAL_SET, 1=SIGNAL_ADD

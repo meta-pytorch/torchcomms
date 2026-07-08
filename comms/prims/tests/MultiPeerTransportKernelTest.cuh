@@ -26,42 +26,6 @@ void test_device_handle_type_map(
     int blockSize);
 
 /**
- * End-to-end NVL send via MultiPeerDeviceHandle.
- *
- * @param handle Device handle with NVL transports.
- * @param peerRank Rank of the NVL peer to send to.
- * @param src_d Source buffer in GPU memory.
- * @param nbytes Number of bytes to send.
- * @param numBlocks Number of CUDA blocks.
- * @param blockSize Number of threads per block.
- */
-void test_multi_peer_nvl_send(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* src_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize);
-
-/**
- * End-to-end NVL recv via MultiPeerDeviceHandle.
- *
- * @param handle Device handle with NVL transports.
- * @param peerRank Rank of the NVL peer to receive from.
- * @param dst_d Destination buffer in GPU memory.
- * @param nbytes Number of bytes to receive.
- * @param numBlocks Number of CUDA blocks.
- * @param blockSize Number of threads per block.
- */
-void test_multi_peer_nvl_recv(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize);
-
-/**
  * Test self-transport put via MultiPeerDeviceHandle.
  *
  * @param handle Device handle.

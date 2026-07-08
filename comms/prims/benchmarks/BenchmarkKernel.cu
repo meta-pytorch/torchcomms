@@ -2,6 +2,8 @@
 
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
 
+#include "comms/prims/core/TiledBuffer.cuh"
+
 namespace comms::prims::benchmark {
 
 // Helper to compute global thread ID across all blocks
@@ -17,7 +19,13 @@ __global__ void p2pSend(
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p.send_group(group, srcBuff, nBytes, timeout);
+  TiledBuffer<char> tiles(static_cast<char*>(srcBuff), nBytes, group);
+  p2p.send(
+      group,
+      tiles.tile_data(group.group_id),
+      tiles.tile_bytes(group.group_id),
+      /*max_signal_bytes=*/0,
+      timeout);
 }
 
 __global__ void p2pRecv(
@@ -28,7 +36,13 @@ __global__ void p2pRecv(
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p.recv_group(group, dstBuff, nBytes, timeout);
+  TiledBuffer<char> tiles(static_cast<char*>(dstBuff), nBytes, group);
+  p2p.recv(
+      group,
+      tiles.tile_data(group.group_id),
+      tiles.tile_bytes(group.group_id),
+      /*max_signal_bytes=*/0,
+      timeout);
 }
 
 __global__ void p2pSendTimed(
@@ -45,7 +59,12 @@ __global__ void p2pSendTimed(
     stats->startCycle = clock64();
   }
 
-  p2p.send_group(group, srcBuff, nBytes);
+  TiledBuffer<char> tiles(static_cast<char*>(srcBuff), nBytes, group);
+  p2p.send(
+      group,
+      tiles.tile_data(group.group_id),
+      tiles.tile_bytes(group.group_id),
+      /*max_signal_bytes=*/0);
 
   // Only first thread globally records end time
   if (globalThreadId == 0) {
@@ -69,7 +88,12 @@ __global__ void p2pRecvTimed(
     stats->startCycle = clock64();
   }
 
-  p2p.recv_group(group, dstBuff, nBytes);
+  TiledBuffer<char> tiles(static_cast<char*>(dstBuff), nBytes, group);
+  p2p.recv(
+      group,
+      tiles.tile_data(group.group_id),
+      tiles.tile_bytes(group.group_id),
+      /*max_signal_bytes=*/0);
 
   // Only first thread globally records end time
   if (globalThreadId == 0) {
@@ -92,9 +116,21 @@ __global__ __launch_bounds__(512, 1) void p2pBidirectional(
   // Partition groups into 2: half for send, half for recv
   auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
-    p2p.send_group(subgroup, sendBuff, nBytes, timeout);
+    TiledBuffer<char> tiles(static_cast<char*>(sendBuff), nBytes, subgroup);
+    p2p.send(
+        subgroup,
+        tiles.tile_data(subgroup.group_id),
+        tiles.tile_bytes(subgroup.group_id),
+        /*max_signal_bytes=*/0,
+        timeout);
   } else {
-    p2p.recv_group(subgroup, recvBuff, nBytes, timeout);
+    TiledBuffer<char> tiles(static_cast<char*>(recvBuff), nBytes, subgroup);
+    p2p.recv(
+        subgroup,
+        tiles.tile_data(subgroup.group_id),
+        tiles.tile_bytes(subgroup.group_id),
+        /*max_signal_bytes=*/0,
+        timeout);
   }
 }
 
