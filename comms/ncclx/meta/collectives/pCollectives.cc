@@ -202,6 +202,9 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
       WARN(
           "allToAllvDedupDestroy: experimental API moved to comms/experiments/algos");
       return ncclInvalidUsage;
+    case CtranPersistentRequest::Type::ALLGATHER_P_WIN:
+      NCCLCHECK(metaCommToNccl(::ctran::allGatherWinDestroy(pReq)));
+      break;
     default:
       FB_ERRORRETURN(
           ncclInvalidArgument,

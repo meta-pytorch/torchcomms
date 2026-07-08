@@ -45,6 +45,8 @@ using ctran::allgatherp::PersistArgs;
 
 namespace ctran {
 
+commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
+
 // Internal helpers for the windowed-capture lifecycle. They are file-local: the
 // only entry points are createAllGatherPWithWindow /
 // destroyAllGatherPWithWindow.
@@ -58,16 +60,27 @@ commResult_t attachWindow(CtranPersistentRequest* request, CtranWin* win) {
   auto& pArgs = algo->pArgs;
   pArgs.recvbuff = win->winDataPtr;
   pArgs.recvHdl = win->dataRegHdl;
+  pArgs.maxRecvCount = win->dataBytes;
+  pArgs.datatype = commInt8;
 
-  // The window is always registered on the split local-NVL subcomm, so its comm
-  // and parentRanks are present and map window rank -> parent-comm rank.
+  // Split-share windows map window rank -> parent-comm rank through
+  // parentRanks. NCCLX-created windows are registered on the parent comm, so
+  // their rank mapping is identity.
   FB_CHECKABORT(win->comm != nullptr, "windowed AllGatherP: win->comm is null");
-  const auto& winToCommRank = win->comm->parentRanks();
-  FB_CHECKABORT(
-      winToCommRank.size() == win->remWinInfo.size(),
-      "window remWinInfo size {} does not match parentRanks size {}",
-      win->remWinInfo.size(),
-      winToCommRank.size());
+  std::vector<int> winToCommRank;
+  if (win->comm->isSplitShare()) {
+    winToCommRank = win->comm->parentRanks();
+    FB_CHECKABORT(
+        winToCommRank.size() == win->remWinInfo.size(),
+        "window remWinInfo size {} does not match parentRanks size {}",
+        win->remWinInfo.size(),
+        winToCommRank.size());
+  } else {
+    winToCommRank.reserve(win->remWinInfo.size());
+    for (size_t rank = 0; rank < win->remWinInfo.size(); ++rank) {
+      winToCommRank.push_back(static_cast<int>(rank));
+    }
+  }
 
   const auto nRanks = request->comm_->statex_->nRanks();
   pArgs.remoteRecvBuffs.assign(nRanks, nullptr);
@@ -143,6 +156,95 @@ commResult_t createAllGatherPWithWindow(
   algo->nvlWin = nvlWin;
   algo->nvlComm = std::move(nvlComm);
   *out = request;
+  return commSuccess;
+}
+
+commResult_t allGatherWinInit(
+    CtranWin* win,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request) {
+  if (win == nullptr || comm == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument, "allGatherWinInit requires non-null win and comm");
+  }
+
+  meta::comms::StreamCaptureModeGuard captureGuard{
+      cudaStreamCaptureModeRelaxed};
+  auto algo = std::make_unique<AlgoImpl>(comm, stream);
+  algo->pArgs.initialized.store(false);
+  FB_COMMCHECK(algo->initResources());
+  request = new CtranPersistentRequest(
+      CtranPersistentRequest::Type::ALLGATHER_P_WIN, comm, stream);
+  request->algo = algo.release();
+
+  auto requestGuard = folly::makeGuard([&request]() {
+    if (request != nullptr) {
+      allGatherWinDestroy(request);
+      delete request;
+      request = nullptr;
+    }
+  });
+  FB_COMMCHECK(attachWindow(request, win));
+
+  requestGuard.dismiss();
+  return commSuccess;
+}
+
+commResult_t allGatherWinExec(
+    const void* sendbuff,
+    const size_t count,
+    commDataType_t datatype,
+    CtranPersistentRequest* request) {
+  CHECK_VALID_PREQ(request);
+
+  auto* algo = reinterpret_cast<AlgoImpl*>(request->algo);
+  const auto nRanks = request->comm_->statex_->nRanks();
+  if (count * nRanks * commTypeSize(datatype) >
+      algo->pArgs.maxRecvCount * commTypeSize(algo->pArgs.datatype)) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "AllGatherWin invalid sendbuff count {} * nRanks {} * sizeof datatype {} exceeds window data bytes {}.",
+        count,
+        nRanks,
+        datatype,
+        algo->pArgs.maxRecvCount);
+  }
+
+  switch (NCCL_ALLGATHER_P_ALGO) {
+    case NCCL_ALLGATHER_P_ALGO::ctdirect:
+      return algo->execDirect(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctpipeline:
+      return algo->execPipeline(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
+      return algo->execRecursiveDoubling(sendbuff, count, datatype);
+    case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
+      return algo->execStreamedRecursiveDoubling(sendbuff, count, datatype);
+    default:
+      FB_ERRORRETURN(
+          commInvalidArgument,
+          "Unexpected AllGatherWin algorithm {}",
+          NCCL_ALLGATHER_P_ALGO);
+  }
+}
+
+commResult_t allGatherWinDestroy(CtranPersistentRequest* request) {
+  if (request == nullptr) {
+    return commSuccess;
+  }
+  CHECK_VALID_PREQ(request);
+  auto* algo = reinterpret_cast<AlgoImpl*>(request->algo);
+  if (algo != nullptr) {
+    FB_COMMCHECK(algo->destroy());
+    delete algo;
+    request->algo = nullptr;
+  }
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "allGatherWinDestroy: rank {} destroyed request {}",
+      request->comm_->statex_->rank(),
+      (void*)request);
   return commSuccess;
 }
 
