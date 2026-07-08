@@ -222,14 +222,18 @@ bool algoCanLazySetupChannel(struct ncclComm* comm, struct ncclTaskColl* task) {
 
 bool algoNeedConnect(struct ncclComm* comm, struct ncclTaskColl* task) {
   if (comm->planner.nTasksColl > 1) {
-    /* FIXME: cannot support aggregated collectives now because it may use more
-     * channels at scheduling time, update nMaxChannelsNeedInit and
-     * algoMaxChannelsNeedConnect in planner to ensure all channels will be
-     * setup and the selected algorithm will be connected */
-    comm->planner.nMaxChannelsNeedInit = comm->nChannels;
+    /* Aggregated collectives may use more channels at scheduling time, update
+     * nMaxChannelsNeedInit and algoMaxChannelsNeedConnect in planner to ensure
+     * all channels will be setup and the selected algorithm will be connected.
+     */
+    const int nChannelsNeedConnect = comm->nChannels;
+    comm->planner.nMaxChannelsNeedInit = nChannelsNeedConnect;
     comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm) =
-        comm->nChannels;
-    return comm->nChannelsReady < comm->nChannels;
+        nChannelsNeedConnect;
+    const int algoChannelsNeedConnect =
+        comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm);
+    return comm->nChannelsReady < nChannelsNeedConnect ||
+        algoChannelsNeedConnect > comm->algoConnectedChannels[task->algorithm];
   }
   // update the maximal number of channels need to be initialized later
   if (task->nMaxChannels > comm->nChannelsReady) {
