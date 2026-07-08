@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/ScopeGuard.h>
 #include <memory>
 #include <numeric>
 
@@ -545,6 +546,12 @@ commResult_t ctranWinAllocate(
       comm,
       size,
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
+  auto winGuard = folly::makeGuard([&newWin]() {
+    // On any early error return, release partial resources (SW + backend
+    // dereg, no barrier) and delete the window so it does not leak.
+    (void)newWin->free(/*skipBarrier=*/true);
+    delete newWin;
+  });
   newWin->setAtomicCapable(true);
   FB_COMMCHECK(newWin->allocate(nullptr));
   FB_COMMCHECK(newWin->exchange());
@@ -552,6 +559,7 @@ commResult_t ctranWinAllocate(
     *baseptr = newWin->winDataPtr;
   }
   *win = newWin;
+  winGuard.dismiss();
   return commSuccess;
 }
 
@@ -598,6 +606,12 @@ commResult_t ctranWinRegister(
       // if user buffer is on host CPU, allocate kHostPinned buffer for
       // signal otherwise is on GPU device, allocate kCumem buffer for signal
       userBufType);
+  auto winGuard = folly::makeGuard([&newWin]() {
+    // On any early error return, release partial resources (SW + backend
+    // dereg, no barrier) and delete the window so it does not leak.
+    (void)newWin->free(/*skipBarrier=*/true);
+    delete newWin;
+  });
   newWin->setAtomicCapable(
       reinterpret_cast<uintptr_t>(databuf) % sizeof(uint64_t) == 0 &&
       size % sizeof(uint64_t) == 0);
@@ -607,6 +621,7 @@ commResult_t ctranWinRegister(
   FB_COMMCHECK(newWin->exchange()); // register and exchange both signal
                                     // & data buffer
   *win = newWin;
+  winGuard.dismiss();
   return commSuccess;
 }
 

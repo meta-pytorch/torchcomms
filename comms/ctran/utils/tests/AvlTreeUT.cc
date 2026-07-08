@@ -558,3 +558,54 @@ TEST_F(CtranUtilsAvlTreeTest, SearchRangeLeftSubtreePruning) {
   tree->remove(hdl2);
   tree->remove(hdl3);
 }
+
+// Regression test: when the only tree node is removed first, root_ becomes null
+// while an overlapping element still lives in the fallback list_. A subsequent
+// remove() of that list element must not dereference the null root_.
+// Range A goes into the AVL tree as the first/only node; range B overlaps A and
+// falls back to list_.
+TEST_F(CtranUtilsAvlTreeTest, RemoveTreeNodeBeforeOverlappingListNode) {
+  const uintptr_t base = 0x100000;
+  void* const valA = reinterpret_cast<void*>(0xA);
+  void* const valB = reinterpret_cast<void*>(0xB);
+
+  // Tree-then-list removal order
+  {
+    auto tree = std::make_unique<CtranAvlTree>();
+
+    void* const hdlA =
+        tree->insert(reinterpret_cast<void*>(base + 0x1000), 0x1000, valA);
+    void* const hdlB =
+        tree->insert(reinterpret_cast<void*>(base), 0x4000, valB);
+    ASSERT_NE(hdlA, nullptr);
+    ASSERT_NE(hdlB, nullptr);
+    ASSERT_EQ(tree->size(), 2);
+
+    // Remove the tree node first, emptying the internal AVL tree (root_ null)
+    ASSERT_EQ(tree->remove(hdlA), commSuccess);
+    ASSERT_EQ(tree->size(), 1);
+
+    // Remove the list node with a null root_; must not crash
+    ASSERT_EQ(tree->remove(hdlB), commSuccess);
+    ASSERT_EQ(tree->size(), 0);
+  }
+
+  // Reverse order: list-then-tree removal
+  {
+    auto tree = std::make_unique<CtranAvlTree>();
+
+    void* const hdlA =
+        tree->insert(reinterpret_cast<void*>(base + 0x1000), 0x1000, valA);
+    void* const hdlB =
+        tree->insert(reinterpret_cast<void*>(base), 0x4000, valB);
+    ASSERT_NE(hdlA, nullptr);
+    ASSERT_NE(hdlB, nullptr);
+    ASSERT_EQ(tree->size(), 2);
+
+    ASSERT_EQ(tree->remove(hdlB), commSuccess);
+    ASSERT_EQ(tree->size(), 1);
+
+    ASSERT_EQ(tree->remove(hdlA), commSuccess);
+    ASSERT_EQ(tree->size(), 0);
+  }
+}
