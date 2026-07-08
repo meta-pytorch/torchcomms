@@ -1064,6 +1064,7 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
 
   // Cache miss: resolve the GPU allocation base and register one MR per NIC
   // (DMABUF-first, ibv_reg_mr fallback). Generic — no DOCA, no backend hook.
+  bool isMultiSegment = false;
 #ifdef __HIP_PLATFORM_AMD__
   // HIP doesn't expose an exact cuMemGetAddressRange equivalent; for the common
   // case where the caller passes the allocation base, register the requested
@@ -1082,6 +1083,21 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   if (cuRes != CUDA_SUCCESS || allocBase == 0) {
     throw std::runtime_error(
         "registerBuffer: cuMemGetAddressRange failed for ptr");
+  }
+  // cuMemGetAddressRange returns a single physical segment for cuMem VMM
+  // (cuMemCreate/cuMemMap) buffers. When the caller's range spans multiple
+  // segments (expandable-segment / disjoint allocations), the returned range
+  // covers only the first segment. Widen to the caller's range so the MR
+  // covers the full contiguous VA — ibv_reg_dmabuf_mr handles the underlying
+  // physical discontinuity transparently.
+  {
+    const auto requestedEnd = reinterpret_cast<uintptr_t>(ptr) + size;
+    const auto allocEnd = static_cast<uintptr_t>(allocBase) + allocSize;
+    if (requestedEnd > allocEnd) {
+      allocBase = reinterpret_cast<CUdeviceptr>(ptr);
+      allocSize = size;
+      isMultiSegment = true;
+    }
   }
 #endif
   auto& symbols = ibverbx::ibvSymbols;
@@ -1187,8 +1203,22 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
         close(dmabuf->fd);
       }
     }
-    // 3. Plain reg_mr.
+    // 3. Plain reg_mr. ibv_reg_mr cannot handle physically disjoint pages
+    //    behind contiguous VA (cuMem VMM multi-segment buffers), so reject
+    //    rather than silently producing a broken MR.
     if (!mr) {
+      if (isMultiSegment) {
+        for (int j = 0; j < n; ++j) {
+          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+        }
+        throw std::runtime_error(
+            fmt::format(
+                "registerBuffer: buffer spans multiple cuMem VMM segments "
+                "(allocSize={}) and DMA-BUF registration failed on NIC {}; "
+                "ibv_reg_mr cannot handle disjoint physical pages",
+                allocSize,
+                n));
+      }
       errno = 0;
       mr = symbols.ibv_internal_reg_mr(
           nics_[n].ibvPd,
