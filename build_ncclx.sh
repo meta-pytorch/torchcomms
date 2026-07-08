@@ -209,6 +209,9 @@ function build_third_party {
         fmt
         "conda-forge::libabseil>=20240722,<20240723"
       )
+      if [[ -n "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+          DEPS+=(conda-forge::folly)
+      fi
       conda install "${DEPS[@]}" --yes
       ensure_conda_libdwarf_symlinks
       build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
