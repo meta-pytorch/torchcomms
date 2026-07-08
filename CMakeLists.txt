@@ -30,6 +30,7 @@ option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
+option(BUILD_INTEGRATION_TESTS "Whether to build integration tests or not" OFF)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
 message(STATUS "  USE_GLOO  : ${USE_GLOO}")
@@ -40,6 +41,7 @@ message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRANSPORT_CCA_HOOK : ${USE_TRANSPORT_CCA_HOOK}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
+message(STATUS "  BUILD_INTEGRATION_TESTS : ${BUILD_INTEGRATION_TESTS}")
 
 # NEEDS_CUDA: TRUE when any enabled backend requires CUDA. GLOO and XCCL
 # are the only non-CUDA backends; if no CUDA-dependent backend is enabled
@@ -292,4 +294,12 @@ install(TARGETS torchcomms_comms
 if (BUILD_TESTS)
     enable_testing()
     add_subdirectory(comms/torchcomms/tests/unit/cpp)
+endif()
+
+# Build integration tests (requires GPU, NCCL device API headers).
+# MUST come after ncclx include() above, which sets NCCLX_INCLUDE,
+# NCCLX_SHARED_LIB, FOLLY_LDFLAGS, TORCHCOMMS_HAS_NCCL_DEVICE_API.
+if (BUILD_INTEGRATION_TESTS)
+    enable_testing()
+    add_subdirectory(comms/torchcomms/tests/integration/cpp)
 endif()

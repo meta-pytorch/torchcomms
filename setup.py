@@ -92,6 +92,7 @@ USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
 USE_TRITON = flag_enabled("USE_TRITON", False)
+BUILD_INTEGRATION_TESTS = flag_enabled("BUILD_INTEGRATION_TESTS", False)
 
 
 def parse_requirements(path: str) -> list[str]:
@@ -193,6 +194,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
+            f"-DBUILD_INTEGRATION_TESTS={flag_str(BUILD_INTEGRATION_TESTS)}",
         ]
         build_args = ["--", "-j"]
 
