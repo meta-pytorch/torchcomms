@@ -46,10 +46,6 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
       tconfig.pipesConfig.nvlChunkSize =
           static_cast<int64_t>(ncclxCfg->pipesNvlChunkSize.value());
     }
-    if (ncclxCfg->pipesUseDualStateBuffer.has_value()) {
-      tconfig.pipesConfig.useDualStateBuffer =
-          ncclxCfg->pipesUseDualStateBuffer.value() ? 1 : 0;
-    }
     tconfig.pipesConfig.ibLazyConnect = ncclxCfg->ibLazyConnect;
     if (ncclxCfg->pipesIbgdaDataBufferSize.has_value()) {
       tconfig.pipesConfig.ibgdaDataBufferSize =

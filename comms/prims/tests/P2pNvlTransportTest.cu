@@ -19,24 +19,6 @@ __device__ inline ThreadGroup make_group(GroupType groupType) {
   }
 }
 
-__global__ void testSendKernel(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  p2p->send_group(group, src_d, nbytes);
-}
-
-__global__ void testRecvKernel(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  p2p->recv_group(group, dst_d, nbytes);
-}
-
 __global__ void testTileSendKernel(
     P2pNvlTransportDevice p2p,
     void* src_d,
@@ -59,102 +41,6 @@ __global__ void testTileRecvKernel(
   auto group = make_block_group();
   TiledBuffer<char> tiles(reinterpret_cast<char*>(dst_d), nbytes, group);
   p2p.recv(group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
-}
-
-// Kernel that performs multiple sequential sends within a single kernel launch
-__global__ void testMultiSendKernel(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    int numSends,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  char* src = reinterpret_cast<char*>(src_d);
-  for (int i = 0; i < numSends; i++) {
-    p2p->send_group(group, src + i * nbytes, nbytes);
-  }
-}
-
-// Kernel that performs multiple sequential recvs within a single kernel launch
-__global__ void testMultiRecvKernel(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    int numRecvs,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  char* dst = reinterpret_cast<char*>(dst_d);
-  for (int i = 0; i < numRecvs; i++) {
-    p2p->recv_group(group, dst + i * nbytes, nbytes);
-  }
-}
-
-// Kernel that performs both send and recv within a single kernel launch
-// Used for pipelined bidirectional communication
-__global__ void testSendRecvKernel(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  p2p->send_group(group, send_d, nbytes);
-  p2p->recv_group(group, recv_d, nbytes);
-}
-
-// Kernel that performs recv then send within a single kernel launch
-// Paired with testSendRecvKernel for bidirectional tests
-__global__ void testRecvSendKernel(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  p2p->recv_group(group, recv_d, nbytes);
-  p2p->send_group(group, send_d, nbytes);
-}
-
-// Kernel that performs weighted partition send/recv
-// Groups are partitioned according to weights, partition 0 sends, partition 1
-// recvs
-__global__ void testWeightedSendRecvKernel(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    uint32_t sendWeight,
-    uint32_t recvWeight,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  uint32_t weights[] = {sendWeight, recvWeight};
-  auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
-  if (partition_id == 0) {
-    p2p->send_group(subgroup, send_d, nbytes);
-  } else {
-    p2p->recv_group(subgroup, recv_d, nbytes);
-  }
-}
-
-// Kernel that performs weighted partition recv/send
-// Groups are partitioned according to weights, partition 0 recvs, partition 1
-// sends
-__global__ void testWeightedRecvSendKernel(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    uint32_t recvWeight,
-    uint32_t sendWeight,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  uint32_t weights[] = {recvWeight, sendWeight};
-  auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
-  if (partition_id == 0) {
-    p2p->recv_group(subgroup, recv_d, nbytes);
-  } else {
-    p2p->send_group(subgroup, send_d, nbytes);
-  }
 }
 
 __device__ void wait_for_second_call_signal(
@@ -656,34 +542,6 @@ __global__ void testCopyLocalStagingKernel(
       static_cast<char*>(dst), p2p.local_state().dataBuffer, nbytes, group);
 }
 
-void testSend(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/,
-    cudaStream_t stream) {
-  testSendKernel<<<numBlocks, blockSize, 0, stream>>>(
-      p2p, src_d, nbytes, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testRecv(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/,
-    cudaStream_t stream) {
-  testRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
-      p2p, dst_d, nbytes, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
 void testTileSend(
     const P2pNvlTransportDevice& p2p,
     void* src_d,
@@ -709,34 +567,6 @@ void testTileRecv(
     cudaStream_t stream) {
   testTileRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
       p2p, dst_d, nbytes, maxSignalBytes, timeout);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testMultiSend(
-    P2pNvlTransportDevice* p2p,
-    void* src_d,
-    size_t nbytes,
-    int numSends,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testMultiSendKernel<<<numBlocks, blockSize>>>(
-      p2p, src_d, nbytes, numSends, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testMultiRecv(
-    P2pNvlTransportDevice* p2p,
-    void* dst_d,
-    size_t nbytes,
-    int numRecvs,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testMultiRecvKernel<<<numBlocks, blockSize>>>(
-      p2p, dst_d, nbytes, numRecvs, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1012,92 +842,6 @@ void testCopyLocalStaging(
     int blockSize,
     cudaStream_t stream) {
   testCopyLocalStagingKernel<<<1, blockSize, 0, stream>>>(p2p, dst, nbytes);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testSendRecv(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testSendRecvKernel<<<numBlocks, blockSize>>>(
-      p2p, send_d, recv_d, nbytes, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testRecvSend(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testRecvSendKernel<<<numBlocks, blockSize>>>(
-      p2p, recv_d, send_d, nbytes, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testWeightedSendRecv(
-    P2pNvlTransportDevice* p2p,
-    void* send_d,
-    void* recv_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    uint32_t sendWeight,
-    uint32_t recvWeight,
-    GroupType groupType) {
-  testWeightedSendRecvKernel<<<numBlocks, blockSize>>>(
-      p2p, send_d, recv_d, nbytes, sendWeight, recvWeight, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void testWeightedRecvSend(
-    P2pNvlTransportDevice* p2p,
-    void* recv_d,
-    void* send_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    uint32_t recvWeight,
-    uint32_t sendWeight,
-    GroupType groupType) {
-  testWeightedRecvSendKernel<<<numBlocks, blockSize>>>(
-      p2p, recv_d, send_d, nbytes, recvWeight, sendWeight, groupType);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-// =============================================================================
-// forward_group() test kernel and wrapper
-// =============================================================================
-
-__global__ void testForwardKernel(
-    P2pNvlTransportDevice* pred,
-    P2pNvlTransportDevice* succ,
-    void* dst_d,
-    size_t nbytes,
-    GroupType groupType) {
-  auto group = make_group(groupType);
-  pred->forward_group(group, dst_d, nbytes, *succ);
-}
-
-void testForward(
-    P2pNvlTransportDevice* pred,
-    P2pNvlTransportDevice* succ,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    GroupType groupType,
-    cudaStream_t stream) {
-  testForwardKernel<<<numBlocks, blockSize, 0, stream>>>(
-      pred, succ, dst_d, nbytes, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

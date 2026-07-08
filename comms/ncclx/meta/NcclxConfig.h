@@ -42,7 +42,6 @@ class Config {
   // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
   // When set, override the corresponding CVARs for this communicator.
   std::optional<size_t> pipesNvlChunkSize;
-  std::optional<bool> pipesUseDualStateBuffer;
   std::optional<size_t> pipesIbgdaDataBufferSize;
   int vCliqueSize = 0;
 
@@ -65,15 +64,23 @@ class Config {
 // Hints::set() to warn on unrecognized keys (typo detection).
 inline const std::vector<std::string>& knownHintKeys() {
   static const std::vector<std::string> keys = {
-      "commDesc",          "splitGroupRanks",
-      "fastInitMode",      "useCtran",
-      "usePatAvg",         "noLocal",
-      "sendrecvAlgo",      "allgatherAlgo",
-      "allreduceAlgo",     "pipesIbgdaDataBufferSize",
-      "alltoallvAlgo",     "rmaAlgo",
-      "pipesNvlChunkSize", "pipesUseDualStateBuffer",
-      "vCliqueSize",       "ncclBuffSize",
-      "ibSplitDataOnQps",  "ibQpsPerConnection",
+      "commDesc",
+      "splitGroupRanks",
+      "fastInitMode",
+      "useCtran",
+      "usePatAvg",
+      "noLocal",
+      "sendrecvAlgo",
+      "allgatherAlgo",
+      "allreduceAlgo",
+      "pipesIbgdaDataBufferSize",
+      "alltoallvAlgo",
+      "rmaAlgo",
+      "pipesNvlChunkSize",
+      "vCliqueSize",
+      "ncclBuffSize",
+      "ibSplitDataOnQps",
+      "ibQpsPerConnection",
       "ibLazyConnect",
   };
   return keys;

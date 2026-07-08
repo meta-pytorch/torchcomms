@@ -7,7 +7,7 @@
 namespace comms::prims::test {
 
 // Kernel that calls all_to_allv
-__global__ void testAllToAllvKernel(
+__global__ __launch_bounds__(512, 1) void testAllToAllvKernel(
     void* recvbuff_d,
     const void* sendbuff_d,
     int my_rank_id,
