@@ -26,6 +26,9 @@ using AllReduceMinMsgSizeTestParam = std::tuple<size_t, commDataType_t>;
 enum class CtranAllReduceRingMinSizeTestOpt {
   expect_sufficient,
   expect_insufficient,
+  // count < nRanks, but routed through the small-message padding path
+  // (ctranAllReduceRingSmallMsg), which must succeed instead of throwing.
+  expect_padded_small_msg,
 };
 
 class CtranAllReduceTest
@@ -398,6 +401,22 @@ class CtranAllReduceRingMinSizeTest
                 state.stream);
             EXPECT_EQ(res, commSuccess);
           });
+        } else if (
+            testOpt ==
+            CtranAllReduceRingMinSizeTestOpt::expect_padded_small_msg) {
+          // count < nRanks is padded up to nRanks internally, so the ring
+          // runs successfully instead of throwing.
+          EXPECT_NO_THROW({
+            auto res = ctranAllReduceRingSmallMsg(
+                state.srcBuffer,
+                state.dstBuffer,
+                count,
+                dt,
+                kReduceOpType,
+                state.ctranComm.get(),
+                state.stream);
+            EXPECT_EQ(res, commSuccess);
+          });
         } else {
           // Expect ctran::utils::Exception when count < nRanks
           EXPECT_THROW(
@@ -452,6 +471,18 @@ TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_NRanksPlus1) {
       numRanks + 1,
       dt,
       CtranAllReduceRingMinSizeTestOpt::expect_sufficient,
+      numRanks);
+}
+
+// count < nRanks succeeds through the small-message padding path instead of
+// throwing (see ctranAllReduceRingSmallMsg / MCCL_FORCE_SMALL_MSG_AR_RING).
+TEST_P(CtranAllReduceRingMinSizeTest, PaddedSmallMsg_NRanksMinus1) {
+  auto [numRanks, dt] = GetParam();
+  ASSERT_GT(numRanks, 1) << "Need at least 2 ranks for this test";
+  runTest(
+      numRanks - 1,
+      dt,
+      CtranAllReduceRingMinSizeTestOpt::expect_padded_small_msg,
       numRanks);
 }
 

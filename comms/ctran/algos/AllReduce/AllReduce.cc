@@ -78,6 +78,20 @@ commResult_t ctranAllReduce(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       if (count < comm->statex_->nRanks()) {
+        // Opt-in: pad the message up to nRanks and run the ring anyway. This
+        // unblocks TCPDM, which is only exposed to the ring path.
+        // TODO: remove once small messages are fully supported through TCPDM.
+        if (MCCL_FORCE_SMALL_MSG_AR_RING) {
+          return ctranAllReduceRingSmallMsg(
+              sendbuff,
+              recvbuff,
+              count,
+              datatype,
+              redOp,
+              comm,
+              stream,
+              timeout);
+        }
         CLOGF(
             DBG,
             "AllReduce ctring requires count {} > nRanks {}, fallback to ctdirect",

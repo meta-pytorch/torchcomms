@@ -224,6 +224,15 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+
+  // Persistent staging buffers for the small-message AllReduce-ring padding
+  // path (opt-in via MCCL_FORCE_SMALL_MSG_AR_RING, driven by
+  // ctranAllReduceRingSmallMsg). Lazily allocated on first use, grown on
+  // demand, and reused across collectives; freed in destroy(). Remain nullptr
+  // when the feature is unused.
+  void* smallMsgStageSrc_{nullptr};
+  void* smallMsgStageDst_{nullptr};
+  size_t smallMsgStageBytes_{0};
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};

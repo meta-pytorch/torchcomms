@@ -26,6 +26,28 @@ commResult_t ctranAllReduceRing(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+
+/**
+ * Run the ctring AllReduce for messages whose element count is smaller than
+ * nRanks (opt-in via MCCL_FORCE_SMALL_MSG_AR_RING; selected in ctranAllReduce).
+ *
+ * The ring shards data across all ranks and needs at least one element per
+ * rank, so it cannot run for count < nRanks. This pads the input up to nRanks
+ * elements (tail zero-filled) in persistent per-comm staging buffers
+ * (CtranComm::smallMsgStage*_, reused across calls and freed on comm
+ * destruction), runs ctranAllReduceRing over the padded buffers, and copies the
+ * original count of reduced elements back to recvbuff. The padded positions are
+ * reduced independently across ranks and discarded.
+ */
+commResult_t ctranAllReduceRingSmallMsg(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 /**
  * Run the Prims-backed tree AllReduce implementation.
  *

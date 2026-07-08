@@ -3259,6 +3259,18 @@ cvars:
      reporters from the MCCL level (CTRAN-side defaults for the GPE
      profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
 
+ - name        : MCCL_FORCE_SMALL_MSG_AR_RING
+   type        : bool
+   default     : false
+   description : |-
+     Force the ctran ring AllReduce algorithm for small messages whose element
+     count is smaller than nRanks. The ring requires at least one element per
+     rank; when this is enabled, Ctran pads the input up to nRanks elements in a
+     temporary buffer (tail zero-filled), runs ctring, and copies the original
+     count of elements back to the receive buffer. The padded element positions
+     are reduced independently across ranks and discarded. Default: false
+     (small messages fall back to ctdirect as before).
+
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist
    default     : "0"
