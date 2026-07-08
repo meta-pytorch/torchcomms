@@ -945,6 +945,75 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
   ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
 }
 
+// Verify that importing a remote NVL buffer works during CUDA graph stream
+// capture. importMem issues host CUDA driver calls
+// (cuMemImportFromShareableHandle / cuMemMap / cuMemSetAccess); the internal
+// StreamCaptureModeGuard must relax capture so these calls don't invalidate the
+// capture. Uses a single-process self-export + self-import (same pattern as
+// IpcRemRegElemRefCount). Without the guard this capture would fail with
+// cudaErrorStreamCaptureUnsupported.
+TEST_F(RegCacheTest, ImportMemDuringGraphCapture) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  // Allocate a cuMem buffer so IPC export is supported, then self-export to get
+  // an IpcDesc we can import back.
+  size_t bufSize = 4096;
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
+
+  void* ipcRegElem = nullptr;
+  ASSERT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+  ASSERT_NE(ipcRegElem, nullptr);
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  ASSERT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  const std::string peerId = "test_capture_peer";
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  // ThreadLocal (strict) mode: without the internal StreamCaptureModeGuard in
+  // importMem, the host CUDA driver calls would invalidate this capture.
+  // Relaxed mode here would make the guard a no-op and defeat the test.
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+
+  void* importedBuf = nullptr;
+  ctran::regcache::IpcRemHandle remKey;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf, &remKey),
+      commSuccess);
+  EXPECT_NE(importedBuf, nullptr);
+
+  // The capture must still be valid: end-capture succeeds and yields a graph.
+  cudaGraph_t graph = nullptr;
+  EXPECT_EQ(cudaStreamEndCapture(stream, &graph), cudaSuccess);
+  EXPECT_NE(graph, nullptr);
+
+  if (graph != nullptr) {
+    CUDACHECK_TEST(cudaGraphDestroy(graph));
+  }
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+
+  // Release the imported registration and drain the deferred unmap.
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
+      commSuccess);
+  ipcRegCache->cleanupInvalidImports();
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
 // Test that releasing an IpcRemRegElem
 // returns an error (unknown registration).
 TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {

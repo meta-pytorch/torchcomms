@@ -7,6 +7,7 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Utils.h"
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 // Initialize static unique ID counter
@@ -154,6 +155,15 @@ commResult_t ctran::IpcRegCache::importMem(
     const struct CommLogData* logMetaData,
     const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
     ctran::ScopedIpcRegHdl* outHdl) {
+  // Importing a remote NVL buffer issues host CUDA driver calls
+  // (cuMemImportFromShareableHandle / cuMemMap / cuMemSetAccess, and cuMemUnmap
+  // via cleanupInvalidImports below). Relax this thread's stream-capture mode
+  // so IpcRegCache is self-guarding when a caller imports during CUDA graph
+  // capture (e.g. persistent AllGatherP); callers must not need their own
+  // guard.
+  meta::comms::StreamCaptureModeGuard captureGuard{
+      cudaStreamCaptureModeRelaxed};
+
   // Reclaim any imports released deferentially before this user-thread entry.
   cleanupInvalidImports();
 
