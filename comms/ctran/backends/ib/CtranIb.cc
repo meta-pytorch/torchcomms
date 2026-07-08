@@ -911,7 +911,9 @@ commResult_t CtranIb::iflush(
       return vc->iflush(dbuf, localRegHdl, req);
     });
   } else {
-    req->complete();
+    if (req != nullptr) {
+      req->complete();
+    }
     return commSuccess;
   }
 }

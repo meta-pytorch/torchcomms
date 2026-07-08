@@ -153,6 +153,11 @@ template <typename AlgoContext>
 inline commResult_t
 postRecvFlush(AlgoContext& ctx, int step, CtranMapperRequest** flushReq) {
   *flushReq = nullptr;
+  // Preserve the pre-flush scheduling path on platforms where local flush is a
+  // no-op; do not add a completed request that gates the put queue.
+  if (!ctx.mapper->isLocalFlushEnabled()) {
+    return commSuccess;
+  }
 
   CtranMapperRequest* req = nullptr;
   FB_COMMCHECK(ctx.mapper->iflush(ctx.recvbuff, ctx.memHdl, &req));

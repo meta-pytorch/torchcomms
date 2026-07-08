@@ -196,9 +196,11 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
 
-    // Drain received RDMA writes before the next step forwards them or the
-    // stream-side CE/cudaMemcpyAsync broadcast reads them.
-    FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+    if (mapper->isLocalFlushEnabled()) {
+      // Drain received RDMA writes before the next step forwards them or the
+      // stream-side CE/cudaMemcpyAsync broadcast reads them.
+      FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+    }
 
     // Notify the stream that step `i` IB exchange is done. The stream can
     // now issue the intra-node CE broadcast for the 2^i chunks just

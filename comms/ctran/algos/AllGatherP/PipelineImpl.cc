@@ -135,9 +135,11 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
     // Wait till received data from upstream peer
     FB_COMMCHECK(mapper->waitNotify(notify.get()));
 
-    // Drain received RDMA writes before the stream-side CE/cudaMemcpyAsync
-    // broadcast reads the chunk.
-    FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+    if (mapper->isLocalFlushEnabled()) {
+      // Drain received RDMA writes before the stream-side CE/cudaMemcpyAsync
+      // broadcast reads the chunk.
+      FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+    }
 
     // Kick off local broadcast of the received data.
     resource->pipeSync->post(step);

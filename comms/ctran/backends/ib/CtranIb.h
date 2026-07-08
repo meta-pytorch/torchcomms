@@ -61,6 +61,10 @@ class CtranIb {
 
   static bool shouldEnableLocalFlushByDefault(int cudaArch);
 
+  bool isLocalFlushEnabled() const {
+    return enableLocalFlush;
+  }
+
   // Creates local IB resources without pre-existing communicator.
   // Supports three types of bootstrap mode as defined below.
   // Input arguments:

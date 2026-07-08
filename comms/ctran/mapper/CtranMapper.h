@@ -702,6 +702,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     return commSuccess;
   }
 
+  bool isLocalFlushEnabled() const {
+    return this->ctranIb != nullptr && this->ctranIb->isLocalFlushEnabled();
+  }
+
   /* Drain pending NIC PCIe writes into GPU HBM after RDMA receives complete
    * and before host or stream-side work reads the just-received buffer. On
    * split-path topologies, PCIe write ordering does not necessarily extend to
@@ -711,6 +715,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t flush(const void* buf, const void* regHdl) {
     if (this->ctranIb) {
+      if (!this->ctranIb->isLocalFlushEnabled()) {
+        return commSuccess;
+      }
+
       auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
           const_cast<void*>(regHdl));
       if (!regElem) {
@@ -1216,11 +1224,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t testRequestImpl(
       CtranMapperRequest* req,
       bool* isComplete) {
-    FB_COMMCHECK(this->checkComplete(req, isComplete));
-    if (*isComplete) {
-      return commSuccess;
-    }
-
+    // Keep request polling progress-first so completed/no-op backend requests
+    // do not silently change collective progress cadence.
     FB_COMMCHECK(this->progress<PerfConfig>());
     FB_COMMCHECK(this->checkComplete(req, isComplete));
 
