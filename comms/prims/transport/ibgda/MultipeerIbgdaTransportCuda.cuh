@@ -52,9 +52,9 @@ struct NicDeviceIbgdaResourcesBuildSpec {
  * for the device transport.
  *
  * Single-NIC callers populate `nicResources` with one element.
- * Multi-NIC callers populate `nicResources` with one element per NIC. qps
- * contains maxGroups * qpsPerBlockPerNic main QPs; companionQps contains
- * maxGroups shared companion QPs.
+ * Multi-NIC callers populate `nicResources` with one element per NIC. qps and
+ * companionQps both contain maxChannels * qpDirectionCount * qpsPerConnection
+ * QPs.
  */
 struct P2pIbgdaTransportBuildParams {
   P2pIbgdaTransportBuildParams() = default;
@@ -68,8 +68,9 @@ struct P2pIbgdaTransportBuildParams {
   IbgdaRemoteBuffer discardSignalSlot{};
   int numSignalSlots{0};
   int numCounterSlots{0};
-  int maxGroups{0};
-  int qpsPerBlockPerNic{1};
+  int maxChannels{0};
+  int qpsPerConnection{1};
+  int qpDirectionCount{1};
   IbSendRecvState sendRecvState{};
 };
 
