@@ -47,6 +47,7 @@ static struct ncclDevCommCompat *devCommCompat[] = {
 static std::mutex ncclWindowMapMutex;
 static ncclIntruAddressMap<ncclDevrWindow, struct ncclWindow_vidmem*, &ncclDevrWindow::vidmem, &ncclDevrWindow::next> ncclWindowMap;
 static ncclResult_t symWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream);
+static ncclResult_t symLocalWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream);
 
 // Complete types from src/include/dev_runtime.h
 struct ncclDevrMemory {
@@ -75,7 +76,8 @@ struct ncclDevrMemory {
 struct ncclDevrWindowSorted {
   uintptr_t userAddr;
   size_t size;
-  struct ncclDevrWindow* win;
+  struct ncclDevrWindow* win; // For local-only windows, points to ncclDevrLocalWindow via
+                              // reinterpret_cast (layout-compatible prefix). Never nullptr.
 };
 
 struct ncclDevrTeam {
@@ -198,7 +200,11 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
   CUDACHECKIGNORE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   while (devr->winSortedCount > 0) {
     struct ncclDevrWindow* win = devr->winSorted[0].win;
-    NCCLCHECKIGNORE(symWindowDestroy(comm, win->vidmem, stream), ret);
+    if (win->winFlags & NCCL_WIN_LOCAL_ONLY) {
+      NCCLCHECKIGNORE(symLocalWindowDestroy(comm, win->vidmem, stream), ret);
+    } else {
+      NCCLCHECKIGNORE(symWindowDestroy(comm, win->vidmem, stream), ret);
+    }
   }
   CUDACHECKIGNORE(cudaStreamSynchronize(stream));
   CUDACHECKIGNORE(cudaStreamDestroy(stream));
@@ -905,9 +911,7 @@ static ncclResult_t symLocalWindowCreate(
     struct ncclDevrWindowSorted winSort;
     winSort.userAddr = userAddr;
     winSort.size = userSize;
-    // Note: We store nullptr for local-only windows in winSorted.win since it's a different type.
-    // This is safe because winSorted is only used for lookups, not for type-specific operations.
-    winSort.win = nullptr;
+    winSort.win = reinterpret_cast<struct ncclDevrWindow*>(win);
     listInsert(&devr->winSorted, &devr->winSortedCapacity, &devr->winSortedCount, i, winSort);
   }
 
@@ -1395,7 +1399,10 @@ ncclResult_t ncclDevrCommCreateInternal(
 
   if (ginActivated) {
     // Now update the GIN handles in all existing windows. Registration of memories happened above.
+    // Skip local-only windows: they have their own GIN registration done at creation time
+    // and do not have an ncclDevrMemory (win->memory would be invalid).
     for (int i=0; i < devr->winSortedCount; i++) {
+      if (devr->winSorted[i].win->winFlags & NCCL_WIN_LOCAL_ONLY) continue;
       struct ncclDevrWindow* win = devr->winSorted[i].win;
       struct ncclWindow_vidmem* winHost;
       NCCLCHECKGOTO(ncclShadowPoolToHost(&devr->shadows, win->vidmem, &winHost), ret, fail_stream);
@@ -1611,7 +1618,11 @@ ncclResult_t ncclDevrFindWindow(
   uintptr_t userAddr = reinterpret_cast<uintptr_t>(userPtr);
   int i = listFindSortedLub(&ncclDevrWindowSorted::userAddr, devr->winSorted, devr->winSortedCount, userAddr);
   if (0 < i && (userAddr - devr->winSorted[i-1].userAddr < devr->winSorted[i-1].size)) {
-    *outWin = devr->winSorted[i-1].win;
+    struct ncclDevrWindow* win = devr->winSorted[i-1].win;
+    // Filter out local-only windows: callers (ncclDevrWindowIsMultiSegment,
+    // ncclDevrWindowHasSysmemSegment, sym_kernels) treat non-null as a regular
+    // collective window and dereference win->memory without null checks.
+    *outWin = (win->winFlags & NCCL_WIN_LOCAL_ONLY) ? nullptr : win;
   } else {
     *outWin = nullptr;
   }
