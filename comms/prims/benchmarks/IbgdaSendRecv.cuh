@@ -4,12 +4,12 @@
 
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/P2pIbTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
 
 /**
- * Bidirectional tile sendrecv kernel for IBGDA transport.
+ * Bidirectional tile sendrecv kernel for IB transport.
  *
  * Grid: 2 * numBlocks (first half sends, second half receives).
  * Block: 512 threads.
@@ -21,7 +21,7 @@ namespace comms::prims::benchmark {
  * partitions data into per-block tiles. Each tile fits in one perBlockSlotSize.
  */
 __global__ void ibgda_send_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t totalBytes,
@@ -31,7 +31,7 @@ __global__ void ibgda_send_recv_kernel(
 
 #ifndef __HIP_PLATFORM_AMD__
 __global__ void ibgda_progress_send_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t totalBytes,
@@ -41,7 +41,7 @@ __global__ void ibgda_progress_send_recv_kernel(
 #endif
 
 __global__ void ibgda_send_recv_two_call_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     char* dst,
     std::size_t firstBytes,
@@ -56,7 +56,7 @@ __global__ void ibgda_send_recv_two_call_kernel(
  * Grid: numBlocks. Block: 512 threads.
  */
 __global__ void ibgda_send_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t totalBytes,
     int numBlocks,
@@ -68,7 +68,7 @@ __global__ void ibgda_send_kernel(
  * Grid: numBlocks. Block: 512 threads.
  */
 __global__ void ibgda_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t totalBytes,
     int numBlocks,
@@ -81,7 +81,7 @@ __global__ void ibgda_recv_kernel(
  * Grid: numBlocks. Block: 512 threads.
  */
 __global__ void ibgda_progress_send_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* src,
     std::size_t totalBytes,
     int numBlocks,
@@ -93,7 +93,7 @@ __global__ void ibgda_progress_send_kernel(
  * Grid: numBlocks. Block: 512 threads.
  */
 __global__ void ibgda_progress_recv_kernel(
-    P2pIbgdaTransportDevice* transport,
+    P2pIbTransportDevice transport,
     char* dst,
     std::size_t totalBytes,
     int numBlocks,

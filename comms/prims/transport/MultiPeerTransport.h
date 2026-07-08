@@ -23,6 +23,7 @@
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/IbTransportConfig.h"
+#include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
@@ -109,6 +110,13 @@ class MultiPeerTransport {
   /** @return True if IBGDA is the preferred transport for peerRank. */
   bool is_ibgda_peer(int peerRank) const;
 
+  /** @return True if an IB transport is the preferred transport for peerRank.
+   */
+  bool is_ib_peer(int peerRank) const {
+    return typePerRank_[peerRank] == TransportType::P2P_IBGDA ||
+        typePerRank_[peerRank] == TransportType::P2P_IBRC;
+  }
+
   /** @return True if IBGDA transport is available for peerRank (all non-self).
    */
   bool has_ibgda(int peerRank) const {
@@ -193,6 +201,12 @@ class MultiPeerTransport {
    */
   P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(
       int globalPeerRank) const;
+
+  /**
+   * @param globalPeerRank Global rank of an IB peer.
+   * @return Generic IB transport handle backed by the configured IB backend.
+   */
+  P2pIbTransportDevice get_p2p_ib_transport_device(int globalPeerRank) const;
 
   /** @return A stateless P2pSelfTransportDevice handle. */
   P2pSelfTransportDevice get_p2p_self_transport_device() const;

@@ -510,6 +510,34 @@ __device__ __forceinline__ void P2pIbTransportDevice::send(
 }
 
 template <typename CopyOp, typename... Args>
+__device__ __forceinline__ void P2pIbTransportDevice::sendWithTrace(
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    int active_blocks,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    PipesTraceHandle trace,
+    uint8_t self_rank,
+    Args... args) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->send<CopyOp>(
+        group, src, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+  } else {
+    ibgda->sendWithTrace<CopyOp>(
+        group,
+        src,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        trace,
+        self_rank,
+        args...);
+  }
+}
+
+template <typename CopyOp, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::recv(
     ThreadGroup& group,
     void* __restrict__ dst,
@@ -524,6 +552,34 @@ __device__ __forceinline__ void P2pIbTransportDevice::recv(
   } else {
     ibgda->recv<CopyOp>(
         group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+  }
+}
+
+template <typename CopyOp, typename... Args>
+__device__ __forceinline__ void P2pIbTransportDevice::recvWithTrace(
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    int active_blocks,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    PipesTraceHandle trace,
+    uint8_t self_rank,
+    Args... args) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->recv<CopyOp>(
+        group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+  } else {
+    ibgda->recvWithTrace<CopyOp>(
+        group,
+        dst,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        trace,
+        self_rank,
+        args...);
   }
 }
 
@@ -558,6 +614,51 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
         timeout,
         args...);
   }
+}
+
+template <typename CopyOp, typename... Args>
+__device__ __forceinline__ void P2pIbTransportDevice::forwardWithTrace(
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    P2pIbTransportDevice& fwd,
+    std::size_t nbytes,
+    int active_blocks,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    PipesTraceHandle trace,
+    uint8_t self_rank,
+    Args... args) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->forward<CopyOp>(
+        group,
+        dst,
+        *fwd.ibrc,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        args...);
+  } else {
+    ibgda->forwardWithTrace<CopyOp>(
+        group,
+        dst,
+        *fwd.ibgda,
+        nbytes,
+        active_blocks,
+        max_signal_bytes,
+        timeout,
+        trace,
+        self_rank,
+        args...);
+  }
+}
+
+__host__ __device__ __forceinline__ const IbSendRecvState&
+P2pIbTransportDevice::send_recv_state() const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->send_recv_state();
+  }
+  return ibgda->send_recv_state();
 }
 
 __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window(

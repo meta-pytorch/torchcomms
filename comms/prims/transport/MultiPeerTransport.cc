@@ -263,6 +263,30 @@ P2pIbgdaTransportDevice* MultiPeerTransport::get_p2p_ibgda_transport_device(
   return ibgdaTransport_->getP2pTransportDevice(globalPeerRank);
 }
 
+P2pIbTransportDevice MultiPeerTransport::get_p2p_ib_transport_device(
+    int globalPeerRank) const {
+  const auto transportType = typePerRank_.at(globalPeerRank);
+  if (transportType == TransportType::P2P_IBGDA) {
+    if (!ibgdaTransport_) {
+      throw std::runtime_error(
+          "get_p2p_ib_transport_device: IBGDA transport not available");
+    }
+    return P2pIbTransportDevice(
+        ibgdaTransport_->getP2pTransportDevice(globalPeerRank));
+  }
+  if (transportType == TransportType::P2P_IBRC) {
+    if (!ibrcTransport_) {
+      throw std::runtime_error(
+          "get_p2p_ib_transport_device: IBRC transport not available");
+    }
+    return P2pIbTransportDevice(
+        ibrcTransport_->getP2pTransportDevice(globalPeerRank));
+  }
+  throw std::runtime_error(
+      "get_p2p_ib_transport_device: peer " + std::to_string(globalPeerRank) +
+      " is not an IB peer");
+}
+
 Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
   if (!nvlTransport_) {
     return nullptr;

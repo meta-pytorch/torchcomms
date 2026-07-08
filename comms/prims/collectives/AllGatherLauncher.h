@@ -42,7 +42,7 @@ struct HierarchicalAllgatherLaunchParams {
   int ib_num_blocks{16};
   float timeout_ms{0.0f};
   cudaStream_t stream{nullptr};
-  HierarchicalAllgatherIbgdaRing ib_ring{};
+  HierarchicalAllgatherIbRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
 };
 
@@ -68,7 +68,7 @@ struct HierarchicalAllgatherOverlapLaunchParams {
   int nvl_num_blocks{16};
   float timeout_ms{0.0f};
   cudaStream_t stream{nullptr};
-  HierarchicalAllgatherIbgdaRing ib_ring{};
+  HierarchicalAllgatherIbRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
   PipesTraceHandle trace{};
 };

@@ -9,7 +9,7 @@
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+#include "comms/prims/transport/P2pIbTransportDevice.cuh"
 
 namespace comms::prims {
 
@@ -114,8 +114,8 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
   }
 
   const auto& topo = args.ib_ring;
-  auto& prev = *topo.prev;
-  auto& next = *topo.next;
+  auto prev = topo.prev;
+  auto next = topo.next;
   const std::size_t pipeline_window = next.pipeline_window(group.total_groups);
   PIPES_DEVICE_CHECK_MSG(
       pipeline_window != 0,
@@ -302,8 +302,8 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       }
 
       const auto& topo = args.ib_ring;
-      auto& prev = *topo.prev;
-      auto& next = *topo.next;
+      auto prev = topo.prev;
+      auto next = topo.next;
       const int stride = (args.ib_rank - topo.prev_rank + W) % W;
       const std::size_t ib_window = next.pipeline_window(args.ib_num_blocks);
       PIPES_DEVICE_CHECK_MSG(

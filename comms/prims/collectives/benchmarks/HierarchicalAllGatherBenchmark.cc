@@ -411,10 +411,10 @@ class HierarchicalAllGatherBenchmarkFixture
       const int next_global = ib_ring.next_rank * config.nvl_size + nvl_rank;
       launch_params.ib_ring.prev_rank = ib_ring.prev_rank;
       launch_params.ib_ring.next_rank = ib_ring.next_rank;
-      launch_params.ib_ring.prev =
-          ib_transport->getP2pTransportDevice(prev_global);
-      launch_params.ib_ring.next =
-          ib_transport->getP2pTransportDevice(next_global);
+      launch_params.ib_ring.prev = P2pIbTransportDevice(
+          ib_transport->getP2pTransportDevice(prev_global));
+      launch_params.ib_ring.next = P2pIbTransportDevice(
+          ib_transport->getP2pTransportDevice(next_global));
     }
 
     for (int peer = 0; peer < config.nvl_size; ++peer) {
