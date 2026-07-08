@@ -32,7 +32,7 @@ packaging==23.2
 plantuml==0.3.0
 plantuml-markdown==3.9.2
 Pygments==2.16.1
-pymdown-extensions==10.3.1
+pymdown-extensions==10.16.1
 pyparsing==3.1.1
 python-dateutil==2.8.2
 pytz==2023.3.post1
