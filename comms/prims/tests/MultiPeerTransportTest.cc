@@ -270,7 +270,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCudaMalloc) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -305,7 +305,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferMultipleRoundTrips) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
     EXPECT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
     for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
       EXPECT_NE(mappedPtrs[rank], nullptr);
@@ -383,7 +383,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -462,7 +462,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -541,7 +541,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd_MultipleRounds) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
     ASSERT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
     for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
       EXPECT_NE(mappedPtrs[rank], nullptr);
@@ -610,9 +610,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCuMemNone_Throws) {
 
   void* localBuf = reinterpret_cast<void*>(devPtr);
 
-  EXPECT_THROW(
-      transport->exchangeNvlBuffer(localBuf, requestedSize),
-      std::runtime_error);
+  EXPECT_THROW(transport->exchangeNvlBuffer(localBuf), std::runtime_error);
 
   cuMemUnmap(devPtr, allocSize);
   cuMemAddressFree(devPtr, allocSize);
@@ -701,7 +699,7 @@ TEST_F(MultiPeerTransportTestFixture, DisableIb_NvlBufferExchange) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
