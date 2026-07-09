@@ -536,18 +536,24 @@ def batch_isend_irecv(p2p_op_list: list[Any]) -> list[dist.Work]:
             return []
 
         first_op = getattr(p2p_op_list[0], "_p2p_op", p2p_op_list[0])
+        # pyrefly: ignore [missing-attribute]
         pg = get_group(first_op.group)
         pg_info_assert_registered(pg)
+        # pyrefly: ignore [missing-attribute]
         tc = get_torchcomms_instance(pg, tensor=first_op.tensor)
 
         works: list[dist.Work] = []
         for p2p_op in p2p_op_list:
             actual_op = getattr(p2p_op, "_p2p_op", p2p_op)
+            # pyrefly: ignore [missing-attribute]
             op_name = actual_op.op.__name__
 
+            # pyrefly: ignore [missing-attribute]
             group_peer = actual_op.group_peer
             if group_peer is None:
+                # pyrefly: ignore [missing-attribute]
                 if actual_op.peer is not None:
+                    # pyrefly: ignore [bad-argument-type]
                     group_peer = get_group_rank(pg, actual_op.peer)
                 else:
                     raise ValueError(
@@ -556,8 +562,10 @@ def batch_isend_irecv(p2p_op_list: list[Any]) -> list[dist.Work]:
                     )
 
             if "send" in op_name:
+                # pyrefly: ignore [missing-attribute]
                 work = tc.send(actual_op.tensor, group_peer, True)
             elif "recv" in op_name:
+                # pyrefly: ignore [missing-attribute]
                 work = tc.recv(actual_op.tensor, group_peer, True)
             else:
                 raise ValueError(f"Unknown P2P operation: {op_name}")
@@ -565,6 +573,7 @@ def batch_isend_irecv(p2p_op_list: list[Any]) -> list[dist.Work]:
         return works
     # Unwrap distwrap P2POp objects to torch.distributed.P2POp
     unwrapped_ops = [getattr(op, "_p2p_op", op) for op in p2p_op_list]
+    # pyrefly: ignore [bad-argument-type]
     works = dist.batch_isend_irecv(unwrapped_ops)
     if works is None:
         raise AssertionError("dist.batch_isend_irecv returned None")
