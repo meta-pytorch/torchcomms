@@ -29,6 +29,11 @@
 
 namespace comms::prims {
 
+// Forward-declared so GpuMemHandler.h stays lean for its many users; the
+// composed multicast overlay is an implementation detail (out-of-line dtor in
+// the .cc, which includes MultimemHandler.h).
+class MultimemHandler;
+
 /**
  * Memory sharing mode - determines which IPC mechanism to use.
  */
@@ -213,6 +218,40 @@ class GpuMemHandler {
   }
 
   /**
+   * Adds an NVSwitch multicast overlay over this handler's physical allocation.
+   *
+   * COLLECTIVE OPERATION over the NVLink-domain team described by
+   * `nvlRankToCommRank`. Creates a multicast object, binds this rank's physical
+   * allocation into it, and maps the multicast VA. After this call,
+   * getMultimemDeviceMemPtr() returns a pointer usable with `multimem.*`
+   * instructions, while getLocalDeviceMemPtr() continues to return the unicast
+   * VA onto the same physical backing.
+   *
+   * Zeroing the local backing before peers read through the multicast VA is the
+   * CALLER'S responsibility. This method intentionally issues no default-stream
+   * operations (no implicit `cudaMemset` / `cudaStreamSynchronize`) so it can't
+   * race with caller-managed compute streams; instead, the caller should
+   * `cudaMemsetAsync` the backing on the same stream it will use for the
+   * subsequent collective and synchronize there.
+   *
+   * The allocation must have been sized to backingGranularity() (pass it as the
+   * constructor's `alignFloor`). Throws in cudaIpc mode (no VMM handle).
+   *
+   * @param commRank This process's rank in the global communicator
+   * @param nvlRankToCommRank Maps each NVLink-local rank to its global rank
+   * @param cudaDevice CUDA device ordinal (already current)
+   */
+  void exchangeMulticast(
+      int32_t commRank,
+      std::vector<int> nvlRankToCommRank,
+      int cudaDevice);
+
+  /**
+   * Returns this rank's multicast VA. PRECONDITION: exchangeMulticast() done.
+   */
+  void* getMultimemDeviceMemPtr() const;
+
+  /**
    * Check if the current GPU supports fabric handles.
    *
    * @return true if Hopper+ GPU with CUDA 12.3+ and fabric support enabled
@@ -223,6 +262,20 @@ class GpuMemHandler {
    * Get the best available sharing mode for the current system.
    */
   static MemSharingMode detectBestMode();
+
+  /**
+   * Returns whether multicast/multimem is supported on `cudaDevice`. Delegates
+   * to MultimemHandler::isMultimemSupported.
+   */
+  static bool isMultimemSupported(int cudaDevice);
+
+  /**
+   * Returns the allocation alignment/size floor (alignFloor) required for a
+   * physical allocation to be bindable into a multicast object for a team of
+   * `nvlRanks` devices on `cudaDevice`. Delegates to
+   * MultimemHandler::backingGranularity. Returns 0 if multimem is unsupported.
+   */
+  static std::size_t backingGranularity(int cudaDevice, int nvlRanks);
 
  private:
   void init(size_t size, std::size_t alignFloor);
@@ -266,6 +319,17 @@ class GpuMemHandler {
   // exchangeMemPtrs(). For VMM modes the peer mappings co-own their imported
   // allocations; for cudaIpc only the peer pointers (owned by the IPC runtime).
   NvlPeerMem peers_;
+#ifndef __HIP_PLATFORM_AMD__
+  // Optional NVSwitch multicast overlay over allocation_, created lazily by
+  // exchangeMulticast(). NVIDIA-only; forward-declared, destroyed via the
+  // out-of-line dtor (which includes MultimemHandler.h).
+  std::unique_ptr<MultimemHandler> multimem_;
+  // Topology args recorded by the first successful exchangeMulticast() so a
+  // re-entry with mismatched args can be rejected instead of silently no-op'd.
+  int32_t multimemCommRank_{-1};
+  std::vector<int> multimemNvlRankToCommRank_;
+  int multimemCudaDevice_{-1};
+#endif
 
   // ---- CudaIpc mode state ----
   void* cudaIpcLocalPtr_{nullptr};

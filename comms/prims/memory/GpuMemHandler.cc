@@ -11,6 +11,8 @@
 #include <hip/hip_runtime.h>
 #else
 #include "comms/prims/platform/CudaDriverLazy.h"
+// The multicast overlay is NVIDIA-only; not composed on AMD.
+#include "comms/prims/memory/MultimemHandler.h"
 #endif
 
 #include "comms/prims/core/Checks.h"
@@ -182,6 +184,25 @@ MemSharingMode GpuMemHandler::detectBestMode() {
 #endif
 }
 
+bool GpuMemHandler::isMultimemSupported(int cudaDevice) {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  (void)cudaDevice;
+  return false;
+#else
+  return MultimemHandler::isMultimemSupported(cudaDevice);
+#endif
+}
+
+std::size_t GpuMemHandler::backingGranularity(int cudaDevice, int nvlRanks) {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  (void)cudaDevice;
+  (void)nvlRanks;
+  return 0;
+#else
+  return MultimemHandler::backingGranularity(cudaDevice, nvlRanks);
+#endif
+}
+
 GpuMemHandler::GpuMemHandler(
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     int32_t selfRank,
@@ -215,6 +236,11 @@ GpuMemHandler::GpuMemHandler(
 }
 
 GpuMemHandler::~GpuMemHandler() {
+#ifndef __HIP_PLATFORM_AMD__
+  // Tear down the multicast overlay (if any) before the unicast mapping and the
+  // shared physical allocation.
+  multimem_.reset();
+#endif
   if (isVmmMode()) {
     cleanupVmm();
   } else {
@@ -285,6 +311,81 @@ const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
   }
   return cudaIpcLocalHandle_;
 }
+
+#ifndef __HIP_PLATFORM_AMD__
+void GpuMemHandler::exchangeMulticast(
+    int32_t commRank,
+    std::vector<int> nvlRankToCommRank,
+    int cudaDevice) {
+  // PRECONDITION: VMM allocation + unicast mapping must already exist (the
+  // constructor does this for kFabric/kPosixFd modes). The multicast object
+  // binds into this rank's physical handle and shares its VA with peers.
+  // Zeroing the backing before peers see it is the caller's responsibility —
+  // intentionally not done here so this method doesn't issue default-stream
+  // operations that could race with caller-managed compute streams.
+  if (!isVmmMode()) {
+    throw std::runtime_error(
+        "GpuMemHandler::exchangeMulticast requires a VMM handler mode "
+        "(kFabric or kPosixFd); cudaIpc has no physical handle to bind into "
+        "a multicast object");
+  }
+  if (!allocation_) {
+    throw std::runtime_error(
+        "GpuMemHandler::exchangeMulticast: VMM allocation is null "
+        "(allocation was never created or has been torn down)");
+  }
+
+  if (multimem_) {
+    // Re-entry must match the topology we already set up. Silently accepting
+    // a second call with different ranks/device would hide an incorrect setup
+    // and surface as a multicast collective desync at runtime.
+    if (commRank != multimemCommRank_ ||
+        nvlRankToCommRank != multimemNvlRankToCommRank_ ||
+        cudaDevice != multimemCudaDevice_) {
+      throw std::runtime_error(
+          "GpuMemHandler::exchangeMulticast: re-entered with different "
+          "(commRank, nvlRankToCommRank, cudaDevice) than the existing "
+          "multicast overlay; the overlay is bound to the first call's "
+          "topology");
+    }
+    return;
+  }
+
+  // Construct + exchange into a local unique_ptr first; only assign to
+  // multimem_ on success. Otherwise a failure in MultimemHandler::exchange()
+  // would leave multimem_ non-null but unexchanged, and the next call's
+  // `if (multimem_) { return; }` would silently no-op while
+  // getMultimemDeviceMemPtr() dereferenced an unexchanged overlay.
+  auto pending = std::make_unique<MultimemHandler>(
+      allocation_, bootstrap_, commRank, nvlRankToCommRank, cudaDevice);
+  pending->exchange();
+  multimem_ = std::move(pending);
+  multimemCommRank_ = commRank;
+  multimemNvlRankToCommRank_ = std::move(nvlRankToCommRank);
+  multimemCudaDevice_ = cudaDevice;
+}
+
+void* GpuMemHandler::getMultimemDeviceMemPtr() const {
+  if (!multimem_) {
+    throw std::runtime_error(
+        "GpuMemHandler: exchangeMulticast() must complete before using multimem ptr");
+  }
+  return multimem_->getMultimemDeviceMemPtr();
+}
+#else
+void GpuMemHandler::exchangeMulticast(
+    int32_t /*commRank*/,
+    std::vector<int> /*nvlRankToCommRank*/,
+    int /*cudaDevice*/) {
+  throw std::runtime_error(
+      "GpuMemHandler::exchangeMulticast: multicast is not supported on AMD");
+}
+
+void* GpuMemHandler::getMultimemDeviceMemPtr() const {
+  throw std::runtime_error(
+      "GpuMemHandler::getMultimemDeviceMemPtr: multicast is not supported on AMD");
+}
+#endif
 
 // ============================================================================
 // VMM Mode Implementation (kFabric / kPosixFd)

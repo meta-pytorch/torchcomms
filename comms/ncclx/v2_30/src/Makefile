@@ -151,7 +151,9 @@ ifeq ($(ENABLE_PRIMS),1)
 LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemAllocation.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemMapping.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMulticastAllocation.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/MultimemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
