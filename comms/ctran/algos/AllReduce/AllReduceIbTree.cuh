@@ -5,7 +5,6 @@
 #if defined(ENABLE_PRIMS)
 
 #include "comms/ctran/algos/AllReduce/AllReduceFusedTypes.h"
-#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/topo/TreeConstants.h"
 #include "comms/utils/commSpecs.h"

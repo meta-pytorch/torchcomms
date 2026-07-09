@@ -5,6 +5,7 @@
 #include <cstddef>
 
 #include "comms/ctran/algos/CtranAlgoDev.h" // CTRAN_MAX_NVL_PEERS
+#include "comms/ctran/algos/topo/TreeConstants.h" // kMaxTreeChildren
 #include "comms/utils/commSpecs.h" // commDataType_t, commRedOp_t
 
 namespace ctran::allreduce::common {
@@ -32,6 +33,21 @@ namespace ctran::allreduce::nvl::direct {
 struct ExtraArgs {};
 
 } // namespace ctran::allreduce::nvl::direct
+
+namespace ctran::allreduce {
+
+// Tree topology for one half of the dual tree pair.
+// Holds communicator ranks — transport dispatch uses the shared Transport
+// array.
+struct TreeTopology {
+  int parentRank{-1};
+  int childRanks[ctran::algos::topo::kMaxTreeChildren]{-1, -1, -1};
+  int numChildren{0};
+  bool isRoot{false};
+  bool isLeaf{false};
+};
+
+} // namespace ctran::allreduce
 
 #if defined(ENABLE_PRIMS)
 

@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
@@ -16,9 +17,25 @@ __device__ __forceinline__ void sendImpl(
     comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
     comms::prims::ThreadGroup& group) {
   for (auto i = 0; i < numSends; i++) {
+    if (group.group_id >= sends[i].nGroups) {
+      continue;
+    }
     const auto nbytes = sends[i].nbytes;
     const auto peerLocalRank = sends[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].send_group(group, sends[i].buff, nbytes);
+    comms::prims::ThreadGroup opGroup{
+        .thread_id_in_group = group.thread_id_in_group,
+        .group_size = group.group_size,
+        .group_id = group.group_id,
+        .block_id = group.block_id,
+        .total_groups = static_cast<uint32_t>(sends[i].nGroups),
+        .scope = group.scope};
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(sends[i].buff), nbytes, opGroup);
+    nvlTransportsBase[peerLocalRank].send(
+        opGroup,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -28,9 +45,25 @@ __device__ __forceinline__ void recvImpl(
     comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
     comms::prims::ThreadGroup& group) {
   for (auto i = 0; i < numRecvs; i++) {
+    if (group.group_id >= recvs[i].nGroups) {
+      continue;
+    }
     const auto nbytes = recvs[i].nbytes;
     const auto peerLocalRank = recvs[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].recv_group(group, recvs[i].buff, nbytes);
+    comms::prims::ThreadGroup opGroup{
+        .thread_id_in_group = group.thread_id_in_group,
+        .group_size = group.group_size,
+        .group_id = group.group_id,
+        .block_id = group.block_id,
+        .total_groups = static_cast<uint32_t>(recvs[i].nGroups),
+        .scope = group.scope};
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(recvs[i].buff), nbytes, opGroup);
+    nvlTransportsBase[peerLocalRank].recv(
+        opGroup,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0);
   }
 }
 

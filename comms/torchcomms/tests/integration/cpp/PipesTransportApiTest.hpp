@@ -19,9 +19,7 @@ class PipesTransportApiTest : public ::testing::Test {
   void SetUp() override;
   void TearDown() override;
 
-  void testStressSendRecv(size_t msg_bytes, int num_threads);
   void testStressSignal(int num_threads);
-  void testStressCombined(size_t msg_bytes, int num_threads);
   void testStressLl128(size_t nbytes);
 
   torchcomms::device::test::StressTestConfig config_;

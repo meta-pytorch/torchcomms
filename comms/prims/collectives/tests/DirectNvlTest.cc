@@ -41,7 +41,8 @@ std::unique_ptr<MultiPeerNvlTransport> make_nvl_transport(
       .chunkSize = dataBufferSize,
       .pipelineDepth = 2,
       .p2pSignalCount = static_cast<std::size_t>(numBlocks),
-      .tile_max_groups = numBlocks,
+      .maxNumChannels = numBlocks,
+      .perChannelSize = dataBufferSize / static_cast<std::size_t>(numBlocks),
       .memSharingMode = MemSharingMode::kCudaIpc,
   };
   auto transport = std::make_unique<MultiPeerNvlTransport>(

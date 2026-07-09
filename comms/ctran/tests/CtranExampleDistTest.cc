@@ -58,12 +58,13 @@ TEST_F(CtranExampleDistTest, Basic) {
   }
 
   // Copy input data to device
-  cudaMemcpy(
+  CUDACHECK_TEST(cudaMemcpy(
       input_d.get(),
       input_h.data(),
       numElements * sizeof(int),
-      cudaMemcpyHostToDevice);
-  cudaMemset(output_d.get(), 0, numElements * sizeof(int) * numRanks);
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(
+      cudaMemset(output_d.get(), 0, numElements * sizeof(int) * numRanks));
 
   auto ret = ctranAllGather(
       input_d.get(),
@@ -76,15 +77,15 @@ TEST_F(CtranExampleDistTest, Basic) {
   ASSERT_EQ(ret, commSuccess);
 
   // Wait for kernel completion
-  cudaDeviceSynchronize();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Copy output data back to host
   std::vector<int32_t> output_h(numElements * numRanks);
-  cudaMemcpy(
+  CUDACHECK_TEST(cudaMemcpy(
       output_h.data(),
       output_d.get(),
       numElements * sizeof(int) * numRanks,
-      cudaMemcpyDeviceToHost);
+      cudaMemcpyDeviceToHost));
 
   // Verify output
   for (int i = 0; i < numElements * numRanks; i++) {

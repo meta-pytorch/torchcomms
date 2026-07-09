@@ -18,26 +18,6 @@ __global__ void test_device_handle_type_map_kernel(
   }
 }
 
-__global__ void test_multi_peer_nvl_send_kernel(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* src_d,
-    size_t nbytes) {
-  auto group = make_warp_group();
-  auto& nvl = handle.get_nvl(peerRank);
-  nvl.send_group(group, src_d, nbytes);
-}
-
-__global__ void test_multi_peer_nvl_recv_kernel(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* dst_d,
-    size_t nbytes) {
-  auto group = make_warp_group();
-  auto& nvl = handle.get_nvl(peerRank);
-  nvl.recv_group(group, dst_d, nbytes);
-}
-
 __global__ void test_multi_peer_self_put_kernel(
     MultiPeerDeviceHandle handle,
     void* dst_d,
@@ -64,30 +44,6 @@ void test_device_handle_type_map(
     int blockSize) {
   test_device_handle_type_map_kernel<<<numBlocks, blockSize>>>(
       handle, output_d);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void test_multi_peer_nvl_send(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* src_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize) {
-  test_multi_peer_nvl_send_kernel<<<numBlocks, blockSize>>>(
-      handle, peerRank, src_d, nbytes);
-  PIPES_KERNEL_LAUNCH_CHECK();
-}
-
-void test_multi_peer_nvl_recv(
-    MultiPeerDeviceHandle handle,
-    int peerRank,
-    void* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize) {
-  test_multi_peer_nvl_recv_kernel<<<numBlocks, blockSize>>>(
-      handle, peerRank, dst_d, nbytes);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

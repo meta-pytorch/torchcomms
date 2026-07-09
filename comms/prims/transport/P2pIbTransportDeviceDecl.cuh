@@ -511,7 +511,8 @@ class IbSendRecvDevice {
         sendRecvState_.remoteSignalBuf.subBuffer(
             (sendRecvState_.maxGroups + progress_params.groupId) *
             sizeof(uint64_t)),
-        chunk.bytes);
+        chunk.bytes,
+        IbDirection::Recv);
 
     state.activeNextByte += chunk.bytes;
     if (state.activeNextByte >= progress_params.protocolBytes) {
@@ -600,37 +601,27 @@ class IbSendRecvDevice {
     const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
-    const int effActive =
-        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
-
-    if (effActive > sendRecvState_.maxGroups) {
+    (void)active_blocks;
+    const int maxGroups = sendRecvState_.maxGroups;
+    if (groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: send active_blocks=%d > maxGroups=%d\n",
-            effActive,
-            sendRecvState_.maxGroups);
-      }
-      PIPES_DEVICE_TRAP();
-    }
-    if (groupId >= effActive) {
-      if (group.is_leader()) {
-        printf(
-            "[PIPES] FATAL: send group_id=%u >= active_blocks=%d\n",
+            "[PIPES] FATAL: send group_id=%u >= maxGroups=%d\n",
             groupId,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }
 
     const std::size_t perBlockSlot =
-        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / maxGroups) & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: send perBlockSlot=0 "
-            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            "(dataBufferSize=%llu, maxGroups=%d)\n",
             (unsigned long long)sendRecvState_.dataBufferSize,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }
@@ -645,7 +636,6 @@ class IbSendRecvDevice {
 
     const int pipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
-    const int maxGroups = sendRecvState_.maxGroups;
     const int stateIndex = progress_send_index(group);
     auto& state = progress_state_slot(group, stateIndex);
     assert_progress_slot_idle(group, state, "send");
@@ -796,37 +786,27 @@ class IbSendRecvDevice {
     const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
-    const int effActive =
-        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
-
-    if (effActive > sendRecvState_.maxGroups) {
+    (void)active_blocks;
+    const int maxGroups = sendRecvState_.maxGroups;
+    if (groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: recv active_blocks=%d > maxGroups=%d\n",
-            effActive,
-            sendRecvState_.maxGroups);
-      }
-      PIPES_DEVICE_TRAP();
-    }
-    if (groupId >= effActive) {
-      if (group.is_leader()) {
-        printf(
-            "[PIPES] FATAL: recv group_id=%u >= active_blocks=%d\n",
+            "[PIPES] FATAL: recv group_id=%u >= maxGroups=%d\n",
             groupId,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }
 
     const std::size_t perBlockSlot =
-        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / maxGroups) & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: recv perBlockSlot=0 "
-            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            "(dataBufferSize=%llu, maxGroups=%d)\n",
             (unsigned long long)sendRecvState_.dataBufferSize,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }
@@ -841,7 +821,6 @@ class IbSendRecvDevice {
 
     const int pipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t dataBufferSize = sendRecvState_.dataBufferSize;
-    const int maxGroups = sendRecvState_.maxGroups;
     const int stateIndex = progress_recv_index(group);
     auto& state = progress_state_slot(group, stateIndex);
     assert_progress_slot_idle(group, state, "recv");
@@ -896,7 +875,8 @@ class IbSendRecvDevice {
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (maxGroups + groupId) * sizeof(uint64_t)),
-          bytesThis);
+          bytesThis,
+          IbDirection::Recv);
       dataOff += bytesThis;
     }
 
@@ -996,22 +976,20 @@ class IbSendRecvDevice {
     const int groupId = group.group_id;
 
     // --- recv side (this transport) ---
-    const int recvEffActive =
-        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
-    if (recvEffActive > sendRecvState_.maxGroups || groupId >= recvEffActive) {
+    (void)active_blocks;
+    const int recvMaxGroups = sendRecvState_.maxGroups;
+    if (groupId >= recvMaxGroups) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: forward recv active_blocks=%d "
-            "maxGroups=%d groupId=%u\n",
-            recvEffActive,
-            sendRecvState_.maxGroups,
+            "[PIPES] FATAL: forward recv maxGroups=%d groupId=%u\n",
+            recvMaxGroups,
             groupId);
       }
       PIPES_DEVICE_TRAP();
     }
 
     const std::size_t recvPerBlockSlot =
-        (sendRecvState_.dataBufferSize / recvEffActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / recvMaxGroups) & ~15ULL;
     if (recvPerBlockSlot == 0) {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
@@ -1020,23 +998,19 @@ class IbSendRecvDevice {
     }
 
     // --- fwd side (fwd transport) ---
-    const int fwdEffActive =
-        active_blocks > 0 ? active_blocks : fwdDevice.sendRecvState_.maxGroups;
-    if (fwdEffActive > fwdDevice.sendRecvState_.maxGroups ||
-        groupId >= fwdEffActive) {
+    const int fwdMaxGroups = fwdDevice.sendRecvState_.maxGroups;
+    if (groupId >= fwdMaxGroups) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: forward fwd active_blocks=%d "
-            "maxGroups=%d groupId=%u\n",
-            fwdEffActive,
-            fwdDevice.sendRecvState_.maxGroups,
+            "[PIPES] FATAL: forward fwd maxGroups=%d groupId=%u\n",
+            fwdMaxGroups,
             groupId);
       }
       PIPES_DEVICE_TRAP();
     }
 
     const std::size_t fwdPerBlockSlot =
-        (fwdDevice.sendRecvState_.dataBufferSize / fwdEffActive) & ~15ULL;
+        (fwdDevice.sendRecvState_.dataBufferSize / fwdMaxGroups) & ~15ULL;
     if (fwdPerBlockSlot == 0) {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
@@ -1062,7 +1036,6 @@ class IbSendRecvDevice {
 
     const int recvPipelineDepth = sendRecvState_.pipelineDepth;
     const std::size_t recvDataBufSize = sendRecvState_.dataBufferSize;
-    const int recvMaxGroups = sendRecvState_.maxGroups;
     const int recvStateIndex = progress_recv_index(group);
     auto& recvSlotState = progress_state_slot(group, recvStateIndex);
     assert_progress_slot_idle(group, recvSlotState, "forward recv");
@@ -1071,7 +1044,6 @@ class IbSendRecvDevice {
 
     const int fwdPipelineDepth = fwdDevice.sendRecvState_.pipelineDepth;
     const std::size_t fwdDataBufSize = fwdDevice.sendRecvState_.dataBufferSize;
-    const int fwdMaxGroups = fwdDevice.sendRecvState_.maxGroups;
     const int fwdStateIndex = fwdDevice.progress_send_index(group);
     auto& fwdSlotState = fwdDevice.progress_state_slot(group, fwdStateIndex);
     fwdDevice.assert_progress_slot_idle(group, fwdSlotState, "forward send");
@@ -1158,7 +1130,8 @@ class IbSendRecvDevice {
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (recvMaxGroups + groupId) * sizeof(uint64_t)),
-          bytesThis);
+          bytesThis,
+          IbDirection::Recv);
 
       // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
       //     recvStaging).
@@ -1235,8 +1208,9 @@ class IbSendRecvDevice {
    */
   __device__ __forceinline__ std::size_t pipeline_window(
       int active_blocks) const {
+    (void)active_blocks;
     const std::size_t per_block_slot =
-        (sendRecvState_.dataBufferSize / active_blocks) & ~15ULL;
+        (sendRecvState_.dataBufferSize / sendRecvState_.maxGroups) & ~15ULL;
     return per_block_slot * sendRecvState_.pipelineDepth;
   }
 
@@ -1473,39 +1447,29 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
     const int groupId = static_cast<int>(group.group_id);
-    const int effActive =
-        active_blocks > 0 ? active_blocks : sendRecvState_.maxGroups;
-    if (effActive > sendRecvState_.maxGroups) {
+    (void)active_blocks;
+    const int maxGroups = sendRecvState_.maxGroups;
+    if (groupId < 0 || groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: %s active_blocks=%d > maxGroups=%d\n",
-            opName,
-            effActive,
-            sendRecvState_.maxGroups);
-      }
-      PIPES_DEVICE_TRAP();
-    }
-    if (groupId < 0 || groupId >= effActive) {
-      if (group.is_leader()) {
-        printf(
-            "[PIPES] FATAL: %s group_id=%d >= active_blocks=%d\n",
+            "[PIPES] FATAL: %s group_id=%d >= maxGroups=%d\n",
             opName,
             groupId,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }
 
     const std::size_t perBlockSlot =
-        (sendRecvState_.dataBufferSize / effActive) & ~15ULL;
+        (sendRecvState_.dataBufferSize / maxGroups) & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: %s perBlockSlot=0 "
-            "(dataBufferSize=%llu, active_blocks=%d)\n",
+            "(dataBufferSize=%llu, maxGroups=%d)\n",
             opName,
             (unsigned long long)sendRecvState_.dataBufferSize,
-            effActive);
+            maxGroups);
       }
       PIPES_DEVICE_TRAP();
     }

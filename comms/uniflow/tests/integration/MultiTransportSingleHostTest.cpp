@@ -74,7 +74,9 @@ class MultiTransportFactoryTest : public ::testing::Test {
 
     if (!platform.empty()) {
       cudaDeviceProp prop{};
-      cudaGetDeviceProperties(&prop, 0);
+      if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+        return Err(ErrCode::DriverError, "cudaGetDeviceProperties failed");
+      }
       std::string gpuName(prop.name);
       if (gpuName.find(platform) == std::string::npos) {
         std::string errMsg =

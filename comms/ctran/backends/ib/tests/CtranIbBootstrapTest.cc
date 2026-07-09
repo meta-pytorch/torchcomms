@@ -222,7 +222,7 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
   }
 
   void TearDown() override {
-    cudaDeviceReset(); // Reset CUDA device
+    EXPECT_EQ(cudaDeviceReset(), cudaSuccess); // Reset CUDA device
   }
 
   // Helper to wait for VC to be established

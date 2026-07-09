@@ -69,6 +69,20 @@ def register_opaque_reference_type(cls: Any, **kwargs: Any) -> None:
         _opaque_object.register_opaque_type(cls, typ="reference", **kwargs)
 
 
+def is_opaque_reference_type_registered(cls: Any) -> bool:
+    """Check whether a class is registered as an opaque/custom class type.
+
+    Compatibility wrapper: PyTorch 2.14+ renamed is_opaque_type to
+    is_custom_class (pytorch/pytorch#188461); the old name still exists but
+    emits a deprecation warning. Use whichever the installed version has.
+    """
+    import torch._library.opaque_object as _opaque_object
+
+    if hasattr(_opaque_object, "is_custom_class"):
+        return _opaque_object.is_custom_class(cls)
+    return _opaque_object.is_opaque_type(cls)
+
+
 @dataclass
 class ParsedArgs:
     """Parsed arguments for collective operations.
@@ -351,7 +365,7 @@ class CollectiveParamSchema:
         Returns:
             A CollectiveParamSchema ready for use
         """
-        from torch._library.opaque_object import get_opaque_type_name, is_opaque_type
+        from torch._library.opaque_object import get_opaque_type_name
 
         def _get_schema_type(torch_type: Any) -> str | None:
             """Return the schema type string for known torch types."""
@@ -390,7 +404,7 @@ class CollectiveParamSchema:
             return None
 
         # Register the class as opaque type
-        if not is_opaque_type(target_class):
+        if not is_opaque_reference_type_registered(target_class):
             register_opaque_reference_type(target_class)
         opaque_type_name = get_opaque_type_name(target_class)
         _TYPE_NAME_TO_CLASS[opaque_type_name] = target_class
@@ -410,7 +424,7 @@ class CollectiveParamSchema:
                     )
                 )
             elif isinstance(spec.torch_type, type):
-                if not is_opaque_type(spec.torch_type):
+                if not is_opaque_reference_type_registered(spec.torch_type):
                     register_opaque_reference_type(spec.torch_type)
                 type_name = get_opaque_type_name(spec.torch_type)
                 _TYPE_NAME_TO_CLASS[type_name] = spec.torch_type
@@ -433,7 +447,7 @@ class CollectiveParamSchema:
                     if len(non_none_args) == 1 and type(None) in args:
                         inner_type = non_none_args[0]
                         if isinstance(inner_type, type):
-                            if not is_opaque_type(inner_type):
+                            if not is_opaque_reference_type_registered(inner_type):
                                 register_opaque_reference_type(inner_type)
                             type_name = get_opaque_type_name(inner_type)
                             _TYPE_NAME_TO_CLASS[type_name] = inner_type

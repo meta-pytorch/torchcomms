@@ -34,7 +34,7 @@ class CtranIbConnectionTest : public ::testing::Test {
 
   void TearDown() override {
     // Reset CUDA device
-    cudaDeviceReset();
+    EXPECT_EQ(cudaDeviceReset(), cudaSuccess);
   }
 
   // Structure to hold synchronization objects for thread communication

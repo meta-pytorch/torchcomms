@@ -44,20 +44,13 @@ struct alignas(16) CtranAlgoDeviceSync {
 
 struct alignas(16) CtranAlgoDeviceState {
   // Shared buffers for intra-node inter-process communication.
-  // Sync and buf and chunk statesare pointers to device memory.
-  // indexed by rank ID
+  // Sync and buf are pointers to device memory, indexed by rank ID.
   CtranAlgoDeviceSync* remoteSyncsMap[CTRAN_MAX_NVL_PEERS];
   CtranAlgoDeviceSync* localSyncsMap[CTRAN_MAX_NVL_PEERS];
 
   // indexed by rank ID
   void* remoteStagingBufsMap[CTRAN_MAX_NVL_PEERS];
   void* localStagingBufsMap[CTRAN_MAX_NVL_PEERS];
-
-  // TODO: The followings are used by P2P NVL copy-based kernel, and should be
-  // managed by comms::prims::MultiPeerNvlTransport instead of tracked by Ctran.
-  // indexed by rank ID
-  void* remoteChunkStatesMap[CTRAN_MAX_NVL_PEERS];
-  void* localChunkStatesMap[CTRAN_MAX_NVL_PEERS];
 
   void* peerBcastBufsMap[CTRAN_MAX_NVL_PEERS];
 
