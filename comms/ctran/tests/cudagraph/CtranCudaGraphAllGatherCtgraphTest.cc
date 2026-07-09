@@ -10,6 +10,8 @@
 #include <random>
 
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -21,15 +23,48 @@
     ASSERT_EQ(r, ncclSuccess) << "NCCL error: " << ncclGetErrorString(r); \
   } while (0)
 
+// Caches the recvbuf's segment in the regcache allocator cache for the
+// lifetime of this object, mirroring the production CCA memory hook. The
+// graph AGP path's acquireScopedRegister requires the recvbuf segment to be
+// cached. Deregistration in the destructor MUST run after the capturing
+// graph/request is destroyed (the scoped registration ref is held until
+// then), which callers guarantee by declaring the guard so it outlives the
+// graph.
+class ScopedRecvBufReg {
+ public:
+  ScopedRecvBufReg(void* buf, size_t bytes) : buf_(buf), bytes_(bytes) {
+    ctran::RegCache::getInstance()->globalRegister(
+        buf_, bytes_, /*forceReg=*/true);
+  }
+  ~ScopedRecvBufReg() {
+    if (buf_ != nullptr) {
+      ctran::RegCache::getInstance()->globalDeregister(buf_, bytes_);
+    }
+  }
+  ScopedRecvBufReg(ScopedRecvBufReg&& other) noexcept
+      : buf_(other.buf_), bytes_(other.bytes_) {
+    other.buf_ = nullptr;
+  }
+  ScopedRecvBufReg(const ScopedRecvBufReg&) = delete;
+  ScopedRecvBufReg& operator=(const ScopedRecvBufReg&) = delete;
+  ScopedRecvBufReg& operator=(ScopedRecvBufReg&&) = delete;
+
+ private:
+  void* buf_;
+  size_t bytes_;
+};
+
 static AlgoDescriptor makeAllGatherCtgraph(
     enum NCCL_ALLGATHER_ALGO algo = NCCL_ALLGATHER_ALGO::ctgraph) {
   struct B : AlgoDescriptor::Buffers {
     ctran::TestDeviceBuffer send, recv;
     size_t bytes;
+    ScopedRecvBufReg recvReg;
     B(size_t c, int rank, int nR)
         : send(c * sizeof(int32_t)),
           recv(c * nR * sizeof(int32_t)),
-          bytes(c * nR * sizeof(int32_t)) {
+          bytes(c * nR * sizeof(int32_t)),
+          recvReg(recv.get(), c * nR * sizeof(int32_t)) {
       CtranCudaGraphTestBase::fillSendBuf(send.get(), c, rank);
     }
     void* sendbuf() override {
@@ -177,6 +212,8 @@ TEST_P(CudaGraphAllGatherCtgraphExpandable, CaptureReplayVerify) {
 
   fillSendBuf(sendbuf, count, globalRank);
 
+  ScopedRecvBufReg recvReg(recv.get(), recvNumSeg * kSegmentSize);
+
   meta::comms::CudaStream stream(cudaStreamNonBlocking);
 
   // Capture
@@ -263,6 +300,8 @@ TEST_P(CudaGraphAllGatherCtgraphAutoSelect, CaptureReplayVerify) {
   ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
   fillSendBuf(send.get(), count, globalRank);
 
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
   meta::comms::CudaStream stream(cudaStreamNonBlocking);
 
   cudaGraph_t graph;
@@ -337,6 +376,8 @@ TEST_F(CudaGraphAllGatherCtgraphDestroy, DestroyGraphCleanly) {
   ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
   fillSendBuf(send.get(), count, globalRank);
 
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
   meta::comms::CudaStream stream(cudaStreamNonBlocking);
 
   // Capture
@@ -383,6 +424,8 @@ TEST_F(CtranCudaGraphTestBase, BackToBackMultiCommCtgraph) {
   std::vector<meta::comms::CudaStream> streams;
   std::vector<cudaGraph_t> graphs(kComms, nullptr);
   std::vector<cudaGraphExec_t> execs(kComms, nullptr);
+  std::vector<ScopedRecvBufReg> recvRegs;
+  recvRegs.reserve(kComms);
 
   for (int c = 0; c < kComms; ++c) {
     auto comm = makeCtranComm();
@@ -398,6 +441,7 @@ TEST_F(CtranCudaGraphTestBase, BackToBackMultiCommCtgraph) {
     recvs.emplace_back(count * nRanks * sizeof(int32_t));
     streams.emplace_back(cudaStreamNonBlocking);
     fillSendBuf(sends[c].get(), count, globalRank);
+    recvRegs.emplace_back(recvs[c].get(), count * nRanks * sizeof(int32_t));
   }
 
   // Capture one graph per comm back-to-back, without syncing between captures,
@@ -438,6 +482,250 @@ TEST_F(CtranCudaGraphTestBase, BackToBackMultiCommCtgraph) {
   for (int c = 0; c < kComms; ++c) {
     waitAndVerifyGpeClean(comms[c].get());
   }
+}
+
+class CudaGraphAllGatherCtgraphSharedRecvbuf
+    : public CtranCudaGraphTestBase,
+      public ::testing::WithParamInterface<enum NCCL_ALLGATHER_ALGO> {};
+
+TEST_P(
+    CudaGraphAllGatherCtgraphSharedRecvbuf,
+    ReusedRecvbufSurvivesOneCommCleanup) {
+  const auto algo = GetParam();
+  auto comm1 = makeCtranComm();
+  auto comm2 = makeCtranComm();
+  ASSERT_NE(comm1, nullptr);
+  ASSERT_NE(comm2, nullptr);
+
+  if (!ctran::allGatherPSupport(comm1.get()) ||
+      !ctran::allGatherPSupport(comm2.get())) {
+    GTEST_SKIP() << "allGatherP not supported";
+  }
+
+  const auto statex = comm1->statex_.get();
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "Need local NVL peers for pipeline ctgraph AGP";
+  }
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
+      !ctran::utils::isPowerOfTwo(statex->nNodes())) {
+    GTEST_SKIP() << allGatherAlgoName(algo)
+                 << " requires nNodes to be a power of 2";
+  }
+
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+  ctran::TestDeviceBuffer send1(count * sizeof(int32_t));
+  ctran::TestDeviceBuffer send2(count * sizeof(int32_t));
+  ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
+  fillSendBuf(send1.get(), count, globalRank);
+  fillSendBuf(send2.get(), count, globalRank);
+
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
+  meta::comms::CudaStream stream1(cudaStreamNonBlocking);
+  meta::comms::CudaStream stream2(cudaStreamNonBlocking);
+  cudaGraph_t graph1 = nullptr;
+  cudaGraph_t graph2 = nullptr;
+  cudaGraphExec_t exec1 = nullptr;
+  cudaGraphExec_t exec2 = nullptr;
+
+  auto capture = [&](CtranComm* comm,
+                     void* sendbuf,
+                     cudaStream_t stream,
+                     cudaGraph_t* graph,
+                     cudaGraphExec_t* exec) {
+    ASSERT_EQ(
+        cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal),
+        cudaSuccess);
+    ASSERT_EQ(
+        ctranAllGather(
+            sendbuf, recv.get(), count, commInt32, comm, stream, algo),
+        commSuccess);
+    ASSERT_EQ(cudaStreamEndCapture(stream, graph), cudaSuccess);
+    ASSERT_EQ(cudaGraphInstantiate(exec, *graph, 0), cudaSuccess);
+  };
+
+  capture(comm1.get(), send1.get(), stream1.get(), &graph1, &exec1);
+  capture(comm2.get(), send2.get(), stream2.get(), &graph2, &exec2);
+
+  ASSERT_EQ(cudaGraphLaunch(exec1, stream1.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream1.get()), cudaSuccess);
+  verifyAllGather(recv.get(), count, nRanks);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec1), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph1), cudaSuccess);
+  comm1->cudagraphDeferredCleanup.runAll();
+  waitAndVerifyGpeClean(comm1.get());
+
+  ASSERT_EQ(
+      cudaMemsetAsync(
+          recv.get(), 0, count * nRanks * sizeof(int32_t), stream2.get()),
+      cudaSuccess);
+  ASSERT_EQ(cudaGraphLaunch(exec2, stream2.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream2.get()), cudaSuccess);
+  verifyAllGather(recv.get(), count, nRanks);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec2), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph2), cudaSuccess);
+  comm2->cudagraphDeferredCleanup.runAll();
+  waitAndVerifyGpeClean(comm2.get());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CudaGraphAllGatherCtgraph,
+    CudaGraphAllGatherCtgraphSharedRecvbuf,
+    ::testing::Values(
+        NCCL_ALLGATHER_ALGO::ctgraph_pipeline,
+        NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline),
+    [](const auto& info) { return allGatherAlgoName(info.param); });
+
+// Multiple persistent AGP requests over the same recvbuf coexist in one
+// captured graph: each ctranAllGather builds its own persistent request
+// (setupPersistentRequest) whose NVL IPC imports refcount up on the shared
+// recvbuf. Capturing three back-to-back allgathers on the same recvbuf in a
+// single graph exercises this coexistence, and the CTRAN-AGP log shows the
+// IpcImport refCount rising 1->2->3 across the three requests.
+class CudaGraphAllGatherCtgraphMultiAgpSameRecvbuf
+    : public CtranCudaGraphTestBase,
+      public ::testing::WithParamInterface<enum NCCL_ALLGATHER_ALGO> {};
+
+TEST_P(
+    CudaGraphAllGatherCtgraphMultiAgpSameRecvbuf,
+    MultipleAgpReuseRecvbufInOneGraph) {
+  const auto algo = GetParam();
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  if (!ctran::allGatherPSupport(comm.get())) {
+    GTEST_SKIP() << "allGatherP not supported";
+  }
+
+  const auto statex = comm->statex_.get();
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "Need local NVL peers for pipeline ctgraph AGP";
+  }
+  if (algo == NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline &&
+      !ctran::utils::isPowerOfTwo(statex->nNodes())) {
+    GTEST_SKIP() << allGatherAlgoName(algo)
+                 << " requires nNodes to be a power of 2";
+  }
+
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+  ctran::TestDeviceBuffer send(count * sizeof(int32_t));
+  fillSendBuf(send.get(), count, globalRank);
+
+  ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+  cudaGraph_t graph = nullptr;
+  cudaGraphExec_t exec = nullptr;
+  constexpr int kNumAgp = 3;
+
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  for (int i = 0; i < kNumAgp; ++i) {
+    ASSERT_EQ(
+        ctranAllGather(
+            send.get(),
+            recv.get(),
+            count,
+            commInt32,
+            comm.get(),
+            stream.get(),
+            algo),
+        commSuccess);
+  }
+  ASSERT_EQ(cudaStreamEndCapture(stream.get(), &graph), cudaSuccess);
+  ASSERT_EQ(cudaGraphInstantiate(&exec, graph, 0), cudaSuccess);
+
+  // All kNumAgp AllGathers captured into this graph reuse the same recvbuf,
+  // so their intra-node NVL peer imports dedup in IpcRegCache and the shared
+  // refCount rises above 1. Imports live until cudaGraphDestroy below.
+  const auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  EXPECT_GE(ipcRegCache->maxRemRegRefCount(), 2)
+      << "expected reused NVL IPC import refCount > 1 across " << kNumAgp
+      << " same-recvbuf AllGathers captured in one graph";
+
+  ASSERT_EQ(cudaGraphLaunch(exec, stream.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+  verifyAllGather(recv.get(), count, nRanks);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  comm->cudagraphDeferredCleanup.runAll();
+  waitAndVerifyGpeClean(comm.get());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CudaGraphAllGatherCtgraph,
+    CudaGraphAllGatherCtgraphMultiAgpSameRecvbuf,
+    ::testing::Values(
+        NCCL_ALLGATHER_ALGO::ctgraph_pipeline,
+        NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline),
+    [](const auto& info) { return allGatherAlgoName(info.param); });
+
+// Failure path: graph-capture ctgraph pipeline AGP registers the recvbuff via
+// RegCache::acquireScopedRegister, which requires the recvbuff segment to be
+// allocator-cached (CCA hook). A raw cudaMalloc buffer that was never cached
+// must make capture fail with a clean error (commInvalidUsage surfaced through
+// ctranAllGather) rather than crash or silently succeed. The
+// createPersistentRequest seam is file-local to AllGatherCudagraphAware.cc and
+// cannot be unit-tested in isolation, so this exercises the closest feasible
+// graph/algo seam.
+TEST_F(CtranCudaGraphTestBase, CtgraphPipelineUncachedRecvbufFailsCleanly) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  if (!ctran::allGatherPSupport(comm.get())) {
+    GTEST_SKIP() << "allGatherP not supported";
+  }
+  const auto statex = comm->statex_.get();
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "Need local NVL peers for pipeline ctgraph AGP";
+  }
+
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+  ctran::TestDeviceBuffer send(count * sizeof(int32_t));
+  fillSendBuf(send.get(), count, globalRank);
+
+  // Raw cudaMalloc recvbuff: its segment is NOT registered in the regcache
+  // allocator cache, so acquireScopedRegister must reject it.
+  void* recvbuf = nullptr;
+  ASSERT_EQ(
+      cudaMalloc(&recvbuf, count * nRanks * sizeof(int32_t)), cudaSuccess);
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  const auto rc = ctranAllGather(
+      send.get(),
+      recvbuf,
+      count,
+      commInt32,
+      comm.get(),
+      stream.get(),
+      NCCL_ALLGATHER_ALGO::ctgraph_pipeline);
+  EXPECT_EQ(rc, commInvalidUsage)
+      << "Uncached recvbuf must fail ctgraph pipeline capture with "
+         "commInvalidUsage from acquireScopedRegister";
+
+  // Tear the capture down regardless of whether an incomplete graph was left
+  // on the stream, then confirm the device is still in a clean state (no crash,
+  // no leaked capture).
+  cudaGraph_t captured = nullptr;
+  cudaStreamEndCapture(stream.get(), &captured);
+  if (captured != nullptr) {
+    cudaGraphDestroy(captured);
+  }
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  ASSERT_EQ(cudaFree(recvbuf), cudaSuccess);
 }
 
 // Reproduces the ctgraph_rdpipeline in-place corruption covered by
