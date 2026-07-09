@@ -348,6 +348,13 @@ struct AnsCompress {
   // shmem / aux-buf overhead.
   static constexpr std::size_t kActivationThreshold = 4ULL * 1024 * 1024;
 
+  // Maximum uncompressed sub-chunk size this CopyOp operates on (the
+  // `MaxUncompBytes` template arg). Consumers that stage a full uncompressed
+  // chunk (e.g. the per-block realign aux buffer in SendRecvTileCommon) size
+  // that scratch off this so the geometry tracks the CopyOp instead of a
+  // hard-coded per-algorithm constant.
+  static constexpr std::size_t kMaxUncompBytes = MaxUncompBytes;
+
  private:
   // ===========================================================================
   // Compile-time SM picker. nvCOMPDx instantiates a fully-typed

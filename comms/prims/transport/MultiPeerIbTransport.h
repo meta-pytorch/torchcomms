@@ -299,7 +299,14 @@ constexpr int kMaxRanksForAllGather = 128;
 // block-owned QP shapes must use lazy peer materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
-constexpr int kMaxIbGroups = 64;
+// Bumped 64 -> 256 to support the SendRecvTile (compressed) path, which can
+// request up to 256 groups. This only widens the *index space*; per-group QP
+// state is still materialized lazily per group that is actually used. Groups
+// beyond kMaxEagerExchangeQpsPerPeerPerNic (128) are NOT eligible for the
+// compact eager QPN-exchange wire format and therefore require lazy peer
+// materialization (ibLazyConnect=true); existing eager-exchange collectives
+// that stay <= 128 groups are unaffected in QP registration cost.
+constexpr int kMaxIbGroups = 256;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
 constexpr int kMaxIbQpsPerPeerPerNic = kMaxIbGroups * kMaxIbQpsPerBlockPerNic;
 
