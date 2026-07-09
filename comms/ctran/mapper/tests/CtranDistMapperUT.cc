@@ -126,6 +126,84 @@ TEST_P(CtranDistMapperBackendParam, intraAllGatherCtrl) {
   NCCLCHECK_TEST(ncclMemFree(buf));
 }
 
+// Verify that intraAllGatherCtrl with recordExport=false does NOT populate the
+// export tracking cache, so its self-managed NVL imports are not
+// double-released by the export-notify path at deregistration.
+TEST_F(CtranDistMapperTest, intraAllGatherCtrlNoRecordExport) {
+  void* buf = nullptr;
+  void* handle = nullptr;
+  constexpr size_t bufSize = 8192;
+  auto mapper = comm_->ctran_->mapper.get();
+  const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+
+  for (int localRank = 0; localRank < statex->nLocalRanks(); localRank++) {
+    const int peer = statex->localRankToRank(localRank);
+    if (!mapper->hasBackend(peer, CtranMapperBackend::NVL)) {
+      GTEST_SKIP() << "NVL backend is not available for localRank " << localRank
+                   << " (rank " << peer << ")";
+    }
+  }
+
+  NCCLCHECK_TEST(ncclMemAlloc(&buf, bufSize));
+  COMMCHECK_TEST(comm_->ctran_->commRegister(buf, bufSize, &handle));
+
+  void* sendHdl = nullptr;
+  bool localReg = false;
+  COMMCHECK_TEST(mapper->searchRegHandle(buf, bufSize, &sendHdl, &localReg));
+  ASSERT_NE(sendHdl, nullptr);
+  ASSERT_EQ(localReg, false);
+
+  std::vector<void*> remoteBufs(statex->nRanks(), nullptr);
+  std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(
+      statex->nRanks());
+
+  {
+    CtranMapperEpochRAII epochRAII(mapper);
+    ASSERT_EQ(
+        mapper->intraAllGatherCtrl(
+            buf,
+            sendHdl,
+            remoteBufs,
+            remoteAccessKeys,
+            CtranMapperBackend::NVL,
+            /*recordExport=*/false),
+        commSuccess);
+  }
+
+  ASSERT_TRUE(mapper->dumpExportRegCache().empty());
+
+  const int nodeId = statex->node();
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (peer == statex->rank()) {
+      ASSERT_EQ(remoteBufs[peer], buf);
+      ASSERT_EQ(remoteAccessKeys[peer].backend, CtranMapperBackend::UNSET);
+    } else if (statex->node(peer) == nodeId) {
+      ASSERT_NE(remoteBufs[peer], nullptr);
+      ASSERT_EQ(remoteAccessKeys[peer].backend, CtranMapperBackend::NVL);
+    } else {
+      ASSERT_EQ(remoteBufs[peer], nullptr);
+      ASSERT_EQ(remoteAccessKeys[peer].backend, CtranMapperBackend::UNSET);
+    }
+  }
+
+  // Self-managed imports: release the remote NVL registrations explicitly.
+  barrierNvlDomain(comm_.get());
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (remoteAccessKeys[peer].backend == CtranMapperBackend::NVL) {
+      ASSERT_EQ(mapper->deregRemReg(&remoteAccessKeys[peer]), commSuccess);
+    }
+  }
+  barrierNvlDomain(comm_.get());
+
+  COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
+  NCCLCHECK_TEST(ncclMemFree(buf));
+}
+
 TEST_P(CtranDistMapperBackendParam, allGatherCtrl) {
   auto& [backend] = GetParam();
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
