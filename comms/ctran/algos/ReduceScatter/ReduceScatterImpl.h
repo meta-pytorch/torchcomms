@@ -34,6 +34,15 @@ commResult_t ctranReduceScatterRHD(
     CtranComm* comm,
     cudaStream_t stream);
 
+commResult_t ctranReduceScatterDirectIb(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 static inline commResult_t reduceScatterSingleRankImpl(
     const void* sendbuff,
     void* recvbuff,
@@ -59,6 +68,8 @@ static inline const std::string reduceScatterAlgoName(
       return "CtranReduceScatterRing";
     case NCCL_REDUCESCATTER_ALGO::ctrhd:
       return "CtranReduceScatterRHD";
+    case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
+      return "CtranReduceScatterDirectIb";
     case NCCL_REDUCESCATTER_ALGO::ctran:
       return "CtranAuto";
     case NCCL_REDUCESCATTER_ALGO::orig:

@@ -158,6 +158,8 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIb.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIbLauncher.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
 endif
 

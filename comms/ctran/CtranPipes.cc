@@ -9,6 +9,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/ReduceScatter/ReduceScatterDirectIbConfig.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -184,7 +185,33 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
-    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
+    const bool directIbReduceScatter =
+        NCCL_REDUCESCATTER_ALGO == NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
+    if (directIbReduceScatter) {
+      config.ibConfig.perChannelSize =
+          ctran::reducescatter::direct_ib::kPerChannelSize;
+      config.ibConfig.max_num_channels =
+          ctran::reducescatter::direct_ib::kMaxNumBlocks;
+      config.ibConfig.pipelineDepth =
+          ctran::reducescatter::direct_ib::kPipelineDepth;
+      config.ibConfig.qpsPerConnection =
+          ctran::reducescatter::direct_ib::kQpsPerConnection;
+      config.ibConfig.maxGroups =
+          ctran::reducescatter::direct_ib::kMaxNumBlocks;
+      config.ibConfig.dataBufferSize =
+          config.ibConfig.fixedChannelDataBufferSize();
+      CLOGF(
+          INFO,
+          "Direct IB ReduceScatter pins IB config: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, qpsPerConnection={}, maxGroups={}, dataBufferSize={}",
+          config.ibConfig.perChannelSize,
+          config.ibConfig.max_num_channels,
+          config.ibConfig.pipelineDepth,
+          config.ibConfig.qpsPerConnection,
+          config.ibConfig.maxGroups,
+          config.ibConfig.dataBufferSize);
+    }
+
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE || directIbReduceScatter) {
       if (config.ibConfig.dataBufferSize == 0) {
         CLOGF(
             ERR,
@@ -193,7 +220,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             "or the per-communicator IBGDA data-buffer override");
         return commInvalidArgument;
       }
-      if (NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
+      if (!directIbReduceScatter &&
+          NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
         CLOGF(
             ERR,
             "NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH must be positive, got {}",
@@ -203,15 +231,17 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.ibConfig.sendRecv =
           comms::prims::MultipeerIbTransportConfig::SendRecvConfig{
               .maxGroups = config.ibConfig.maxGroups,
-              .pipelineDepth =
-                  static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
+              .pipelineDepth = directIbReduceScatter
+                  ? ctran::reducescatter::direct_ib::kPipelineDepth
+                  : static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
           };
       CLOGF(
           INFO,
-          "Prims IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}",
+          "Prims IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
           config.ibConfig.sendRecv->maxGroups,
           config.ibConfig.sendRecv->pipelineDepth,
-          config.ibConfig.dataBufferSize);
+          config.ibConfig.dataBufferSize,
+          directIbReduceScatter);
     }
 
     if (NCCL_CTRAN_PIPES_IB_MODE == NCCL_CTRAN_PIPES_IB_MODE::ibrc) {
