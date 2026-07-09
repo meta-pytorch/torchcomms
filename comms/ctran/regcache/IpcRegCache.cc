@@ -91,6 +91,58 @@ void ctran::IpcRegCache::init() {
 ctran::IpcRegCache::~IpcRegCache() {
   stopAsyncSocket();
   clearAllRemReg();
+  cleanupInvalidImports();
+}
+
+void ctran::ScopedIpcRegHdl::reset() noexcept {
+  if (ipcRegCache_ == nullptr) {
+    return;
+  }
+
+  // Deferred release: safe on any thread (SW-only), the actual CUDA unmap is
+  // drained later by IpcRegCache::cleanupInvalidImports(). Ignore the result —
+  // a destructor must not throw or propagate errors.
+  FB_COMMCHECKIGNORE(
+      ipcRegCache_->releaseRemReg(peerId_, basePtr_, uid_, /*exportCount=*/1));
+
+  ipcRegCache_ = nullptr;
+  peerId_.clear();
+  basePtr_ = nullptr;
+  uid_ = 0;
+  refCount_ = 0;
+}
+
+ctran::ScopedIpcRegHdl& ctran::ScopedIpcRegHdl::operator=(
+    ScopedIpcRegHdl&& other) noexcept {
+  if (this != &other) {
+    reset();
+    ipcRegCache_ = other.ipcRegCache_;
+    peerId_ = std::move(other.peerId_);
+    basePtr_ = other.basePtr_;
+    uid_ = other.uid_;
+    refCount_ = other.refCount_;
+    other.ipcRegCache_ = nullptr;
+    other.basePtr_ = nullptr;
+    other.uid_ = 0;
+    other.refCount_ = 0;
+  }
+  return *this;
+}
+
+ctran::ScopedIpcRegHdl::~ScopedIpcRegHdl() {
+  reset();
+}
+
+std::string ctran::ScopedIpcRegHdl::toString() const {
+  if (ipcRegCache_ == nullptr) {
+    return "[ScopedIpcRegHdl] empty";
+  }
+  return fmt::format(
+      "[ScopedIpcRegHdl] peerId: {}, basePtr: {}, uid: {}, refCount: {}",
+      peerId_,
+      basePtr_,
+      uid_,
+      refCount_);
 }
 
 commResult_t ctran::IpcRegCache::importMem(
@@ -100,10 +152,21 @@ commResult_t ctran::IpcRegCache::importMem(
     void** buf,
     struct ctran::regcache::IpcRemHandle* remKey,
     const struct CommLogData* logMetaData,
-    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
+    ctran::ScopedIpcRegHdl* outHdl) {
+  // Reclaim any imports released deferentially before this user-thread entry.
+  cleanupInvalidImports();
+
   void* basePtr = nullptr;
+  int refCount = 0;
   FB_COMMCHECK(importRemMemImpl(
-      peerId, ipcDesc, cudaDev, logMetaData, &basePtr, extraSegments));
+      peerId,
+      ipcDesc,
+      cudaDev,
+      logMetaData,
+      &basePtr,
+      extraSegments,
+      &refCount));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
@@ -119,6 +182,14 @@ commResult_t ctran::IpcRegCache::importMem(
       (void*)basePtr,
       ipcDesc.offset,
       ipcDesc.uid);
+
+  // The single ref this import added is now owned by *outHdl: its destructor's
+  // deferred releaseRemReg drops it. Callers passing nullptr manage the ref
+  // themselves via releaseRemReg.
+  if (outHdl != nullptr) {
+    *outHdl =
+        ScopedIpcRegHdl(this, peerId, remKey->basePtr, remKey->uid, refCount);
+  }
   return commSuccess;
 }
 
@@ -128,7 +199,8 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     int cudaDev,
     const struct CommLogData* logMetaData,
     void** mappedBase,
-    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
+    const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments,
+    int* outRefCount) {
   auto lockedMap = ipcRemRegMap_.wlock();
   uint64_t base = reinterpret_cast<uint64_t>(ipcDesc.desc.base);
   IpcRemRegKey key{base, ipcDesc.uid};
@@ -138,15 +210,19 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   if (peerIt != lockedMap->end()) {
     auto keyIt = peerIt->second.find(key);
     if (keyIt != peerIt->second.end()) {
-      keyIt->second->refCount.fetch_add(1, std::memory_order_relaxed);
+      const int newRefCount =
+          keyIt->second->refCount.fetch_add(1, std::memory_order_relaxed) + 1;
       *mappedBase = keyIt->second->ipcRemMem.getBase();
+      if (outRefCount != nullptr) {
+        *outRefCount = newRefCount;
+      }
       CLOGF_TRACE(
           COLL,
           "CTRAN-REGCACHE: IPC remote registration cache hit peer:base:uid=<{}:{}:{}>, refCount now {}",
           peerId,
           reinterpret_cast<void*>(base),
           ipcDesc.uid,
-          keyIt->second->refCount.load(std::memory_order_relaxed));
+          newRefCount);
       return commSuccess;
     }
   }
@@ -173,6 +249,9 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
       ipcDesc.uid,
       reg->toString());
 
+  if (outRefCount != nullptr) {
+    *outRefCount = 1;
+  }
   *mappedBase = reg->ipcRemMem.getBase();
   (*lockedMap)[peerId][key] = std::move(reg);
 
@@ -188,8 +267,9 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   uint64_t base = reinterpret_cast<uint64_t>(basePtr);
   IpcRemRegKey key{base, uid};
 
-  if (lockedMap->find(peerId) == lockedMap->end() ||
-      (*lockedMap)[peerId].find(key) == (*lockedMap)[peerId].end()) {
+  auto peerIt = lockedMap->find(peerId);
+  if (peerIt == lockedMap->end() ||
+      peerIt->second.find(key) == peerIt->second.end()) {
     CLOGF(
         ERR,
         "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
@@ -199,7 +279,8 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
     return ErrorStackTraceUtil::log(commInternalError);
   }
 
-  auto& elem = (*lockedMap)[peerId][key];
+  auto keyIt = peerIt->second.find(key);
+  auto& elem = keyIt->second;
   int prevCount =
       elem->refCount.fetch_sub(exportCount, std::memory_order_acq_rel);
 
@@ -213,7 +294,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
         uid,
         prevCount,
         exportCount);
-    // Fall through to erase — the entry is invalid regardless
+    // Fall through to invalidate — the entry is invalid regardless
   } else if (prevCount > exportCount) {
     CLOGF_TRACE(
         COLL,
@@ -234,20 +315,23 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
       uid,
       elem->toString());
 
-  try {
-    (*lockedMap)[peerId].erase(key);
-  } catch (std::exception& e) {
-    CLOGF(
-        WARN,
-        "CTRAN-REGCACHE: failed to remove IPC remote registration from cache peer:base:uid=<{}:{}:{}>, error {}",
-        peerId,
-        basePtr,
-        uid,
-        e.what());
-    return ErrorStackTraceUtil::log(commInternalError);
-  }
+  // Move refcount==0 elem out of the live map. Actual unmap runs in
+  // cleanupInvalidImports().
+  invalidImports_.wlock()->push_back(std::move(elem));
+  peerIt->second.erase(keyIt);
 
   return commSuccess;
+}
+
+void ctran::IpcRegCache::cleanupInvalidImports() {
+  std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>> pending;
+  {
+    auto lockedInvalid = invalidImports_.wlock();
+    pending.swap(*lockedInvalid);
+  }
+
+  // Destruct the moved-out elems outside the lock; ~IpcRemRegElem performs the
+  // CUDA unmap. Safe when pending is empty and when called repeatedly.
 }
 
 void ctran::IpcRegCache::clearAllRemReg() {
@@ -273,6 +357,21 @@ size_t ctran::IpcRegCache::getNumRemReg(const std::string& peerId) const {
     return it->second.size();
   }
   return 0;
+}
+
+int ctran::IpcRegCache::maxRemRegRefCount() const {
+  auto lockedMap = ipcRemRegMap_.rlock();
+
+  int maxRefCount = 0;
+  for (const auto& [peerId, regs] : *lockedMap) {
+    for (const auto& [key, elem] : regs) {
+      const int refCount = elem->refCount.load(std::memory_order_relaxed);
+      if (refCount > maxRefCount) {
+        maxRefCount = refCount;
+      }
+    }
+  }
+  return maxRefCount;
 }
 
 commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
@@ -443,6 +542,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                 ipcReq.release.base,
                 ipcReq.release.uid,
                 ipcReq.release.exportCount));
+            cleanupInvalidImports();
             break;
           }
           case ctran::regcache::IpcReqType::kDesc: {

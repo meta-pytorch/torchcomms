@@ -938,6 +938,7 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
       ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
       commSuccess);
   EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+  ipcRegCache->cleanupInvalidImports();
 
   // Cleanup
   ctran::IpcRegCache::deregMem(ipcRegElem);
@@ -1357,6 +1358,7 @@ TEST_F(RegCacheTest, ImportMemWithExtraSegments) {
       ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
       commSuccess);
   EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+  ipcRegCache->cleanupInvalidImports();
 
   ctran::IpcRegCache::deregMem(ipcRegElem);
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
@@ -2123,6 +2125,142 @@ TEST_F(RegCacheTest, DynamicDeregisterFailsWithLiveInUseCnt) {
   EXPECT_FALSE(regCache->isRegistered(buf, bufSize));
 
   CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Refcounted import: importing the same descriptor twice bumps the single
+// entry's refCount to 2; the first release keeps it live (getNumRemReg stays
+// 1); the second release drops it to 0, moving the elem out of the live map.
+// An explicit cleanupInvalidImports() then performs the CUDA unmap.
+TEST_F(RegCacheTest, IpcRemRegImmediateRelease) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  size_t bufSize = 4096;
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+  ASSERT_NE(ipcRegElem, nullptr);
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  const std::string peerId = "test_immediate_release_peer";
+
+  // Import twice: single map entry, refCount 2.
+  void* importedBuf1 = nullptr;
+  void* importedBuf2 = nullptr;
+  ctran::regcache::IpcRemHandle remKey1;
+  ctran::regcache::IpcRemHandle remKey2;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf1, &remKey1),
+      commSuccess);
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf2, &remKey2),
+      commSuccess);
+  EXPECT_EQ(importedBuf1, importedBuf2);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // First release: refCount 2 -> 1, entry stays live.
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid, 1),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Second release: refCount 1 -> 0, elem moved out of the live map. The
+  // deferred CUDA unmap is drained by the explicit cleanupInvalidImports().
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid, 1),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  ipcRegCache->cleanupInvalidImports();
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+// Releasing to rc 0 removes the elem from the live map (getNumRemReg == 0) but
+// does not unmap yet (release is always deferred). A fresh importMem of the
+// same descriptor cannot resurrect the dead elem and instead creates a new live
+// mapping. cleanupInvalidImports() is safe to call afterwards.
+TEST_F(RegCacheTest, IpcRemRegDeferredReleaseNoResurrect) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  size_t bufSize = 4096;
+  std::vector<TestMemSegment> segments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, segments);
+  ASSERT_NE(buf, nullptr);
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+  ASSERT_NE(ipcRegElem, nullptr);
+
+  ctran::regcache::IpcDesc ipcDesc;
+  std::vector<ctran::utils::CtranIpcSegDesc> extraSegments;
+  EXPECT_EQ(
+      ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc, extraSegments),
+      commSuccess);
+
+  const std::string peerId = "test_deferred_release_peer";
+
+  void* importedBuf1 = nullptr;
+  ctran::regcache::IpcRemHandle remKey1;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf1, &remKey1),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Deferred release to rc 0: leaves the live map but is not yet unmapped.
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid, 1),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  // A fresh import of the same descriptor must create a NEW live entry rather
+  // than resurrecting the deferred-dead one. importMem also drains the pending
+  // unmap via cleanupInvalidImports().
+  void* importedBuf2 = nullptr;
+  ctran::regcache::IpcRemHandle remKey2;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf2, &remKey2),
+      commSuccess);
+  EXPECT_NE(importedBuf2, nullptr);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Release the fresh entry and drain.
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid, 1),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  ipcRegCache->cleanupInvalidImports();
+
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+// cleanupInvalidImports() on an empty invalidImports_ list is safe and
+// idempotent.
+TEST_F(RegCacheTest, IpcCleanupEmptyIsIdempotent) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  ipcRegCache->cleanupInvalidImports();
+  ipcRegCache->cleanupInvalidImports();
 }
 
 int main(int argc, char* argv[]) {

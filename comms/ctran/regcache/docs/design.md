@@ -402,6 +402,44 @@ Compatibility with the existing (non-refcounted) lookup APIs:
   from the allocator-hook contract: the buffer allocation must outlive borrowed
   lookup use.
 
+### Remote IPC import: `ScopedIpcRegHdl`
+
+Remote NVLink IPC imports live in `IpcRegCache`, separate from the local segment
+cache, and use a symmetric-but-different scoped owner.
+
+Lifecycle:
+
+- An imported `IpcRemRegElem` is refcounted (`refCount`). `releaseRemReg` ALWAYS
+  defers: it decrements the refcount and, on reaching zero, moves the elem out of
+  the live map into `invalidImports_`. This is pure software work (no CUDA), so
+  it is safe from a graph-destroy callback. Because rc==0 entries leave the live
+  map, a released import is never resurrected by a later import.
+- `cleanupInvalidImports()` performs the actual CUDA unmap of the parked
+  entries. It runs on user-thread entries (`importMem`, `~IpcRegCache`) and is
+  called explicitly by release callsites that want prompt teardown
+  (`CtranMapper::deregRemReg`, the async-socket `kRelease` handler).
+- `ScopedIpcRegHdl` is a move-only owner of one import reference, produced
+  directly by `IpcRegCache::importMem` via its optional `outHdl` out-param: the
+  single reference the import adds is ADOPTED by the returned handle (no extra
+  reference is added). `~ScopedIpcRegHdl` performs a deferred `releaseRemReg`, so
+  it is graph-destroy safe; the CUDA unmap drains later via an explicit
+  `cleanupInvalidImports()` at a user-thread teardown point (window free, eager
+  AGP destroy).
+
+Difference from local `ScopedRegHdl`, and compatibility:
+
+- `ScopedIpcRegHdl` owns a real import ref. Its last release CAN retire the
+  import (deferred). Local `ScopedRegHdl` only owns a `RegElem::inUseCnt`
+  use-side reference; releasing it never retires the local registration because
+  local registration lifetime is controlled by allocator hooks or explicit
+  teardown.
+- `IpcRemRegElem` was already refcount-based for existing importers, and its
+  release can be triggered either by an explicit importer-side call
+  (`releaseRemReg` / `CtranMapper::deregRemReg`) or by the exporter's `kRelease`
+  notification over the async socket. `ScopedIpcRegHdl` layers cleanly on top of
+  this existing refcount — it introduces no new scheme and does not change the
+  C-style release/notify paths.
+
 ## Component Interactions
 
 ### CtranMapper (per-communicator)

@@ -2,6 +2,9 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -17,6 +20,91 @@
 #include "comms/ctran/utils/Checks.h"
 
 namespace ctran {
+
+class IpcRegCache;
+class ScopedIpcRegHdl;
+
+// Move-only RAII owner of ONE remote NVL IPC import ref. It ADOPTS an existing
+// import ref (does not importMem, does not add a ref) and, on destruction,
+// drops that ref via a deferred releaseRemReg so it is safe to destroy from a
+// CUDA-callback context (e.g. graph destroy): the drop is pure SW; the parked
+// import is unmapped later by IpcRegCache::cleanupInvalidImports() on a user
+// thread.
+//
+// Lifecycle difference vs the local ScopedRegHdl: ScopedIpcRegHdl owns a real
+// import ref. Its last release CAN drive the import refCount to 0 and retire
+// the mapping (deferred: moved to invalidImports_, unmapped later by
+// cleanupInvalidImports()). A local ScopedRegHdl release only drops a
+// RegElem::inUseCnt use-side owner; it never retires the local registration
+// because local registration lifetime is controlled by allocator hooks or
+// explicit teardown.
+class ScopedIpcRegHdl {
+ public:
+  ScopedIpcRegHdl() = default;
+
+  ScopedIpcRegHdl(ScopedIpcRegHdl&& other) noexcept
+      : ipcRegCache_(other.ipcRegCache_),
+        peerId_(std::move(other.peerId_)),
+        basePtr_(other.basePtr_),
+        uid_(other.uid_),
+        refCount_(other.refCount_) {
+    other.ipcRegCache_ = nullptr;
+    other.basePtr_ = nullptr;
+    other.uid_ = 0;
+    other.refCount_ = 0;
+  }
+
+  ScopedIpcRegHdl& operator=(ScopedIpcRegHdl&& other) noexcept;
+
+  ScopedIpcRegHdl(const ScopedIpcRegHdl&) = delete;
+  ScopedIpcRegHdl& operator=(const ScopedIpcRegHdl&) = delete;
+
+  ~ScopedIpcRegHdl();
+
+  // The IpcRegCache this handle will release into, or nullptr when the handle
+  // is empty or moved-from.
+  IpcRegCache* get() const {
+    return ipcRegCache_;
+  }
+
+  explicit operator bool() const {
+    return ipcRegCache_ != nullptr;
+  }
+
+  std::string toString() const;
+
+  // The import's refCount observed when this handle adopted it: >1 means the
+  // remote IPC import was already held by another owner (reused / cache hit),
+  // ==1 means this handle is the sole holder (freshly imported), 0 if unknown.
+  int refCount() const {
+    return refCount_;
+  }
+
+ private:
+  friend class IpcRegCache;
+
+  ScopedIpcRegHdl(
+      IpcRegCache* ipcRegCache,
+      std::string peerId,
+      void* basePtr,
+      uint32_t uid,
+      int refCount)
+      : ipcRegCache_(ipcRegCache),
+        peerId_(std::move(peerId)),
+        basePtr_(basePtr),
+        uid_(uid),
+        refCount_(refCount) {}
+
+  // Drop the held import ref (deferred release) and reset to the empty state.
+  // No-op when already empty/moved-from. Never throws.
+  void reset() noexcept;
+
+  IpcRegCache* ipcRegCache_{nullptr};
+  std::string peerId_;
+  void* basePtr_{nullptr};
+  uint32_t uid_{0};
+  int refCount_{0};
+};
 
 // Class to manage IPC-based remote memory registrations for a single
 // communicator. Currently handles NVL (NVLink) remote memory imports from peer
@@ -83,6 +171,9 @@ class IpcRegCache {
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
   //   - remKey: the remoteAccessKey (rkey) of the remote buffer registration
+  //   - outHdl: (optional) when non-null, populated with a ScopedIpcRegHdl that
+  //             ADOPTS the ref this import added (its destructor drops that
+  //             ref)
   commResult_t importMem(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
@@ -90,7 +181,8 @@ class IpcRegCache {
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey,
       const struct CommLogData* logMetaData = nullptr,
-      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {},
+      ctran::ScopedIpcRegHdl* outHdl = nullptr);
 
   // Export local NVL memory registration for sharing with remote peers.
   // Input arguments:
@@ -120,17 +212,30 @@ class IpcRegCache {
     return commSuccess;
   }
 
-  // Release a specific remote registration for a given peer.
-  // exportCount specifies how many times the buffer was exported to this peer;
-  // the refcount is decremented by this amount.
+  // Release a specific remote registration for a given peer. Always deferred
+  // (SW-only): exportCount specifies how many times the buffer was exported to
+  // this peer; the refcount is decremented by this amount. When the refcount
+  // drops to zero the elem is moved out of the live map into invalidImports_
+  // WITHOUT touching CUDA. The backing CUDA unmap happens later, only when
+  // cleanupInvalidImports() is explicitly called on a user thread.
   commResult_t releaseRemReg(
       const std::string& peerId,
       void* basePtr,
       uint32_t uid,
       int32_t exportCount = 1);
 
+  // Drain invalidImports_: destroy every refcount==0 elem pending CUDA unmap.
+  // Must be called on a user thread (performs CUDA APIs). Safe when empty and
+  // safe to call repeatedly.
+  void cleanupInvalidImports();
+
   // Get the number of existing remote registrations for a given peer
   size_t getNumRemReg(const std::string& peerId) const;
+
+  // Max refCount among live remote IPC imports (0 if none). For
+  // test/observability: refCount > 1 means an import was reused (shared) by
+  // multiple importers.
+  int maxRemRegRefCount() const;
 
   // Release all remote registrations.
   // Called during destruction to clean up any remaining cached registrations.
@@ -196,7 +301,8 @@ class IpcRegCache {
       int cudaDev,
       const struct CommLogData* logMetaData,
       void** mappedBase,
-      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {});
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {},
+      int* outRefCount = nullptr);
 
   // Initialize the AsyncSocket infrastructure for this rank.
   // Must be called once per rank before notifyRemoteIpcRelease can be used.
@@ -220,6 +326,14 @@ class IpcRegCache {
           std::unique_ptr<ctran::regcache::IpcRemRegElem>,
           folly::Hash>>;
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
+
+  // Elems whose refCount reached zero and left ipcRemRegMap_, still holding a
+  // live CUDA mapping. Destroying the unique_ptr performs the cuMemUnmap; that
+  // must happen on a user thread, so releaseRemReg parks the elem
+  // here and cleanupInvalidImports() drains it later outside the map lock.
+  folly::Synchronized<
+      std::vector<std::unique_ptr<ctran::regcache::IpcRemRegElem>>>
+      invalidImports_;
 
   // Flag for one-time initialization
   std::once_flag initFlag_;
