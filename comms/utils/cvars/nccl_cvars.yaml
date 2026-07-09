@@ -2247,12 +2247,13 @@ cvars:
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrhd
+   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctrhd
    description : |-
      The algorithm to use for ReduceScatter communication
      orig - Copy-based ring algorithm
      ctran - Ctran-based algorithm automatically picked by the library
      ctdirect - Ctran-based direct point-to-point algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
 
