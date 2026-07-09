@@ -109,6 +109,7 @@ RegElem
   isDynamic_ : bool         -- true for one-time uncached registrations
   type_      : DevMemType   -- memory type of the registered range
   ncclManaged_: bool        -- whether NCCL allocated this buffer
+  inUseCnt    : atomic<int64_t>  -- live scoped-use count; does not control RegElem lifetime (see Scoped Registration)
 ```
 
 ### RegCache (class)
@@ -202,8 +203,11 @@ freeSegment(segHdl, forceFree=false) -> freed, regElems
   1. Acquire both segmentsAvl_ and regElemsMaps_ locks
   2. Lookup Segment from AVL handle
      - Not found -> return (freed=false, commSuccess)
-  3. If !forceFree: askFree() -> decrement refCount
-     - refCount > 0 -> return (freed=false, commSuccess)
+  3. If !forceFree: lock SegmentStateMnger
+     - refCount > 1 -> decrement and return (freed=false, commSuccess)
+     - refCount == 1 -> validate associated RegElems have inUseCnt == 0
+       before setting refCount to 0
+     - inUseCnt > 0 -> return commInvalidUsage without changing refCount
   4. Collect all RegElems via segToRegElemsMap
   5. Transfer ownership from regHdlToElemMap to output vector
   6. Remove Segment from AVL tree
@@ -328,6 +332,76 @@ cleanup:
   -> cudaFree
 ```
 
+## Scoped Registration
+
+Ctran's persistent collectives (persistent AllGatherP, "AGP") and window
+collectives hold a registration for the lifetime of an operation, request, or
+window — not the lifetime of the underlying memory — and must release it safely,
+including from a CUDA graph-destroy callback where no CUDA calls are allowed.
+Move-only RAII owners provide this on top of the existing cache without
+disturbing the allocator (CCA) hook or the existing, non-refcounted lookup APIs.
+
+`globalRegister` / `globalDeregister` are the allocator-hook APIs. They are keyed
+on BUFFER (memory) lifetime — the allocator calls them around a buffer's
+allocation and free — and `globalDeregister` force-frees the cached segment and
+all of its registrations. They are therefore NOT suitable for scoped
+registration inside Ctran: a persistent collective or window has an operation /
+request / window lifetime, not a memory lifetime, and calling `globalDeregister`
+from that code would tear down allocator-owned state that other consumers may
+still need. Ctran-internal scopes must use `acquireScopedRegister` /
+`ScopedRegHdl` (below) instead; `globalRegister` / `globalDeregister` must be
+called ONLY from the allocator side (the CCA memory hook), never from collective
+or window code.
+
+### Local registration: `ScopedRegHdl`
+
+Use tracking (`RegElem::inUseCnt`):
+
+- `RegElem` lifetime is controlled by allocator hooks and explicit teardown, not
+  by `inUseCnt`. A cached registration starts with `inUseCnt = 0` when it is
+  created via `globalRegister` / the CCA hook or by first scoped use of an
+  already-cached segment.
+- `RegCache::acquireScopedRegister(buf, len, cudaDev, backends, &hdl)` resolves
+  the cached `RegElem`, increments `inUseCnt`, and returns a move-only
+  `ScopedRegHdl` owning that one use-side reference.
+- Dynamic registrations (`regDynamic` / internal `regRange`) do not acquire
+  `inUseCnt`. The explicit `deregDynamic` / internal `deregRange` call deletes
+  the RegElem only if `inUseCnt == 0`; a non-zero `inUseCnt` there is invalid
+  usage and returns `commInvalidUsage`.
+- `~ScopedRegHdl` performs a pure software decrement (`releaseScopedRegHdl`)
+  under the `regElemsMaps_` read lock — no deregistration, no delete, no CUDA —
+  so it is safe to run from a graph-destroy callback.
+- If `deregRange` or non-force `freeSegment` attempts to delete a registration
+  while `inUseCnt > 0`, it returns `commInvalidUsage`. The allocator hook
+  (`globalDeregister` -> force `freeSegment`) must not block memory free; it
+  logs and force-frees the registration because freeing the buffer while scoped
+  use is still live is already invalid usage. These errors are not retry
+  contracts: mapper-side release may already have partially run, and regcache
+  only preserves enough local state for whole-cache failure cleanup or
+  allocator force-free to reclaim memory.
+
+Compatibility with the allocator (CCA) hook:
+
+- The allocator hook owns memory lifetime: `globalRegister` caches the segment
+  and may create the `RegElem`; `globalDeregister` force-frees cached segments
+  and associated backend registrations right before the memory is freed.
+- `acquireScopedRegister` REQUIRES the buffer's segment to already be
+  allocator-cached and returns `commInvalidUsage` otherwise — it never caches or
+  frees segments. A scoped acquire/release only adjusts `inUseCnt`, so it can
+  neither race nor double-free allocator-owned state; the allocator remains the
+  owner of the registration's lifetime. If a buffer is freed while scoped use is
+  still live, force `freeSegment` logs a contract-violation warning and tears
+  down anyway (the memory is going away).
+
+Compatibility with the existing (non-refcounted) lookup APIs:
+
+- `searchRegHandle` / `searchIbRegHandle` / `getRegHandle` return a borrowed
+  `RegElem*` WITHOUT touching `inUseCnt`. These are the established production
+  callers (e.g. collective-time handle lookup) and are intentionally left
+  uncounted because there is no matching release API. Their safety still comes
+  from the allocator-hook contract: the buffer allocation must outlive borrowed
+  lookup use.
+
 ## Component Interactions
 
 ### CtranMapper (per-communicator)
@@ -340,7 +414,7 @@ notifications.
 CtranMapper
   regMem()          -> RegCache::cacheSegment [+ regRange]
   deregMem()        -> RegCache::getRegElems -> remReleaseMem per elem
-                       -> RegCache::freeSegment (decrement refCount)
+                       -> RegCache::freeSegment (decrement segment refCount)
   searchRegHandle() -> RegCache::regRange [or regDynamic as fallback]
   remReleaseMem()   -> send IPC release to remote peers via AsyncSocket
 ```
