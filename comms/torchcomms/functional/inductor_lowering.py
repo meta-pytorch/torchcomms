@@ -13,6 +13,32 @@ try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
 
+    def _disable_unsafe_reordering_passes() -> None:
+        """Disable inductor scheduler passes that reorder torchcomms comm ops.
+
+        PyTorch 2.14 nightly enables the simple_overlap scheduler pass by
+        default (pytorch/pytorch#184235, #184240). Its "no collective
+        reordering" guard only recognizes ir._CollectiveKernel nodes, but
+        torchcomms lowers ops without mutable tensor params (e.g. sync send,
+        barrier) as plain FallbackKernels, so the pass hoists recv above the
+        send/barrier that precede it and deadlocks blocking P2P patterns.
+        Disable it whenever torchcomms ops can appear in compiled graphs.
+        See pytorch/pytorch#189454.
+        """
+        try:
+            from torch._inductor import config as inductor_config
+
+            dist_opts = getattr(inductor_config, "aten_distributed_optimizations", None)
+            if dist_opts is not None and hasattr(dist_opts, "enable_simple_overlap"):
+                if dist_opts.enable_simple_overlap:
+                    dist_opts.enable_simple_overlap = False
+                    logger.info(
+                        "Disabled inductor simple_overlap pass (unsafe with "
+                        "torchcomms P2P ops)"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to disable simple_overlap pass: {e}")
+
     def register_torchcomms_lowerings():
         from torchcomms.functional import collectives
 
@@ -20,6 +46,8 @@ try:  # noqa: C901
         if collectives is None:
             logger.warning("torchcomms.functional.collectives not available")
             return
+
+        _disable_unsafe_reordering_passes()
 
         try:
             from torchcomms.functional.registry import _REGISTERED_COLLECTIVES
