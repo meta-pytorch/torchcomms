@@ -10,6 +10,8 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
@@ -51,6 +53,14 @@ struct CtranWin {
   void* dataSegHdl{nullptr};
   // The ctran mapper handles for caching the data registration
   void* dataRegHdl{nullptr};
+  // Scoped registration owning the user-provided data buffer's local
+  // registration ref (SW refcnt only). dataRegHdl aliases its borrowed
+  // RegElem* for the export ctrl path.
+  ScopedRegHdl dataScopedReg;
+  // Scoped RAII owners of this rank's imported NVL peer registrations for the
+  // user data buffer (sized nLocalRanks, empty for self / non-NVL peers).
+  // Released SW-only in free(); replaces the old per-peer deregRemReg loop.
+  std::vector<ctran::ScopedIpcRegHdl> dataScopedIpcRegHdls;
   // The base pointer of allocated buffer by the window
   void* winBasePtr{nullptr};
   // The pointer of the data buffer of this window
