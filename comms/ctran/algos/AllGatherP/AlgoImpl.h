@@ -1,15 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
-#include <memory>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
+#include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
-
-namespace ctran {
-struct CtranWin;
-}
 
 namespace ctran::allgatherp {
 
@@ -17,14 +14,9 @@ class AlgoImpl {
  public:
   PersistArgs pArgs;
 
-  // Local-NVL window + split subcomm for the windowed-capture path; null for
-  // the eager path. Freed in destroy().
-  ctran::CtranWin* nvlWin{nullptr};
-  std::shared_ptr<CtranComm> nvlComm;
-
   AlgoImpl(CtranComm* comm, cudaStream_t stream)
       : comm_(comm), stream_(stream) {};
-  ~AlgoImpl() {};
+  ~AlgoImpl();
 
   commResult_t initialize();
   commResult_t destroy();
@@ -104,7 +96,7 @@ class AlgoImpl {
   // Wait till either the async initialization is done or hit async error.
   // It is called before execution scheduling any CE copy to the stream.
   inline commResult_t waitInit() {
-    while (!pArgs.initialized.load()) {
+    while (pArgs.initState.load() != InitState::kInitialized) {
       FB_COMMCHECK(comm_->getAsyncResult());
     }
     return commSuccess;
@@ -114,4 +106,11 @@ class AlgoImpl {
   CtranComm* comm_{nullptr};
   cudaStream_t stream_{nullptr};
 };
+
+commResult_t createPersistentRequest(
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest** out);
+
+commResult_t destroyPersistentRequest(CtranPersistentRequest* const request);
 } // namespace ctran::allgatherp
