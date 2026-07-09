@@ -6,7 +6,6 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceFused.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
-#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/topo/CtranTreeBuilder.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
