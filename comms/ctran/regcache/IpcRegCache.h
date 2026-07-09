@@ -355,4 +355,9 @@ class IpcRegCache {
       exportClientRegistry_;
 };
 
+static inline void CHECK_VALID_IPC_REGCACHE(
+    const std::shared_ptr<IpcRegCache>& ipcRegCache) {
+  FB_CHECKABORT(ipcRegCache != nullptr, "Failed to get IpcRegCache instance");
+}
+
 } // namespace ctran

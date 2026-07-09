@@ -450,9 +450,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
     dataScopedReg = ScopedRegHdl{};
     dataScopedIpcRegHdls.clear();
     auto ipcRegCache = ctran::IpcRegCache::getInstance();
-    if (ipcRegCache) {
-      ipcRegCache->cleanupInvalidImports();
-    }
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    ipcRegCache->cleanupInvalidImports();
   }
 
 #if defined(ENABLE_PRIMS)
