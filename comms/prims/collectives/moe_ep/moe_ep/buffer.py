@@ -5,10 +5,9 @@
 """
 Python `Buffer` wrapper for the pipes MoE expert-parallel runtime.
 
-The C++ runtime backing `Buffer` lives in `comms.prims.collectives.moe_ep._cpp`. For
-Phase 1 (intranode, NVLink only) we only implement the dispatch / combine
-methods exercised by `tests/test_intranode.py`; LL / internode methods are
-stubbed and raise `NotImplementedError` until the follow-up diffs land.
+The C++ runtime backing `Buffer` lives in `comms.prims.collectives.moe_ep._cpp`.
+Intranode (NVLink) dispatch/combine is implemented; low-latency and internode
+methods that are not yet wired raise `NotImplementedError`.
 """
 
 from __future__ import annotations
@@ -77,13 +76,14 @@ class Buffer:
     Core expert-parallel (EP) communication buffer for Mixture of Experts.
 
     Supports:
-    - **High-throughput intranode** all-to-all (dispatch + combine, NVLink) — D3
-    - **Low-latency** all-to-all (dispatch + combine, RDMA) — D4
-    - **High-throughput internode** all-to-all (dispatch + combine, RDMA + NVLink) — D5
+    - **High-throughput intranode** all-to-all (dispatch + combine, NVLink)
+    - **Low-latency** all-to-all (dispatch + combine, RDMA)
+    - **High-throughput internode** all-to-all (dispatch + combine, RDMA + NVLink)
 
-    Mirrors the `Buffer` API surface that the canonical `test_intranode.py`
-    / `test_low_latency.py` / `test_internode.py` scripts in
-    `comms/prims/collectives/moe_ep/tests/` exercise.
+    Mirrors the `Buffer` API surface so the canonical
+    `test_intranode.py` / `test_low_latency.py` / `test_internode.py` scripts
+    run unchanged through the `conftest.py` import shim in
+    `comms/prims/collectives/moe_ep/tests/`.
     """
 
     num_sms: int = 20
@@ -110,13 +110,11 @@ class Buffer:
         comm: object | None = None,
     ) -> None:
         if allow_mnnvl:
-            raise NotImplementedError("allow_mnnvl=True is a v1 non-goal")
+            raise NotImplementedError("allow_mnnvl=True is not supported")
         if use_fabric:
-            raise NotImplementedError("use_fabric=True is a v1 non-goal")
+            raise NotImplementedError("use_fabric=True is not supported")
         if enable_shrink:
-            raise NotImplementedError(
-                "enable_shrink=True is a v1 non-goal (shrink-test family)"
-            )
+            raise NotImplementedError("enable_shrink=True is not supported")
 
         check_nvlink_connections(group) if group is not None else None
 
@@ -188,8 +186,8 @@ class Buffer:
         local_ipc_handle = self.runtime.get_local_ipc_handle()
         ipc_handles = all_gather_object(local_ipc_handle)
 
-        # NVSHMEM unique-id exchange — RDMA / LL only (Phase 2/3). For
-        # Phase 1 (intranode-only), get_num_rdma_ranks() returns 1 and
+        # NVSHMEM unique-id exchange — RDMA / LL only. For the
+        # intranode-only case, get_num_rdma_ranks() returns 1 and
         # low_latency_mode is False, so we skip this branch entirely.
         root_unique_id: object | None = None
         if self.runtime.get_num_rdma_ranks() > 1 or low_latency_mode:
@@ -199,7 +197,7 @@ class Buffer:
             # The pipes IBGDA transport doesn't use NVSHMEM env vars; the
             # equivalent settings live on `MultipeerIbgdaTransportConfig`,
             # set inside the C++ runtime when constructing the IBGDA
-            # transport in Phase 2/3 (D4 / D5).
+            # transport.
 
             if (low_latency_mode and self.rank == 0) or (
                 not low_latency_mode and self.runtime.get_rdma_rank() == 0
@@ -347,8 +345,8 @@ class Buffer:
         async_finish: bool = False,
         allocate_on_comm_stream: bool = False,
     ) -> tuple[Any, ...]:
-        """Dispatch tokens to per-expert ranks. Phase 1: intranode (NVLink)."""
-        # Route to internode_dispatch when crossing nodes (Phase 3).
+        """Dispatch tokens to per-expert ranks (intranode NVLink)."""
+        # Route to internode_dispatch when crossing nodes.
         if self.runtime.get_num_rdma_ranks() > 1:
             return self.internode_dispatch(
                 x,
@@ -473,7 +471,7 @@ class Buffer:
         async_finish: bool = False,
         allocate_on_comm_stream: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, EventOverlap]:
-        """Combine reduces dispatched tokens. Phase 1: intranode (NVLink)."""
+        """Combine reduces dispatched tokens (intranode NVLink)."""
         if self.runtime.get_num_rdma_ranks() > 1:
             return self.internode_combine(
                 x,
@@ -540,27 +538,71 @@ class Buffer:
         )
 
     def internode_dispatch(self, *args: object, **kwargs: object) -> tuple[Any, ...]:
-        """Phase 3 (D5) — internode dispatch (RDMA + NVLink)."""
-        raise NotImplementedError(
-            "internode_dispatch lands in D5 of the design plan stack"
-        )
+        """Internode dispatch (RDMA + NVLink)."""
+        raise NotImplementedError("internode_dispatch is not implemented in this build")
 
     def internode_combine(self, *args: object, **kwargs: object) -> tuple[Any, ...]:
-        """Phase 3 (D5) — internode combine (RDMA + NVLink)."""
-        raise NotImplementedError(
-            "internode_combine lands in D5 of the design plan stack"
+        """Internode combine (RDMA + NVLink)."""
+        raise NotImplementedError("internode_combine is not implemented in this build")
+
+    def low_latency_dispatch(
+        self,
+        x: torch.Tensor,
+        topk_idx: torch.Tensor,
+        num_max_dispatch_tokens_per_rank: int,
+        num_experts: int,
+        use_fp8: bool = False,
+        round_scale: bool = False,
+        use_ue8m0: bool = False,
+        async_finish: bool = False,
+        return_recv_hook: bool = False,
+        # Diagnostic tensors — accepted for API parity, currently
+        # ignored (the diagnostic counters are filled by the kernel impl).
+        cumulative_local_expert_recv_stats: torch.Tensor | None = None,
+        dispatch_wait_recv_cost_stats: torch.Tensor | None = None,
+    ) -> tuple[Any, ...]:
+        """Low-latency dispatch (IBGDA).
+
+        Routes through the C++ runtime which constructs `LowLatencyRuntime`
+        on first call. The kernel launch raises NotImplementedError; the
+        host-side scaffolding (RDMA buffer allocation, atomic counters,
+        output tensor allocation) is wired.
+        """
+        return self.runtime.low_latency_dispatch(
+            x,
+            topk_idx,
+            num_max_dispatch_tokens_per_rank,
+            num_experts,
+            use_fp8,
+            round_scale,
+            use_ue8m0,
+            async_finish,
+            return_recv_hook,
         )
 
-    def low_latency_dispatch(self, *args: object, **kwargs: object) -> tuple[Any, ...]:
-        """Phase 2 (D4) — low-latency dispatch (IBGDA)."""
-        raise NotImplementedError(
-            "low_latency_dispatch lands in D4 of the design plan stack"
-        )
-
-    def low_latency_combine(self, *args: object, **kwargs: object) -> tuple[Any, ...]:
-        """Phase 2 (D4) — low-latency combine (IBGDA)."""
-        raise NotImplementedError(
-            "low_latency_combine lands in D4 of the design plan stack"
+    def low_latency_combine(
+        self,
+        x: torch.Tensor,
+        topk_idx: torch.Tensor,
+        topk_weights: torch.Tensor,
+        handle: object,
+        use_logfmt: bool = False,
+        async_finish: bool = False,
+        return_recv_hook: bool = False,
+        # Diagnostic / zero-copy controls — currently parity-only.
+        zero_copy: bool = False,
+        out: torch.Tensor | None = None,
+        combine_wait_recv_cost_stats: torch.Tensor | None = None,
+    ) -> tuple[Any, ...]:
+        """Low-latency combine (IBGDA)."""
+        return self.runtime.low_latency_combine(
+            x,
+            topk_idx,
+            topk_weights,
+            handle,
+            use_logfmt,
+            async_finish,
+            return_recv_hook,
         )
 
     def clean_low_latency_buffer(
@@ -569,13 +611,18 @@ class Buffer:
         hidden: int,
         num_experts: int,
     ) -> None:
-        """Phase 2 (D4) — zero the LL buffer regions."""
-        raise NotImplementedError(
-            "clean_low_latency_buffer lands in D4 of the design plan stack"
+        """Zero the LL buffer regions."""
+        self.runtime.clean_low_latency_buffer(
+            num_max_dispatch_tokens_per_rank, hidden, num_experts
         )
 
     def get_next_low_latency_combine_buffer(
         self, handle: tuple[Any, ...]
     ) -> torch.Tensor:
-        """Phase 2 (D4) — `zero_copy=True` combine path."""
-        raise NotImplementedError("get_next_low_latency_combine_buffer lands in D4")
+        """Return a buffer matching packed_recv_x shape for zero_copy combine.
+
+        Our kernel currently ignores the zero_copy flag, so this is a scratch
+        tensor that the test writes to but the kernel doesn't read from.
+        """
+        packed_recv_x_ref = handle[2]
+        return torch.empty_like(packed_recv_x_ref)
