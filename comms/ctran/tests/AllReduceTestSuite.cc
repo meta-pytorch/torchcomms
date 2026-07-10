@@ -763,12 +763,13 @@ INSTANTIATE_TEST_SUITE_P(
 #if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY) || \
     defined(CTRAN_ALLREDUCE_TEST_HYBRID)
 // Ring Phase 2 requires nNodes > 1.
+// cthierarchical_ring supports fp32 and fp16, so sweep the full datatype axis.
 INSTANTIATE_TEST_SUITE_P(
     CtranAllReduceRing,
     CtranAllReduceCorrectnessTest,
     ::testing::Combine(
         ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
-        ::testing::Values(commFloat32),
+        ::testing::ValuesIn(allReduceDataTypes()),
         ::testing::Bool()),
     correctnessTestName);
 

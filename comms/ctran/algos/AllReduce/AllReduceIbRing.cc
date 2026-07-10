@@ -92,10 +92,10 @@ commResult_t ctranAllReduceHierarchicalRing(
     return commInvalidArgument;
   }
 
-  if (datatype != commFloat32) {
+  if (datatype != commFloat32 && datatype != commFloat16) {
     CLOGF(
         ERR,
-        "AllReduce cthierarchical_ring currently supports commFloat32 only, got {}",
+        "AllReduce cthierarchical_ring currently supports commFloat32/commFloat16 only, got {}",
         commDataTypeToString(datatype));
     return commInvalidArgument;
   }
