@@ -104,17 +104,21 @@ std::string_view TorchCommFake::getBackendName() const {
 
 c10::intrusive_ptr<TorchWork> TorchCommFake::send(
     const at::Tensor& /* tensor */,
-    int /* dst */,
+    int dst,
     bool /* async_op */,
-    const SendOptions& /* options */) {
+    const SendOptions& options) {
+  lastSendOptions_ = options;
+  lastSendDst_ = dst;
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommFake::recv(
     at::Tensor& /* tensor */,
-    int /* src */,
+    int src,
     bool /* async_op */,
-    const RecvOptions& /* options */) {
+    const RecvOptions& options) {
+  lastRecvOptions_ = options;
+  lastRecvSrc_ = src;
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 

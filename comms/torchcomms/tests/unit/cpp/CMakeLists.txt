@@ -49,6 +49,7 @@ target_include_directories(TorchCommOptionsTest PRIVATE
 target_compile_features(TorchCommOptionsTest PRIVATE cxx_std_20)
 target_link_libraries(TorchCommOptionsTest PRIVATE
     torchcomms
+    ${TORCH_LIBRARIES}
     GTest::gtest_main
     GTest::gmock
     atomic
@@ -79,9 +80,17 @@ target_link_options(TorchCommFactoryTest PRIVATE
 # Add dependency so fake backend is built before factory test runs
 add_dependencies(TorchCommFactoryTest fake_test_backend)
 
+# TorchCommOptionsTest's BackendWrapper tag tests load the fake backend
+# dynamically via new_comm("fake_test"), so it also needs the fake backend
+# built and its path exported through FAKE_TEST_BACKEND_LIB_PATH.
+add_dependencies(TorchCommOptionsTest fake_test_backend)
+
 # Register tests with CTest
 include(GoogleTest)
-gtest_discover_tests(TorchCommOptionsTest)
+gtest_discover_tests(TorchCommOptionsTest
+    PROPERTIES
+    ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>"
+)
 
 # For TorchCommFactoryTest, we need to set the environment variable
 # pointing to the fake backend library

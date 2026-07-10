@@ -4,6 +4,7 @@
 
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -223,6 +224,21 @@ class TorchCommFake : public TorchCommBackend {
     return registered_addrs_.count(tensor.data_ptr()) > 0;
   }
 
+  // P2P capture — records the most recent send/recv so tests can verify that
+  // options (e.g. tag) are threaded through to the backend.
+  std::optional<SendOptions> getLastSendOptionsForTest() const {
+    return lastSendOptions_;
+  }
+  int getLastSendDstForTest() const {
+    return lastSendDst_;
+  }
+  std::optional<RecvOptions> getLastRecvOptionsForTest() const {
+    return lastRecvOptions_;
+  }
+  int getLastRecvSrcForTest() const {
+    return lastRecvSrc_;
+  }
+
  private:
   bool initialized_;
   at::Device device_;
@@ -236,6 +252,10 @@ class TorchCommFake : public TorchCommBackend {
   std::unordered_map<std::string, std::string> hints_;
   bool shouldFailReconfigure_{false};
   std::unordered_set<void*> registered_addrs_;
+  std::optional<SendOptions> lastSendOptions_;
+  int lastSendDst_{-1};
+  std::optional<RecvOptions> lastRecvOptions_;
+  int lastRecvSrc_{-1};
 };
 
 } // namespace torch::comms
