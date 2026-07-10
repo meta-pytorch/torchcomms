@@ -50,7 +50,11 @@ namespace torch::comms {
  * `name` that is unique across allocations for the same {min,max} pair
  * so any store-based bootstrap inside createPairComm can safely use
  * `name` as its key prefix without collisions across LazyBackend
- * instances within the same process.
+ * instances within the same process. T must also expose
+ *   void T::setBootstrapStore(c10::intrusive_ptr<c10d::Store>);
+ * which LazyBackend calls once, right after init(), to hand the primary
+ * the store its createPairComm needs — the primary's own init() releases
+ * the store, so only lazy primaries keep it alive.
  *
  * Lifetime: pair comms are cached in a map keyed by the remote peer's
  * global rank. finalize() drains and tears them all down before the
@@ -107,6 +111,12 @@ class LazyBackend : public TorchCommBackend {
 
     primary_ = std::make_shared<T>();
     primary_->init(device, name, options);
+    // Hand the bootstrap store to the primary so lazy pair-comm creation
+    // (createPairComm) can exchange ncclUniqueIds through it. Only lazy
+    // primaries retain the store; init() itself releases it, so plain comms
+    // free their TCPStore port once the caller drops its reference. We keep
+    // our own reference alive in options_ for the LazyBackend's lifetime.
+    primary_->setBootstrapStore(options.store);
     device_ = primary_->getDevice();
     rank_ = primary_->getRank();
     size_ = primary_->getSize();

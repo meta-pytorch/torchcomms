@@ -259,6 +259,15 @@ class TorchCommNCCL : public TorchCommBackend,
       int peer_rank,
       const std::string& name);
 
+  // Preserve a store for lazy pair-comm bootstrap (createPairComm). Only
+  // LazyBackend calls this, on the primary comm, right after init. Plain
+  // (non-lazy) comms never retain the store: init() releases it so the
+  // caller's TCPStore server frees its port once the caller drops its own
+  // reference (some tests recreate a store on the same port between comms).
+  void setBootstrapStore(c10::intrusive_ptr<c10d::Store> store) {
+    bootstrap_store_ = std::move(store);
+  }
+
   // Method to override the CUDA API implementation for testing
   void setCudaApi(std::shared_ptr<CudaApi> api) {
     cuda_api_ = std::move(api);
@@ -472,6 +481,10 @@ class TorchCommNCCL : public TorchCommBackend,
 
   // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
   c10::intrusive_ptr<c10d::Store> reconfigure_store_;
+
+  // Store for lazy pair-comm bootstrap (createPairComm), installed via
+  // setBootstrapStore() by LazyBackend only. Null for non-lazy comms.
+  c10::intrusive_ptr<c10d::Store> bootstrap_store_;
 
   // NCCL API abstraction
   std::shared_ptr<NcclApi> nccl_api_;
