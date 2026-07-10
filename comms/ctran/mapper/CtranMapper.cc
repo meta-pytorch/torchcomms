@@ -113,11 +113,13 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
         INIT,
         "CTRAN-MAPPER: IpcRegCache socket server enabled, initializing");
     // Initialize IpcRegCache singleton (idempotent - only initializes once)
-    ctran::IpcRegCache::getInstance()->init();
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    ipcRegCache->init();
 
     // Register this mapper as an IpcExportClient so globalDeregister
     // can iterate all active mappers to send remote releases.
-    ctran::IpcRegCache::getInstance()->registerExportClient(this);
+    ipcRegCache->registerExportClient(this);
 
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
@@ -457,9 +459,8 @@ CtranMapper::~CtranMapper() {
   // Deregister from IpcRegCache so globalDeregister won't call this mapper
   // after it's destroyed.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  if (ipcRegCache) {
-    ipcRegCache->deregisterExportClient(this);
-  }
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->deregisterExportClient(this);
 
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
@@ -490,8 +491,9 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
   const int myRank = comm->statex_->rank();
   peerIpcServerAddrs_.resize(nRanks);
 
-  ctran::IpcRegCache::getInstance()->getServerAddr().getAddress(
-      &peerIpcServerAddrs_[myRank]);
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->getServerAddr().getAddress(&peerIpcServerAddrs_[myRank]);
   auto resFuture = comm->bootstrap_->allGather(
       peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
@@ -541,13 +543,14 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
     std::unique_ptr<regcache::IpcReqCb> req =
         std::make_unique<regcache::IpcReqCb>();
-    FB_COMMCHECK(
-        ctran::IpcRegCache::getInstance()->notifyRemoteIpcRelease(
-            comm->statex_->gPid(),
-            peerAddr,
-            reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
-            req.get(),
-            exportCount));
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    FB_COMMCHECK(ipcRegCache->notifyRemoteIpcRelease(
+        comm->statex_->gPid(),
+        peerAddr,
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
+        req.get(),
+        exportCount));
 
     CLOGF_TRACE(
         COLL,
@@ -735,8 +738,7 @@ commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
       auto ipcRegCache = ctran::IpcRegCache::getInstance();
-      FB_CHECKABORT(
-          ipcRegCache != nullptr, "Failed to get IpcRegCache instance");
+      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
       FB_COMMCHECK(ipcRegCache->releaseRemReg(
           rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
       // actual release of deferred deregistrations

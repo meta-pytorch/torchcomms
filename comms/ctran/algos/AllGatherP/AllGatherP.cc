@@ -318,9 +318,8 @@ commResult_t allGatherPDestroy(CtranPersistentRequest* request) {
   // cuMemUnmaps now rather than leaving them for the next IpcRegCache entry /
   // comm teardown.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  if (ipcRegCache != nullptr) {
-    ipcRegCache->cleanupInvalidImports();
-  }
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->cleanupInvalidImports();
 
   CLOGF_SUBSYS(
       INFO,

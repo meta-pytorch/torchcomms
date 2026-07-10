@@ -405,6 +405,7 @@ commResult_t ctran::RegCache::globalDeregister(
   if (!skipRemRelease) {
     // Notify remote peers to release their imported NVL memory.
     auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
     for (auto& regElem : regElems) {
       if (regElem->ipcRegElem != nullptr) {
         FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
@@ -1860,6 +1861,7 @@ commResult_t ctran::RegCache::deregAll() {
   // This iterates all registered IpcExportClients (mappers) and notifies
   // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
   for (auto& regElem : toDeregister) {
     if (regElem->ipcRegElem != nullptr) {
       FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem.get()));

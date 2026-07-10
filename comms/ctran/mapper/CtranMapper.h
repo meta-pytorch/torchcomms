@@ -1343,15 +1343,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
+      auto ipcRegCache = ctran::IpcRegCache::getInstance();
+      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
       if (extraSegments) {
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->exportMem(
-                buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
+        FB_COMMCHECK(ipcRegCache->exportMem(
+            buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
       } else {
         std::vector<ctran::utils::CtranIpcSegDesc> tmpExtraSegments;
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->exportMem(
-                buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
+        FB_COMMCHECK(ipcRegCache->exportMem(
+            buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
         if (!tmpExtraSegments.empty()) {
           CLOGF(
               ERR,
@@ -1422,16 +1422,17 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->importMem(
-                peerId,
-                msg.ipcDesc,
-                comm->statex_->cudaDev(),
-                buf,
-                &(remKey->nvlKey),
-                &this->logMetaData_,
-                extraSegments,
-                outHdl));
+        auto ipcRegCache = ctran::IpcRegCache::getInstance();
+        ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+        FB_COMMCHECK(ipcRegCache->importMem(
+            peerId,
+            msg.ipcDesc,
+            comm->statex_->cudaDev(),
+            buf,
+            &(remKey->nvlKey),
+            &this->logMetaData_,
+            extraSegments,
+            outHdl));
         break;
       }
       default:
