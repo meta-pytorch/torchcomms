@@ -168,6 +168,7 @@ def _work_item_port(
     if args.candidate_port_mode == "dynamic":
         port_obj: list[int | None] = [_get_free_tcp_port() if rank == 0 else None]
         dist.broadcast_object_list(port_obj, src=0)
+        # pyrefly: ignore [bad-argument-type]
         return int(port_obj[0])
     return args.base_master_port + work_item.work_item_id * args.master_port_stride
 

@@ -106,7 +106,9 @@ class DeviceMeshTest(unittest.TestCase):
                 break
 
         # Create communicators using the new single-list API
+        # pyrefly: ignore [bad-argument-type]
         tp_comm = comm.split(tp_ranks, "tp")
+        # pyrefly: ignore [bad-argument-type]
         dp_comm = comm.split(dp_ranks, "dp")
 
         sub_comms = {"dp": dp_comm, "tp": tp_comm}

@@ -322,6 +322,7 @@ def split_group(  # noqa: C901
                     if hasattr(pg_options, "config") and hasattr(
                         pg_options.config, "split_share"
                     ):
+                        # pyrefly: ignore [missing-attribute]
                         pg_options.config.split_share = 0
 
             # Use dist.split_group
