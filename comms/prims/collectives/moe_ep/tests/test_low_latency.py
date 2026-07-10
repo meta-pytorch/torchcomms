@@ -1,10 +1,10 @@
+# pyre-ignore-all-errors
+
 import argparse
 import random
 import sys
 from functools import partial
 from typing import Literal, Set
-
-# pyre-ignore-all-errors
 
 # Alias in-tree modules before any `import deep_ep` / `import deep_ep_cpp`.
 import comms.prims.collectives.moe_ep._cpp as _moe_ep_cpp  # noqa: E402
