@@ -103,6 +103,54 @@ TEST_F(TileTestFixture, LoadStoreFloat) {
       kNumElems);
 }
 
+TEST_F(TileTestFixture, LoadStoreFloatUnalignedPointers) {
+  constexpr int kInputOffset = 1;
+  constexpr int kOutputOffset = 3;
+  constexpr float kSentinel = -999.0f;
+
+  std::vector<float> input_h(kNumElems + kInputOffset);
+  for (int i = 0; i < static_cast<int>(input_h.size()); i++) {
+    input_h[i] = static_cast<float>(i + 1);
+  }
+
+  std::vector<float> output_h(kNumElems + kOutputOffset, kSentinel);
+
+  DeviceBuffer inputBuf(input_h.size() * sizeof(float));
+  DeviceBuffer outputBuf(output_h.size() * sizeof(float));
+  auto* input_d = static_cast<float*>(inputBuf.get());
+  auto* output_d = static_cast<float*>(outputBuf.get());
+
+  CUDACHECK_TEST(cudaMemcpy(
+      input_d,
+      input_h.data(),
+      input_h.size() * sizeof(float),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      output_d,
+      output_h.data(),
+      output_h.size() * sizeof(float),
+      cudaMemcpyHostToDevice));
+
+  test_tile_load_store_float(
+      input_d + kInputOffset, output_d + kOutputOffset, kNumTiles);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaMemcpy(
+      output_h.data(),
+      output_d,
+      output_h.size() * sizeof(float),
+      cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i < kNumElems; i++) {
+    EXPECT_EQ(output_h[kOutputOffset + i], input_h[kInputOffset + i])
+        << "Mismatch at index " << i;
+  }
+  for (int i = 0; i < kOutputOffset; i++) {
+    EXPECT_EQ(output_h[i], kSentinel)
+        << "prefix should be untouched at index " << i;
+  }
+}
+
 TEST_F(TileTestFixture, LoadStoreBF16) {
   run_load_store_roundtrip<__nv_bfloat16>(
       test_tile_load_store_bf16, __bfloat162float, __float2bfloat16, 256);
