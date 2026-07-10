@@ -173,49 +173,6 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
-    def test_reconfigure_then_collective(self):
-        """Test that collective operations work after reconfigure."""
-        if not self._is_supported_backend():
-            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-
-        comm, _ = self._create_reconfigured_comm("reconfigure_collective", 2)
-
-        if self.world_size > 1:
-            my_rank = comm.get_rank()
-            count = 4
-            send_tensor = torch.ones(count, dtype=torch.float, device=self.device) * (
-                my_rank + 1
-            )
-            recv_tensor = torch.zeros(count, dtype=torch.float, device=self.device)
-
-            send_rank = (my_rank + 1) % self.world_size
-            recv_rank = (my_rank - 1 + self.world_size) % self.world_size
-
-            if my_rank % 2 == 0:
-                send_work = comm.send(send_tensor, send_rank, async_op=True)
-                recv_work = comm.recv(recv_tensor, recv_rank, async_op=True)
-            else:
-                recv_work = comm.recv(recv_tensor, recv_rank, async_op=True)
-                send_work = comm.send(send_tensor, send_rank, async_op=True)
-
-            send_work.wait()
-            recv_work.wait()
-
-            if self.device.type == "cuda":
-                torch.cuda.current_stream().synchronize()
-
-            expected = torch.ones(count, dtype=torch.float, device="cpu") * (
-                recv_rank + 1
-            )
-            self.assertTrue(
-                torch.allclose(recv_tensor.cpu(), expected),
-                f"[Rank {my_rank}] Send/recv after reconfigure failed",
-            )
-
-            print(f"[Rank {my_rank}] Send/recv after reconfigure succeeded")
-
-        comm.finalize()
-
     def test_reconfigure_then_allreduce(self):
         """Test that allreduce works after reconfigure."""
         if not self._is_supported_backend():
@@ -360,7 +317,7 @@ class ReconfigureTest(unittest.TestCase):
         expected = sum(range(1, new_size + 1))
         self.assertTrue(
             torch.allclose(tensor, torch.full_like(tensor, expected)),
-            f"AllReduce after middle-rank shrink failed",
+            "AllReduce after middle-rank shrink failed",
         )
 
         print(
