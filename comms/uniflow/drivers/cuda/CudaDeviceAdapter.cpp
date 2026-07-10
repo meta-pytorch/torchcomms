@@ -36,6 +36,10 @@ Result<bool> CudaDeviceAdapter::isDmaBuffSupported(int deviceId) {
   return cudaDriverApi_->isDmaBufSupported(deviceId);
 }
 
+bool isNvlinkAvailable() {
+  return true;
+}
+
 Result<DmaBuff>
 CudaDeviceAdapter::exportDmaBuff(int /* deviceId */, void* ptr, size_t len) {
   if (!cudaDriverApi_) {
