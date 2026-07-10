@@ -376,6 +376,24 @@ class SendRecvTest(unittest.TestCase):
             count, dtype, num_iters=4, description_prefix="repeated async"
         )
 
+    def _async_send_recv_event_ordering(self, count, dtype):
+        """Regression test for NCCL P2P event ordering.
+
+        Issues async send/recv, waits on the work, and immediately reads back
+        the received data. work.wait() synchronizes on the end CUDA event
+        recorded after the NCCL call. Without wrapping the send/recv in
+        ncclGroupStart/End, a non-blocking NCCL comm may defer the kernel launch
+        past the end-event record, so the event can fire before the transfer
+        completes and wait() would return with stale/partial data. Looping with
+        distinct values makes such an early completion observable.
+        """
+        print(
+            f"Testing async send/recv event ordering with count={count} and dtype={get_dtype_name(dtype)}"
+        )
+        self._async_send_recv_loop(
+            count, dtype, num_iters=8, description_prefix="event ordering"
+        )
+
     def _create_send_tensor(self, count, dtype):
         """Create send tensor with rank-specific values."""
         options = {"dtype": dtype, "device": self.device}
@@ -454,6 +472,12 @@ class SendRecvTest(unittest.TestCase):
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._async_send_recv_repeated(count, dtype)
+
+    def test_async_send_recv_event_ordering(self):
+        """Regression test for NCCL P2P send/recv event ordering."""
+        for count, dtype in itertools.product(self.counts, self.dtypes):
+            with self.subTest(count=count, dtype=dtype):
+                self._async_send_recv_event_ordering(count, dtype)
 
     @unittest.skipIf(os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only tests")
     def test_graph_send_recv(self):
