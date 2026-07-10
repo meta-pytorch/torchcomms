@@ -178,7 +178,7 @@ struct IbReduceCopy {
     const T* staged = reinterpret_cast<const T*>(staging);
     const size_t nelems = nbytes / sizeof(T);
 
-    tileReduce<T, common::kIbTileElems, common::kBlockSize>(
+    tileReduce<T, common::TileElems<T>::k, common::kBlockSize>(
         accum, staged, nelems, group);
 #endif
   }

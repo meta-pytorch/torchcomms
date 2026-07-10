@@ -116,7 +116,27 @@ struct BenchmarkSize {
   std::size_t nbytes;
 };
 
-constexpr std::array<BenchmarkSize, 13> kBenchmarkSizes{{
+constexpr std::array<BenchmarkSize, 33> kBenchmarkSizes{{
+    {"1B", 1ULL},
+    {"2B", 2ULL},
+    {"4B", 4ULL},
+    {"8B", 8ULL},
+    {"16B", 16ULL},
+    {"32B", 32ULL},
+    {"64B", 64ULL},
+    {"128B", 128ULL},
+    {"256B", 256ULL},
+    {"512B", 512ULL},
+    {"1KB", 1ULL << 10},
+    {"2KB", 2ULL << 10},
+    {"4KB", 4ULL << 10},
+    {"8KB", 8ULL << 10},
+    {"16KB", 16ULL << 10},
+    {"32KB", 32ULL << 10},
+    {"64KB", 64ULL << 10},
+    {"128KB", 128ULL << 10},
+    {"256KB", 256ULL << 10},
+    {"512KB", 512ULL << 10},
     {"1MB", 1ULL << 20},
     {"2MB", 2ULL << 20},
     {"4MB", 4ULL << 20},

@@ -69,13 +69,14 @@ commResult_t validateAllReduceTreeIbPeer(
     const char* treeName,
     const char* edgeName) {
   const auto type = transport.get_transport_type(peerRank);
-  if (type == comms::prims::TransportType::P2P_IBGDA) {
+  if (type == comms::prims::TransportType::P2P_IBGDA ||
+      type == comms::prims::TransportType::P2P_IBRC) {
     return commSuccess;
   }
 
   CLOGF(
       ERR,
-      "AllReduce ctree requires P2P_IBGDA transport for {} {} edge "
+      "AllReduce ctree requires an IB transport for {} {} edge "
       "rank {} -> peer {}; got {}",
       treeName,
       edgeName,

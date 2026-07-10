@@ -93,12 +93,13 @@ totalBytes < numBlocks * 640 * 64
 
 `NCCL_CTRAN_MAX_NBLOCKS` controls the cap and defaults to `16`, which keeps the tree implementation below the NCCL Tree CTA count used on the current H100 and GB200/GB300 validation setups.
 
-The implementation uses phase-specific tile widths:
+The implementation uses one topology-agnostic tile width for both NVL and IB reductions:
 
-- `kNvlTileElems = 15360`
-- `kIbTileElems = 5120`
+```text
+kTileBytes = kBlockSize * kTileBytesPerThread = 640 * 96B = 60KB
+```
 
-Both are selected to satisfy Pipes tile divisibility constraints with `640`-thread blocks and the vector widths used by supported datatypes.
+`TileElems<T>` converts this byte width into a datatype-specific element count while preserving tile divisibility for the supported datatypes and the vector widths used by the reduction helpers.
 
 ## Staging and Memory Lifetime
 

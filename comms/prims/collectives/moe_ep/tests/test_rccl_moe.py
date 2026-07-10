@@ -29,7 +29,7 @@ to NCCL). Apples-to-apples baseline for the pipes MoE EP custom kernel:
     (dispatch + combine) and the topk-weighted reduction that the pipes
     `combine()` kernel also does internally. Nothing else.
 
-  * Uses `upstream_utils.bench` directly (50 warmups, 50 timed runs, L2
+  * Uses `common_utils.bench` directly (50 warmups, 50 timed runs, L2
     flushed before timing) — identical methodology to the pipes test.
 
   * Correctness assertion comparing output against a reference implementation
@@ -59,11 +59,11 @@ sys.modules["deep_ep"] = _moe_ep
 sys.modules["deep_ep_cpp"] = _moe_ep_cpp
 
 # Bind to the in-house moe_ep module (sys.modules shim above) — no import of
-# the external deeplearning/deep_ep package.
+# a separate deep_ep package.
 deep_ep = _moe_ep
 import torch  # noqa: E402
 import torch.distributed as dist  # noqa: E402
-from comms.prims.collectives.moe_ep.tests.upstream_utils import (  # noqa: E402  # noqa: E402
+from comms.prims.collectives.moe_ep.tests.common_utils import (  # noqa: E402  # noqa: E402
     bench,
     init_dist,
     inplace_unique,
@@ -343,7 +343,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     dist.barrier(group=group)
 
     # ============ TIMED BENCH (matches pipes methodology exactly) ============
-    # `upstream_utils.bench` does 50 warmups + 50 timed runs with L2 flush.
+    # `common_utils.bench` does 50 warmups + 50 timed runs with L2 flush.
     # Same function the pipes test uses.
     t_avg, t_min, t_max = bench(run_bench_once)
 
