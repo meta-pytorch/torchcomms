@@ -44,6 +44,36 @@ enum class IbgdaSendRecvProgressStatus : uint8_t {
   Done,
 };
 
+namespace detail {
+__host__ __device__ constexpr std::size_t ib_send_recv_credit_quantum(
+    std::size_t perBlockSlot,
+    int pipelineDepth) {
+  const std::size_t pipelineBytes =
+      perBlockSlot * static_cast<std::size_t>(pipelineDepth);
+  std::size_t quantum = pipelineBytes / 4;
+  if (quantum < 16ULL) {
+    quantum = 16ULL;
+  }
+  if (quantum > perBlockSlot) {
+    quantum = perBlockSlot;
+  }
+  quantum &= ~15ULL;
+  return quantum == 0 ? 16ULL : quantum;
+}
+
+__host__ __device__ constexpr std::size_t ib_send_recv_nic_done_credit_quantum(
+    std::size_t perBlockSlot,
+    int pipelineDepth) {
+  return ib_send_recv_credit_quantum(perBlockSlot, pipelineDepth);
+}
+
+__host__ __device__ constexpr std::size_t ib_send_recv_slot_free_credit_quantum(
+    std::size_t perBlockSlot,
+    int pipelineDepth) {
+  return ib_send_recv_credit_quantum(perBlockSlot, pipelineDepth);
+}
+} // namespace detail
+
 #if PIPES_IS_DEVICE_COMPILE
 __device__ __forceinline__ uint32_t trace_ibgda_step(std::size_t value) {
   constexpr std::size_t kMaxTraceStep = static_cast<std::size_t>(UINT32_MAX);
@@ -129,6 +159,7 @@ class IbSendRecvDevice {
     auto& slot = progress_state_slot(group, progressIndex);
     assert_progress_slot_idle(group, slot, "send");
     IbSendRecvState::ProgressSlot state{};
+    state.reuseCreditStep = slot.reuseCreditStep;
     state.activeStage = nbytes == 0
         ? detail::IbSendRecvProgressStage::Done
         : detail::IbSendRecvProgressStage::WaitNicDone;
@@ -186,6 +217,7 @@ class IbSendRecvDevice {
     auto& slot = progress_state_slot(group, progressIndex);
     assert_progress_slot_idle(group, slot, "recv");
     IbSendRecvState::ProgressSlot state{};
+    state.reuseCreditStep = slot.reuseCreditStep;
     state.activeStage = nbytes == 0
         ? detail::IbSendRecvProgressStage::Done
         : detail::IbSendRecvProgressStage::WaitDataReady;
@@ -220,8 +252,8 @@ class IbSendRecvDevice {
    * The send path first waits for NIC_DONE before reusing the local
    * send-staging range, then copies user data into send-staging through
    * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
-   * range, and finally issues an RDMA put that piggybacks DATA_READY and
-   * records NIC_DONE in the local counter. Returning `Done` means the reserved
+   * range, and finally issues an RDMA put that piggybacks DATA_READY and may
+   * batch NIC_DONE into the local counter. Returning `Done` means the reserved
    * byte range has completed.
    *
    * `CopyOp` must expose `send(dst, src, bytes, group, dataOffset, args...)`.
@@ -356,7 +388,17 @@ class IbSendRecvDevice {
 
       __threadfence_system();
       group.sync();
+      IbgdaLocalBuffer counterBuf{};
+      uint64_t counterVal = 0;
       if (group.is_leader()) {
+        if (should_post_nic_done_credit(
+                chunk.streamEnd, state.reuseCreditStep, progress_params)) {
+          counterVal =
+              reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
+          counterBuf = sendRecvState_.localCounterCompletionBuf.subBuffer(
+              progress_params.groupId * sizeof(uint64_t));
+          state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
+        }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         transport.put(
@@ -367,9 +409,8 @@ class IbSendRecvDevice {
             sendRecvState_.remoteSignalBuf.subBuffer(
                 progress_params.groupId * sizeof(uint64_t)),
             chunk.bytes,
-            sendRecvState_.localCounterCompletionBuf.subBuffer(
-                progress_params.groupId * sizeof(uint64_t)),
-            chunk.bytes);
+            counterBuf,
+            counterVal);
       }
       group.sync();
 
@@ -416,8 +457,8 @@ class IbSendRecvDevice {
    *
    * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
    * transport-owned recv-staging into the caller's destination through
-   * `CopyOp::recv`, then signals SLOT_FREE back to the sender. Returning `Done`
-   * means the reserved byte range has completed.
+   * `CopyOp::recv`, then may signal batched SLOT_FREE credit back to the
+   * sender. Returning `Done` means the reserved byte range has completed.
    *
    * `CopyOp` must expose `recv(dst, src, bytes, group, dataOffset, args...)`.
    * The default `Memcpy` copies bytes cooperatively across the supplied
@@ -506,13 +547,25 @@ class IbSendRecvDevice {
     }
     group.sync();
 
-    transport.signal(
-        group,
-        sendRecvState_.remoteSignalBuf.subBuffer(
-            (sendRecvState_.maxGroups + progress_params.groupId) *
-            sizeof(uint64_t)),
-        chunk.bytes,
-        IbDirection::Recv);
+    uint64_t slotFreeVal = 0;
+    if (group.is_leader()) {
+      if (should_post_slot_free_credit(
+              chunk.streamEnd, state.reuseCreditStep, progress_params)) {
+        slotFreeVal =
+            reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
+        state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
+      }
+    }
+    slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
+    if (slotFreeVal != 0) {
+      transport.signal(
+          group,
+          sendRecvState_.remoteSignalBuf.subBuffer(
+              (sendRecvState_.maxGroups + progress_params.groupId) *
+              sizeof(uint64_t)),
+          slotFreeVal,
+          IbDirection::Recv);
+    }
 
     state.activeNextByte += chunk.bytes;
     if (state.activeNextByte >= progress_params.protocolBytes) {
@@ -704,6 +757,15 @@ class IbSendRecvDevice {
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
+        IbgdaLocalBuffer counterBuf{};
+        uint64_t counterVal = 0;
+        if (should_post_nic_done_credit(
+                streamEnd, state.reuseCreditStep, perBlockSlot)) {
+          counterVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
+          counterBuf = sendRecvState_.localCounterCompletionBuf.subBuffer(
+              groupId * sizeof(uint64_t));
+          state.reuseCreditStep = static_cast<int64_t>(streamEnd);
+        }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         transport.put(
@@ -714,9 +776,8 @@ class IbSendRecvDevice {
             sendRecvState_.remoteSignalBuf.subBuffer(
                 groupId * sizeof(uint64_t)),
             bytesThis,
-            sendRecvState_.localCounterCompletionBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            bytesThis);
+            counterBuf,
+            counterVal);
       }
       group.sync();
       dataOff += bytesThis;
@@ -871,12 +932,23 @@ class IbSendRecvDevice {
 
       // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
       //     threshold before reusing remote recvStaging at the same offset.
-      transport.signal(
-          group,
-          sendRecvState_.remoteSignalBuf.subBuffer(
-              (maxGroups + groupId) * sizeof(uint64_t)),
-          bytesThis,
-          IbDirection::Recv);
+      uint64_t slotFreeVal = 0;
+      if (group.is_leader()) {
+        if (should_post_slot_free_credit(
+                streamEnd, state.reuseCreditStep, perBlockSlot)) {
+          slotFreeVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
+          state.reuseCreditStep = static_cast<int64_t>(streamEnd);
+        }
+      }
+      slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
+      if (slotFreeVal != 0) {
+        transport.signal(
+            group,
+            sendRecvState_.remoteSignalBuf.subBuffer(
+                (maxGroups + groupId) * sizeof(uint64_t)),
+            slotFreeVal,
+            IbDirection::Recv);
+      }
       dataOff += bytesThis;
     }
 
@@ -1123,15 +1195,19 @@ class IbSendRecvDevice {
       }
       group.sync();
 
-      // (4) Signal SLOT_FREE to sender (this transport).
-      //     CRITICAL: must happen BEFORE waiting on fwd's SLOT_FREE (step 5)
-      //     to break circular ring dependency.
+      // (4) SLOT_FREE, posted unbatched every chunk. This must happen before
+      //     the step-5 wait to break circular ring dependency. Advance
+      //     reuseCreditStep so an interleaved recv() on this shared slot
+      //     computes reuse credit from a current cursor.
       transport.signal(
           group,
           sendRecvState_.remoteSignalBuf.subBuffer(
               (recvMaxGroups + groupId) * sizeof(uint64_t)),
           bytesThis,
           IbDirection::Recv);
+      if (group.is_leader()) {
+        recvSlotState.reuseCreditStep = static_cast<int64_t>(recvStreamEnd);
+      }
 
       // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
       //     recvStaging).
@@ -1148,6 +1224,7 @@ class IbSendRecvDevice {
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
+        fwdSlotState.reuseCreditStep = static_cast<int64_t>(fwdStreamEnd);
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         fwdTransport.put(
@@ -1398,6 +1475,7 @@ class IbSendRecvDevice {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (group.is_leader()) {
       auto& slot = sendRecvState_.state[progressIndex];
+      slot.reuseCreditStep = state.reuseCreditStep;
       slot.activeNextByte = state.activeNextByte;
       slot.activeBaseStep = state.activeBaseStep;
       slot.activeStage = state.activeStage;
@@ -1497,6 +1575,68 @@ class IbSendRecvDevice {
     (void)opName;
     return {};
 #endif
+  }
+
+  __device__ __forceinline__ std::size_t nic_done_credit_quantum(
+      std::size_t perBlockSlot) const {
+    return detail::ib_send_recv_nic_done_credit_quantum(
+        perBlockSlot, sendRecvState_.pipelineDepth);
+  }
+
+  __device__ __forceinline__ std::size_t slot_free_credit_quantum(
+      std::size_t perBlockSlot) const {
+    return detail::ib_send_recv_slot_free_credit_quantum(
+        perBlockSlot, sendRecvState_.pipelineDepth);
+  }
+
+  __device__ __forceinline__ bool should_post_nic_done_credit(
+      uint64_t streamEnd,
+      int64_t reuseCreditStep,
+      const ProgressGeometry& geometry) const {
+    return should_post_nic_done_credit(
+        streamEnd, reuseCreditStep, geometry.perBlockSlot);
+  }
+
+  __device__ __forceinline__ bool should_post_nic_done_credit(
+      uint64_t streamEnd,
+      int64_t reuseCreditStep,
+      std::size_t perBlockSlot) const {
+    return should_post_credit_at_quantum(
+        streamEnd, reuseCreditStep, nic_done_credit_quantum(perBlockSlot));
+  }
+
+  __device__ __forceinline__ bool should_post_slot_free_credit(
+      uint64_t streamEnd,
+      int64_t reuseCreditStep,
+      const ProgressGeometry& geometry) const {
+    return should_post_slot_free_credit(
+        streamEnd, reuseCreditStep, geometry.perBlockSlot);
+  }
+
+  __device__ __forceinline__ bool should_post_slot_free_credit(
+      uint64_t streamEnd,
+      int64_t reuseCreditStep,
+      std::size_t perBlockSlot) const {
+    return should_post_credit_at_quantum(
+        streamEnd, reuseCreditStep, slot_free_credit_quantum(perBlockSlot));
+  }
+
+  __device__ __forceinline__ bool should_post_credit_at_quantum(
+      uint64_t streamEnd,
+      int64_t reuseCreditStep,
+      std::size_t creditQuantum) const {
+    const uint64_t posted = reuse_credit_posted_step(reuseCreditStep);
+    return streamEnd > posted && streamEnd - posted >= creditQuantum;
+  }
+
+  __device__ __forceinline__ uint64_t
+  reuse_credit_value(uint64_t streamEnd, int64_t reuseCreditStep) const {
+    return streamEnd - reuse_credit_posted_step(reuseCreditStep);
+  }
+
+  __device__ __forceinline__ static uint64_t reuse_credit_posted_step(
+      int64_t reuseCreditStep) {
+    return reuseCreditStep > 0 ? static_cast<uint64_t>(reuseCreditStep) : 0ULL;
   }
 
   /**

@@ -480,11 +480,16 @@ struct IbSendRecvState {
    *
    * The state is indexed by direction and transport group. `nextStep` is the
    * shared byte-stream cursor used by blocking send/recv and async init.
-   * `activeBaseStep`, `activeNextByte`, and `activeStage` track the currently
-   * initialized async operation or a blocking call in progress, if any.
+   * `reuseCreditStep` is the persistent byte cursor for reuse credits: NIC_DONE
+   * on sender slots and SLOT_FREE on receiver slots. It may lag `nextStep`
+   * because those credits can be batched without delaying DATA_READY
+   * visibility. `activeBaseStep`, `activeNextByte`, and `activeStage` track the
+   * currently initialized async operation or a blocking call in progress, if
+   * any.
    */
   struct ProgressSlot {
     int64_t nextStep{0};
+    int64_t reuseCreditStep{0};
     std::size_t activeNextByte{0};
     int64_t activeBaseStep{0};
     detail::IbSendRecvProgressStage activeStage{

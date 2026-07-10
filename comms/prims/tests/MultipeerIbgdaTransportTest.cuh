@@ -94,6 +94,18 @@ __global__ void progressReservationKernel(
     std::size_t sendBytes,
     std::size_t recvBytes,
     int activeBlocks);
+
+__global__ void sendRecvReuseCreditKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    int iterations,
+    bool send,
+    bool useProgress,
+    uint64_t waitExpectedNicDoneCredit,
+    uint64_t waitExpectedSlotFreeCredit,
+    uint64_t* output);
 #endif
 
 __global__ void
