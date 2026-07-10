@@ -286,8 +286,6 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
       return "ctdirect";
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
       return "ctpipeline";
-    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
-      return "ctrdpipeline";
     case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
       return "ctsrdpipeline";
     default:
@@ -296,8 +294,7 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
 }
 
 static bool requiresPowerOfTwoNodes(enum NCCL_ALLGATHER_P_ALGO algo) {
-  return algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
-      algo == NCCL_ALLGATHER_P_ALGO::ctsrdpipeline;
+  return algo == NCCL_ALLGATHER_P_ALGO::ctsrdpipeline;
 }
 
 TEST_P(CtranAllgatherPTestParam, Basic) {
@@ -351,8 +348,8 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
 }
 
 // Exercises the log2(nNodes) striping with nLocalRanks=2, nNodes=numRanks/2,
-// which forces ctrdpipeline through 2+ recursive-doubling steps and thus the
-// j >= 1 path of rankChunkOffset and the step > 0 recvbuff-read path that the
+// which forces ctsrdpipeline through 2+ recursive-doubling steps and thus the
+// multi-step chunk-offset and step > 0 recvbuff-read path that the
 // 1-step VnodeBasic never hits. Other algos also run through this config
 // so the extra parameterization is cheap.
 TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
@@ -821,7 +818,6 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
             NCCL_ALLGATHER_P_ALGO::ctpipeline,
-            NCCL_ALLGATHER_P_ALGO::ctrdpipeline,
             NCCL_ALLGATHER_P_ALGO::ctsrdpipeline)),
     getTestName);
 
