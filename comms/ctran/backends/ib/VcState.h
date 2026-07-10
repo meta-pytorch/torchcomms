@@ -153,9 +153,15 @@ class VcState {
       return it->second;
     };
 
+    // Hold the read lock in a named local so the guarded VcStateMaps outlives
+    // the pointer passed to getVcFrom(). A default-constructed (null) LockedPtr
+    // is used when the lock is skipped, so the lock is only taken when needed.
+    auto lockedVcStateMaps = PerfConfig::skipVcConnectionCheck
+        ? decltype(vcStateMaps_.rlock()){}
+        : vcStateMaps_.rlock();
     auto vcstatemaps = PerfConfig::skipVcConnectionCheck
         ? vcStateMapsPtr_
-        : &(*vcStateMaps_.rlock());
+        : &(*lockedVcStateMaps);
     return getVcFrom(vcstatemaps);
   }
 
