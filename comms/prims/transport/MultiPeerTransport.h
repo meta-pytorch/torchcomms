@@ -11,9 +11,8 @@
 // `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
 // `comms/prims/memory/GpuMemHandler.h` (included below) brings in the HIP
 // runtime headers under `#ifdef __HIP_PLATFORM_AMD__` and provides the
-// stand-in types needed for the `CUdeviceptr` /
-// `CUmemGenericAllocationHandle` member fields used by the
-// `NvlExchangeRecord`.
+// stand-in types needed for the CUDA driver types referenced via
+// `NvlMemExchange.h` (`NvlPeerMem`).
 #ifndef __HIP_PLATFORM_AMD__
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -21,6 +20,7 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/memory/NvlMemExchange.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/IbTransportConfig.h"
 #include "comms/prims/transport/Transport.cuh"
@@ -268,13 +268,15 @@ class MultiPeerTransport {
    * - cuMem with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR (no fabric):
    *   POSIX FD path via pidfd_getfd (Linux 5.6+, intra-host only)
    *
-   * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc)
-   * @param size Size of the buffer in bytes
+   * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc). The actual
+   *                 buffer length is derived from the allocation itself
+   *                 (via `cuMemGetAddressRange` on the VMM path) -- callers
+   *                 do not need to pass a size.
    * @return Vector of mapped peer pointers (size = nvlNRanks_), indexed by
    *         NVL local rank. Self entry is the original localPtr. Other entries
    *         are IPC-mapped pointers to peer buffers.
    */
-  std::vector<void*> exchangeNvlBuffer(void* localPtr, std::size_t size);
+  std::vector<void*> exchangeNvlBuffer(void* localPtr);
 
   /**
    * Unmap NVL IPC-mapped peer buffers obtained from exchangeNvlBuffer().
@@ -324,23 +326,17 @@ class MultiPeerTransport {
   enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };
   NvlMemMode detectNvlMemMode(void* ptr) const;
 
-  // Handle exchange helpers
-  std::vector<void*> exchangeNvlBufferCudaIpc(void* localPtr);
-  std::vector<void*> exchangeNvlBufferFabric(void* localPtr, std::size_t size);
-  std::vector<void*> exchangeNvlBufferPosixFd(void* localPtr, std::size_t size);
-
-  // Track NVL exchange state for proper cleanup in unmapNvlBuffers
+  // Track NVL exchange state for proper cleanup in unmapNvlBuffers. The
+  // NvlPeerMem owns the peer memory state produced by the NvlMemExchange
+  // helpers: for VMM modes its `vmmMappings` (RAII peer VAs) and
+  // `vmmPeerHandles` (imported handles released via cuMemRelease), and for
+  // cudaIpc mode the peer pointers in `peerPtrs` (closed via
+  // cudaIpcCloseMemHandle).
   struct NvlExchangeRecord {
-    NvlMemMode mode;
-    // cuMem state for cleanup (used by kFabric and kPosixFd paths):
-    std::vector<CUdeviceptr> cuMemPeerPtrs;
-    std::vector<CUmemGenericAllocationHandle> cuMemPeerAllocHandles;
-    std::vector<size_t> cuMemPeerSizes;
-    // POSIX FD exported by this rank — kept open until unmap so that peers
-    // can complete pidfd_getfd imports before the fd is closed.
-    int localExportedFd{-1};
+    NvlMemMode mode{NvlMemMode::kCudaIpc};
+    NvlPeerMem mem;
   };
-  // Keyed by the mappedPtrs vector's data pointer (first element address)
+  // Keyed by the self (local) pointer, i.e. mappedPtrs[nvlLocalRank_].
   std::unordered_map<void*, NvlExchangeRecord> nvlExchangeRecords_;
 };
 
