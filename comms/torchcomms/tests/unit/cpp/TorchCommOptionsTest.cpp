@@ -3,6 +3,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <ATen/ATen.h>
+#include <cstdlib>
+
+#include "comms/torchcomms/BackendWrapper.hpp"
+#include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/TorchCommOptions.hpp"
+#include "comms/torchcomms/fake/TorchCommFake.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 using ::testing::_;
@@ -72,6 +79,69 @@ TEST(TorchCommOptionsTest, StringToBool) {
   EXPECT_THROW(torch::comms::string_to_bool("yess"), std::runtime_error);
   EXPECT_THROW(torch::comms::string_to_bool("nope"), std::runtime_error);
   EXPECT_THROW(torch::comms::string_to_bool("falsey"), std::runtime_error);
+}
+
+namespace {
+constexpr const char* kBackendName = "fake_test";
+constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
+} // namespace
+
+// Verifies the behavior the tag field exists for: BackendWrapper::send/recv
+// must thread the c10d `tag` into SendOptions/RecvOptions and pass it down to
+// the backend. Uses the fake backend to capture the options actually received.
+class BackendWrapperTagTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    const char* lib_path = std::getenv("FAKE_TEST_BACKEND_LIB_PATH");
+    ASSERT_NE(lib_path, nullptr) << "FAKE_TEST_BACKEND_LIB_PATH not set";
+    setenv(kBackendEnvKey, lib_path, 1);
+
+    comm_ = new_comm(kBackendName, at::Device(at::kCPU), "tag_test");
+    ASSERT_NE(comm_, nullptr);
+    // Widen the world so send/recv rank validation accepts non-zero peers.
+    auto* fake = getFakeBackend();
+    ASSERT_NE(fake, nullptr);
+    fake->setSize(4);
+    wrapper_ = c10::make_intrusive<BackendWrapper>(comm_);
+  }
+
+  void TearDown() override {
+    wrapper_.reset();
+    comm_.reset();
+    unsetenv(kBackendEnvKey);
+  }
+
+  // Callers must ASSERT_NE the result before use: ASSERT_* cannot live in this
+  // non-void helper, so a failed cast would otherwise fall through to a null
+  // dereference instead of a clean gtest failure.
+  TorchCommFake* getFakeBackend() {
+    return dynamic_cast<TorchCommFake*>(comm_->getBackendImpl().get());
+  }
+
+  std::shared_ptr<TorchComm> comm_;
+  c10::intrusive_ptr<BackendWrapper> wrapper_;
+};
+
+TEST_F(BackendWrapperTagTest, SendThreadsTagToBackend) {
+  std::vector<at::Tensor> tensors = {at::ones({4}, at::kFloat)};
+  wrapper_->send(tensors, /*dstRank=*/1, /*tag=*/123);
+
+  auto* fake = getFakeBackend();
+  ASSERT_NE(fake, nullptr);
+  ASSERT_TRUE(fake->getLastSendOptionsForTest().has_value());
+  EXPECT_EQ(fake->getLastSendOptionsForTest()->tag, 123);
+  EXPECT_EQ(fake->getLastSendDstForTest(), 1);
+}
+
+TEST_F(BackendWrapperTagTest, RecvThreadsTagToBackend) {
+  std::vector<at::Tensor> tensors = {at::empty({4}, at::kFloat)};
+  wrapper_->recv(tensors, /*srcRank=*/2, /*tag=*/456);
+
+  auto* fake = getFakeBackend();
+  ASSERT_NE(fake, nullptr);
+  ASSERT_TRUE(fake->getLastRecvOptionsForTest().has_value());
+  EXPECT_EQ(fake->getLastRecvOptionsForTest()->tag, 456);
+  EXPECT_EQ(fake->getLastRecvSrcForTest(), 2);
 }
 
 } // namespace torch::comms::test
