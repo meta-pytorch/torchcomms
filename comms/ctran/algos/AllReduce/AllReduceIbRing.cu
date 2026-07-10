@@ -2,6 +2,8 @@
 
 #if defined(ENABLE_PRIMS)
 
+#include <cuda_fp16.h>
+
 #include <cstdint>
 
 #include "comms/ctran/algos/AllReduce/AllReduceFused.cuh"
@@ -272,6 +274,12 @@ __launch_bounds__(ctran::allreduce::hierring::kBlockSize, 1) void ctranKernelAll
         runAllReduceFused<float, ctran::allreduce::nvl::direct::Ops>(
             args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
               phase2IbRing<float>(args, phaseGroup);
+            });
+  } else if (args.common.datatype == commFloat16) {
+    ctran::allreduce::fused::
+        runAllReduceFused<__half, ctran::allreduce::nvl::direct::Ops>(
+            args.common, group, [&](comms::prims::ThreadGroup& phaseGroup) {
+              phase2IbRing<__half>(args, phaseGroup);
             });
   }
 }
