@@ -7,6 +7,9 @@
 
 #include <nccl.h>
 #include <cstddef>
+
+#include <folly/ScopeGuard.h>
+
 #include "comm.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -57,12 +60,18 @@ class RMATest : public NcclxBaseTestFixture {
       size_t sizeBytes) {
     *winBasePtr = testAllocBuf(sizeBytes, bufType, segments);
     ASSERT_NE(*winBasePtr, nullptr);
+    NCCLCHECK_TEST(ncclGlobalRegisterWithPtr(*winBasePtr, sizeBytes));
+    auto regGuard = folly::makeGuard([&]() {
+      NCCLCHECK_TEST(ncclGlobalDeregisterWithPtr(*winBasePtr, sizeBytes));
+    });
     auto res = ncclCommWindowRegister(
         comm, *winBasePtr, sizeBytes, winPtr, NCCL_WIN_DEFAULT);
     ASSERT_EQ(res, ncclSuccess);
+    regGuard.dismiss();
   }
 
   void freeWinBuf(void* ptr, size_t size, MemAllocType bufType) {
+    NCCLCHECK_TEST(ncclGlobalDeregisterWithPtr(ptr, size));
     testFreeBuf(ptr, size, bufType);
     segments.erase(
         std::remove_if(
@@ -91,11 +100,7 @@ TEST_F(RMATest, winPutOnly) {
 
   void* winBase = nullptr;
   ncclWindow_t win = nullptr;
-  ASSERT_EQ(ncclMemAlloc(&winBase, sizeBytes), ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
-  auto res =
-      ncclCommWindowRegister(comm, winBase, sizeBytes, &win, NCCL_WIN_DEFAULT);
-  ASSERT_EQ(res, ncclSuccess);
+  createWin(MemAllocType::kMemNcclMemAlloc, &winBase, &win, sizeBytes);
 
   int* localBuf = nullptr;
   void* localHdl = nullptr;
@@ -136,12 +141,12 @@ TEST_F(RMATest, winPutOnly) {
       globalRank,
       stream);
 
-  res = ncclCommWindowDeregister(comm, win);
+  auto res = ncclCommWindowDeregister(comm, win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
-  ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+  freeWinBuf(winBase, sizeBytes, MemAllocType::kMemNcclMemAlloc);
 
   EXPECT_EQ(errs, 0u);
 }
@@ -383,13 +388,8 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     size_t sizeBytes = numElements * sizeof(int) * numRanks;
 
     void* winBase = nullptr;
-    ASSERT_EQ(ncclMemAlloc(&winBase, sizeBytes), ncclSuccess);
-    ASSERT_NE(winBase, nullptr);
-
     ncclWindow_t win = nullptr;
-    auto res = ncclCommWindowRegister(
-        comm, winBase, sizeBytes, &win, NCCL_WIN_DEFAULT);
-    ASSERT_EQ(res, ncclSuccess);
+    createWin(MemAllocType::kMemNcclMemAlloc, &winBase, &win, sizeBytes);
 
     int* localbuf = reinterpret_cast<int*>(winBase);
 
@@ -422,9 +422,9 @@ TEST_P(MultiWindowTestParam, multiWindow) {
         wait_stream);
     EXPECT_EQ(errs, 0u);
 
-    res = ncclCommWindowDeregister(comm, win);
+    auto res = ncclCommWindowDeregister(comm, win);
     EXPECT_EQ(res, ncclSuccess);
-    ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+    freeWinBuf(winBase, sizeBytes, MemAllocType::kMemNcclMemAlloc);
 
     CUDACHECK_TEST(cudaStreamDestroy(put_stream));
     CUDACHECK_TEST(cudaStreamDestroy(wait_stream));

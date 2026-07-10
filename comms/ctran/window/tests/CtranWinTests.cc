@@ -8,6 +8,8 @@
 #include <folly/init/Init.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Checks.h"
@@ -44,6 +46,12 @@ class CtranWinTest : public ctran::CtranDistTestFixture {
     if (isUserBuf) {
       *winBasePtr = commMemAlloc(sizeBytes, bufType, segments);
 
+      // Simulate the CCA memory hook: cache the user buffer's segment so the
+      // window's acquireScopedRegister path succeeds.
+      COMMCHECK_TEST(
+          ctran::RegCache::getInstance()->globalRegister(
+              *winBasePtr, sizeBytes));
+
       res =
           ctranWinRegister((void*)*winBasePtr, sizeBytes, comm, winPtr, hints);
 
@@ -64,6 +72,9 @@ class CtranWinTest : public ctran::CtranDistTestFixture {
   void
   freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
     if (isUserBuf) {
+      // Release the CCA-hook simulation registration (mirrors createWin).
+      COMMCHECK_TEST(
+          ctran::RegCache::getInstance()->globalDeregister(ptr, size));
       commMemFree(ptr, size, bufType);
       segments.erase(
           std::remove_if(
@@ -130,6 +141,11 @@ TEST_P(CtranWinTestParam, winAllocCreate) {
 
   const auto dump1 = comm->ctran_->mapper->dumpExportRegCache();
   EXPECT_EQ(dump1.size(), 0);
+
+  const auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  EXPECT_EQ(ipcRegCache->maxRemRegRefCount(), 0)
+      << "IpcRegCache still holds live NVL IPC imports after window free";
 
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 }
@@ -715,6 +731,11 @@ TEST_F(CtranWinTest, multiSegmentWindowRegister) {
   CUDACHECK_TEST(cudaMemcpy(
       disjointBuf, fillVals.data(), totalSize, cudaMemcpyHostToDevice));
 
+  // Simulate the CCA memory hook so the window's acquireScopedRegister path
+  // finds the disjoint buffer's segments cached.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalRegister(disjointBuf, totalSize));
+
   // Register the disjoint buffer as a user-provided window.
   // This exercises: ctranWinRegister -> allocate(userBufPtr) -> exchange()
   // -> allGatherCtrl() with multi-segment NVL export.
@@ -774,6 +795,14 @@ TEST_F(CtranWinTest, multiSegmentWindowRegister) {
   res = ctranWinFree(win);
   EXPECT_EQ(res, commSuccess);
 
+  const auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  EXPECT_EQ(ipcRegCache->maxRemRegRefCount(), 0)
+      << "IpcRegCache still holds live NVL IPC imports after window free";
+
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalDeregister(disjointBuf, totalSize));
+
   COMMCHECK_TEST(commMemFreeDisjoint(disjointBuf, segSizes));
 }
 
@@ -793,6 +822,12 @@ TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
   // be a real cumem allocation so getDevMemType returns kCumem and the range
   // discovery takes the cumem path; a cudaMalloc/host over-range buffer does
   // not reliably error there.
+  //
+  // Note: the user buffer registers via acquireScopedRegister, whose
+  // regRangeCached runs pinRange (the over-range step above) BEFORE its
+  // allocator-cached-segment check, so the over-range failure still triggers
+  // here and is surfaced as commInvalidUsage. The oversizedBytes trigger stays
+  // required; no globalRegister/CCA-hook simulation is needed for this path.
   //
   // With the RAII guard fix, the failed register frees the window (and its
   // signal-buffer segment), so getSegments() returns to baseline.
@@ -836,6 +871,36 @@ TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
           [cumemBuf](const TestMemSegment& seg) {
             return seg.ptr == cumemBuf;
           }),
+      segments.end());
+}
+
+TEST_F(CtranWinTest, RegisterUncachedUserBufferReturnsInvalidUsageNoLeak) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCudaMalloc;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
+  ASSERT_NE(userBuf, nullptr);
+
+  auto regCache = ctran::RegCache::getInstance();
+  const size_t segsBefore = regCache->getSegments().size();
+
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  const auto res =
+      ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
+  EXPECT_EQ(res, commInvalidUsage);
+  EXPECT_EQ(win, nullptr);
+  EXPECT_EQ(regCache->getSegments().size(), segsBefore)
+      << "ctranWinRegister leaked RegCache segments on uncached user buffer";
+
+  commMemFree(userBuf, sizeBytes, bufType);
+  segments.erase(
+      std::remove_if(
+          segments.begin(),
+          segments.end(),
+          [userBuf](const TestMemSegment& seg) { return seg.ptr == userBuf; }),
       segments.end());
 }
 
