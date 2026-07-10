@@ -692,6 +692,115 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   }
 }
 
+TEST_F(CtranAllgatherPTest, DestroyOneShareRecvBuf) {
+  // Two persistent AGP requests share the SAME recvbuff. Destroying one must
+  // not release imports/registration still needed by the other: with the
+  // per-request ScopedIpcRegHdl deferred release on destroy, an over-release or
+  // stale key would make the surviving request's exec fail or produce wrong
+  // data.
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctpipeline");
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skipping DestroyOneShareRecvBuf test";
+  }
+
+  const auto recvCount = 2097152UL * numRanks;
+  const auto sendCount = recvCount / numRanks;
+
+  char* localSendBuf = nullptr;
+  char* localRecvBuf = nullptr;
+  cumemBufSetup(sendCount, recvCount, &localSendBuf, &localRecvBuf);
+
+  const auto recvRegBytes = recvCount * commTypeSize(dt);
+  const auto sendRegBytes = sendCount * commTypeSize(dt);
+  void* localRecvHdl = nullptr;
+  void* localSendHdl = nullptr;
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+      localRecvBuf, recvRegBytes, &localRecvHdl));
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+      localSendBuf, sendRegBytes, &localSendHdl));
+
+  const auto initMaxRecvCount =
+      recvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  const auto initDt = commInt8;
+
+  // Two persistent requests over the SAME recvbuff on the same comm.
+  meta::comms::Hints hints;
+  CtranPersistentRequest* reqA = nullptr;
+  CtranPersistentRequest* reqB = nullptr;
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          localRecvBuf,
+          initMaxRecvCount,
+          hints,
+          initDt,
+          ctranComm.get(),
+          stream,
+          reqA));
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          localRecvBuf,
+          initMaxRecvCount,
+          hints,
+          initDt,
+          ctranComm.get(),
+          stream,
+          reqB));
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+  // Runs one exec on the given request and verifies every peer chunk.
+  auto runAndVerify = [&](CtranPersistentRequest* request, int iter) {
+    const char sendVal = static_cast<char>(iter * 10 + globalRank);
+    std::vector<char> sendVals(sendRegBytes, sendVal);
+    ASSERT_EQ(
+        cudaMemcpyAsync(
+            localSendBuf,
+            sendVals.data(),
+            sendRegBytes,
+            cudaMemcpyDefault,
+            stream),
+        cudaSuccess);
+    ASSERT_EQ(
+        ctran::allGatherPExec(localSendBuf, sendCount, dt, request),
+        commSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    for (int i = 0; i < numRanks; ++i) {
+      std::vector<char> observedVals(sendRegBytes, 0xFF);
+      ASSERT_EQ(
+          cudaMemcpy(
+              observedVals.data(),
+              localRecvBuf + sendRegBytes * i,
+              sendRegBytes,
+              cudaMemcpyDefault),
+          cudaSuccess);
+      const std::vector<char> expectedVals(
+          sendRegBytes, static_cast<char>(i + iter * 10));
+      EXPECT_EQ(observedVals, expectedVals)
+          << "at rank " << globalRank << " in iteration " << iter
+          << " at chunk received from peer " << i;
+    }
+  };
+
+  // Both requests work before any destroy.
+  runAndVerify(reqA, 0);
+  runAndVerify(reqB, 1);
+
+  // Destroy ONE; the shared recvbuff imports must remain valid for the other.
+  ASSERT_EQ(ctran::allGatherPDestroy(reqA), commSuccess);
+  delete reqA;
+
+  // The surviving request must still execute correctly over the shared buffer.
+  runAndVerify(reqB, 2);
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  ASSERT_EQ(ctran::allGatherPDestroy(reqB), commSuccess);
+  delete reqB;
+
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localSendHdl));
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localRecvHdl));
+  cumemBufCleanUp(localSendBuf, localRecvBuf);
+}
+
 inline std::string getTestName(
     const testing::TestParamInfo<CtranAllgatherPTestParam::ParamType>& info) {
   return std::to_string(std::get<0>(info.param)) + "maxSendCount_" +
