@@ -13,9 +13,12 @@ namespace ctran::allreduce::common {
 /** CUDA threads per block used by the fused AllReduce kernels. */
 static constexpr int kBlockSize = 640;
 
+/** Bytes reduced per thread in one NVL or IB tile; 96B * 640 = 60KB. */
 static constexpr size_t kTileBytesPerThread = 96;
+/** Topology-agnostic tile byte width shared by NVL and IB reductions. */
 static constexpr size_t kTileBytes = kBlockSize * kTileBytesPerThread;
 
+/** Datatype-specific element count for the unified byte tile. */
 template <typename T>
 struct TileElems {
   static constexpr size_t kBytes = kTileBytes;
