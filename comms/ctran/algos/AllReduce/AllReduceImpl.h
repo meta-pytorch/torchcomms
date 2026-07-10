@@ -42,7 +42,7 @@ static inline const std::string allReduceAlgoName(
     case NCCL_ALLREDUCE_ALGO::ctree:
       return "CtranAllReduceTreeDirect";
     case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
-      return "CtranAllReduceRingDirect";
+      return "CtranAllReduceHierarchicalRingDirect";
     default:
       return "Unknown";
   }

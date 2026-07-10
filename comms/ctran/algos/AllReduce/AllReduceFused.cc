@@ -4,11 +4,16 @@
 
 #include <algorithm>
 #include <climits>
+#include <exception>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/MultiPeerTransport.h"
+#endif
 
 namespace ctran::allreduce::fused {
 
@@ -42,6 +47,29 @@ int compute_num_blocks(size_t totalBytes, int cap) {
   return numBlocks;
 }
 
+int compute_num_blocks_ring(size_t segmentBytes, int cap) {
+  // Size-aware launch-geometry cap on the Phase-2 owner-segment size. The
+  // hierarchical ring does 2(W-1) serialized IB steps per pipeline window, so
+  // per-WQE/group overhead dominates at small/medium sizes and fewer blocks win
+  // there; large segments use the full cap. This is a launch-geometry ceiling
+  // on TOP of compute_num_blocks -- NOT a re-implementation of per-block
+  // sizing: the per-block byte threshold and the reduce-to-fit loop live in
+  // compute_num_blocks (single source of truth); this only lowers the ceiling
+  // before delegating. Keyed on segmentBytes (not totalBytes) because Phase 2
+  // operates per owner segment (segmentBytes ~= totalBytes/pMin in HYBRID). The
+  // 4/8/16 tiers are a starting point at this stack position; they are
+  // validated by the block-count sweep in the descendant diff D108428650.
+  int tier;
+  if (segmentBytes <= (1ull << 20)) { // <= 1 MB
+    tier = 4;
+  } else if (segmentBytes <= (32ull << 20)) { // <= 32 MB
+    tier = 8;
+  } else {
+    tier = 16;
+  }
+  return compute_num_blocks(segmentBytes, std::min(cap, tier));
+}
+
 void* compute_phase2_buf(
     void* recvbuff,
     int localRank,
@@ -70,7 +98,8 @@ commResult_t fill_common_kern_args(
     int numBlocks,
     commDataType_t datatype,
     commRedOp_t redOp,
-    CtranComm* comm) {
+    CtranComm* comm,
+    std::optional<std::vector<int>> ibPeers) {
   args.sendbuff = sendbuff;
   args.recvbuff = recvbuff;
   args.phase2Buf = phase2Buf;
@@ -83,7 +112,38 @@ commResult_t fill_common_kern_args(
   args.numBlocks = numBlocks;
   args.datatype = datatype;
   args.redOp = redOp;
-  args.transports = comm->getMultiPeerTransportsPtr();
+  // Transport array for the kernel. Eager mode: the no-peer getter is valid.
+  // Lazy mode: the no-peer getter throws, so the caller MUST hand us an
+  // explicit peer list to materialize -- an empty list is fine (ranks that use
+  // no IB slots still get a valid pointer), but a missing (nullopt) list is a
+  // caller that has not audited its lazy peers, so fail rather than hand the
+  // kernel unmaterialized slots.
+  const bool lazy =
+      comm->multiPeerTransport_ && comm->multiPeerTransport_->is_lazy_mode();
+  if (!lazy) {
+    args.transports = comm->getMultiPeerTransportsPtr();
+  } else if (!ibPeers.has_value()) {
+    CLOGF(
+        ERR,
+        "AllReduce fused: lazy IB connect requires an explicit peer list, "
+        "but the caller provided none");
+    return commInvalidArgument;
+  } else {
+    try {
+      args.transports = comm->getMultiPeerTransportsPtr(*ibPeers);
+    } catch (const std::exception& e) {
+      CLOGF(
+          ERR,
+          "AllReduce fused: lazy peer materialization failed: {}",
+          e.what());
+      return commInternalError;
+    } catch (...) {
+      CLOGF(
+          ERR,
+          "AllReduce fused: lazy peer materialization failed (non-standard exception)");
+      return commInternalError;
+    }
+  }
   if (args.transports == nullptr) {
     CLOGF(
         ERR,
