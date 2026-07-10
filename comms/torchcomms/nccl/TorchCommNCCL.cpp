@@ -454,17 +454,34 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
   // Record start event before NCCL operation
   work->recordStart("send");
 
+  // Wrap in ncclGroupStart/End so the kernel is enqueued on the stream
+  // before we record the end event.  Without the group wrapper,
+  // non-blocking NCCL comms may defer kernel launch past the event
+  // record, causing the end event to fire before the data transfer
+  // completes.  (Matches c10d ProcessGroupNCCL::pointToPoint.)
   NCCL_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->send(
-          tensor.data_ptr(),
-          tensor.numel(),
-          getNcclDataType(tensor),
-          dst,
-          nccl_comm_,
-          stream),
-      "NCCL Send failed");
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
+  try {
+    NCCL_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->send(
+            tensor.data_ptr(),
+            tensor.numel(),
+            getNcclDataType(tensor),
+            dst,
+            nccl_comm_,
+            stream),
+        "NCCL Send failed");
+  } catch (...) {
+    // Close the group even on failure so the comm is not left mid-group for
+    // subsequent operations on this thread. groupEnd's own error is only logged
+    // (not thrown) since we are already propagating the original error.
+    NCCL_CHECK_IGNORE(nccl_api_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
+    throw;
+  }
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
@@ -494,17 +511,30 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
   // Record start event before NCCL operation
   work->recordStart("recv");
 
+  // Wrap in ncclGroupStart/End — see send() comment for rationale.
   NCCL_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->recv(
-          tensor.data_ptr(),
-          tensor.numel(),
-          getNcclDataType(tensor),
-          src,
-          nccl_comm_,
-          stream),
-      "NCCL Recv failed");
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
+  try {
+    NCCL_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->recv(
+            tensor.data_ptr(),
+            tensor.numel(),
+            getNcclDataType(tensor),
+            src,
+            nccl_comm_,
+            stream),
+        "NCCL Recv failed");
+  } catch (...) {
+    // Close the group even on failure so the comm is not left mid-group for
+    // subsequent operations on this thread. groupEnd's own error is only logged
+    // (not thrown) since we are already propagating the original error.
+    NCCL_CHECK_IGNORE(nccl_api_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
+    throw;
+  }
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
