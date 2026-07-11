@@ -170,7 +170,7 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
           rsSummary.toString().c_str(),
           c);
     }
-    NCCLCHECK(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_TREE], 0));
+    NCCLCHECK(ncclTransportP2pSetup(comm, nullptr, 0));
     for (int c = comm->algoConnectedChannels[NCCL_ALGO_PAT]; c < nChannels;
          c++) {
       connectionSummary agSummary;
@@ -190,7 +190,7 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
           agSummary.toString().c_str(),
           c);
     }
-    NCCLCHECK(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_TREE], 0));
+    NCCLCHECK(ncclTransportP2pSetup(comm, nullptr, 0));
   }
   INFO(
       NCCL_INIT,
