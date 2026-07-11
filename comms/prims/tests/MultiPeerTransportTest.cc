@@ -155,7 +155,15 @@ TEST_F(MultiPeerTransportTestFixture, TopologyDiscovery) {
   EXPECT_EQ(transport->get_transport_type(globalRank), TransportType::SELF);
   EXPECT_EQ(transport->get_transport_type(peer), TransportType::P2P_NVL);
   EXPECT_FALSE(transport->nvl_peer_ranks().empty());
-  EXPECT_EQ(static_cast<int>(transport->ib_peer_ranks().size()), numRanks - 1);
+  // Every remote rank must be classified either as NVL-reachable or as an
+  // IB peer (no rank should be "unclassified"). On MNNVL, all peers are
+  // NVL-reachable and ib_peer_ranks is empty; on non-MNNVL, IB covers what
+  // NVL cannot. The old assertion `ib_peer_ranks().size() == numRanks-1`
+  // predates MNNVL and no longer holds when NVLink spans hosts.
+  const int totalClassified =
+      static_cast<int>(transport->nvl_peer_ranks().size()) +
+      static_cast<int>(transport->ib_peer_ranks().size());
+  EXPECT_EQ(totalClassified, numRanks - 1);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -216,7 +224,10 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
   EXPECT_GT(handle.numNvlPeers, 0);
-  EXPECT_EQ(handle.numIbPeers, numRanks - 1);
+  // Every remote rank is classified either as NVL or IB (see
+  // TopologyDiscovery). Old assertion `numIbPeers == numRanks-1` held only on
+  // non-MNNVL topologies where NVL was intra-host and everything remote was IB.
+  EXPECT_EQ(handle.numNvlPeers + handle.numIbPeers, numRanks - 1);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -238,7 +249,23 @@ TEST_F(MultiPeerTransportTestFixture, HostIbgdaAccessorForNvlPeer) {
 
   int peer = (globalRank == 0) ? 1 : 0;
   ASSERT_TRUE(transport->is_nvl_peer(peer));
-  EXPECT_TRUE(transport->has_ibgda(peer));
+  // `has_ibgda(peer)` is a comm-level predicate -- it returns true iff the
+  // MultiPeerTransport built an IBGDA sub-transport at all, which happens
+  // iff at least one peer is IB-classified (see
+  // MultiPeerTransport.cc:172-188). Per-peer classification is strictly
+  // NVL-xor-IB (MultiPeerTransport.cc:111-119), so there is no per-peer
+  // IBGDA fallback provisioned for NVL-classified peers. This test still
+  // asserts the historic dual-path property that on a comm that DOES have
+  // IBGDA, the accessor returns a device even for NVL peers -- something
+  // the underlying MultipeerIbgdaTransport supports for backward
+  // compatibility. On MNNVL every peer is NVL-classified so no IBGDA
+  // sub-transport is built and has_ibgda is false for all peers; skip
+  // cleanly rather than assert has_ibgda == true.
+  if (!transport->has_ibgda(peer)) {
+    GTEST_SKIP()
+        << "comm has no IBGDA sub-transport (all peers NVL-classified); "
+           "dual-path accessor assertion not applicable";
+  }
   EXPECT_NE(transport->get_p2p_ibgda_transport_device(peer), nullptr);
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -270,7 +297,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCudaMalloc) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -305,7 +332,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferMultipleRoundTrips) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
     EXPECT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
     for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
       EXPECT_NE(mappedPtrs[rank], nullptr);
@@ -383,7 +410,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -462,7 +489,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);
@@ -541,7 +568,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd_MultipleRounds) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
     ASSERT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
     for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
       EXPECT_NE(mappedPtrs[rank], nullptr);
@@ -610,9 +637,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCuMemNone_Throws) {
 
   void* localBuf = reinterpret_cast<void*>(devPtr);
 
-  EXPECT_THROW(
-      transport->exchangeNvlBuffer(localBuf, requestedSize),
-      std::runtime_error);
+  EXPECT_THROW(transport->exchangeNvlBuffer(localBuf), std::runtime_error);
 
   cuMemUnmap(devPtr, allocSize);
   cuMemAddressFree(devPtr, allocSize);
@@ -701,7 +726,7 @@ TEST_F(MultiPeerTransportTestFixture, DisableIb_NvlBufferExchange) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf);
   verifyMappedPtrs(*transport, mappedPtrs, localBuf);
 
   transport->unmapNvlBuffers(mappedPtrs);

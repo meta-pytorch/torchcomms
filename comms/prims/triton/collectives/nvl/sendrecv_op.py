@@ -326,14 +326,24 @@ def _launch(
         peer_rank=peer_rank,
         send_numel=send_buf.numel(),
         recv_numel=recv_buf.numel(),
+        # pyrefly: ignore [bad-argument-type]
         TILE_ROWS=config.tile_rows,
+        # pyrefly: ignore [bad-argument-type]
         TILE_COLS=config.tile_cols,
+        # pyrefly: ignore [bad-argument-type]
         BLOCK_STRIDE_ELEMS=block_stride_elems,
+        # pyrefly: ignore [bad-argument-type]
         PIPELINE_DEPTH=_PIPELINE_DEPTH,
+        # pyrefly: ignore [bad-argument-type]
         MAX_BLOCKS_PER_DIR=_MAX_BLOCKS_PER_DIR,
+        # pyrefly: ignore [bad-argument-type]
         NUM_SEND_BLOCKS=num_blocks,
+        # pyrefly: ignore [bad-argument-type]
         MAX_TILES_PER_BLOCK_PER_SLOT=max_tiles_per_block_per_slot,
+        # pyrefly: ignore [bad-argument-type]
         MODE=mode,
+        # pyrefly: ignore [unexpected-keyword]
         num_warps=num_warps,
+        # pyrefly: ignore [unexpected-keyword]
         num_stages=config.num_stages,
     )

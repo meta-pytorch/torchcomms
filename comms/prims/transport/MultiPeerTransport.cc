@@ -2,13 +2,9 @@
 
 #include "comms/prims/transport/MultiPeerTransport.h"
 
-#include <algorithm>
-#include <cerrno>
-#include <cstring>
 #include <stdexcept>
-
-#include <sys/syscall.h>
-#include <unistd.h>
+#include <utility>
+#include <vector>
 
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD, HIPify renames `cuda*` runtime calls to `hip*`; pull in the HIP
@@ -25,6 +21,7 @@
 #include <glog/logging.h>
 
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
+#include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
@@ -474,305 +471,62 @@ MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
 #endif
 }
 
-std::vector<void*> MultiPeerTransport::exchangeNvlBufferCudaIpc(
-    void* localPtr) {
-  cudaIpcMemHandle_t localHandle{};
-  CUDA_CHECK(cudaIpcGetMemHandle(&localHandle, localPtr));
-
-  std::vector<cudaIpcMemHandle_t> allHandles(nvlNRanks_);
-  allHandles[nvlLocalRank_] = localHandle;
-
-  auto result = nvlBootstrapAdapter_
-                    ->allGather(
-                        allHandles.data(),
-                        sizeof(cudaIpcMemHandle_t),
-                        nvlLocalRank_,
-                        nvlNRanks_)
-                    .get();
-  if (result != 0) {
-    throw std::runtime_error("exchangeNvlBufferCudaIpc: allGather failed");
-  }
-
-  std::vector<void*> mappedPtrs(nvlNRanks_, nullptr);
-  mappedPtrs[nvlLocalRank_] = localPtr;
-
-  for (int rank = 0; rank < nvlNRanks_; ++rank) {
-    if (rank == nvlLocalRank_) {
-      continue;
-    }
-    CUDA_CHECK(cudaIpcOpenMemHandle(
-        &mappedPtrs[rank], allHandles[rank], cudaIpcMemLazyEnablePeerAccess));
-  }
-
-  return mappedPtrs;
-}
-
-std::vector<void*> MultiPeerTransport::exchangeNvlBufferFabric(
-    void* localPtr,
-    std::size_t size) {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("Fabric handles require CUDA 12.3+");
-#else
-  if (cuda_driver_lazy_init() != 0) {
-    throw std::runtime_error(
-        "exchangeNvlBufferFabric: CUDA driver not available");
-  }
-
-  // Retain allocation handle and export fabric handle
-  CUmemGenericAllocationHandle allocHandle;
-  CU_CHECK(pfn_cuMemRetainAllocationHandle(&allocHandle, localPtr));
-
-  FabricHandle localFabricHandle{};
-  CU_CHECK(pfn_cuMemExportToShareableHandle(
-      &localFabricHandle, allocHandle, CU_MEM_HANDLE_TYPE_FABRIC, 0));
-  CU_CHECK(pfn_cuMemRelease(allocHandle));
-
-  // Get actual allocated size (may be larger due to granularity)
-  CUdeviceptr basePtr;
-  size_t allocatedSize = 0;
-  CU_CHECK(pfn_cuMemGetAddressRange(
-      &basePtr, &allocatedSize, (CUdeviceptr)localPtr));
-
-  // Exchange fabric handles + allocated sizes
-  struct ExchangeData {
-    FabricHandle handle;
-    size_t allocatedSize;
-  };
-
-  std::vector<ExchangeData> allData(nvlNRanks_);
-  allData[nvlLocalRank_].handle = localFabricHandle;
-  allData[nvlLocalRank_].allocatedSize = allocatedSize;
-
-  auto result =
-      nvlBootstrapAdapter_
-          ->allGather(
-              allData.data(), sizeof(ExchangeData), nvlLocalRank_, nvlNRanks_)
-          .get();
-  if (result != 0) {
-    throw std::runtime_error("exchangeNvlBufferFabric: allGather failed");
-  }
-
-  // Import peer fabric handles
-  int cudaDev = 0;
-  CUdevice cuDev;
-  CUDA_CHECK(cudaGetDevice(&cudaDev));
-  CU_CHECK(pfn_cuDeviceGet(&cuDev, cudaDev));
-
-  NvlExchangeRecord record;
-  record.mode = NvlMemMode::kFabric;
-  record.cuMemPeerPtrs.resize(nvlNRanks_, 0);
-  record.cuMemPeerAllocHandles.resize(nvlNRanks_, 0);
-  record.cuMemPeerSizes.resize(nvlNRanks_, 0);
-
-  std::vector<void*> mappedPtrs(nvlNRanks_, nullptr);
-  mappedPtrs[nvlLocalRank_] = localPtr;
-
-  for (int rank = 0; rank < nvlNRanks_; ++rank) {
-    if (rank == nvlLocalRank_) {
-      continue;
-    }
-
-    size_t peerAllocatedSize = allData[rank].allocatedSize;
-    record.cuMemPeerSizes[rank] = peerAllocatedSize;
-
-    CU_CHECK(pfn_cuMemImportFromShareableHandle(
-        &record.cuMemPeerAllocHandles[rank],
-        const_cast<void*>(static_cast<const void*>(&allData[rank].handle)),
-        CU_MEM_HANDLE_TYPE_FABRIC));
-
-    CUmemAllocationProp prop = {};
-    CU_CHECK(pfn_cuMemGetAllocationPropertiesFromHandle(
-        &prop, record.cuMemPeerAllocHandles[rank]));
-
-    size_t granularity = 0;
-    CU_CHECK(pfn_cuMemGetAllocationGranularity(
-        &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
-
-    CU_CHECK(pfn_cuMemAddressReserve(
-        &record.cuMemPeerPtrs[rank], peerAllocatedSize, granularity, 0, 0));
-
-    CU_CHECK(pfn_cuMemMap(
-        record.cuMemPeerPtrs[rank],
-        peerAllocatedSize,
-        0,
-        record.cuMemPeerAllocHandles[rank],
-        0));
-
-    CUmemAccessDesc accessDesc = {};
-    accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    accessDesc.location.id = cuDev;
-    accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    CU_CHECK(pfn_cuMemSetAccess(
-        record.cuMemPeerPtrs[rank], peerAllocatedSize, &accessDesc, 1));
-
-    mappedPtrs[rank] = reinterpret_cast<void*>(record.cuMemPeerPtrs[rank]);
-  }
-
-  // Store record keyed by the local pointer for cleanup
-  nvlExchangeRecords_[localPtr] = std::move(record);
-
-  return mappedPtrs;
-#endif
-}
-
-std::vector<void*> MultiPeerTransport::exchangeNvlBufferPosixFd(
-    void* localPtr,
-    std::size_t size) {
-#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
-  throw std::runtime_error("POSIX FD cuMem handles require CUDA 12.3+");
-#else
-  if (cuda_driver_lazy_init() != 0) {
-    throw std::runtime_error(
-        "exchangeNvlBufferPosixFd: CUDA driver not available");
-  }
-
-  // Retain allocation handle and export as POSIX file descriptor
-  CUmemGenericAllocationHandle allocHandle;
-  CU_CHECK(pfn_cuMemRetainAllocationHandle(&allocHandle, localPtr));
-
-  int localFd = -1;
-  CU_CHECK(pfn_cuMemExportToShareableHandle(
-      &localFd, allocHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
-  CU_CHECK(pfn_cuMemRelease(allocHandle));
-
-  // Get actual allocated size (may be larger due to granularity)
-  CUdeviceptr basePtr;
-  size_t allocatedSize = 0;
-  CU_CHECK(pfn_cuMemGetAddressRange(
-      &basePtr, &allocatedSize, (CUdeviceptr)localPtr));
-
-  // Exchange {pid, fd, allocatedSize} with NVL peers.
-  // Peers will use pidfd_getfd to duplicate our fd into their fd table.
-  struct ExchangeData {
-    pid_t pid;
-    int fd;
-    size_t allocatedSize;
-  };
-
-  std::vector<ExchangeData> allData(nvlNRanks_);
-  allData[nvlLocalRank_] = {getpid(), localFd, allocatedSize};
-
-  auto result =
-      nvlBootstrapAdapter_
-          ->allGather(
-              allData.data(), sizeof(ExchangeData), nvlLocalRank_, nvlNRanks_)
-          .get();
-  if (result != 0) {
-    close(localFd);
-    throw std::runtime_error("exchangeNvlBufferPosixFd: allGather failed");
-  }
-
-  // Import peer handles via pidfd_open + pidfd_getfd (Linux 5.6+)
-  int cudaDev = 0;
-  CUdevice cuDev;
-  CUDA_CHECK(cudaGetDevice(&cudaDev));
-  CU_CHECK(pfn_cuDeviceGet(&cuDev, cudaDev));
-
-  NvlExchangeRecord record;
-  record.mode = NvlMemMode::kPosixFd;
-  record.localExportedFd = localFd;
-  record.cuMemPeerPtrs.resize(nvlNRanks_, 0);
-  record.cuMemPeerAllocHandles.resize(nvlNRanks_, 0);
-  record.cuMemPeerSizes.resize(nvlNRanks_, 0);
-
-  std::vector<void*> mappedPtrs(nvlNRanks_, nullptr);
-  mappedPtrs[nvlLocalRank_] = localPtr;
-
-  for (int rank = 0; rank < nvlNRanks_; ++rank) {
-    if (rank == nvlLocalRank_) {
-      continue;
-    }
-
-    // Duplicate the remote process's fd into this process
-    int pidfd = static_cast<int>(syscall(SYS_pidfd_open, allData[rank].pid, 0));
-    if (pidfd < 0) {
-      throw std::runtime_error(
-          "exchangeNvlBufferPosixFd: pidfd_open failed for rank " +
-          std::to_string(rank) + ": " + strerror(errno));
-    }
-
-    int importedFd =
-        static_cast<int>(syscall(SYS_pidfd_getfd, pidfd, allData[rank].fd, 0));
-    close(pidfd);
-    if (importedFd < 0) {
-      throw std::runtime_error(
-          "exchangeNvlBufferPosixFd: pidfd_getfd failed for rank " +
-          std::to_string(rank) + ": " + strerror(errno));
-    }
-
-    size_t peerAllocatedSize = allData[rank].allocatedSize;
-    record.cuMemPeerSizes[rank] = peerAllocatedSize;
-
-    CU_CHECK(pfn_cuMemImportFromShareableHandle(
-        &record.cuMemPeerAllocHandles[rank],
-        reinterpret_cast<void*>(static_cast<uintptr_t>(importedFd)),
-        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
-
-    // fd can be closed immediately after import
-    close(importedFd);
-
-    CUmemAllocationProp prop = {};
-    CU_CHECK(pfn_cuMemGetAllocationPropertiesFromHandle(
-        &prop, record.cuMemPeerAllocHandles[rank]));
-
-    size_t granularity = 0;
-    CU_CHECK(pfn_cuMemGetAllocationGranularity(
-        &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
-
-    CU_CHECK(pfn_cuMemAddressReserve(
-        &record.cuMemPeerPtrs[rank], peerAllocatedSize, granularity, 0, 0));
-
-    CU_CHECK(pfn_cuMemMap(
-        record.cuMemPeerPtrs[rank],
-        peerAllocatedSize,
-        0,
-        record.cuMemPeerAllocHandles[rank],
-        0));
-
-    CUmemAccessDesc accessDesc = {};
-    accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    accessDesc.location.id = cuDev;
-    accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    CU_CHECK(pfn_cuMemSetAccess(
-        record.cuMemPeerPtrs[rank], peerAllocatedSize, &accessDesc, 1));
-
-    mappedPtrs[rank] = reinterpret_cast<void*>(record.cuMemPeerPtrs[rank]);
-  }
-
-  nvlExchangeRecords_[localPtr] = std::move(record);
-
-  return mappedPtrs;
-#endif
-}
-
-std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(
-    void* localPtr,
-    std::size_t size) {
+std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(void* localPtr) {
   if (!nvlBootstrapAdapter_ || nvlNRanks_ <= 1) {
     throw std::runtime_error(
         "exchangeNvlBuffer: NVL transport not available or single rank");
   }
 
   NvlMemMode mode = detectNvlMemMode(localPtr);
-  if (mode == NvlMemMode::kFabric) {
-    return exchangeNvlBufferFabric(localPtr, size);
+
+  if (mode == NvlMemMode::kFabric || mode == NvlMemMode::kPosixFd) {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+    throw std::runtime_error("exchangeNvlBuffer: VMM path requires CUDA 12.3+");
+#else
+    if (cuda_driver_lazy_init() != 0) {
+      throw std::runtime_error("exchangeNvlBuffer: CUDA driver not available");
+    }
+
+    int cudaDev = 0;
+    CUdevice cuDev;
+    CUDA_CHECK(cudaGetDevice(&cudaDev));
+    CU_CHECK(pfn_cuDeviceGet(&cuDev, cudaDev));
+
+    // Retain the external VMM allocation's physical handle via
+    // CuMemAllocation::retain -- its destructor releases the retain reference
+    // on both the success path and any exception unwind from
+    // nvlMemExchangeVmm (allGather / import / map failures), preventing a
+    // silent driver-refcount leak. The factory also queries the buffer's
+    // real allocated size via cuMemGetAddressRange -- nvlMemExchangeVmm
+    // needs a granularity-multiple size for peer-side cuMemAddressReserve.
+    auto phys = CuMemAllocation::retain(localPtr);
+
+    auto pm = nvlMemExchangeVmm(
+        *nvlBootstrapAdapter_,
+        nvlLocalRank_,
+        nvlNRanks_,
+        cuDev,
+        phys->handle(),
+        localPtr,
+        phys->size(),
+        /*preferFabric=*/mode == NvlMemMode::kFabric);
+
+    std::vector<void*> mappedPtrs = pm.peerPtrs;
+    nvlExchangeRecords_[localPtr] = NvlExchangeRecord{mode, std::move(pm)};
+    return mappedPtrs;
+#endif
   }
-  if (mode == NvlMemMode::kPosixFd) {
-    return exchangeNvlBufferPosixFd(localPtr, size);
-  }
 
-  auto mappedPtrs = exchangeNvlBufferCudaIpc(localPtr);
-
-  // Store a cudaIpc record for cleanup dispatch
-  NvlExchangeRecord record;
-  record.mode = NvlMemMode::kCudaIpc;
-  nvlExchangeRecords_[localPtr] = std::move(record);
-
+  auto pm = nvlMemExchangeCudaIpc(
+      *nvlBootstrapAdapter_, nvlLocalRank_, nvlNRanks_, localPtr);
+  std::vector<void*> mappedPtrs = pm.peerPtrs;
+  nvlExchangeRecords_[localPtr] =
+      NvlExchangeRecord{NvlMemMode::kCudaIpc, std::move(pm)};
   return mappedPtrs;
 }
 
 void MultiPeerTransport::unmapNvlBuffers(const std::vector<void*>& mappedPtrs) {
-  // Find the exchange record by the self entry (localPtr)
+  // Find the exchange record by the self entry (localPtr).
   void* localPtr = (nvlLocalRank_ >= 0 &&
                     nvlLocalRank_ < static_cast<int>(mappedPtrs.size()))
       ? mappedPtrs[nvlLocalRank_]
@@ -780,43 +534,31 @@ void MultiPeerTransport::unmapNvlBuffers(const std::vector<void*>& mappedPtrs) {
 
   auto it =
       localPtr ? nvlExchangeRecords_.find(localPtr) : nvlExchangeRecords_.end();
+  if (it == nvlExchangeRecords_.end()) {
+    return;
+  }
 
-  bool isCuMem =
-      (it != nvlExchangeRecords_.end() &&
-       (it->second.mode == NvlMemMode::kFabric ||
-        it->second.mode == NvlMemMode::kPosixFd));
-
-  if (isCuMem) {
+  auto& record = it->second;
+  if (record.mode == NvlMemMode::kFabric ||
+      record.mode == NvlMemMode::kPosixFd) {
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
-    if (cuda_driver_lazy_init() != 0) {
-      return;
-    }
-
-    auto& record = it->second;
-    for (int rank = 0; rank < static_cast<int>(mappedPtrs.size()); ++rank) {
-      if (rank == nvlLocalRank_) {
-        continue;
-      }
-      if (record.cuMemPeerPtrs[rank] != 0) {
-        pfn_cuMemUnmap(record.cuMemPeerPtrs[rank], record.cuMemPeerSizes[rank]);
-        pfn_cuMemAddressFree(
-            record.cuMemPeerPtrs[rank], record.cuMemPeerSizes[rank]);
-      }
-      if (record.cuMemPeerAllocHandles[rank] != 0) {
-        pfn_cuMemRelease(record.cuMemPeerAllocHandles[rank]);
-      }
-    }
-    if (record.localExportedFd >= 0) {
-      close(record.localExportedFd);
+    if (cuda_driver_lazy_init() == 0) {
+      // Tear down the peer VAs. Each CuMemMapping co-owns its imported peer
+      // CuMemAllocation (via keepAlive), so clearing the mappings runs
+      // cuMemUnmap + cuMemAddressFree and then releases the imported physical
+      // handle -- the unmap-VA-then-release-handle ordering is preserved
+      // without separate handle bookkeeping.
+      record.mem.vmmMappings.clear();
     }
 #endif
   } else {
-    // cudaIpc path
-    for (int rank = 0; rank < static_cast<int>(mappedPtrs.size()); ++rank) {
-      if (rank == nvlLocalRank_ || mappedPtrs[rank] == nullptr) {
+    // cudaIpc path: close every non-self peer handle.
+    for (int rank = 0; rank < static_cast<int>(record.mem.peerPtrs.size());
+         ++rank) {
+      if (rank == nvlLocalRank_ || record.mem.peerPtrs[rank] == nullptr) {
         continue;
       }
-      cudaError_t err = cudaIpcCloseMemHandle(mappedPtrs[rank]);
+      cudaError_t err = cudaIpcCloseMemHandle(record.mem.peerPtrs[rank]);
       if (err != cudaSuccess) {
         fprintf(
             stderr,
@@ -828,9 +570,7 @@ void MultiPeerTransport::unmapNvlBuffers(const std::vector<void*>& mappedPtrs) {
     }
   }
 
-  if (it != nvlExchangeRecords_.end()) {
-    nvlExchangeRecords_.erase(it);
-  }
+  nvlExchangeRecords_.erase(it);
 }
 
 void MultiPeerTransport::build_device_handle() {
