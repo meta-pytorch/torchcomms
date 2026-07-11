@@ -99,7 +99,12 @@ struct CommonKernArgs {
 
   /** Total number of elements in the user tensor. */
   size_t count;
-  /** Elements per owner segment, equal to `ceil(count / pMin)`. */
+  /**
+   * Elements per owner segment. The base value is `ceil(count / pMin)`, but
+   * some algorithms round it up for alignment (e.g. hierring rounds up to a
+   * 16-byte multiple so sub-shard offsets are 16-aligned); over-padding past
+   * `count` is handled by `actualSegElems`.
+   */
   size_t segmentElems;
 
   /** Number of nodes in the communicator. */
