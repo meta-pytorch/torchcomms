@@ -15,7 +15,15 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#else
+// prims not compiled in; the member/getter are pointer-only, so a forward
+// declaration suffices (mirrors SendRecv/Types.h).
+namespace comms::prims {
+class P2pNvlTransportDevice;
+} // namespace comms::prims
+#endif // defined(ENABLE_PRIMS)
 #include "comms/utils/logger/Logger.h"
 
 #include <folly/Synchronized.h>
