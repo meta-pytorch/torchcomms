@@ -1,5 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+// This entire translation unit is the comms::prims-backed NVLink P2P sendrecv
+// kernel. It is compiled only when prims is enabled; otherwise it becomes an
+// empty TU (mirrors AllToAll/DeviceAllToAllvPipes.cu,
+// AllReduce/AllReduceIbTree.cu).
+#if defined(ENABLE_PRIMS)
+
 #include <stdio.h>
 #include <cstddef>
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -108,3 +114,5 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
+
+#endif // defined(ENABLE_PRIMS)

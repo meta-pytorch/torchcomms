@@ -10,13 +10,17 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
+#if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#endif // defined(ENABLE_PRIMS)
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
+#if defined(ENABLE_PRIMS)
 using comms::prims::NvlChannelState;
+#endif // defined(ENABLE_PRIMS)
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
@@ -80,11 +84,13 @@ CtranAlgo::~CtranAlgo() {
   // Note: No destructor calls needed since objects were constructed on CPU
   // and copied to device memory. The CPU objects were already destructed
   // when they went out of scope after cudaMemcpy.
+#if defined(ENABLE_PRIMS)
   if (nvlTransports_) {
     FB_COMMCHECKIGNORE(
         ctran::utils::commCudaFree(nvlTransports_, &this->comm_->logMetaData_));
     nvlTransports_ = nullptr;
   }
+#endif // defined(ENABLE_PRIMS)
 
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
@@ -114,8 +120,19 @@ inline size_t alignUp(size_t value, size_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
 
+// NvlChannelState is a comms/prims type gated behind ENABLE_PRIMS. Pin its
+// size/alignment so the OFF build computes the same NVL shared-memory layout
+// without the prims header; the static_asserts (compiled only with prims)
+// catch drift.
+constexpr size_t kNvlChannelStateSize = 384;
+constexpr size_t kNvlChannelStateAlign = 128;
+#if defined(ENABLE_PRIMS)
+static_assert(sizeof(NvlChannelState) == kNvlChannelStateSize);
+static_assert(alignof(NvlChannelState) == kNvlChannelStateAlign);
+#endif // defined(ENABLE_PRIMS)
+
 inline size_t getPerPeerChannelStatesSize() {
-  return sizeof(NvlChannelState) * CTRAN_ALGO_MAX_THREAD_BLOCKS;
+  return kNvlChannelStateSize * CTRAN_ALGO_MAX_THREAD_BLOCKS;
 }
 
 inline size_t getChannelStatesBaseOffset(
@@ -123,7 +140,7 @@ inline size_t getChannelStatesBaseOffset(
     size_t nvlSharedDevbufSize) {
   return alignUp(
       (nLocalRanks - 1) * (sizeof(CtranAlgoDeviceSync) + nvlSharedDevbufSize),
-      alignof(NvlChannelState));
+      kNvlChannelStateAlign);
 }
 
 inline size_t getBcastBufOffset(int nLocalRanks, size_t nvlSharedDevbufSize) {
@@ -131,6 +148,7 @@ inline size_t getBcastBufOffset(int nLocalRanks, size_t nvlSharedDevbufSize) {
       (nLocalRanks - 1) * getPerPeerChannelStatesSize();
 }
 
+#if defined(ENABLE_PRIMS)
 NvlChannelState* partitionChannelStates(
     void* mappedDevShmPtr,
     int nLocalRanks,
@@ -143,6 +161,7 @@ NvlChannelState* partitionChannelStates(
       reinterpret_cast<char*>(channelStateBase_d) +
       pos * getPerPeerChannelStatesSize());
 }
+#endif // defined(ENABLE_PRIMS)
 
 // Helper to calculate sync and staging buffer pointers for a given peer
 std::tuple<CtranAlgoDeviceSync*, void*> partitionDevShm(
@@ -290,6 +309,7 @@ commResult_t CtranAlgo::initKernelResources() {
       sizeof(CtranAlgoDeviceState),
       cudaMemcpyHostToDevice));
 
+#if defined(ENABLE_PRIMS)
   // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
   FB_COMMCHECK(
       ctran::utils::commCudaMalloc(
@@ -348,6 +368,7 @@ commResult_t CtranAlgo::initKernelResources() {
         sizeof(comms::prims::P2pNvlTransportDevice),
         cudaMemcpyHostToDevice));
   }
+#endif // defined(ENABLE_PRIMS)
 
   this->isResInitialized_ = true;
 
@@ -416,12 +437,14 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
             cudaMemcpyHostToDevice),
         comm->logMetaData_);
 
+#if defined(ENABLE_PRIMS)
     void* channelStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
         getChannelStatesBaseOffset(nLocalRanks, nvlSharedDevbufSize) +
         pos * getPerPeerChannelStatesSize();
     FB_CUDACHECKTHROW_EX(
         cudaMemset(channelStatePtr_d, 0, getPerPeerChannelStatesSize()),
         comm->logMetaData_);
+#endif // defined(ENABLE_PRIMS)
   }
 
   // Exchange IPC handle with all ranks in the NVL domain
