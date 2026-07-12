@@ -114,6 +114,54 @@ TEST(CudaDeviceAdapterTest, ExportDmaBuffPopulatesFdOffsetAndIova) {
   EXPECT_EQ(res->iova, reinterpret_cast<uint64_t>(ptr));
 }
 
+TEST(CudaDeviceAdapterTest, ExportDmaBuffDataDirectSelectsPcieMapping) {
+  /*
+   * The DmaBufMapping::DataDirect route must map the buffer over PCIe BAR1 so
+   * the exported fd can back an mlx5dv Data-Direct MR. The observable contract
+   * is the range flag handed to the driver: DataDirect => the PCIe flag,
+   * Default => 0 (asserted by ExportDmaBuffPopulatesFdOffsetAndIova). On CUDA
+   * older than 12.8 the PCIe mapping cannot be expressed, so DataDirect must
+   * fail cleanly rather than silently fall back to the C2C mapping.
+   */
+  auto cudaApi = std::make_shared<NiceMock<MockCudaApi>>();
+  auto driverApi = std::make_shared<NiceMock<MockCudaDriverApi>>();
+  CudaDeviceAdapter adapter(cudaApi, driverApi);
+
+  const size_t pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  void* backingRaw = nullptr;
+  ASSERT_EQ(::posix_memalign(&backingRaw, pageSize, pageSize), 0);
+  std::unique_ptr<void, decltype(&::free)> backing(backingRaw, &::free);
+
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
+  constexpr int kFakeFd = 7;
+  EXPECT_CALL(
+      *driverApi,
+      cuMemGetHandleForAddressRange(
+          _,
+          _,
+          _,
+          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+          static_cast<unsigned long long>(
+              CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE)))
+      .WillOnce([&](void* handle,
+                    CUdeviceptr,
+                    size_t,
+                    CUmemRangeHandleType,
+                    unsigned long long) {
+        *static_cast<int*>(handle) = kFakeFd;
+        return Ok();
+      });
+  auto res = adapter.exportDmaBuff(
+      /*deviceId=*/0, backing.get(), pageSize, DmaBufMapping::DataDirect);
+  ASSERT_FALSE(res.hasError());
+  EXPECT_EQ(res->fd, kFakeFd);
+#else
+  auto res = adapter.exportDmaBuff(
+      /*deviceId=*/0, backing.get(), pageSize, DmaBufMapping::DataDirect);
+  EXPECT_TRUE(res.hasError());
+#endif
+}
+
 TEST(CudaDeviceAdapterTest, ExportDmaBuffRejectsNullPtr) {
   auto cudaApi = std::make_shared<NiceMock<MockCudaApi>>();
   auto driverApi = std::make_shared<NiceMock<MockCudaDriverApi>>();

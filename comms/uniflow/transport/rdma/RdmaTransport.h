@@ -62,6 +62,12 @@ struct RdmaTransportConfig {
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
   uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
   RdmaSlabPoolConfig slabPoolConfig{.slabNum = 0}; /* Disabled by default. */
+  /* Register GPU memory over the mlx5 Data Direct path (NIC<->GPU via PCIe
+   * BAR1) instead of the standard dmabuf path (which traverses the Grace C2C
+   * link on GB300). Only applies to NICs that expose a data-direct sysfs path;
+   * other NICs fall back to the standard path. Default off = existing behavior.
+   */
+  bool dataDirect{false};
 };
 
 /*
@@ -686,6 +692,12 @@ class RdmaTransportFactory : public TransportFactory {
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
   const RdmaTransportConfig config_;
   std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  /// Set once the "Data Direct requested but unavailable" fallback has been
+  /// logged, so this per-factory-invariant warning fires at most once rather
+  /// than on every registerSegment call. Atomic so the check-then-set latch is
+  /// race-free if registerSegment is ever called concurrently.
+  std::atomic<bool> dataDirectFallbackWarned_{false};
 };
 
 } // namespace uniflow

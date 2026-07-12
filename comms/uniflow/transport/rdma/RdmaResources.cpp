@@ -2,6 +2,11 @@
 
 #include "comms/uniflow/transport/rdma/RdmaResources.h"
 
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
+#include <memory>
+
 #include "comms/uniflow/logging/Logger.h"
 
 namespace uniflow {
@@ -9,6 +14,36 @@ namespace uniflow {
 namespace {
 
 constexpr uint8_t kDefaultRoceV2GidIndex = 3;
+
+/// Parse a whole hex token to a non-negative value, or -1 if it is empty or not
+/// entirely valid hex (strtol otherwise silently yields 0 for non-hex input).
+long parseHexToken(const std::string& token) {
+  // Require the first character to be a hex digit: strtol would otherwise
+  // accept a leading '+'/'-' sign (e.g. "+ff") or skip leading whitespace, but
+  // a PCIe domain token is bare hex.
+  if (token.empty() ||
+      std::isxdigit(static_cast<unsigned char>(token[0])) == 0) {
+    return -1;
+  }
+  char* end = nullptr;
+  errno = 0;
+  long value = std::strtol(token.c_str(), &end, 16);
+  // Reject trailing junk, negatives, and overflow (ERANGE -> LONG_MAX).
+  if (end != token.c_str() + token.size() || value < 0 || errno == ERANGE) {
+    return -1;
+  }
+  return value;
+}
+
+/// Parse the hex PCIe domain from a "domain:bus:device.function" prefix (-1 if
+/// no ':' or the domain token is not valid hex).
+long parsePciDomainFromBusId(const std::string& busId) {
+  auto colon = busId.find(':');
+  if (colon == std::string::npos) {
+    return -1;
+  }
+  return parseHexToken(busId.substr(0, colon));
+}
 
 /// True if @p gid is an IPv4-mapped IPv6 address (::ffff:a.b.c.d).
 bool isIpv4MappedGid(const ibv_gid& gid) {
@@ -75,6 +110,17 @@ NicResources::NicResources(
     }
     dmaBufSupported = dmaBufResult.value();
 
+    /*
+     * Probe for mlx5 Data Direct: a NIC with a dedicated GPU<->NIC PCIe path
+     * exposes a data-direct sysfs path. Optional capability — a missing path
+     * (or an mlx5dv library without the symbol) simply leaves dataDirect false.
+     */
+    char ddPath[256] = {};
+    dataDirect =
+        !ibvApi->mlx5dvGetDataDirectSysfsPath(ctx, ddPath, sizeof(ddPath))
+             .hasError() &&
+        ddPath[0] != '\0';
+
     ibv_port_attr portAttr{};
     auto portStatus = ibvApi->queryPort(ctx, portNum, &portAttr);
     if (portStatus.hasError()) {
@@ -107,6 +153,7 @@ NicResources::NicResources(NicResources&& other) noexcept
       portNum(other.portNum),
       dmaBufSupported(other.dmaBufSupported),
       numaNode(other.numaNode),
+      dataDirect(other.dataDirect),
       ibvApi(std::move(other.ibvApi)) {
   other.ctx = nullptr;
   other.pd = nullptr;
@@ -230,6 +277,89 @@ uint8_t NicResources::resolveGidIndex(
       std::to_string(portNum) + " and default GID index " +
       std::to_string(kDefaultRoceV2GidIndex) + " out of range (gid_tbl_len=" +
       std::to_string(portAttr.gid_tbl_len) + ")");
+}
+
+// ---------------------------------------------------------------------------
+// Data Direct NIC selection
+// ---------------------------------------------------------------------------
+
+bool dataDirectDomainMatchesGpu(
+    const std::string& ddSysfsPath,
+    const std::string& gpuPciBusId) {
+  long gpuDomain = parsePciDomainFromBusId(gpuPciBusId);
+  if (gpuDomain < 0) {
+    return false;
+  }
+  /*
+   * A data-direct sysfs path looks like
+   * "/sys/devices/pci0008:00/0008:00:00.0/...": the PCIe domain is the hex
+   * token right after "/pci", up to the next ':'. Every device under a
+   * "/sys/devices/pciDDDD:BB" root shares that root's domain DDDD (a different
+   * domain lives under its own "pciEEEE:BB" root, i.e. a separate path), so the
+   * first (and only) "pci" component is authoritative — nested BDFs do not
+   * carry a "pci" prefix, so there is no deeper domain token to prefer.
+   */
+  auto pci = ddSysfsPath.find("/pci");
+  if (pci == std::string::npos) {
+    return false;
+  }
+  size_t domStart = pci + 4;
+  auto colon = ddSysfsPath.find(':', domStart);
+  if (colon == std::string::npos) {
+    return false;
+  }
+  long ddDomain = parseHexToken(ddSysfsPath.substr(domStart, colon - domStart));
+  return ddDomain >= 0 && gpuDomain == ddDomain;
+}
+
+std::vector<std::string> selectDataDirectNicsForGpu(
+    IbvApi& ibvApi,
+    const std::vector<std::string>& candidateNics,
+    const std::string& gpuPciBusId) {
+  std::vector<std::string> matched;
+  int numDevices = 0;
+  auto listResult = ibvApi.getDeviceList(&numDevices);
+  if (listResult.hasError()) {
+    return matched;
+  }
+  ibv_device** list = listResult.value();
+
+  for (const auto& name : candidateNics) {
+    ibv_device* device = nullptr;
+    for (int i = 0; i < numDevices; ++i) {
+      auto nameResult = ibvApi.getDeviceName(list[i]);
+      if (!nameResult.hasError() && name == nameResult.value()) {
+        device = list[i];
+        break;
+      }
+    }
+    if (device == nullptr) {
+      continue;
+    }
+    auto ctxResult = ibvApi.openDevice(device);
+    if (ctxResult.hasError()) {
+      continue;
+    }
+    ibv_context* ctx = ctxResult.value();
+    // Close the context on every exit path (incl. an exception from the
+    // dlopen'd mlx5dv call or the string parsing below), not just the success
+    // path.
+    auto closeCtx = [&ibvApi](ibv_context* c) noexcept {
+      (void)ibvApi.closeDevice(c);
+    };
+    std::unique_ptr<ibv_context, decltype(closeCtx)> ctxGuard(ctx, closeCtx);
+
+    char ddPath[256] = {};
+    auto ddStatus =
+        ibvApi.mlx5dvGetDataDirectSysfsPath(ctx, ddPath, sizeof(ddPath));
+    if (!ddStatus.hasError() &&
+        dataDirectDomainMatchesGpu(ddPath, gpuPciBusId)) {
+      matched.push_back(name);
+    }
+  }
+
+  ibvApi.freeDeviceList(list);
+  return matched;
 }
 
 } // namespace uniflow
