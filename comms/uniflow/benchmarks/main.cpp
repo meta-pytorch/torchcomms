@@ -42,7 +42,10 @@ struct CliOptions {
   int numNics{0};
   size_t chunkSize{512 * 1024};
   int cudaDevice{-1};
+  std::vector<int> cudaDevices;
+  std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
+  bool dataDirect{false};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
   int pipelineDepth{2};
@@ -78,6 +81,34 @@ std::vector<std::string> parseStringList(const std::string& s) {
   return result;
 }
 
+/*
+ * Parse a per-GPU NIC map: groups separated by ';', NICs within a group by ','.
+ * e.g. "mlx5_0,mlx5_1;mlx5_2,mlx5_3" -> [[mlx5_0, mlx5_1], [mlx5_2, mlx5_3]].
+ */
+std::vector<std::vector<std::string>> parseNicGroups(const std::string& s) {
+  std::vector<std::vector<std::string>> groups;
+  std::istringstream iss(s);
+  std::string group;
+  while (std::getline(iss, group, ';')) {
+    /*
+     * Preserve empty groups (leading or adjacent ';'). Dropping them would
+     * silently collapse the map and shift each GPU's NICs onto the wrong GPU;
+     * keeping them lets the per-GPU count check and NIC selection report a
+     * clear error for the empty slot instead.
+     */
+    groups.push_back(parseStringList(group));
+  }
+  /*
+   * getline emits no token after a trailing ';', so a trailing empty group must
+   * be appended explicitly to stay consistent with leading/adjacent empties
+   * (e.g. "mlx5_0;" -> two groups, the second empty).
+   */
+  if (!s.empty() && s.back() == ';') {
+    groups.emplace_back();
+  }
+  return groups;
+}
+
 void printUsage(const char* prog) {
   std::cerr
       << "Usage: " << prog << " [OPTIONS]\n"
@@ -105,6 +136,9 @@ void printUsage(const char* prog) {
       << "  --pipeline-depth <n>   Send/recv staging pipeline depth (default: 2)\n"
       << "  --slab-size <bytes>    Staging slab size in bytes (default: chunk-size)\n"
       << "  --slab-num <n>         Number of staging slabs (default: pipeline-depth)\n"
+      << "  --cuda-devices <list>  Comma-separated GPU indices for single-process multi-GPU (overrides --cuda-device)\n"
+      << "  --gpu-nics <groups>    Per-GPU NIC map for multi-GPU: ';'-separated groups of comma-separated NICs, one per --cuda-devices entry\n"
+      << "  --data-direct          Register GPU memory over the mlx5 Data Direct path (default: off)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -143,6 +177,9 @@ CliOptions parseArgs(int argc, char** argv) {
       {"pipeline-depth", required_argument, nullptr, 260},
       {"slab-size", required_argument, nullptr, 261},
       {"slab-num", required_argument, nullptr, 262},
+      {"data-direct", no_argument, nullptr, 263},
+      {"cuda-devices", required_argument, nullptr, 264},
+      {"gpu-nics", required_argument, nullptr, 265},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -202,6 +239,15 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 'B':
         opts.bidirectional = true;
+        break;
+      case 263:
+        opts.dataDirect = true;
+        break;
+      case 264:
+        opts.cudaDevices = parseIntList(optarg);
+        break;
+      case 265:
+        opts.gpuNicGroups = parseNicGroups(optarg);
         break;
       case 'd':
         opts.direction = optarg;
@@ -387,12 +433,15 @@ int main(int argc, char** argv) {
   config.warmupIterations = opts.warmup;
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
+  config.dataDirect = opts.dataDirect;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
   config.txDepth = opts.txDepth;
   config.numNics = opts.numNics;
   config.chunkSize = opts.chunkSize;
   config.cudaDevice = opts.cudaDevice;
+  config.cudaDevices = opts.cudaDevices;
+  config.gpuNicGroups = opts.gpuNicGroups;
   config.numStreams = opts.numStreams;
   config.topology = opts.topology;
   config.pipelineDepth = opts.pipelineDepth;
