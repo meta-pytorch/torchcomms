@@ -13,6 +13,19 @@ namespace uniflow {
 class CudaApi;
 class CudaDriverApi;
 
+/// How a device buffer is mapped when exported as a DMA-BUF.
+enum class DmaBufMapping {
+  /// Standard mapping. On Grace-based systems (e.g. GB300) NIC<->GPU traffic
+  /// traverses the C2C link.
+  Default,
+  /// mlx5 Data Direct: map the buffer over the NIC's PCIe BAR1 path so the NIC
+  /// DMAs straight to/from GPU HBM, bypassing the Grace C2C link. The exported
+  /// fd must back an `mlx5dv_reg_dmabuf_mr` with
+  /// `MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT`. Only meaningful on a Data-Direct-
+  /// capable NIC; requires CUDA >= 12.8.
+  DataDirect,
+};
+
 /// Description of a DMA-BUF region exported from device memory and
 /// suitable for use with `ibv_reg_dmabuf_mr`.
 ///
@@ -30,6 +43,10 @@ struct DmaBuff {
   /// Registration bbase for this DmaBuff to be used when creating WQEs.
   /// This is to be subtracted from a device pointer to form the WQE address.
   uint64_t registrationBase{0};
+  /// Full length of the exported dma-buf (page-aligned, covering `offset` +
+  /// `len`). mlx5 Data Direct registers the whole dma-buf from its aligned
+  /// base (offset 0), so the DD MR uses this length rather than `len`.
+  size_t dmaBufLen{0};
 };
 
 /// DeviceAdapter abstracts device-specific host pinned memory allocation
@@ -53,10 +70,16 @@ class DeviceAdapter {
   virtual Result<bool> isDmaBuffSupported(int deviceId) = 0;
 
   /// Export a DMA-BUF descriptor for `[ptr, ptr + len)` on `deviceId`.
+  /// `mapping` selects the NIC<->GPU route (see DmaBufMapping); `DataDirect`
+  /// requires a Data-Direct-capable NIC and, on GB300, a buffer whose base is
+  /// VMM-granularity (2 MB) aligned so the returned `offset` is 0.
   /// The caller must call `closeDmaBuff()` on the returned value once the
   /// resulting MR has been registered.
-  virtual Result<DmaBuff>
-  exportDmaBuff(int deviceId, void* ptr, size_t len) = 0;
+  virtual Result<DmaBuff> exportDmaBuff(
+      int deviceId,
+      void* ptr,
+      size_t len,
+      DmaBufMapping mapping = DmaBufMapping::Default) = 0;
 
   /// Translate a client-supplied device pointer (which may be an opaque
   /// allocation handle / UID) to the bare device address the NIC needs to

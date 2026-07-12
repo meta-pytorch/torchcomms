@@ -22,7 +22,11 @@ class CudaDeviceAdapter : public DeviceAdapter {
   Result<void*> hostGetDevicePointer(void* hostPtr) override;
 
   Result<bool> isDmaBuffSupported(int deviceId) override;
-  Result<DmaBuff> exportDmaBuff(int deviceId, void* ptr, size_t len) override;
+  Result<DmaBuff> exportDmaBuff(
+      int deviceId,
+      void* ptr,
+      size_t len,
+      DmaBufMapping mapping = DmaBufMapping::Default) override;
   Status closeDmaBuff(DmaBuff& buff) override;
 
  private:
