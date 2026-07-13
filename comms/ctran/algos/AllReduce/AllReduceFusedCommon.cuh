@@ -51,7 +51,7 @@ __device__ __forceinline__ void scalarReduce(
 /**
  * Accumulate `staging` into `accum` using Prims tiles when alignment allows.
  */
-template <typename T, int kTileElems, int kGroupSize>
+template <typename T, int kTileElems, int kBlockSize>
 __device__ __forceinline__ void tileReduce(
     T* accum,
     const T* staging,
@@ -67,20 +67,76 @@ __device__ __forceinline__ void tileReduce(
 
   for (size_t t = 0; t < nFullTiles; t++) {
     auto acc =
-        comms::prims::tile_load<T, kTileElems, kGroupSize>(accum, t, group);
+        comms::prims::tile_load<T, kTileElems, kBlockSize>(accum, t, group);
     comms::prims::
-        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kGroupSize>(
+        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kBlockSize>(
             acc, staging, t, group);
-    comms::prims::tile_store<T, kTileElems, kGroupSize>(accum, t, acc, group);
+    comms::prims::tile_store<T, kTileElems, kBlockSize>(accum, t, acc, group);
   }
   if (rem > 0) {
-    auto acc = comms::prims::tile_load<T, kTileElems, kGroupSize>(
+    auto acc = comms::prims::tile_load<T, kTileElems, kBlockSize>(
         accum, nFullTiles, group, rem);
     comms::prims::
-        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kGroupSize>(
+        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kBlockSize>(
             acc, staging, nFullTiles, group, rem);
-    comms::prims::tile_store<T, kTileElems, kGroupSize>(
+    comms::prims::tile_store<T, kTileElems, kBlockSize>(
         accum, nFullTiles, acc, group, rem);
+  }
+}
+
+/**
+ * Write `a + b` into a distinct `out` buffer without assuming tile alignment.
+ * Scalar fallback for tileReduceCopy (small buffers / unaligned pointers).
+ */
+template <typename T>
+__device__ __forceinline__ void scalarReduceCopy(
+    T* out,
+    const T* a,
+    const T* b,
+    size_t nelems,
+    comms::prims::ThreadGroup& group) {
+  for (size_t i = group.thread_id_in_group; i < nelems; i += group.group_size) {
+    out[i] = a[i] + b[i];
+  }
+}
+
+/**
+ * Write `a + b` into a distinct `out` buffer using Prims tiles when alignment
+ * allows, falling back to a scalar loop otherwise. Distinct-buffer analogue of
+ * tileReduce (which accumulates in place). Used by the ring reduce-scatter
+ * forward step (fwd_staging = staging + local_input).
+ */
+template <typename T, int kTileElems, int kBlockSize>
+__device__ __forceinline__ void tileReduceCopy(
+    T* out,
+    const T* a,
+    const T* b,
+    size_t nelems,
+    comms::prims::ThreadGroup& group) {
+  if (!isAligned16(out) || !isAligned16(a) || !isAligned16(b) ||
+      nelems < kTileElems) {
+    scalarReduceCopy(out, a, b, nelems, group);
+    return;
+  }
+
+  const size_t nFullTiles = nelems / kTileElems;
+  const size_t rem = nelems % kTileElems;
+
+  for (size_t t = 0; t < nFullTiles; t++) {
+    auto acc = comms::prims::tile_load<T, kTileElems, kBlockSize>(a, t, group);
+    comms::prims::
+        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kBlockSize>(
+            acc, b, t, group);
+    comms::prims::tile_store<T, kTileElems, kBlockSize>(out, t, acc, group);
+  }
+  if (rem > 0) {
+    auto acc = comms::prims::tile_load<T, kTileElems, kBlockSize>(
+        a, nFullTiles, group, rem);
+    comms::prims::
+        tile_load_accumulate<T, comms::prims::SumOp, kTileElems, kBlockSize>(
+            acc, b, nFullTiles, group, rem);
+    comms::prims::tile_store<T, kTileElems, kBlockSize>(
+        out, nFullTiles, acc, group, rem);
   }
 }
 
@@ -180,6 +236,35 @@ struct IbReduceCopy {
 
     tileReduce<T, common::TileElems<T>::k, common::kBlockSize>(
         accum, staged, nelems, group);
+#endif
+  }
+
+  /**
+   * Reduce-forward for the ring reduce-scatter: writes `fwd_staging = staging +
+   * local_input`, alignment-safe (tile fast path when 16B-aligned, scalar
+   * fallback otherwise). `dst` is unused -- the reduce-scatter forwards without
+   * a local store. `local_input` is the transfer base and MUST be indexed by
+   * `byteOffset`: the transport advances `staging`/`fwd_staging` per sub-chunk
+   * but passes `local_input` un-advanced (see P2pIbTransportDeviceDecl.cuh).
+   */
+  template <typename... Args>
+  __device__ __forceinline__ static void forward(
+      char* /* dst */,
+      char* fwd_staging,
+      const char* staging,
+      size_t nbytes,
+      comms::prims::ThreadGroup& group,
+      size_t byteOffset,
+      const char* local_input,
+      Args...) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    T* fwd = reinterpret_cast<T*>(fwd_staging);
+    const T* staged = reinterpret_cast<const T*>(staging);
+    const T* local = reinterpret_cast<const T*>(local_input + byteOffset);
+    const size_t nelems = nbytes / sizeof(T);
+
+    tileReduceCopy<T, common::TileElems<T>::k, common::kBlockSize>(
+        fwd, staged, local, nelems, group);
 #endif
   }
 };

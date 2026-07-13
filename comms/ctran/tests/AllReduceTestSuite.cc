@@ -246,7 +246,7 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
    */
   void SetUp() override {
     ctran::CtranDistTestFixture::SetUp(envOverrides());
-    ctranComm = makeCtranComm();
+    ctranComm = makeCtranComm(ibLazyConnect());
   }
 
   void TearDown() override {
@@ -287,8 +287,11 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     }
 
     constexpr uint8_t kGuardPattern = 0xA5;
+    // Trailing guard sized to catch a worst-case 16B-rounded tail overwrite
+    // (e.g. transport-delegated padding leaking past the payload end).
+    constexpr size_t kSuffixGuardBytes = 16;
     const size_t bytes = count * commTypeSize(datatype);
-    const size_t allocBytes = bytes + bufferOffsetBytes;
+    const size_t allocBytes = bufferOffsetBytes + bytes + kSuffixGuardBytes;
     DeviceBuffer sendbuf = makeDeviceBuffer(allocBytes);
     DeviceBuffer recvbuf = inPlace ? nullptr : makeDeviceBuffer(allocBytes);
     DeviceBuffer expectedBuf = makeDeviceBuffer(bytes);
@@ -358,9 +361,19 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     }
 
     CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+    // Prefix guard: bytes before the (optionally offset) payload.
     expectDeviceBytePattern(sendbuf.get(), bufferOffsetBytes, kGuardPattern);
+    // Suffix guard: bytes after the payload end -- catches tail overwrites.
+    expectDeviceBytePattern(
+        static_cast<char*>(sendbuf.get()) + bufferOffsetBytes + bytes,
+        kSuffixGuardBytes,
+        kGuardPattern);
     if (!inPlace) {
       expectDeviceBytePattern(recvbuf.get(), bufferOffsetBytes, kGuardPattern);
+      expectDeviceBytePattern(
+          static_cast<char*>(recvbuf.get()) + bufferOffsetBytes + bytes,
+          kSuffixGuardBytes,
+          kGuardPattern);
     }
 
     for (int repeat = 1; repeat < kDeterminismRepeats; ++repeat) {
@@ -401,6 +414,9 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
       case NCCL_ALLREDUCE_ALGO::ctree:
         return ctranAllReduceTree(
             sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
+      case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+        return ctranAllReduceHierarchicalRing(
+            sendbuf, recvbuf, count, datatype, redOp, comm, stream, timeout);
       default:
         return commInvalidArgument;
     }
@@ -429,6 +445,12 @@ class AllReduceTestSuite : public ctran::CtranDistTestFixture,
     envs.emplace_back("NCCL_CTRAN_BACKENDS", "socket, nvl");
 #endif
     return envs;
+  }
+
+  // Whether to construct the communicator with lazy IB connect enabled.
+  // Overridden by the lazy fixture; base tests use eager connect.
+  virtual bool ibLazyConnect() const {
+    return false;
   }
 };
 
@@ -727,7 +749,7 @@ TEST_P(CtranAllReduceBlockCapCorrectnessTest, Correctness) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    CtranAllReduce,
+    CtranAllReduceTree,
     CtranAllReduceCorrectnessTest,
     ::testing::ValuesIn(allReduceParams()),
     correctnessTestName);
@@ -737,6 +759,69 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllReduceBlockCapCorrectnessTest,
     ::testing::ValuesIn(allReduceBlockCapParams()),
     blockCapCorrectnessTestName);
+
+#if defined(CTRAN_ALLREDUCE_TEST_IB_ONLY) || \
+    defined(CTRAN_ALLREDUCE_TEST_HYBRID)
+// Ring Phase 2 requires nNodes > 1.
+// cthierarchical_ring supports fp32 and fp16, so sweep the full datatype axis.
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduceRing,
+    CtranAllReduceCorrectnessTest,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::ValuesIn(allReduceDataTypes()),
+        ::testing::Bool()),
+    correctnessTestName);
+
+// NOTE: unsupported (datatype, redOp) for cthierarchical_ring are rejected on
+// the host with commInvalidArgument (no silent fallback; see
+// AllReduceIbRing.cc), as are the defensive IB-transport guards (null
+// multiPeerTransport_, non-P2P_IBGDA neighbor). These are intentionally not
+// unit-tested per-variant here: the dtype/op-rejection contract moves to the
+// unified dtype/op matrix shared across tree and ring, and the transport guards
+// are impractical to trigger from this distributed fixture. Lazy IB connect IS
+// supported for the ring: the ring neighbors are materialized on-demand via
+// get_device_handle(peers) (see AllReduceIbRing.cc / AllReduceFused.cc),
+// covered by the CtranAllReduceRingLazy instantiation below. Tree lazy support
+// is a follow-up.
+
+// Lazy-connect coverage: exercise the ring with lazy IB connect enabled so the
+// ring-neighbor IBGDA peers are materialized on-demand inside
+// fill_common_kern_args (get_device_handle(peers)). A dedicated fixture
+// subclass is required because a TEST_P body is bound to its fixture class; it
+// enables lazy via the ibLazyConnect() hook, which reaches
+// pipesConfig.ibLazyConnect -- unlike the NCCL_CTRAN_IBGDA_LAZY_CONNECT env,
+// which this test's default ctranConfig bypasses.
+class CtranAllReduceLazyCorrectnessTest : public CtranAllReduceCorrectnessTest {
+ public:
+  bool ibLazyConnect() const override {
+    return true;
+  }
+};
+
+TEST_P(CtranAllReduceLazyCorrectnessTest, Correctness) {
+  auto [algo, datatype, inPlace] = GetParam();
+  // Lazy connect validates on-demand peer materialization + clean teardown, not
+  // exhaustive size coverage: sweep the bounded (no huge-payload) count list at
+  // a representative non-16B buffer offset, which also covers lazy + unaligned.
+  const size_t offsetBytes = commTypeSize(datatype); // fp32: 4B, non-16B
+  runCorrectnessSweep(
+      algo,
+      datatype,
+      allReduceElementCounts(datatype, offsetBytes),
+      inPlace,
+      offsetBytes);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranAllReduceRingLazy,
+    CtranAllReduceLazyCorrectnessTest,
+    ::testing::Combine(
+        ::testing::Values(NCCL_ALLREDUCE_ALGO::cthierarchical_ring),
+        ::testing::Values(commFloat32),
+        ::testing::Bool()),
+    correctnessTestName);
+#endif
 #else
 #error "Define one CTRAN AllReduce topology: NVL_ONLY, IB_ONLY, or HYBRID"
 #endif

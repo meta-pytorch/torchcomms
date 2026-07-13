@@ -115,6 +115,7 @@ LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
 ifeq ($(ENABLE_PRIMS),1)
 ## CTRAN CUDA source files
+LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceIbRing.cu
 LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceIbTree.cu
 endif
 ## CollTrace plugin source files

@@ -132,6 +132,7 @@ The primary benchmark comparison is forced NCCL Tree against CTREE using the thi
 - **Performance tuning**: continue tuning launch shape, tile sizing, transport progress, and tiny-message overhead.
 - **LL protocol for IB**: add a lower-latency IB protocol for small payloads.
 - **NVLS-based ReduceScatter**: replace the current Phase 1 implementation with an NVLS-based local ReduceScatter path.
-- **Ring-based IB implementation**: add a ring implementation for the IB phase so the cross-node phase can choose between Ring and Tree implementations.
+- **Ring-based IB implementation**: *delivered* — the cross-node IB phase can now select a ring (`cthierarchical_ring`) as well as the tree. See [RingAllReduce.md](RingAllReduce.md).
+- **Share ReduceScatter/AllGather with standalone collectives**: the ring's Phase 2 is factored into `reduceScatterRing` / `allGatherRing` halves (see [RingAllReduce.md](RingAllReduce.md)) that are structurally reusable for the standalone ReduceScatter / AllGather collectives; the tree's phases are analogous. Unifying the fused halves with the standalone collectives is possible future work — not yet pursued.
 - **Wider reduction ops and datatypes**: add support beyond the current `commSum` scope, with correctness tests and benchmark coverage across all topologies.
 - **Uneven `pMin` topology coverage**: add targeted validation for mixed local-rank-count topologies where extra local ranks contribute to NVL phases but do not participate in IB.

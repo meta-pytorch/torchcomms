@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 #include <cuda_runtime.h>
 
@@ -18,6 +20,7 @@ bool is_supported_fused_type(commDataType_t datatype);
 int compute_p_min(CtranComm* comm);
 int get_num_block_cap();
 int compute_num_blocks(size_t totalBytes, int cap);
+int compute_num_blocks_ring(size_t segmentBytes, int cap);
 
 void* compute_phase2_buf(
     void* recvbuff,
@@ -41,7 +44,8 @@ commResult_t fill_common_kern_args(
     int numBlocks,
     commDataType_t datatype,
     commRedOp_t redOp,
-    CtranComm* comm);
+    CtranComm* comm,
+    std::optional<std::vector<int>> ibPeers = std::nullopt);
 
 commResult_t submit_fused_kernel(
     CtranComm* comm,

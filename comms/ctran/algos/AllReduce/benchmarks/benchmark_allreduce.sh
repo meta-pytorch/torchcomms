@@ -258,6 +258,12 @@ build_perf_binary() {
       -m "$cuda_mode"
     )
   fi
+  if [[ -n "${USE_MCCL_ADAPTER:-}" ]]; then
+    # Link the MCCL adapter so the binary exercises the LOCAL comms/ctran
+    # AllReduce code (e.g. cthierarchical_ring) instead of the pinned
+    # use_ncclx=stable build. Required when sweeping uncommitted kernel changes.
+    build_flags+=(-c hpc_comms.nccl_testonly_override=nccl_adapter -c nccl.enable_profapi=True)
+  fi
   if ! buck2 build "${build_flags[@]}" \
     "$BUCK_TARGET" --show-full-json-output >"$json_file"; then
     rm -f "$json_file"
@@ -534,7 +540,7 @@ print_command() {
 
 variant_uses_ctran() {
   case "$1" in
-    ctree|ctring) return 0 ;;
+    ctree|ctring|cthierarchical_ring) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -561,13 +567,20 @@ variant_envs() {
         "NCCL_PROTO=Simple" \
         "TORCH_NCCL_BCAST_UNIQUEID=1"
       ;;
+    nccl_ring_ll128)
+      printf '%s\n' \
+        "NCCL_ALLREDUCE_ALGO=orig" \
+        "NCCL_ALGO=allreduce:ring" \
+        "NCCL_PROTO=LL128" \
+        "TORCH_NCCL_BCAST_UNIQUEID=1"
+      ;;
     ctree)
       printf '%s\n' \
         "NCCL_CTRAN_USE_PIPES=1" \
         "NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE=${NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE:-33554432}" \
         "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1"
       ;;
-    ctring)
+    ctring|cthierarchical_ring)
       ;;
     *)
       echo "Unsupported variant: ${variant}" >&2
@@ -641,6 +654,22 @@ run_one() {
   if variant_uses_ctran "$variant"; then
     envs+=("NCCL_CTRAN_ENABLE=1")
     envs+=("NCCL_ALLREDUCE_ALGO=${variant}")
+    envs+=("NCCL_CTRAN_USE_PIPES=1")
+    envs+=("NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE=${NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE:-33554432}")
+    envs+=("NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1")
+  fi
+
+  # Forward optional ring-tuning knobs (only when set in the caller's env) so a
+  # parameter sweep can vary block count / pipeline / QP depth without further
+  # script edits. Applies to cthierarchical_ring only.
+  if [[ "$variant" == "cthierarchical_ring" ]]; then
+    local knob
+    for knob in NCCL_CTRAN_MAX_NBLOCKS \
+      NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH NCCL_CTRAN_IBGDA_QP_DEPTH; do
+      if [[ -n "${!knob:-}" ]]; then
+        envs+=("${knob}=${!knob}")
+      fi
+    done
   fi
 
   envs+=("${extra_envs[@]}")
@@ -666,12 +695,21 @@ run_one() {
     echo "== ${variant} ${topology} np=${np} arch=${arch}${block_desc} size=${min_bytes}..${max_bytes} =="
   fi
 
+  # cthierarchical_ring is fp32/sum-only; its support gate does NOT check
+  # dtype/op, so a non-fp32/non-sum run passes the gate then hard-fails inside
+  # ctranAllReduceHierarchicalRing. Pin -d float -o sum (-c 1 = explicit check)
+  # for it; other variants keep the script's -d "$DTYPE" (unchanged behavior).
+  local -a dtype_args=(-d "$DTYPE")
+  if [[ "$variant" == "cthierarchical_ring" ]]; then
+    dtype_args=(-d float -o sum -c 1)
+  fi
+
   local -a cmd=(
     env "${envs[@]}" "$MPI_BIN" --allow-run-as-root --bind-to none
     --mca btl "^openib" -np "$np" -host "localhost:${np}"
     "${mpi_envs[@]}"
     "$perf_bin" -b "$min_bytes" -e "$max_bytes" -f "$FACTOR" -g 1
-    -n "$ITERS" -w "$WARMUP" -d "$DTYPE"
+    -n "$ITERS" -w "$WARMUP" "${dtype_args[@]}"
   )
   if [[ -n "$RUN_TIMEOUT_SECONDS" ]]; then
     cmd=(timeout --foreground "$RUN_TIMEOUT_SECONDS" "${cmd[@]}")
@@ -788,7 +826,7 @@ run_local() {
 
   local -a variant_values
   read_csv_values "$VARIANTS" variant_values
-  validate_csv_values "variant" variant_values nccl nccl_tree nccl_tree_simple nccl_ring_simple ctree ctring
+  validate_csv_values "variant" variant_values nccl nccl_tree nccl_tree_simple nccl_ring_simple nccl_ring_ll128 ctree ctring cthierarchical_ring
 
   local -a block_cap_values=()
   if [[ -n "$BLOCK_CAPS" ]]; then

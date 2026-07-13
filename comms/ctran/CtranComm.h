@@ -172,6 +172,14 @@ class CtranComm {
   // initialized.
   comms::prims::Transport* getMultiPeerTransportsPtr() const;
 
+  // Lazy-safe overload: materializes `peers` (via get_device_handle(peers))
+  // and returns the Transport array pointer. Required in lazy-connect mode,
+  // where the no-arg overload throws. Non-const because materialization
+  // mutates transport state. An empty `peers` list materializes nothing and
+  // still returns a valid pointer (for ranks that use no IB slots).
+  comms::prims::Transport* getMultiPeerTransportsPtr(
+      const std::vector<int>& peers);
+
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
