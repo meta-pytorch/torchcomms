@@ -87,6 +87,9 @@ TEST_F(
       std::make_shared<ClogHook>(log_path_, std::vector<std::string>{"ALL"});
   hook->registerWithComm(comm);
 
+  // Log writes are flushed on a bounded cadence, so flush before reading the
+  // file mid-run.
+  hook->flush();
   EXPECT_EQ(
       countContaining(readLines(log_path_), "new_comm|comm=eager_comm"), 1u);
 }
@@ -111,13 +114,15 @@ TEST_F(
   hook->registerWithComm(comm);
 
   // Deferred: no signature yet at registration time.
+  hook->flush();
   EXPECT_EQ(
       countContaining(readLines(log_path_), "new_comm|comm=deferred_comm"), 0u);
 
-  // First collective fires the pre-hook, which flushes the deferred signature.
+  // First collective fires the pre-hook, which emits the deferred signature.
   auto tensor = at::ones({2, 2}, at::kFloat);
   comm->all_reduce(tensor, ReduceOp::SUM, /*async_op=*/false);
 
+  hook->flush();
   EXPECT_EQ(
       countContaining(readLines(log_path_), "new_comm|comm=deferred_comm"), 1u);
 }
@@ -141,8 +146,32 @@ TEST_F(ClogHookRegistrationTest, DeferredSignatureWrittenExactlyOnce) {
   comm->all_reduce(tensor, ReduceOp::SUM, /*async_op=*/false);
   comm->all_reduce(tensor, ReduceOp::SUM, /*async_op=*/false);
 
+  hook->flush();
   EXPECT_EQ(
       countContaining(readLines(log_path_), "new_comm|comm=once_comm"), 1u);
+}
+
+// ClogHook registers an abort hook so the buffered log is flushed to disk when
+// a comm aborts (watchdog timeout / explicit abort). The abort path calls
+// std::abort(), which bypasses the destructor's flush, so without the hook the
+// buffered tail would be stranded. triggerAbort() runs the abort hooks without
+// tearing the process down, so the flush is observable in-process.
+TEST_F(ClogHookRegistrationTest, FlushesBufferedLogOnAbort) {
+  auto comm = new_comm(kBackendName, at::Device(at::kCPU), "abort_comm", {});
+  ASSERT_NE(comm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+
+  auto hook =
+      std::make_shared<ClogHook>(log_path_, std::vector<std::string>{"ALL"});
+  hook->registerWithComm(comm);
+
+  backend->triggerAbort();
+
+  EXPECT_EQ(
+      countContaining(readLines(log_path_), "new_comm|comm=abort_comm"), 1u);
 }
 
 } // namespace torch::comms
