@@ -640,7 +640,7 @@ TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   printResultsTable("IBGDA ThreadScope MultiBlock Put+Flush", results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
+TEST_P(IbgdaBenchmarkFixture, PutWaitCounter) {
   // Measures raw RDMA Write latency (put + transport counter-slot wait).
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
