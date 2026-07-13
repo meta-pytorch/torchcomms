@@ -131,6 +131,10 @@ static_assert(sizeof(NvlChannelState) == kNvlChannelStateSize);
 static_assert(alignof(NvlChannelState) == kNvlChannelStateAlign);
 #endif // defined(ENABLE_PRIMS)
 
+inline size_t alignDown(size_t value, size_t alignment) {
+  return (value / alignment) * alignment;
+}
+
 inline size_t getPerPeerChannelStatesSize() {
   return kNvlChannelStateSize * CTRAN_ALGO_MAX_THREAD_BLOCKS;
 }
@@ -318,14 +322,13 @@ commResult_t CtranAlgo::initKernelResources() {
           &this->comm_->logMetaData_,
           "initKernelResources-nvlTransports"));
 
+  const size_t nvlPipelineSlotSize =
+      nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH;
   comms::prims::P2pNvlTransportOptions options{
-      .dataBufferSize =
-          nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
-      .chunkSize = NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE,
+      .dataBufferSize = nvlPipelineSlotSize,
       .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
       .per_channel_slot =
-          (nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH) /
-          CTRAN_ALGO_MAX_THREAD_BLOCKS,
+          alignDown(nvlPipelineSlotSize / CTRAN_ALGO_MAX_THREAD_BLOCKS, 16),
       .max_num_channels = CTRAN_ALGO_MAX_THREAD_BLOCKS};
 
   for (int peer = 0; peer < nLocalRanks; peer++) {

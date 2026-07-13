@@ -34,7 +34,8 @@ namespace comms::prims::tests {
 
 namespace {
 // Default configuration for transport setup
-constexpr std::size_t kDefaultDataBufferSize = 1024 * 1024; // 1MB
+constexpr int kDefaultMaxNumChannels = 64;
+constexpr std::size_t kDefaultPerChannelSize = 16 * 1024;
 constexpr std::size_t kDefaultChunkSize = 1024;
 constexpr std::size_t kDefaultPipelineDepth = 4;
 
@@ -116,9 +117,9 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
         transportName == nullptr ? "DeviceWindow" : transportName;
 
     MultiPeerNvlTransportConfig config{
-        .dataBufferSize = kDefaultDataBufferSize,
-        .chunkSize = kDefaultChunkSize,
         .pipelineDepth = kDefaultPipelineDepth,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = kDefaultPerChannelSize,
     };
     WindowConfig wmConfig{
         .peerSignalCount = kDefaultSignalCount,
@@ -173,9 +174,9 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
 
     constexpr std::size_t kTransferSize = 4096;
     MultiPeerNvlTransportConfig config{
-        .dataBufferSize = kDefaultDataBufferSize,
-        .chunkSize = kDefaultChunkSize,
         .pipelineDepth = kDefaultPipelineDepth,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = kDefaultPerChannelSize,
     };
     WindowConfig wmConfig{
         .peerSignalCount = kDefaultSignalCount,
@@ -283,9 +284,9 @@ TEST_F(
     MultiPeerNvlTransportIntegrationTestFixture,
     GetMultiPeerDeviceTransport) {
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto [transport, window, dw] = createTransport(config);
@@ -327,9 +328,9 @@ TEST_F(
   // Test that MultiPeerDeviceTransport can be constructed multiple times
   // and returns consistent results
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -399,11 +400,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -458,11 +459,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1,
@@ -501,9 +502,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1,
@@ -544,13 +545,13 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   // Use multiple barrier slots to avoid state accumulation issues
   constexpr int kNumBarrierSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = kNumBarrierSlots,
@@ -602,12 +603,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleSignalSlots) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -652,12 +653,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -709,12 +710,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numBarrierSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = numBarrierSlots,
@@ -751,13 +752,13 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
 }
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numBarrierSlots = 4;
   const int numIterations = 20;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = numBarrierSlots,
@@ -801,12 +802,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMonotonicCounters) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   constexpr int kNumPhases = 3;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1, // Single barrier slot, reused via monotonic counters
@@ -849,11 +850,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
   constexpr int kNumBlocks = 8;
   constexpr int kNumBarrierSlots = 8;
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = kNumBarrierSlots,
@@ -904,13 +905,13 @@ TEST_F(
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   const int numBarrierSlots = 2;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -1019,9 +1020,9 @@ TEST_F(
 
   constexpr int kNumBlocks = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kMultiSlotSignalCount,
@@ -1072,9 +1073,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalResetBetweenPhases) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kMultiSlotSignalCount,
@@ -1138,9 +1139,9 @@ TEST_F(
   constexpr int kNumIterations = 5;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kNumSignalSlots,
@@ -1202,9 +1203,9 @@ TEST_F(
   constexpr int kNumSignalSlots = 8; // More slots than warps to test modulo
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kNumSignalSlots,
@@ -1254,9 +1255,9 @@ TEST_F(
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, TransportAccessorTypes) {
   // Test that get_peer_transport/get_self_transport return correct types
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto [transport, window, dw] = createTransport(config);
@@ -1329,9 +1330,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1380,9 +1381,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1430,9 +1431,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromAll) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1479,9 +1480,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitWithCmpEq) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1531,9 +1532,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MonotonicWaitValues) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1584,9 +1585,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1644,9 +1645,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1695,9 +1696,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1747,9 +1748,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1797,9 +1798,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,

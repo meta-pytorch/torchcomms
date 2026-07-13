@@ -39,6 +39,8 @@ struct Ll128Config {
 // Threshold above which Simple gets its own transport with optimal chunking
 constexpr std::size_t kSimpleChunkThreshold = 8 * 1024;
 constexpr std::size_t kSimpleChunkSize = 8 * 1024;
+constexpr int kNvlMaxNumChannels = 64;
+constexpr std::size_t kNvlPerChannelSize = 64 * 1024;
 
 // Message sizes used by auto-tuned benchmarks (both uni- and bidirectional).
 static const std::vector<std::size_t> kAutoTuneMessageSizes = {
@@ -532,9 +534,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
       if (cfg.nBytes <= kSimpleChunkThreshold) {
         comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = cfg.nBytes,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
             .ll128BufferSize = comms::prims::ll128_buffer_size(cfg.nBytes),
         };
 
@@ -560,9 +562,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
             runLl128Benchmark(p2p, benchConfig, result.ll128Time);
       } else {
         comms::prims::MultiPeerNvlTransportConfig ll128Config{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = cfg.nBytes,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
             .ll128BufferSize = comms::prims::ll128_buffer_size(cfg.nBytes),
         };
         comms::prims::MultiPeerNvlTransport ll128Transport(
@@ -570,9 +572,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         ll128Transport.exchange();
 
         comms::prims::MultiPeerNvlTransportConfig simpleConfig{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = kSimpleChunkSize,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
         };
         comms::prims::MultiPeerNvlTransport simpleTransport(
             globalRank, worldSize, bootstrap, simpleConfig);
@@ -632,9 +634,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
       if (cfg.nBytes <= kSimpleChunkThreshold) {
         comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = cfg.nBytes,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
             .ll128BufferSize = comms::prims::ll128_buffer_size(cfg.nBytes),
         };
 
@@ -660,9 +662,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
             runLl128BidirectionalBenchmark(p2p, benchConfig, result.ll128Time);
       } else {
         comms::prims::MultiPeerNvlTransportConfig ll128Config{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = cfg.nBytes,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
             .ll128BufferSize = comms::prims::ll128_buffer_size(cfg.nBytes),
         };
         comms::prims::MultiPeerNvlTransport ll128Transport(
@@ -670,9 +672,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         ll128Transport.exchange();
 
         comms::prims::MultiPeerNvlTransportConfig simpleConfig{
-            .dataBufferSize = cfg.nBytes,
-            .chunkSize = kSimpleChunkSize,
             .pipelineDepth = 2,
+            .maxNumChannels = kNvlMaxNumChannels,
+            .perChannelSize = kNvlPerChannelSize,
         };
         comms::prims::MultiPeerNvlTransport simpleTransport(
             globalRank, worldSize, bootstrap, simpleConfig);
@@ -735,9 +737,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           : comms::prims::ll128_buffer_size(cfg.nBytes);
 
       comms::prims::MultiPeerNvlTransportConfig ll128Config{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
           .pipelineDepth = 2,
+          .maxNumChannels = kNvlMaxNumChannels,
+          .perChannelSize = kNvlPerChannelSize,
           .ll128BufferSize = ll128BufSize,
       };
       comms::prims::MultiPeerNvlTransport ll128Transport(
@@ -787,9 +789,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           : comms::prims::ll128_buffer_size(cfg.nBytes);
 
       comms::prims::MultiPeerNvlTransportConfig ll128Config{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
           .pipelineDepth = 2,
+          .maxNumChannels = kNvlMaxNumChannels,
+          .perChannelSize = kNvlPerChannelSize,
           .ll128BufferSize = ll128BufSize,
       };
       comms::prims::MultiPeerNvlTransport ll128Transport(

@@ -16,8 +16,9 @@ namespace comms::prims {
 
 namespace {
 
-std::size_t alignDown(std::size_t value, std::size_t alignment) {
-  return (value / alignment) * alignment;
+std::size_t dataBufferSize(const MultiPeerNvlTransportConfig& config) {
+  return static_cast<std::size_t>(config.maxNumChannels) *
+      config.perChannelSize;
 }
 
 MultiPeerNvlTransportConfig normalizeChannelConfig(
@@ -27,24 +28,10 @@ MultiPeerNvlTransportConfig normalizeChannelConfig(
     return config;
   }
 
-  const auto maxChannels = static_cast<std::size_t>(config.maxNumChannels);
-  const bool usesDefaultPerChannelSize = config.perChannelSize == 0 ||
-      config.perChannelSize == kDefaultNvlPerChannelSize;
   if (config.perChannelSize == 0) {
     config.perChannelSize = kDefaultNvlPerChannelSize;
   }
 
-  const std::size_t requiredDataBufferSize =
-      config.perChannelSize * maxChannels;
-  if (config.dataBufferSize == 0) {
-    config.dataBufferSize = requiredDataBufferSize;
-  } else if (config.dataBufferSize < requiredDataBufferSize) {
-    if (!usesDefaultPerChannelSize) {
-      throw std::runtime_error(
-          "tile send/recv requires dataBufferSize >= perChannelSize * maxNumChannels");
-    }
-    config.perChannelSize = alignDown(config.dataBufferSize / maxChannels, 16);
-  }
   if (config.perChannelSize < 16) {
     throw std::runtime_error("tile send/recv requires perChannelSize >= 16");
   }
@@ -53,8 +40,8 @@ MultiPeerNvlTransportConfig normalizeChannelConfig(
         "tile send/recv requires perChannelSize to be 16-byte aligned");
   }
   // Cap per-channel staging at 128MB (matches NCCL's max channel buffer). This
-  // also subsumes the dataBufferSize overflow guard: 128MB * maxNumChannels
-  // stays well within std::size_t for any sane channel count.
+  // also keeps the derived per-slot staging size bounded for any sane channel
+  // count.
   constexpr std::size_t kMaxPerChannelSize = 128ULL * 1024 * 1024;
   if (config.perChannelSize > kMaxPerChannelSize) {
     throw std::runtime_error("tile send/recv requires perChannelSize <= 128MB");
@@ -94,7 +81,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // Each handler's destructor will free its GPU memory if constructed.
 
   // Calculate per-peer buffer sizes with pipelining
-  perPeerDataBufferSize_ = config_.pipelineDepth * config_.dataBufferSize;
+  dataBufferSize_ = dataBufferSize(config_);
+  perPeerDataBufferSize_ = config_.pipelineDepth * dataBufferSize_;
 
   perPeerSignalBufferSize_ = getSignalBufferSize(config_.p2pSignalCount);
 
@@ -202,14 +190,14 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
           "setExternalDataBuffers: local buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(localSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * dataBufferSize)");
+          " (pipelineDepth * maxNumChannels * perChannelSize)");
     }
     if (remoteSize < perPeerDataBufferSize_) {
       throw std::runtime_error(
           "setExternalDataBuffers: remote buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(remoteSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * dataBufferSize)");
+          " (pipelineDepth * maxNumChannels * perChannelSize)");
     }
   }
   externalStagingBuffers_ = std::move(externalStagingBuffers);
@@ -218,8 +206,8 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
 void MultiPeerNvlTransport::exchange() {
   // Allocate and exchange data buffers when:
   // - No external buffers were provided, AND
-  // - dataBufferSize > 0 (staging buffers needed for send/recv)
-  if (!externalStagingBuffers_ && config_.dataBufferSize > 0) {
+  // - dataBufferSize_ > 0 (staging buffers needed for send/recv)
+  if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
     const std::size_t totalDataBufferSize =
         perPeerDataBufferSize_ * (nRanks_ - 1);
     dataBufferHandler_ = std::make_unique<GpuMemHandler>(
@@ -286,8 +274,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const std::size_t perChannelSlot =
       maxChannels > 0 ? config_.perChannelSize : 0;
   P2pNvlTransportOptions options{
-      .dataBufferSize = config_.dataBufferSize,
-      .chunkSize = config_.chunkSize,
+      .dataBufferSize = dataBufferSize_,
       .pipelineDepth = config_.pipelineDepth,
       .ll128BufferNumPackets = perPeerLl128BufferSize_ / kLl128PacketSize,
       .llBufferNumLines = perPeerLlBufferSize_ / kLlLineSize,

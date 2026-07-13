@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
@@ -17,6 +19,11 @@
 using namespace meta::comms;
 
 namespace comms::prims {
+
+namespace {
+constexpr int kNvlMaxNumChannels = 64;
+constexpr std::size_t kNvlPerChannelSize = 64 * 1024;
+} // namespace
 
 // =============================================================================
 // 2-GPU AllToAllV fixture — exercises minimum rank count (Gap 5)
@@ -50,9 +57,9 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(perPeerBytes),
   };
 
@@ -177,9 +184,9 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(perPeerBytes),
   };
 

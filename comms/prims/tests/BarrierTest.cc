@@ -289,7 +289,6 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
   // Create transport options
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -388,7 +387,6 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -497,7 +495,6 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -603,7 +600,6 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -722,7 +718,6 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 

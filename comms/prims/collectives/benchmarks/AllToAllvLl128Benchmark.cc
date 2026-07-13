@@ -38,7 +38,7 @@ struct Ll128BenchmarkConfig {
   bool simpleSpreadCluster;
   std::size_t pipelineDepth;
   std::size_t chunkSize;
-  std::size_t dataBufferSize;
+  std::size_t perChannelSize;
   // LL128 protocol settings
   int ll128NumBlocks;
   int ll128NumThreads;
@@ -224,9 +224,9 @@ class AllToAllvLl128BenchmarkFixture
     CUDA_CHECK(cudaMemset(recvBuffer.get(), 0, totalBytes));
 
     MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.dataBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = 64,
+        .perChannelSize = config.perChannelSize,
     };
 
     MultiPeerNvlTransport transport(globalRank, nranks, bootstrap, nvlConfig);
@@ -335,9 +335,9 @@ class AllToAllvLl128BenchmarkFixture
     CUDA_CHECK(cudaMemset(recvBuffer.get(), 0, totalBytes));
 
     MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.dataBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = 64,
+        .perChannelSize = config.perChannelSize,
         .ll128BufferSize = ll128_buffer_size(bytesPerPeer),
     };
 
@@ -509,7 +509,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
   }
 
   std::vector<Ll128BenchmarkConfig> configs;
-  const std::size_t kDataBufferSize = 8 * 1024 * 1024; // 8MB
+  const std::size_t kPerChannelSize = 128 * 1024;
 
   // Message sizes focused on LL128's sweet spot
   // Simple protocol settings from AllToAllvBenchmark.cc for fair comparison
@@ -527,7 +527,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(128),
       .ll128NumThreads = 512,
       .name = "128B",
@@ -541,7 +541,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(256),
       .ll128NumThreads = 512,
       .name = "256B",
@@ -555,7 +555,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(512),
       .ll128NumThreads = 512,
       .name = "512B",
@@ -569,7 +569,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(1024),
       .ll128NumThreads = 512,
       .name = "1KB",
@@ -583,7 +583,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(4 * 1024),
       .ll128NumThreads = 512,
       .name = "4KB",
@@ -597,7 +597,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(16 * 1024),
       .ll128NumThreads = 512,
       .name = "16KB",
@@ -611,7 +611,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(64 * 1024),
       .ll128NumThreads = 512,
       .name = "64KB",
@@ -625,7 +625,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(256 * 1024),
       .ll128NumThreads = 512,
       .name = "256KB",
@@ -639,7 +639,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
       .simpleSpreadCluster = true,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024,
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .ll128NumBlocks = auto_ll128_blocks(1024 * 1024),
       .ll128NumThreads = 512,
       .name = "1MB",
@@ -684,7 +684,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
         << "\n=== LL128 vs Simple vs NCCL Latency Sweep (for Triton comparison) ===\n";
   }
 
-  const std::size_t kDataBufferSize = 8 * 1024 * 1024; // 8MB
+  const std::size_t kPerChannelSize = 128 * 1024;
 
   auto auto_ll128_blocks = [&](std::size_t bytesPerPeer) {
     return ll128_auto_tune_alltoallv(bytesPerPeer, worldSize).numBlocks;
@@ -738,7 +738,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
         .simpleSpreadCluster = sz.simpleSpreadCluster,
         .pipelineDepth = 2,
         .chunkSize = sz.chunkSize,
-        .dataBufferSize = kDataBufferSize,
+        .perChannelSize = kPerChannelSize,
         .ll128NumBlocks = sz.runLl128 ? auto_ll128_blocks(sz.bytesPerPeer) : 1,
         .ll128NumThreads = 512,
         .name = sz.name,
@@ -900,7 +900,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128BlockThreadSweep) {
           .simpleSpreadCluster = false,
           .pipelineDepth = 2,
           .chunkSize = 64 * 1024,
-          .dataBufferSize = 8 * 1024 * 1024,
+          .perChannelSize = 128 * 1024,
           .ll128NumBlocks = numBlocks,
           .ll128NumThreads = 512,
           .name = "",
@@ -998,7 +998,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128ThreadSweep) {
             .simpleSpreadCluster = false,
             .pipelineDepth = 2,
             .chunkSize = 64 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
+            .perChannelSize = 128 * 1024,
             .ll128NumBlocks = numBlocks,
             .ll128NumThreads = numThreads,
             .name = "",

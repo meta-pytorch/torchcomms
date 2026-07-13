@@ -37,6 +37,17 @@ class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
   }
 };
 
+MultiPeerNvlTransportConfig makeNvlConfig(
+    std::size_t perChannelSize,
+    std::size_t pipelineDepth,
+    int maxNumChannels = 1) {
+  return MultiPeerNvlTransportConfig{
+      .pipelineDepth = pipelineDepth,
+      .maxNumChannels = maxNumChannels,
+      .perChannelSize = (perChannelSize + 15) & ~15ULL,
+  };
+}
+
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
   if (numRanks != 2) {
@@ -47,11 +58,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const size_t numElements = 256;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = sizeof(int) * numElements,
-      .chunkSize = 256, // 256 bytes
-      .pipelineDepth = 4,
-  };
+  auto config = makeNvlConfig(sizeof(int) * numElements, 4);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -196,11 +203,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
   const int numSendBlocks = 4;
   const int nIters = 5; // call sendrecv 5 times with different data
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
-      .chunkSize = 8 * 1024 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -270,11 +273,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   const int numSendBlocks = 4;
   const size_t maxSignalBytes = 16 * 1024;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 512 * 1024,
-      .chunkSize = 512 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(128 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -351,7 +350,7 @@ static void runTileTest(
     int numRanks,
     std::shared_ptr<meta::comms::MpiBootstrap> bootstrap,
     size_t nBytes,
-    size_t dataBufferSize,
+    size_t perChannelSize,
     size_t chunkSize,
     size_t pipelineDepth,
     int numSendBlocks,
@@ -359,11 +358,7 @@ static void runTileTest(
     int threadCount = 256) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = chunkSize,
-      .pipelineDepth = pipelineDepth,
-  };
+  auto config = makeNvlConfig(perChannelSize, pipelineDepth, numSendBlocks);
 
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
@@ -413,7 +408,7 @@ static void runTileTest(
           static_cast<unsigned char>(peerPattern))
           << "Iter " << iter << ": Mismatch at byte " << i
           << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-          << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+          << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
           << ", pd=" << pipelineDepth << ")";
       if (static_cast<unsigned char>(hostBuf[i]) !=
           static_cast<unsigned char>(peerPattern)) {
@@ -886,7 +881,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = tileBytes * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
       .per_channel_slot = tileBytes,
       .max_num_channels = numBlocks,
@@ -992,7 +986,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
@@ -1109,7 +1102,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
@@ -1214,7 +1206,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
@@ -1282,7 +1273,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
@@ -1365,8 +1355,6 @@ TEST_F(
   const size_t nBytes = 512 * 1024;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = perBlockSlotSize * activeBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
       .maxNumChannels = activeBlocks,
       .perChannelSize = perBlockSlotSize,
@@ -1447,7 +1435,6 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = pipelineDepth,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
@@ -1671,11 +1658,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const int numSendBlocks = 4;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024,
-      .chunkSize = 8 * 1024 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -1903,11 +1886,7 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   }
 
   const size_t nbytes = 1024 * 1024; // 1MB
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = nbytes,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(nbytes, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -1951,11 +1930,7 @@ TEST_P(PutTransferSizeTestFixture, Put) {
       params.name,
       params.nbytes);
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.nbytes,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(params.nbytes, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -2042,11 +2017,7 @@ TEST_P(PutUnalignedTestFixture, Put) {
   // Allocate larger staging buffers to accommodate offsets
   const size_t dataBufferSize =
       params.nbytes + std::max(params.srcOffset, params.dstOffset);
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
+  auto config = makeNvlConfig(dataBufferSize, 4);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -2170,11 +2141,7 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
   const size_t paddedSize = nbytes + 64; // Extra space to detect overflow
   const char sentinelValue = static_cast<char>(0xDE);
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = paddedSize,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(paddedSize, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto* p2p = helper.getDevicePtr(); // device pointer for kernel calls
@@ -2246,12 +2213,8 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-      .ll128BufferSize = ll128_buffer_size(4096),
-  };
+  auto config = makeNvlConfig(4096, 2);
+  config.ll128BufferSize = ll128_buffer_size(4096);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -2280,11 +2243,7 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(4096, 2);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -2324,8 +2283,6 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
   constexpr int maxBlocks = 32;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
-      .chunkSize = 8 * 1024 * 1024,
       .pipelineDepth = 2,
       .p2pBarrierCount = static_cast<std::size_t>(maxBlocks),
       .maxNumChannels = maxBlocks,
@@ -2439,7 +2396,7 @@ static void runTileForwardTest(
     int numRanks,
     const std::shared_ptr<meta::comms::MpiBootstrap>& bootstrap,
     size_t nBytes,
-    size_t dataBufferSize,
+    size_t perChannelSize,
     size_t chunkSize,
     size_t pipelineDepth,
     int numSendBlocks,
@@ -2452,11 +2409,7 @@ static void runTileForwardTest(
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = chunkSize,
-      .pipelineDepth = pipelineDepth,
-  };
+  auto config = makeNvlConfig(perChannelSize, pipelineDepth, numSendBlocks);
 
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
@@ -2530,7 +2483,7 @@ static void runTileForwardTest(
             static_cast<unsigned char>(pattern))
             << "Iter " << iter << " (rank 0 recv): Mismatch at byte " << i
             << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-            << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+            << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
             << ", pd=" << pipelineDepth << ", dstOffset=" << dstOffset << ")";
         if (static_cast<unsigned char>(hostBuf[i]) !=
             static_cast<unsigned char>(pattern)) {
@@ -2562,7 +2515,7 @@ static void runTileForwardTest(
             static_cast<unsigned char>(pattern))
             << "Iter " << iter << " (rank 1 forward dst): Mismatch at byte "
             << i << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-            << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+            << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
             << ", pd=" << pipelineDepth << ", dstOffset=" << dstOffset << ")";
         if (static_cast<unsigned char>(hostBuf[dstOffset + i]) !=
             static_cast<unsigned char>(pattern)) {
@@ -2755,11 +2708,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
 
   auto bs = std::make_shared<meta::comms::MpiBootstrap>();
   const int peerRank = globalRank == 0 ? 1 : 0;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDataBufferSize,
-      .chunkSize = kDataBufferSize,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(kPerBlockSlotSize, 2, kNumBlocks);
   MultiPeerNvlTransport transport(globalRank, numRanks, bs, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -2771,7 +2720,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
     CUDACHECK_TEST(cudaMemset(
         p2pHost.getLocalState().dataBuffer,
         0,
-        config.pipelineDepth * config.dataBufferSize));
+        config.pipelineDepth * kDataBufferSize));
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
@@ -2908,7 +2857,6 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = tileBytes * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
       .per_channel_slot = tileBytes,
       .max_num_channels = numBlocks,
@@ -3086,7 +3034,7 @@ TEST_P(TileForwardUnalignedTestFixture, TileForward) {
       numRanks,
       bs,
       params.nbytes,
-      /*dataBufferSize=*/8 * 1024 * 1024,
+      /*perChannelSize=*/8 * 1024 * 1024,
       /*chunkSize=*/128 * 1024,
       /*pipelineDepth=*/2,
       /*numSendBlocks=*/4,
@@ -3147,12 +3095,8 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-      .llBufferSize = ll_buffer_size(4096),
-  };
+  auto config = makeNvlConfig(4096, 2);
+  config.llBufferSize = ll_buffer_size(4096);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -3181,11 +3125,7 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(4096, 2);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
