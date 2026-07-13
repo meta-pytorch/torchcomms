@@ -2,6 +2,7 @@
 
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -229,10 +230,13 @@ void MultiPeerNvlTransport::exchange() {
   if (channelStateHandler_) {
     channelStateHandler_->exchangeMemPtrs();
   }
-
   if (llBufferHandler_) {
     llBufferHandler_->exchangeMemPtrs();
   }
+
+  // Multimem NVL is intentionally not initialized here. Most collectives only
+  // need the peer-to-peer NVLink transport; multicast setup is deferred until
+  // getMultimemNvlTransportDevice() is called by a multimem collective.
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -417,6 +421,93 @@ DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {
 
   return DeviceSpan<Transport>(
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
+}
+
+bool MultiPeerNvlTransport::hasMultimemNvlTransport() const {
+  if (!config_.enableMultimem ||
+      multimemNvlUnavailable_.load(std::memory_order_acquire)) {
+    return false;
+  }
+
+  int cudaDevice = 0;
+  CUDA_CHECK(cudaGetDevice(&cudaDevice));
+  return MultimemNvlTransport::isEligible(nRanks_, cudaDevice);
+}
+
+MultimemNvlTransportDevice
+MultiPeerNvlTransport::getMultimemNvlTransportDevice() const {
+  initializeMultimemNvlTransport();
+  return multimemNvlTransport_->getDeviceTransport();
+}
+
+void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
+  // Serialize concurrent same-rank callers so at most one thread drives the
+  // collective (eligibility allGather + MultimemNvlTransport::exchange). If
+  // two threads on this rank both raced past the null-check, each would
+  // enter its own collective while other ranks only participate once,
+  // deadlocking the bootstrap. Second+ arrivals block here, then see the
+  // cached transport (or the poison bit) via the fast paths below.
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+
+  if (multimemNvlTransport_) {
+    return;
+  }
+  if (!config_.enableMultimem) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem NVL transport is not enabled "
+        "(config.enableMultimem is false)");
+  }
+  if (multimemNvlUnavailable_.load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem NVL transport is not available: " +
+        multimemNvlErrorMessage_);
+  }
+
+  int cudaDevice = 0;
+  CUDA_CHECK(cudaGetDevice(&cudaDevice));
+  std::vector<int> multimemEligible(nRanks_, 0);
+  multimemEligible[myRank_] =
+      MultimemNvlTransport::isEligible(nRanks_, cudaDevice) ? 1 : 0;
+  auto eligibilityResult =
+      bootstrap_
+          ->allGather(multimemEligible.data(), sizeof(int), myRank_, nRanks_)
+          .get();
+  // Note: allGather-failure is intentionally NOT latched into
+  // multimemNvlUnavailable_. It can be transient (bootstrap glitch, peer
+  // slow-start) and the caller may legitimately want to retry -- the outer
+  // mutex serializes concurrent retries so cross-rank collectives stay
+  // aligned. Eligibility failure, in contrast, is terminal on this comm.
+  if (eligibilityResult != 0) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem eligibility allGather failed");
+  }
+  if (!std::all_of(
+          multimemEligible.begin(), multimemEligible.end(), [](int value) {
+            return value != 0;
+          })) {
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport is not eligible on all ranks";
+    multimemNvlUnavailable_.store(true, std::memory_order_release);
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+
+  auto multimemNvlTransport = std::make_unique<MultimemNvlTransport>(
+      myRank_, nRanks_, bootstrap_, config_.multimem);
+  // Unlike the eligibility allGather above, exchange() is a cross-rank
+  // collective that can partially succeed on peers before it throws locally; a
+  // retry would re-enter a collective the other ranks have already moved past,
+  // risking desync/hang. So an exchange() failure is terminal: latch the poison
+  // bit before rethrowing so future callers fall back instead of retrying.
+  try {
+    multimemNvlTransport->exchange();
+  } catch (const std::exception& e) {
+    multimemNvlErrorMessage_ =
+        std::string("multimem NVL transport exchange failed: ") + e.what();
+    multimemNvlUnavailable_.store(true, std::memory_order_release);
+    throw;
+  }
+  multimemNvlTransport_ = std::move(multimemNvlTransport);
 }
 
 void MultiPeerNvlTransport::initializeTransportsArray() {
