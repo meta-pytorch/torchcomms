@@ -8,22 +8,11 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/utils/commSpecs.h"
 
-/**
- * Run the Prims-backed tree AllReduce implementation.
- *
- * The implementation supports `commSum` over `commFloat32` and `commFloat16`.
- * It relies on Prims NVL and IBGDA transport staging for transient receives and
- * does not allocate message-size-dependent AllReduce staging.
+/*
+ * Note: the Prims-backed tree AllReduce ("ctree", ctranAllReduceTree) was moved
+ * into MCCL (comms/mccl/collectives/allreduce) as the single owner; CTRAN no
+ * longer declares or implements it.
  */
-commResult_t ctranAllReduceTree(
-    const void* sendbuff,
-    void* recvbuff,
-    size_t count,
-    commDataType_t datatype,
-    commRedOp_t redOp,
-    CtranComm* comm,
-    cudaStream_t stream,
-    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 /**
  * Run the Prims-backed hierarchical ring AllReduce implementation.
