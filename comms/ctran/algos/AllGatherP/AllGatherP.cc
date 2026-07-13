@@ -117,6 +117,21 @@ commResult_t createPersistentRequest(
       CtranPersistentRequest::Type::ALLGATHER_P, comm, stream);
   request->algo = algo.release();
   *out = request.release();
+
+  // Route teardown through the §9 one-shot cleanup token: it releases the
+  // pooled pipeSync + scoped registration (via destroyPersistentRequest),
+  // running at most once regardless of which path (eager free, graph-destroy
+  // callback, comm drain before terminate()) fires first. It does NOT delete
+  // the request object -- that stays with the object's owner. The closure
+  // captures the RAW request pointer (NOT a shared_ptr) so the token does not
+  // co-own the request -- no ownership cycle. The token is co-owned by the
+  // request (cleanup_), the comm registry, and (for graph) the graph
+  // user-object.
+  auto cleanup = std::make_shared<PersistentCleanup>([request = *out]() {
+    FB_COMMCHECKIGNORE(destroyPersistentRequest(request));
+  });
+  (*out)->cleanup_ = cleanup;
+  comm->registerPersistentCleanup(cleanup);
   return commSuccess;
 }
 
@@ -249,7 +264,8 @@ commResult_t allGatherPInit(
   }
 
   FB_COMMCHECK(createPersistentRequest(comm, stream, &request));
-  auto requestGuard = folly::makeGuard([&request] {
+  auto requestGuard = folly::makeGuard([&request, comm] {
+    comm->unregisterPersistentCleanup(request->cleanup_);
     FB_COMMCHECKIGNORE(destroyPersistentRequest(request));
     delete request;
     request = nullptr;
@@ -306,11 +322,21 @@ commResult_t allGatherPExec(
 commResult_t allGatherPDestroy(CtranPersistentRequest* request) {
   CHECK_VALID_PREQ(request);
 
-  // No need to dereg handles now since user should call explicit
-  // commDeregister before buffer is freed
-  FB_COMMCHECK(destroyPersistentRequest(request));
+  // Route the resource release through the shared cleanup token so it runs at
+  // most once across {eager free, graph-destroy callback, comm drain before
+  // terminate()}. If the comm was already destroyed (comm-then-free ordering),
+  // the token was already run by the comm drain and this no-ops -- no hang, no
+  // double release. The request object itself is still owned/deleted by the
+  // caller (unchanged contract); the token releases only the pooled pipeSync +
+  // scoped registration. Keep the token alive across run(), then drop the
+  // comm's registry entry (comm is alive on this eager path).
+  auto token = request->cleanup_;
+  auto* comm = request->comm_;
+  DCHECK(token != nullptr);
+  token->run();
+  comm->unregisterPersistentCleanup(token);
 
-  // destroyPersistentRequest released this request's remote NVL IPC imports
+  // The cleanup token released this request's remote NVL IPC imports
   // deferred (SW-only, so the shared teardown is also safe from the
   // graph-destroy callback). This is a user thread, so drain the parked
   // cuMemUnmaps now rather than leaving them for the next IpcRegCache entry /
