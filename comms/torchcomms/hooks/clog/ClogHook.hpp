@@ -154,6 +154,10 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   // and registers pre/post hooks for logging.
   void registerWithComm(std::shared_ptr<TorchComm> comm);
 
+  // Force any buffered log lines to disk. Log writes are flushed on a bounded
+  // cadence (not per line); a live reader of the log file calls this first.
+  void flush();
+
  private:
   // signature_pending: if non-null, the new_comm signature is deferred and the
   // first pre-hook writes it under a per-registration lock (for comms
