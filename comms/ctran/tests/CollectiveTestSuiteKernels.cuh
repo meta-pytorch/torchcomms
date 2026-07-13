@@ -48,6 +48,44 @@ void launchInitExpectedKernel(
     cudaStream_t stream);
 
 // -----------------------------------------------------------------------------
+// initScatterExpected (ReduceScatter): expected[i] = sum over all ranks of
+// initData(rank, rep, baseIdx + i). Each rank's expected recv buffer is the
+// reduction shard starting at baseIdx = myRank * recvcount.
+// -----------------------------------------------------------------------------
+void launchInitScatterExpectedKernel(
+    float* buf,
+    size_t recvcount,
+    int nranks,
+    int rep,
+    size_t baseIdx,
+    cudaStream_t stream);
+void launchInitScatterExpectedKernel(
+    __half* buf,
+    size_t recvcount,
+    int nranks,
+    int rep,
+    size_t baseIdx,
+    cudaStream_t stream);
+
+// -----------------------------------------------------------------------------
+// initGatherExpected (AllGather): expected[r*sendcount + i] = initData(r, rep,
+// i) for every r in [0, nranks). Pure host composition of launchInitDataKernel
+// over each rank's shard.
+// -----------------------------------------------------------------------------
+template <typename T>
+inline void launchInitGatherExpectedTyped(
+    T* dst,
+    size_t sendcount,
+    int nranks,
+    int rep,
+    cudaStream_t stream) {
+  for (int r = 0; r < nranks; ++r) {
+    launchInitDataKernel(
+        dst + static_cast<size_t>(r) * sendcount, sendcount, r, rep, stream);
+  }
+}
+
+// -----------------------------------------------------------------------------
 // delta: max |actual[i] - expected[i]|. Synchronous.
 // -----------------------------------------------------------------------------
 double computeMaxDelta(

@@ -100,6 +100,23 @@ __global__ void initExpectedKernel(T* buf, size_t count, int nranks, int rep) {
   }
 }
 
+template <typename T>
+__global__ void initScatterExpectedKernel(
+    T* buf,
+    size_t recvcount,
+    int nranks,
+    int rep,
+    size_t baseIdx) {
+  size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < recvcount) {
+    float sum = 0.0f;
+    for (int r = 0; r < nranks; ++r) {
+      sum += elementValue(r, rep, baseIdx + i);
+    }
+    buf[i] = TestValueOps<T>::fromFloat(sum);
+  }
+}
+
 // Each block computes the max abs delta over its assigned elements, then
 // writes the per-block maximum into blockMaxes[blockIdx.x].
 template <typename T>
@@ -230,6 +247,40 @@ void launchInitExpectedKernel(
   int numBlocks = static_cast<int>((count + kBlockSize - 1) / kBlockSize);
   initExpectedKernel<<<numBlocks, kBlockSize, 0, stream>>>(
       buf, count, nranks, rep);
+  COLLECTIVE_TEST_SUITE_CUDA_CHECK(cudaPeekAtLastError());
+}
+
+void launchInitScatterExpectedKernel(
+    float* buf,
+    size_t recvcount,
+    int nranks,
+    int rep,
+    size_t baseIdx,
+    cudaStream_t stream) {
+  if (recvcount == 0) {
+    return;
+  }
+  constexpr int kBlockSize = 256;
+  int numBlocks = static_cast<int>((recvcount + kBlockSize - 1) / kBlockSize);
+  initScatterExpectedKernel<<<numBlocks, kBlockSize, 0, stream>>>(
+      buf, recvcount, nranks, rep, baseIdx);
+  COLLECTIVE_TEST_SUITE_CUDA_CHECK(cudaPeekAtLastError());
+}
+
+void launchInitScatterExpectedKernel(
+    __half* buf,
+    size_t recvcount,
+    int nranks,
+    int rep,
+    size_t baseIdx,
+    cudaStream_t stream) {
+  if (recvcount == 0) {
+    return;
+  }
+  constexpr int kBlockSize = 256;
+  int numBlocks = static_cast<int>((recvcount + kBlockSize - 1) / kBlockSize);
+  initScatterExpectedKernel<<<numBlocks, kBlockSize, 0, stream>>>(
+      buf, recvcount, nranks, rep, baseIdx);
   COLLECTIVE_TEST_SUITE_CUDA_CHECK(cudaPeekAtLastError());
 }
 
