@@ -47,10 +47,10 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
-                .dataBufferSize = 256 * 1024,
-                .chunkSize = 512,
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
+                .maxNumChannels = 64,
+                .perChannelSize = 4 * 1024,
             },
         .ibConfig =
             {
@@ -69,10 +69,10 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
-                .dataBufferSize = 256 * 1024,
-                .chunkSize = 512,
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
+                .maxNumChannels = 64,
+                .perChannelSize = 4 * 1024,
             },
         .ibConfig =
             {

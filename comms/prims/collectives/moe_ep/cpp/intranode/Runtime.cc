@@ -62,9 +62,9 @@ IntranodeRuntime::IntranodeRuntime(
   //    state buffers (chunked-send pipelining) — not the dispatch/combine
   //    data block (which lives in `memHandler_`).
   comms::prims::MultiPeerNvlTransportConfig nvlConfig{
-      .dataBufferSize = 1024UL * 1024UL, // 1 MiB transport state
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = 64,
+      .perChannelSize = (1024UL * 1024UL) / 64,
       // numSignalSlots is dimensioned by callers; for Phase 1 dispatch +
       // combine we need ~num_channels*num_peers*2 slots. With num_sms=64,
       // num_channels=32 and 7 peers → ~448 slots. Bump to 1024 to avoid

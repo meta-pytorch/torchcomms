@@ -30,14 +30,13 @@ struct MemcpyAndSelfCopy {
 __device__ __forceinline__ std::size_t direct_pipeline_window(
     const P2pNvlTransportDevice* peers,
     int my_rank,
-    int num_ranks,
-    int total_groups) {
+    int num_ranks) {
   std::size_t window = 0;
   for (int peer = 0; peer < num_ranks; ++peer) {
     if (peer == my_rank) {
       continue;
     }
-    const std::size_t peer_window = peers[peer].pipeline_window(total_groups);
+    const std::size_t peer_window = peers[peer].pipeline_window();
     window = window == 0 || peer_window < window ? peer_window : window;
   }
   return window;
@@ -61,7 +60,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
   }
 
   const std::size_t pipeline_window =
-      direct_pipeline_window(peers, nvl_rank, nvl_size, group.total_groups);
+      direct_pipeline_window(peers, nvl_rank, nvl_size);
   PIPES_DEVICE_CHECK_MSG(
       pipeline_window != 0,
       "hierarchical allgather NVLink broadcast pipeline window is zero");

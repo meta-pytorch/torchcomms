@@ -99,9 +99,9 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   const size_t recvBufferSize = worldSize * sendcount;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), recvBufferSize), // At least 2KB
-      .chunkSize = 512, // 512 byte chunk size
       .pipelineDepth = 4,
+      .maxNumChannels = 64,
+      .perChannelSize = (std::max(size_t(2048), recvBufferSize)) / 64,
   };
 
   // Create transport and exchange IPC handles
@@ -292,9 +292,10 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   const size_t recvBufferSize = worldSize * sendcount;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(8 * 1024 * 1024), recvBufferSize),
-      .chunkSize = 64 * 1024, // 64KB chunk size for large messages
       .pipelineDepth = 4,
+      .maxNumChannels = 64,
+      .perChannelSize =
+          (std::max(size_t(8 * 1024 * 1024), recvBufferSize)) / 64,
   };
 
   MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);

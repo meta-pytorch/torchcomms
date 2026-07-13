@@ -127,7 +127,6 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
     // Dummy options (required by constructor, not used by LL128 path)
     P2pNvlTransportOptions options{
         .dataBufferSize = 1024,
-        .chunkSize = 512,
         .pipelineDepth = 2,
         .ll128BufferNumPackets = ll128BufferNumPackets,
     };
@@ -512,7 +511,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpu) {
   // Create transport options
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -611,7 +609,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuMultipleIds) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -712,7 +709,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuAdd) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -803,7 +799,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuBlockGroups) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -904,7 +899,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
@@ -1022,7 +1016,6 @@ TEST_F(P2pNvlTransportDeviceTestFixture, PutPerGroup) {
   // Minimal transport — put doesn't use any transport buffers
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
   LocalState localState{
@@ -1086,7 +1079,6 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceResetSignalTwoGpu) {
 
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 

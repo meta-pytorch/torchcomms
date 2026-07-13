@@ -35,9 +35,9 @@ class HostWindowTestFixture : public MpiBaseTestFixture {
   std::unique_ptr<MultiPeerTransport> createTransport() {
     auto bootstrap = std::make_shared<MpiBootstrap>();
     MultiPeerTransportConfig config;
-    config.nvlConfig.dataBufferSize = 1024 * 1024;
-    config.nvlConfig.chunkSize = 64 * 1024;
     config.nvlConfig.pipelineDepth = 2;
+    config.nvlConfig.maxNumChannels = 64;
+    config.nvlConfig.perChannelSize = 16 * 1024;
     auto transport = std::make_unique<MultiPeerTransport>(
         globalRank, numRanks, localRank, bootstrap, config);
     transport->exchange();

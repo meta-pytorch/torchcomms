@@ -41,7 +41,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
   }
 
   const std::size_t pipeline_window =
-      direct_pipeline_window(args.peers, my_rank, W, group.total_groups);
+      direct_pipeline_window(args.peers, my_rank, W);
   PIPES_DEVICE_CHECK_MSG(
       pipeline_window != 0,
       "direct NVLink reduce-scatter pipeline window is zero");

@@ -205,9 +205,9 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     // Setup P2P NVL transport
     MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.dataBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = 64,
+        .perChannelSize = (config.dataBufferSize) / 64,
     };
 
     // Create transport with bootstrap and exchange IPC handles
