@@ -4,6 +4,10 @@
 #include <deque>
 #include <optional>
 
+#if !defined(ENABLE_PRIMS)
+#include <mutex> // std::once_flag/std::call_once for the prims-off fallback warn
+#endif
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -41,8 +45,10 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
+#if defined(ENABLE_PRIMS)
     {KernelConfig::KernelType::SENDRECV_P2P,
      reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
+#endif // defined(ENABLE_PRIMS)
 };
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
@@ -55,6 +61,24 @@ bool ctranSendRecvSupport(
   if (!ctranInitialized(comm)) {
     return false;
   }
+
+#if !defined(ENABLE_PRIMS)
+  // ctp2p/ctgraph are prims-backed and not compiled in; decline so the caller
+  // falls back to baseline send/recv.
+  if (algo == NCCL_SENDRECV_ALGO::ctp2p ||
+      algo == NCCL_SENDRECV_ALGO::ctgraph) {
+    static std::once_flag warnedOnce;
+    std::call_once(warnedOnce, []() {
+      CLOGF_SUBSYS(
+          WARN,
+          COLL,
+          "CTRAN SendRecv: ctp2p/ctgraph requires comms::prims device transports "
+          "(ENABLE_PRIMS), which are not compiled in this build; falling back to "
+          "baseline send/recv.");
+    });
+    return false;
+  }
+#endif // !defined(ENABLE_PRIMS)
 
   const auto statex = comm->statex_.get();
 

@@ -408,11 +408,19 @@ esac
 
 
 function build_rccl {
+  # Opt in to compiling comms/prims into librccl only when ENABLE_PRIMS is set
+  # to a truthy value in the environment. Default (unset) keeps prims out of the
+  # build, shielding librccl from comms/prims churn.
+  local prims_flag=""
+  case "${ENABLE_PRIMS:-}" in
+    1 | ON | on | true | TRUE | yes | YES) prims_flag="--enable-prims" ;;
+  esac
   ./install.sh \
     --prefix "$BUILDDIR" \
     --amdgpu_targets "$AMDGPU_TARGETS" \
     --disable-colltrace \
-    --disable-msccl-kernel
+    --disable-msccl-kernel \
+    ${prims_flag}
 }
 
 build_rccl

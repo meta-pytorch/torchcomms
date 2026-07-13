@@ -44,10 +44,12 @@ KernelConfig::KernelType getKernelType(
     bool hasTcpDmRecv,
     enum NCCL_SENDRECV_ALGO algo) {
   KernelConfig::KernelType kernelType = KernelConfig::KernelType::SENDRECV;
+#if defined(ENABLE_PRIMS)
   if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
     kernelType = KernelConfig::KernelType::SENDRECV_P2P;
     return kernelType;
   }
+#endif // defined(ENABLE_PRIMS)
   if (hasSend && hasRecv) {
     if (hasTcpDmRecv) {
       kernelType = KernelConfig::KernelType::SENDRECV_UNPACK;
