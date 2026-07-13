@@ -105,10 +105,6 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
 LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
-ifeq ($(ENABLE_PRIMS),1)
-## CTRAN CUDA source files
-LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceIbTree.cu
-endif
 ## CollTrace plugin source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
 ## Include ibverbx files
