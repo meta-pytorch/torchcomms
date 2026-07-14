@@ -1517,10 +1517,9 @@ cvars:
    type        : uint64_t
    default     : 128
    description : |-
-     Maximum chunks of a staging buffer in P2P NVL copy-based kernel, this is
-     used to allocate IPC buffer for chunk states. The value = 16M/128k (maximum
-     staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
-     is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
+     Maximum chunks of a staging buffer in P2P NVL copy-based kernel. The value
+     = 16M/128k (maximum staging buffer / minimum chunk size). Currently unused
+     after the cooperative chunk-state path was removed.
 
  - name        : NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH
    type        : size_t
@@ -1898,14 +1897,6 @@ cvars:
      Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
      Controls the granularity of parallel copy operations over NVLink.
 
- - name        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER
-   type        : bool
-   default     : false
-   description : |-
-     Enable dual state buffer mode for NVL transport in Pipes
-     MultiPeerTransport. When enabled, uses two chunk state buffers
-     instead of one, allowing overlap of copy and signal operations.
-
  - name        : NCCL_CTRAN_PIPES_DISABLE_IB
    type        : bool
    default     : false
@@ -2201,15 +2192,12 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline, ctrdpipeline, ctsrdpipeline
+   choices     : ctdirect, ctpipeline, ctsrdpipeline
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
-     ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
-                    rails for inter-node exchange and CopyEngine based broadcast
-                    within the NVLink domain. Requires nNodes to be a power of 2.
      ctsrdpipeline - Ctran-based hybrid algorithm that streams recursive-doubling
                      forwards across rails while keeping NVLink-domain CopyEngine
                      broadcast step-based. Requires nNodes to be a power of 2.
@@ -2256,12 +2244,13 @@ cvars:
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrhd
+   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctrhd
    description : |-
      The algorithm to use for ReduceScatter communication
      orig - Copy-based ring algorithm
      ctran - Ctran-based algorithm automatically picked by the library
      ctdirect - Ctran-based direct point-to-point algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
 

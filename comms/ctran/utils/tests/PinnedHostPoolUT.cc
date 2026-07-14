@@ -217,8 +217,8 @@ TEST_F(PinnedHostPoolTest, ResizeDuringGraphCapture) {
   ASSERT_EQ(cudaGraphGetNodes(graph, nullptr, &numNodes), cudaSuccess);
   EXPECT_EQ(numNodes, 0);
 
-  cudaGraphDestroy(graph);
-  cudaStreamDestroy(stream);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 
   // Clean up items
   for (auto* item : items) {

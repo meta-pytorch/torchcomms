@@ -41,6 +41,19 @@ inline commResult_t retainUserObject(
   return commSuccess;
 }
 
+// Register a graph-destroy user-object callback on the graph currently being
+// captured on `stream`: `destroyCallback` runs once with `data` when the graph
+// is destroyed. Must be called during active stream capture (the only context
+// with a capturing graph), so it does not re-check the capture status.
+inline commResult_t registerGraphDestroyCallback(
+    cudaStream_t stream,
+    void* data,
+    cudaHostFn_t destroyCallback) {
+  StreamCaptureInfo info;
+  FB_CUDACHECK(getStreamCaptureInfo(stream, info));
+  return retainUserObject(data, destroyCallback, info);
+}
+
 // Add a host node to the captured graph and retain the user object so its
 // destroy callback runs on graph destruction.
 inline commResult_t addHostNode(

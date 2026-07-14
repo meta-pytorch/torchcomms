@@ -155,7 +155,14 @@ class ClogHook : public std::enable_shared_from_this<ClogHook> {
   void registerWithComm(std::shared_ptr<TorchComm> comm);
 
  private:
-  void registerHooks(std::shared_ptr<TorchComm> comm);
+  // signature_pending: if non-null, the new_comm signature is deferred and the
+  // first pre-hook writes it under a per-registration lock (for comms
+  // registered before initialization, when rank/size aren't available yet),
+  // then flips the flag so later pre-hooks skip the lock (atomic fast path). If
+  // null, this path writes no deferred signature and takes no lock.
+  void registerHooks(
+      std::shared_ptr<TorchComm> comm,
+      std::shared_ptr<std::atomic<bool>> signature_pending = nullptr);
 
   // Pre-hook: log collective signature and enqueue event.
   void onPreHook(

@@ -6,6 +6,7 @@
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDevicePtr.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
+#include "comms/uniflow/drivers/ibverbs/Mlx5Core.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
@@ -1927,16 +1928,94 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   DmaBuffCloseGuard closeGuard{*deviceAdapter_, dmaBuff};
   uint64_t registrationBase = 0;
 
+  /*
+   * mlx5 Data Direct: route NIC<->GPU DMA over PCIe BAR1 (bypassing the Grace
+   * C2C link) when enabled AND every NIC is both Data-Direct- and dma-buf-
+   * capable. It is all-or-nothing: one PCIe-mapped dmabuf fd must be valid on
+   * every NIC's QP, so a mix of DD and non-DD NICs falls back to the standard
+   * path. dmaBufSupported is required here too because the per-NIC registration
+   * loop gates the DD MR on it; without it a DD-but-not-dmabuf NIC would
+   * silently take the standard path, producing exactly the mixed-route MR set
+   * this invariant avoids.
+   */
+  const bool useDataDirect = config_.dataDirect &&
+      std::all_of(nicsHandle_->begin(),
+                  nicsHandle_->end(),
+                  [](const NicResources& nic) {
+                    return nic.dataDirect && nic.dmaBufSupported;
+                  });
+
   if (segment.memType() == MemoryType::VRAM) {
+    // Data Direct only applies to VRAM (dmabuf) registration. Warn at most once
+    // if it was requested but can't be used: config_.dataDirect and NIC
+    // capabilities are per-transport invariants, so a single warning suffices
+    // and avoids per-registration log spam.
+    if (config_.dataDirect && !useDataDirect &&
+        !dataDirectFallbackWarned_.exchange(true)) {
+      UNIFLOW_LOG_WARN(
+          "registerSegment: Data Direct requested but not all NICs are "
+          "Data-Direct-capable; using the standard dmabuf path");
+    }
+
     auto dmaBufSupported =
         deviceAdapter_->isDmaBuffSupported(segment.deviceId());
     CHECK_RETURN(dmaBufSupported);
     if (dmaBufSupported.value()) {
       auto exportRes = deviceAdapter_->exportDmaBuff(
-          segment.deviceId(), segment.mutable_data(), segment.len());
+          segment.deviceId(),
+          segment.mutable_data(),
+          segment.len(),
+          useDataDirect ? DmaBufMapping::DataDirect : DmaBufMapping::Default);
       if (exportRes.hasValue()) {
         dmaBuff = std::move(exportRes).value();
         registrationBase = dmaBuff.registrationBase;
+        /*
+         * GB300 Data Direct rejects a non-zero dmabuf offset (EOPNOTSUPP): the
+         * buffer base must be VMM-granularity (2 MB) aligned. Fail clearly
+         * rather than let the mlx5dv registration below return an opaque errno.
+         */
+        if (useDataDirect && dmaBuff.offset != 0) {
+          return Err(
+              ErrCode::InvalidArgument,
+              "registerSegment: Data Direct requires a 2MB-aligned buffer "
+              "(dmabuf offset must be 0), got offset " +
+                  std::to_string(dmaBuff.offset));
+        }
+        /*
+         * Data Direct registers the whole dma-buf by length; dmaBufLen is only
+         * populated by adapters that support the PCIe-mapped export. Guard
+         * against a 0 length (which would create a useless zero-length MR) in
+         * case an adapter exports a DD dmabuf without setting it.
+         */
+        if (useDataDirect && dmaBuff.dmaBufLen == 0) {
+          return Err(
+              ErrCode::InvalidArgument,
+              "registerSegment: Data Direct requires a non-zero dmaBufLen from "
+              "exportDmaBuff");
+        }
+        if (useDataDirect) {
+          UNIFLOW_LOG_INFO(
+              "registerSegment: Data Direct active for VRAM segment "
+              "(device={}, len={}, dmabufOffset={}, nics={})",
+              segment.deviceId(),
+              segment.len(),
+              dmaBuff.offset,
+              nicsHandle_->size());
+        }
+      } else if (useDataDirect) {
+        /*
+         * Data Direct was explicitly requested; do not silently downgrade to a
+         * non-DD MR (that would misreport DD bandwidth and, with multiple NICs,
+         * mix routes on one QP).
+         */
+        UNIFLOW_LOG_ERROR(
+            "registerSegment: Data Direct dmabuf export failed for VRAM "
+            "segment (device={}, ptr=0x{:x}, len={}): {}",
+            segment.deviceId(),
+            reinterpret_cast<uint64_t>(segment.mutable_data()),
+            segment.len(),
+            exportRes.error().toString());
+        return std::move(exportRes).error();
       } else if (deviceAdapter_->allowsRegMrFallback()) {
         UNIFLOW_LOG_WARN(
             "registerSegment: exportDmaBuff failed for VRAM segment "
@@ -1988,8 +2067,24 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   mrs.reserve(nicsHandle_->size());
   for (const auto& nic : *nicsHandle_) {
     Result<ibv_mr*> mrResult = Err(ErrCode::NotImplemented);
-    if (nic.dmaBufSupported && dmaBuff.fd >= 0) {
-      // Accelerator memory: register via DMA-BUF for GPU Direct RDMA.
+    if (useDataDirect && nic.dmaBufSupported && dmaBuff.fd >= 0) {
+      /*
+       * GPU memory over Data Direct: register via mlx5dv with the DATA_DIRECT
+       * access flag so the NIC DMAs to/from GPU HBM over PCIe BAR1. Data Direct
+       * registers the whole exported dma-buf from its aligned base: pass
+       * offset 0, iova = the page-aligned base (iova - offset), and the full
+       * dma-buf length.
+       */
+      mrResult = ibvApi_->mlx5dvRegDmabufMr(
+          nic.pd,
+          /*offset=*/0,
+          /*length=*/dmaBuff.dmaBufLen,
+          /*iova=*/dmaBuff.iova - dmaBuff.offset,
+          dmaBuff.fd,
+          access,
+          MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);
+    } else if (nic.dmaBufSupported && dmaBuff.fd >= 0) {
+      // GPU memory: standard DMA-BUF GPU Direct RDMA.
       mrResult = ibvApi_->regDmabufMr(
           nic.pd,
           dmaBuff.offset,

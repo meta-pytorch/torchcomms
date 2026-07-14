@@ -24,6 +24,15 @@ CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
 # Use header-only fmt to avoid runtime dependency on libfmt.so
 CXXFLAGS += -DFMT_HEADER_ONLY=1
 
+# Enable JSON parsing in the NCCLX built-in CSV/JSON tuner (meta/tuner) when
+# folly is available. The conda feedstock build sets NCCLX_TUNER_WITH_FOLLY_JSON=1
+# (folly is already linked there); a bare OSS `make` without folly leaves it off,
+# so meta/tuner compiles only its CSV parser -- matching def_build.bzl.
+NCCLX_TUNER_WITH_FOLLY_JSON ?= 0
+ifeq ($(NCCLX_TUNER_WITH_FOLLY_JSON),1)
+CXXFLAGS += -DNCCLX_TUNER_WITH_FOLLY_JSON
+endif
+
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
 endif
@@ -104,10 +113,6 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
 LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
 LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
-ifeq ($(ENABLE_PRIMS),1)
-## CTRAN CUDA source files
-LIBSRCFILES += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceIbTree.cu
-endif
 ## CollTrace plugin source files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
 ## Include ibverbx files
@@ -151,7 +156,9 @@ ifeq ($(ENABLE_PRIMS),1)
 LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemAllocation.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemMapping.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMulticastAllocation.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/MultimemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
@@ -166,6 +173,8 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIb.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIbLauncher.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
 endif
 

@@ -39,12 +39,9 @@ class HierarchicalAllGatherTest : public AllGatherTestBase {
     try {
       MultipeerIbgdaTransportConfig ibConfig{
           .cudaDevice = localRank,
-          .dataBufferSize = 1024 * 1024,
-          .sendRecv =
-              MultipeerIbgdaTransportConfig::SendRecvConfig{
-                  .maxGroups = kNumBlocks,
-                  .pipelineDepth = 2,
-              },
+          .perChannelSize = (1024 * 1024) / kNumBlocks,
+          .max_num_channels = kNumBlocks,
+          .pipelineDepth = 2,
       };
       ibTransport = std::make_unique<MultipeerIbgdaTransport>(
           globalRank, worldSize, bootstrap, ibConfig);
@@ -56,8 +53,6 @@ class HierarchicalAllGatherTest : public AllGatherTestBase {
     std::unique_ptr<MultiPeerNvlTransport> nvlTransport;
     try {
       MultiPeerNvlTransportConfig nvlConfig{
-          .dataBufferSize = 1024 * 1024,
-          .chunkSize = 1024 * 1024,
           .pipelineDepth = 2,
           .p2pSignalCount = static_cast<std::size_t>(kNumBlocks),
           .maxNumChannels = kNumBlocks,

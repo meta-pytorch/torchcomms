@@ -50,64 +50,6 @@ void testSignalWait(
 void testBarrier(DeviceWindow& dw, int barrierIdx, int* result);
 
 /**
- * Test kernel: Send data from this rank to a single peer
- *
- * @param dw The DeviceWindow to use
- * @param targetRank The destination rank
- * @param srcBuff Source buffer containing data to send
- * @param nbytes Number of bytes to send
- * @param numBlocks Number of thread blocks to launch
- * @param blockSize Threads per block
- */
-void testSinglePeerSend(
-    DeviceWindow& dw,
-    int targetRank,
-    void* srcBuff,
-    std::size_t nbytes,
-    int numBlocks,
-    int blockSize);
-
-/**
- * Test kernel: Receive data from a single peer to this rank
- *
- * @param dw The DeviceWindow to use
- * @param targetRank The source rank
- * @param dstBuff Destination buffer for received data
- * @param nbytes Number of bytes to receive
- * @param numBlocks Number of thread blocks to launch
- * @param blockSize Threads per block
- */
-void testSinglePeerRecv(
-    DeviceWindow& dw,
-    int targetRank,
-    void* dstBuff,
-    std::size_t nbytes,
-    int numBlocks,
-    int blockSize);
-
-/**
- * Test kernel: Parallel send/recv to all peers using partition
- *
- * Uses partition_interleaved to split warps between send and recv work,
- * then further partitions across peers. This avoids deadlocks that can occur
- * when send and recv are done sequentially.
- *
- * @param dw The DeviceWindow to use
- * @param srcBuffs Array of source buffers, one per peer
- * @param dstBuffs Array of destination buffers, one per peer
- * @param nbytesPerPeer Number of bytes to transfer per peer
- * @param numBlocks Number of thread blocks to launch
- * @param blockSize Threads per block
- */
-void testMultiPeerSendRecvAllPeers(
-    DeviceWindow& dw,
-    void** srcBuffs,
-    void** dstBuffs,
-    std::size_t nbytesPerPeer,
-    int numBlocks,
-    int blockSize);
-
-/**
  * Test kernel: Concurrent signal/barrier using multiple blocks
  *
  * Each block uses different signal/barrier slots concurrently

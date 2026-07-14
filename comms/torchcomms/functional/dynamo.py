@@ -22,9 +22,17 @@ from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.constant import ConstantVariable
 from torch._dynamo.variables.lists import ListVariable
 
+# PyTorch 2.14+ renamed TorchScriptObjectVariable to CustomClassObjectVariable
+# (pytorch/pytorch#188460) with no back-compat alias; support both.
+try:
+    from torch._dynamo.variables.script_object import (
+        CustomClassObjectVariable as TorchScriptObjectVariable,
+    )
+except ImportError:
+    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
+
 if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
-    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +71,6 @@ class TorchCommMethodVariable(VariableTracker):
         # Directly call the torch op - no tracing through patched method
         from torch._dynamo.variables import TensorVariable
         from torch._dynamo.variables.builder import wrap_fx_proxy
-        from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
         op_name = self.op_info["op_name"]
         schema = self.op_info["param_schema"]
@@ -626,7 +633,6 @@ def _patch_var_getattr() -> None:
     register_opaque_type with members=MemberType.USE_REAL.
     """
     from torch._dynamo.source import AttrSource
-    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
     # PyTorch 2.14+ renamed var_getattr to getattro_impl
     # (pytorch/pytorch#186013); patch whichever the installed version has.

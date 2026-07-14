@@ -75,8 +75,8 @@ TEST_P(CtranMPSCTbSyncTestParamFixture, Check) {
 
   ASSERT_EQ(cudaMalloc((void**)&shmData, size), cudaSuccess);
   ASSERT_EQ(cudaMalloc((void**)&outputData, size * numIter), cudaSuccess);
-  cudaMemset(shmData, 0, size);
-  cudaMemset(outputData, 0, size * numIter);
+  ASSERT_EQ(cudaMemset(shmData, 0, size), cudaSuccess);
+  ASSERT_EQ(cudaMemset(outputData, 0, size * numIter), cudaSuccess);
 
   dim3 grid = {(unsigned int)numProducers + 1, 1, 1};
   dim3 block = {256, 1, 1};
@@ -142,8 +142,8 @@ TEST_F(CtranMPSCTbSyncTestParamFixture, Perf) {
         ctran::utils::align(count * numProducers * sizeof(int), (size_t)16);
     ASSERT_EQ(cudaMalloc((void**)&shmData, size), cudaSuccess);
     ASSERT_EQ(cudaMalloc((void**)&outputData, size * numIter), cudaSuccess);
-    cudaMemset(shmData, 0, size);
-    cudaMemset(outputData, 0, size * numIter);
+    ASSERT_EQ(cudaMemset(shmData, 0, size), cudaSuccess);
+    ASSERT_EQ(cudaMemset(outputData, 0, size * numIter), cudaSuccess);
     dim3 grid = {(unsigned int)numProducers + 1, 1, 1};
     dim3 block = {256, 1, 1};
     void* execArgs[6] = {
@@ -207,8 +207,8 @@ TEST_P(CtranMPSCTbSyncTestParamFixture, CheckSPSCTestCase) {
 
   ASSERT_EQ(cudaMalloc((void**)&shmData, size), cudaSuccess);
   ASSERT_EQ(cudaMalloc((void**)&outputData, size * numIter), cudaSuccess);
-  cudaMemset(shmData, 0, size);
-  cudaMemset(outputData, 0, size * numIter);
+  ASSERT_EQ(cudaMemset(shmData, 0, size), cudaSuccess);
+  ASSERT_EQ(cudaMemset(outputData, 0, size * numIter), cudaSuccess);
 
   // Launch 2 blocks: one producer (blockIdx.x=0) and one consumer
   // (blockIdx.x=1)

@@ -695,8 +695,6 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = config.stagedBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
         .maxNumChannels = kDefaultMaxNumChannels,
         .perChannelSize = config.stagedBufferSize / kDefaultMaxNumChannels,
@@ -919,8 +917,6 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = config.stagedBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
         .maxNumChannels = kDefaultMaxNumChannels,
         .perChannelSize = config.stagedBufferSize / kDefaultMaxNumChannels,
@@ -1077,8 +1073,6 @@ TEST_F(P2pSendRecvBenchmarkFixture, MatchedBidirCtaBenchmark) {
   std::vector<BenchmarkResult> results;
   for (const auto& config : configs) {
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = config.stagedBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
         .maxNumChannels = config.numBlocks,
         .perChannelSize = config.chunkSize,

@@ -29,8 +29,8 @@ class IntranodeRuntime;
  * Buffer — pybind-facing C++ class backing
  * `comms.prims.collectives.moe_ep.moe_ep.Buffer`.
  *
- * Phase 1 (D3): intranode dispatch / combine over NVLink. Phase 2 (D4)
- * adds low_latency_*; Phase 3 (D5) adds internode_*.
+ * Provides intranode dispatch / combine over NVLink, low-latency
+ * dispatch / combine, and internode dispatch / combine.
  *
  * The Python `Buffer.__init__` constructs this with cosmetic args, then
  * gathers `device_ids` + `ipc_handles` Python-side and feeds them back
@@ -106,7 +106,7 @@ class Buffer {
       bool asyncFinish,
       bool allocateOnCommStream);
 
-  // ---- Intranode dispatch / combine (Phase 1) ----
+  // ---- Intranode dispatch / combine ----
   /**
    * Returns a 6-tuple:
    *   (recv_x, recv_topk_idx, recv_topk_weights,
@@ -145,7 +145,50 @@ class Buffer {
       bool asyncFinish,
       bool allocateOnCommStream);
 
-  // ---- Internode (Phase 3 — D5) + Low-latency (Phase 2 — D4) ----
+  // ---- Low-latency ----
+  /**
+   * `low_latency_dispatch` — RDMA-direct send of (BF16/FP8) tokens to peer's
+   * per-(local-expert × src-rank) recv buffer via IBGDA. Returns
+   * (packed_recv_x, packed_recv_x_scales, packed_recv_count,
+   *  packed_recv_src_info, packed_recv_layout_range, handle, event,
+   *  recv_hook). The binding is in place so the Python surface is
+   * callable.
+   */
+  pybind11::tuple low_latency_dispatch(
+      const torch::Tensor& x,
+      const torch::Tensor& topkIdx,
+      int numMaxDispatchTokensPerRank,
+      int numExperts,
+      bool useFp8,
+      bool roundScale,
+      bool useUe8m0,
+      bool asyncFinish,
+      bool returnRecvHook);
+
+  /**
+   * `low_latency_combine` — symmetric counterpart. Returns
+   * (combined_x, event, recv_hook).
+   */
+  pybind11::tuple low_latency_combine(
+      const torch::Tensor& x,
+      const torch::Tensor& topkIdx,
+      const torch::Tensor& topkWeights,
+      const pybind11::object& handle,
+      bool useLogfmt,
+      bool asyncFinish,
+      bool returnRecvHook);
+
+  /** `clean_low_latency_buffer` — wipes both LL FIFOs back to 0. */
+  void clean_low_latency_buffer(
+      int numMaxDispatchTokensPerRank,
+      int hidden,
+      int numExperts);
+
+  /** `set_low_latency_buffer_idx` — pivots between the two LL buffer
+   *  slots used to overlap dispatch / combine. */
+  void set_low_latency_buffer_idx(int idx);
+
+  // ---- Internode ----
   // These are bound through the same pybind module (so the Python `Buffer`
   // class's full method surface stays addressable), but throw at runtime
   // until the matching kernels land. Concrete signatures + bindings live
@@ -182,9 +225,20 @@ class Buffer {
   // pointer to peer `i`'s NVL data buffer. Closed in the destructor.
   std::vector<void*> peerIpcBuffers_;
 
-  // Owned only after `sync()` for Phase 1 (intranode-only).
+  // Byte offset of the LL RDMA region within localIpcBuffer_.
+  // LL region = localIpcBuffer_ + llRdmaOffset_.
+  std::size_t llRdmaOffset_{0};
+
+  // Pivots between the two LL buffer halves.
+  int lowLatencyBufferIdx_{0};
+
+  // Owned only after `sync()` (intranode-only).
   std::unique_ptr<IntranodeRuntime> intranode_;
-  // LowLatencyRuntime / InternodeRuntime land in D4 / D5.
+  // LowLatencyRuntime owned when `low_latency_mode=true`.
+  // Forward-declared in this header; concrete type defined in
+  // `cpp/LowLatencyRuntime.h`. Lives behind unique_ptr so the heavy
+  // include stays inside Buffer.cc.
+  std::unique_ptr<class LowLatencyRuntime> lowLatency_;
 };
 
 } // namespace comms::prims::moe_ep

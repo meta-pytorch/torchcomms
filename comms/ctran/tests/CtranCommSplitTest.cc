@@ -80,6 +80,10 @@ TEST_F(CtranCommSplitTest, LocalNvlSplitSupportsWindowRegistration) {
       cudaFree(buffer);
     }
   });
+  COMMCHECK_TEST(ctran::globalRegisterWithPtr(buffer, kBufferBytes));
+  auto regGuard = folly::makeGuard([&]() {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(buffer, kBufferBytes));
+  });
 
   ctran::CtranWin* win = nullptr;
   COMMCHECK_TEST(

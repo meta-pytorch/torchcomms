@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
@@ -53,6 +54,13 @@ __device__ __forceinline__ void printPerPeerOperation(
         offset,
         nbytes);
   }
+}
+
+__device__ __forceinline__ uint32_t interleavedPartitionSize(
+    uint32_t total_groups,
+    uint32_t num_partitions,
+    uint32_t partition_id) {
+  return (total_groups + num_partitions - 1 - partition_id) / num_partitions;
 }
 } // namespace
 
@@ -200,17 +208,54 @@ __device__ __forceinline__ void all_to_allv(
 
   // Perform peer send/recv based on partition_id from first partition
   bool is_send = (partition_id == 0);
+  const uint32_t send_groups =
+      interleavedPartitionSize(group.total_groups, 2, 0);
+  const uint32_t recv_groups =
+      interleavedPartitionSize(group.total_groups, 2, 1);
+  const uint32_t peer_send_groups = is_send
+      ? group_per_peer.total_groups
+      : interleavedPartitionSize(send_groups, nranks, my_rank_id);
+  const uint32_t peer_recv_groups = is_send
+      ? interleavedPartitionSize(recv_groups, nranks, my_rank_id)
+      : group_per_peer.total_groups;
+  // Channelized NVL requires both directions of a rank pair to use the same
+  // channel IDs, even when interleaved peer partitions are uneven.
+  const uint32_t active_channels =
+      peer_send_groups < peer_recv_groups ? peer_send_groups : peer_recv_groups;
+
+  if (group_per_peer.group_id >= active_channels) {
+    return;
+  }
+
+  ThreadGroup peer_channel_group{
+      .thread_id_in_group = group_per_peer.thread_id_in_group,
+      .group_size = group_per_peer.group_size,
+      .group_id = group_per_peer.group_id,
+      .block_id = group_per_peer.block_id,
+      .total_groups = active_channels,
+      .scope = group_per_peer.scope};
+
   if (is_send) {
-    transport.p2p_nvl.send_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
         send_info.nbytes,
+        peer_channel_group);
+    transport.p2p_nvl.send(
+        peer_channel_group,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0,
         timeout);
   } else {
-    transport.p2p_nvl.recv_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,
+        peer_channel_group);
+    transport.p2p_nvl.recv(
+        peer_channel_group,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0,
         timeout);
   }
 

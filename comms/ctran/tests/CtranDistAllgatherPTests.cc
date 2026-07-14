@@ -286,8 +286,6 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
       return "ctdirect";
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
       return "ctpipeline";
-    case NCCL_ALLGATHER_P_ALGO::ctrdpipeline:
-      return "ctrdpipeline";
     case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
       return "ctsrdpipeline";
     default:
@@ -296,8 +294,7 @@ static std::string algoToStr(enum NCCL_ALLGATHER_P_ALGO algo) {
 }
 
 static bool requiresPowerOfTwoNodes(enum NCCL_ALLGATHER_P_ALGO algo) {
-  return algo == NCCL_ALLGATHER_P_ALGO::ctrdpipeline ||
-      algo == NCCL_ALLGATHER_P_ALGO::ctsrdpipeline;
+  return algo == NCCL_ALLGATHER_P_ALGO::ctsrdpipeline;
 }
 
 TEST_P(CtranAllgatherPTestParam, Basic) {
@@ -351,8 +348,8 @@ TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
 }
 
 // Exercises the log2(nNodes) striping with nLocalRanks=2, nNodes=numRanks/2,
-// which forces ctrdpipeline through 2+ recursive-doubling steps and thus the
-// j >= 1 path of rankChunkOffset and the step > 0 recvbuff-read path that the
+// which forces ctsrdpipeline through 2+ recursive-doubling steps and thus the
+// multi-step chunk-offset and step > 0 recvbuff-read path that the
 // 1-step VnodeBasic never hits. Other algos also run through this config
 // so the extra parameterization is cheap.
 TEST_P(CtranAllgatherPTestParam, VnodeBasicMultiStep) {
@@ -692,6 +689,212 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   }
 }
 
+TEST_F(CtranAllgatherPTest, DestroyOneShareRecvBuf) {
+  // Two persistent AGP requests share the SAME recvbuff. Destroying one must
+  // not release imports/registration still needed by the other: with the
+  // per-request ScopedIpcRegHdl deferred release on destroy, an over-release or
+  // stale key would make the surviving request's exec fail or produce wrong
+  // data.
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctpipeline");
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skipping DestroyOneShareRecvBuf test";
+  }
+
+  const auto recvCount = 2097152UL * numRanks;
+  const auto sendCount = recvCount / numRanks;
+
+  char* localSendBuf = nullptr;
+  char* localRecvBuf = nullptr;
+  cumemBufSetup(sendCount, recvCount, &localSendBuf, &localRecvBuf);
+
+  const auto recvRegBytes = recvCount * commTypeSize(dt);
+  const auto sendRegBytes = sendCount * commTypeSize(dt);
+  void* localRecvHdl = nullptr;
+  void* localSendHdl = nullptr;
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+      localRecvBuf, recvRegBytes, &localRecvHdl));
+  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+      localSendBuf, sendRegBytes, &localSendHdl));
+
+  const auto initMaxRecvCount =
+      recvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  const auto initDt = commInt8;
+
+  // Two persistent requests over the SAME recvbuff on the same comm.
+  meta::comms::Hints hints;
+  CtranPersistentRequest* reqA = nullptr;
+  CtranPersistentRequest* reqB = nullptr;
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          localRecvBuf,
+          initMaxRecvCount,
+          hints,
+          initDt,
+          ctranComm.get(),
+          stream,
+          reqA));
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          localRecvBuf,
+          initMaxRecvCount,
+          hints,
+          initDt,
+          ctranComm.get(),
+          stream,
+          reqB));
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+  // Runs one exec on the given request and verifies every peer chunk.
+  auto runAndVerify = [&](CtranPersistentRequest* request, int iter) {
+    const char sendVal = static_cast<char>(iter * 10 + globalRank);
+    std::vector<char> sendVals(sendRegBytes, sendVal);
+    ASSERT_EQ(
+        cudaMemcpyAsync(
+            localSendBuf,
+            sendVals.data(),
+            sendRegBytes,
+            cudaMemcpyDefault,
+            stream),
+        cudaSuccess);
+    ASSERT_EQ(
+        ctran::allGatherPExec(localSendBuf, sendCount, dt, request),
+        commSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    for (int i = 0; i < numRanks; ++i) {
+      std::vector<char> observedVals(sendRegBytes, 0xFF);
+      ASSERT_EQ(
+          cudaMemcpy(
+              observedVals.data(),
+              localRecvBuf + sendRegBytes * i,
+              sendRegBytes,
+              cudaMemcpyDefault),
+          cudaSuccess);
+      const std::vector<char> expectedVals(
+          sendRegBytes, static_cast<char>(i + iter * 10));
+      EXPECT_EQ(observedVals, expectedVals)
+          << "at rank " << globalRank << " in iteration " << iter
+          << " at chunk received from peer " << i;
+    }
+  };
+
+  // Both requests work before any destroy.
+  runAndVerify(reqA, 0);
+  runAndVerify(reqB, 1);
+
+  // Destroy ONE; the shared recvbuff imports must remain valid for the other.
+  ASSERT_EQ(ctran::allGatherPDestroy(reqA), commSuccess);
+  delete reqA;
+
+  // The surviving request must still execute correctly over the shared buffer.
+  runAndVerify(reqB, 2);
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  ASSERT_EQ(ctran::allGatherPDestroy(reqB), commSuccess);
+  delete reqB;
+
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localSendHdl));
+  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localRecvHdl));
+  cumemBufCleanUp(localSendBuf, localRecvBuf);
+}
+
+// Validates the ctran-level persistent-request teardown-safety mechanism: a
+// request's pooled pipeSync must be released before CtranGpe::terminate()'s
+// pool-drain spin-wait, regardless of whether the CtranComm or the persistent
+// request is destroyed first. Without the comm-drain-before-terminate fix, the
+// "comm before preq" sub-case would hang forever in terminate().
+TEST_F(CtranAllgatherPTest, CommDestroyBeforePreqDestroy) {
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", "ctpipeline");
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skipping this test";
+  } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  }
+
+  const auto recvCount = 2097152UL * numRanks;
+  const auto sendCount = recvCount / numRanks;
+  const auto sendRegBytes = sendCount * commTypeSize(dt);
+  const auto recvRegBytes = recvCount * commTypeSize(dt);
+  const auto initMaxRecvCount =
+      recvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  const auto initDt = commInt8;
+
+  // Creates a comm + persistent request over a freshly allocated recvbuf, runs
+  // exactly one exec, and returns the pieces so the caller controls teardown
+  // ordering. Buffers are freed by the caller after the request is destroyed.
+  auto makeReqAndExec = [&](std::unique_ptr<CtranComm>& comm,
+                            CtranPersistentRequest*& request,
+                            char*& sendBuf,
+                            char*& recvBuf,
+                            void*& sendHdl,
+                            void*& recvHdl) {
+    comm = makeCtranComm();
+    cumemBufSetup(sendCount, recvCount, &sendBuf, &recvBuf);
+
+    // allGatherPInit resolves the recvbuf's registration via searchRegHandle,
+    // so the recvbuf must be pre-registered on this comm; mirror the sibling
+    // AGP tests by also registering the sendbuf used by exec.
+    COMMCHECK_TEST(comm->ctran_->commRegister(recvBuf, recvRegBytes, &recvHdl));
+    COMMCHECK_TEST(comm->ctran_->commRegister(sendBuf, sendRegBytes, &sendHdl));
+
+    meta::comms::Hints hints;
+    COMMCHECK_TEST(
+        ctran::allGatherPInit(
+            recvBuf,
+            initMaxRecvCount,
+            hints,
+            initDt,
+            comm.get(),
+            stream,
+            request));
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    std::vector<char> sendVals(sendRegBytes, static_cast<char>(globalRank));
+    ASSERT_EQ(
+        cudaMemcpyAsync(
+            sendBuf, sendVals.data(), sendRegBytes, cudaMemcpyDefault, stream),
+        cudaSuccess);
+    ASSERT_EQ(
+        ctran::allGatherPExec(sendBuf, sendCount, dt, request), commSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  };
+
+  // Sub-case 1: normal ordering -- destroy the preq (comm alive), then the
+  // comm. The comm drain then finds the token already spent (no-op).
+  {
+    std::unique_ptr<CtranComm> comm;
+    CtranPersistentRequest* request = nullptr;
+    char *sendBuf = nullptr, *recvBuf = nullptr;
+    void *sendHdl = nullptr, *recvHdl = nullptr;
+    makeReqAndExec(comm, request, sendBuf, recvBuf, sendHdl, recvHdl);
+
+    ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
+    delete request;
+    COMMCHECK_TEST(comm->ctran_->commDeregister(sendHdl));
+    COMMCHECK_TEST(comm->ctran_->commDeregister(recvHdl));
+    comm.reset();
+    cumemBufCleanUp(sendBuf, recvBuf);
+  }
+
+  // Sub-case 2: the hang case -- destroy the COMM before the preq. The comm
+  // drain must release the pooled pipeSync before terminate() so this returns
+  // instead of spinning forever. The user then only frees the request object
+  // (the comm is gone; allGatherPDestroy is not valid post-comm-destroy).
+  {
+    std::unique_ptr<CtranComm> comm;
+    CtranPersistentRequest* request = nullptr;
+    char *sendBuf = nullptr, *recvBuf = nullptr;
+    void *sendHdl = nullptr, *recvHdl = nullptr;
+    makeReqAndExec(comm, request, sendBuf, recvBuf, sendHdl, recvHdl);
+
+    // The comm is destroyed first; its drain releases the registrations, so no
+    // explicit commDeregister is valid post-comm-destroy.
+    comm.reset();
+    delete request;
+    cumemBufCleanUp(sendBuf, recvBuf);
+  }
+}
+
 inline std::string getTestName(
     const testing::TestParamInfo<CtranAllgatherPTestParam::ParamType>& info) {
   return std::to_string(std::get<0>(info.param)) + "maxSendCount_" +
@@ -712,7 +915,6 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(
             NCCL_ALLGATHER_P_ALGO::ctdirect,
             NCCL_ALLGATHER_P_ALGO::ctpipeline,
-            NCCL_ALLGATHER_P_ALGO::ctrdpipeline,
             NCCL_ALLGATHER_P_ALGO::ctsrdpipeline)),
     getTestName);
 

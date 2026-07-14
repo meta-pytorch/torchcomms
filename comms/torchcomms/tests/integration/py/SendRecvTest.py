@@ -315,6 +315,85 @@ class SendRecvTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(recv_tensor, recv_rank)
 
+    def _async_send_recv_loop(self, count, dtype, num_iters, description_prefix):
+        """Issue num_iters async send/recv pairs with distinct per-iteration
+        values and verify each result immediately after wait().
+
+        Shared by the Gloo work-object regression (_async_send_recv_repeated)
+        and the NCCL event-ordering regression (_async_send_recv_event_ordering).
+        The per-iteration fill value is rank + 1 + i; for the tested world sizes
+        and iteration counts it stays well within the narrow int8 range, so the
+        values remain distinct per iteration (which is what makes stale/partial
+        data observable) without silently overflowing the dtype.
+        """
+        send_rank = (self.rank + 1) % self.num_ranks
+        recv_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
+
+        for i in range(num_iters):
+            send_tensor = torch.ones(count, dtype=dtype, device=self.device) * int(
+                self.rank + 1 + i
+            )
+            recv_tensor = torch.zeros(count, dtype=dtype, device=self.device)
+
+            # Alternate order based on rank to avoid deadlock
+            if self.rank % 2 == 0:
+                send_work = self.torchcomm.send(send_tensor, send_rank, True)
+                recv_work = self.torchcomm.recv(recv_tensor, recv_rank, True)
+            else:
+                recv_work = self.torchcomm.recv(recv_tensor, recv_rank, True)
+                send_work = self.torchcomm.send(send_tensor, send_rank, True)
+
+            send_work.wait()
+            recv_work.wait()
+
+            expected = torch.ones(count, dtype=dtype) * int(recv_rank + 1 + i)
+            description = f"{description_prefix} iter {i} from rank {recv_rank}"
+            if dtype == torch.float:
+                self.assertTrue(
+                    torch.allclose(recv_tensor.cpu(), expected),
+                    f"Tensors not close enough for {description}",
+                )
+            else:
+                self.assertTrue(
+                    torch.equal(recv_tensor.cpu(), expected),
+                    f"Tensors not equal for {description}",
+                )
+
+    def _async_send_recv_repeated(self, count, dtype):
+        """Repeatedly issue async send/recv pairs with distinct per-iteration
+        values.
+
+        Exercises the rewritten Gloo P2P path, which initiates the transfer
+        inline on a gloo unbound buffer and returns a TorchWorkGlooSend/
+        TorchWorkGlooRecv work object completed on wait(). Looping creates and
+        waits on many of these work objects, which the single-shot tests do
+        not cover.
+        """
+        print(
+            f"Testing repeated async send/recv with count={count} and dtype={get_dtype_name(dtype)}"
+        )
+        self._async_send_recv_loop(
+            count, dtype, num_iters=4, description_prefix="repeated async"
+        )
+
+    def _async_send_recv_event_ordering(self, count, dtype):
+        """Regression test for NCCL P2P event ordering.
+
+        Issues async send/recv, waits on the work, and immediately reads back
+        the received data. work.wait() synchronizes on the end CUDA event
+        recorded after the NCCL call. Without wrapping the send/recv in
+        ncclGroupStart/End, a non-blocking NCCL comm may defer the kernel launch
+        past the end-event record, so the event can fire before the transfer
+        completes and wait() would return with stale/partial data. Looping with
+        distinct values makes such an early completion observable.
+        """
+        print(
+            f"Testing async send/recv event ordering with count={count} and dtype={get_dtype_name(dtype)}"
+        )
+        self._async_send_recv_loop(
+            count, dtype, num_iters=8, description_prefix="event ordering"
+        )
+
     def _create_send_tensor(self, count, dtype):
         """Create send tensor with rank-specific values."""
         options = {"dtype": dtype, "device": self.device}
@@ -387,6 +466,18 @@ class SendRecvTest(unittest.TestCase):
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._send_recv_input_deleted(count, dtype)
+
+    def test_async_send_recv_repeated(self):
+        """Test repeated async send/recv create/wait cycles."""
+        for count, dtype in itertools.product(self.counts, self.dtypes):
+            with self.subTest(count=count, dtype=dtype):
+                self._async_send_recv_repeated(count, dtype)
+
+    def test_async_send_recv_event_ordering(self):
+        """Regression test for NCCL P2P send/recv event ordering."""
+        for count, dtype in itertools.product(self.counts, self.dtypes):
+            with self.subTest(count=count, dtype=dtype):
+                self._async_send_recv_event_ordering(count, dtype)
 
     @unittest.skipIf(os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only tests")
     def test_graph_send_recv(self):

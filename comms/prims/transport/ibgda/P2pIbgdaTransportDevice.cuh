@@ -42,10 +42,9 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // `PIPES_DEVICE_TRAP()` is defined in `comms/prims/core/DeviceMacros.cuh` and
 // is intentionally available across all `comms/prims` device headers.
 //
-// `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm now live
-// in the shared `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh); this class
-// delegates its send/recv/forward/init/progress methods to a `sendRecv_`
-// member.
+// `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
+// the shared stateless `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh);
+// backend-owned `sendRecvState_` carries the actual protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
@@ -92,14 +91,6 @@ struct NicDeviceIbgdaResources {
   __host__ __device__ int get_nic_id() const {
     return device_id;
   }
-};
-
-inline constexpr int kIbgdaMaxQpLanesPerBlock = 64;
-
-struct IbgdaBlockQpState {
-  uint32_t put_rr{0};
-  uint64_t pending_flush_lanes_mask{0};
-  uint64_t last_flush_wqe[kIbgdaMaxQpLanesPerBlock]{};
 };
 
 /**
@@ -177,8 +168,8 @@ class P2pIbgdaTransportDevice {
    *
    * @param nicDevices          GPU span of per-NIC bundles (length =
    *                              numNics). Each NicDeviceIbgdaResources owns
-   *                              maxGroups * qpsPerBlockPerNic main QPs and
-   *                              maxGroups companion QPs.
+   *                              maxChannels * qpDirectionCount *
+   *                              qpsPerConnection main and companion QPs.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
    *                              targets the peer's local signal inbox.
    *                              Used by the slot-index signal API.
@@ -205,9 +196,10 @@ class P2pIbgdaTransportDevice {
       IbgdaLocalBuffer ownedCounterBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
-      int maxGroups = 0,
-      int qpsPerBlockPerNic = 1,
-      DeviceSpan<IbgdaBlockQpState> blockQpState = {},
+      int maxChannels = 0,
+      int qpsPerConnection = 1,
+      int qpDirectionCount = kIbDirections,
+      DeviceSpan<IbLocalChannel> localChannels = {},
       IbSendRecvState sendRecvState = {})
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
@@ -215,10 +207,11 @@ class P2pIbgdaTransportDevice {
         ownedCounterBuf_(ownedCounterBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
-        maxGroups_(maxGroups),
-        qpsPerBlockPerNic_(qpsPerBlockPerNic),
-        blockQpState_(blockQpState),
-        sendRecv_(sendRecvState) {}
+        maxChannels_(maxChannels),
+        qpsPerConnection_(qpsPerConnection),
+        qpDirectionCount_(qpDirectionCount),
+        localChannels_(localChannels),
+        sendRecvState_(sendRecvState) {}
 
   // =========================================================================
   // Slot-Index API (resolves owned buffers, forwards to explicit-buffer API)
@@ -300,8 +293,8 @@ class P2pIbgdaTransportDevice {
 
   /**
    * put (thread-scope, slot-index) - Single-thread variant of slot-index put.
-   * Caller is responsible for gating to one thread. Uses the caller's physical
-   * block-owned QP resources.
+   * Caller is responsible for gating to one thread. Fixed-channel callers must
+   * use the group-scope APIs because the solo group id is not a channel id.
    * Args match the group-scope overload.
    */
   __device__ void put(
@@ -342,8 +335,9 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * signal (thread-scope, slot-index) - Single-thread variant. Uses the
-   * caller's physical block-owned QP resources.
+   * signal (thread-scope, slot-index) - Single-thread variant. Fixed-channel
+   * callers must use the group-scope APIs because the solo group id is not a
+   * channel id.
    */
   __device__ void signal(int signalId, uint64_t signalVal = 1) {
     ThreadGroup solo = make_thread_solo();
@@ -517,7 +511,9 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * put (thread-scope) - Single-thread variant. Caller gates.
+   * put (thread-scope) - Single-thread variant. Caller gates. Fixed-channel
+   * callers must use the group-scope APIs because the solo group id is not a
+   * channel id.
    *
    * signalBuf intentionally not defaulted (see group-scope sibling above).
    */
@@ -591,10 +587,11 @@ class P2pIbgdaTransportDevice {
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1) {
+      uint64_t signalVal = 1,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      IbgdaLane lane = control_lane(group.block_id);
+      IbgdaLane lane = control_lane(group, direction);
       const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
       record_signal_wqe(lane, signalTicket);
     }
@@ -671,14 +668,18 @@ class P2pIbgdaTransportDevice {
    *
    * Flush waits for the block's recorded data put and signal WQEs. Counter
    * WQEs are local-tracking operations and are intentionally not part of the
-   * flush set.
+   * flush set. Raw put/signal/fence users default to the Send direction;
+   * receive-direction drains are only needed by protocols that explicitly post
+   * receive-direction data WQEs.
    *
    * @param group Thread group; all threads must call. Leader waits, all sync.
    */
-  __device__ void flush(ThreadGroup& group) {
+  __device__ void flush(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      drain_flush_lanes(group.block_id);
+      drain_flush_lanes(group, direction);
     }
     group.sync();
   }
@@ -697,8 +698,10 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group; all threads must call.
    */
-  __device__ void fence(ThreadGroup& group) {
-    flush(group);
+  __device__ void fence(
+      ThreadGroup& group,
+      IbDirection direction = IbDirection::Send) {
+    flush(group, direction);
   }
 
   /** fence (thread-scope) - Single-thread variant. */
@@ -780,7 +783,11 @@ class P2pIbgdaTransportDevice {
     uint32_t nic_id{0};
     uint32_t qp_index{0};
     uint32_t lane_ordinal{0};
-    uint32_t block_id{0};
+    uint32_t channel_id{0};
+    uint32_t qp_slot_per_nic{0};
+    uint32_t companion_slot_per_nic{0};
+    IbDirection direction{IbDirection::Send};
+    IbQpState* qp_state{nullptr};
     doca_gpu_dev_verbs_qp* qp{nullptr};
     doca_gpu_dev_verbs_qp* companion_qp{nullptr};
   };
@@ -801,11 +808,12 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
-  __device__ __forceinline__ void validate_block_id(uint32_t blockId) const {
+  __device__ __forceinline__ void validate_channel_id(
+      uint32_t channelId) const {
     if (blockIdx.y != 0 || blockIdx.z != 0 || blockDim.y != 1 ||
         blockDim.z != 1) {
       printf(
-          "[PIPES] FATAL: IBGDA per-block QP selection currently supports "
+          "[PIPES] FATAL: IBGDA channel QP selection currently supports "
           "only 1D grids and 1D thread blocks, got blockIdx=(%u,%u,%u) "
           "blockDim=(%u,%u,%u)\n",
           blockIdx.x,
@@ -816,12 +824,13 @@ class P2pIbgdaTransportDevice {
           blockDim.z);
       PIPES_DEVICE_TRAP();
     }
-    if (blockId >= static_cast<uint32_t>(maxGroups_) || blockQpState_.empty()) {
+    if (channelId >= static_cast<uint32_t>(maxChannels_) ||
+        localChannels_.empty()) {
       printf(
-          "[PIPES] FATAL: IBGDA block_id=%u out of range [0, %d) "
-          "or block QP state missing\n",
-          blockId,
-          maxGroups_);
+          "[PIPES] FATAL: IBGDA channel_id=%u out of range [0, %d) "
+          "or channel state missing\n",
+          channelId,
+          maxChannels_);
       PIPES_DEVICE_TRAP();
     }
   }
@@ -834,12 +843,22 @@ class P2pIbgdaTransportDevice {
           "cluster-scope ThreadGroup yet\n");
       PIPES_DEVICE_TRAP();
     }
-    validate_block_id(group.block_id);
+    validate_channel_id(group.group_id);
   }
 
-  __device__ __forceinline__ IbgdaLane
-  lane_from_ordinal(uint32_t blockId, uint32_t laneOrdinal) const {
-    validate_block_id(blockId);
+  __device__ __forceinline__ IbQpState& qp_state(
+      uint32_t channelId,
+      IbDirection direction) const {
+    validate_channel_id(channelId);
+    auto& channel = localChannels_[channelId];
+    return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
+  }
+
+  __device__ __forceinline__ IbgdaLane lane_from_ordinal(
+      uint32_t channelId,
+      IbDirection direction,
+      uint32_t laneOrdinal) const {
+    validate_channel_id(channelId);
     const uint32_t numNics = static_cast<uint32_t>(nicDevices_.size());
     if (numNics == 0) {
       printf(
@@ -858,17 +877,33 @@ class P2pIbgdaTransportDevice {
     }
     const uint32_t nicId = laneOrdinal % numNics;
     const uint32_t qpIndex = laneOrdinal / numNics;
-    const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
-    const uint32_t qpId = blockId * qpsPerBlockPerNic_ + qpIndex;
-    if (qpIndex >= static_cast<uint32_t>(qpsPerBlockPerNic_) ||
-        qpId >= nic.qps.size() || blockId >= nic.companion_qps.size()) {
+    const uint32_t directionIndex = static_cast<uint32_t>(direction);
+    if (directionIndex >= static_cast<uint32_t>(qpDirectionCount_)) {
       printf(
-          "[PIPES] FATAL: invalid IBGDA lane block=%u nic=%u qpIndex=%u "
-          "qpsPerBlockPerNic=%d qps=%u companionQps=%u\n",
-          blockId,
+          "[PIPES] FATAL: IBGDA direction=%u is unavailable for "
+          "qpDirectionCount=%d\n",
+          directionIndex,
+          qpDirectionCount_);
+      PIPES_DEVICE_TRAP();
+    }
+    const uint32_t qpSlotPerNic =
+        ((channelId * static_cast<uint32_t>(qpDirectionCount_) +
+          directionIndex) *
+         static_cast<uint32_t>(qpsPerConnection_)) +
+        qpIndex;
+    const uint32_t companionSlotPerNic = qpSlotPerNic;
+    const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
+    if (qpIndex >= static_cast<uint32_t>(qpsPerConnection_) ||
+        qpSlotPerNic >= nic.qps.size() ||
+        companionSlotPerNic >= nic.companion_qps.size()) {
+      printf(
+          "[PIPES] FATAL: invalid IBGDA lane channel=%u direction=%u nic=%u "
+          "qpIndex=%u qpsPerConnection=%d qps=%u companionQps=%u\n",
+          channelId,
+          directionIndex,
           nicId,
           qpIndex,
-          qpsPerBlockPerNic_,
+          qpsPerConnection_,
           static_cast<unsigned>(nic.qps.size()),
           static_cast<unsigned>(nic.companion_qps.size()));
       PIPES_DEVICE_TRAP();
@@ -877,14 +912,18 @@ class P2pIbgdaTransportDevice {
         .nic_id = nicId,
         .qp_index = qpIndex,
         .lane_ordinal = laneOrdinal,
-        .block_id = blockId,
-        .qp = nic.qps[qpId],
-        .companion_qp = nic.companion_qps[blockId]};
+        .channel_id = channelId,
+        .qp_slot_per_nic = qpSlotPerNic,
+        .companion_slot_per_nic = companionSlotPerNic,
+        .direction = direction,
+        .qp_state = &qp_state(channelId, direction),
+        .qp = nic.qps[qpSlotPerNic],
+        .companion_qp = nic.companion_qps[companionSlotPerNic]};
   }
 
   __device__ __forceinline__ uint32_t
-  select_put_lane_ordinal(uint32_t blockId) {
-    validate_block_id(blockId);
+  select_put_lane_ordinal(uint32_t channelId, IbDirection direction) {
+    validate_channel_id(channelId);
     if (nicDevices_.empty()) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
@@ -901,24 +940,28 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
     const uint32_t numLanes =
-        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+        static_cast<uint32_t>(nicDevices_.size() * qpsPerConnection_);
     if (numLanes == 1) {
       return 0;
     }
-    uint32_t seq = atomicAdd(&blockQpState_[blockId].put_rr, 1U);
+    uint32_t seq = qp_state(channelId, direction).cursor++;
     return seq % numLanes;
   }
 
-  __device__ __forceinline__ IbgdaLane select_put_lane(uint32_t blockId) {
-    return lane_from_ordinal(blockId, select_put_lane_ordinal(blockId));
+  __device__ __forceinline__ IbgdaLane
+  select_put_lane(ThreadGroup& group, IbDirection direction) {
+    const uint32_t channelId = group.group_id;
+    return lane_from_ordinal(
+        channelId, direction, select_put_lane_ordinal(channelId, direction));
   }
 
-  __device__ __forceinline__ IbgdaLane control_lane(uint32_t blockId) const {
-    return lane_from_ordinal(blockId, 0);
+  __device__ __forceinline__ IbgdaLane
+  control_lane(ThreadGroup& group, IbDirection direction) const {
+    return lane_from_ordinal(group.group_id, direction, 0);
   }
 
   __device__ __forceinline__ uint32_t num_qp_lanes() const {
-    return static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+    return static_cast<uint32_t>(nicDevices_.size() * qpsPerConnection_);
   }
 
   __device__ __forceinline__ void atomic_max_u64(uint64_t* ptr, uint64_t val) {
@@ -949,9 +992,9 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ void record_flush_wqe(
       const IbgdaLane& lane,
       uint64_t ticket) {
-    auto& state = blockQpState_[lane.block_id];
-    atomic_max_u64(&state.last_flush_wqe[lane.lane_ordinal], ticket);
-    atomic_or_u64(&state.pending_flush_lanes_mask, 1ULL << lane.lane_ordinal);
+    auto& state = *lane.qp_state;
+    atomic_max_u64(&state.lastFlushWqe[lane.lane_ordinal], ticket);
+    atomic_or_u64(&state.pendingFlushLanesMask, 1ULL << lane.lane_ordinal);
   }
 
   __device__ __forceinline__ void record_signal_wqe(
@@ -984,24 +1027,25 @@ class P2pIbgdaTransportDevice {
     }
   }
 
-  __device__ void
-  wait_lanes(uint32_t blockId, uint64_t mask, const uint64_t* tickets) {
-    const uint32_t numLanes =
-        static_cast<uint32_t>(nicDevices_.size() * qpsPerBlockPerNic_);
+  __device__ void wait_lanes(
+      uint32_t channelId,
+      IbDirection direction,
+      uint64_t mask,
+      const uint64_t* tickets) {
+    const uint32_t numLanes = num_qp_lanes();
     for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
       if ((mask & (1ULL << laneId)) == 0) {
         continue;
       }
-      IbgdaLane lane = lane_from_ordinal(blockId, laneId);
+      IbgdaLane lane = lane_from_ordinal(channelId, direction, laneId);
       wait_local_on_qp(lane.qp, tickets[laneId]);
     }
   }
 
-  __device__ void drain_flush_lanes(uint32_t blockId) {
-    auto& state = blockQpState_[blockId];
-    const uint64_t mask =
-        atomic_exchange_u64(&state.pending_flush_lanes_mask, 0);
-    wait_lanes(blockId, mask, state.last_flush_wqe);
+  __device__ void drain_flush_lanes(ThreadGroup& group, IbDirection direction) {
+    auto& state = qp_state(group.group_id, direction);
+    const uint64_t mask = atomic_exchange_u64(&state.pendingFlushLanesMask, 0);
+    wait_lanes(group.group_id, direction, mask, state.lastFlushWqe);
   }
 
   __device__ void put_impl(
@@ -1028,7 +1072,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       validate_group_scope(group);
       const bool hasCounter = counterBuf.ptr != nullptr;
-      IbgdaLane lane = select_put_lane(group.block_id);
+      IbgdaLane lane = select_put_lane(group, IbDirection::Send);
       if (hasSignal && hasCounter) {
         const auto tickets = put_signal_counter_single_impl(
             lane,
@@ -1082,10 +1126,11 @@ class P2pIbgdaTransportDevice {
     uint64_t lastPutWqeIdx = 0;
     if (group.is_leader()) {
       validate_group_scope(group);
-      laneOrdinal = select_put_lane_ordinal(group.block_id);
+      laneOrdinal = select_put_lane_ordinal(group.group_id, IbDirection::Send);
     }
     laneOrdinal = group.broadcast<uint32_t>(laneOrdinal);
-    IbgdaLane lane = lane_from_ordinal(group.block_id, laneOrdinal);
+    IbgdaLane lane =
+        lane_from_ordinal(group.group_id, IbDirection::Send, laneOrdinal);
 
     lastPutWqeIdx =
         put_cooperative_data_impl(group, lane, localBuf, remoteBuf, nbytes);
@@ -1815,10 +1860,10 @@ class P2pIbgdaTransportDevice {
   // Terminology used below:
   //   slot             = one logical staging-ring entry of dataBufferSize
   //                      bytes. There are pipelineDepth slots in the ring.
-  //   active_blocks    = number of participating block-groups in one
-  //                      send()/recv() call. Must be <= maxGroups.
+  //   maxChannels      = fixed number of channel/group slots allocated for
+  //                      this peer at transport construction.
   //   perBlockSlot     = one block-group's partition within a slot:
-  //                      (dataBufferSize / active_blocks) & ~15ULL
+  //                      channelLayout.perChannelSize & ~15ULL
   //   sub-chunk        = one signaled byte range within a perBlockSlot. When
   //                      max_signal_bytes == 0, a sub-chunk is the whole
   //                      perBlockSlot. Otherwise:
@@ -1835,9 +1880,9 @@ class P2pIbgdaTransportDevice {
   //   for (std::size_t s = 0; s < totalBytes / sectionBytes; ++s) {
   //     TiledBuffer<char> tiles(data + s * sectionBytes, sectionBytes, sub);
   //     if (role == 0)
-  //       transport->send(sub, tiles.data(), tiles.bytes(), active_blocks);
+  //       transport->send(sub, tiles.data(), tiles.bytes());
   //     else
-  //       transport->recv(sub, tiles.data(), tiles.bytes(), active_blocks);
+  //       transport->recv(sub, tiles.data(), tiles.bytes());
   //   }
 
   /**
@@ -1886,25 +1931,23 @@ class P2pIbgdaTransportDevice {
    * logical transfer, then calling the matching progress method with the same
    * static geometry until it returns `Done`:
    *
-   *   transport->init_send_progress(
-   *       group, nbytes, active_blocks, max_signal_bytes);
+   *   transport->init_send_progress(group, nbytes, max_signal_bytes);
    *   while (transport->progress_send_once(
-   *              group, src, nbytes, active_blocks, max_signal_bytes, timeout)
+   *              group, src, nbytes, max_signal_bytes, timeout)
    *          != IbgdaSendRecvProgressStatus::Done) {
    *     // Try another independent lane or return to the scheduler.
    *   }
    *
    * Receivers use the symmetric `init_recv_progress()` and
-   * `progress_recv_once()` pair with the same `nbytes`, `active_blocks`, and
-   * compatible `max_signal_bytes`. Zero-byte operations initialize directly to
-   * `Done`, so callers can use the same loop shape for empty and non-empty
-   * transfers.
+   * `progress_recv_once()` pair with the same `nbytes` and compatible
+   * `max_signal_bytes`. Zero-byte operations initialize directly to `Done`, so
+   * callers can use the same loop shape for empty and non-empty transfers.
    *
    * The transport-owned state slot stores the shared persistent protocol byte
    * cursor and only the active async stage, `activeNextByte`, and reserved
-   * stream base. Immutable geometry such as `nbytes`, active block count, and
-   * chunk sizing is intentionally kept out of HBM-backed state and recomputed
-   * by each progress call from its arguments.
+   * stream base. Immutable geometry such as `nbytes` and chunk sizing is
+   * intentionally kept out of HBM-backed state and recomputed by each progress
+   * call from its arguments and the fixed channel layout.
    *
    * The progress state is a property of this transport, indexed by
    * `group.group_id` and direction. A caller may have one send and one recv in
@@ -1925,9 +1968,8 @@ class P2pIbgdaTransportDevice {
    * group while a previous send is outstanding traps with a diagnostic instead
    * of silently overwriting the in-flight byte range.
    *
-   * `active_blocks == 0` means all configured groups participate. Non-zero
-   * values must match the peer's recv-side initialization for the same logical
-   * transfer. `max_signal_bytes == 0` sends one signal per per-block staging
+   * Channel count and per-channel staging geometry are fixed in the transport
+   * layout. `max_signal_bytes == 0` sends one signal per per-channel staging
    * partition; smaller non-zero values split that partition into multiple
    * signaled sub-chunks for finer overlap with the receiver.
    *
@@ -1937,17 +1979,14 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group that will execute all later progress calls.
    * @param nbytes Number of user-buffer bytes to send for this group.
-   * @param active_blocks Number of participating transport lanes, or 0 for
-   *                      maxGroups.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0) {
     sendRecv_.init_send_progress(
-        group, nbytes, active_blocks, max_signal_bytes);
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -1964,10 +2003,9 @@ class P2pIbgdaTransportDevice {
    * group while a previous recv is outstanding traps with a diagnostic instead
    * of silently overwriting the in-flight byte range.
    *
-   * The sender and receiver must use the same `active_blocks` and compatible
-   * `max_signal_bytes` for a logical transfer. The staging offset and protocol
-   * signal values are derived from those values, so a mismatch can make one
-   * side wait on a different byte range than the other side produced.
+   * The sender and receiver must use compatible `max_signal_bytes` for a
+   * logical transfer. Channel count and staging geometry are fixed in the
+   * transport layout; `max_signal_bytes` only controls sub-chunk signaling.
    *
    * Zero-byte receives mark the internal state `Done` without reading or
    * validating staging geometry. This matches the blocking `recv()` no-op
@@ -1975,17 +2013,14 @@ class P2pIbgdaTransportDevice {
    *
    * @param group Thread group that will execute all later progress calls.
    * @param nbytes Number of user-buffer bytes to receive for this group.
-   * @param active_blocks Number of participating transport lanes, or 0 for
-   *                      maxGroups.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0) {
     sendRecv_.init_recv_progress(
-        group, nbytes, active_blocks, max_signal_bytes);
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2016,7 +2051,6 @@ class P2pIbgdaTransportDevice {
    * @param src Source user buffer. The range `[src, src + nbytes)` must remain
    *            valid until `Done`.
    * @param nbytes Number of user-buffer bytes from the matching init call.
-   * @param active_blocks Number of participating groups from init.
    * @param max_signal_bytes Maximum signaled sub-chunk size from init.
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::send`.
@@ -2026,16 +2060,15 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
         *this,
+        sendRecvState_,
         group,
         src,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);
@@ -2066,7 +2099,6 @@ class P2pIbgdaTransportDevice {
    * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
    *            remain valid until `Done`.
    * @param nbytes Number of user-buffer bytes from the matching init call.
-   * @param active_blocks Number of participating groups from init.
    * @param max_signal_bytes Maximum signaled sub-chunk size from init.
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::recv`.
@@ -2076,16 +2108,15 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
         *this,
+        sendRecvState_,
         group,
         dst,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);
@@ -2113,10 +2144,9 @@ class P2pIbgdaTransportDevice {
    * cursor and protocol sequence numbers on each invocation. This allows
    * callers to pipeline across repeated send() calls without a separate drain.
    *
-   * The caller must keep the staging layout stable while a sequence is in
-   * flight. Changing active_blocks changes the per-block staging partition, so
-   * both sides must perform a higher-level barrier/quiescence step first.
-   * max_signal_bytes may vary across calls with the same active_blocks.
+   * The caller must keep the transport layout stable while a sequence is in
+   * flight. `max_signal_bytes` may vary across calls because it changes only
+   * sub-chunk signaling, not the fixed channel staging layout.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).
@@ -2125,8 +2155,6 @@ class P2pIbgdaTransportDevice {
    *                        protocol byte count is rounded up to 16 bytes and
    *                        consumed in perBlockSlot-sized pieces, or smaller
    *                        sub-chunks when max_signal_bytes is set.
-   * @param active_blocks   Number of block-groups sharing each logical slot in
-   *                        this call. 0 means use maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
    *                        perBlockSlot. 0 means one signal per perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
@@ -2136,20 +2164,11 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     sendWithTrace<CopyOp>(
-        group,
-        src,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        {},
-        0,
-        args...);
+        group, src, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -2157,7 +2176,6 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks,
       std::size_t max_signal_bytes,
       const Timeout& timeout,
       PipesTraceHandle trace,
@@ -2167,7 +2185,6 @@ class P2pIbgdaTransportDevice {
     (void)group;
     (void)src;
     (void)nbytes;
-    (void)active_blocks;
     (void)max_signal_bytes;
     (void)timeout;
     (void)trace;
@@ -2186,10 +2203,10 @@ class P2pIbgdaTransportDevice {
     }
     sendRecv_.send<P2pIbgdaTransportDevice, CopyOp>(
         *this,
+        sendRecvState_,
         group,
         src,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);
@@ -2226,8 +2243,6 @@ class P2pIbgdaTransportDevice {
    *                        internal protocol byte count is rounded up to 16
    *                        bytes and consumed in perBlockSlot-sized pieces, or
    *                        smaller sub-chunks when max_signal_bytes is set.
-   * @param active_blocks   Number of block-groups sharing each logical slot in
-   *                        this call. 0 means use maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
    *                        perBlockSlot. 0 means one signal per perBlockSlot.
    *                        Must match the sender's value.
@@ -2238,20 +2253,11 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     recvWithTrace<CopyOp>(
-        group,
-        dst,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        {},
-        0,
-        args...);
+        group, dst, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -2259,7 +2265,6 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks,
       std::size_t max_signal_bytes,
       const Timeout& timeout,
       PipesTraceHandle trace,
@@ -2269,7 +2274,6 @@ class P2pIbgdaTransportDevice {
     (void)group;
     (void)dst;
     (void)nbytes;
-    (void)active_blocks;
     (void)max_signal_bytes;
     (void)timeout;
     (void)trace;
@@ -2288,10 +2292,10 @@ class P2pIbgdaTransportDevice {
     }
     sendRecv_.recv<P2pIbgdaTransportDevice, CopyOp>(
         *this,
+        sendRecvState_,
         group,
         dst,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);
@@ -2332,22 +2336,16 @@ class P2pIbgdaTransportDevice {
    * The signal protocol is wire-compatible:
    *
    *   Recv side (this transport):
-   *     - Reads state[maxGroups + groupId].nextStep (same index as recv)
-   *     - Waits DATA_READY on localSignalBuf[groupId] (matches send's
-   *       piggybacked signal on remoteSignalBuf[groupId])
-   *     - Signals SLOT_FREE on remoteSignalBuf[maxGroups + groupId]
-   *       (matches send's backpressure wait on localSignalBuf[maxGroups +
-   *       groupId])
+   *     - Uses this channel's recv progress cursor.
+   *     - Waits DATA_READY on this channel's local data-ready signal.
+   *     - Signals SLOT_FREE on the remote channel's slot-free signal.
    *
    *   Fwd side (fwd transport):
-   *     - Reads state[groupId].nextStep (same index as send)
-   *     - Waits NIC_DONE on localCounterBuf[groupId] (matches send's
-   *       self-counter)
-   *     - Waits SLOT_FREE on localSignalBuf[maxGroups + groupId]
-   *       (matches recv's backpressure release)
-   *     - RDMA puts with DATA_READY on remoteSignalBuf[groupId]
-   *       + NIC_DONE on localCounterBuf[groupId]
-   *       (matches recv's DATA_READY wait)
+   *     - Uses the forward channel's send progress cursor.
+   *     - Waits NIC_DONE on the forward channel's local completion counter.
+   *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
+   *     - RDMA puts with DATA_READY on the forward remote channel and may
+   *       batch NIC_DONE credit to the local completion counter.
    *
    * Any chain of send → forward* → recv is therefore valid: each
    * forward consumes exactly the signals its predecessor produces
@@ -2359,8 +2357,6 @@ class P2pIbgdaTransportDevice {
    * @param fwd             Forward transport (sends to next peer in ring).
    * @param nbytes          Payload bytes to receive and forward. The internal
    *                        protocol byte count is rounded up to 16 bytes.
-   * @param active_blocks   Number of block-groups sharing the slot. 0 =
-   * maxGroups.
    * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    * @param args            Extra args forwarded to CopyOp::forward.
@@ -2371,21 +2367,11 @@ class P2pIbgdaTransportDevice {
       void* __restrict__ dst,
       P2pIbgdaTransportDevice& fwd,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     forwardWithTrace<CopyOp>(
-        group,
-        dst,
-        fwd,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        {},
-        0,
-        args...);
+        group, dst, fwd, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -2394,7 +2380,6 @@ class P2pIbgdaTransportDevice {
       void* __restrict__ dst,
       P2pIbgdaTransportDevice& fwd,
       std::size_t nbytes,
-      int active_blocks,
       std::size_t max_signal_bytes,
       const Timeout& timeout,
       PipesTraceHandle trace,
@@ -2414,12 +2399,13 @@ class P2pIbgdaTransportDevice {
     }
     sendRecv_.forward<CopyOp>(
         *this,
+        sendRecvState_,
         group,
         dst,
         fwd.sendRecv_,
+        fwd.sendRecvState_,
         fwd,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);
@@ -2437,26 +2423,22 @@ class P2pIbgdaTransportDevice {
   // Send/recv state accessors
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const {
-    return sendRecv_.send_recv_state();
+    return sendRecvState_;
   }
 
   /**
    * Maximum bytes a block can send without blocking on pipeline backpressure.
    *
-   * The staging buffer is split into pipelineDepth slots, each divided evenly
-   * across active_blocks. A block can fill all its slots before the NIC must
+   * The staging buffer is split into pipelineDepth slots, each with a fixed
+   * per-channel partition. A block can fill all its slots before the NIC must
    * drain any of them, so the non-blocking window is:
-   *   (dataBufferSize / active_blocks) * pipelineDepth
+   *   perChannelSize * pipelineDepth
    *
    * Callers should loop over their data in pipeline_window-sized chunks so
    * that send()/forward() never stall waiting for a free slot.
-   *
-   * @param active_blocks  Total blocks sharing this transport (typically
-   *                       gridDim.x).
    */
-  __device__ __forceinline__ std::size_t pipeline_window(
-      int active_blocks) const {
-    return sendRecv_.pipeline_window(active_blocks);
+  __device__ __forceinline__ std::size_t pipeline_window() const {
+    return sendRecv_.pipeline_window(sendRecvState_);
   }
 
  private:
@@ -2471,10 +2453,12 @@ class P2pIbgdaTransportDevice {
 
   int numSignalSlots_{0};
   int numCounterSlots_{0};
-  int maxGroups_{0};
-  int qpsPerBlockPerNic_{1};
-  DeviceSpan<IbgdaBlockQpState> blockQpState_{};
+  int maxChannels_{0};
+  int qpsPerConnection_{1};
+  int qpDirectionCount_{kIbDirections};
+  DeviceSpan<IbLocalChannel> localChannels_{};
 
+  IbSendRecvState sendRecvState_{};
   IbSendRecvDevice sendRecv_{};
 };
 

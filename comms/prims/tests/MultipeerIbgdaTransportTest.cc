@@ -1242,12 +1242,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1262,13 +1259,7 @@ TEST_F(
     CUDACHECK_TEST(cudaMemset(d_output, 0, 2 * sizeof(int64_t)));
 
     test::testProgressReservations(
-        peerTransportPtr,
-        d_output,
-        sendBytes,
-        recvBytes,
-        numBlocks,
-        numBlocks,
-        blockSize);
+        peerTransportPtr, d_output, sendBytes, recvBytes, numBlocks, blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     std::array<int64_t, 2> output{};
@@ -1308,12 +1299,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1342,7 +1330,6 @@ TEST_F(
           peerTransportPtr,
           sendBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           true,
           numBlocks,
@@ -1352,7 +1339,6 @@ TEST_F(
           peerTransportPtr,
           recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           false,
           numBlocks,
@@ -1394,7 +1380,6 @@ TEST_F(
           peerTransportPtr,
           sendBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           true,
           numBlocks,
@@ -1404,7 +1389,6 @@ TEST_F(
           peerTransportPtr,
           recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           false,
           numBlocks,
@@ -1459,12 +1443,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1494,7 +1475,6 @@ TEST_F(
           peerTransportPtr,
           isSender ? sendBuffer.get() : recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           isSender,
           numBlocks,
@@ -1525,6 +1505,181 @@ TEST_F(
 
     runDirection(0, rank0Pattern);
     runDirection(1, rank1Pattern);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+TEST_F(MultipeerIbgdaTransportTestFixture, SendRecvReuseCreditCadence) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  if (!test::supportsProgressSendRecv()) {
+    GTEST_SKIP() << "progress send/recv is not supported for this build";
+  }
+
+  constexpr std::size_t perChannelSize = 64 * 1024;
+  constexpr int pipelineDepth = 2;
+  constexpr std::size_t protocolBytes = 16;
+  constexpr int numBlocks = 1;
+  constexpr std::size_t perBlockSlot = perChannelSize;
+  constexpr std::size_t nicDoneCreditQuantum =
+      detail::ib_send_recv_nic_done_credit_quantum(perBlockSlot, pipelineDepth);
+  constexpr std::size_t slotFreeCreditQuantum =
+      detail::ib_send_recv_slot_free_credit_quantum(
+          perBlockSlot, pipelineDepth);
+  static_assert(nicDoneCreditQuantum == slotFreeCreditQuantum);
+  constexpr std::size_t testCreditQuantum = nicDoneCreditQuantum;
+  static_assert(testCreditQuantum % protocolBytes == 0);
+  constexpr std::size_t largeBytes = testCreditQuantum * 2;
+  static_assert(largeBytes <= perBlockSlot);
+  constexpr std::size_t largeNonQuantumBytes = perBlockSlot - protocolBytes;
+  static_assert(largeNonQuantumBytes % protocolBytes == 0);
+  static_assert(largeNonQuantumBytes % testCreditQuantum != 0);
+
+  constexpr int blockSize = 128;
+  constexpr int iterationsBeforeCredit =
+      static_cast<int>(testCreditQuantum / protocolBytes) - 1;
+  constexpr int iterationsAtCredit =
+      static_cast<int>(testCreditQuantum / protocolBytes);
+  constexpr uint8_t testPattern = 0x7B;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  struct ReuseCreditCase {
+    const char* name;
+    std::size_t nbytes;
+    int iterations;
+    uint64_t expectedNicDoneCredit;
+    uint64_t expectedSlotFreeCredit;
+    uint64_t expectedDataReady;
+  };
+
+  const std::array<ReuseCreditCase, 4> cases{{
+      {
+          "tiny_before_quantum",
+          1,
+          iterationsBeforeCredit,
+          0,
+          0,
+          static_cast<uint64_t>(iterationsBeforeCredit) * protocolBytes,
+      },
+      {
+          "tiny_at_quantum",
+          1,
+          iterationsAtCredit,
+          nicDoneCreditQuantum,
+          slotFreeCreditQuantum,
+          testCreditQuantum,
+      },
+      {
+          "large_quantum_aligned",
+          largeBytes,
+          1,
+          largeBytes,
+          largeBytes,
+          largeBytes,
+      },
+      {
+          "large_non_quantum_single_chunk",
+          largeNonQuantumBytes,
+          1,
+          largeNonQuantumBytes,
+          largeNonQuantumBytes,
+          largeNonQuantumBytes,
+      },
+  }};
+
+  auto runCase = [&](const ReuseCreditCase& testCase, bool useProgress) {
+    SCOPED_TRACE(
+        ::testing::Message()
+        << testCase.name << (useProgress ? " progress" : " blocking"));
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+    DeviceBuffer buffer(testCase.nbytes);
+    DeviceBuffer outputBuffer(3 * sizeof(uint64_t));
+    auto* d_output = static_cast<uint64_t*>(outputBuffer.get());
+    CUDACHECK_TEST(cudaMemset(d_output, 0, 3 * sizeof(uint64_t)));
+
+    const bool isSender = globalRank == 0;
+    if (isSender) {
+      test::fillBufferWithPattern(
+          buffer.get(), testCase.nbytes, testPattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(buffer.get(), 0, testCase.nbytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testSendRecvReuseCredits(
+        peerTransportPtr,
+        buffer.get(),
+        testCase.nbytes,
+        numBlocks,
+        testCase.iterations,
+        isSender,
+        useProgress,
+        testCase.expectedNicDoneCredit,
+        testCase.expectedSlotFreeCredit,
+        d_output,
+        numBlocks,
+        blockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    std::array<uint64_t, 3> output{};
+    CUDACHECK_TEST(cudaMemcpy(
+        output.data(),
+        d_output,
+        output.size() * sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
+
+    if (isSender) {
+      EXPECT_EQ(output[0], testCase.expectedNicDoneCredit)
+          << "NIC_DONE credit mismatch";
+      EXPECT_EQ(output[2], testCase.expectedSlotFreeCredit)
+          << "SLOT_FREE credit mismatch";
+    } else {
+      EXPECT_EQ(output[1], testCase.expectedDataReady)
+          << "DATA_READY credit mismatch";
+
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          buffer.get(),
+          testCase.nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0)
+          << "tiny progress send/recv transfer corrupted";
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  };
+
+  try {
+    for (const auto& testCase : cases) {
+      runCase(testCase, /*useProgress=*/false);
+      runCase(testCase, /*useProgress=*/true);
+    }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
   }

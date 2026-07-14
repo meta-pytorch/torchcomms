@@ -86,11 +86,15 @@ ncclResult_t ncclTransportPatConnect(struct ncclComm* comm) {
       for (int c = 0; c < comm->nChannels; c++) {
         NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &prevPeer, 1, &nextPeer, 0), ret, fail); // ReduceScatter
       }
-      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_TREE], 0), ret, fail);
+      // [META] pass nullptr so ncclTopoGetNetDev takes the graph==NULL branch and honors NCCL_NETDEVS_POLICY;
+      // see meta/baseline_modification_docs/pat_transport_netdevs_policy.md
+      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, nullptr, 0), ret, fail);
       for (int c = 0; c < comm->nChannels; c++) {
         NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &nextPeer, 1, &prevPeer, 0), ret, fail); // AllGather
       }
-      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_TREE], 0), ret, fail);
+      // [META] pass nullptr so ncclTopoGetNetDev takes the graph==NULL branch and honors NCCL_NETDEVS_POLICY;
+      // see meta/baseline_modification_docs/pat_transport_netdevs_policy.md
+      NCCLCHECKGOTO(ncclTransportP2pSetup(comm, nullptr, 0), ret, fail);
     }
     INFO(NCCL_INIT, "Connected binomial trees");
   }

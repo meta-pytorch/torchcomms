@@ -3,7 +3,6 @@
 #pragma once
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/ctran/algos/topo/TreeConstants.h"
 #include "comms/utils/commSpecs.h"
 
 // Forward declaration
@@ -37,17 +36,6 @@ struct KernelArgs {
   // IPC imported ptr to each of the local peers' RecvBuff
   void* intraNodeRemoteRecvBuffs[CTRAN_MAX_NVL_PEERS];
   KernelElem* kernelElems[ALLREDUCE_MAX_KERNEL_ELEMS];
-};
-
-// Tree topology for one half of the dual tree pair.
-// Holds communicator ranks — transport dispatch uses the shared Transport
-// array.
-struct TreeTopology {
-  int parentRank{-1};
-  int childRanks[ctran::algos::topo::kMaxTreeChildren]{-1, -1, -1};
-  int numChildren{0};
-  bool isRoot{false};
-  bool isLeaf{false};
 };
 
 } // namespace ctran::allreduce

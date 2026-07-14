@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -62,10 +63,25 @@ struct MultipeerIbTransportConfig {
   // during auto-discovery (not when gpuNicMap has a mapping for the GPU).
   std::string ibHca;
 
-  // Per-peer data buffer size in bytes. Raw put()/signal() users interpret
-  // this as the exported per-peer RDMA buffer size; send()/recv() users
-  // interpret it as the size of one logical staging slot.
+  // Per-peer data buffer size in bytes for raw put()/signal() users. When
+  // perChannelSize is set for send()/recv(), the transport derives this as
+  // perChannelSize * max_num_channels.
   std::size_t dataBufferSize{0};
+
+  // Fixed-channel send/recv staging slice size in bytes. When this is nonzero,
+  // send/recv staging geometry is:
+  //   dataBufferSize = perChannelSize * max_num_channels
+  // where dataBufferSize is the derived size of one pipeline slot across all
+  // channels.
+  std::size_t perChannelSize{0};
+
+  // Maximum number of logical IB channels per peer in the fixed-channel model.
+  // A channel is selected by ThreadGroup::group_id. For IB, QP ownership is
+  // scoped by (channel, direction, NIC).
+  int max_num_channels{64};
+
+  // Fixed-channel send/recv pipeline depth.
+  int pipelineDepth{2};
 
   // Number of signal slots managed by the transport (per peer), for the
   // slot-index API. Independent of send/recv's private signal buffers.
@@ -80,20 +96,10 @@ struct MultipeerIbTransportConfig {
   // block_id < maxGroups.
   int maxGroups{64};
 
-  // Send/recv configuration. When set, the transport allocates a private
-  // pipelined staging ring plus private signal/counter state for send()/recv().
-  // When nullopt (default), only the raw put/signal APIs are available.
-  struct SendRecvConfig {
-    // Maximum number of block-groups that may participate in one send()/recv()
-    // call. Sizes the private signal/counter/step arrays and caps
-    // active_blocks. A value of 0 inherits the top-level maxGroups.
-    int maxGroups{0};
-
-    // Number of logical slots in the send/recv staging ring. Total staging
-    // bytes per peer per direction: pipelineDepth * dataBufferSize.
-    int pipelineDepth{2};
-  };
-  std::optional<SendRecvConfig> sendRecv;
+  // Legacy block-owned QP count for IBRC. IBGDA send/recv uses
+  // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
+  // fixed-channel shape in the following stack diff.
+  int qpsPerBlockPerNic{1};
 
   // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
   // because qpDepth also sizes msn_tbl_sz on bnxt_re.
@@ -103,13 +109,69 @@ struct MultipeerIbTransportConfig {
   uint32_t qpDepth{1024};
 #endif
 
-  // Number of main QPs owned by one physical block on each NIC. IBGDA executes
-  // on the selected QP directly; IBRC enqueues to the selected QP's CPU-proxy
-  // command queue.
-  int qpsPerBlockPerNic{1};
+  // Number of main QPs per fixed-channel IB connection, where one connection is
+  // a (channel, direction, NIC) tuple. IBGDA companion QPs use the same slot
+  // geometry as main QPs because device-side lane selection indexes both with
+  // qpsPerConnection.
+  int qpsPerConnection{1};
 
   int numQpsPerPeerPerNic() const {
+    if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
+      throw std::invalid_argument(
+          "maxGroups and qpsPerBlockPerNic must be >= 0");
+    }
+    if (maxGroups != 0 &&
+        qpsPerBlockPerNic > std::numeric_limits<int>::max() / maxGroups) {
+      throw std::overflow_error("maxGroups * qpsPerBlockPerNic overflows int");
+    }
     return maxGroups * qpsPerBlockPerNic;
+  }
+
+  std::size_t fixedChannelDataBufferSize() const {
+    if (max_num_channels < 0) {
+      throw std::invalid_argument("max_num_channels must be >= 0");
+    }
+    const auto channels = static_cast<std::size_t>(max_num_channels);
+    if (channels != 0 &&
+        perChannelSize > std::numeric_limits<std::size_t>::max() / channels) {
+      throw std::overflow_error(
+          "perChannelSize * max_num_channels overflows size_t");
+    }
+    return perChannelSize * channels;
+  }
+
+  int fixedChannelMainQpsPerPeerPerNic() const {
+    if (max_num_channels < 0 || qpsPerConnection < 0) {
+      throw std::invalid_argument(
+          "max_num_channels and qpsPerConnection must be >= 0");
+    }
+    const int directionCount = fixedChannelDirectionCount();
+    if (max_num_channels != 0 &&
+        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
+                max_num_channels) {
+      throw std::overflow_error(
+          "max_num_channels * direction_count * qpsPerConnection overflows int");
+    }
+    return max_num_channels * directionCount * qpsPerConnection;
+  }
+
+  int fixedChannelCompanionQpsPerPeerPerNic() const {
+    if (max_num_channels < 0 || qpsPerConnection < 0) {
+      throw std::invalid_argument(
+          "max_num_channels and qpsPerConnection must be >= 0");
+    }
+    const int directionCount = fixedChannelDirectionCount();
+    if (max_num_channels != 0 &&
+        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
+                max_num_channels) {
+      throw std::overflow_error(
+          "max_num_channels * direction_count * qpsPerConnection overflows int");
+    }
+    return max_num_channels * directionCount * qpsPerConnection;
+  }
+
+  int fixedChannelDirectionCount() const {
+    return perChannelSize > 0 ? kIbDirections : 1;
   }
 
   // mlx5 Data-Direct: register MRs through the NIC's data-direct (BAR1) PCIe
@@ -459,10 +521,11 @@ class MultiPeerIbTransportBase {
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
   // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
   // = pipelineDepth * dataBufferSize per direction; signal/state are sized off
-  // maxGroups. Per-peer staging + signal are device-registered; recvStaging +
-  // signal are collectively exchanged so peers can RDMA into our ring.
+  // max_num_channels. Per-peer staging + signal are device-registered;
+  // recvStaging + signal are collectively exchanged so peers can RDMA into our
+  // ring.
   bool sendRecvBuffersEnabled() const {
-    return config_.sendRecv.has_value();
+    return config_.perChannelSize > 0;
   }
   IbSendRecvState sendRecvStateForPeer(int peerIndex) const;
   // Allocate + register the per-peer staging/signal/state bulks and slice them.
@@ -494,7 +557,6 @@ class MultiPeerIbTransportBase {
   // its views. Safe on an unmaterialized peer.
   void cleanupSendRecvBufferForPeer(int peerIndex) noexcept;
 
-  const MultipeerIbTransportConfig::SendRecvConfig& sendRecvConfig() const;
   void validateSendRecvConfig() const;
   std::size_t sendRecvStagingBytesPerPeer() const;
   std::size_t sendRecvSignalBytesPerPeer() const;

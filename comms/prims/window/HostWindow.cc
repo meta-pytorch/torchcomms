@@ -358,7 +358,7 @@ void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
 
   // NVL side: IPC exchange
   if (nNvlPeers > 0) {
-    exchangedNvlMappedPtrs_ = transport_.exchangeNvlBuffer(ptr, size);
+    exchangedNvlMappedPtrs_ = transport_.exchangeNvlBuffer(ptr);
 
     // Upload NVL peer pointers to device for offset-based put/put_signal.
     // exchangedNvlMappedPtrs_ is indexed by NVL local rank; extract peers

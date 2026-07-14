@@ -445,16 +445,14 @@ enum class IbSendRecvProgressStage : uint8_t {
  * Buffer layout:
  *   sendStaging / recvStaging: pipelineDepth * dataBufferSize bytes each.
  *     Logically divided into pipelineDepth slots of dataBufferSize bytes.
- *     For one send()/recv() call, a caller chooses active_blocks
- *     (1 <= active_blocks <= maxGroups). Each slot is then partitioned into
- *     active_blocks per-block regions:
- *       perBlockSlot = (dataBufferSize / active_blocks) & ~15ULL
+ *     Each slot is partitioned into maxGroups fixed channel regions:
+ *       perBlockSlot = (dataBufferSize / maxGroups) & ~15ULL
  *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
  *     is further subdivided into signaled sub-chunks:
  *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
  *     state[].nextStep counts 16-byte-aligned protocol bytes, not sub-chunks,
- *     so max_signal_bytes may change between calls as long as active_blocks is
- *     unchanged.
+ *     so max_signal_bytes may change between calls without changing the
+ *     staging layout.
  *
  *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — DATA_READY (sender -> receiver)
@@ -480,11 +478,16 @@ struct IbSendRecvState {
    *
    * The state is indexed by direction and transport group. `nextStep` is the
    * shared byte-stream cursor used by blocking send/recv and async init.
-   * `activeBaseStep`, `activeNextByte`, and `activeStage` track the currently
-   * initialized async operation or a blocking call in progress, if any.
+   * `reuseCreditStep` is the persistent byte cursor for reuse credits: NIC_DONE
+   * on sender slots and SLOT_FREE on receiver slots. It may lag `nextStep`
+   * because those credits can be batched without delaying DATA_READY
+   * visibility. `activeBaseStep`, `activeNextByte`, and `activeStage` track the
+   * currently initialized async operation or a blocking call in progress, if
+   * any.
    */
   struct ProgressSlot {
     int64_t nextStep{0};
+    int64_t reuseCreditStep{0};
     std::size_t activeNextByte{0};
     int64_t activeBaseStep{0};
     detail::IbSendRecvProgressStage activeStage{
@@ -506,6 +509,39 @@ struct IbSendRecvState {
   int maxGroups{0}; ///< Layout size for signal/state arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
+};
+
+enum class IbDirection : uint8_t {
+  Send = 0,
+  Recv = 1,
+};
+
+inline constexpr int kIbDirections = 2;
+inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
+
+struct IbQpState {
+  uint32_t cursor{0};
+  uint64_t pendingFlushLanesMask{0};
+  uint64_t lastFlushWqe[kIbMaxQpLanesPerChannelDirection]{};
+};
+
+struct IbLocalChannel {
+  IbSendRecvState::ProgressSlot sendProgress;
+  IbSendRecvState::ProgressSlot recvProgress;
+
+  IbgdaLocalBuffer dataReady;
+  IbgdaLocalBuffer slotFree;
+  IbgdaLocalBuffer nicDoneWait;
+  IbgdaLocalBuffer nicDoneCompletion;
+
+  IbQpState sendQp;
+  IbQpState recvQp;
+};
+
+struct IbRemoteChannel {
+  IbgdaRemoteBuffer dataReady;
+  IbgdaRemoteBuffer slotFree;
+  IbgdaRemoteBuffer recvStaging;
 };
 
 } // namespace comms::prims

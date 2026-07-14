@@ -35,22 +35,17 @@ void launchBarrierBenchKernel(
   // Create transport options (only barrier buffers are used)
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 
   // Create local and remote state with barrier buffers
   LocalState localState{
       .dataBuffer = nullptr,
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(localBarrier, numBarriers),
   };
   RemoteState remoteState{
       .dataBuffer = nullptr,
-      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(remoteBarrier, numBarriers),
   };

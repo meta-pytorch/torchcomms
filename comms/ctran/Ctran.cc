@@ -4,10 +4,13 @@
 
 #include <cuda_runtime.h>
 
+#include <folly/container/F14Set.h>
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
@@ -138,6 +141,24 @@ void CtranComm::recordAlgoStats(
   }
 }
 
+void CtranComm::registerPersistentCleanup(
+    std::shared_ptr<PersistentCleanup> cleanup) {
+  persistentCleanups_.wlock()->insert(std::move(cleanup));
+}
+
+void CtranComm::unregisterPersistentCleanup(
+    const std::shared_ptr<PersistentCleanup>& cleanup) {
+  persistentCleanups_.wlock()->erase(cleanup);
+}
+
+void CtranComm::drainPersistentCleanups() {
+  folly::F14FastSet<std::shared_ptr<PersistentCleanup>> local;
+  persistentCleanups_.withWLock([&local](auto& set) { local.swap(set); });
+  for (const auto& cleanup : local) {
+    cleanup->run();
+  }
+}
+
 commResult_t ctranInit(
     CtranComm* comm,
     std::unique_ptr<ctran::IProfilerReporter> reporter,
@@ -209,6 +230,11 @@ void CtranComm::destroy() {
   // multiPeerTransport_ holds a non-owning reference to it).
   multiPeerTransport_.reset();
 #endif // defined(ENABLE_PRIMS)
+  // Release every outstanding persistent request's pooled pipeSync + scoped
+  // registration before ctran_.reset() (which triggers CtranGpe::terminate()'s
+  // pool-drain spin-wait). Runs each cleanup token at most once; tokens already
+  // run by an eager free / graph-destroy callback no-op here.
+  drainPersistentCleanups();
   ctran_.reset();
   bootstrap_.reset();
   colltraceNew_.reset();

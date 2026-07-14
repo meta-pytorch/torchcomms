@@ -129,7 +129,6 @@ void testSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
@@ -142,7 +141,6 @@ void testProgressSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
@@ -157,7 +155,24 @@ void testProgressReservations(
     int64_t* output,
     std::size_t sendBytes,
     std::size_t recvBytes,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: run repeated blocking or progress send/recv calls and snapshot
+ * sendrecv protocol counters.
+ */
+void testSendRecvReuseCredits(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
     int activeBlocks,
+    int iterations,
+    bool send,
+    bool useProgress,
+    uint64_t waitExpectedNicDoneCredit,
+    uint64_t waitExpectedSlotFreeCredit,
+    uint64_t* output,
     int numBlocks,
     int blockSize);
 
