@@ -92,7 +92,7 @@ class P2pIbrcTransportDevice {
         ownedCounterHostBuf_(ownedCounterHostBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
-        sendRecv_(sendRecvState) {}
+        sendRecvState_(sendRecvState) {}
 
   __device__ void put(
       ThreadGroup& group,
@@ -458,33 +458,36 @@ class P2pIbrcTransportDevice {
   }
 
   // ===========================================================================
-  // Pipelined send/recv — delegated to the shared IbSendRecvDevice.
+  // Pipelined send/recv — delegated to the shared stateless IbSendRecvDevice.
   // ===========================================================================
   //
   // The send/recv algorithm is transport-agnostic and lives in
-  // `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh). Each method routes every
-  // transport op through `*this`, so IBRC reuses IBGDA's send/recv unchanged.
+  // `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh). The protocol state is
+  // owned by this backend device; each method routes every transport op through
+  // `*this`, so IBRC reuses IBGDA's send/recv unchanged.
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const {
-    return sendRecv_.send_recv_state();
+    return sendRecvState_;
   }
 
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return sendRecv_.pipeline_window();
+    return sendRecv_.pipeline_window(sendRecvState_);
   }
 
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_send_progress(group, nbytes, max_signal_bytes);
+    sendRecv_.init_send_progress(
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_recv_progress(group, nbytes, max_signal_bytes);
+    sendRecv_.init_recv_progress(
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -496,7 +499,14 @@ class P2pIbrcTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_send_once<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -508,7 +518,14 @@ class P2pIbrcTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -520,7 +537,14 @@ class P2pIbrcTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     sendRecv_.send<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -532,7 +556,14 @@ class P2pIbrcTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     sendRecv_.recv<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -546,9 +577,11 @@ class P2pIbrcTransportDevice {
       Args... args) {
     sendRecv_.forward<CopyOp>(
         *this,
+        sendRecvState_,
         group,
         dst,
         fwd.sendRecv_,
+        fwd.sendRecvState_,
         fwd,
         nbytes,
         max_signal_bytes,
@@ -892,6 +925,7 @@ class P2pIbrcTransportDevice {
   IbgdaLocalBuffer ownedCounterHostBuf_{};
   int numSignalSlots_{0};
   int numCounterSlots_{0};
+  IbSendRecvState sendRecvState_{};
   IbSendRecvDevice sendRecv_{};
 };
 
