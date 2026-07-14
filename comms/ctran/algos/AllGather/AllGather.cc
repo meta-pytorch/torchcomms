@@ -7,6 +7,9 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/MultiPeerTransport.h"
+#endif
 #include "comms/utils/cvars/nccl_cvars.h"
 
 static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
@@ -59,30 +62,6 @@ bool ctranAllGatherSupport(
       break;
     case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
 #if defined(ENABLE_PRIMS)
-      if (statex->nRanks() <= 1 || statex->nNodes() <= 1) {
-        CLOGF_SUBSYS(
-            WARN,
-            COLL,
-            "AllGather {} requires multiple nodes, got nRanks={} nNodes={}. Falling back to baseline",
-            allGatherAlgoName(algo),
-            statex->nRanks(),
-            statex->nNodes());
-        supported = false;
-        break;
-      }
-      if (statex->nLocalRanks() < 1 ||
-          statex->nRanks() != statex->nNodes() * statex->nLocalRanks()) {
-        CLOGF_SUBSYS(
-            WARN,
-            COLL,
-            "AllGather {} requires rectangular rank geometry, got nRanks={} nNodes={} nLocalRanks={}. Falling back to baseline",
-            allGatherAlgoName(algo),
-            statex->nRanks(),
-            statex->nNodes(),
-            statex->nLocalRanks());
-        supported = false;
-        break;
-      }
       if (!comm->multiPeerTransport_) {
         CLOGF_SUBSYS(
             WARN,
@@ -91,6 +70,35 @@ bool ctranAllGatherSupport(
             allGatherAlgoName(algo));
         supported = false;
         break;
+      }
+      {
+        const bool nvlAvailable =
+            !comm->multiPeerTransport_->nvl_peer_ranks().empty();
+        const int ibSize = nvlAvailable ? statex->nNodes() : statex->nRanks();
+        const int nvlSize = nvlAvailable ? statex->nLocalRanks() : 1;
+        if (statex->nRanks() <= 1 || ibSize <= 1) {
+          CLOGF_SUBSYS(
+              WARN,
+              COLL,
+              "AllGather {} requires multiple IB peers, got nRanks={} ibSize={}. Falling back to baseline",
+              allGatherAlgoName(algo),
+              statex->nRanks(),
+              ibSize);
+          supported = false;
+          break;
+        }
+        if (nvlSize < 1 || statex->nRanks() != ibSize * nvlSize) {
+          CLOGF_SUBSYS(
+              WARN,
+              COLL,
+              "AllGather {} requires rectangular rank geometry, got nRanks={} ibSize={} nvlSize={}. Falling back to baseline",
+              allGatherAlgoName(algo),
+              statex->nRanks(),
+              ibSize,
+              nvlSize);
+          supported = false;
+          break;
+        }
       }
       if (!NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
         CLOGF_SUBSYS(
