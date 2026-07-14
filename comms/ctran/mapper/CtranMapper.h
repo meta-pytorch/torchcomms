@@ -1290,11 +1290,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t testRequestImpl(
       CtranMapperRequest* req,
       bool* isComplete) {
-    FB_COMMCHECK(this->checkComplete(req, isComplete));
-    if (*isComplete) {
-      return commSuccess;
-    }
-
     FB_COMMCHECK(this->progress<PerfConfig>());
     FB_COMMCHECK(this->checkComplete(req, isComplete));
 
