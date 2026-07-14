@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "comms/prims/core/DeviceCheck.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
@@ -113,6 +115,13 @@ __device__ __forceinline__ void all_gather(
     return;
   }
 
+  PRIMS_DEVICE_CHECK_MSG(
+      group.total_groups % (2 * nranks) == 0,
+      "all_gather requires equal send/recv peer groups: total_groups=%u "
+      "nranks=%zu",
+      group.total_groups,
+      nranks);
+
   // 1. First partition by SEND/RECV using interleaved partitioning
   // partition_id: 0 = send, 1 = recv
   auto [partition_id, send_recv_group] = group.partition_interleaved(2);
@@ -177,17 +186,27 @@ __device__ __forceinline__ void all_gather(
   if (is_send) {
     // Send my local data to peer
     // Note: All sends use the same source buffer (sendbuff_d)
-    transport.p2p_nvl.send_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(const_cast<void*>(sendbuff_d)),
         sendcount,
+        group_per_peer);
+    transport.p2p_nvl.send(
+        group_per_peer,
+        tiles.tile_data(group_per_peer.group_id),
+        tiles.tile_bytes(group_per_peer.group_id),
+        /*max_signal_bytes=*/0,
         timeout);
   } else {
     // Receive peer's data into my recvbuff at appropriate offset
-    transport.p2p_nvl.recv_group(
-        group_per_peer,
+    TiledBuffer<char> tiles(
         static_cast<char*>(recvbuff_d) + recv_offset,
         sendcount,
+        group_per_peer);
+    transport.p2p_nvl.recv(
+        group_per_peer,
+        tiles.tile_data(group_per_peer.group_id),
+        tiles.tile_bytes(group_per_peer.group_id),
+        /*max_signal_bytes=*/0,
         timeout);
   }
 

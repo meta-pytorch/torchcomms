@@ -36,14 +36,37 @@ Result<bool> CudaDeviceAdapter::isDmaBuffSupported(int deviceId) {
   return cudaDriverApi_->isDmaBufSupported(deviceId);
 }
 
-Result<DmaBuff>
-CudaDeviceAdapter::exportDmaBuff(int /* deviceId */, void* ptr, size_t len) {
+bool isNvlinkAvailable() {
+  return true;
+}
+
+Result<DmaBuff> CudaDeviceAdapter::exportDmaBuff(
+    int /* deviceId */,
+    void* ptr,
+    size_t len,
+    DmaBufMapping mapping) {
   if (!cudaDriverApi_) {
     return Err(
         ErrCode::DriverError, "CudaDeviceAdapter: CudaDriverApi unavailable");
   }
   if (ptr == nullptr || len == 0) {
     return Err(ErrCode::InvalidArgument, "exportDmaBuff: bad ptr or len");
+  }
+
+  /*
+   * Resolve the mapping flag. Data Direct maps the buffer over PCIe BAR1 so the
+   * NIC reaches GPU HBM directly (mlx5 GDAKI / NCCL_IB_DATA_DIRECT); it needs
+   * the CUDA 12.8 range flag, unavailable on older toolkits.
+   */
+  unsigned long long flags = 0;
+  if (mapping == DmaBufMapping::DataDirect) {
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
+    flags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
+#else
+    return Err(
+        ErrCode::DriverError,
+        "exportDmaBuff: Data Direct requires CUDA >= 12.8");
+#endif
   }
 
   // dma-buf registration requires a page-aligned base address. Align down
@@ -55,20 +78,18 @@ CudaDeviceAdapter::exportDmaBuff(int /* deviceId */, void* ptr, size_t len) {
       (len + dmaBufOffset + pageSize_ - 1) & ~(pageSize_ - 1);
 
   DmaBuff out;
-  // TODO: set CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE if a data-direct
-  // link is available.
-  constexpr unsigned long long kFlags = 0;
   auto status = cudaDriverApi_->cuMemGetHandleForAddressRange(
       &out.fd,
       toDevicePtr(alignedAddr),
       dmaBufLen,
       CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-      kFlags);
+      flags);
   CHECK_RETURN(status);
 
   out.offset = dmaBufOffset;
   out.len = len;
   out.iova = static_cast<uint64_t>(addr);
+  out.dmaBufLen = dmaBufLen;
   return out;
 }
 

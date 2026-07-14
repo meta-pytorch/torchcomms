@@ -402,6 +402,73 @@ __global__ void progressReservationKernel(
         sendRecvState.state[sendRecvState.maxGroups + group.group_id].nextStep;
   }
 }
+
+__global__ void sendRecvReuseCreditKernel(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    int iterations,
+    bool send,
+    bool useProgress,
+    uint64_t waitExpectedNicDoneCredit,
+    uint64_t waitExpectedSlotFreeCredit,
+    uint64_t* output) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+
+  for (int i = 0; i < iterations; ++i) {
+    if (useProgress) {
+      if (send) {
+        transport->init_send_progress(group, nbytes, activeBlocks);
+        while (transport->progress_send_once(
+                   group, buffer, nbytes, activeBlocks, 0, timeout) !=
+               IbgdaSendRecvProgressStatus::Done) {
+        }
+      } else {
+        transport->init_recv_progress(group, nbytes, activeBlocks);
+        while (transport->progress_recv_once(
+                   group, buffer, nbytes, activeBlocks, 0, timeout) !=
+               IbgdaSendRecvProgressStatus::Done) {
+        }
+      }
+    } else {
+      if (send) {
+        transport->send(group, buffer, nbytes, activeBlocks, 0, timeout);
+      } else {
+        transport->recv(group, buffer, nbytes, activeBlocks, 0, timeout);
+      }
+    }
+  }
+
+  const auto& state = transport->send_recv_state();
+  const auto groupId = static_cast<int>(group.group_id);
+  if (send && waitExpectedNicDoneCredit != 0) {
+    transport->wait_counter(
+        group,
+        state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)),
+        waitExpectedNicDoneCredit,
+        timeout);
+  }
+  if (send && waitExpectedSlotFreeCredit != 0) {
+    transport->wait_signal(
+        group,
+        state.localSignalBuf.subBuffer(
+            (state.maxGroups + groupId) * sizeof(uint64_t)),
+        waitExpectedSlotFreeCredit,
+        timeout);
+  }
+
+  if (group.is_leader()) {
+    output[0] = transport->read_counter(
+        state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)));
+    output[1] = transport->read_signal(
+        state.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)));
+    output[2] = transport->read_signal(state.localSignalBuf.subBuffer(
+        (state.maxGroups + groupId) * sizeof(uint64_t)));
+  }
+}
 #endif
 
 void testProgressSendRecv(
@@ -426,6 +493,55 @@ void testProgressSendRecv(
 #else
   progressSendRecvKernel<<<numBlocks, blockSize>>>(
       transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+  // The caller synchronizes immediately after this helper so runtime kernel
+  // failures are reported through the test's CUDA check rather than as skips.
+#endif
+}
+
+void testSendRecvReuseCredits(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    int activeBlocks,
+    int iterations,
+    bool send,
+    bool useProgress,
+    uint64_t waitExpectedNicDoneCredit,
+    uint64_t waitExpectedSlotFreeCredit,
+    uint64_t* output,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)buffer;
+  (void)nbytes;
+  (void)activeBlocks;
+  (void)iterations;
+  (void)send;
+  (void)useProgress;
+  (void)waitExpectedNicDoneCredit;
+  (void)waitExpectedSlotFreeCredit;
+  (void)output;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("progress send/recv is NVIDIA-only");
+#else
+  sendRecvReuseCreditKernel<<<numBlocks, blockSize>>>(
+      transport,
+      buffer,
+      nbytes,
+      activeBlocks,
+      iterations,
+      send,
+      useProgress,
+      waitExpectedNicDoneCredit,
+      waitExpectedSlotFreeCredit,
+      output);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

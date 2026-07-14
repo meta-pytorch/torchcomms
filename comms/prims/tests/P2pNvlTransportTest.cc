@@ -25,29 +25,6 @@ using namespace meta::comms;
 
 namespace comms::prims::tests {
 
-// Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name,
-// useDualStateBuffer, useCudaGraph)
-struct TransferSizeParams {
-  size_t nbytes;
-  size_t dataBufferSize;
-  size_t chunkSize;
-  bool useDualStateBuffer;
-  bool useCudaGraph;
-  std::string name;
-};
-
-// Parameters for group type tests: (groupType, numBlocks, blockSize,
-// blocksPerGroup, useDualStateBuffer, useCudaGraph, name)
-struct GroupTypeParams {
-  test::GroupType groupType;
-  int numBlocks;
-  int blockSize;
-  int blocksPerGroup;
-  bool useDualStateBuffer;
-  bool useCudaGraph;
-  std::string name;
-};
-
 class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
@@ -60,6 +37,17 @@ class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
   }
 };
 
+MultiPeerNvlTransportConfig makeNvlConfig(
+    std::size_t perChannelSize,
+    std::size_t pipelineDepth,
+    int maxNumChannels = 1) {
+  return MultiPeerNvlTransportConfig{
+      .pipelineDepth = pipelineDepth,
+      .maxNumChannels = maxNumChannels,
+      .perChannelSize = (perChannelSize + 15) & ~15ULL,
+  };
+}
+
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
   if (numRanks != 2) {
@@ -70,11 +58,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const size_t numElements = 256;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = sizeof(int) * numElements,
-      .chunkSize = 256, // 256 bytes
-      .pipelineDepth = 4,
-  };
+  auto config = makeNvlConfig(sizeof(int) * numElements, 4);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -134,73 +118,6 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   ASSERT_EQ(h_errorCount, 0)
       << "Rank " << globalRank << " found " << h_errorCount
       << " errors when reading from peer rank " << peerRank;
-}
-
-// Helper to verify received data with early exit on first mismatch
-void verifyReceivedData(
-    const int* dst_d,
-    size_t nbytes,
-    int expectedValue,
-    const std::string& context = "") {
-  const size_t numInts = nbytes / sizeof(int);
-  std::vector<int> hostBuffer(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-  for (size_t i = 0; i < numInts; i++) {
-    EXPECT_EQ(hostBuffer[i], expectedValue)
-        << context << "Mismatch at index " << i << ": expected "
-        << expectedValue << ", got " << hostBuffer[i];
-    if (hostBuffer[i] != expectedValue) {
-      break;
-    }
-  }
-}
-// Helper to run a single send/recv iteration with verification
-void runSendRecvIteration(
-    int globalRank,
-    P2pNvlTransportDevice* p2p,
-    int* src_d,
-    int* dst_d,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    int iter,
-    test::GroupType groupType = test::GroupType::WARP) {
-  const size_t numInts = nbytes / sizeof(int);
-  const int testValue = 42 + iter;
-
-  if (globalRank == 0) {
-    test::fillBuffer(src_d, testValue, numInts);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testSend(p2p, src_d, nbytes, numBlocks, blockSize, groupType, 1);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testRecv(p2p, dst_d, nbytes, numBlocks, blockSize, groupType, 1);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    std::vector<int> hostBuffer(numInts);
-    CUDACHECK_TEST(
-        cudaMemcpy(hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-    for (size_t i = 0; i < numInts; i++) {
-      EXPECT_EQ(hostBuffer[i], testValue)
-          << "Iter " << iter << ": Mismatch at index " << i << ": expected "
-          << testValue << ", got " << hostBuffer[i];
-      if (hostBuffer[i] != testValue) {
-        break;
-      }
-    }
-  }
 }
 
 // =============================================================================
@@ -272,111 +189,6 @@ class TransportTestHelper {
 };
 
 // =============================================================================
-// runBasicSendRecvTest - Common test pattern for send/recv verification
-// =============================================================================
-
-void runBasicSendRecvTest(
-    TransportTestHelper& helper,
-    size_t nbytes,
-    int numBlocks,
-    int blockSize,
-    int nIter = 1,
-    test::GroupType groupType = test::GroupType::WARP,
-    bool useCudaGraph = false) {
-  auto p2p = helper.getDevicePtr();
-
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  if (!useCudaGraph) {
-    // Direct kernel launch mode
-    for (int iter = 0; iter < nIter; iter++) {
-      runSendRecvIteration(
-          helper.globalRank(),
-          p2p,
-          src_d,
-          dst_d,
-          nbytes,
-          numBlocks,
-          blockSize,
-          iter,
-          groupType);
-    }
-  } else {
-    // CUDA graph mode: capture send/recv into graphs, then replay
-    // Enforce minimum 3 iterations for graph replay testing
-    const int graphIter = std::max(nIter, 3);
-
-    cudaStream_t stream;
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
-
-    // Capture the send or recv kernel into a graph
-    cudaGraph_t graph;
-    cudaGraphExec_t graphExec;
-
-    CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-    if (helper.globalRank() == 0) {
-      test::testSend(
-          p2p, src_d, nbytes, numBlocks, blockSize, groupType, 1, stream);
-    } else {
-      test::testRecv(
-          p2p, dst_d, nbytes, numBlocks, blockSize, groupType, 1, stream);
-    }
-    CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
-    CUDACHECK_TEST(
-        cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
-
-    const size_t numInts = nbytes / sizeof(int);
-    std::vector<int> hostBuffer(numInts);
-
-    // Replay the graph multiple times with different data patterns
-    for (int iter = 0; iter < graphIter; iter++) {
-      const int testValue = 42 + iter;
-
-      if (helper.globalRank() == 0) {
-        // Sender: fill source buffer with test value
-        test::fillBuffer(src_d, testValue, numInts);
-        CUDACHECK_TEST(cudaDeviceSynchronize());
-      } else {
-        // Receiver: clear destination buffer
-        CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-      }
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Launch the graph
-      CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Receiver verifies the data
-      if (helper.globalRank() == 1) {
-        CUDACHECK_TEST(cudaMemcpy(
-            hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-        for (size_t i = 0; i < numInts; i++) {
-          EXPECT_EQ(hostBuffer[i], testValue)
-              << "CudaGraph iter " << iter << ": Mismatch at index " << i
-              << ": expected " << testValue << ", got " << hostBuffer[i];
-          if (hostBuffer[i] != testValue) {
-            break;
-          }
-        }
-      }
-    }
-
-    // Cleanup
-    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
-    CUDACHECK_TEST(cudaGraphDestroy(graph));
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-  }
-}
-
-// =============================================================================
 // Tile sendrecv multi-call correctness test
 // =============================================================================
 
@@ -391,11 +203,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
   const int numSendBlocks = 4;
   const int nIters = 5; // call sendrecv 5 times with different data
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
-      .chunkSize = 8 * 1024 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -421,15 +229,9 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
         static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
     comms::prims::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
-    int numBlocksArg = numSendBlocks;
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost,
-        &sendTiles,
-        &recvTiles,
-        &numBlocksArg,
-        &maxSignalBytes,
-        &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -471,11 +273,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   const int numSendBlocks = 4;
   const size_t maxSignalBytes = 16 * 1024;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 512 * 1024,
-      .chunkSize = 512 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(128 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -489,16 +287,10 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   comms::prims::TiledBuffer<char> recvTiles(
       static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
 
-  int numBlocksArg = numSendBlocks;
   std::size_t maxSignalBytesArg = maxSignalBytes;
   Timeout timeout;
   void* args[] = {
-      &p2pHost,
-      &sendTiles,
-      &recvTiles,
-      &numBlocksArg,
-      &maxSignalBytesArg,
-      &timeout};
+      &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &timeout};
 
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -558,7 +350,7 @@ static void runTileTest(
     int numRanks,
     std::shared_ptr<meta::comms::MpiBootstrap> bootstrap,
     size_t nBytes,
-    size_t dataBufferSize,
+    size_t perChannelSize,
     size_t chunkSize,
     size_t pipelineDepth,
     int numSendBlocks,
@@ -566,11 +358,7 @@ static void runTileTest(
     int threadCount = 256) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = chunkSize,
-      .pipelineDepth = pipelineDepth,
-  };
+  auto config = makeNvlConfig(perChannelSize, pipelineDepth, numSendBlocks);
 
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
@@ -595,15 +383,9 @@ static void runTileTest(
         static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
     comms::prims::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
-    int numBlocksArg = numSendBlocks;
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost,
-        &sendTiles,
-        &recvTiles,
-        &numBlocksArg,
-        &maxSignalBytes,
-        &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -626,7 +408,7 @@ static void runTileTest(
           static_cast<unsigned char>(peerPattern))
           << "Iter " << iter << ": Mismatch at byte " << i
           << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-          << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+          << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
           << ", pd=" << pipelineDepth << ")";
       if (static_cast<unsigned char>(hostBuf[i]) !=
           static_cast<unsigned char>(peerPattern)) {
@@ -758,34 +540,36 @@ static void expectPersistentTwoCallStagingPattern(
   }
 }
 
+// Build a P2pNvlTransportDevice for tile tests that bypass
+// MultiPeerNvlTransport. The options must already have per_channel_slot and
+// max_num_channels populated.
 static P2pNvlTransportDevice makeLocalTileDevice(
     const P2pNvlTransportOptions& options,
     int numBlocks,
     char* localData,
     char* remoteData,
-    DeviceSpan<int64_t> stepState,
-    DeviceSpan<SignalState> localSignals,
-    DeviceSpan<SignalState> remoteSignals) {
+    NvlChannelState* localChannels,
+    NvlChannelState* remoteChannels) {
+  P2pNvlTransportOptions opts = options;
+  if (opts.max_num_channels == 0) {
+    opts.max_num_channels = numBlocks;
+  }
   LocalState localState{
       localData,
-      DeviceSpan<ChunkState>(),
-      DeviceSpan<ChunkState>(),
-      localSignals,
+      DeviceSpan<SignalState>(),
       DeviceSpan<BarrierState>(),
+      nullptr,
       nullptr};
 
   RemoteState remoteState{
       remoteData,
-      DeviceSpan<ChunkState>(),
-      DeviceSpan<ChunkState>(),
-      remoteSignals,
+      DeviceSpan<SignalState>(),
       DeviceSpan<BarrierState>(),
+      nullptr,
       nullptr};
 
-  NvlinkTransportTileState tileState{
-      stepState, numBlocks, localSignals, remoteSignals};
   return P2pNvlTransportDevice(
-      0, 1, options, localState, remoteState, tileState);
+      0, 1, opts, localState, remoteState, localChannels, remoteChannels);
 }
 
 class LocalTileHarness {
@@ -794,64 +578,36 @@ class LocalTileHarness {
       : options_(options),
         numBlocks_(numBlocks),
         stagingBytes_(options.dataBufferSize * options.pipelineDepth),
-        stateSlots_(numBlocks * 2),
-        stepStateBytes_(sizeof(int64_t) * stateSlots_),
-        signalBytes_(sizeof(SignalState) * stateSlots_),
+        channelBytes_(sizeof(NvlChannelState) * numBlocks),
         stagingBuf_(stagingBytes_),
-        stepStateBuf_(stepStateBytes_),
-        localSignalsBuf_(signalBytes_),
-        remoteSignalsBuf_(signalBytes_) {
+        channelBuf_(channelBytes_) {
     zero();
   }
 
   void zero() {
     CUDACHECK_TEST(cudaMemset(stagingBuf_.get(), 0, stagingBytes_));
-    CUDACHECK_TEST(cudaMemset(stepStateBuf_.get(), 0, stepStateBytes_));
-    CUDACHECK_TEST(cudaMemset(localSignalsBuf_.get(), 0, signalBytes_));
-    CUDACHECK_TEST(cudaMemset(remoteSignalsBuf_.get(), 0, signalBytes_));
+    CUDACHECK_TEST(cudaMemset(channelBuf_.get(), 0, channelBytes_));
   }
 
   P2pNvlTransportDevice device(
       char* localData = nullptr,
       char* remoteData = nullptr) {
     return makeLocalTileDevice(
-        options_,
-        numBlocks_,
-        localData,
-        remoteData,
-        stepState(),
-        localSignals(),
-        remoteSignals());
+        options_, numBlocks_, localData, remoteData, channels(), channels());
   }
 
   P2pNvlTransportDevice stagingDevice() {
     return device(staging(), staging());
   }
 
+  // Same channels for local and peer — single-rank loopback. Equivalent to
+  // device(staging(), staging()) but kept distinct for clarity at call sites.
   P2pNvlTransportDevice loopbackDevice() {
-    return makeLocalTileDevice(
-        options_,
-        numBlocks_,
-        staging(),
-        staging(),
-        stepState(),
-        localSignals(),
-        localSignals());
+    return device(staging(), staging());
   }
 
-  DeviceSpan<int64_t> stepState() {
-    return DeviceSpan<int64_t>(
-        static_cast<int64_t*>(stepStateBuf_.get()), stateSlots_);
-  }
-
-  DeviceSpan<SignalState> localSignals() {
-    return DeviceSpan<SignalState>(
-        static_cast<SignalState*>(localSignalsBuf_.get()), stateSlots_);
-  }
-
-  DeviceSpan<SignalState> remoteSignals() {
-    return DeviceSpan<SignalState>(
-        static_cast<SignalState*>(remoteSignalsBuf_.get()), stateSlots_);
+  NvlChannelState* channels() {
+    return static_cast<NvlChannelState*>(channelBuf_.get());
   }
 
   char* staging() {
@@ -862,8 +618,8 @@ class LocalTileHarness {
     return stagingBuf_;
   }
 
-  DeviceBuffer& stepStateBuffer() {
-    return stepStateBuf_;
+  DeviceBuffer& channelBuffer() {
+    return channelBuf_;
   }
 
   size_t stagingBytes() const {
@@ -874,13 +630,9 @@ class LocalTileHarness {
   const P2pNvlTransportOptions options_;
   const int numBlocks_;
   const size_t stagingBytes_;
-  const int stateSlots_;
-  const size_t stepStateBytes_;
-  const size_t signalBytes_;
+  const size_t channelBytes_;
   DeviceBuffer stagingBuf_;
-  DeviceBuffer stepStateBuf_;
-  DeviceBuffer localSignalsBuf_;
-  DeviceBuffer remoteSignalsBuf_;
+  DeviceBuffer channelBuf_;
 };
 
 // Test various message sizes with default config
@@ -1129,8 +881,9 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = tileBytes * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
+      .per_channel_slot = tileBytes,
+      .max_num_channels = numBlocks,
   };
   LocalTileHarness p2pHarness(options, numBlocks);
 
@@ -1233,8 +986,9 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
+      .per_channel_slot = perBlockSlotSize,
+      .max_num_channels = numBlocks,
   };
 
   LocalTileHarness sendHarness(options, numBlocks);
@@ -1281,13 +1035,13 @@ TEST_F(
         << " between unaligned calls should stay transport-private";
   }
 
-  std::vector<int64_t> sendStepState(numBlocks * 2);
+  std::vector<NvlChannelState> sendChannels(numBlocks);
   CUDACHECK_TEST(cudaMemcpy(
-      sendStepState.data(),
-      sendHarness.stepStateBuffer().get(),
-      sendStepState.size() * sizeof(int64_t),
+      sendChannels.data(),
+      sendHarness.channelBuffer().get(),
+      sendChannels.size() * sizeof(NvlChannelState),
       cudaMemcpyDeviceToHost));
-  EXPECT_EQ(sendStepState[0], static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(sendChannels[0].send_cursor, static_cast<int64_t>(expectedStep));
 
   LocalTileHarness loopbackHarness(options, numBlocks);
   DeviceBuffer recvBuf(totalBytes);
@@ -1320,14 +1074,16 @@ TEST_F(
       0,
       "tile sendrecv unaligned protocol");
 
-  std::vector<int64_t> loopbackStepState(numBlocks * 2);
+  std::vector<NvlChannelState> loopbackChannels(numBlocks);
   CUDACHECK_TEST(cudaMemcpy(
-      loopbackStepState.data(),
-      loopbackHarness.stepStateBuffer().get(),
-      loopbackStepState.size() * sizeof(int64_t),
+      loopbackChannels.data(),
+      loopbackHarness.channelBuffer().get(),
+      loopbackChannels.size() * sizeof(NvlChannelState),
       cudaMemcpyDeviceToHost));
-  EXPECT_EQ(loopbackStepState[0], static_cast<int64_t>(expectedStep));
-  EXPECT_EQ(loopbackStepState[numBlocks], static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(
+      loopbackChannels[0].send_cursor, static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(
+      loopbackChannels[0].recv_cursor, static_cast<int64_t>(expectedStep));
 }
 
 TEST_F(
@@ -1346,8 +1102,9 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
+      .per_channel_slot = perBlockSlotSize,
+      .max_num_channels = numBlocks,
   };
   LocalTileHarness predHarness(options, numBlocks);
   LocalTileHarness succHarness(options, numBlocks);
@@ -1415,23 +1172,23 @@ TEST_F(
         << " between unaligned calls should stay transport-private";
   }
 
-  std::vector<int64_t> predStepState(numBlocks * 2);
+  std::vector<NvlChannelState> predChannels(numBlocks);
   CUDACHECK_TEST(cudaMemcpy(
-      predStepState.data(),
-      predHarness.stepStateBuffer().get(),
-      predStepState.size() * sizeof(int64_t),
+      predChannels.data(),
+      predHarness.channelBuffer().get(),
+      predChannels.size() * sizeof(NvlChannelState),
       cudaMemcpyDeviceToHost));
-  EXPECT_EQ(predStepState[0], 0);
-  EXPECT_EQ(predStepState[numBlocks], static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(predChannels[0].send_cursor, 0);
+  EXPECT_EQ(predChannels[0].recv_cursor, static_cast<int64_t>(expectedStep));
 
-  std::vector<int64_t> succStepState(numBlocks * 2);
+  std::vector<NvlChannelState> succChannels(numBlocks);
   CUDACHECK_TEST(cudaMemcpy(
-      succStepState.data(),
-      succHarness.stepStateBuffer().get(),
-      succStepState.size() * sizeof(int64_t),
+      succChannels.data(),
+      succHarness.channelBuffer().get(),
+      succChannels.size() * sizeof(NvlChannelState),
       cudaMemcpyDeviceToHost));
-  EXPECT_EQ(succStepState[0], static_cast<int64_t>(expectedStep));
-  EXPECT_EQ(succStepState[numBlocks], 0);
+  EXPECT_EQ(succChannels[0].send_cursor, static_cast<int64_t>(expectedStep));
+  EXPECT_EQ(succChannels[0].recv_cursor, 0);
 }
 
 TEST_F(
@@ -1449,8 +1206,9 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
+      .per_channel_slot = perBlockSlotSize,
+      .max_num_channels = numBlocks,
   };
   LocalTileHarness p2pHarness(options, numBlocks);
 
@@ -1515,8 +1273,9 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
+      .per_channel_slot = perBlockSlotSize,
+      .max_num_channels = numBlocks,
   };
   LocalTileHarness predHarness(options, numBlocks);
   LocalTileHarness succHarness(options, numBlocks);
@@ -1596,10 +1355,9 @@ TEST_F(
   const size_t nBytes = 512 * 1024;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = perBlockSlotSize * activeBlocks,
-      .chunkSize = perBlockSlotSize,
       .pipelineDepth = 2,
-      .tile_max_groups = activeBlocks,
+      .maxNumChannels = activeBlocks,
+      .perChannelSize = perBlockSlotSize,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1624,15 +1382,9 @@ TEST_F(
         static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
     comms::prims::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
-    int activeBlocksArg = activeBlocks;
     std::size_t maxSignalBytesArg = maxSignalBytes;
     void* args[] = {
-        &p2pHost,
-        &sendTiles,
-        &recvTiles,
-        &activeBlocksArg,
-        &maxSignalBytesArg,
-        &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -1663,7 +1415,10 @@ TEST_F(
 }
 
 TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
-  const int numBlocks = 1;
+  // The helper kernels launch one producer block plus one checker block.
+  // Fixed-channel bounds use group.total_groups, so the test device needs two
+  // channels even though only channel 0 performs the send/forward operation.
+  const int numBlocks = 2;
   const int threadCount = 256;
   const size_t maxSignalBytes = 16 * 1024;
   const size_t perBlockSlotSize = 4 * maxSignalBytes;
@@ -1679,33 +1434,39 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
   const unsigned char forwardPattern = 0x55;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize,
-      .chunkSize = maxSignalBytes,
+      .dataBufferSize = perBlockSlotSize * numBlocks,
       .pipelineDepth = pipelineDepth,
+      .per_channel_slot = perBlockSlotSize,
+      .max_num_channels = numBlocks,
   };
-  const int numSignalSlots = numBlocks * 2;
-  const size_t signalBytes = sizeof(SignalState) * numSignalSlots;
-  const size_t stepStateBytes = sizeof(int64_t) * numBlocks * 2;
+  const size_t channelBytes = sizeof(NvlChannelState) * numBlocks;
 
-  auto makeSignals = [&](uint64_t headValue) {
-    std::vector<SignalState> signals(numSignalSlots);
-    signals[numBlocks].signal_ = headValue;
-    return signals;
+  // Build a host-side channel array with channel-0 pre-populated.
+  // `localSlotFreeValue` seeds local_channels_[0].slot_free (replaces the
+  // legacy local_signals[numBlocks].signal_ = headValue setup that
+  // makeSignals() used to do).
+  auto makeChannels = [&](uint64_t sendCursor,
+                          uint64_t recvCursor,
+                          uint64_t localDataReady,
+                          uint64_t localSlotFreeValue) {
+    std::vector<NvlChannelState> channels(numBlocks);
+    channels[0].send_cursor = static_cast<int64_t>(sendCursor);
+    channels[0].recv_cursor = static_cast<int64_t>(recvCursor);
+    channels[0].data_ready.signal_ = localDataReady;
+    channels[0].slot_free.signal_ = localSlotFreeValue;
+    return channels;
   };
 
   {
     std::vector<char> hostSend(nbytes, static_cast<char>(sendPattern));
     std::vector<char> hostStaging(options.dataBufferSize, sentinel);
-    std::vector<int64_t> hostStepState(numBlocks * 2);
-    hostStepState[0] = static_cast<int64_t>(wrappedByte);
-    auto hostLocalSignals = makeSignals(initialAckValue);
-    std::vector<SignalState> hostRemoteSignals(numSignalSlots);
+    auto hostChannels = makeChannels(wrappedByte, 0, 0, initialAckValue);
+    std::vector<NvlChannelState> hostRemoteChannels(numBlocks);
 
     DeviceBuffer sendBuf(nbytes);
     DeviceBuffer stagingBuf(options.dataBufferSize);
-    DeviceBuffer stepStateBuf(stepStateBytes);
-    DeviceBuffer localSignalsBuf(signalBytes);
-    DeviceBuffer remoteSignalsBuf(signalBytes);
+    DeviceBuffer channelBuf(channelBytes);
+    DeviceBuffer remoteChannelBuf(channelBytes);
     DeviceBuffer observedBuf(sizeof(int));
     const int initialObserved = -1;
 
@@ -1717,19 +1478,14 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
         hostStaging.size(),
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
-        stepStateBuf.get(),
-        hostStepState.data(),
-        stepStateBytes,
+        channelBuf.get(),
+        hostChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
-        localSignalsBuf.get(),
-        hostLocalSignals.data(),
-        signalBytes,
-        cudaMemcpyHostToDevice));
-    CUDACHECK_TEST(cudaMemcpy(
-        remoteSignalsBuf.get(),
-        hostRemoteSignals.data(),
-        signalBytes,
+        remoteChannelBuf.get(),
+        hostRemoteChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
         observedBuf.get(),
@@ -1742,17 +1498,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
         numBlocks,
         static_cast<char*>(stagingBuf.get()),
         static_cast<char*>(stagingBuf.get()),
-        DeviceSpan<int64_t>(
-            static_cast<int64_t*>(stepStateBuf.get()), numBlocks * 2),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(localSignalsBuf.get()), numSignalSlots),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(remoteSignalsBuf.get()), numSignalSlots));
+        static_cast<NvlChannelState*>(channelBuf.get()),
+        static_cast<NvlChannelState*>(remoteChannelBuf.get()));
 
     test::testTileSendWaitsForWrappedSubstepAck(
         p2pHost,
         static_cast<const char*>(sendBuf.get()),
-        numBlocks,
         nbytes,
         maxSignalBytes,
         sentinel,
@@ -1787,24 +1538,24 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
         hostPredStaging.begin() + nbytes,
         static_cast<char>(forwardPattern));
     std::vector<char> hostSuccStaging(options.dataBufferSize, sentinel);
-    std::vector<int64_t> predStepState(numBlocks * 2);
-    std::vector<int64_t> succStepState(numBlocks * 2);
-    succStepState[0] = static_cast<int64_t>(wrappedByte);
-    std::vector<SignalState> predLocalSignals(numSignalSlots);
-    predLocalSignals[0].signal_ = nbytes;
-    std::vector<SignalState> predRemoteSignals(numSignalSlots);
-    auto succLocalSignals = makeSignals(initialAckValue);
-    std::vector<SignalState> succRemoteSignals(numSignalSlots);
+
+    // pred is the recv side: data_ready[0] = nbytes simulates peer sender
+    // having already signaled the full message ready.
+    auto hostPredChannels = makeChannels(0, 0, nbytes, 0);
+    std::vector<NvlChannelState> hostPredRemoteChannels(numBlocks);
+
+    // succ is the send side: send_cursor[0] pre-wrapped; slot_free[0]
+    // pre-seeded at initialAckValue (replaces makeSignals's headValue setup).
+    auto hostSuccChannels = makeChannels(wrappedByte, 0, 0, initialAckValue);
+    std::vector<NvlChannelState> hostSuccRemoteChannels(numBlocks);
 
     DeviceBuffer predStagingBuf(options.dataBufferSize);
     DeviceBuffer succStagingBuf(options.dataBufferSize);
     DeviceBuffer dstBuf(nbytes);
-    DeviceBuffer predStepStateBuf(stepStateBytes);
-    DeviceBuffer succStepStateBuf(stepStateBytes);
-    DeviceBuffer predLocalSignalsBuf(signalBytes);
-    DeviceBuffer predRemoteSignalsBuf(signalBytes);
-    DeviceBuffer succLocalSignalsBuf(signalBytes);
-    DeviceBuffer succRemoteSignalsBuf(signalBytes);
+    DeviceBuffer predChannelBuf(channelBytes);
+    DeviceBuffer predRemoteChannelBuf(channelBytes);
+    DeviceBuffer succChannelBuf(channelBytes);
+    DeviceBuffer succRemoteChannelBuf(channelBytes);
     DeviceBuffer observedBuf(sizeof(int));
     const int initialObserved = -1;
 
@@ -1820,34 +1571,24 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0, nbytes));
     CUDACHECK_TEST(cudaMemcpy(
-        predStepStateBuf.get(),
-        predStepState.data(),
-        stepStateBytes,
+        predChannelBuf.get(),
+        hostPredChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
-        succStepStateBuf.get(),
-        succStepState.data(),
-        stepStateBytes,
+        predRemoteChannelBuf.get(),
+        hostPredRemoteChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
-        predLocalSignalsBuf.get(),
-        predLocalSignals.data(),
-        signalBytes,
+        succChannelBuf.get(),
+        hostSuccChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
-        predRemoteSignalsBuf.get(),
-        predRemoteSignals.data(),
-        signalBytes,
-        cudaMemcpyHostToDevice));
-    CUDACHECK_TEST(cudaMemcpy(
-        succLocalSignalsBuf.get(),
-        succLocalSignals.data(),
-        signalBytes,
-        cudaMemcpyHostToDevice));
-    CUDACHECK_TEST(cudaMemcpy(
-        succRemoteSignalsBuf.get(),
-        succRemoteSignals.data(),
-        signalBytes,
+        succRemoteChannelBuf.get(),
+        hostSuccRemoteChannels.data(),
+        channelBytes,
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
         observedBuf.get(),
@@ -1860,33 +1601,20 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
         numBlocks,
         static_cast<char*>(predStagingBuf.get()),
         nullptr,
-        DeviceSpan<int64_t>(
-            static_cast<int64_t*>(predStepStateBuf.get()), numBlocks * 2),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(predLocalSignalsBuf.get()),
-            numSignalSlots),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(predRemoteSignalsBuf.get()),
-            numSignalSlots));
+        static_cast<NvlChannelState*>(predChannelBuf.get()),
+        static_cast<NvlChannelState*>(predRemoteChannelBuf.get()));
     auto succ = makeLocalTileDevice(
         options,
         numBlocks,
         nullptr,
         static_cast<char*>(succStagingBuf.get()),
-        DeviceSpan<int64_t>(
-            static_cast<int64_t*>(succStepStateBuf.get()), numBlocks * 2),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(succLocalSignalsBuf.get()),
-            numSignalSlots),
-        DeviceSpan<SignalState>(
-            static_cast<SignalState*>(succRemoteSignalsBuf.get()),
-            numSignalSlots));
+        static_cast<NvlChannelState*>(succChannelBuf.get()),
+        static_cast<NvlChannelState*>(succRemoteChannelBuf.get()));
 
     test::testTileForwardWaitsForWrappedSubstepAck(
         pred,
         succ,
         static_cast<char*>(dstBuf.get()),
-        numBlocks,
         nbytes,
         maxSignalBytes,
         sentinel,
@@ -1930,11 +1658,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const int numSendBlocks = 4;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024,
-      .chunkSize = 8 * 1024 * 1024,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -1967,15 +1691,9 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
         static_cast<char*>(sendBuf.get()), nBytes, numSendBlocks);
     comms::prims::TiledBuffer<char> recvTiles(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
-    int numBlocksArg = numSendBlocks;
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost,
-        &sendTiles,
-        &recvTiles,
-        &numBlocksArg,
-        &maxSignalBytes,
-        &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -2094,2050 +1812,6 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvStagingSizes) {
 }
 
 // =============================================================================
-// Parameterized Test Fixture for Transfer Size Variations
-// =============================================================================
-
-class TransferSizeTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<TransferSizeParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(TransferSizeTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running transfer size test: {} (nbytes={}, bufferSize={}, chunkSize={}, dualState={}, cudaGraph={})",
-      params.name,
-      params.nbytes,
-      params.dataBufferSize,
-      params.chunkSize,
-      params.useDualStateBuffer,
-      params.useCudaGraph);
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.dataBufferSize,
-      .chunkSize = params.chunkSize,
-      .pipelineDepth = 4,
-      .useDualStateBuffer = params.useDualStateBuffer,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper,
-      params.nbytes,
-      2,
-      64,
-      1,
-      test::GroupType::WARP,
-      params.useCudaGraph);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Transfer size test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string transferSizeParamName(
-    const ::testing::TestParamInfo<TransferSizeParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    TransferSizeVariations,
-    TransferSizeTestFixture,
-    ::testing::Values(
-        // ===== SINGLE STATE BUFFER MODE (default) =====
-        // Small transfer: nbytes < chunkSize
-        TransferSizeParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "SmallTransfer_LessThanChunk_SingleState"},
-        TransferSizeParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "SmallTransfer_LessThanChunk_SingleState"},
-        // Single chunk: nbytes == chunkSize
-        TransferSizeParams{
-            .nbytes = 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "SingleChunk_ExactMatch_SingleState"},
-        TransferSizeParams{
-            .nbytes = 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "SingleChunk_ExactMatch_SingleState"},
-        // Transfer not aligned to chunk size
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "UnalignedToChunk_SingleState"},
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "UnalignedToChunk_SingleState"},
-        // Transfer not aligned to vector size (16 bytes)
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "NonVectorAligned_1000bytes_SingleState"},
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "NonVectorAligned_1000bytes_SingleState"},
-        // Another non-vector-aligned size
-        TransferSizeParams{
-            .nbytes = 100,
-            .dataBufferSize = 1024,
-            .chunkSize = 64,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "NonVectorAligned_100bytes_SingleState"},
-        TransferSizeParams{
-            .nbytes = 100,
-            .dataBufferSize = 1024,
-            .chunkSize = 64,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "NonVectorAligned_100bytes_SingleState"},
-        // Transfer exactly equals buffer size (single step)
-        TransferSizeParams{
-            .nbytes = 4096,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "ExactBufferSize_SingleState"},
-        TransferSizeParams{
-            .nbytes = 4096,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "ExactBufferSize_SingleState"},
-        // Multiple steps: transfer > buffer size
-        TransferSizeParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "MultipleSteps_4x_SingleState"},
-        TransferSizeParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "MultipleSteps_4x_SingleState"},
-        // Large transfer with multiple steps
-        TransferSizeParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "LargeMultiStep_4MB_SingleState"},
-        TransferSizeParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "LargeMultiStep_4MB_SingleState"},
-        // Very large transfer (64MB with 8MB buffer = 8 steps)
-        TransferSizeParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "VeryLargeMultiStep_64MB_SingleState"},
-        TransferSizeParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "VeryLargeMultiStep_64MB_SingleState"},
-        // Edge case: stepBytes exactly divisible by chunkSize (no partial
-        // chunk) Tests that we don't process any 0-byte chunks
-        TransferSizeParams{
-            .nbytes = 4096,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "ExactChunkBoundary_4Chunks_SingleState"},
-        TransferSizeParams{
-            .nbytes = 4096,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "ExactChunkBoundary_4Chunks_SingleState"},
-        // Edge case: last chunk has minimal bytes (1 byte remainder)
-        // stepBytes=4097, chunkSize=1024 → 5 chunks, last chunk = 1 byte
-        TransferSizeParams{
-            .nbytes = 4097,
-            .dataBufferSize = 8192,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "MinimalLastChunk_1Byte_SingleState"},
-        TransferSizeParams{
-            .nbytes = 4097,
-            .dataBufferSize = 8192,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "MinimalLastChunk_1Byte_SingleState"},
-        // Edge case: multiple steps where each step ends exactly on chunk
-        // boundary 8KB transfer, 4KB buffer, 1KB chunks → 2 steps × 4 chunks
-        // each
-        TransferSizeParams{
-            .nbytes = 8 * 1024,
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "MultiStep_ExactChunkBoundaries_SingleState"},
-        TransferSizeParams{
-            .nbytes = 8 * 1024,
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "MultiStep_ExactChunkBoundaries_SingleState"},
-        // Edge case: chunkSize larger than stepBytes
-        // Forces single chunk per step with partial fill
-        TransferSizeParams{
-            .nbytes = 2048,
-            .dataBufferSize = 1024,
-            .chunkSize = 2048,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "ChunkLargerThanStep_SingleState"},
-        TransferSizeParams{
-            .nbytes = 2048,
-            .dataBufferSize = 1024,
-            .chunkSize = 2048,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "ChunkLargerThanStep_SingleState"},
-
-        // ===== DUAL STATE BUFFER MODE =====
-        // Small transfer: nbytes < chunkSize
-        TransferSizeParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "SmallTransfer_LessThanChunk_DualState"},
-        TransferSizeParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "SmallTransfer_LessThanChunk_DualState"},
-        // Single chunk: nbytes == chunkSize
-        TransferSizeParams{
-            .nbytes = 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "SingleChunk_ExactMatch_DualState"},
-        TransferSizeParams{
-            .nbytes = 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "SingleChunk_ExactMatch_DualState"},
-        // Transfer not aligned to chunk size
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "UnalignedToChunk_DualState"},
-        TransferSizeParams{
-            .nbytes = 1000,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "UnalignedToChunk_DualState"},
-        // Multiple steps: transfer > buffer size
-        TransferSizeParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "MultipleSteps_4x_DualState"},
-        TransferSizeParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "MultipleSteps_4x_DualState"},
-        // Large transfer with multiple steps
-        TransferSizeParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "LargeMultiStep_4MB_DualState"},
-        TransferSizeParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "LargeMultiStep_4MB_DualState"},
-        // Very large transfer (64MB with 8MB buffer = 8 steps)
-        TransferSizeParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "VeryLargeMultiStep_64MB_DualState"},
-        TransferSizeParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 1024,
-            .useDualStateBuffer = true,
-            .useCudaGraph = true,
-            .name = "VeryLargeMultiStep_64MB_DualState"}),
-    transferSizeParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Group Type Variations
-// =============================================================================
-
-class GroupTypeTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<GroupTypeParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(GroupTypeTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running group type test: {} (numBlocks={}, blockSize={}, dualState={}, cudaGraph={})",
-      params.name,
-      params.numBlocks,
-      params.blockSize,
-      params.useDualStateBuffer,
-      params.useCudaGraph);
-
-  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-      .useDualStateBuffer = params.useDualStateBuffer,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper,
-      nbytes,
-      params.numBlocks,
-      params.blockSize,
-      1,
-      params.groupType,
-      params.useCudaGraph);
-
-  XLOGF(
-      INFO, "Rank {}: Group type test '{}' completed", globalRank, params.name);
-}
-
-std::string groupTypeParamName(
-    const ::testing::TestParamInfo<GroupTypeParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    GroupTypeVariations,
-    GroupTypeTestFixture,
-    ::testing::Values(
-        // ===== SINGLE STATE BUFFER MODE (default) =====
-        // Warp-based groups (32 threads per group)
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "Warp_4Blocks_128Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "Warp_4Blocks_128Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 8,
-            .blockSize = 256,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "Warp_8Blocks_256Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 8,
-            .blockSize = 256,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "Warp_8Blocks_256Threads_SingleState"},
-        // Block-based groups (all threads in block form one group)
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "Block_4Groups_128Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "Block_4Groups_128Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 8,
-            .blockSize = 256,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "Block_8Groups_256Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 8,
-            .blockSize = 256,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "Block_8Groups_256Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 2,
-            .blockSize = 512,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = false,
-            .name = "Block_2Groups_512Threads_SingleState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 2,
-            .blockSize = 512,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = false,
-            .useCudaGraph = true,
-            .name = "Block_2Groups_512Threads_SingleState"},
-
-        // ===== DUAL STATE BUFFER MODE =====
-        // Warp-based groups (32 threads per group)
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "Warp_4Blocks_128Threads_DualState"},
-        GroupTypeParams{
-            .groupType = test::GroupType::WARP,
-            .numBlocks = 8,
-            .blockSize = 256,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "Warp_8Blocks_256Threads_DualState"},
-        // Block-based groups (all threads in block form one group)
-        GroupTypeParams{
-            .groupType = test::GroupType::BLOCK,
-            .numBlocks = 4,
-            .blockSize = 128,
-            .blocksPerGroup = 1,
-            .useDualStateBuffer = true,
-            .useCudaGraph = false,
-            .name = "Block_4Groups_128Threads_DualState"}),
-    groupTypeParamName);
-
-// =============================================================================
-// Bidirectional Send/Recv Test
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, BidirectionalSendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  const size_t numInts = nbytes / sizeof(int);
-
-  // Each rank has both send and receive buffers
-  DeviceBuffer sendBuffer(nbytes);
-  DeviceBuffer recvBuffer(nbytes);
-
-  auto send_d = static_cast<int*>(sendBuffer.get());
-  auto recv_d = static_cast<int*>(recvBuffer.get());
-
-  const int numBlocks = 4;
-  const int blockSize = 128;
-
-  // Each rank uses a different test value
-  const int sendValue = 100 + globalRank;
-  const int expectedRecvValue = 100 + helper.peerRank();
-
-  // Fill send buffer with this rank's value
-  test::fillBuffer(send_d, sendValue, numInts);
-  CUDACHECK_TEST(cudaMemset(recv_d, 0, nbytes));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  XLOGF(
-      INFO,
-      "Rank {}: filled send buffer with {}, expecting to receive {}",
-      globalRank,
-      sendValue,
-      expectedRecvValue);
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Both ranks send and receive simultaneously
-  // Rank 0 sends first, then receives
-  // Rank 1 receives first, then sends
-  // This tests that the state buffers are managed correctly for bidirectional
-  if (globalRank == 0) {
-    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  }
-
-  // Verify received data
-  std::vector<int> hostBuffer(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostBuffer.data(), recv_d, nbytes, cudaMemcpyDeviceToHost));
-
-  for (size_t i = 0; i < numInts; i++) {
-    EXPECT_EQ(hostBuffer[i], expectedRecvValue)
-        << "Rank " << globalRank << ": Mismatch at index " << i << ": expected "
-        << expectedRecvValue << ", got " << hostBuffer[i];
-    if (hostBuffer[i] != expectedRecvValue) {
-      break;
-    }
-  }
-
-  XLOGF(INFO, "Rank {}: Bidirectional test completed", globalRank);
-}
-
-// =============================================================================
-// Stress Test with Many Iterations
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, SendRecvStress) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
-  const size_t nbytes = 2 * 1024 * 1024; // 2MB total transfer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 512,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  const int nIter = 100;
-
-  XLOGF(
-      INFO,
-      "Rank {}: Starting stress test with {} iterations",
-      globalRank,
-      nIter);
-
-  runBasicSendRecvTest(helper, nbytes, 4, 128, nIter);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Stress test completed ({} iterations)",
-      globalRank,
-      nIter);
-}
-
-// =============================================================================
-// Zero-Byte Transfer Test
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, SendRecvZeroBytes) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 4096;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 256,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  // Allocate small buffers for the zero-byte transfer test
-  const size_t bufferSize = 64;
-  const size_t numInts = bufferSize / sizeof(int);
-  DeviceBuffer srcBuffer(bufferSize);
-  DeviceBuffer dstBuffer(bufferSize);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  const int numBlocks = 1;
-  const int blockSize = 32;
-  const size_t nbytes = 0; // Zero-byte transfer
-
-  // Initialize destination buffer with a known pattern to verify it remains
-  // unchanged
-  const int initialValue = 999;
-  test::fillBuffer(dst_d, initialValue, numInts);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  if (globalRank == 0) {
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testSend(p2p, src_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testRecv(p2p, dst_d, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Verify that the destination buffer was NOT modified (since zero bytes
-    // transferred)
-    std::vector<int> hostBuffer(numInts);
-    CUDACHECK_TEST(cudaMemcpy(
-        hostBuffer.data(), dst_d, bufferSize, cudaMemcpyDeviceToHost));
-
-    for (size_t i = 0; i < numInts; i++) {
-      EXPECT_EQ(hostBuffer[i], initialValue)
-          << "Zero-byte transfer modified buffer at index " << i
-          << ": expected " << initialValue << ", got " << hostBuffer[i];
-      if (hostBuffer[i] != initialValue) {
-        break;
-      }
-    }
-  }
-
-  XLOGF(INFO, "Rank {}: Zero-byte transfer test completed", globalRank);
-}
-
-// =============================================================================
-// Multiple Sends in Single Kernel Test
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
-  const size_t nbytesPerSend = 256 * 1024; // 256KB per send
-  const int numSends = 16;
-  const size_t totalBytes = nbytesPerSend * numSends;
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  DeviceBuffer srcBuffer(totalBytes);
-  DeviceBuffer dstBuffer(totalBytes);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  const int numBlocks = 4;
-  const int blockSize = 128;
-
-  // Fill source buffer with different values for each segment
-  const size_t intsPerSend = nbytesPerSend / sizeof(int);
-  for (int i = 0; i < numSends; i++) {
-    test::fillBuffer(src_d + i * intsPerSend, 100 + i, intsPerSend);
-  }
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  if (helper.globalRank() == 0) {
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    // Single kernel launch that does multiple sends
-    test::testMultiSend(
-        p2p, src_d, nbytesPerSend, numSends, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    std::cout << "Rank 0: MultiSendInKernel test completed" << std::endl;
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    CUDACHECK_TEST(cudaMemset(dst_d, 0, totalBytes));
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    // Single kernel launch that does multiple recvs
-    test::testMultiRecv(
-        p2p, dst_d, nbytesPerSend, numSends, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    std::cout << "Rank 1: MultiRecvKernel test completed" << std::endl;
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Verify each segment
-    std::vector<int> hostBuffer(intsPerSend);
-    for (int i = 0; i < numSends; i++) {
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuffer.data(),
-          dst_d + i * intsPerSend,
-          nbytesPerSend,
-          cudaMemcpyDeviceToHost));
-
-      const int expectedValue = 100 + i;
-      for (size_t j = 0; j < intsPerSend; j++) {
-        EXPECT_EQ(hostBuffer[j], expectedValue)
-            << "Segment " << i << ", index " << j << ": expected "
-            << expectedValue << ", got " << hostBuffer[j];
-        if (hostBuffer[j] != expectedValue) {
-          break;
-        }
-      }
-    }
-  }
-
-  XLOGF(INFO, "Rank {}: MultiSendInKernel test completed", helper.globalRank());
-}
-
-// =============================================================================
-// Multiple Recvs in Single Kernel Test
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, MultiRecvInKernel) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
-  const size_t nbytesPerRecv = 128 * 1024; // 128KB per recv
-  const int numRecvs = 8;
-  const size_t totalBytes = nbytesPerRecv * numRecvs;
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 512,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  DeviceBuffer srcBuffer(totalBytes);
-  DeviceBuffer dstBuffer(totalBytes);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  const int numBlocks = 2;
-  const int blockSize = 64;
-
-  // Fill source buffer with unique pattern
-  const size_t intsPerRecv = nbytesPerRecv / sizeof(int);
-  for (int i = 0; i < numRecvs; i++) {
-    test::fillBuffer(src_d + i * intsPerRecv, 200 + i, intsPerRecv);
-  }
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  if (helper.globalRank() == 0) {
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testMultiSend(
-        p2p, src_d, nbytesPerRecv, numRecvs, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    CUDACHECK_TEST(cudaMemset(dst_d, 0, totalBytes));
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testMultiRecv(
-        p2p, dst_d, nbytesPerRecv, numRecvs, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Verify each segment
-    std::vector<int> hostBuffer(intsPerRecv);
-    for (int i = 0; i < numRecvs; i++) {
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuffer.data(),
-          dst_d + i * intsPerRecv,
-          nbytesPerRecv,
-          cudaMemcpyDeviceToHost));
-
-      const int expectedValue = 200 + i;
-      for (size_t j = 0; j < intsPerRecv; j++) {
-        EXPECT_EQ(hostBuffer[j], expectedValue)
-            << "Segment " << i << ", index " << j << ": expected "
-            << expectedValue << ", got " << hostBuffer[j];
-        if (hostBuffer[j] != expectedValue) {
-          break;
-        }
-      }
-    }
-  }
-
-  XLOGF(INFO, "Rank {}: MultiRecvInKernel test completed", helper.globalRank());
-}
-
-// =============================================================================
-// Simultaneous Send+Recv in Single Kernel Test
-// =============================================================================
-
-TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  const size_t nbytes = 2 * 1024 * 1024; // 2MB transfer each direction
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  const size_t numInts = nbytes / sizeof(int);
-
-  // Each rank has send and receive buffers
-  DeviceBuffer sendBuffer(nbytes);
-  DeviceBuffer recvBuffer(nbytes);
-
-  auto send_d = static_cast<int*>(sendBuffer.get());
-  auto recv_d = static_cast<int*>(recvBuffer.get());
-
-  const int numBlocks = 4;
-  const int blockSize = 128;
-
-  // Each rank uses unique values
-  const int sendValue = 300 + globalRank;
-  const int expectedRecvValue = 300 + helper.peerRank();
-
-  test::fillBuffer(send_d, sendValue, numInts);
-  CUDACHECK_TEST(cudaMemset(recv_d, 0, nbytes));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  XLOGF(
-      INFO,
-      "Rank {}: Simulatenous test - sending {}, expecting {}",
-      globalRank,
-      sendValue,
-      expectedRecvValue);
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Both ranks do send+recv in a single kernel, but in opposite order
-  // to avoid deadlock: rank 0 sends then recvs, rank 1 recvs then sends
-  if (helper.globalRank() == 0) {
-    test::testSendRecv(p2p, send_d, recv_d, nbytes, numBlocks, blockSize);
-  } else {
-    test::testRecvSend(p2p, recv_d, send_d, nbytes, numBlocks, blockSize);
-  }
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Verify received data
-  std::vector<int> hostBuffer(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostBuffer.data(), recv_d, nbytes, cudaMemcpyDeviceToHost));
-
-  for (size_t i = 0; i < numInts; i++) {
-    EXPECT_EQ(hostBuffer[i], expectedRecvValue)
-        << "Rank " << globalRank << ": Mismatch at index " << i << ": expected "
-        << expectedRecvValue << ", got " << hostBuffer[i];
-    if (hostBuffer[i] != expectedRecvValue) {
-      break;
-    }
-  }
-
-  XLOGF(
-      INFO,
-      "Rank {}: SimultaneousSendRecvInKernel test completed",
-      helper.globalRank());
-}
-
-// =============================================================================
-// Parameterized Test Fixture for Weighted Partition Send/Recv
-// =============================================================================
-// Tests unequal send/recv partitioning with weighted splits
-
-struct WeightedPartitionParams {
-  uint32_t sendWeight;
-  uint32_t recvWeight;
-  std::string name;
-};
-
-class WeightedPartitionTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<WeightedPartitionParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(WeightedPartitionTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  const size_t nbytes = 2 * 1024 * 1024; // 2MB
-  const int numBlocks = 4;
-  const int blockSize = 128;
-
-  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  const size_t numInts = nbytes / sizeof(int);
-
-  DeviceBuffer sendBuffer(nbytes);
-  DeviceBuffer recvBuffer(nbytes);
-
-  auto send_d = static_cast<int*>(sendBuffer.get());
-  auto recv_d = static_cast<int*>(recvBuffer.get());
-
-  const int sendValue = 400 + globalRank;
-  const int expectedRecvValue = 400 + helper.peerRank();
-
-  test::fillBuffer(send_d, sendValue, numInts);
-  CUDACHECK_TEST(cudaMemset(recv_d, 0, nbytes));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Rank 0 sends then recvs, rank 1 recvs then sends
-  if (helper.globalRank() == 0) {
-    test::testWeightedSendRecv(
-        p2p,
-        send_d,
-        recv_d,
-        nbytes,
-        numBlocks,
-        blockSize,
-        params.sendWeight,
-        params.recvWeight);
-  } else {
-    test::testWeightedRecvSend(
-        p2p,
-        recv_d,
-        send_d,
-        nbytes,
-        numBlocks,
-        blockSize,
-        params.sendWeight,
-        params.recvWeight);
-  }
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Verify received data
-  std::vector<int> hostBuffer(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostBuffer.data(), recv_d, nbytes, cudaMemcpyDeviceToHost));
-
-  for (size_t i = 0; i < numInts; i++) {
-    EXPECT_EQ(hostBuffer[i], expectedRecvValue)
-        << "Rank " << globalRank << ": Mismatch at index " << i << ": expected "
-        << expectedRecvValue << ", got " << hostBuffer[i];
-    if (hostBuffer[i] != expectedRecvValue) {
-      break;
-    }
-  }
-
-  XLOGF(
-      INFO,
-      "Rank {}: Weighted partition test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string weightedPartitionParamName(
-    const ::testing::TestParamInfo<WeightedPartitionParams>& info) {
-  return info.param.name;
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    WeightedPartitionVariations,
-    WeightedPartitionTestFixture,
-    ::testing::Values(
-        WeightedPartitionParams{
-            .sendWeight = 3,
-            .recvWeight = 1,
-            .name = "Send3_Recv1"},
-        WeightedPartitionParams{
-            .sendWeight = 1,
-            .recvWeight = 3,
-            .name = "Send1_Recv3"},
-        // Extreme case: 1:99 split - tests that at least 1 warp is assigned to
-        // send
-        WeightedPartitionParams{
-            .sendWeight = 1,
-            .recvWeight = 99,
-            .name = "Send1_Recv99"}),
-    weightedPartitionParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Pipeline Depth Variation
-// =============================================================================
-// Test different pipelineDepth values to verify pipelining works correctly:
-// - pipelineDepth = 1 (no pipelining, sequential)
-// - pipelineDepth = 2 (minimal pipelining)
-// - pipelineDepth = 4 (default)
-// - pipelineDepth = 8 (deep pipelining)
-
-struct PipelineDepthParams {
-  size_t pipelineDepth;
-  size_t nbytes;
-  size_t dataBufferSize;
-  size_t chunkSize;
-  bool useCudaGraph;
-  std::string name;
-};
-
-class PipelineDepthTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<PipelineDepthParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(PipelineDepthTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running pipeline depth test: {} (pipelineDepth={}, nbytes={}, bufferSize={}, chunkSize={}, cudaGraph={})",
-      params.name,
-      params.pipelineDepth,
-      params.nbytes,
-      params.dataBufferSize,
-      params.chunkSize,
-      params.useCudaGraph);
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.dataBufferSize,
-      .chunkSize = params.chunkSize,
-      .pipelineDepth = params.pipelineDepth,
-  };
-
-  // Calculate expected number of steps to verify pipelining
-  const size_t totalSteps =
-      (params.nbytes + params.dataBufferSize - 1) / params.dataBufferSize;
-  XLOGF(
-      INFO,
-      "Rank {}: Transfer will use {} steps with pipeline depth {}",
-      globalRank,
-      totalSteps,
-      params.pipelineDepth);
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper,
-      params.nbytes,
-      4,
-      128,
-      1,
-      test::GroupType::WARP,
-      params.useCudaGraph);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Pipeline depth test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string pipelineDepthParamName(
-    const ::testing::TestParamInfo<PipelineDepthParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    PipelineDepthVariations,
-    PipelineDepthTestFixture,
-    ::testing::Values(
-        // pipelineDepth=1: No pipelining, sequential execution
-        // 4MB transfer with 512KB buffer = 8 steps, all executed sequentially
-        PipelineDepthParams{
-            .pipelineDepth = 1,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth1_Sequential_8Steps"},
-        PipelineDepthParams{
-            .pipelineDepth = 1,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth1_Sequential_8Steps"},
-        // pipelineDepth=2: Minimal pipelining
-        // 4MB transfer with 512KB buffer = 8 steps, using 2 slots
-        PipelineDepthParams{
-            .pipelineDepth = 2,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth2_MinimalPipeline_8Steps"},
-        PipelineDepthParams{
-            .pipelineDepth = 2,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth2_MinimalPipeline_8Steps"},
-        // pipelineDepth=4: Default pipelining
-        // 4MB transfer with 512KB buffer = 8 steps, using 4 slots
-        PipelineDepthParams{
-            .pipelineDepth = 4,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth4_DefaultPipeline_8Steps"},
-        PipelineDepthParams{
-            .pipelineDepth = 4,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth4_DefaultPipeline_8Steps"},
-        // pipelineDepth=8: Deep pipelining
-        // 4MB transfer with 512KB buffer = 8 steps, using all 8 slots
-        PipelineDepthParams{
-            .pipelineDepth = 8,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth8_DeepPipeline_8Steps"},
-        PipelineDepthParams{
-            .pipelineDepth = 8,
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth8_DeepPipeline_8Steps"},
-        // pipelineDepth=8 with more steps than depth
-        // 8MB transfer with 512KB buffer = 16 steps, using 8 slots (slot reuse)
-        PipelineDepthParams{
-            .pipelineDepth = 8,
-            .nbytes = 8 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth8_SlotReuse_16Steps"},
-        PipelineDepthParams{
-            .pipelineDepth = 8,
-            .nbytes = 8 * 1024 * 1024,
-            .dataBufferSize = 512 * 1024,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth8_SlotReuse_16Steps"}),
-    pipelineDepthParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Pipeline Slot Reuse
-// =============================================================================
-// Tests that pipeline slots are correctly reused when totalSteps >
-// pipelineDepth:
-// - Verifies stepId % pipelineDepth indexing works correctly
-// - Verifies state buffer is properly reset when slots are reused
-// - Ensures data integrity across multiple reuses of the same slot
-
-struct PipelineSaturationParams {
-  size_t pipelineDepth;
-  size_t totalSteps;
-  size_t chunkSize;
-  bool useCudaGraph;
-  std::string name;
-};
-
-class PipelineSaturationTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<PipelineSaturationParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(PipelineSaturationTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  // Calculate buffer size and total bytes to achieve desired number of steps
-  const size_t dataBufferSize = 256 * 1024; // 256KB per step
-  const size_t nbytes = params.totalSteps * dataBufferSize;
-
-  XLOGF(
-      INFO,
-      "Running pipeline saturation test: {} (pipelineDepth={}, steps={}, nbytes={}, cudaGraph={})",
-      params.name,
-      params.pipelineDepth,
-      params.totalSteps,
-      nbytes,
-      params.useCudaGraph);
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = params.chunkSize,
-      .pipelineDepth = params.pipelineDepth,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper, nbytes, 4, 128, 1, test::GroupType::WARP, params.useCudaGraph);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Pipeline saturation test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string pipelineSaturationParamName(
-    const ::testing::TestParamInfo<PipelineSaturationParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    PipelineSlotReuseVariations,
-    PipelineSaturationTestFixture,
-    ::testing::Values(
-        // pipelineDepth=2, 10 steps: each slot used 5 times (steps 0,2,4,6,8
-        // and 1,3,5,7,9)
-        PipelineSaturationParams{
-            .pipelineDepth = 2,
-            .totalSteps = 10,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth2_10Steps_5xReuse"},
-        PipelineSaturationParams{
-            .pipelineDepth = 2,
-            .totalSteps = 10,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth2_10Steps_5xReuse"},
-        // pipelineDepth=2, 16 steps: each slot used 8 times
-        PipelineSaturationParams{
-            .pipelineDepth = 2,
-            .totalSteps = 16,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth2_16Steps_8xReuse"},
-        PipelineSaturationParams{
-            .pipelineDepth = 2,
-            .totalSteps = 16,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth2_16Steps_8xReuse"},
-        // pipelineDepth=3, 12 steps: each slot used 4 times
-        PipelineSaturationParams{
-            .pipelineDepth = 3,
-            .totalSteps = 12,
-            .chunkSize = 1024,
-            .useCudaGraph = false,
-            .name = "Depth3_12Steps_4xReuse"},
-        PipelineSaturationParams{
-            .pipelineDepth = 3,
-            .totalSteps = 12,
-            .chunkSize = 1024,
-            .useCudaGraph = true,
-            .name = "Depth3_12Steps_4xReuse"},
-        // pipelineDepth=4, 20 steps: each slot used 5 times
-        PipelineSaturationParams{
-            .pipelineDepth = 4,
-            .totalSteps = 20,
-            .chunkSize = 512,
-            .useCudaGraph = false,
-            .name = "Depth4_20Steps_5xReuse"},
-        PipelineSaturationParams{
-            .pipelineDepth = 4,
-            .totalSteps = 20,
-            .chunkSize = 512,
-            .useCudaGraph = true,
-            .name = "Depth4_20Steps_5xReuse"}),
-    pipelineSaturationParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Chunk Count Edge Cases
-// =============================================================================
-// Test edge cases in chunk distribution:
-// - numChunks < numWarps (some warps have no work)
-// - numChunks = 1 (single chunk)
-// - numChunks = numWarps (exactly 1 chunk per warp)
-// - Very small transfer (< chunkSize)
-
-struct ChunkCountEdgeCaseParams {
-  size_t nbytes;
-  size_t dataBufferSize;
-  size_t chunkSize;
-  int numBlocks;
-  int blockSize;
-  bool useCudaGraph;
-  std::string name;
-};
-
-class ChunkCountEdgeCaseTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<ChunkCountEdgeCaseParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(ChunkCountEdgeCaseTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-
-  // Calculate chunk distribution info
-  const size_t chunksPerStep =
-      (params.dataBufferSize + params.chunkSize - 1) / params.chunkSize;
-  const int numWarps =
-      (params.numBlocks * params.blockSize + 31) / 32; // Approximate
-
-  XLOGF(
-      INFO,
-      "Running chunk edge case test: {} (nbytes={}, chunkSize={}, ~{} chunks, ~{} warps, cudaGraph={})",
-      params.name,
-      params.nbytes,
-      params.chunkSize,
-      chunksPerStep,
-      numWarps,
-      params.useCudaGraph);
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.dataBufferSize,
-      .chunkSize = params.chunkSize,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper,
-      params.nbytes,
-      params.numBlocks,
-      params.blockSize,
-      1,
-      test::GroupType::WARP,
-      params.useCudaGraph);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Chunk edge case test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string chunkCountEdgeCaseParamName(
-    const ::testing::TestParamInfo<ChunkCountEdgeCaseParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    ChunkCountEdgeCases,
-    ChunkCountEdgeCaseTestFixture,
-    ::testing::Values(
-        // numChunks < numWarps: 4 chunks with 64 warps (8 blocks × 256 threads)
-        // Many warps will have no work
-        ChunkCountEdgeCaseParams{
-            .nbytes = 4 * 1024, // 4KB
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 1024, // 4 chunks
-            .numBlocks = 8,
-            .blockSize = 256, // 64 warps
-            .useCudaGraph = false,
-            .name = "FewChunks_4Chunks_64Warps"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 4 * 1024, // 4KB
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 1024, // 4 chunks
-            .numBlocks = 8,
-            .blockSize = 256, // 64 warps
-            .useCudaGraph = true,
-            .name = "FewChunks_4Chunks_64Warps"},
-        // numChunks = 1: Single chunk transfer
-        ChunkCountEdgeCaseParams{
-            .nbytes = 512, // 512 bytes
-            .dataBufferSize = 1024,
-            .chunkSize = 1024, // 1 chunk (transfer < chunkSize)
-            .numBlocks = 4,
-            .blockSize = 128,
-            .useCudaGraph = false,
-            .name = "SingleChunk_512Bytes"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 512, // 512 bytes
-            .dataBufferSize = 1024,
-            .chunkSize = 1024, // 1 chunk (transfer < chunkSize)
-            .numBlocks = 4,
-            .blockSize = 128,
-            .useCudaGraph = true,
-            .name = "SingleChunk_512Bytes"},
-        // numChunks = 1 with larger chunk
-        ChunkCountEdgeCaseParams{
-            .nbytes = 4 * 1024, // 4KB
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 4 * 1024, // 1 chunk
-            .numBlocks = 4,
-            .blockSize = 128,
-            .useCudaGraph = false,
-            .name = "SingleChunk_4KB"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 4 * 1024, // 4KB
-            .dataBufferSize = 4 * 1024,
-            .chunkSize = 4 * 1024, // 1 chunk
-            .numBlocks = 4,
-            .blockSize = 128,
-            .useCudaGraph = true,
-            .name = "SingleChunk_4KB"},
-        // numChunks = numWarps: Exactly 1 chunk per warp
-        // 16 chunks with 16 warps (4 blocks × 128 threads = 16 warps)
-        ChunkCountEdgeCaseParams{
-            .nbytes = 16 * 1024, // 16KB
-            .dataBufferSize = 16 * 1024,
-            .chunkSize = 1024, // 16 chunks
-            .numBlocks = 4,
-            .blockSize = 128, // 16 warps
-            .useCudaGraph = false,
-            .name = "ExactMatch_16Chunks_16Warps"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 16 * 1024, // 16KB
-            .dataBufferSize = 16 * 1024,
-            .chunkSize = 1024, // 16 chunks
-            .numBlocks = 4,
-            .blockSize = 128, // 16 warps
-            .useCudaGraph = true,
-            .name = "ExactMatch_16Chunks_16Warps"},
-        // Very small transfer (< chunkSize)
-        ChunkCountEdgeCaseParams{
-            .nbytes = 64, // 64 bytes (much smaller than chunk)
-            .dataBufferSize = 1024,
-            .chunkSize = 256,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = false,
-            .name = "VerySmall_64Bytes"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 64, // 64 bytes (much smaller than chunk)
-            .dataBufferSize = 1024,
-            .chunkSize = 256,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = true,
-            .name = "VerySmall_64Bytes"},
-        // Another very small transfer
-        ChunkCountEdgeCaseParams{
-            .nbytes = 128, // 128 bytes
-            .dataBufferSize = 1024,
-            .chunkSize = 512,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = false,
-            .name = "VerySmall_128Bytes"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 128, // 128 bytes
-            .dataBufferSize = 1024,
-            .chunkSize = 512,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = true,
-            .name = "VerySmall_128Bytes"},
-        // Edge case: nbytes not aligned to chunk or vector size
-        ChunkCountEdgeCaseParams{
-            .nbytes = 100, // Non-aligned size
-            .dataBufferSize = 1024,
-            .chunkSize = 64,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = false,
-            .name = "NonAligned_100Bytes"},
-        ChunkCountEdgeCaseParams{
-            .nbytes = 100, // Non-aligned size
-            .dataBufferSize = 1024,
-            .chunkSize = 64,
-            .numBlocks = 2,
-            .blockSize = 64,
-            .useCudaGraph = true,
-            .name = "NonAligned_100Bytes"}),
-    chunkCountEdgeCaseParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Large Transfers (Stress Test)
-// =============================================================================
-// Stress test with large transfers:
-// - 64MB, 128MB, 256MB transfers
-// - Exercises full pipeline depth, many steps, many chunks
-
-struct LargeTransferParams {
-  size_t nbytes;
-  size_t dataBufferSize;
-  size_t chunkSize;
-  size_t pipelineDepth;
-  bool useCudaGraph;
-  std::string name;
-};
-
-class LargeTransferTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<LargeTransferParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(LargeTransferTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-
-  // Calculate transfer statistics
-  const size_t totalSteps =
-      (params.nbytes + params.dataBufferSize - 1) / params.dataBufferSize;
-  const size_t chunksPerStep =
-      (params.dataBufferSize + params.chunkSize - 1) / params.chunkSize;
-
-  XLOGF(
-      INFO,
-      "Running large transfer test: {} (nbytes={}MB, {} steps, {} chunks/step, cudaGraph={})",
-      params.name,
-      params.nbytes / (1024 * 1024),
-      totalSteps,
-      chunksPerStep,
-      params.useCudaGraph);
-
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.dataBufferSize,
-      .chunkSize = params.chunkSize,
-      .pipelineDepth = params.pipelineDepth,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  runBasicSendRecvTest(
-      helper,
-      params.nbytes,
-      8,
-      256,
-      1,
-      test::GroupType::WARP,
-      params.useCudaGraph);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Large transfer test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string largeTransferParamName(
-    const ::testing::TestParamInfo<LargeTransferParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    LargeTransferVariations,
-    LargeTransferTestFixture,
-    ::testing::Values(
-        // 64MB transfer with 8MB buffer = 8 steps
-        LargeTransferParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = false,
-            .name = "Large_64MB_8MBBuffer"},
-        LargeTransferParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = true,
-            .name = "Large_64MB_8MBBuffer"},
-        // 128MB transfer with 8MB buffer = 16 steps
-        LargeTransferParams{
-            .nbytes = 128 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = false,
-            .name = "Large_128MB_8MBBuffer"},
-        LargeTransferParams{
-            .nbytes = 128 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = true,
-            .name = "Large_128MB_8MBBuffer"},
-        // 256MB transfer with 8MB buffer = 32 steps
-        LargeTransferParams{
-            .nbytes = 256 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = false,
-            .name = "Large_256MB_8MBBuffer"},
-        LargeTransferParams{
-            .nbytes = 256 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 4 * 1024,
-            .pipelineDepth = 4,
-            .useCudaGraph = true,
-            .name = "Large_256MB_8MBBuffer"},
-        // 64MB transfer with smaller buffer = more steps
-        LargeTransferParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 4 * 1024 * 1024,
-            .chunkSize = 2 * 1024,
-            .pipelineDepth = 8,
-            .useCudaGraph = false,
-            .name = "Large_64MB_4MBBuffer_DeepPipeline"},
-        LargeTransferParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 4 * 1024 * 1024,
-            .chunkSize = 2 * 1024,
-            .pipelineDepth = 8,
-            .useCudaGraph = true,
-            .name = "Large_64MB_4MBBuffer_DeepPipeline"},
-        // 128MB transfer with deep pipeline
-        LargeTransferParams{
-            .nbytes = 128 * 1024 * 1024,
-            .dataBufferSize = 4 * 1024 * 1024,
-            .chunkSize = 2 * 1024,
-            .pipelineDepth = 8,
-            .useCudaGraph = false,
-            .name = "Large_128MB_4MBBuffer_DeepPipeline"},
-        LargeTransferParams{
-            .nbytes = 128 * 1024 * 1024,
-            .dataBufferSize = 4 * 1024 * 1024,
-            .chunkSize = 2 * 1024,
-            .pipelineDepth = 8,
-            .useCudaGraph = true,
-            .name = "Large_128MB_4MBBuffer_DeepPipeline"}),
-    largeTransferParamName);
-
-// =============================================================================
-// Parameterized Test Fixture for Asymmetric Group Configurations
-// =============================================================================
-// Tests that sender and receiver can use different thread group configurations
-// This validates that the protocol works across asymmetric kernel launches.
-
-struct AsymmetricGroupParams {
-  test::GroupType senderGroupType;
-  int senderNumBlocks;
-  int senderBlockSize;
-  test::GroupType receiverGroupType;
-  int receiverNumBlocks;
-  int receiverBlockSize;
-  bool useCudaGraph;
-  std::string name;
-};
-
-class AsymmetricGroupTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<AsymmetricGroupParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(AsymmetricGroupTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running asymmetric group test: {} (sender: {} {}x{}, receiver: {} {}x{}, cudaGraph={})",
-      params.name,
-      params.senderGroupType == test::GroupType::WARP ? "WARP" : "BLOCK",
-      params.senderNumBlocks,
-      params.senderBlockSize,
-      params.receiverGroupType == test::GroupType::WARP ? "WARP" : "BLOCK",
-      params.receiverNumBlocks,
-      params.receiverBlockSize,
-      params.useCudaGraph);
-
-  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevicePtr();
-
-  const size_t numInts = nbytes / sizeof(int);
-
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  if (!params.useCudaGraph) {
-    // Direct kernel launch mode
-    if (globalRank == 0) {
-      // Sender
-      test::fillBuffer(src_d, 42, numInts);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-      test::testSend(
-          p2p,
-          src_d,
-          nbytes,
-          params.senderNumBlocks,
-          params.senderBlockSize,
-          params.senderGroupType);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    } else {
-      // Receiver
-      CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-      test::testRecv(
-          p2p,
-          dst_d,
-          nbytes,
-          params.receiverNumBlocks,
-          params.receiverBlockSize,
-          params.receiverGroupType);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Verify received data
-      std::vector<int> hostBuffer(numInts);
-      CUDACHECK_TEST(
-          cudaMemcpy(hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-      for (size_t i = 0; i < numInts; i++) {
-        EXPECT_EQ(hostBuffer[i], 42)
-            << "Rank " << globalRank << ": Mismatch at index " << i
-            << ": expected 42, got " << hostBuffer[i];
-        if (hostBuffer[i] != 42) {
-          break;
-        }
-      }
-    }
-  } else {
-    // CUDA graph mode
-    cudaStream_t stream;
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
-
-    cudaGraph_t graph;
-    cudaGraphExec_t graphExec;
-
-    // Capture the send or recv kernel into a graph
-    CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-    if (globalRank == 0) {
-      test::testSend(
-          p2p,
-          src_d,
-          nbytes,
-          params.senderNumBlocks,
-          params.senderBlockSize,
-          params.senderGroupType,
-          1,
-          stream);
-    } else {
-      test::testRecv(
-          p2p,
-          dst_d,
-          nbytes,
-          params.receiverNumBlocks,
-          params.receiverBlockSize,
-          params.receiverGroupType,
-          1,
-          stream);
-    }
-    CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
-    CUDACHECK_TEST(
-        cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
-
-    std::vector<int> hostBuffer(numInts);
-    const int graphIter = 3;
-
-    // Replay graph 3 times with different data patterns
-    for (int iter = 0; iter < graphIter; iter++) {
-      const int testValue = 42 + iter;
-
-      if (globalRank == 0) {
-        test::fillBuffer(src_d, testValue, numInts);
-        CUDACHECK_TEST(cudaDeviceSynchronize());
-      } else {
-        CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-      }
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      if (globalRank == 1) {
-        CUDACHECK_TEST(cudaMemcpy(
-            hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-        for (size_t i = 0; i < numInts; i++) {
-          EXPECT_EQ(hostBuffer[i], testValue)
-              << "CudaGraph iter " << iter << ": Mismatch at index " << i
-              << ": expected " << testValue << ", got " << hostBuffer[i];
-          if (hostBuffer[i] != testValue) {
-            break;
-          }
-        }
-      }
-    }
-
-    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
-    CUDACHECK_TEST(cudaGraphDestroy(graph));
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-  }
-
-  XLOGF(
-      INFO,
-      "Rank {}: Asymmetric group test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string asymmetricGroupParamName(
-    const ::testing::TestParamInfo<AsymmetricGroupParams>& info) {
-  return info.param.name + (info.param.useCudaGraph ? "_CudaGraph" : "");
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    AsymmetricGroupVariations,
-    AsymmetricGroupTestFixture,
-    ::testing::Values(
-        // Sender uses WARP groups, receiver uses BLOCK groups
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 4,
-            .senderBlockSize = 128,
-            .receiverGroupType = test::GroupType::BLOCK,
-            .receiverNumBlocks = 4,
-            .receiverBlockSize = 128,
-            .useCudaGraph = false,
-            .name = "SenderWarp_ReceiverBlock"},
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 4,
-            .senderBlockSize = 128,
-            .receiverGroupType = test::GroupType::BLOCK,
-            .receiverNumBlocks = 4,
-            .receiverBlockSize = 128,
-            .useCudaGraph = true,
-            .name = "SenderWarp_ReceiverBlock"},
-        // Sender uses BLOCK groups, receiver uses WARP groups
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::BLOCK,
-            .senderNumBlocks = 4,
-            .senderBlockSize = 128,
-            .receiverGroupType = test::GroupType::WARP,
-            .receiverNumBlocks = 4,
-            .receiverBlockSize = 128,
-            .useCudaGraph = false,
-            .name = "SenderBlock_ReceiverWarp"},
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::BLOCK,
-            .senderNumBlocks = 4,
-            .senderBlockSize = 128,
-            .receiverGroupType = test::GroupType::WARP,
-            .receiverNumBlocks = 4,
-            .receiverBlockSize = 128,
-            .useCudaGraph = true,
-            .name = "SenderBlock_ReceiverWarp"},
-        // Different block configurations
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 8,
-            .senderBlockSize = 256,
-            .receiverGroupType = test::GroupType::BLOCK,
-            .receiverNumBlocks = 2,
-            .receiverBlockSize = 512,
-            .useCudaGraph = false,
-            .name = "SenderWarp8x256_ReceiverBlock2x512"},
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 8,
-            .senderBlockSize = 256,
-            .receiverGroupType = test::GroupType::BLOCK,
-            .receiverNumBlocks = 2,
-            .receiverBlockSize = 512,
-            .useCudaGraph = true,
-            .name = "SenderWarp8x256_ReceiverBlock2x512"},
-        // Same group type but different configurations
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 2,
-            .senderBlockSize = 64,
-            .receiverGroupType = test::GroupType::WARP,
-            .receiverNumBlocks = 8,
-            .receiverBlockSize = 256,
-            .useCudaGraph = false,
-            .name = "SenderWarp2x64_ReceiverWarp8x256"},
-        AsymmetricGroupParams{
-            .senderGroupType = test::GroupType::WARP,
-            .senderNumBlocks = 2,
-            .senderBlockSize = 64,
-            .receiverGroupType = test::GroupType::WARP,
-            .receiverNumBlocks = 8,
-            .receiverBlockSize = 256,
-            .useCudaGraph = true,
-            .name = "SenderWarp2x64_ReceiverWarp8x256"}),
-    asymmetricGroupParamName);
-
-// =============================================================================
 // P2pNvlTransportDevice::put() Tests
 // =============================================================================
 // Tests for the one-sided put() API that writes directly to peer memory
@@ -4212,11 +1886,7 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   }
 
   const size_t nbytes = 1024 * 1024; // 1MB
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = nbytes,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(nbytes, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -4260,11 +1930,7 @@ TEST_P(PutTransferSizeTestFixture, Put) {
       params.name,
       params.nbytes);
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = params.nbytes,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(params.nbytes, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -4351,11 +2017,7 @@ TEST_P(PutUnalignedTestFixture, Put) {
   // Allocate larger staging buffers to accommodate offsets
   const size_t dataBufferSize =
       params.nbytes + std::max(params.srcOffset, params.dstOffset);
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
+  auto config = makeNvlConfig(dataBufferSize, 4);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto p2p = helper.getDevicePtr();
@@ -4479,11 +2141,7 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
   const size_t paddedSize = nbytes + 64; // Extra space to detect overflow
   const char sentinelValue = static_cast<char>(0xDE);
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = paddedSize,
-      .chunkSize = 1,
-      .pipelineDepth = 1,
-  };
+  auto config = makeNvlConfig(paddedSize, 1);
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
   auto* p2p = helper.getDevicePtr(); // device pointer for kernel calls
@@ -4555,12 +2213,8 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-      .ll128BufferSize = ll128_buffer_size(4096),
-  };
+  auto config = makeNvlConfig(4096, 2);
+  config.ll128BufferSize = ll128_buffer_size(4096);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -4589,11 +2243,7 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(4096, 2);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -4633,11 +2283,10 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
   constexpr int maxBlocks = 32;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 8 * 1024 * 1024, // 8MB slot
-      .chunkSize = 8 * 1024 * 1024,
       .pipelineDepth = 2,
       .p2pBarrierCount = static_cast<std::size_t>(maxBlocks),
-      .tile_max_groups = maxBlocks,
+      .maxNumChannels = maxBlocks,
+      .perChannelSize = 256 * 1024,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -4683,14 +2332,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
         static_cast<char*>(recvBuf.get()), nBytes, numBlocks);
 
     bool needsBarrier = (prevBlocks != 0 && prevBlocks != numBlocks);
-    int numBlocksArg = numBlocks;
-    void* args[] = {
-        &p2pHost,
-        &sendTiles,
-        &recvTiles,
-        &numBlocksArg,
-        &needsBarrier,
-        &timeout};
+    void* args[] = {&p2pHost, &sendTiles, &recvTiles, &needsBarrier, &timeout};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -4725,340 +2367,6 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
 }
 
 // =============================================================================
-// forward_group() Tests - 2-rank ring topology
-// =============================================================================
-// Topology: Rank 0 → Rank 1 → Rank 0
-// - Rank 0: send_group to rank 1, recv_group from rank 1 (concurrent streams)
-// - Rank 1: forward_group with pred==succ==same device (reads from localState_
-//   staging where rank 0 wrote, writes to remoteState_ staging for rank 0's
-//   recv)
-// Uses a single transport between ranks — send uses remoteState_, recv uses
-// localState_, so both directions coexist without conflict.
-
-void runForwardGroupTest(
-    int globalRank,
-    int numRanks,
-    int localRank,
-    size_t nbytes,
-    size_t dataBufferSize,
-    size_t chunkSize,
-    size_t pipelineDepth,
-    bool useDualStateBuffer,
-    int numBlocks = 4,
-    int blockSize = 128,
-    size_t dstOffset = 0) {
-  if (numRanks != 2) {
-    return;
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-
-  // Single transport between rank 0 and rank 1 — supports bidirectional
-  // communication. send_group uses remoteState_, recv_group uses localState_,
-  // so both directions can coexist on the same device without conflict.
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = chunkSize,
-      .pipelineDepth = pipelineDepth,
-      .useDualStateBuffer = useDualStateBuffer,
-  };
-
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
-  transport.exchange();
-
-  // Build host-side device handle
-  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
-
-  // Copy to device memory
-  DeviceBuffer devP2p(sizeof(P2pNvlTransportDevice));
-  CUDACHECK_TEST(cudaMemcpy(
-      devP2p.get(),
-      &p2pHost,
-      sizeof(P2pNvlTransportDevice),
-      cudaMemcpyHostToDevice));
-
-  auto* p2pDev = static_cast<P2pNvlTransportDevice*>(devP2p.get());
-
-  const size_t numInts = nbytes / sizeof(int);
-  const int testValue = 77;
-
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstRank0(nbytes); // rank 0's recv buffer
-  // Rank 1's local forward output, padded to support unaligned dstOffset.
-  DeviceBuffer dstRank1(nbytes + dstOffset);
-
-  auto* src_d = static_cast<int*>(srcBuffer.get());
-  auto* recvR0_d = static_cast<int*>(dstRank0.get());
-
-  if (globalRank == 0) {
-    // Fill source buffer
-    test::fillBuffer(src_d, testValue, numInts);
-    CUDACHECK_TEST(cudaMemset(recvR0_d, 0, nbytes));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Launch send and recv concurrently on different streams to avoid
-    // pipeline deadlock when totalSteps > pipelineDepth
-    cudaStream_t sendStream, recvStream;
-    CUDACHECK_TEST(cudaStreamCreate(&sendStream));
-    CUDACHECK_TEST(cudaStreamCreate(&recvStream));
-
-    // Send to rank 1 (writes to remoteState_.dataBuffer)
-    test::testSend(
-        p2pDev,
-        src_d,
-        nbytes,
-        numBlocks,
-        blockSize,
-        test::GroupType::WARP,
-        1,
-        sendStream);
-    // Recv from rank 1 (reads from localState_.dataBuffer — no conflict)
-    test::testRecv(
-        p2pDev,
-        recvR0_d,
-        nbytes,
-        numBlocks,
-        blockSize,
-        test::GroupType::WARP,
-        1,
-        recvStream);
-
-    CUDACHECK_TEST(cudaStreamSynchronize(sendStream));
-    CUDACHECK_TEST(cudaStreamSynchronize(recvStream));
-
-    CUDACHECK_TEST(cudaStreamDestroy(sendStream));
-    CUDACHECK_TEST(cudaStreamDestroy(recvStream));
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Verify rank 0 received correct data
-    std::vector<int> hostBuffer(numInts);
-    CUDACHECK_TEST(cudaMemcpy(
-        hostBuffer.data(), recvR0_d, nbytes, cudaMemcpyDeviceToHost));
-    for (size_t i = 0; i < numInts; i++) {
-      EXPECT_EQ(hostBuffer[i], testValue)
-          << "Rank 0 recv: Mismatch at index " << i
-          << " (dstOffset=" << dstOffset << ")";
-      if (hostBuffer[i] != testValue) {
-        break;
-      }
-    }
-  } else {
-    // Rank 1: forward (pred == succ == same device, reads localState_ staging
-    // and writes to remoteState_ staging). Zero entire padded buffer so we
-    // can verify both prefix safety and payload correctness.
-    CUDACHECK_TEST(cudaMemset(dstRank1.get(), 0, nbytes + dstOffset));
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Apply byte-level dstOffset to the user-facing dst pointer.
-    char* dstPtr = static_cast<char*>(dstRank1.get()) + dstOffset;
-    test::testForward(p2pDev, p2pDev, dstPtr, nbytes, numBlocks, blockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Read entire padded buffer to verify both prefix safety and payload.
-    std::vector<unsigned char> hostBuf(nbytes + dstOffset);
-    CUDACHECK_TEST(cudaMemcpy(
-        hostBuf.data(),
-        dstRank1.get(),
-        nbytes + dstOffset,
-        cudaMemcpyDeviceToHost));
-
-    // Prefix bytes [0, dstOffset) must be untouched (still 0).
-    for (size_t i = 0; i < dstOffset; i++) {
-      EXPECT_EQ(hostBuf[i], 0u) << "Rank 1 prefix clobbered at byte " << i
-                                << " (dstOffset=" << dstOffset << ")";
-      if (hostBuf[i] != 0u) {
-        return;
-      }
-    }
-    // Payload bytes [dstOffset, dstOffset + nbytes) must match the byte
-    // pattern of testValue (a repeated int). Build expected bytes from the
-    // same int fill pattern so byte-level offsets work for any dstOffset.
-    std::vector<int> expectedInts(numInts, testValue);
-    const auto* expectedBytes =
-        reinterpret_cast<const unsigned char*>(expectedInts.data());
-    for (size_t i = 0; i < nbytes; i++) {
-      EXPECT_EQ(hostBuf[dstOffset + i], expectedBytes[i])
-          << "Rank 1 forward dst: Mismatch at byte " << i
-          << " (nbytes=" << nbytes << ", dstOffset=" << dstOffset << ")";
-      if (hostBuf[dstOffset + i] != expectedBytes[i]) {
-        return;
-      }
-    }
-  }
-}
-
-TEST_F(P2pNvlTransportTestFixture, ForwardGroupSingleState) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  CUDACHECK_TEST(cudaSetDevice(localRank));
-
-  // Basic test: 4MB transfer, 1MB staging, 1KB chunks
-  runForwardGroupTest(
-      globalRank,
-      numRanks,
-      localRank,
-      4 * 1024 * 1024, // nbytes
-      1024 * 1024, // dataBufferSize
-      1024, // chunkSize
-      4, // pipelineDepth
-      false); // useDualStateBuffer
-
-  XLOGF(INFO, "Rank {}: ForwardGroupSingleState completed", globalRank);
-}
-
-TEST_F(P2pNvlTransportTestFixture, ForwardGroupDualState) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  CUDACHECK_TEST(cudaSetDevice(localRank));
-
-  // Basic test: 4MB transfer, 1MB staging, 1KB chunks
-  runForwardGroupTest(
-      globalRank,
-      numRanks,
-      localRank,
-      4 * 1024 * 1024, // nbytes
-      1024 * 1024, // dataBufferSize
-      1024, // chunkSize
-      4, // pipelineDepth
-      true); // useDualStateBuffer
-
-  XLOGF(INFO, "Rank {}: ForwardGroupDualState completed", globalRank);
-}
-
-// Parameterized forward_group test with various sizes
-struct ForwardGroupParams {
-  size_t nbytes;
-  size_t dataBufferSize;
-  size_t chunkSize;
-  size_t pipelineDepth;
-  bool useDualStateBuffer;
-  std::string name;
-};
-
-class ForwardGroupTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<ForwardGroupParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(ForwardGroupTestFixture, ForwardGroup) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running forward_group test: {} (nbytes={}, dualState={})",
-      params.name,
-      params.nbytes,
-      params.useDualStateBuffer);
-
-  runForwardGroupTest(
-      globalRank,
-      numRanks,
-      localRank,
-      params.nbytes,
-      params.dataBufferSize,
-      params.chunkSize,
-      params.pipelineDepth,
-      params.useDualStateBuffer);
-
-  XLOGF(
-      INFO,
-      "Rank {}: Forward group test '{}' completed",
-      globalRank,
-      params.name);
-}
-
-std::string forwardGroupParamName(
-    const ::testing::TestParamInfo<ForwardGroupParams>& info) {
-  return info.param.name;
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    ForwardGroupVariations,
-    ForwardGroupTestFixture,
-    ::testing::Values(
-        // Single state buffer mode
-        ForwardGroupParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = false,
-            .name = "Small_512B_SingleState"},
-        ForwardGroupParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = false,
-            .name = "MultiStep_16KB_SingleState"},
-        ForwardGroupParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = false,
-            .name = "Large_4MB_SingleState"},
-        ForwardGroupParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 512 * 1024,
-            .pipelineDepth = 2,
-            .useDualStateBuffer = false,
-            .name = "VeryLarge_64MB_SingleState"},
-        // Dual state buffer mode
-        ForwardGroupParams{
-            .nbytes = 512,
-            .dataBufferSize = 4096,
-            .chunkSize = 1024,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = true,
-            .name = "Small_512B_DualState"},
-        ForwardGroupParams{
-            .nbytes = 16 * 1024,
-            .dataBufferSize = 4096,
-            .chunkSize = 256,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = true,
-            .name = "MultiStep_16KB_DualState"},
-        ForwardGroupParams{
-            .nbytes = 4 * 1024 * 1024,
-            .dataBufferSize = 1024 * 1024,
-            .chunkSize = 4096,
-            .pipelineDepth = 4,
-            .useDualStateBuffer = true,
-            .name = "Large_4MB_DualState"},
-        ForwardGroupParams{
-            .nbytes = 64 * 1024 * 1024,
-            .dataBufferSize = 8 * 1024 * 1024,
-            .chunkSize = 512 * 1024,
-            .pipelineDepth = 2,
-            .useDualStateBuffer = true,
-            .name = "VeryLarge_64MB_DualState"}),
-    forwardGroupParamName);
-
-// =============================================================================
 // Tile-style forward() tests — 2-rank ring topology
 // =============================================================================
 // Topology: Rank 0 ──send──▶ Rank 1 ──forward──▶ Rank 0
@@ -5088,7 +2396,7 @@ static void runTileForwardTest(
     int numRanks,
     const std::shared_ptr<meta::comms::MpiBootstrap>& bootstrap,
     size_t nBytes,
-    size_t dataBufferSize,
+    size_t perChannelSize,
     size_t chunkSize,
     size_t pipelineDepth,
     int numSendBlocks,
@@ -5101,11 +2409,7 @@ static void runTileForwardTest(
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = chunkSize,
-      .pipelineDepth = pipelineDepth,
-  };
+  auto config = makeNvlConfig(perChannelSize, pipelineDepth, numSendBlocks);
 
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
@@ -5137,15 +2441,9 @@ static void runTileForwardTest(
           static_cast<char*>(srcBuf.get()), nBytes, numSendBlocks);
       comms::prims::TiledBuffer<char> recvTiles(
           static_cast<char*>(recvR0Buf.get()), nBytes, numSendBlocks);
-      int numBlocksArg = numSendBlocks;
       std::size_t maxSignalBytes = 0;
       void* args[] = {
-          &p2pHost,
-          &sendTiles,
-          &recvTiles,
-          &numBlocksArg,
-          &maxSignalBytes,
-          &timeout};
+          &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileSendRecv,
@@ -5159,15 +2457,8 @@ static void runTileForwardTest(
       // Apply dstOffset to the user-facing output buffer.
       char* dstPtr = static_cast<char*>(fwdR1Buf.get()) + dstOffset;
       comms::prims::TiledBuffer<char> dstTiles(dstPtr, nBytes, numSendBlocks);
-      int numBlocksArg = numSendBlocks;
       std::size_t maxSignalBytes = 0;
-      void* args[] = {
-          &p2pHost,
-          &p2pHost,
-          &dstTiles,
-          &numBlocksArg,
-          &maxSignalBytes,
-          &timeout};
+      void* args[] = {&p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &timeout};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileForward,
@@ -5192,7 +2483,7 @@ static void runTileForwardTest(
             static_cast<unsigned char>(pattern))
             << "Iter " << iter << " (rank 0 recv): Mismatch at byte " << i
             << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-            << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+            << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
             << ", pd=" << pipelineDepth << ", dstOffset=" << dstOffset << ")";
         if (static_cast<unsigned char>(hostBuf[i]) !=
             static_cast<unsigned char>(pattern)) {
@@ -5224,7 +2515,7 @@ static void runTileForwardTest(
             static_cast<unsigned char>(pattern))
             << "Iter " << iter << " (rank 1 forward dst): Mismatch at byte "
             << i << " (nBytes=" << nBytes << ", blocks=" << numSendBlocks
-            << ", slot=" << dataBufferSize << ", chunk=" << chunkSize
+            << ", perChannelSize=" << perChannelSize << ", chunk=" << chunkSize
             << ", pd=" << pipelineDepth << ", dstOffset=" << dstOffset << ")";
         if (static_cast<unsigned char>(hostBuf[dstOffset + i]) !=
             static_cast<unsigned char>(pattern)) {
@@ -5417,11 +2708,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
 
   auto bs = std::make_shared<meta::comms::MpiBootstrap>();
   const int peerRank = globalRank == 0 ? 1 : 0;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDataBufferSize,
-      .chunkSize = kDataBufferSize,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(kPerBlockSlotSize, 2, kNumBlocks);
   MultiPeerNvlTransport transport(globalRank, numRanks, bs, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -5433,7 +2720,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
     CUDACHECK_TEST(cudaMemset(
         p2pHost.getLocalState().dataBuffer,
         0,
-        config.pipelineDepth * config.dataBufferSize));
+        config.pipelineDepth * kDataBufferSize));
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
@@ -5454,7 +2741,6 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         p2pHost,
         advanceSendBuf.get(),
         kAdvanceBytes,
-        kNumBlocks,
         kMaxSignalBytes,
         timeout,
         kNumBlocks,
@@ -5464,7 +2750,6 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         p2pHost,
         advanceRecvBuf.get(),
         kAdvanceBytes,
-        kNumBlocks,
         kMaxSignalBytes,
         timeout,
         kNumBlocks,
@@ -5503,7 +2788,6 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         p2pHost,
         srcBuf.get(),
         kForwardBytes,
-        kNumBlocks,
         kMaxSignalBytes,
         timeout,
         kNumBlocks,
@@ -5511,15 +2795,8 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
   } else {
     TiledBuffer<char> dstTiles(
         static_cast<char*>(fwdR1Buf.get()), kForwardBytes, kNumBlocks);
-    int numBlocksArg = kNumBlocks;
     std::size_t maxSignalBytes = kMaxSignalBytes;
-    void* args[] = {
-        &p2pHost,
-        &p2pHost,
-        &dstTiles,
-        &numBlocksArg,
-        &maxSignalBytes,
-        &timeout};
+    void* args[] = {&p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &timeout};
 
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileForward,
@@ -5580,57 +2857,44 @@ TEST_F(
 
   P2pNvlTransportOptions options{
       .dataBufferSize = tileBytes * numBlocks,
-      .chunkSize = maxSignalBytes,
       .pipelineDepth = 2,
+      .per_channel_slot = tileBytes,
+      .max_num_channels = numBlocks,
   };
   const size_t stagingBytes = options.dataBufferSize * options.pipelineDepth;
 
   DeviceBuffer sourceStagingBuf(stagingBytes);
   DeviceBuffer forwardedStagingBuf(stagingBytes);
   DeviceBuffer dstBuf(totalBytes);
-  const size_t stepStateBytes = sizeof(int64_t) * numBlocks * 2;
-  const size_t signalBytes = sizeof(SignalState) * numBlocks * 2;
-  DeviceBuffer predStepStateBuf(stepStateBytes);
-  DeviceBuffer predLocalSignalsBuf(signalBytes);
-  DeviceBuffer predRemoteSignalsBuf(signalBytes);
-  DeviceBuffer succStepStateBuf(stepStateBytes);
-  DeviceBuffer succLocalSignalsBuf(signalBytes);
-  DeviceBuffer succRemoteSignalsBuf(signalBytes);
+  const size_t channelBytes = sizeof(NvlChannelState) * numBlocks;
+  DeviceBuffer predChannelBuf(channelBytes);
+  DeviceBuffer succChannelBuf(channelBytes);
 
   CUDACHECK_TEST(cudaMemset(sourceStagingBuf.get(), 0, stagingBytes));
   CUDACHECK_TEST(cudaMemset(forwardedStagingBuf.get(), 0, stagingBytes));
   CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0, totalBytes));
-  CUDACHECK_TEST(cudaMemset(predStepStateBuf.get(), 0, stepStateBytes));
-  CUDACHECK_TEST(cudaMemset(predLocalSignalsBuf.get(), 0, signalBytes));
-  CUDACHECK_TEST(cudaMemset(predRemoteSignalsBuf.get(), 0, signalBytes));
-  CUDACHECK_TEST(cudaMemset(succStepStateBuf.get(), 0, stepStateBytes));
-  CUDACHECK_TEST(cudaMemset(succLocalSignalsBuf.get(), 0, signalBytes));
-  CUDACHECK_TEST(cudaMemset(succRemoteSignalsBuf.get(), 0, signalBytes));
+  CUDACHECK_TEST(cudaMemset(predChannelBuf.get(), 0, channelBytes));
+  CUDACHECK_TEST(cudaMemset(succChannelBuf.get(), 0, channelBytes));
 
+  auto* predChannels = static_cast<NvlChannelState*>(predChannelBuf.get());
+  auto* succChannels = static_cast<NvlChannelState*>(succChannelBuf.get());
+
+  // pred / succ are single-rank loopback devices, so localChannels and
+  // remoteChannels both point at the same per-side buffer.
   auto pred = makeLocalTileDevice(
       options,
       numBlocks,
       static_cast<char*>(sourceStagingBuf.get()),
       nullptr,
-      DeviceSpan<int64_t>(
-          static_cast<int64_t*>(predStepStateBuf.get()), numBlocks * 2),
-      DeviceSpan<SignalState>(
-          static_cast<SignalState*>(predLocalSignalsBuf.get()), numBlocks * 2),
-      DeviceSpan<SignalState>(
-          static_cast<SignalState*>(predRemoteSignalsBuf.get()),
-          numBlocks * 2));
+      predChannels,
+      predChannels);
   auto succ = makeLocalTileDevice(
       options,
       numBlocks,
       nullptr,
       static_cast<char*>(forwardedStagingBuf.get()),
-      DeviceSpan<int64_t>(
-          static_cast<int64_t*>(succStepStateBuf.get()), numBlocks * 2),
-      DeviceSpan<SignalState>(
-          static_cast<SignalState*>(succLocalSignalsBuf.get()), numBlocks * 2),
-      DeviceSpan<SignalState>(
-          static_cast<SignalState*>(succRemoteSignalsBuf.get()),
-          numBlocks * 2));
+      succChannels,
+      succChannels);
 
   test::testPrepareTileTwoCallStaging(
       pred,
@@ -5714,7 +2978,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardPartialTiles) {
 }
 
 // =============================================================================
-// Unaligned dstbuff tests for forward_group() and tile forward()
+// Unaligned dstbuff tests for tile forward()
 // =============================================================================
 // The staging buffers (localState_/remoteState_.dataBuffer) are always
 // 256-byte aligned (cudaMalloc), so the only user-facing pointer that can
@@ -5723,128 +2987,19 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardPartialTiles) {
 //
 // These tests offset rank 1's dstbuff by various byte amounts to exercise
 // memcpy_vectorized's unaligned path in the forward() implementation.
-// They reuse runForwardGroupTest / runTileForwardTest with the dstOffset
-// parameter — no duplicate helpers.
+// They reuse runTileForwardTest with the dstOffset parameter.
 
-// Parameterized test fixture for forward_group / tile forward unaligned dst
+// Parameterized test fixture for tile forward unaligned dst
 struct ForwardUnalignedParams {
   size_t dstOffset; // bytes added to dst pointer (0 = aligned)
   size_t nbytes;
-  bool useDualStateBuffer;
   std::string name;
 };
-
-class ForwardGroupUnalignedTestFixture
-    : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<ForwardUnalignedParams> {
- protected:
-  void SetUp() override {
-    MpiBaseTestFixture::SetUp();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-};
-
-TEST_P(ForwardGroupUnalignedTestFixture, ForwardGroup) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const auto& params = GetParam();
-  XLOGF(
-      INFO,
-      "Running forward_group unaligned test: {} (nbytes={}, dstOffset={}, dualState={})",
-      params.name,
-      params.nbytes,
-      params.dstOffset,
-      params.useDualStateBuffer);
-
-  // Use a smallish staging buffer + chunk so multi-step + sub-step paths are
-  // exercised even at modest message sizes.
-  runForwardGroupTest(
-      globalRank,
-      numRanks,
-      localRank,
-      params.nbytes,
-      /*dataBufferSize=*/256 * 1024,
-      /*chunkSize=*/4096,
-      /*pipelineDepth=*/4,
-      params.useDualStateBuffer,
-      /*numBlocks=*/4,
-      /*blockSize=*/128,
-      params.dstOffset);
-}
 
 std::string forwardUnalignedParamName(
     const ::testing::TestParamInfo<ForwardUnalignedParams>& info) {
   return info.param.name;
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    ForwardGroupUnalignedVariations,
-    ForwardGroupUnalignedTestFixture,
-    ::testing::Values(
-        // Baseline aligned (offset 0) for sanity
-        ForwardUnalignedParams{
-            .dstOffset = 0,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Aligned_64KB_SingleState"},
-        // Various small misalignments (single state)
-        ForwardUnalignedParams{
-            .dstOffset = 1,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off1_64KB_SingleState"},
-        ForwardUnalignedParams{
-            .dstOffset = 7,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off7_64KB_SingleState"},
-        ForwardUnalignedParams{
-            .dstOffset = 8,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off8_64KB_SingleState"},
-        ForwardUnalignedParams{
-            .dstOffset = 15,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off15_64KB_SingleState"},
-        // Larger transfer with misalignment (multi-step pipeline)
-        ForwardUnalignedParams{
-            .dstOffset = 3,
-            .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off3_4MB_SingleState"},
-        ForwardUnalignedParams{
-            .dstOffset = 13,
-            .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
-            .name = "Off13_4MB_SingleState"},
-        // Unaligned size + unaligned offset
-        ForwardUnalignedParams{
-            .dstOffset = 5,
-            .nbytes = 1000003,
-            .useDualStateBuffer = false,
-            .name = "Off5_OddSize_SingleState"},
-        // Dual state mode with misalignment
-        ForwardUnalignedParams{
-            .dstOffset = 1,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = true,
-            .name = "Off1_64KB_DualState"},
-        ForwardUnalignedParams{
-            .dstOffset = 7,
-            .nbytes = 64 * 1024,
-            .useDualStateBuffer = true,
-            .name = "Off7_64KB_DualState"},
-        ForwardUnalignedParams{
-            .dstOffset = 13,
-            .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = true,
-            .name = "Off13_4MB_DualState"}),
-    forwardUnalignedParamName);
 
 // Tile forward unaligned: reuse runTileForwardTest's dstOffset parameter.
 class TileForwardUnalignedTestFixture
@@ -5872,14 +3027,14 @@ TEST_P(TileForwardUnalignedTestFixture, TileForward) {
       params.dstOffset);
 
   auto bs = std::make_shared<meta::comms::MpiBootstrap>();
-  // Tile API doesn't use useDualStateBuffer; use a multi-step config so the
+  // Use a multi-step config so the
   // unaligned dst is exercised across many steps and chunks.
   runTileForwardTest(
       globalRank,
       numRanks,
       bs,
       params.nbytes,
-      /*dataBufferSize=*/8 * 1024 * 1024,
+      /*perChannelSize=*/8 * 1024 * 1024,
       /*chunkSize=*/128 * 1024,
       /*pipelineDepth=*/2,
       /*numSendBlocks=*/4,
@@ -5896,40 +3051,33 @@ INSTANTIATE_TEST_SUITE_P(
         ForwardUnalignedParams{
             .dstOffset = 0,
             .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Aligned_4MB"},
         // Various misalignments
         ForwardUnalignedParams{
             .dstOffset = 1,
             .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Off1_4MB"},
         ForwardUnalignedParams{
             .dstOffset = 7,
             .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Off7_4MB"},
         ForwardUnalignedParams{
             .dstOffset = 8,
             .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Off8_4MB"},
         ForwardUnalignedParams{
             .dstOffset = 15,
             .nbytes = 4 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Off15_4MB"},
         // Larger transfer with misalignment
         ForwardUnalignedParams{
             .dstOffset = 3,
             .nbytes = 16 * 1024 * 1024,
-            .useDualStateBuffer = false,
             .name = "Off3_16MB"},
         // Unaligned size + unaligned offset
         ForwardUnalignedParams{
             .dstOffset = 5,
             .nbytes = 1000003,
-            .useDualStateBuffer = false,
             .name = "Off5_OddSize"}),
     forwardUnalignedParamName);
 
@@ -5947,12 +3095,8 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-      .llBufferSize = ll_buffer_size(4096),
-  };
+  auto config = makeNvlConfig(4096, 2);
+  config.llBufferSize = ll_buffer_size(4096);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -5981,11 +3125,7 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = 4096,
-      .chunkSize = 256,
-      .pipelineDepth = 2,
-  };
+  auto config = makeNvlConfig(4096, 2);
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);

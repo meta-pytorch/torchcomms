@@ -19,7 +19,7 @@ class CommAllocTest : public ::testing::Test {
     COMMCHECK_TEST(commCudaLibraryInit());
     CUDACHECK_TEST(cudaSetDevice(0));
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    CUDACHECK_TEST(cudaGetDeviceProperties(&prop, 0));
     gpuName_ = prop.name;
     CLOGF(INFO, "GPU name: {}", gpuName_);
   }

@@ -522,7 +522,7 @@ struct CudaBuffer {
   size_t size{0};
 
   explicit CudaBuffer(size_t n, int device = 0) : size(n) {
-    cudaSetDevice(device);
+    (void)cudaSetDevice(device);
     if (cudaMalloc(&ptr, n) != cudaSuccess) {
       ptr = nullptr;
     }
@@ -530,7 +530,7 @@ struct CudaBuffer {
 
   ~CudaBuffer() {
     if (ptr) {
-      cudaFree(ptr);
+      (void)cudaFree(ptr);
     }
   }
 
@@ -577,18 +577,24 @@ TEST_P(GpuCrossHostTransferTest, Put) {
   CudaBuffer gpuBuf(totalSize, cudaDev);
   ASSERT_NE(gpuBuf.ptr, nullptr) << "cudaMalloc failed on device " << cudaDev;
 
-  cudaSetDevice(cudaDev);
+  ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess) << "cudaSetDevice failed";
   if (globalRank == 0) {
     std::vector<char> staging(totalSize);
     for (size_t r = 0; r < numRequests; ++r) {
       std::memset(
           staging.data() + r * bufSize, static_cast<int>(0xC0 + r), bufSize);
     }
-    cudaMemcpy(gpuBuf.ptr, staging.data(), totalSize, cudaMemcpyHostToDevice);
+    ASSERT_EQ(
+        cudaMemcpy(
+            gpuBuf.ptr, staging.data(), totalSize, cudaMemcpyHostToDevice),
+        cudaSuccess)
+        << "cudaMemcpy failed";
   } else {
-    cudaMemset(gpuBuf.ptr, 0, totalSize);
+    ASSERT_EQ(cudaMemset(gpuBuf.ptr, 0, totalSize), cudaSuccess)
+        << "cudaMemset failed";
   }
-  cudaDeviceSynchronize();
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess)
+      << "cudaDeviceSynchronize failed";
 
   auto segments = registerAndExchangeSegments(
       *pair.factory, gpuBuf.ptr, totalSize, MemoryType::VRAM, cudaDev);
@@ -606,8 +612,12 @@ TEST_P(GpuCrossHostTransferTest, Put) {
 
   if (globalRank == 1) {
     std::vector<char> verify(totalSize, 0);
-    cudaSetDevice(cudaDev);
-    cudaMemcpy(verify.data(), gpuBuf.ptr, totalSize, cudaMemcpyDeviceToHost);
+    ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess) << "cudaSetDevice failed";
+    ASSERT_EQ(
+        cudaMemcpy(
+            verify.data(), gpuBuf.ptr, totalSize, cudaMemcpyDeviceToHost),
+        cudaSuccess)
+        << "cudaMemcpy failed";
     for (size_t r = 0; r < numRequests; ++r) {
       uint8_t expected = static_cast<uint8_t>(0xC0 + r);
       for (size_t i = 0; i < bufSize; ++i) {
@@ -655,18 +665,24 @@ TEST_P(GpuCrossHostTransferTest, Get) {
   CudaBuffer gpuBuf(totalSize, cudaDev);
   ASSERT_NE(gpuBuf.ptr, nullptr) << "cudaMalloc failed on device " << cudaDev;
 
-  cudaSetDevice(cudaDev);
+  ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess) << "cudaSetDevice failed";
   if (globalRank == 0) {
-    cudaMemset(gpuBuf.ptr, 0, totalSize);
+    ASSERT_EQ(cudaMemset(gpuBuf.ptr, 0, totalSize), cudaSuccess)
+        << "cudaMemset failed";
   } else {
     std::vector<char> staging(totalSize);
     for (size_t r = 0; r < numRequests; ++r) {
       std::memset(
           staging.data() + r * bufSize, static_cast<int>(0xD0 + r), bufSize);
     }
-    cudaMemcpy(gpuBuf.ptr, staging.data(), totalSize, cudaMemcpyHostToDevice);
+    ASSERT_EQ(
+        cudaMemcpy(
+            gpuBuf.ptr, staging.data(), totalSize, cudaMemcpyHostToDevice),
+        cudaSuccess)
+        << "cudaMemcpy failed";
   }
-  cudaDeviceSynchronize();
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess)
+      << "cudaDeviceSynchronize failed";
 
   auto segments = registerAndExchangeSegments(
       *pair.factory, gpuBuf.ptr, totalSize, MemoryType::VRAM, cudaDev);
@@ -684,8 +700,12 @@ TEST_P(GpuCrossHostTransferTest, Get) {
 
   if (globalRank == 0) {
     std::vector<char> verify(totalSize, 0);
-    cudaSetDevice(cudaDev);
-    cudaMemcpy(verify.data(), gpuBuf.ptr, totalSize, cudaMemcpyDeviceToHost);
+    ASSERT_EQ(cudaSetDevice(cudaDev), cudaSuccess) << "cudaSetDevice failed";
+    ASSERT_EQ(
+        cudaMemcpy(
+            verify.data(), gpuBuf.ptr, totalSize, cudaMemcpyDeviceToHost),
+        cudaSuccess)
+        << "cudaMemcpy failed";
     for (size_t r = 0; r < numRequests; ++r) {
       uint8_t expected = static_cast<uint8_t>(0xD0 + r);
       for (size_t i = 0; i < bufSize; ++i) {

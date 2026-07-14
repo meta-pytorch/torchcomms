@@ -5,6 +5,7 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/prims/collectives/moe_ep/cpp/Buffer.h"
+#include "comms/prims/collectives/moe_ep/cpp/low_latency/Layout.h"
 #include "comms/prims/collectives/moe_ep/cpp/shared/Config.h"
 #include "comms/prims/collectives/moe_ep/cpp/shared/EventHandle.h"
 
@@ -24,38 +25,24 @@ PYBIND11_MODULE(_cpp, m) {
   m.attr("topk_idx_t") = py::module_::import("torch").attr("int64");
 
   // Module attrs / free fns expected by the test files.
-  // - `AITER_MOE`: hardcoded `False` per design plan §2.4 (line 166).
+  // - `AITER_MOE`: hardcoded `False`.
   // - `is_sm90_compiled()`: returns False on AMD (matches USE_ROCM
   //   behavior); on NVIDIA we conservatively return False until a
   //   proper compute-cap probe lands.
   m.attr("AITER_MOE") = py::bool_(false);
   m.def("is_sm90_compiled", []() { return false; });
 
-  // Low-latency RDMA buffer size estimator. Phase 2 (D4) lands the LL
-  // kernels; this helper is bound now because the Python `Buffer` ctor
-  // calls it during construction even when low_latency_mode=False (paths
-  // that compute hint sizes for diagnostic output).
-  //
-  // Per-rank send + recv buffers sized by max-dispatch tokens × hidden bytes ×
-  // num_experts / num_ranks × 2 (send + recv) + signal slots.
+  // Low-latency RDMA buffer size — delegates to LowLatencyLayout::compute
+  // for exact sizing (dispatch send/recv + combine send/recv + flags).
   m.def(
       "get_low_latency_rdma_size_hint",
       [](int num_max_dispatch_tokens_per_rank,
          int hidden,
          int num_ranks,
          int num_experts) {
-        constexpr int kBytesPerToken = 2; // bf16
-        const int num_local_experts = num_experts / num_ranks;
-        const std::size_t per_token_bytes =
-            static_cast<std::size_t>(hidden) * kBytesPerToken;
-        // 2× for send + recv, num_ranks peers, num_local_experts slots.
-        const std::size_t data =
-            static_cast<std::size_t>(num_max_dispatch_tokens_per_rank) *
-            per_token_bytes * num_ranks * num_local_experts * 2UL;
-        // Plus a small per-(peer × local_expert) signal/state region.
-        const std::size_t signal =
-            static_cast<std::size_t>(num_ranks) * num_local_experts * 64UL;
-        return data + signal + (32UL * 1024UL * 1024UL);
+        auto layout = LowLatencyLayout::compute(
+            num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
+        return layout.totalBytes;
       },
       py::arg("num_max_dispatch_tokens_per_rank"),
       py::arg("hidden"),
@@ -103,8 +90,8 @@ PYBIND11_MODULE(_cpp, m) {
 
   // ---------------------------------------------------------------------------
   // Buffer — pybind-facing class. Constructor + topology + IPC bootstrap +
-  // layout/dispatch/combine. Phase 2/3 entry points are bound below but
-  // throw `notImplemented` until D4 / D5 wire in their kernels.
+  // layout/dispatch/combine. Low-latency and internode entry points are
+  // bound below but throw `notImplemented` where their kernels aren't wired.
   // ---------------------------------------------------------------------------
   py::class_<Buffer>(m, "Buffer")
       .def(
@@ -150,7 +137,7 @@ PYBIND11_MODULE(_cpp, m) {
           py::arg("previous_event") = std::nullopt,
           py::arg("async_finish") = false,
           py::arg("allocate_on_comm_stream") = false)
-      // ---- Phase 1 (intranode dispatch / combine) ----
+      // ---- Intranode dispatch / combine ----
       .def(
           "intranode_dispatch",
           &Buffer::intranode_dispatch,
@@ -178,5 +165,38 @@ PYBIND11_MODULE(_cpp, m) {
           py::arg("config"),
           py::arg("previous_event") = std::nullopt,
           py::arg("async_finish") = false,
-          py::arg("allocate_on_comm_stream") = false);
+          py::arg("allocate_on_comm_stream") = false)
+      // ---- Low-latency dispatch / combine over IBGDA ----
+      .def(
+          "low_latency_dispatch",
+          &Buffer::low_latency_dispatch,
+          py::arg("x"),
+          py::arg("topk_idx"),
+          py::arg("num_max_dispatch_tokens_per_rank"),
+          py::arg("num_experts"),
+          py::arg("use_fp8") = false,
+          py::arg("round_scale") = false,
+          py::arg("use_ue8m0") = false,
+          py::arg("async_finish") = false,
+          py::arg("return_recv_hook") = false)
+      .def(
+          "low_latency_combine",
+          &Buffer::low_latency_combine,
+          py::arg("x"),
+          py::arg("topk_idx"),
+          py::arg("topk_weights"),
+          py::arg("handle"),
+          py::arg("use_logfmt") = false,
+          py::arg("async_finish") = false,
+          py::arg("return_recv_hook") = false)
+      .def(
+          "clean_low_latency_buffer",
+          &Buffer::clean_low_latency_buffer,
+          py::arg("num_max_dispatch_tokens_per_rank"),
+          py::arg("hidden"),
+          py::arg("num_experts"))
+      .def(
+          "set_low_latency_buffer_idx",
+          &Buffer::set_low_latency_buffer_idx,
+          py::arg("idx"));
 }

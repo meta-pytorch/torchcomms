@@ -41,7 +41,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
   }
 
   const std::size_t pipeline_window =
-      direct_pipeline_window(args.peers, my_rank, W, group.total_groups);
+      direct_pipeline_window(args.peers, my_rank, W);
   PIPES_DEVICE_CHECK_MSG(
       pipeline_window != 0, "direct NVLink allgather pipeline window is zero");
 
@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
         continue;
       }
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, group.total_groups, max_sig, timeout);
+      peer.send(group, send_src, window, max_sig, timeout);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -65,7 +65,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
       }
       char* dst = args.recvbuf + peer_rank * sendcount + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.recv(group, dst, window, group.total_groups, max_sig, timeout);
+      peer.recv(group, dst, window, max_sig, timeout);
     }
   }
 #endif
@@ -395,8 +395,8 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       make_sub_block_group(base_group, nvl_group_id, args.nvl_num_blocks);
   const std::size_t total_tasks =
       static_cast<std::size_t>(args.ib_size) * total_chunks;
-  const std::size_t nvl_window = direct_pipeline_window(
-      args.nvl_peers, args.nvl_rank, args.nvl_size, args.nvl_num_blocks);
+  const std::size_t nvl_window =
+      direct_pipeline_window(args.nvl_peers, args.nvl_rank, args.nvl_size);
   PIPES_DEVICE_CHECK_MSG(
       nvl_window != 0,
       "hierarchical allgather overlap NVLink pipeline window is zero");
@@ -449,7 +449,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             group,
             send_src + chunk_off,
             window,
-            args.nvl_num_blocks,
             args.nvl_signaling_data_size,
             timeout);
       }
@@ -463,13 +462,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 args.sendcount +
             off + chunk_off;
         auto peer = args.nvl_peers[peer_rank];
-        peer.recv(
-            group,
-            dst,
-            window,
-            args.nvl_num_blocks,
-            args.nvl_signaling_data_size,
-            timeout);
+        peer.recv(group, dst, window, args.nvl_signaling_data_size, timeout);
       }
     }
     trace_hierarchical_allgather(

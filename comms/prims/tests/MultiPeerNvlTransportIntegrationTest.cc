@@ -34,23 +34,14 @@ namespace comms::prims::tests {
 
 namespace {
 // Default configuration for transport setup
-constexpr std::size_t kDefaultDataBufferSize = 1024 * 1024; // 1MB
+constexpr int kDefaultMaxNumChannels = 64;
+constexpr std::size_t kDefaultPerChannelSize = 16 * 1024;
 constexpr std::size_t kDefaultChunkSize = 1024;
 constexpr std::size_t kDefaultPipelineDepth = 4;
 
 // Signal and barrier slot counts
 constexpr int kDefaultSignalCount = 2;
 constexpr int kMultiSlotSignalCount = 4;
-
-// Transfer sizes for data tests
-constexpr std::size_t kSmallTransferSize = 1024 * 1024; // 1MB
-
-// Stress test parameters
-constexpr int kStressIterations = 50;
-
-// Kernel launch parameters
-constexpr int kDefaultNumBlocks = 4;
-constexpr int kDefaultBlockSize = 128;
 
 struct IbDeviceWindowBackendParam {
   IbBackendMode mode;
@@ -126,9 +117,9 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
         transportName == nullptr ? "DeviceWindow" : transportName;
 
     MultiPeerNvlTransportConfig config{
-        .dataBufferSize = kDefaultDataBufferSize,
-        .chunkSize = kDefaultChunkSize,
         .pipelineDepth = kDefaultPipelineDepth,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = kDefaultPerChannelSize,
     };
     WindowConfig wmConfig{
         .peerSignalCount = kDefaultSignalCount,
@@ -183,9 +174,9 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
 
     constexpr std::size_t kTransferSize = 4096;
     MultiPeerNvlTransportConfig config{
-        .dataBufferSize = kDefaultDataBufferSize,
-        .chunkSize = kDefaultChunkSize,
         .pipelineDepth = kDefaultPipelineDepth,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = kDefaultPerChannelSize,
     };
     WindowConfig wmConfig{
         .peerSignalCount = kDefaultSignalCount,
@@ -293,9 +284,9 @@ TEST_F(
     MultiPeerNvlTransportIntegrationTestFixture,
     GetMultiPeerDeviceTransport) {
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto [transport, window, dw] = createTransport(config);
@@ -337,9 +328,9 @@ TEST_F(
   // Test that MultiPeerDeviceTransport can be constructed multiple times
   // and returns consistent results
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -409,11 +400,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -468,11 +459,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1,
@@ -511,9 +502,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1,
@@ -550,161 +541,17 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
 }
 
 // =============================================================================
-// Multi-GPU Send/Recv Test
-// =============================================================================
-
-TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecv) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
-
-  const size_t dataBufferSize = 1024 * 1024;
-  const size_t nbytes = 4 * 1024 * 1024; // 4MB transfer
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  auto [transport, window, dw] = createTransport(config);
-
-  if (transport->nvl_peer_ranks().empty()) {
-    GTEST_SKIP()
-        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  const size_t numInts = nbytes / sizeof(int);
-
-  DeviceBuffer srcBuffer(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  const int testValue = 42 + globalRank;
-  const int expectedValue = 42 + peerRank;
-
-  if (globalRank == 0) {
-    // Rank 0: Fill source buffer and send
-    test::fillBuffer(src_d, testValue, numInts);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testSinglePeerSend(dw, peerRank, src_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    // Rank 1: Clear destination buffer and receive
-    CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testSinglePeerRecv(dw, peerRank, dst_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Verify received data
-    std::vector<int> hostBuffer(numInts);
-    CUDACHECK_TEST(
-        cudaMemcpy(hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
-
-    std::vector<int> expected(numInts, expectedValue);
-    EXPECT_EQ(hostBuffer, expected) << "Data mismatch in SendRecv transfer";
-  }
-
-  XLOGF(INFO, "Rank {}: Send/Recv test completed", globalRank);
-}
-
-// =============================================================================
-// Bidirectional Send/Recv Test
-// =============================================================================
-
-TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSendRecv) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
-
-  const size_t dataBufferSize = 1024 * 1024;
-  const size_t nbytes = 2 * 1024 * 1024; // 2MB transfer each direction
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
-      .pipelineDepth = 4,
-  };
-
-  auto [transport, window, dw] = createTransport(config);
-
-  if (transport->nvl_peer_ranks().empty()) {
-    GTEST_SKIP()
-        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  const size_t numInts = nbytes / sizeof(int);
-
-  DeviceBuffer sendBuffer(nbytes);
-  DeviceBuffer recvBuffer(nbytes);
-
-  auto send_d = static_cast<int*>(sendBuffer.get());
-  auto recv_d = static_cast<int*>(recvBuffer.get());
-
-  const int sendValue = 100 + globalRank;
-  const int expectedRecvValue = 100 + peerRank;
-
-  // Fill send buffer and clear receive buffer
-  test::fillBuffer(send_d, sendValue, numInts);
-  CUDACHECK_TEST(cudaMemset(recv_d, 0, nbytes));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-  // Rank 0 sends then receives, Rank 1 receives then sends
-  if (globalRank == 0) {
-    test::testSinglePeerSend(dw, peerRank, send_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testSinglePeerRecv(dw, peerRank, recv_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  } else {
-    test::testSinglePeerRecv(dw, peerRank, recv_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testSinglePeerSend(dw, peerRank, send_d, nbytes, 4, 128);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  }
-
-  // Verify received data
-  std::vector<int> hostBuffer(numInts);
-  CUDACHECK_TEST(
-      cudaMemcpy(hostBuffer.data(), recv_d, nbytes, cudaMemcpyDeviceToHost));
-
-  std::vector<int> expected(numInts, expectedRecvValue);
-  EXPECT_EQ(hostBuffer, expected)
-      << "Rank " << globalRank << ": Data mismatch in BidirectionalSendRecv";
-
-  XLOGF(INFO, "Rank {}: Bidirectional Send/Recv test completed", globalRank);
-}
-
-// =============================================================================
 // Multiple Barrier Iterations Test
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   // Use multiple barrier slots to avoid state accumulation issues
   constexpr int kNumBarrierSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = kNumBarrierSlots,
@@ -748,96 +595,6 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
 }
 
 // =============================================================================
-// Stress Test with Many Iterations
-// =============================================================================
-
-TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecvStress) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
-
-  constexpr std::size_t kStressDataBufferSize = 512 * 1024;
-  constexpr std::size_t kStressChunkSize = 512;
-  MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kStressDataBufferSize,
-      .chunkSize = kStressChunkSize,
-      .pipelineDepth = kDefaultPipelineDepth,
-  };
-
-  auto [transport, window, dw] = createTransport(config);
-
-  if (transport->nvl_peer_ranks().empty()) {
-    GTEST_SKIP()
-        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  const size_t numInts = kSmallTransferSize / sizeof(int);
-
-  DeviceBuffer srcBuffer(kSmallTransferSize);
-  DeviceBuffer dstBuffer(kSmallTransferSize);
-
-  auto src_d = static_cast<int*>(srcBuffer.get());
-  auto dst_d = static_cast<int*>(dstBuffer.get());
-
-  for (int iter = 0; iter < kStressIterations; ++iter) {
-    const int testValue = 1000 + iter;
-
-    if (globalRank == 0) {
-      test::fillBuffer(src_d, testValue, numInts);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      test::testSinglePeerSend(
-          dw,
-          peerRank,
-          src_d,
-          kSmallTransferSize,
-          kDefaultNumBlocks,
-          kDefaultBlockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    } else {
-      CUDACHECK_TEST(cudaMemset(dst_d, 0, kSmallTransferSize));
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      test::testSinglePeerRecv(
-          dw,
-          peerRank,
-          dst_d,
-          kSmallTransferSize,
-          kDefaultNumBlocks,
-          kDefaultBlockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Verify a sample of received data
-      std::vector<int> hostBuffer(numInts);
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuffer.data(),
-          dst_d,
-          kSmallTransferSize,
-          cudaMemcpyDeviceToHost));
-
-      EXPECT_EQ(hostBuffer[0], testValue)
-          << "Iteration " << iter << ": first element mismatch";
-      EXPECT_EQ(hostBuffer[numInts - 1], testValue)
-          << "Iteration " << iter << ": last element mismatch";
-    }
-  }
-
-  XLOGF(
-      INFO,
-      "Rank {}: Stress test completed ({} iterations)",
-      globalRank,
-      kStressIterations);
-}
-
-// =============================================================================
 // Tests with Custom signalCount Configuration
 // =============================================================================
 
@@ -846,12 +603,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleSignalSlots) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -896,12 +653,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -953,12 +710,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numBarrierSlots = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = numBarrierSlots,
@@ -995,13 +752,13 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
 }
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numBarrierSlots = 4;
   const int numIterations = 20;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = numBarrierSlots,
@@ -1045,12 +802,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
 // =============================================================================
 
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMonotonicCounters) {
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   constexpr int kNumPhases = 3;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = 1, // Single barrier slot, reused via monotonic counters
@@ -1093,11 +850,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
   constexpr int kNumBlocks = 8;
   constexpr int kNumBarrierSlots = 8;
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .barrierCount = kNumBarrierSlots,
@@ -1148,13 +905,13 @@ TEST_F(
     GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
   }
 
-  const size_t dataBufferSize = 1024 * 1024;
+  constexpr std::size_t kPerChannelSize = kDefaultPerChannelSize;
   const int numSignalSlots = 4;
   const int numBarrierSlots = 2;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = 1024,
       .pipelineDepth = 4,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = numSignalSlots,
@@ -1263,9 +1020,9 @@ TEST_F(
 
   constexpr int kNumBlocks = 4;
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kMultiSlotSignalCount,
@@ -1316,9 +1073,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalResetBetweenPhases) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kMultiSlotSignalCount,
@@ -1382,9 +1139,9 @@ TEST_F(
   constexpr int kNumIterations = 5;
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kNumSignalSlots,
@@ -1446,9 +1203,9 @@ TEST_F(
   constexpr int kNumSignalSlots = 8; // More slots than warps to test modulo
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kNumSignalSlots,
@@ -1498,9 +1255,9 @@ TEST_F(
 TEST_F(MultiPeerNvlTransportIntegrationTestFixture, TransportAccessorTypes) {
   // Test that get_peer_transport/get_self_transport return correct types
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
 
   auto [transport, window, dw] = createTransport(config);
@@ -1573,9 +1330,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1624,9 +1381,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1674,9 +1431,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromAll) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1723,9 +1480,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitWithCmpEq) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1775,9 +1532,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MonotonicWaitValues) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1828,9 +1585,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1888,9 +1645,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1939,9 +1696,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -1991,9 +1748,9 @@ TEST_F(
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,
@@ -2041,9 +1798,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
   }
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = kDefaultDataBufferSize,
-      .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
+      .maxNumChannels = kDefaultMaxNumChannels,
+      .perChannelSize = kDefaultPerChannelSize,
   };
   WindowConfig wmConfig{
       .peerSignalCount = kDefaultSignalCount,

@@ -88,6 +88,7 @@ class MLPStack(nn.Sequential):
             if isinstance(module, nn.LayerNorm):
                 continue
             if use_activation_checkpointing:
+                # pyrefly: ignore [invalid-param-spec]
                 checkpoint(module)
             fully_shard(module, mesh=dp_mesh, **fsdp_kwargs)
         fully_shard(self, mesh=dp_mesh, **fsdp_kwargs)
@@ -132,7 +133,9 @@ class DPTPCommTest(unittest.TestCase):
                 break
 
         # Create communicators using the new single-list API
+        # pyrefly: ignore [bad-argument-type]
         tp_comm = comm.split(tp_ranks, "tp")
+        # pyrefly: ignore [bad-argument-type]
         dp_comm = comm.split(dp_ranks, "dp")
 
         try:

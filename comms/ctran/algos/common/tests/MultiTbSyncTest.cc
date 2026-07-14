@@ -87,8 +87,8 @@ TEST_P(MultiTbSyncTestParamFixture, Test) {
 
   ASSERT_EQ(cudaMalloc((void**)&shmData, size), cudaSuccess);
   ASSERT_EQ(cudaMalloc((void**)&outputData, size * numIter), cudaSuccess);
-  cudaMemset(shmData, 0, size);
-  cudaMemset(outputData, 0, size * numIter);
+  ASSERT_EQ(cudaMemset(shmData, 0, size), cudaSuccess);
+  ASSERT_EQ(cudaMemset(outputData, 0, size * numIter), cudaSuccess);
 
   void* resetArgs[2] = {(void*)&shmCnts, (void*)&numCnts};
   dim3 resetGrid = {(unsigned int)1, 1, 1};

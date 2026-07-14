@@ -24,6 +24,9 @@ namespace comms::prims {
 
 namespace {
 // Helper function to print device buffer contents
+constexpr int kNvlMaxNumChannels = 64;
+constexpr std::size_t kNvlPerChannelSize = 64 * 1024;
+
 void printDeviceBuffer(
     const char* label,
     void* deviceBuffer,
@@ -103,9 +106,9 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   const size_t bufferSize = totalInts * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize), // At least 2KB
-      .chunkSize = 512, // 512 byte chunk size
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
   };
 
   // Create transport and exchange IPC handles
@@ -318,24 +321,10 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
       blockSize,
       base_ints);
 
-  // Calculate max buffer size needed for any rank
-  // Max size happens at the highest rank pair: (worldSize-1 + worldSize-1 + 1)
-  // * base_ints * sizeof(int32_t) Total for one rank = sum of (globalRank +
-  // rank
-  // + 1) for rank in [0, worldSize)
-  //                    = worldSize * globalRank + sum(rank) + worldSize
-  //                    = worldSize * globalRank + worldSize*(worldSize-1)/2 +
-  //                    worldSize
-  // Worst case (highest rank): worldSize * (worldSize-1) +
-  // worldSize*(worldSize-1)/2 + worldSize
-  size_t max_total_ints = worldSize * (2 * worldSize - 1 + 1) / 2 * base_ints;
-  size_t max_buffer_size = max_total_ints * sizeof(int32_t);
-
-  // Configuration for P2pNvlTransport - use dynamic buffer size
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), max_buffer_size), // At least 2KB
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
   };
 
   // Create transport and exchange IPC handles

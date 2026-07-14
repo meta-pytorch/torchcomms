@@ -480,11 +480,16 @@ struct IbSendRecvState {
    *
    * The state is indexed by direction and transport group. `nextStep` is the
    * shared byte-stream cursor used by blocking send/recv and async init.
-   * `activeBaseStep`, `activeNextByte`, and `activeStage` track the currently
-   * initialized async operation or a blocking call in progress, if any.
+   * `reuseCreditStep` is the persistent byte cursor for reuse credits: NIC_DONE
+   * on sender slots and SLOT_FREE on receiver slots. It may lag `nextStep`
+   * because those credits can be batched without delaying DATA_READY
+   * visibility. `activeBaseStep`, `activeNextByte`, and `activeStage` track the
+   * currently initialized async operation or a blocking call in progress, if
+   * any.
    */
   struct ProgressSlot {
     int64_t nextStep{0};
+    int64_t reuseCreditStep{0};
     std::size_t activeNextByte{0};
     int64_t activeBaseStep{0};
     detail::IbSendRecvProgressStage activeStage{
@@ -506,6 +511,39 @@ struct IbSendRecvState {
   int maxGroups{0}; ///< Layout size for signal/state arrays
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
+};
+
+enum class IbDirection : uint8_t {
+  Send = 0,
+  Recv = 1,
+};
+
+inline constexpr int kIbDirections = 2;
+inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
+
+struct IbQpState {
+  uint32_t cursor{0};
+  uint64_t pendingFlushLanesMask{0};
+  uint64_t lastFlushWqe[kIbMaxQpLanesPerChannelDirection]{};
+};
+
+struct IbLocalChannel {
+  IbSendRecvState::ProgressSlot sendProgress;
+  IbSendRecvState::ProgressSlot recvProgress;
+
+  IbgdaLocalBuffer dataReady;
+  IbgdaLocalBuffer slotFree;
+  IbgdaLocalBuffer nicDoneWait;
+  IbgdaLocalBuffer nicDoneCompletion;
+
+  IbQpState sendQp;
+  IbQpState recvQp;
+};
+
+struct IbRemoteChannel {
+  IbgdaRemoteBuffer dataReady;
+  IbgdaRemoteBuffer slotFree;
+  IbgdaRemoteBuffer recvStaging;
 };
 
 } // namespace comms::prims

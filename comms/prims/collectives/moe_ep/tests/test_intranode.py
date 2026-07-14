@@ -4,8 +4,8 @@
 
 # Intranode EP dispatch/combine test. The moe_ep adaptations are: the
 # `deep_ep`/`deep_ep_cpp` import shims (this module runs directly as
-# `:test_intranode`), the `upstream_utils` import path, a lazy
-# `test_low_latency` import (it ships in a later diff), and one `x_e4m3 = None`
+# `:test_intranode`), the `common_utils` import path, a lazy
+# `test_low_latency` import, and one `x_e4m3 = None`
 # line that disables FP8 cases until the kernel FP8-scales path is wired.
 
 import argparse
@@ -21,13 +21,13 @@ sys.modules["deep_ep"] = _moe_ep
 sys.modules["deep_ep_cpp"] = _moe_ep_cpp
 
 # Bind `deep_ep` / `deep_ep_cpp` to the in-house moe_ep modules (installed in
-# sys.modules above) so the upstream-style test body runs against our impl
-# without importing — and thus depending on — the external deeplearning/deep_ep.
+# sys.modules above) so the test body runs against our implementation
+# without importing a separate deep_ep package.
 deep_ep = _moe_ep
 deep_ep_cpp = _moe_ep_cpp
 import torch  # noqa: E402
 import torch.distributed as dist  # noqa: E402
-from comms.prims.collectives.moe_ep.tests.upstream_utils import (  # noqa: E402
+from comms.prims.collectives.moe_ep.tests.common_utils import (  # noqa: E402
     bench,
     calc_diff,
     init_dist,
@@ -448,8 +448,8 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
 
     # Test compatibility with low latency functions
     if test_ll_compatibility:
-        # moe_ep: `test_low_latency` ships in a later diff; import lazily so the
-        # intranode-only build doesn't depend on it (this branch is off here).
+        # Import lazily so the intranode-only build doesn't depend on
+        # `test_low_latency` (this branch is off here).
         from comms.prims.collectives.moe_ep.tests import test_low_latency
 
         buffer.clean_low_latency_buffer(ll_num_tokens, ll_hidden, ll_num_experts)

@@ -323,9 +323,8 @@ TEST_F(MultiPeerBenchmarkFixture, BarrierLatency) {
   // Create transport once with max slot count
   int maxSlots = getMaxSlots(configs);
   MultiPeerNvlTransportConfig nvlConfig{
-      .dataBufferSize = 1,
-      .chunkSize = 1,
       .pipelineDepth = 1,
+      .maxNumChannels = 0,
   };
   WindowConfig wmConfig{
       .barrierCount = static_cast<std::size_t>(maxSlots),
@@ -393,9 +392,8 @@ TEST_F(MultiPeerBenchmarkFixture, SignalAllLatency) {
 
   int maxSlots = getMaxSlots(configs);
   MultiPeerNvlTransportConfig nvlConfig{
-      .dataBufferSize = 1,
-      .chunkSize = 1,
       .pipelineDepth = 1,
+      .maxNumChannels = 0,
   };
   WindowConfig wmConfig{
       .peerSignalCount = static_cast<std::size_t>(maxSlots),
@@ -463,9 +461,8 @@ TEST_F(MultiPeerBenchmarkFixture, SignalPingPongLatency) {
 
   int maxSlots = getMaxSlots(configs);
   MultiPeerNvlTransportConfig nvlConfig{
-      .dataBufferSize = 1,
-      .chunkSize = 1,
       .pipelineDepth = 1,
+      .maxNumChannels = 0,
   };
   WindowConfig wmConfig{
       .peerSignalCount = static_cast<std::size_t>(maxSlots),

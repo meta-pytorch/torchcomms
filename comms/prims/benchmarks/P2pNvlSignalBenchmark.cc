@@ -190,10 +190,9 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
         : warmupConfig.numBlocks * (warmupConfig.numThreads / 32);
 
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = 1,
-        .chunkSize = 1,
         .pipelineDepth = 1,
         .p2pSignalCount = signalCount,
+        .maxNumChannels = 0,
     };
 
     comms::prims::MultiPeerNvlTransport transport(
@@ -216,10 +215,9 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
 
     // Create fresh P2P transport for each config to reset signal buffers
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = 1,
-        .chunkSize = 1,
         .pipelineDepth = 1,
         .p2pSignalCount = signalCount,
+        .maxNumChannels = 0,
     };
 
     comms::prims::MultiPeerNvlTransport transport(

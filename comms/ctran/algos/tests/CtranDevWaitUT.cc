@@ -149,7 +149,8 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
           break;
       }
     }
-    cudaMemcpy(&d2h_, args_.d2h, sizeof(d2h_), cudaMemcpyDeviceToHost);
+    FB_CUDACHECKTHROW_EX_NOCOMM(
+        cudaMemcpy(&d2h_, args_.d2h, sizeof(d2h_), cudaMemcpyDeviceToHost));
   }
 
   int* flag_;

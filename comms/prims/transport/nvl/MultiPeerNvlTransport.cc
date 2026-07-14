@@ -2,15 +2,54 @@
 
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 
+#include <stdexcept>
 #include <vector>
 
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/NvlChannelState.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 #include "comms/utils/checks.h"
 
 namespace comms::prims {
+
+namespace {
+
+std::size_t dataBufferSize(const MultiPeerNvlTransportConfig& config) {
+  return static_cast<std::size_t>(config.maxNumChannels) *
+      config.perChannelSize;
+}
+
+MultiPeerNvlTransportConfig normalizeChannelConfig(
+    MultiPeerNvlTransportConfig config) {
+  if (config.maxNumChannels <= 0) {
+    config.perChannelSize = 0;
+    return config;
+  }
+
+  if (config.perChannelSize == 0) {
+    config.perChannelSize = kDefaultNvlPerChannelSize;
+  }
+
+  if (config.perChannelSize < 16) {
+    throw std::runtime_error("tile send/recv requires perChannelSize >= 16");
+  }
+  if (config.perChannelSize % 16 != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize to be 16-byte aligned");
+  }
+  // Cap per-channel staging at 128MB (matches NCCL's max channel buffer). This
+  // also keeps the derived per-slot staging size bounded for any sane channel
+  // count.
+  constexpr std::size_t kMaxPerChannelSize = 128ULL * 1024 * 1024;
+  if (config.perChannelSize > kMaxPerChannelSize) {
+    throw std::runtime_error("tile send/recv requires perChannelSize <= 128MB");
+  }
+  return config;
+}
+
+} // namespace
 
 MultiPeerNvlTransport::MultiPeerNvlTransport(
     int myRank,
@@ -20,7 +59,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     : myRank_(myRank),
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
-      config_(multiPeerNvlTransportConfig),
+      config_(normalizeChannelConfig(multiPeerNvlTransportConfig)),
       memSharingMode_(
           config_.memSharingMode.value_or(GpuMemHandler::detectBestMode())) {
   // ===========================================================================
@@ -42,7 +81,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // Each handler's destructor will free its GPU memory if constructed.
 
   // Calculate per-peer buffer sizes with pipelining
-  perPeerDataBufferSize_ = config_.pipelineDepth * config_.dataBufferSize;
+  dataBufferSize_ = dataBufferSize(config_);
+  perPeerDataBufferSize_ = config_.pipelineDepth * dataBufferSize_;
 
   perPeerSignalBufferSize_ = getSignalBufferSize(config_.p2pSignalCount);
 
@@ -52,55 +92,6 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
 
   signalBufferHandler_ = std::make_unique<GpuMemHandler>(
       bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode_);
-
-  // Staging data + state buffers are only needed for send()/recv().
-  // When dataBufferSize=0, skip allocation — put() works without staging.
-  if (config_.dataBufferSize > 0) {
-    // Calculate state buffer size based on chunk size and pipeline depth
-    // Single state mode (useDualStateBuffer=false):
-    //   - 1 chunk state per chunk, stored on receiver side only
-    // Dual state mode (useDualStateBuffer=true):
-    //   - 2 chunk states per chunk:
-    //     - First half [0, numChunksPerPeer): my chunk state (local operations)
-    //     - Second half [numChunksPerPeer, 2*numChunksPerPeer): peer's chunk
-    //     state
-    //       (stored locally for local polling)
-    const std::size_t numChunksPerStep =
-        (config_.dataBufferSize + config_.chunkSize - 1) / config_.chunkSize;
-    const std::size_t numChunksPerPeer =
-        config_.pipelineDepth * numChunksPerStep;
-    const std::size_t chunkStateMultiplier = config_.useDualStateBuffer ? 2 : 1;
-    perPeerChunkStateBufferSize_ =
-        chunkStateMultiplier * numChunksPerPeer * sizeof(ChunkState);
-
-    // Allocate state buffer for (nRanks - 1) peers using GpuMemHandler.
-    // Data buffer allocation is deferred to exchange() to allow
-    // setExternalDataBuffers() to be called first.
-    const std::size_t totalChunkStateBufferSize =
-        perPeerChunkStateBufferSize_ * (nRanks_ - 1);
-
-    stateBufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_,
-        myRank_,
-        nRanks_,
-        totalChunkStateBufferSize,
-        memSharingMode_);
-
-    // Initialize state buffer to READY_TO_SEND for all pipeline slots
-    // The number of states depends on useDualStateBuffer:
-    // - Single mode: 1x chunk states (only receiverStateBuffer)
-    // - Dual mode: 2x chunk states (receiverStateBuffer + senderStateBuffer)
-    auto statePtr =
-        static_cast<ChunkState*>(stateBufferHandler_->getLocalDeviceMemPtr());
-    const std::size_t totalNumChunksAllPeers =
-        chunkStateMultiplier * numChunksPerPeer * (nRanks_ - 1);
-    std::vector<ChunkState> initStates(totalNumChunksAllPeers);
-    CUDA_CHECK(cudaMemcpy(
-        statePtr,
-        initStates.data(),
-        totalChunkStateBufferSize,
-        cudaMemcpyDefault));
-  }
 
   // Initialize signal state buffer to 0 for all ranks
   auto signalPtr =
@@ -113,32 +104,21 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       totalSignalBufferSize,
       cudaMemcpyDefault));
 
-  // Conditionally allocate tile protocol buffers (all internal)
-  if (config_.tile_max_groups > 0) {
+  // Conditionally allocate per-channel state for the tile protocol.
+  // One NvlChannelState per channel per peer; the whole array is IPC-shared
+  // so the remote rank's send/recv can write data_ready / slot_free into our
+  // local endpoint.
+  if (config_.maxNumChannels > 0) {
     if (config_.pipelineDepth < 1) {
       throw std::runtime_error("tile send/recv requires pipelineDepth >= 1");
     }
-    if (config_.dataBufferSize / config_.tile_max_groups < 16) {
-      throw std::runtime_error(
-          "tile send/recv requires (dataBufferSize / tile_max_groups) >= 16");
-    }
-    // Step state (local only, not exchanged, per-peer)
-    // Each peer gets 2*maxBlocks int64s: [sender steps | receiver steps]
-    std::size_t perPeerStepStateBytes =
-        2 * config_.tile_max_groups * sizeof(int64_t);
-    std::size_t totalStepStateBytes = perPeerStepStateBytes * (nRanks_ - 1);
-    tileStepStateBuffer_ =
-        std::make_unique<meta::comms::DeviceBuffer>(totalStepStateBytes);
-    CUDA_CHECK(cudaMemset(tileStepStateBuffer_->get(), 0, totalStepStateBytes));
-
-    // Tile signal buffer (2*maxBlocks signals per peer, exchanged)
-    std::size_t tileSignalCount = 2 * config_.tile_max_groups;
-    perPeerTileSignalSize_ = getSignalBufferSize(tileSignalCount);
-    std::size_t totalTileSignalSize = perPeerTileSignalSize_ * (nRanks_ - 1);
-    tileSignalHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalTileSignalSize, memSharingMode_);
-    auto* tileSignalPtr = tileSignalHandler_->getLocalDeviceMemPtr();
-    CUDA_CHECK(cudaMemset(tileSignalPtr, 0, totalTileSignalSize));
+    perPeerChannelStateSize_ = config_.maxNumChannels * sizeof(NvlChannelState);
+    const std::size_t totalChannelStateSize =
+        perPeerChannelStateSize_ * (nRanks_ - 1);
+    channelStateHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalChannelStateSize, memSharingMode_);
+    auto* channelStatePtr = channelStateHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(channelStatePtr, 0, totalChannelStateSize));
   }
 
   // Conditionally allocate barrier buffer
@@ -210,14 +190,14 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
           "setExternalDataBuffers: local buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(localSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * dataBufferSize)");
+          " (pipelineDepth * maxNumChannels * perChannelSize)");
     }
     if (remoteSize < perPeerDataBufferSize_) {
       throw std::runtime_error(
           "setExternalDataBuffers: remote buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(remoteSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * dataBufferSize)");
+          " (pipelineDepth * maxNumChannels * perChannelSize)");
     }
   }
   externalStagingBuffers_ = std::move(externalStagingBuffers);
@@ -226,8 +206,8 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
 void MultiPeerNvlTransport::exchange() {
   // Allocate and exchange data buffers when:
   // - No external buffers were provided, AND
-  // - dataBufferSize > 0 (staging buffers needed for send/recv)
-  if (!externalStagingBuffers_ && config_.dataBufferSize > 0) {
+  // - dataBufferSize_ > 0 (staging buffers needed for send/recv)
+  if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
     const std::size_t totalDataBufferSize =
         perPeerDataBufferSize_ * (nRanks_ - 1);
     dataBufferHandler_ = std::make_unique<GpuMemHandler>(
@@ -238,9 +218,6 @@ void MultiPeerNvlTransport::exchange() {
   if (dataBufferHandler_) {
     dataBufferHandler_->exchangeMemPtrs();
   }
-  if (stateBufferHandler_) {
-    stateBufferHandler_->exchangeMemPtrs();
-  }
   signalBufferHandler_->exchangeMemPtrs();
 
   if (ll128BufferHandler_) {
@@ -249,8 +226,8 @@ void MultiPeerNvlTransport::exchange() {
   if (barrierBufferHandler_) {
     barrierBufferHandler_->exchangeMemPtrs();
   }
-  if (tileSignalHandler_) {
-    tileSignalHandler_->exchangeMemPtrs();
+  if (channelStateHandler_) {
+    channelStateHandler_->exchangeMemPtrs();
   }
 
   if (llBufferHandler_) {
@@ -282,8 +259,6 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const int localPeerIndex = (peerRank < myRank_) ? peerRank : (peerRank - 1);
   const std::size_t localDataBufferOffset =
       localPeerIndex * perPeerDataBufferSize_;
-  const std::size_t localChunkStateBufferOffset =
-      localPeerIndex * perPeerChunkStateBufferSize_;
   const std::size_t localSignalBufferOffset =
       localPeerIndex * perPeerSignalBufferSize_;
 
@@ -292,19 +267,36 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const int remotePeerIndex = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
   const std::size_t remoteDataBufferOffset =
       remotePeerIndex * perPeerDataBufferSize_;
-  const std::size_t remoteChunkStateBufferOffset =
-      remotePeerIndex * perPeerChunkStateBufferSize_;
   const std::size_t remoteSignalBufferOffset =
       remotePeerIndex * perPeerSignalBufferSize_;
 
+  const int maxChannels = config_.maxNumChannels;
+  const std::size_t perChannelSlot =
+      maxChannels > 0 ? config_.perChannelSize : 0;
   P2pNvlTransportOptions options{
-      .dataBufferSize = config_.dataBufferSize,
-      .chunkSize = config_.chunkSize,
+      .dataBufferSize = dataBufferSize_,
       .pipelineDepth = config_.pipelineDepth,
-      .useDualStateBuffer = config_.useDualStateBuffer,
       .ll128BufferNumPackets = perPeerLl128BufferSize_ / kLl128PacketSize,
       .llBufferNumLines = perPeerLlBufferSize_ / kLlLineSize,
+      .per_channel_slot = perChannelSlot,
+      .max_num_channels = maxChannels,
   };
+
+  // Per-peer NvlChannelState pointers (nullptr when tile path is disabled).
+  // local_channels: this rank's channel endpoint for the remote rank.
+  // remote_channels: the remote rank's channel endpoint, seen via IPC.
+  NvlChannelState* localChannels = nullptr;
+  NvlChannelState* remoteChannels = nullptr;
+  if (channelStateHandler_) {
+    auto* localChBase =
+        static_cast<char*>(channelStateHandler_->getLocalDeviceMemPtr());
+    auto* remoteChBase =
+        static_cast<char*>(channelStateHandler_->getPeerDeviceMemPtr(peerRank));
+    localChannels = reinterpret_cast<NvlChannelState*>(
+        localChBase + localPeerIndex * perPeerChannelStateSize_);
+    remoteChannels = reinterpret_cast<NvlChannelState*>(
+        remoteChBase + remotePeerIndex * perPeerChannelStateSize_);
+  }
 
   auto* localSignalPtr =
       static_cast<char*>(signalBufferHandler_->getLocalDeviceMemPtr());
@@ -373,72 +365,15 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         remoteLlPtr + remotePeerIndex * perPeerLlBufferSize_);
   }
 
-  // When dataBufferSize=0, staging buffers are not allocated.
-  // Set data/state to nullptr/empty — send()/recv() will trap.
-  if (!dataBufferHandler_ && !externalStagingBuffers_) {
-    LocalState localState{
-        .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .signalBuffer = localSignalSpan,
-        .barrierBuffer = localBarrierSpan,
-        .ll128Buffer = localLl128,
-        .llBuffer = localLl,
-    };
-    RemoteState remoteState{
-        .dataBuffer = nullptr,
-        .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
-        .signalBuffer = remoteSignalSpan,
-        .barrierBuffer = remoteBarrierSpan,
-        .ll128Buffer = remoteLl128,
-        .llBuffer = remoteLl,
-    };
-    auto buildTileState = [&]() -> NvlinkTransportTileState {
-      if (!tileStepStateBuffer_) {
-        return {};
-      }
-      auto* tileLocalSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
-          localPeerIndex * perPeerTileSignalSize_);
-      auto* tileRemoteSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(
-              tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
-          remotePeerIndex * perPeerTileSignalSize_);
-      auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
-      auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
-      const int max_groups = config_.tile_max_groups;
-      return {
-          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
-          .tile_max_groups = max_groups,
-          .local_signals =
-              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
-          .remote_signals =
-              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
-      };
-    };
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState, buildTileState());
-    return device;
-  }
-
-  const std::size_t numChunksPerStep =
-      (config_.dataBufferSize + config_.chunkSize - 1) / config_.chunkSize;
-  const auto numChunksPerPeer =
-      static_cast<uint32_t>(config_.pipelineDepth * numChunksPerStep);
-
-  auto* localStatePtr =
-      static_cast<char*>(stateBufferHandler_->getLocalDeviceMemPtr());
-
   // Data buffer pointers: use external buffers if provided, otherwise
-  // use internally allocated dataBufferHandler_.
+  // use internally allocated dataBufferHandler_. When neither is available
+  // (dataBufferSize=0), pass nullptr — tile send()/recv() will trap.
   char* localDataBuffer = nullptr;
   char* remoteDataBuffer = nullptr;
   if (externalStagingBuffers_) {
     localDataBuffer = externalStagingBuffers_->localBuffers[peerRank].data();
     remoteDataBuffer = externalStagingBuffers_->remoteBuffers[peerRank].data();
-  } else {
+  } else if (dataBufferHandler_) {
     localDataBuffer =
         static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr()) +
         localDataBufferOffset;
@@ -447,121 +382,30 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         remoteDataBufferOffset;
   }
 
-  auto* localChunkStateBase = reinterpret_cast<ChunkState*>(
-      localStatePtr + localChunkStateBufferOffset);
+  LocalState localState{
+      .dataBuffer = localDataBuffer,
+      .signalBuffer = localSignalSpan,
+      .barrierBuffer = localBarrierSpan,
+      .ll128Buffer = localLl128,
+      .llBuffer = localLl,
+  };
 
-  auto* remoteChunkStatePtr =
-      static_cast<char*>(stateBufferHandler_->getPeerDeviceMemPtr(peerRank));
+  RemoteState remoteState{
+      .dataBuffer = remoteDataBuffer,
+      .signalBuffer = remoteSignalSpan,
+      .barrierBuffer = remoteBarrierSpan,
+      .ll128Buffer = remoteLl128,
+      .llBuffer = remoteLl,
+  };
 
-  auto* remoteChunkStateBase = reinterpret_cast<ChunkState*>(
-      remoteChunkStatePtr + remoteChunkStateBufferOffset);
-
-  // Create LocalState and RemoteState based on useDualStateBuffer mode
-  // Note: Using direct initialization since DeviceSpan has const members
-  // that prevent copy-assignment
-  if (config_.useDualStateBuffer) {
-    LocalState localState{
-        .dataBuffer = localDataBuffer,
-        .receiverStateBuffer =
-            DeviceSpan<ChunkState>(localChunkStateBase, numChunksPerPeer),
-        .senderStateBuffer = DeviceSpan<ChunkState>(
-            localChunkStateBase + numChunksPerPeer, numChunksPerPeer),
-        .signalBuffer = localSignalSpan,
-        .barrierBuffer = localBarrierSpan,
-        .ll128Buffer = localLl128,
-        .llBuffer = localLl,
-    };
-
-    RemoteState remoteState{
-        .dataBuffer = remoteDataBuffer,
-        .receiverStateBuffer =
-            DeviceSpan<ChunkState>(remoteChunkStateBase, numChunksPerPeer),
-        .senderStateBuffer = DeviceSpan<ChunkState>(
-            remoteChunkStateBase + numChunksPerPeer, numChunksPerPeer),
-        .signalBuffer = remoteSignalSpan,
-        .barrierBuffer = remoteBarrierSpan,
-        .ll128Buffer = remoteLl128,
-        .llBuffer = remoteLl,
-    };
-
-    auto buildTileState = [&]() -> NvlinkTransportTileState {
-      if (!tileStepStateBuffer_) {
-        return {};
-      }
-      auto* tileLocalSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
-          localPeerIndex * perPeerTileSignalSize_);
-      auto* tileRemoteSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(
-              tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
-          remotePeerIndex * perPeerTileSignalSize_);
-      auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
-      auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
-      const int max_groups = config_.tile_max_groups;
-      return {
-          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
-          .tile_max_groups = max_groups,
-          .local_signals =
-              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
-          .remote_signals =
-              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
-      };
-    };
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState, buildTileState());
-    return device;
-  } else {
-    LocalState localState{
-        .dataBuffer = localDataBuffer,
-        .receiverStateBuffer =
-            DeviceSpan<ChunkState>(localChunkStateBase, numChunksPerPeer),
-        .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
-        .signalBuffer = localSignalSpan,
-        .barrierBuffer = localBarrierSpan,
-        .ll128Buffer = localLl128,
-        .llBuffer = localLl,
-    };
-
-    RemoteState remoteState{
-        .dataBuffer = remoteDataBuffer,
-        .receiverStateBuffer =
-            DeviceSpan<ChunkState>(remoteChunkStateBase, numChunksPerPeer),
-        .senderStateBuffer = DeviceSpan<ChunkState>(), // Not used
-        .signalBuffer = remoteSignalSpan,
-        .barrierBuffer = remoteBarrierSpan,
-        .ll128Buffer = remoteLl128,
-        .llBuffer = remoteLl,
-    };
-
-    auto buildTileState = [&]() -> NvlinkTransportTileState {
-      if (!tileStepStateBuffer_) {
-        return {};
-      }
-      auto* tileLocalSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(tileSignalHandler_->getLocalDeviceMemPtr()) +
-          localPeerIndex * perPeerTileSignalSize_);
-      auto* tileRemoteSig = reinterpret_cast<SignalState*>(
-          static_cast<char*>(
-              tileSignalHandler_->getPeerDeviceMemPtr(peerRank)) +
-          remotePeerIndex * perPeerTileSignalSize_);
-      auto* stepBase = static_cast<int64_t*>(tileStepStateBuffer_->get());
-      auto* peerStepState =
-          stepBase + localPeerIndex * 2 * config_.tile_max_groups;
-      const int max_groups = config_.tile_max_groups;
-      return {
-          .step_state = {peerStepState, static_cast<uint32_t>(2 * max_groups)},
-          .tile_max_groups = max_groups,
-          .local_signals =
-              {tileLocalSig, static_cast<uint32_t>(2 * max_groups)},
-          .remote_signals =
-              {tileRemoteSig, static_cast<uint32_t>(2 * max_groups)},
-      };
-    };
-    auto device = P2pNvlTransportDevice(
-        myRank_, peerRank, options, localState, remoteState, buildTileState());
-    return device;
-  }
+  return P2pNvlTransportDevice(
+      myRank_,
+      peerRank,
+      options,
+      localState,
+      remoteState,
+      localChannels,
+      remoteChannels);
 }
 
 DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {

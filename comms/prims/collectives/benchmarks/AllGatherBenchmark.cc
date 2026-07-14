@@ -205,9 +205,9 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     // Setup P2P NVL transport
     MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.dataBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = 64,
+        .perChannelSize = (config.dataBufferSize) / 64,
     };
 
     // Create transport with bootstrap and exchange IPC handles
@@ -407,8 +407,8 @@ TEST_F(AllGatherBenchmarkFixture, OptimalConfigs) {
   // - Small messages (< 1MB): pipelineDepth=4 (latency-bound, benefits from
   // overlapping)
   // - Large messages (≥ 1MB): pipelineDepth=2 (bandwidth-bound, less overhead
-  // is better) Deeper pipelining adds memory footprint and ChunkState
-  // synchronization overhead that hurts bandwidth-bound transfers.
+  // is better) Deeper pipelining adds memory footprint and per-channel
+  // signal overhead that hurts bandwidth-bound transfers.
 
   // 256KB with 8 blocks, chunkSize = 32KB
   // Small message: use pipelineDepth=4 for latency hiding

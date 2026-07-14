@@ -687,6 +687,7 @@ def scatter_object_list(
     comm.broadcast(max_tensor_size, root=root, async_op=False, timeout=timeout)
 
     # Scatter actual serialized objects
+    # pyrefly: ignore [no-matching-overload]
     output_tensor = torch.empty(
         max_tensor_size.item(), dtype=torch.uint8, device=current_device
     )

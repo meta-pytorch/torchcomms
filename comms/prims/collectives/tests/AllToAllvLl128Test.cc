@@ -25,6 +25,11 @@ using meta::comms::DeviceBuffer;
 
 namespace comms::prims {
 
+namespace {
+constexpr int kNvlMaxNumChannels = 64;
+constexpr std::size_t kNvlPerChannelSize = 64 * 1024;
+} // namespace
+
 class AllToAllvLl128TestFixture : public BenchmarkTestFixture {
  protected:
   void SetUp() override {
@@ -74,9 +79,9 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
 
   // Transport config with LL128 buffers enabled
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = (params.ll128BufferNumPackets > 0)
           ? params.ll128BufferNumPackets * kLl128PacketSize
           : ll128_buffer_size(perPeerBytes),
@@ -477,15 +482,11 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
   size_t maxPerPeerInts = (2 * worldSize - 1) * base_ints;
   size_t maxPerPeerBytes = maxPerPeerInts * sizeof(int32_t);
 
-  // Calculate max total buffer needed for any rank
-  size_t max_total_ints = worldSize * (2 * worldSize - 1 + 1) / 2 * base_ints;
-  size_t max_buffer_size = max_total_ints * sizeof(int32_t);
-
   // Transport config with LL128 buffers
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), max_buffer_size),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(maxPerPeerBytes),
   };
 
@@ -687,14 +688,10 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
   size_t maxPerPeerInts = (2 * worldSize - 2) * base_ints;
   size_t maxPerPeerBytes = maxPerPeerInts * sizeof(int32_t);
 
-  size_t max_total_ints = worldSize * (2 * worldSize - 2 + 0) / 2 * base_ints;
-  size_t max_buffer_size =
-      std::max(size_t(16), max_total_ints * sizeof(int32_t));
-
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), max_buffer_size),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize =
           ll128_buffer_size(std::max(size_t(16), maxPerPeerBytes)),
   };
@@ -869,9 +866,9 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCall) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(perPeerBytes),
   };
 
@@ -1005,9 +1002,9 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCallChunked) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128BufferNumPackets * kLl128PacketSize,
   };
 
@@ -1148,9 +1145,9 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
         numBlocks);
 
     MultiPeerNvlTransportConfig config{
-        .dataBufferSize = std::max(size_t(2048), bufferSize),
-        .chunkSize = 512,
         .pipelineDepth = 4,
+        .maxNumChannels = kNvlMaxNumChannels,
+        .perChannelSize = kNvlPerChannelSize,
         .ll128BufferSize = ll128BufferNumPackets * kLl128PacketSize,
     };
 
@@ -1307,9 +1304,9 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
   size_t maxBufferSize = maxTotalInts * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), maxBufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(maxPerPeerBytes),
   };
 
@@ -1447,9 +1444,9 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
   size_t maxBufferSize = maxTotalInts * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), maxBufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128BufferNumPackets * kLl128PacketSize,
   };
 
@@ -1577,9 +1574,9 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(perPeerBytes),
   };
 
@@ -1690,9 +1687,9 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(perPeerBytes),
   };
 
@@ -1803,9 +1800,9 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
   const size_t perPeerBytes = numIntsPerRank * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = std::max(size_t(2048), bufferSize),
-      .chunkSize = 512,
       .pipelineDepth = 4,
+      .maxNumChannels = kNvlMaxNumChannels,
+      .perChannelSize = kNvlPerChannelSize,
       .ll128BufferSize = ll128_buffer_size(256 * 1024),
   };
 

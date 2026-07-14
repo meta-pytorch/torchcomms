@@ -44,6 +44,7 @@ option(TRACE                                   "Enable additional tracing"      
 option(FAULT_INJECTION                         "Enable fault injection"                        ON)
 option(QUIET_WARNINGS                          "Supress compiler warnings"                     OFF)
 option(ENABLE_ROCSHMEM                         "Enable rocSHMEM support in RCCL"               OFF)
+option(ENABLE_PRIMS                            "Compile comms/prims (pipes) into RCCLX"        OFF)
 
 # Third-party dependency paths
 #==================================================================================================
@@ -855,7 +856,9 @@ if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/backends/tcpdevmem/.*")
 endif()
 
-# Automatically collect all pipes source files.
+# comms/prims (pipes) sources, gated on ENABLE_PRIMS (default OFF) so the
+# AMD/ROCm build is isolated from comms/prims churn.
+if(ENABLE_PRIMS)
 file(GLOB_RECURSE PIPES_SOURCES_ABS
     "${FBCODE_DIR}/comms/prims/*.cc"
     "${FBCODE_DIR}/comms/prims/*.cu"
@@ -907,6 +910,12 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "NvlMemExchange\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemAllocation\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemMapping\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
+# Exclude MultimemHandler — it is NVIDIA-only (NVSwitch multicast) and owns a
+# std::unique_ptr<CuMemMapping>, so its TU emits an out-of-line reference to
+# CuMemMapping::~CuMemMapping(), whose definition lives in the excluded
+# CuMemMapping.cc. Leaving it in compiles clean but leaves that symbol
+# undefined in librccl at load time. No other compiled source references it.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultimemHandler\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
 # Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
@@ -914,6 +923,10 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
 # MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
 # (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/amd/.*")
+else()
+# ENABLE_PRIMS off: compile no comms/prims sources into librccl.
+set(PIPES_SOURCES "")
+endif()
 
 # Run this command to get RCCLX_LIB_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
@@ -1416,7 +1429,10 @@ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
 # headers (HipDeviceCompat.h, nic/NicConfig.h) are included by compiled
 # transport/ibrc code via bare paths, so put the original source dir on the
 # include path. See the EXCLUDE for comms/prims/transport/amd/.* above.
+# Only needed when comms/prims sources are compiled in (ENABLE_PRIMS).
+if(ENABLE_PRIMS)
 target_include_directories(rccl PRIVATE ${FBCODE_DIR}/comms/prims/transport/amd)
+endif()
 
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})
@@ -1465,6 +1481,9 @@ if(ENABLE_WARP_SPEED)
 endif()
 if(ENABLE_ROCSHMEM)
   target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM)
+endif()
+if(ENABLE_PRIMS)
+  target_compile_definitions(rccl PRIVATE ENABLE_PRIMS)
 endif()
 
 # ==== rocSHMEM integration (optional) ====

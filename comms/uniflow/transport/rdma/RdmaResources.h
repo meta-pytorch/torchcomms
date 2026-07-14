@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 
 namespace uniflow {
@@ -26,6 +29,7 @@ struct NicResources {
   uint8_t portNum{1}; /* Physical port number on the HCA. */
   bool dmaBufSupported{false}; /* Kernel supports DMA-BUF MR registration. */
   int numaNode{-1}; /* NUMA node of the NIC, from Topology (-1 = unknown). */
+  bool dataDirect{false}; /* NIC exposes a data-direct sysfs path (mlx5 DD). */
 
   /*
    * Full-init constructor.
@@ -59,5 +63,25 @@ struct NicResources {
   void cleanup();
   std::shared_ptr<IbvApi> ibvApi{nullptr};
 };
+
+/// True if the mlx5 Data-Direct sysfs path (from
+/// mlx5dv_get_data_direct_sysfs_path) is in the same PCIe domain as the GPU at
+/// gpuPciBusId (nvidia-smi / cudaDeviceGetPCIBusId format, e.g.
+/// "00000008:06:00.0"). mlx5 Data-Direct MR registration only succeeds when the
+/// NIC's data-direct interface shares the GPU's PCIe domain; the NIC's own
+/// physical PCIe location does NOT imply the same data-direct domain.
+bool dataDirectDomainMatchesGpu(
+    const std::string& ddSysfsPath,
+    const std::string& gpuPciBusId);
+
+/// From candidateNics (device names), returns those whose mlx5 Data-Direct
+/// interface shares the GPU's PCIe domain (gpuPciBusId). Each candidate is
+/// opened to probe its data-direct sysfs path; candidates without a DD path, or
+/// in a different domain, are excluded. Input order is preserved. This is the
+/// NIC selection required for Data-Direct RDMA.
+std::vector<std::string> selectDataDirectNicsForGpu(
+    IbvApi& ibvApi,
+    const std::vector<std::string>& candidateNics,
+    const std::string& gpuPciBusId);
 
 } // namespace uniflow

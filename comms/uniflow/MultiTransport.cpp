@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 
@@ -140,7 +141,7 @@ MultiTransportFactory::MultiTransportFactory(
       std::runtime_error);
 
 #ifndef __HIP_PLATFORM_AMD__
-  if (deviceId_ >= 0) {
+  if (deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
@@ -171,7 +172,20 @@ Result<TransportInfo> MultiTransport::bind() {
   size_t totalSize = sizeof(uint8_t);
   totalSize += sizeof(uint32_t) * numTransport;
   for (auto& t : transports_) {
-    infoData.emplace_back(t->bind());
+    auto data = t->bind();
+    /*
+     * A successful bind always yields a non-empty serialized TransportInfo
+     * (header + QP/NIC info). An empty result means the underlying transport
+     * failed to acquire its resources (CQ/QP/MR) and set itself to Error.
+     * Surface that as a real error instead of packing an empty sub-info that
+     * the peer would fail to deserialize during connect().
+     */
+    if (data.empty()) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          "MultiTransport::bind: a transport failed to bind (empty info)");
+    }
+    infoData.emplace_back(std::move(data));
     totalSize += infoData.back().size();
   }
 

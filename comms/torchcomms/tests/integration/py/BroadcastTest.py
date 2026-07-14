@@ -48,6 +48,7 @@ class BroadcastTest(unittest.TestCase):
         """Clean up after each test."""
         # Explicitly reset the TorchComm object to ensure proper cleanup
         self.torchcomm = None
+        # pyrefly: ignore [bad-assignment]
         self.wrapper = None
 
     def _sync_broadcast(self, count: int, dtype: torch.dtype) -> None:

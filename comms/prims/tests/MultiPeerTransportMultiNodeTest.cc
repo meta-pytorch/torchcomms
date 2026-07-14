@@ -108,10 +108,10 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
-                .dataBufferSize = 256 * 1024,
-                .chunkSize = 512,
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
+                .maxNumChannels = 64,
+                .perChannelSize = 4 * 1024,
             },
         .ibConfig =
             {
@@ -132,7 +132,9 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
 // cross-node → IBGDA preferred. On both platforms, IBGDA covers ALL non-self
 // peers.
 TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
-  ASSERT_GE(numRanks, 4) << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  if (numRanks < 4) {
+    GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  }
 
   auto states = create_transport_states();
 
@@ -172,7 +174,9 @@ TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
 
 // Verify that exchange() completes on both platforms.
 TEST_F(MultiPeerTransportMultiNodeFixture, ExchangeMultiNode) {
-  ASSERT_GE(numRanks, 4) << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  if (numRanks < 4) {
+    GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  }
 
   auto states = create_transport_states();
   EXPECT_NO_THROW(states->exchange());
@@ -186,7 +190,9 @@ TEST_F(MultiPeerTransportMultiNodeFixture, ExchangeMultiNode) {
 // NVL transports are populated based on platform:
 //   MNNVL: all peers,  Non-MNNVL: same-node peers only.
 TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
-  ASSERT_GE(numRanks, 4) << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  if (numRanks < 4) {
+    GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  }
 
   auto states = create_transport_states();
   states->exchange();
@@ -216,7 +222,9 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
 
 // Verify host-side NVL and IBGDA accessors for each platform.
 TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
-  ASSERT_GE(numRanks, 4) << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  if (numRanks < 4) {
+    GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  }
 
   auto states = create_transport_states();
   states->exchange();

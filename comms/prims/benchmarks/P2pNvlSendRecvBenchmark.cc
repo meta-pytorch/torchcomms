@@ -24,6 +24,8 @@ using meta::comms::DeviceBuffer;
 
 namespace comms::prims::benchmark {
 
+constexpr int kDefaultMaxNumChannels = 64;
+
 class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
  protected:
   void SetUp() override {
@@ -285,7 +287,9 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
 
     int numSendBlocks = config.numBlocks;
-    int totalBlocks = numSendBlocks * 2;
+    // BidirCta packs send + recv into ONE block via half-block multiwarp
+    // groups, so the grid is half the size of the 2-role partition() kernel.
+    int totalBlocks = config.useBidirCta ? numSendBlocks : numSendBlocks * 2;
     dim3 gridDim(totalBlocks);
     dim3 blockDim(config.numThreads);
 
@@ -303,14 +307,11 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
               config.nBytes / config.numBlocks / config.chunksPerSlot) &
             ~15ULL
         : 0;
-    void* kernelFunc = (void*)comms::prims::benchmark::p2pTileSendRecv;
+    void* kernelFunc = config.useBidirCta
+        ? (void*)comms::prims::benchmark::p2pTileSendRecvBidirCta
+        : (void*)comms::prims::benchmark::p2pTileSendRecv;
     void* args[] = {
-        p2pDevicePtr,
-        &sendTiles,
-        &recvTiles,
-        &numSendBlocks,
-        &maxSignalBytes,
-        &timeout};
+        p2pDevicePtr, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
 
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
     std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
@@ -694,10 +695,9 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = config.stagedBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
-        .useDualStateBuffer = config.useDualStateBuffer,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = config.stagedBufferSize / kDefaultMaxNumChannels,
     };
 
     comms::prims::MultiPeerNvlTransport transport(
@@ -816,6 +816,25 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
     });
   }
 
+  // === BIDIR-CTA TILE CONFIGS — one block does send+recv via half-block
+  //     multiwarp groups. Halves the grid (16 instead of 32 CTAs).
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .spreadClusterLaunch = true,
+        .useTiled = true,
+        .useBidirCta = true,
+        .name = "BidirCta_" + nm,
+    });
+  }
+
   // === CHUNKS PER SLOT SWEEP (clustered, 8MB staging, pd=2) ===
   for (int cps : {2, 4, 8}) {
     for (const auto& [sz, nm] : tileSizes) {
@@ -898,10 +917,9 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
     comms::prims::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = config.stagedBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
-        .useDualStateBuffer = config.useDualStateBuffer,
+        .maxNumChannels = kDefaultMaxNumChannels,
+        .perChannelSize = config.stagedBufferSize / kDefaultMaxNumChannels,
     };
 
     comms::prims::MultiPeerNvlTransport transport(
@@ -993,6 +1011,99 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
     std::cout << ss.str();
   }
+}
+
+TEST_F(P2pSendRecvBenchmarkFixture, MatchedBidirCtaBenchmark) {
+  if (worldSize != 2) {
+    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    return;
+  }
+
+  auto divUpSize = [](std::size_t x, std::size_t y) { return (x + y - 1) / y; };
+
+  // Mirrors NCCL v2_29 P2P SIMPLE channel selection for the local all-NVLink
+  // 2-rank case with p2pnChannels=32 and p2pnChannelsPerPeer=32.
+  auto ncclActiveP2pChannels = [&](std::size_t bytes) {
+    constexpr int kNChannelsMin = 16;
+    constexpr int kNChannelsMax = 32;
+    constexpr std::size_t kP2pChunkSize = 512 * 1024;
+    constexpr std::size_t kMinPartSize = kP2pChunkSize / 8;
+    constexpr std::size_t kMaxPartSize = kP2pChunkSize * 32;
+
+    if (bytes == 0) {
+      return 1;
+    }
+
+    const std::size_t initialChannels = std::min<std::size_t>(
+        static_cast<std::size_t>(kNChannelsMin),
+        divUpSize(bytes, kMinPartSize));
+    int nChannels = static_cast<int>(initialChannels);
+    std::size_t partSize = std::max(kMinPartSize, divUpSize(bytes, nChannels));
+    while (partSize > kMaxPartSize && nChannels <= kNChannelsMax / 2) {
+      nChannels *= 2;
+      partSize = divUpSize(bytes, nChannels);
+    }
+    return nChannels;
+  };
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  std::vector<BenchmarkConfig> configs;
+  for (std::size_t sizeBytes = 1; sizeBytes <= 1024ULL * 1024 * 1024;
+       sizeBytes <<= 1) {
+    const int activeChannels = ncclActiveP2pChannels(sizeBytes);
+    configs.push_back({
+        .nBytes = sizeBytes,
+        .stagedBufferSize =
+            static_cast<std::size_t>(activeChannels) * 512 * 1024,
+        .numBlocks = activeChannels,
+        .numThreads = 512,
+        .pipelineDepth = 4,
+        .chunkSize = 512 * 1024,
+        .groupScope = SyncScope::BLOCK,
+        .spreadClusterLaunch =
+            activeChannels % comms::common::kDefaultClusterSize == 0,
+        .useTiled = true,
+        .useBidirCta = true,
+        .name = "MatchedCh" + std::to_string(activeChannels) + "_" +
+            formatSize(sizeBytes),
+    });
+  }
+
+  std::vector<BenchmarkResult> results;
+  for (const auto& config : configs) {
+    comms::prims::MultiPeerNvlTransportConfig p2pConfig{
+        .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = config.numBlocks,
+        .perChannelSize = config.chunkSize,
+    };
+
+    comms::prims::MultiPeerNvlTransport transport(
+        globalRank, worldSize, bootstrap, p2pConfig);
+    transport.exchange();
+
+    auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+    BenchmarkResult result;
+    result.testName = config.name;
+    result.messageSize = config.nBytes;
+    result.stagingBufferSize = config.stagedBufferSize;
+    result.pipelineDepth = config.pipelineDepth;
+    result.chunkSize = config.chunkSize;
+    result.numBlocks = config.numBlocks;
+    result.numThreads = config.numThreads;
+
+    result.ncclBandwidth =
+        runNcclBidirectionalBenchmark(config, result.ncclTime);
+    result.p2pBandwidth = runTileBenchmark(&p2pHost, config, result.p2pTime);
+    result.p2pSpeedup = result.ncclBandwidth > 0
+        ? result.p2pBandwidth / result.ncclBandwidth
+        : 0;
+    results.push_back(result);
+  }
+
+  printResultsTable(
+      results, "NCCL vs PRIMS NVL BIDIR-CTA Matched Active-Channel Benchmark");
 }
 
 } // namespace comms::prims::benchmark

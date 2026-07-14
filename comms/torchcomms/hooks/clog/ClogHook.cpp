@@ -70,12 +70,25 @@ ClogHook::~ClogHook() = default;
 // -- Registration --
 
 void ClogHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
-  log_file_.writeLine(buildNewCommSignature(
-      comm->getCommName(), comm->getRank(), comm->getSize()));
-  registerHooks(comm);
+  // The new_comm signature needs the comm's rank/size, which are only assigned
+  // once the comm is initialized. Comms are usually initialized at registration
+  // (the WORLD-init path), so write the signature up front, before any hook can
+  // fire. Dynamic-regime comms — e.g. PAFT's inter-replica MCCL comm, which is
+  // created uninitialized and only gets rank/size on its first reconfigure() —
+  // are registered before init; for those, defer the signature to the first
+  // pre-hook, which cannot fire until a collective runs (i.e. after init).
+  if (comm->getBackendImpl()->isInitialized()) {
+    log_file_.writeLine(buildNewCommSignature(
+        comm->getCommName(), comm->getRank(), comm->getSize()));
+    registerHooks(comm);
+  } else {
+    registerHooks(comm, std::make_shared<std::atomic<bool>>(true));
+  }
 }
 
-void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
+void ClogHook::registerHooks(
+    std::shared_ptr<TorchComm> comm,
+    std::shared_ptr<std::atomic<bool>> signature_pending) {
   for (const auto& reg : registrations_) {
     if (reg.comm.lock() == comm) {
       throw std::runtime_error(
@@ -88,8 +101,39 @@ void ClogHook::registerHooks(std::shared_ptr<TorchComm> comm) {
   auto self = shared_from_this();
 
   int device_index = comm->getDevice().index();
+  std::weak_ptr<TorchComm> comm_weak = comm;
+  // Serializes the deferred new_comm signature so it is written before any
+  // collective line for this comm, even if several pre-hooks fire concurrently
+  // on the first collective. Once the signature is written the atomic flag
+  // flips and pre-hooks skip the lock entirely (lock-free fast path), so the
+  // mutex is taken only during the brief pre-write window. Allocated only for
+  // the deferred (uninitialized) path; the eager path passes signature_pending
+  // == nullptr and never touches the lock.
+  auto sig_mutex = signature_pending ? std::make_shared<std::mutex>()
+                                     : std::shared_ptr<std::mutex>();
   auto pre_hook_handle = comm->registerPreHook(
-      [self, comm_name, device_index](size_t op_id, const PreHookArgs& args) {
+      [self, comm_name, device_index, signature_pending, sig_mutex, comm_weak](
+          size_t op_id, const PreHookArgs& args) {
+        // Deferred new_comm signature (dynamic-regime comm registered before
+        // init): the first pre-hook runs once a collective is issued, by which
+        // point rank/size are available. The acquire-load is a lock-free fast
+        // path — after the signature is written the flag reads false and every
+        // later pre-hook skips the lock. Until then the lock guarantees the
+        // signature precedes every collective line and is written once. The
+        // flag is cleared only after a successful write, so a failed lock()
+        // (comm already gone) leaves it to a later pre-hook rather than
+        // dropping it.
+        if (signature_pending &&
+            signature_pending->load(std::memory_order_acquire)) {
+          std::lock_guard<std::mutex> lock(*sig_mutex);
+          if (signature_pending->load(std::memory_order_relaxed)) {
+            if (auto c = comm_weak.lock()) {
+              self->log_file_.writeLine(buildNewCommSignature(
+                  c->getCommName(), c->getRank(), c->getSize()));
+              signature_pending->store(false, std::memory_order_release);
+            }
+          }
+        }
         self->onPreHook(comm_name, device_index, op_id, args);
       });
 

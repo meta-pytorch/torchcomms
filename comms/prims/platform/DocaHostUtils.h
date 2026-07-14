@@ -112,6 +112,16 @@ inline std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
                  << " err=" << cuRes << " ptr=" << ptr << " size=" << size;
     return std::nullopt;
   }
+  // cuMemGetAddressRange returns a single physical segment for cuMem VMM
+  // buffers. Widen to the caller's range when it spans multiple segments.
+  {
+    const auto requestedEnd = reinterpret_cast<uintptr_t>(ptr) + size;
+    const auto allocEnd = static_cast<uintptr_t>(allocBase) + allocSize;
+    if (requestedEnd > allocEnd) {
+      allocBase = reinterpret_cast<CUdeviceptr>(ptr);
+      allocSize = size;
+    }
+  }
 
   static const size_t pageSize = sysconf(_SC_PAGESIZE);
   auto alignment =

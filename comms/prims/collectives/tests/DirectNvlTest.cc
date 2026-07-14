@@ -19,6 +19,8 @@ namespace comms::prims::test {
 
 namespace {
 
+constexpr std::size_t kNvlPerChannelSize = 128 * 1024;
+
 struct DirectNvlTestParams {
   std::size_t bytes{0};
   int num_blocks{8};
@@ -34,14 +36,13 @@ std::unique_ptr<MultiPeerNvlTransport> make_nvl_transport(
     int globalRank,
     int worldSize,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-    std::size_t dataBufferSize,
+    std::size_t perChannelSize,
     int numBlocks) {
   MultiPeerNvlTransportConfig config{
-      .dataBufferSize = dataBufferSize,
-      .chunkSize = dataBufferSize,
       .pipelineDepth = 2,
       .p2pSignalCount = static_cast<std::size_t>(numBlocks),
-      .tile_max_groups = numBlocks,
+      .maxNumChannels = numBlocks,
+      .perChannelSize = perChannelSize,
       .memSharingMode = MemSharingMode::kCudaIpc,
   };
   auto transport = std::make_unique<MultiPeerNvlTransport>(
@@ -69,7 +70,11 @@ TEST_P(DirectAllGatherNvlTest, Correctness) {
   std::unique_ptr<MultiPeerNvlTransport> transport;
   try {
     transport = make_nvl_transport(
-        globalRank, worldSize, bootstrap, 1024 * 1024, params.num_blocks);
+        globalRank,
+        worldSize,
+        bootstrap,
+        kNvlPerChannelSize,
+        params.num_blocks);
   } catch (const std::exception& e) {
     GTEST_SKIP() << "NVLink transport not available: " << e.what();
   }
@@ -122,7 +127,11 @@ TEST_P(DirectReduceScatterNvlTest, Correctness) {
   std::unique_ptr<MultiPeerNvlTransport> transport;
   try {
     transport = make_nvl_transport(
-        globalRank, worldSize, bootstrap, 1024 * 1024, params.num_blocks);
+        globalRank,
+        worldSize,
+        bootstrap,
+        kNvlPerChannelSize,
+        params.num_blocks);
   } catch (const std::exception& e) {
     GTEST_SKIP() << "NVLink transport not available: " << e.what();
   }

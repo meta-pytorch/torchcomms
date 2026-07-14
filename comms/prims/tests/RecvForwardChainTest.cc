@@ -6,6 +6,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -349,6 +350,99 @@ TEST_F(RecvForwardChainTest, MultiSection) {
       }
       EXPECT_EQ(errors, 0) << "Rank " << globalRank << ": " << errors
                            << " byte mismatches in multi-section transfer";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+TEST_F(RecvForwardChainTest, ForwardAdvancesReuseCreditStep) {
+  if (worldSize < 3) {
+    XLOGF(
+        INFO, "Skipping: requires >= 3 ranks for a send->forward->recv chain");
+    return;
+  }
+
+  constexpr int kNumBlocks = 1;
+  constexpr std::size_t kSlotSize = 512 * 1024;
+  constexpr std::size_t kProtocolBytes = 16;
+
+  struct ForwardCreditCase {
+    const char* name;
+    std::size_t nbytes;
+  };
+
+  const std::array<ForwardCreditCase, 3> cases{{
+      {"tiny", 1},
+      {"large", kSlotSize},
+      {"large_non_quantum", kSlotSize + kProtocolBytes},
+  }};
+
+  auto runCase = [&](const ForwardCreditCase& testCase) {
+    SCOPED_TRACE(testCase.name);
+
+    auto transport = create_transport(kSlotSize, kNumBlocks);
+
+    DeviceBuffer sendBuf(testCase.nbytes);
+    DeviceBuffer recvBuf(testCase.nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x3C, testCase.nbytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, testCase.nbytes));
+
+    DeviceBuffer outBuf(4 * sizeof(int64_t));
+    CUDACHECK_TEST(cudaMemset(outBuf.get(), 0, 4 * sizeof(int64_t)));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<P2pIbgdaTransportDevice*> peerTransports(worldSize, nullptr);
+    for (int rank = 0; rank < worldSize; ++rank) {
+      if (rank != globalRank) {
+        peerTransports[rank] = transport->getP2pTransportDevice(rank);
+      }
+    }
+    DeviceBuffer dTransports(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        dTransports.get(),
+        peerTransports.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+
+    bootstrap->barrierAll();
+
+    test::launch_recv_forward_reuse_credit_step(
+        static_cast<P2pIbgdaTransportDevice**>(dTransports.get()),
+        static_cast<const char*>(sendBuf.get()),
+        static_cast<char*>(recvBuf.get()),
+        testCase.nbytes,
+        globalRank,
+        worldSize,
+        kNumBlocks,
+        static_cast<int64_t*>(outBuf.get()),
+        stream_);
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+    bootstrap->barrierAll();
+
+    if (globalRank != 0 && globalRank != worldSize - 1) {
+      std::array<int64_t, 4> out{};
+      CUDACHECK_TEST(cudaMemcpy(
+          out.data(),
+          outBuf.get(),
+          4 * sizeof(int64_t),
+          cudaMemcpyDeviceToHost));
+
+      EXPECT_GT(out[1], 0) << "recv-slot nextStep should be > 0";
+      EXPECT_GT(out[3], 0) << "fwd-slot nextStep should be > 0";
+      EXPECT_EQ(out[0], out[1]) << "recv-slot reuseCreditStep (" << out[0]
+                                << ") != nextStep (" << out[1] << ")";
+      EXPECT_EQ(out[2], out[3]) << "fwd-slot reuseCreditStep (" << out[2]
+                                << ") != nextStep (" << out[3] << ")";
+    }
+  };
+
+  try {
+    for (const auto& testCase : cases) {
+      runCase(testCase);
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();

@@ -82,4 +82,43 @@ namespace comms::prims {
 #define PIPES_DEVICE_CHECK_MSG(expr, msg) ((void)0)
 #endif
 
+/**
+ * PRIMS_DEVICE_CHECK_MSG: Device-side assertion with a printf-style message.
+ *
+ * Like PIPES_DEVICE_CHECK but takes a printf format string plus arguments, so
+ * runtime values (sizes, ids, limits, ...) can be printed alongside the failing
+ * expression. On device: prints the diagnostic and calls __trap(); on host:
+ * evaluates to a no-op.
+ *
+ * Usage:
+ *   PRIMS_DEVICE_CHECK_MSG(
+ *       group_size % kWarpSize == 0,
+ *       "group_size (%u) must be a multiple of %u", group_size, kWarpSize);
+ */
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#define PRIMS_DEVICE_CHECK_MSG(expr, fmt, ...)    \
+  do {                                            \
+    if (!(expr)) {                                \
+      printf(                                     \
+          "PRIMS_DEVICE_CHECK: %s (" fmt          \
+          ") in %s at %s:%d "                     \
+          "block=(%u,%u,%u) thread=(%u,%u,%u)\n", \
+          #expr,                                  \
+          ##__VA_ARGS__,                          \
+          __func__,                               \
+          __FILE__,                               \
+          __LINE__,                               \
+          blockIdx.x,                             \
+          blockIdx.y,                             \
+          blockIdx.z,                             \
+          threadIdx.x,                            \
+          threadIdx.y,                            \
+          threadIdx.z);                           \
+      __trap();                                   \
+    }                                             \
+  } while (0)
+#else
+#define PRIMS_DEVICE_CHECK_MSG(expr, fmt, ...) ((void)0)
+#endif
+
 } // namespace comms::prims

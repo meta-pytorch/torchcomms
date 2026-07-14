@@ -260,7 +260,11 @@ class FakeDeviceAdapter : public DeviceAdapter {
   Result<bool> isDmaBuffSupported(int) override {
     return ErrCode::NotImplemented;
   }
-  Result<DmaBuff> exportDmaBuff(int, void*, size_t) override {
+  Result<DmaBuff> exportDmaBuff(
+      int,
+      void*,
+      size_t,
+      DmaBufMapping = DmaBufMapping::Default) override {
     return ErrCode::NotImplemented;
   }
   Status closeDmaBuff(DmaBuff&) override {

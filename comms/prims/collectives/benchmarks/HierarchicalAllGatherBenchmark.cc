@@ -367,11 +367,11 @@ class HierarchicalAllGatherBenchmarkFixture
         auto nvl_bootstrap = std::make_shared<NvlBootstrapAdapter>(
             bootstrap, std::move(nvl_rank_to_global));
         MultiPeerNvlTransportConfig transport_config{
-            .dataBufferSize = config.data_buffer_size,
-            .chunkSize = config.data_buffer_size,
             .pipelineDepth = static_cast<std::size_t>(config.pipeline_depth),
             .p2pSignalCount = static_cast<std::size_t>(config.num_blocks),
-            .tile_max_groups = config.num_blocks,
+            .maxNumChannels = config.num_blocks,
+            .perChannelSize = config.data_buffer_size /
+                static_cast<std::size_t>(config.num_blocks),
             .memSharingMode = MemSharingMode::kCudaIpc,
         };
         nvl_transport = std::make_unique<MultiPeerNvlTransport>(

@@ -19,6 +19,7 @@ class SendOptions {
  public:
   std::unordered_map<std::string, std::string> hints;
   std::chrono::milliseconds timeout;
+  int tag{0};
 
   SendOptions() : timeout(kNoTimeout) {}
 };
@@ -27,6 +28,7 @@ class RecvOptions {
  public:
   std::unordered_map<std::string, std::string> hints;
   std::chrono::milliseconds timeout;
+  int tag{0};
 
   RecvOptions() : timeout(kNoTimeout) {}
 };
