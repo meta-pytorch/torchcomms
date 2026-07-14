@@ -42,10 +42,9 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // `PIPES_DEVICE_TRAP()` is defined in `comms/prims/core/DeviceMacros.cuh` and
 // is intentionally available across all `comms/prims` device headers.
 //
-// `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm now live
-// in the shared `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh); this class
-// delegates its send/recv/forward/init/progress methods to a `sendRecv_`
-// member.
+// `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
+// the shared stateless `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh);
+// backend-owned `sendRecvState_` carries the actual protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
@@ -212,7 +211,7 @@ class P2pIbgdaTransportDevice {
         qpsPerConnection_(qpsPerConnection),
         qpDirectionCount_(qpDirectionCount),
         localChannels_(localChannels),
-        sendRecv_(sendRecvState) {}
+        sendRecvState_(sendRecvState) {}
 
   // =========================================================================
   // Slot-Index API (resolves owned buffers, forwards to explicit-buffer API)
@@ -1986,7 +1985,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_send_progress(group, nbytes, max_signal_bytes);
+    sendRecv_.init_send_progress(
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2019,7 +2019,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_recv_progress(group, nbytes, max_signal_bytes);
+    sendRecv_.init_recv_progress(
+        sendRecvState_, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2063,7 +2064,14 @@ class P2pIbgdaTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   /**
@@ -2104,7 +2112,14 @@ class P2pIbgdaTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
   }
 
   /**
@@ -2187,7 +2202,14 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
     sendRecv_.send<P2pIbgdaTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -2269,7 +2291,14 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
     sendRecv_.recv<P2pIbgdaTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this,
+        sendRecvState_,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -2370,9 +2399,11 @@ class P2pIbgdaTransportDevice {
     }
     sendRecv_.forward<CopyOp>(
         *this,
+        sendRecvState_,
         group,
         dst,
         fwd.sendRecv_,
+        fwd.sendRecvState_,
         fwd,
         nbytes,
         max_signal_bytes,
@@ -2392,7 +2423,7 @@ class P2pIbgdaTransportDevice {
   // Send/recv state accessors
 
   __host__ __device__ const IbSendRecvState& send_recv_state() const {
-    return sendRecv_.send_recv_state();
+    return sendRecvState_;
   }
 
   /**
@@ -2407,7 +2438,7 @@ class P2pIbgdaTransportDevice {
    * that send()/forward() never stall waiting for a free slot.
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return sendRecv_.pipeline_window();
+    return sendRecv_.pipeline_window(sendRecvState_);
   }
 
  private:
@@ -2427,6 +2458,7 @@ class P2pIbgdaTransportDevice {
   int qpDirectionCount_{kIbDirections};
   DeviceSpan<IbLocalChannel> localChannels_{};
 
+  IbSendRecvState sendRecvState_{};
   IbSendRecvDevice sendRecv_{};
 };
 
