@@ -9,9 +9,10 @@ export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 source ${DLE_PATH}/setvars.sh
 
 #Create Conda Env and install dependencies
+conda remove --name xpu_torchcomms_ci-${RUNNER_NAME} --all -y
 conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.10
 source activate xpu_torchcomms_ci-${RUNNER_NAME}
-conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
+conda install conda-forge::glog=0.4.0 conda-forge::gflags=2.2.2 conda-forge::fmt=12.2.0 -y
 
 export USE_XCCL=ON
 export USE_NCCL=OFF
