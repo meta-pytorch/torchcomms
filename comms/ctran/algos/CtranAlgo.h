@@ -259,6 +259,14 @@ class CtranPersistentRequest {
   cudaStream_t stream;
   void* segHdl{nullptr};
 
+  // One-shot cleanup token co-owned by this request, the comm registry, and
+  // (for graph requests) the CUDA graph user-object. The eager free path
+  // reaches the token through here; running it releases the pooled pipeSync +
+  // scoped registration (via destroyPersistentRequest), at most once across all
+  // teardown paths. The token does NOT delete this request object -- that stays
+  // with the object's owner -- so ~CtranPersistentRequest stays defaulted.
+  std::shared_ptr<PersistentCleanup> cleanup_;
+
   CtranPersistentRequest(
       Type type,
       CtranComm* comm,

@@ -270,7 +270,8 @@ commResult_t ctranAllGatherCudagraphAware(
 
       CtranPersistentRequest* request = nullptr;
       FB_COMMCHECK(createPersistentRequest(comm, stream, &request));
-      auto cleanupGuard = folly::makeGuard([request]() {
+      auto cleanupGuard = folly::makeGuard([request, comm]() {
+        comm->unregisterPersistentCleanup(request->cleanup_);
         FB_COMMCHECKIGNORE(destroyPersistentRequest(request));
         delete request;
       });
@@ -288,9 +289,25 @@ commResult_t ctranAllGatherCudagraphAware(
       // collective ops: if op capture fails, the graph tears down the request
       // via this callback instead of releasing its NVL imports / registration
       // while the captured graph still references them.
+      //
+      // Release the pooled pipeSync + scoped registration through the shared
+      // cleanup token (runs at most once). If the comm was destroyed first
+      // (comm-then-graph ordering), the comm drain already ran the token and
+      // this no-ops -- the token's shared_ptr lives in the request, which the
+      // comm drain does NOT delete, so it is safe to touch here. Never
+      // unregister from the comm registry in this callback: it may run after
+      // the comm is gone. The spent token therefore lingers in the comm's
+      // persistentCleanups_ registry until CtranComm::destroy() drains it;
+      // this is bounded by the number of distinct graph captures sharing (and
+      // destroyed during the lifetime of) this comm -- typically O(1) in
+      // steady-state training (capture once, replay many) -- so it is an
+      // acceptable bounded retention, not an unbounded leak. The graph owns the
+      // request object (never returned to the user), so this callback deletes
+      // it after releasing resources.
       auto destroyCb = [](void* p) {
         auto* req = static_cast<CtranPersistentRequest*>(p);
-        FB_COMMCHECKIGNORE(destroyPersistentRequest(req));
+        DCHECK(req->cleanup_ != nullptr);
+        req->cleanup_->run();
         delete req;
       };
       FB_COMMCHECK(registerGraphDestroyCallback(stream, request, destroyCb));
