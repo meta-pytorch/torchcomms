@@ -72,7 +72,8 @@ jobs:
         pip install numpy
         USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=1 USE_TRANSPORT=OFF pip install --no-build-isolation -v -e .
 
-        # Verify installation
+        # Verify installation - TODO re-enable this section after D90936340 stack lands
+        # TODO: confirm if D90936340 has landed and is resolved; remove this comment once confirmed
         python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
         python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"
         python -c "import torchcomms; print('TorchComms imported successfully')"
