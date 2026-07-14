@@ -561,9 +561,8 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
   const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-  // Build the device-side send/recv state from the shared base (delegates to
-  // the inherited sendRecvPeerBuffers_).
-  P2pIbgdaTransportBuildParams params(sendRecvStateForPeer(peerIndex));
+  // Build the device-side send/recv layout from the shared base.
+  P2pIbgdaTransportBuildParams params(channelLayoutForPeer(peerIndex));
   params.maxChannels = config_.max_num_channels;
   params.qpDirectionCount = config_.fixedChannelDirectionCount();
   params.qpsPerConnection = config_.qpsPerConnection;

@@ -33,7 +33,7 @@ void writeIbrcDeviceSlot(
     IbgdaLocalBuffer counterHostBuf,
     int numSignalSlots,
     int numCounterSlots,
-    IbSendRecvState sendRecvState) {
+    IbChannelLayout channelLayout) {
   auto* slots = static_cast<P2pIbrcTransportDevice*>(slotsHost);
   new (&slots[peerIndex]) P2pIbrcTransportDevice(
       queues,
@@ -47,7 +47,7 @@ void writeIbrcDeviceSlot(
       counterHostBuf,
       numSignalSlots,
       numCounterSlots,
-      sendRecvState);
+      channelLayout);
 }
 
 } // namespace comms::prims

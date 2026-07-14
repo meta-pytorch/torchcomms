@@ -18,10 +18,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_forward_kernel(
   auto group = make_block_group();
 
   const std::size_t sectionBytes = (my_rank == 1)
-      ? min(prev_transport->send_recv_state().dataBufferSize, totalBytes)
+      ? min(prev_transport->channel_layout().data_buffer_size(), totalBytes)
       : min((my_rank == 0 ? next_transport : prev_transport)
-                ->send_recv_state()
-                .dataBufferSize,
+                ->channel_layout()
+                .data_buffer_size(),
             totalBytes);
   const std::size_t totalSections = totalBytes / sectionBytes;
 
@@ -54,10 +54,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_send_kernel(
   auto group = make_block_group();
 
   const std::size_t sectionBytes = (my_rank == 1)
-      ? min(prev_transport->send_recv_state().dataBufferSize, totalBytes)
+      ? min(prev_transport->channel_layout().data_buffer_size(), totalBytes)
       : min((my_rank == 0 ? next_transport : prev_transport)
-                ->send_recv_state()
-                .dataBufferSize,
+                ->channel_layout()
+                .data_buffer_size(),
             totalBytes);
   const std::size_t totalSections = totalBytes / sectionBytes;
 

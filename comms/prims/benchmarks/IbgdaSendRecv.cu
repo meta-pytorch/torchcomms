@@ -21,7 +21,7 @@ __device__ __forceinline__ std::size_t benchmark_align_protocol_bytes(
 __device__ __forceinline__ std::size_t section_bytes(
     P2pIbgdaTransportDevice* transport,
     std::size_t totalBytes) {
-  return min(transport->send_recv_state().dataBufferSize, totalBytes);
+  return min(transport->channel_layout().data_buffer_size(), totalBytes);
 }
 
 __device__ __forceinline__ std::size_t
@@ -311,25 +311,17 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
   }
 
   const int groupId = static_cast<int>(group.group_id);
-  const auto& state = transport->send_recv_state();
+  const auto& layout = transport->channel_layout();
   const std::size_t expectedBytes =
       protocol_bytes_for_tiled_group_per_launch(
-          totalBytes, numBlocks, state.dataBufferSize, groupId) *
+          totalBytes, numBlocks, layout.data_buffer_size(), groupId) *
       iterations;
   if (expectedBytes == 0) {
     return;
   }
-  transport->wait_counter(
-      group,
-      state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)),
-      expectedBytes,
-      timeout);
-  transport->wait_signal(
-      group,
-      state.localSignalBuf.subBuffer(
-          (state.maxGroups + groupId) * sizeof(uint64_t)),
-      expectedBytes,
-      timeout);
+  auto& channel = transport->local_channel(static_cast<uint32_t>(groupId));
+  transport->wait_counter(group, channel.nicDoneWait, expectedBytes, timeout);
+  transport->wait_signal(group, channel.slotFree, expectedBytes, timeout);
 }
 
 void launch_ibgda_drain_send_recv(
@@ -353,20 +345,22 @@ void launch_ibgda_drain_send_recv(
 __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
     int maxGroups) {
-  const auto& state = transport->send_recv_state();
+  const auto& layout = transport->channel_layout();
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   const auto stride = blockDim.x * gridDim.x;
 
-  auto* signalSlots = static_cast<uint64_t*>(state.localSignalBuf.ptr);
-  auto* counterSlots = static_cast<uint64_t*>(state.localCounterBuf.ptr);
+  auto* signalSlots = static_cast<uint64_t*>(layout.localSignalBuf.ptr);
+  auto* counterSlots = static_cast<uint64_t*>(layout.localCounterBuf.ptr);
 
   for (auto slot = idx; slot < static_cast<uint32_t>(2 * maxGroups);
        slot += stride) {
     if (signalSlots != nullptr) {
       signalSlots[slot] = 0;
     }
-    if (slot < state.state.size()) {
-      state.state[slot] = IbSendRecvState::ProgressSlot{};
+    if (slot < static_cast<uint32_t>(maxGroups)) {
+      auto& channel = transport->local_channel(slot);
+      channel.sendProgress = IbChannelProgress{};
+      channel.recvProgress = IbChannelProgress{};
     }
   }
 
@@ -505,7 +499,14 @@ __global__ void ibgda_snapshot_step_state_kernel(
     int count) {
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < count) {
-    dst[idx] = transport->send_recv_state().state[idx].nextStep;
+    const auto& layout = transport->channel_layout();
+    const auto maxChannels = static_cast<uint32_t>(layout.maxChannels);
+    if (idx < maxChannels) {
+      dst[idx] = transport->local_channel(idx).sendProgress.nextStep;
+    } else {
+      dst[idx] =
+          transport->local_channel(idx - maxChannels).recvProgress.nextStep;
+    }
   }
 }
 
