@@ -3,9 +3,8 @@
 // Tile: cooperative vectorized tile operations for GPU collectives.
 //
 // A Tile is a fixed-size block of elements distributed across threads in a
-// ThreadGroup, backed by uint4 registers. Aligned memory operations use
-// 16-byte (uint4) vectorized loads/stores for optimal coalescing; unaligned
-// base pointers fall back to scalar element loads/stores.
+// ThreadGroup, backed by uint4 registers. All memory operations use 16-byte
+// (uint4) vectorized loads/stores for optimal coalescing.
 //
 // TERMINOLOGY
 // ===========
@@ -314,34 +313,28 @@ tile_load(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   using TileType = Tile<T, kTileElems, kBlockSize, RegisterStorage>;
   constexpr int kVPT = TileType::kVPT;
+  constexpr int kTileVecs = TileType::kTileVecs;
   constexpr int kEPV = VecOps<T>::kElemsPerVec;
 
   TileType tile;
-  const bool aligned = reinterpret_cast<uintptr_t>(ptr) % alignof(uint4) == 0;
+  if (reinterpret_cast<uintptr_t>(ptr) % alignof(uint4) != 0) {
+    printf(
+        "tile_load: ptr %p is not 16-byte aligned (required for uint4 vectorized access)\n",
+        ptr);
+    __trap();
+  }
+  const uint4* src = reinterpret_cast<const uint4*>(ptr) + tile_idx * kTileVecs;
   const std::size_t full_vecs = valid_elems / kEPV;
   const int remainder = static_cast<int>(valid_elems % kEPV);
-  const T* elem_base = ptr + tile_idx * kTileElems;
 
 #pragma unroll
   for (int k = 0; k < kVPT; k++) {
     std::size_t idx = group.thread_id_in_group + k * group.group_size;
-    if (aligned && idx < full_vecs) {
-      const uint4* src = reinterpret_cast<const uint4*>(elem_base);
+    if (idx < full_vecs) {
       tile.vecs[k] = src[idx];
-    } else if (!aligned && idx <= full_vecs) {
-      tile.vecs[k] = make_uint4(0, 0, 0, 0);
-      const T* elem_src = elem_base + idx * kEPV;
-      T* elem_dst = reinterpret_cast<T*>(&tile.vecs[k]);
-      const std::size_t elem_offset = idx * kEPV;
-      const int elems_this = elem_offset + kEPV <= valid_elems
-          ? kEPV
-          : static_cast<int>(valid_elems - elem_offset);
-      for (int e = 0; e < elems_this; e++) {
-        elem_dst[e] = elem_src[e];
-      }
     } else if (idx == full_vecs && remainder > 0) {
       tile.vecs[k] = make_uint4(0, 0, 0, 0);
-      const T* elem_src = elem_base + idx * kEPV;
+      const T* elem_src = ptr + tile_idx * kTileElems + idx * kEPV;
       T* elem_dst = reinterpret_cast<T*>(&tile.vecs[k]);
       for (int e = 0; e < remainder; e++) {
         elem_dst[e] = elem_src[e];
@@ -382,32 +375,27 @@ __device__ __forceinline__ void tile_store(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   using TileType = Tile<T, kTileElems, kBlockSize, RegisterStorage>;
   constexpr int kVPT = TileType::kVPT;
+  constexpr int kTileVecs = TileType::kTileVecs;
   constexpr int kEPV = VecOps<T>::kElemsPerVec;
 
-  const bool aligned = reinterpret_cast<uintptr_t>(ptr) % alignof(uint4) == 0;
+  if (reinterpret_cast<uintptr_t>(ptr) % alignof(uint4) != 0) {
+    printf(
+        "tile_store: ptr %p is not 16-byte aligned (required for uint4 vectorized access)\n",
+        ptr);
+    __trap();
+  }
+  uint4* dst = reinterpret_cast<uint4*>(ptr) + tile_idx * kTileVecs;
   const std::size_t full_vecs = valid_elems / kEPV;
   const int remainder = static_cast<int>(valid_elems % kEPV);
-  T* elem_base = ptr + tile_idx * kTileElems;
 
 #pragma unroll
   for (int k = 0; k < kVPT; k++) {
     std::size_t idx = group.thread_id_in_group + k * group.group_size;
-    if (aligned && idx < full_vecs) {
-      uint4* dst = reinterpret_cast<uint4*>(elem_base);
+    if (idx < full_vecs) {
       dst[idx] = tile.vecs[k];
-    } else if (!aligned && idx <= full_vecs) {
-      const T* elem_src = reinterpret_cast<const T*>(&tile.vecs[k]);
-      T* elem_dst = elem_base + idx * kEPV;
-      const std::size_t elem_offset = idx * kEPV;
-      const int elems_this = elem_offset + kEPV <= valid_elems
-          ? kEPV
-          : static_cast<int>(valid_elems - elem_offset);
-      for (int e = 0; e < elems_this; e++) {
-        elem_dst[e] = elem_src[e];
-      }
     } else if (idx == full_vecs && remainder > 0) {
       const T* elem_src = reinterpret_cast<const T*>(&tile.vecs[k]);
-      T* elem_dst = elem_base + idx * kEPV;
+      T* elem_dst = ptr + tile_idx * kTileElems + idx * kEPV;
       for (int e = 0; e < remainder; e++) {
         elem_dst[e] = elem_src[e];
       }
