@@ -10,6 +10,12 @@
 #include <cuda_runtime.h>
 #endif
 
+namespace comms::prims {
+struct MultipeerIbgdaDeviceTransport;
+struct IbgdaRemoteBuffer;
+struct IbgdaLocalBuffer;
+} // namespace comms::prims
+
 namespace comms::prims::moe_ep::kernels {
 
 /**
@@ -43,6 +49,10 @@ void low_latency_dispatch(
     bool round_scale,
     bool use_ue8m0,
     void** buffer_ptrs,
+    comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
+    const comms::prims::IbgdaLocalBuffer* local_rdma_x_buf,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_count,
     int phase,
     cudaStream_t stream);
 

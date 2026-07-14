@@ -25,6 +25,9 @@ namespace comms::prims {
 class MultipeerIbgdaTransport;
 class MultiPeerNvlTransport;
 class GpuMemHandler;
+struct MultipeerIbgdaDeviceTransport;
+struct IbgdaLocalBuffer;
+struct IbgdaRemoteBuffer;
 } // namespace comms::prims
 
 namespace comms::prims::moe_ep {
@@ -136,6 +139,63 @@ class LowLatencyRuntime {
    *  Buffer after sync() to wire the NVLink peer-mapped buffers. */
   void setPeerDataPtrs(const std::vector<void*>& peerPtrs);
 
+  /**
+   * Set up MultipeerIbgdaTransport for the cross-node IBGDA path.
+   *
+   * Constructs the transport with the given bootstrap, calls exchange()
+   * (which uses bootstrap->allGather), registers the LL RDMA buffer, and
+   * exchanges per-peer remote buffer descriptors for the four LL regions.
+   *
+   * Caller responsibility: provide a bootstrap that can perform the
+   * required allGathers. PreExchangedBootstrap is the typical choice when
+   * Python pre-gathers QP info via dist.all_gather_object.
+   *
+   * Idempotent in the sense that it must only be called once (transport
+   * setup is destructive). Subsequent dispatch/combine calls will see
+   * non-null device transport + per-peer remote buffers.
+   *
+   * Skipped silently when called on a single-rank setup.
+   */
+  void setupIbgda(std::shared_ptr<meta::comms::IBootstrap> bootstrap);
+
+  /** Whether IBGDA is set up and the device transport is available. */
+  bool hasIbgda() const noexcept {
+    return ibgdaDeviceTransportPtr_ != nullptr;
+  }
+
+  /** Returns nullptr if IBGDA wasn't set up. */
+  comms::prims::MultipeerIbgdaDeviceTransport* getIbgdaDeviceTransport()
+      const noexcept {
+    return ibgdaDeviceTransportPtr_;
+  }
+
+  /** Per-peer arrays (numRanks entries; self-rank entry zero-init). nullptr
+   *  if IBGDA not set up. */
+  const comms::prims::IbgdaLocalBuffer* getLocalRdmaXBufDevice()
+      const noexcept {
+    return ibgdaLocalRdmaXBufDevice_;
+  }
+  const comms::prims::IbgdaLocalBuffer* getLocalCombineXBufDevice()
+      const noexcept {
+    return ibgdaLocalCombineXBufDevice_;
+  }
+  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteRecvXDevice()
+      const noexcept {
+    return ibgdaPeerRemoteRecvXDevice_;
+  }
+  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteRecvCountDevice()
+      const noexcept {
+    return ibgdaPeerRemoteRecvCountDevice_;
+  }
+  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteCombineRecvXDevice()
+      const noexcept {
+    return ibgdaPeerRemoteCombineRecvXDevice_;
+  }
+  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteCombineRecvFlagDevice()
+      const noexcept {
+    return ibgdaPeerRemoteCombineRecvFlagDevice_;
+  }
+
  private:
   const int rank_;
   const int numRanks_;
@@ -147,6 +207,19 @@ class LowLatencyRuntime {
   LowLatencyLayout layout_;
 
   std::unique_ptr<comms::prims::MultipeerIbgdaTransport> ibgdaTransport_;
+  // Device-resident IBGDA descriptors. Populated by setupIbgda().
+  // Per-peer arrays are device-allocated copies of the corresponding host
+  // vectors returned by transport.exchangeBuffer(). Indexed by peer rank
+  // [0..numRanks); self-rank entry is zero-initialized.
+  comms::prims::MultipeerIbgdaDeviceTransport* ibgdaDeviceTransportPtr_{
+      nullptr};
+  comms::prims::IbgdaLocalBuffer* ibgdaLocalRdmaXBufDevice_{nullptr};
+  comms::prims::IbgdaLocalBuffer* ibgdaLocalCombineXBufDevice_{nullptr};
+  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteRecvXDevice_{nullptr};
+  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteRecvCountDevice_{nullptr};
+  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteCombineRecvXDevice_{nullptr};
+  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteCombineRecvFlagDevice_{
+      nullptr};
 
   // The big LL data buffer — uncached on AMD (BNXT dma-buf parity).
   // If ownsRdmaBuffer_ is false, the buffer is externally owned.

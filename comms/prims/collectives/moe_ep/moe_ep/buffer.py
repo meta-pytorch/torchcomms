@@ -13,7 +13,6 @@ methods that are not yet wired raise `NotImplementedError`.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Callable
 
 import torch
@@ -80,9 +79,9 @@ class Buffer:
     - **Low-latency** all-to-all (dispatch + combine, RDMA)
     - **High-throughput internode** all-to-all (dispatch + combine, RDMA + NVLink)
 
-    Mirrors the `Buffer` API surface so the canonical
+    Provides the `Buffer` API surface used by the
     `test_intranode.py` / `test_low_latency.py` / `test_internode.py` scripts
-    run unchanged through the `conftest.py` import shim in
+    through the `conftest.py` import shim in
     `comms/prims/collectives/moe_ep/tests/`.
     """
 
@@ -556,17 +555,15 @@ class Buffer:
         use_ue8m0: bool = False,
         async_finish: bool = False,
         return_recv_hook: bool = False,
-        # Diagnostic tensors — accepted for API parity, currently
+        # Diagnostic tensors — accepted for API compatibility, currently
         # ignored (the diagnostic counters are filled by the kernel impl).
         cumulative_local_expert_recv_stats: torch.Tensor | None = None,
         dispatch_wait_recv_cost_stats: torch.Tensor | None = None,
     ) -> tuple[Any, ...]:
         """Low-latency dispatch (IBGDA).
 
-        Routes through the C++ runtime which constructs `LowLatencyRuntime`
-        on first call. The kernel launch raises NotImplementedError; the
-        host-side scaffolding (RDMA buffer allocation, atomic counters,
-        output tensor allocation) is wired.
+        Routes through the C++ runtime, which constructs `LowLatencyRuntime`
+        on first call.
         """
         return self.runtime.low_latency_dispatch(
             x,
@@ -589,7 +586,7 @@ class Buffer:
         use_logfmt: bool = False,
         async_finish: bool = False,
         return_recv_hook: bool = False,
-        # Diagnostic / zero-copy controls — currently parity-only.
+        # Diagnostic / zero-copy controls — accepted for API compatibility.
         zero_copy: bool = False,
         out: torch.Tensor | None = None,
         combine_wait_recv_cost_stats: torch.Tensor | None = None,
@@ -619,10 +616,42 @@ class Buffer:
     def get_next_low_latency_combine_buffer(
         self, handle: tuple[Any, ...]
     ) -> torch.Tensor:
-        """Return a buffer matching packed_recv_x shape for zero_copy combine.
-
-        Our kernel currently ignores the zero_copy flag, so this is a scratch
-        tensor that the test writes to but the kernel doesn't read from.
-        """
+        """Return a buffer matching packed_recv_x shape for zero_copy combine."""
         packed_recv_x_ref = handle[2]
         return torch.empty_like(packed_recv_x_ref)
+
+    def setup_low_latency_ibgda(
+        self,
+        num_max_dispatch_tokens_per_rank: int,
+        hidden: int,
+        num_experts: int,
+    ) -> None:
+        """Construct LowLatencyRuntime + wire MultipeerIbgdaTransport for
+        cross-node LL dispatch/combine.
+
+        Required for multi-node configs. Must be called BEFORE the first
+        low_latency_dispatch — the IBGDA QPs need to be wired before the
+        kernel issues any cross-node sends. On single-node setups this is a
+        no-op (the kernel takes the NVLink-IPC fast path for all peers).
+
+        Constructs a Python `dist.all_gather_object`-backed bootstrap and
+        passes it (plus the dispatch shape) to the C++ runtime, which
+        allocates the LL workspace, registers the LL RDMA buffer, and
+        exchanges QP info + buffer descriptors across all ranks.
+        """
+        if self.group_size < 2:
+            return
+
+        def _all_gather_bytes(local_bytes: bytes) -> bytes:
+            # Gather the bytes from all ranks via PyTorch dist, return
+            # concatenated `[rank0_bytes, rank1_bytes, ..., rankN_bytes]`.
+            gathered: list[bytes] = [b""] * self.group_size
+            dist.all_gather_object(gathered, local_bytes, group=self.group)
+            return b"".join(gathered)
+
+        self.runtime.setup_low_latency_ibgda(
+            num_max_dispatch_tokens_per_rank,
+            hidden,
+            num_experts,
+            _all_gather_bytes,
+        )

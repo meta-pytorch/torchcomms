@@ -260,6 +260,19 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
   if (numChunks == 0)
     numChunks = 1;
 
+#ifdef NIC_BNXT
+  // BNXT: hold the per-QP spinlock across the ENTIRE put — slot reservation,
+  // every WQE prepare (each advances the shared MSN table / sq_tail / epoch
+  // and MUST run in slot order), the doorbell, and the synchronous CQE drain.
+  // Reserving slots OUTSIDE the lock let concurrent thread-blocks grab slots
+  // and then prepare them OUT OF ORDER under a per-chunk lock, corrupting the
+  // MSN table -> NIC fault (GPU exception 0x1016) at moderate scale / hang at
+  // large scale. The single-block path only worked because it had no
+  // concurrency. Holding the lock across reserve+prepare makes preparation
+  // strictly in-order. Matches rocSHMEM's `lock(&bnxt_sq.lock)` pattern.
+  nic.lockQp(qp);
+#endif
+
   uint64_t baseIdx =
       pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numChunks);
   std::size_t remaining = size;
@@ -285,19 +298,22 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
     remaining -= chunkSize;
 
 #ifdef NIC_BNXT
-    // BNXT: per-WQE doorbell + per-chunk CQE drain. The mlx5 batched
-    // doorbell pattern desyncs the NIC, and overlapping chunks trigger
-    // LOC_QP_OP. The caller drains the last chunk's CQE.
+    // BNXT CQ is ncqe=1: the NIC cannot complete the next WQE until this WQE's
+    // CQE is consumed (advance cqe_ci + ring the CQ doorbell). Drain EVERY
+    // chunk — including the last — synchronously (still under the lock) so the
+    // single CQE slot is always free and each put is fully self-contained.
     pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
     pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
-    if (i + 1 < numChunks) {
-      spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
-      qp->cq_sq.cqe_ci = wqeIdx + 1;
-    }
+    spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
+    qp->cq_sq.cqe_ci = wqeIdx + 1;
+    nic.bnxtUpdateCqDbrec(qp);
 #endif
   }
 
   uint64_t lastIdx = baseIdx + numChunks - 1;
+#ifdef NIC_BNXT
+  nic.unlockQp(qp);
+#endif
 #ifdef NIC_MLX5
   // Mlx5: batched doorbell — single ring after all chunks prepared.
   // Uses fast submit with ctrl segment captured on GPU stack (avoids
@@ -323,6 +339,10 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal(
     uint64_t sig_val,
     uint64_t* out_ticket) {
   uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+
+#ifdef NIC_BNXT
+  nic.lockQp(qp);
+#endif
   auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
   pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
@@ -341,6 +361,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+#ifdef NIC_BNXT
+  nic.unlockQp(qp);
+#endif
 
   *out_ticket = wqeIdx;
 }
@@ -378,6 +401,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
         ? PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
         : remaining;
 
+#ifdef NIC_BNXT
+    nic.lockQp(qp);
+#endif
     auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
     pipes_gda_gpu_dev_verbs_wqe_prepare_write(
         nic,
@@ -398,10 +424,14 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
     pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
     spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
     qp->cq_sq.cqe_ci = wqeIdx + 1;
+    nic.unlockQp(qp);
 #endif
   }
 
   uint64_t sigIdx = baseIdx + numChunks;
+#ifdef NIC_BNXT
+  nic.lockQp(qp);
+#endif
   auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, sigIdx);
   pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
@@ -421,6 +451,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
   // BNXT: per-WQE doorbell for the signal WQE too.
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, sigIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
+  nic.unlockQp(qp);
 #else
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
@@ -444,11 +475,17 @@ __device__ __forceinline__ void pipes_gda_fence(
     NicBackend& nic,
     pipes_gda_gpu_dev_verbs_qp* qp) {
   uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+#ifdef NIC_BNXT
+  nic.lockQp(qp);
+#endif
   auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
   pipes_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+#ifdef NIC_BNXT
+  nic.unlockQp(qp);
+#endif
   pipes_gda_gpu_dev_verbs_wait(nic, qp, wqeIdx);
 }
 
@@ -493,6 +530,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_p(
     T value,
     uint64_t* out_ticket) {
   uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+#ifdef NIC_BNXT
+  nic.lockQp(qp);
+#endif
   auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
   nic.prepareInlineWriteWqe(
@@ -506,6 +546,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_p(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+#ifdef NIC_BNXT
+  nic.unlockQp(qp);
+#endif
 
   *out_ticket = wqeIdx;
 }
@@ -579,6 +622,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
         ? PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
         : remaining;
 
+#ifdef NIC_BNXT
+    nic.lockQp(mainQp);
+#endif
     auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, wqeIdx);
     pipes_gda_gpu_dev_verbs_wqe_prepare_write(
         nic,
@@ -599,12 +645,16 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
     pipes_gda_gpu_dev_verbs_submit(nic, mainQp, wqeIdx + 1);
     spin_poll_or_trap(nic, &mainQp->cq_sq, wqeIdx);
     mainQp->cq_sq.cqe_ci = wqeIdx + 1;
+    nic.unlockQp(mainQp);
 #endif
   }
 
   uint64_t lastIdx;
   if (hasSignal) {
     uint64_t sigIdx = mainBase + numChunks;
+#ifdef NIC_BNXT
+    nic.lockQp(mainQp);
+#endif
     auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
     pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
         nic,
@@ -625,6 +675,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
 #ifdef NIC_BNXT
     pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
     pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+    nic.unlockQp(mainQp);
 #endif
   } else {
     lastIdx = mainBase + numChunks - 1;
@@ -742,6 +793,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 
   // Main QP: signal atomic
   uint64_t sigIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, 1);
+#ifdef NIC_BNXT
+  nic.lockQp(mainQp);
+#endif
   auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
   pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
@@ -759,6 +813,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+#ifdef NIC_BNXT
+  nic.unlockQp(mainQp);
+#endif
 
 #if defined(__HIP_PLATFORM_AMD__)
   // AMD: signal-with-real-target path. Spin-poll on mainQp's CQ con_indx,
