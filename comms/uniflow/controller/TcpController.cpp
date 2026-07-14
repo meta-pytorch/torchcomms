@@ -1346,9 +1346,20 @@ Status configureClientSocket(int sock, const TcpSocketConfig& config) {
     int val = static_cast<int>(config.userTimeout->count());
     opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
   }
-  if (config.connTimeout) {
+  /*
+   * Default the send/recv timeout to kConnectedTimeoutSec when the caller does
+   * not specify one, matching configureAcceptedSocket on the server side.
+   * Without this the client's connected socket blocks forever: a peer that
+   * accepts the TCP connection but stops responding mid-handshake (e.g. its
+   * transport setup failed) would wedge the client's blocking recv during the
+   * handshake exchange indefinitely, which is only reaped as an opaque
+   * process-unresponsive failure. Bounding it turns the hang into a surfaced
+   * ConnectionFailed error.
+   */
+  {
     struct timeval tv{};
-    tv.tv_sec = config.connTimeout->count();
+    tv.tv_sec =
+        config.connTimeout ? config.connTimeout->count() : kConnectedTimeoutSec;
     opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
     opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
   }

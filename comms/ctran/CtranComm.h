@@ -12,6 +12,8 @@
 #include <vector>
 
 #include <folly/Synchronized.h>
+#include <folly/container/F14Set.h>
+#include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
@@ -250,6 +252,18 @@ class CtranComm {
   };
   CudagraphDeferredCleanup cudagraphDeferredCleanup;
 
+  // Registry of persistent-request cleanup tokens (see PersistentCleanup.h).
+  // Each token releases one persistent request's pooled GpeKernelSync
+  // (pipeSync) + scoped registration. destroy() drains this set (running each
+  // token once) BEFORE ctran_.reset() -> CtranGpe::terminate(), guaranteeing
+  // every pooled pipeSync is returned before terminate()'s pool-drain
+  // spin-wait -- no matter which teardown path (eager free, graph-destroy
+  // callback, comm cleanup) fires first.
+  void registerPersistentCleanup(std::shared_ptr<PersistentCleanup> cleanup);
+  void unregisterPersistentCleanup(
+      const std::shared_ptr<PersistentCleanup>& cleanup);
+  void drainPersistentCleanups();
+
  private:
   friend class CtranGpe;
   friend commResult_t ctranInit(
@@ -273,4 +287,7 @@ class CtranComm {
   std::shared_ptr<AsyncError> asyncErr_;
   std::shared_ptr<Abort> abort_;
   uint64_t ctranOpCount_{0};
+
+  folly::Synchronized<folly::F14FastSet<std::shared_ptr<PersistentCleanup>>>
+      persistentCleanups_;
 };

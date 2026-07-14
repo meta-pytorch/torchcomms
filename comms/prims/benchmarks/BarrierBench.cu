@@ -35,7 +35,6 @@ void launchBarrierBenchKernel(
   // Create transport options (only barrier buffers are used)
   P2pNvlTransportOptions options{
       .dataBufferSize = 1024,
-      .chunkSize = 512,
       .pipelineDepth = 2,
   };
 

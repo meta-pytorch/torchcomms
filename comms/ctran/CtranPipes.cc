@@ -31,6 +31,10 @@ int ctranPipesNvlMaxNumChannels() {
   return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
 }
 
+size_t alignDown(size_t value, size_t alignment) {
+  return (value / alignment) * alignment;
+}
+
 } // namespace
 
 commResult_t ctran::ctranPreparePipesTrace(
@@ -76,10 +80,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->bootstrap_.get(),
         [](meta::comms::IBootstrap*) {}); // no-op deleter
 
-    comms::prims::MultiPeerTransportConfig config{};
-
-    // NVL config: per-comm hint > CVAR default
     const auto& pc = comm->config_.pipesConfig;
+    comms::prims::MultiPeerTransportConfig config{};
 
     config.nvlConfig.pipelineDepth =
         static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
@@ -88,14 +90,14 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && comm->statex_->nLocalRanks() > 1;
     const size_t nvlSharedDevbufSize =
         ctranEffectiveP2pNvlSharedDevbufSize(comm->statex_->nLocalRanks());
-    config.nvlConfig.dataBufferSize = static_cast<size_t>(
+    const size_t nvlDataBufferSize = static_cast<size_t>(
         nvlSharedDevbufSize / config.nvlConfig.pipelineDepth);
 
-    config.nvlConfig.chunkSize = (pc.nvlChunkSize > 0)
-        ? static_cast<size_t>(pc.nvlChunkSize)
-        : static_cast<size_t>(NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE);
-
     config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
+    config.nvlConfig.perChannelSize = alignDown(
+        nvlDataBufferSize /
+            static_cast<size_t>(config.nvlConfig.maxNumChannels),
+        16);
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
@@ -258,13 +260,13 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlChunkSize={} nvlMaxNumChannels={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
-        config.nvlConfig.dataBufferSize,
-        config.nvlConfig.chunkSize,
+        nvlDataBufferSize,
         config.nvlConfig.maxNumChannels,
+        config.nvlConfig.perChannelSize,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,

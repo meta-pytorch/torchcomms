@@ -40,7 +40,7 @@ struct AllToAllvBenchmarkConfig {
   int numThreads;
   std::size_t pipelineDepth = 4;
   std::size_t chunkSize = 512 * 1024; // 512KB default
-  std::size_t dataBufferSize = 2048; // Data buffer size for P2P transport
+  std::size_t perChannelSize = 32; // Per-channel staging size for NVL transport
   bool spreadClusterLaunch = false; // Use spread cluster kernel launch
   std::string name;
 };
@@ -248,9 +248,9 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     // Setup P2P NVL transport
     MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.dataBufferSize,
-        .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .maxNumChannels = 64,
+        .perChannelSize = config.perChannelSize,
     };
 
     // Create transport with bootstrap and exchange IPC handles
@@ -470,7 +470,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
   }
 
   std::vector<AllToAllvBenchmarkConfig> configs;
-  std::size_t kDataBufferSize = 8 * 1024 * 1024; // 8MB
+  std::size_t kPerChannelSize = 128 * 1024;
 
   // === Block Count Tuning ===
   // Block counts are matched to NCCL channel counts for fair comparison.
@@ -496,7 +496,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024, // 64KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "256K_8B",
   });
@@ -508,7 +508,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024, // 64KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "512K_16B",
   });
@@ -520,7 +520,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 64 * 1024, // 64KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "1M_16B",
   });
@@ -532,7 +532,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 128 * 1024, // 128KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "2M_16B",
   });
@@ -544,7 +544,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 128 * 1024, // 128KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "4M_16B",
   });
@@ -556,7 +556,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 128 * 1024, // 128KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "8M_16B",
   });
@@ -568,7 +568,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 128 * 1024, // 128KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "16M_16B",
   });
@@ -580,7 +580,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 128 * 1024, // 128KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "32M_16B",
   });
@@ -592,7 +592,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 256 * 1024, // 256KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "64M_16B",
   });
@@ -604,7 +604,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 256 * 1024, // 256KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "128M_16B",
   });
@@ -616,7 +616,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 256 * 1024, // 256KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "512M_32B",
   });
@@ -628,7 +628,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 256 * 1024, // 256KB
-      .dataBufferSize = kDataBufferSize,
+      .perChannelSize = kPerChannelSize,
       .spreadClusterLaunch = true,
       .name = "1G_32B",
   });

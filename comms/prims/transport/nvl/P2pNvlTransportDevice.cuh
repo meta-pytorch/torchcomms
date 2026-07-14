@@ -61,17 +61,14 @@ struct RemoteState {
 /**
  * P2pNvlTransportOptions - Configuration for P2P NVLink transport
  *
- * Defines the buffer sizes and chunking parameters for staged transfers.
- * - dataBufferSize: Size of ONE pipeline slot (determines max per-step
- *   transfer)
- * - chunkSize: Size of each chunk for parallel processing
+ * Defines the derived buffer sizes for staged transfers.
+ * - dataBufferSize: Size of ONE pipeline slot across all fixed channels
  * - pipelineDepth: Number of buffer slots for pipelining (typically 2-8)
  *
  * Total memory allocated = pipelineDepth × dataBufferSize
  */
 struct P2pNvlTransportOptions {
   std::size_t dataBufferSize{0};
-  std::size_t chunkSize{0};
   std::size_t pipelineDepth{0};
   std::size_t ll128BufferNumPackets{0}; // 0 = no chunking
   std::size_t llBufferNumLines{0}; // 0 = no chunking
@@ -132,17 +129,11 @@ class P2pNvlTransportDevice {
   // window must be bounded by that ring's capacity (per_channel_slot *
   // safeDepth). A larger window lets a single call wrap the ring and wait for a
   // slot_free the peer only produces after its own recv() — deadlocking the
-  // send-before-recv AllReduce pattern. The legacy (non-channel) path keeps the
-  // historical per-block-slot arithmetic.
-  __host__ __device__ std::size_t pipeline_window(int totalGroups) const {
+  // send-before-recv AllReduce pattern.
+  __host__ __device__ std::size_t pipeline_window() const {
     const std::size_t safeDepth =
         options_.pipelineDepth > 1 ? options_.pipelineDepth - 1 : 1;
-    if (options_.max_num_channels > 0 && options_.per_channel_slot > 0) {
-      return options_.per_channel_slot * safeDepth;
-    }
-    const std::size_t perBlockSlotSize =
-        (options_.dataBufferSize / totalGroups) & ~15ULL;
-    return perBlockSlotSize * safeDepth;
+    return options_.per_channel_slot * safeDepth;
   }
 
   // Getters for testing

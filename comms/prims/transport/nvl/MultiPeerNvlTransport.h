@@ -33,28 +33,18 @@ struct Transport;
  * IMPORTANT: All ranks must use identical configuration values.
  *
  * For the fixed-channel tile protocol:
- *   dataBufferSize >= maxNumChannels * perChannelSize
+ *   one pipeline slot = maxNumChannels * perChannelSize
  *
- * Memory per rank = (nRanks - 1) * pipelineDepth * dataBufferSize
+ * Memory per rank = (nRanks - 1) * pipelineDepth * maxNumChannels *
+ * perChannelSize
  */
 struct MultiPeerNvlTransportConfig {
-  // Size of staging buffer per pipeline slot across all channels (bytes).
-  // When this is 0 and maxNumChannels > 0, it is derived from perChannelSize
-  // and maxNumChannels during host transport construction.
-  std::size_t dataBufferSize{0};
-
-  // Chunk size for parallel processing (bytes).
-  // Smaller = more parallelism, larger = less sync overhead.
-  // Should be multiple of 16 bytes. Typical: 8 KB - 4 MB.
-  std::size_t chunkSize{0};
-
   // Number of pipeline slots for overlapping communication.
   // Higher = better latency hiding but more memory.
   // Typical: 2-4 for most workloads.
   std::size_t pipelineDepth{0};
 
   // Number of P2P signal slots per peer for chunk-level pipeline coordination.
-  // Used by signalBufferHandler_ and P2pNvlTransportDevice for send()/recv().
   // This is separate from WindowConfig.peerSignalCount (inbox model).
   // Typical: 1-num of blocks for most workloads.
   std::size_t p2pSignalCount{1};
@@ -105,8 +95,9 @@ struct MultiPeerNvlTransportConfig {
  *   buffer region that this rank writes into via NVLink.
  *
  * SIZE REQUIREMENTS:
- *   Each per-peer buffer must be at least (pipelineDepth * dataBufferSize)
- *   bytes, matching the config passed to MultiPeerNvlTransport.
+ *   Each per-peer buffer must be at least
+ *   (pipelineDepth * maxNumChannels * perChannelSize) bytes, matching the
+ *   config passed to MultiPeerNvlTransport.
  *   setExternalDataBuffers() validates this and throws on mismatch.
  *
  * OWNERSHIP:
@@ -376,6 +367,7 @@ class MultiPeerNvlTransport {
   std::unique_ptr<meta::comms::DeviceBuffer> transportsDevice_;
 
   // Per-peer buffer sizes for offset calculation
+  std::size_t dataBufferSize_{0};
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
   std::size_t perPeerLl128BufferSize_{0};
