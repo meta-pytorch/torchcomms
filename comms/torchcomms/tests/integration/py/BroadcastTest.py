@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# pyre-unsafe
+# pyre-strict
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import itertools
 import os
 import unittest
+from typing import Callable
 
 import torch
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
@@ -13,19 +14,29 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     TorchCommTestWrapper,
 )
 
+skip_unless_ncclx: Callable[[Callable[..., object]], Callable[..., object]] = (
+    unittest.skipIf(
+        os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only scatter tests"
+    )
+)
+
 
 class BroadcastTest(unittest.TestCase):
     """Test class for broadcast operations in TorchComm."""
 
     # Class variables for test parameters
-    counts = [0, 4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
-    num_replays = 4
+    counts: list[int] = (
+        [0, 4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
+    )
+    dtypes: list[torch.dtype] = (
+        [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
+    )
+    num_replays: int = 4
 
-    def get_wrapper(self):
+    def get_wrapper(self) -> TorchCommTestWrapper:
         return TorchCommTestWrapper()
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Set up test environment before each test."""
         self.wrapper = self.get_wrapper()
         self.torchcomm = self.wrapper.get_torchcomm()
@@ -33,13 +44,14 @@ class BroadcastTest(unittest.TestCase):
         self.num_ranks = self.torchcomm.get_size()
         self.device = self.torchcomm.get_device()
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         """Clean up after each test."""
         # Explicitly reset the TorchComm object to ensure proper cleanup
         self.torchcomm = None
+        # pyrefly: ignore [bad-assignment]
         self.wrapper = None
 
-    def _sync_broadcast(self, count, dtype):
+    def _sync_broadcast(self, count: int, dtype: torch.dtype) -> None:
         """Test synchronous broadcast with work object."""
         print(
             f"Testing sync broadcast with count={count} and dtype={get_dtype_name(dtype)}"
@@ -58,7 +70,7 @@ class BroadcastTest(unittest.TestCase):
         # Verify the results
         self._verify_broadcast_results(tensor, root_value)
 
-    def _sync_broadcast_no_work(self, count, dtype):
+    def _sync_broadcast_no_work(self, count: int, dtype: torch.dtype) -> None:
         """Test synchronous broadcast without work object."""
         print(
             f"Testing sync broadcast without work object with count={count} and dtype={get_dtype_name(dtype)}"
@@ -76,7 +88,7 @@ class BroadcastTest(unittest.TestCase):
         # Verify the results
         self._verify_broadcast_results(tensor, root_value)
 
-    def _async_broadcast(self, count, dtype):
+    def _async_broadcast(self, count: int, dtype: torch.dtype) -> None:
         """Test asynchronous broadcast with wait."""
         print(
             f"Testing async broadcast with count={count} and dtype={get_dtype_name(dtype)}"
@@ -97,7 +109,7 @@ class BroadcastTest(unittest.TestCase):
         # Verify the results
         self._verify_broadcast_results(tensor, root_value)
 
-    def _async_broadcast_early_reset(self, count, dtype):
+    def _async_broadcast_early_reset(self, count: int, dtype: torch.dtype) -> None:
         """Test asynchronous broadcast with early reset."""
         print(
             f"Testing async broadcast with early reset with count={count} and dtype={get_dtype_name(dtype)}"
@@ -121,7 +133,7 @@ class BroadcastTest(unittest.TestCase):
         # Verify the results
         self._verify_broadcast_results(tensor, root_value)
 
-    def _broadcast_input_deleted(self, count, dtype):
+    def _broadcast_input_deleted(self, count: int, dtype: torch.dtype) -> None:
         """Test asynchronous broadcast with input deleted after enqueue."""
         print(
             f"Testing async broadcast with input deleted after enqueue with count={count} and dtype={get_dtype_name(dtype)}"
@@ -143,7 +155,7 @@ class BroadcastTest(unittest.TestCase):
         # to verify results since the original was deleted. This test primarily validates
         # that the operation completes without crashing when input is deleted.
 
-    def _graph_broadcast(self, count, dtype):
+    def _graph_broadcast(self, count: int, dtype: torch.dtype) -> None:
         """Test CUDA Graph broadcast."""
         print(
             f"Testing CUDA Graph broadcast with count={count} and dtype={get_dtype_name(dtype)}"
@@ -160,6 +172,7 @@ class BroadcastTest(unittest.TestCase):
             # Create tensor with different values based on rank AFTER setting non-default stream but BEFORE graph capture
             tensor = self._create_broadcast_tensor(root_rank, root_value, count, dtype)
             # For non-root ranks, create original tensor to reset to
+            original_tensor = tensor
             if self.rank != root_rank:
                 original_tensor = tensor.clone()
 
@@ -182,7 +195,7 @@ class BroadcastTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_broadcast_results(tensor, root_value)
 
-    def _graph_broadcast_input_deleted(self, count, dtype):
+    def _graph_broadcast_input_deleted(self, count: int, dtype: torch.dtype) -> None:
         """Test CUDA Graph broadcast with input deleted after graph creation."""
         print(
             f"Testing CUDA Graph broadcast with input deleted after graph creation with count={count} and dtype={get_dtype_name(dtype)}"
@@ -217,7 +230,9 @@ class BroadcastTest(unittest.TestCase):
             # Note: Cannot verify results since tensor is deleted
             # This test validates that the graph replay completes without crashing
 
-    def _create_broadcast_tensor(self, root_rank, value, count, dtype):
+    def _create_broadcast_tensor(
+        self, root_rank: int, value: int, count: int, dtype: torch.dtype
+    ) -> torch.Tensor:
         """Create tensor for broadcast with different values based on rank."""
         options = {"dtype": dtype, "device": self.device}
 
@@ -237,9 +252,9 @@ class BroadcastTest(unittest.TestCase):
                 return torch.ones(count, **options) * int(value)
             else:
                 return torch.zeros(count, **options)
-        return None
+        raise ValueError(f"Unsupported dtype: {dtype}")
 
-    def _verify_broadcast_results(self, tensor, value):
+    def _verify_broadcast_results(self, tensor: torch.Tensor, value: int) -> None:
         """Verify the results of the broadcast operation."""
         # Extract dtype from the tensor
         dtype = tensor.dtype
@@ -259,49 +274,45 @@ class BroadcastTest(unittest.TestCase):
                 f"Tensors not equal for broadcast with value {value}",
             )
 
-    def test_sync_broadcast(self):
+    def test_sync_broadcast(self) -> None:
         """Test synchronous broadcast with work object."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._sync_broadcast(count, dtype)
 
-    def test_sync_broadcast_no_work(self):
+    def test_sync_broadcast_no_work(self) -> None:
         """Test synchronous broadcast without work object."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._sync_broadcast_no_work(count, dtype)
 
-    def test_async_broadcast(self):
+    def test_async_broadcast(self) -> None:
         """Test asynchronous broadcast with wait."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._async_broadcast(count, dtype)
 
-    def test_async_broadcast_early_reset(self):
+    def test_async_broadcast_early_reset(self) -> None:
         """Test asynchronous broadcast with early reset."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._async_broadcast_early_reset(count, dtype)
 
-    def test_broadcast_input_deleted(self):
+    def test_broadcast_input_deleted(self) -> None:
         """Test asynchronous broadcast with input deleted after enqueue."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._broadcast_input_deleted(count, dtype)
 
-    @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only scatter tests"
-    )
-    def test_graph_broadcast(self):
+    @skip_unless_ncclx
+    def test_graph_broadcast(self) -> None:
         """Test CUDA Graph broadcast."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):
                 self._graph_broadcast(count, dtype)
 
-    @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only scatter tests"
-    )
-    def test_graph_broadcast_input_deleted(self):
+    @skip_unless_ncclx
+    def test_graph_broadcast_input_deleted(self) -> None:
         """Test CUDA Graph broadcast with input deleted after graph creation."""
         for count, dtype in itertools.product(self.counts, self.dtypes):
             with self.subTest(count=count, dtype=dtype):

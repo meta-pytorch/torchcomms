@@ -28,7 +28,8 @@
 namespace torch::comms {
 
 // Hint key names for NCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
@@ -92,6 +93,10 @@ class TorchCommNCCL : public TorchCommBackend,
   int getSize() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
+  // Returns the underlying host ncclComm_t as an opaque integer pointer.
+  // Mirrors TorchCommNCCLX::getCommPtr; used to wire this comm into PyTorch's
+  // symmetric-memory registry from Python (see get_nccl_comm_ptr binding).
+  int64_t getCommPtr() const;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -214,6 +219,8 @@ class TorchCommNCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
   void abort() override;
+  bool isAbortSupported() const override;
+  bool isAborted() const override;
 
   // Friend access for TorchCommNCCL
   friend class TorchWorkNCCL;
@@ -289,6 +296,12 @@ class TorchCommNCCL : public TorchCommBackend,
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
+
+  // Set once the communicator has been revoked (the graceful abort path used in
+  // reconfigurable mode). Guards revokeNcclComm() so its teardown runs at most
+  // once per communicator generation, even when both the timeout watchdog and a
+  // synchronous collective observe the same failure. Reset on reconfigure.
+  std::atomic<bool> revoked_{false};
 
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
@@ -483,7 +496,7 @@ class TorchCommNCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
+  bool is_high_priority_stream_{false};
   std::string name_;
 
   // Graph capture mode work references

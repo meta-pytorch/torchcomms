@@ -161,8 +161,10 @@ RCCL_PARAM(MscclppThreshold, "MSCCLPP_THRESHOLD", (size_t)(16*1024*1024));
 static constexpr int64_t defaultEnableMscclpp = 0;
 RCCL_PARAM(MscclppEnabled, "MSCCLPP_ENABLE", defaultEnableMscclpp);
 RCCL_PARAM(MscclppForceEnabled, "MSCCLPP_FORCE_ENABLE", 0);
-// Turn off cheap fence for gfx942/gfx950
-RCCL_PARAM(Gfx9CheapFenceOff, "GFX9_CHEAP_FENCE_OFF", 0);
+// RCCL_GFX9_CHEAP_FENCE_OFF: 0 = arch-tuned default, 1 = __threadfence, 2 = __threadfence_system
+RCCL_PARAM(Gfx9CheapFenceOff, "GFX9_CHEAP_FENCE_OFF", 2);
+// RCCL_GFX9_BARRIER: ProtoSimple barrier() — 0 = __threadfence_block, 1 = __threadfence, 2 = __threadfence_system
+RCCL_PARAM(Gfx9Barrier, "GFX9_BARRIER", 0);
 
 // GDRCOPY support: Off by default
 NCCL_PARAM(GdrCopyEnable, "GDRCOPY_ENABLE", 0);
@@ -884,8 +886,10 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
       0,
       sizeof(struct ncclLowPrecisionBufferPool));
 
-  // Only pre-allocate low precision buffer pool if RCCL_LOW_PRECISION_ENABLE=1
-  if (isLowPrecisionFp8E4M3Enabled()) {
+  // Pre-allocate the low precision buffer pool if low precision is enabled
+  // globally or for any individual collective, or if RCCL_LOW_PRECISION_ENABLE_INIT
+  // forces it (so the per-collective LP switches can be toggled at runtime).
+  if (isAnyLowPrecisionFp8E4M3Enabled() || isLowPrecisionInitEnabled()) {
     // Pre-allocate low precision buffer pool for 2G elements support (8 GPU
     // single node)
     NCCLCHECK(ncclInitLowPrecisionBufferPoolForComm(comm, ndev));
@@ -918,6 +922,14 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   tmpCommAndChans.comm.abortFlag = comm->abortFlagDev;
   tmpCommAndChans.comm.isAllNvlink = comm->isAllNvlink;
   tmpCommAndChans.comm.p2pnChannelsPerPeer = comm->p2pnChannelsPerPeer;
+  {
+    int64_t const pBarrier = rcclParamGfx9Barrier();
+    int bm = ncclGfx9BarrierFenceBlock;
+    if (pBarrier == ncclGfx9BarrierFenceThread) bm = ncclGfx9BarrierFenceThread;
+    else if (pBarrier == ncclGfx9BarrierFenceSystem) bm = ncclGfx9BarrierFenceSystem;
+    comm->gfx9BarrierMode = bm;
+    tmpCommAndChans.comm.gfx9BarrierMode = bm;
+  }
   for (int p=0; p < NCCL_NUM_PROTOCOLS; p++) {
     tmpCommAndChans.comm.buffSizes[p] = comm->buffSizes[p];
   }
@@ -950,6 +962,14 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
 
   if (comm->rank == 0) {
     INFO(NCCL_INIT, "CC %s, workFifoBytes %d", ccEnable ? "On" : "Off", comm->workFifoBytes);
+    static char const* const kGfx9BarrierFenceModeStr[] = {
+      "__threadfence_block",
+      "__threadfence",
+      "__threadfence_system"
+    };
+    int const bfm = comm->gfx9BarrierMode;
+    INFO(NCCL_INIT, "GFX9 BarrierFenceMode: %s (RCCL_GFX9_BARRIER=%d)",
+         (unsigned)bfm <= 2u ? kGfx9BarrierFenceModeStr[bfm] : kGfx9BarrierFenceModeStr[0], bfm);
   }
 
   if (ncclGdrCopy != NULL && ncclParamGdrCopyFifoEnable() == 1) {
@@ -1596,17 +1616,29 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     allGather3Data[rank].nc = std::max(allGather3Data[rank].nc, 4/ringGraph->nChannels);
   if (ringGraph->nChannels > MAXCHANNELS/2)
     allGather3Data[rank].nc = 1;
-  comm -> gfx9CheapFenceOff = 1;
+  comm->gfx9CheapFenceMode = ncclGfx9PostPeerFenceThread;
   #ifdef HIP_UNCACHED_MEMORY
-  if(!rcclParamGfx9CheapFenceOff()){
-    if(IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx942")){
-      comm -> gfx9CheapFenceOff = 0;
+  {
+    int64_t const p = rcclParamGfx9CheapFenceOff();
+    if (p == ncclGfx9PostPeerFenceThread || p == ncclGfx9PostPeerFenceSystem) {
+      comm->gfx9CheapFenceMode = (int)p;
+    } else {
+      comm->gfx9CheapFenceMode = ncclGfx9PostPeerFenceThread;
+      if (IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx942")) {
+        comm->gfx9CheapFenceMode = ncclGfx9PostPeerFenceCheap;
+      } else if (IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx950")) {
+        comm->gfx9CheapFenceMode = (ROCM_VERSION < 70002 && nNodes > 1) ? ncclGfx9PostPeerFenceThread : ncclGfx9PostPeerFenceCheap;
+      }
     }
-    else if(IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx950")){
-      comm -> gfx9CheapFenceOff = ROCM_VERSION < 70002 && nNodes > 1; // Enable for single node only prior to ROCm 7.0.2
-    }
+    static char const* const fenceModeStr[] = {
+      "cheap (signal fence)",
+      "__threadfence",
+      "__threadfence_system"
+    };
+    int const mi = comm->gfx9CheapFenceMode;
+    INFO(NCCL_INIT, "GFX9 post-peer fence mode: %s",
+         (unsigned)mi <= 2u ? fenceModeStr[mi] : fenceModeStr[0]);
   }
-  INFO(NCCL_INIT, "GFX9 cheap fence is %s", comm -> gfx9CheapFenceOff ? "OFF" : "ON");
   #endif
   // RCCL: Only use one slice per primitive on some single node gfx9xx systems, only currently enabled for AllReduce, ReduceScatter, and AllGather
   if (IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx942") || IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx950")){

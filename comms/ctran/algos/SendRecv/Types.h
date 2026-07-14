@@ -15,7 +15,7 @@
 // header. Including that header would cause duplicate symbols when .cu files
 // including this header are compiled by both device_object and
 // hetero_ctran_device_lib.
-namespace comms::pipes {
+namespace comms::prims {
 class P2pNvlTransportDevice;
 }
 
@@ -83,7 +83,7 @@ struct KernArgs {
 
   // Base pointer to pre-allocated P2pNvlTransportDevice array
   // Indexed by peerLocalRank to get the transport for each peer
-  comms::pipes::P2pNvlTransportDevice* nvlTransportsBase;
+  comms::prims::P2pNvlTransportDevice* nvlTransportsBase;
 };
 
 struct KernelSendArgs {

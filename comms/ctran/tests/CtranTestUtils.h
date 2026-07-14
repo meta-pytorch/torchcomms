@@ -47,7 +47,9 @@ class TestCtranCommRAII {
   }
 };
 
-std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId = 0);
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(
+    int devId = 0,
+    bool abortEnabled = false);
 
 // Helper struct to hold bootstrap that needs to stay alive with the CtranComm
 struct CtranCommWithBootstrap {
@@ -60,14 +62,15 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
     int nRanks,
     uint64_t commId = 22,
     int commHash = -1,
-    std::string_view commDesc = "ctran_comm_raii_comm_desc") {
+    std::string_view commDesc = "ctran_comm_raii_comm_desc",
+    bool abortEnabled = false) {
   int cudaDev;
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));
 
   COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
 
-  std::unique_ptr<CtranComm> ctranComm = std::make_unique<CtranComm>(
-      ::ctran::utils::createAbort(/*enabled=*/false));
+  std::unique_ptr<CtranComm> ctranComm =
+      std::make_unique<CtranComm>(::ctran::utils::createAbort(abortEnabled));
 
   // Create and initialize bootstrap; needed for CTRAN backend initialization
   auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(

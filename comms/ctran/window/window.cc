@@ -1,26 +1,153 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/ScopeGuard.h>
 #include <memory>
+#include <numeric>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/window/DeviceWindow.cuh"
+#include "comms/prims/window/HostWindow.h"
 #endif
 #include "comms/utils/logger/LogUtils.h"
 
 using ctran::window::RemWinInfo;
 
 namespace ctran {
+namespace {
+
+commResult_t getWindowMapper(CtranComm* comm, CtranMapper** mapperOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || mapperOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or mapper output is null");
+  }
+
+  auto* resourceComm = comm->resourceComm();
+  if (!ctranInitialized(resourceComm) ||
+      resourceComm->ctran_->mapper == nullptr) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: window resource communicator has no initialized mapper");
+  }
+
+  *mapperOut = resourceComm->ctran_->mapper.get();
+  return commSuccess;
+}
+
+commResult_t getWindowResourceRanks(
+    CtranComm* comm,
+    std::vector<int>* ranksOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || ranksOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or rank output is null");
+  }
+
+  const int nRanks = comm->statex_->nRanks();
+  ranksOut->resize(nRanks);
+  if (!comm->isSplitShare()) {
+    std::iota(ranksOut->begin(), ranksOut->end(), 0);
+    return commSuccess;
+  }
+
+  const auto& resourceRanks = comm->parentRanks();
+  if (resourceRanks.size() != static_cast<size_t>(nRanks)) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window rank map size {} does not match nRanks {}",
+        resourceRanks.size(),
+        nRanks);
+  }
+
+  *ranksOut = resourceRanks;
+  return commSuccess;
+}
+
+commResult_t getWindowResourceRank(CtranComm* comm, int rank, int* rankOut) {
+  if (comm == nullptr || comm->statex_ == nullptr || rankOut == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: window communicator/statex or rank output is null");
+  }
+  if (rank < 0 || rank >= comm->statex_->nRanks()) {
+    FB_ERRORRETURN(
+        commInvalidArgument, "CTRAN-WINDOW: rank {} is out of range", rank);
+  }
+  if (!comm->isSplitShare()) {
+    *rankOut = rank;
+    return commSuccess;
+  }
+
+  const auto& resourceRanks = comm->parentRanks();
+  if (resourceRanks.size() != static_cast<size_t>(comm->statex_->nRanks())) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window rank map size {} does not match nRanks {}",
+        resourceRanks.size(),
+        comm->statex_->nRanks());
+  }
+  *rankOut = resourceRanks[rank];
+  return commSuccess;
+}
+
+commResult_t windowBarrier(CtranComm* comm, CtranMapper* mapper) {
+  if (comm == nullptr || comm->statex_ == nullptr || mapper == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "CTRAN-WINDOW: cannot run window barrier without comm/statex/mapper");
+  }
+  if (!comm->isSplitShare()) {
+    return mapper->barrier();
+  }
+
+  std::vector<int> ranks;
+  FB_COMMCHECK(getWindowResourceRanks(comm, &ranks));
+  if (ranks.size() <= 1) {
+    return commSuccess;
+  }
+
+  const int myResourceRank = comm->resourceComm()->statex_->rank();
+  bool foundSelf = false;
+  for (const int rank : ranks) {
+    if (rank == myResourceRank) {
+      foundSelf = true;
+      break;
+    }
+  }
+  if (!foundSelf) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CTRAN-WINDOW: split-share window ranks do not contain resource rank {}",
+        myResourceRank);
+  }
+
+  std::vector<CtranMapperRequest> reqs((ranks.size() - 1) * 2);
+  int reqIdx = 0;
+  for (const int peerRank : ranks) {
+    if (peerRank == myResourceRank) {
+      continue;
+    }
+    FB_COMMCHECK(mapper->irecvCtrl(peerRank, &reqs[reqIdx++]));
+    FB_COMMCHECK(mapper->isendCtrl(peerRank, &reqs[reqIdx++]));
+  }
+  for (auto& req : reqs) {
+    FB_COMMCHECK(mapper->waitRequest(&req));
+  }
+  return commSuccess;
+}
+
+} // namespace
 
 // Defined here (not in header) so that unique_ptr<HostWindow> destructor
 // sees the complete HostWindow type.
@@ -48,7 +175,8 @@ commResult_t CtranWin::exchange() {
 
   remWinInfo.resize(nRanks);
 
-  auto mapper = comm->ctran_->mapper.get();
+  CtranMapper* mapper = nullptr;
+  FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
   // Registration via ctran mapper.
   FB_COMMCHECK(mapper->regMem(
@@ -63,29 +191,21 @@ commResult_t CtranWin::exchange() {
     dataSegHdl = baseSegHdl;
     dataRegHdl = baseRegHdl;
   } else {
-    // User-provided buffer: use globalRegisterWithPtr to cache and register
-    // multi-segment buffers (e.g., expandable segments) that mapper->regMem
-    // cannot handle (it asserts single-segment). forceReg=true ensures
-    // registration happens immediately; ncclManaged=true enables NVL IPC
-    // handle creation for cudaMalloc buffers. searchRegHandle then finds the
-    // RegElem via fast path for use in allGatherCtrl handle exchange.
-    FB_COMMCHECK(
-        ctran::globalRegisterWithPtr(
-            winDataPtr,
-            dataBytes,
-            true /* forceReg */,
-            true /* ncclManaged */));
-    bool dynamicRegist = false;
-    FB_COMMCHECK(mapper->searchRegHandle(
-        winDataPtr, dataBytes, &dataRegHdl, &dynamicRegist));
-    // globalRegisterWithPtr with forceReg=true guarantees the RegElem is
-    // already created, so searchRegHandle should find it via fast path
-    // (not dynamic registration).
-    FB_CHECKABORT(
-        !dynamicRegist,
-        "Unexpected dynamic registration for window data buffer {} len {}",
+    // User-provided buffer: acquire a scoped local registration. The buffer's
+    // segment must already be allocator-cached (CCA hook);
+    // acquireScopedRegister does not cache segments and returns
+    // commInvalidUsage otherwise. The window owns the scoped ref via
+    // dataScopedReg (released SW-only in free()); dataRegHdl borrows the
+    // RegElem* for the allGatherCtrl handle exchange.
+    auto regCache = ctran::RegCache::getInstance();
+    ctran::CHECK_VALID_REGCACHE(regCache);
+    FB_COMMCHECK(regCache->acquireScopedRegister(
         winDataPtr,
-        dataBytes);
+        dataBytes,
+        comm->statex_->cudaDev(),
+        mapper->getBackends(),
+        dataScopedReg));
+    dataRegHdl = dataScopedReg.get();
   }
 
   // Exchange each rank's data buffer size via bootstrap allGather
@@ -104,30 +224,55 @@ commResult_t CtranWin::exchange() {
       nRanks);
   std::vector<struct CtranMapperRemoteAccessKey> remoteUserBufAccessKeys(
       nRanks);
+  std::vector<int> exchangeRanks;
+  FB_COMMCHECK(getWindowResourceRanks(comm, &exchangeRanks));
+  if (comm->isSplitShare()) {
+    const auto resourceNRanks = comm->resourceComm()->statex_->nRanks();
+    remoteBaseBufs.resize(resourceNRanks);
+    remoteUserBufs.resize(resourceNRanks);
+    remoteBaseBufAccessKeys.resize(resourceNRanks);
+    remoteUserBufAccessKeys.resize(resourceNRanks);
+  }
 
   FB_COMMCHECK(mapper->allGatherCtrl(
-      winBasePtr, baseRegHdl, remoteBaseBufs, remoteBaseBufAccessKeys));
+      winBasePtr,
+      baseRegHdl,
+      exchangeRanks,
+      remoteBaseBufs,
+      remoteBaseBufAccessKeys,
+      CtranMapperBackend::UNSET,
+      /*recordExport=*/false));
 
   if (!allocDataBuf_) {
     // if data buffer is provided by user, extra round of handler exchange is
     // needed
     FB_COMMCHECK(mapper->allGatherCtrl(
-        winDataPtr, dataRegHdl, remoteUserBufs, remoteUserBufAccessKeys));
+        winDataPtr,
+        dataRegHdl,
+        exchangeRanks,
+        remoteUserBufs,
+        remoteUserBufAccessKeys,
+        CtranMapperBackend::UNSET,
+        /*recordExport=*/false,
+        &dataScopedIpcRegHdls));
   }
 
   for (auto r = 0; r < nRanks; r++) {
+    const int exchangeRank = exchangeRanks[r];
     remWinInfo[r].dataBytes = allRankSizes[r];
     if (allocDataBuf_) {
-      remWinInfo[r].dataAddr = remoteBaseBufs[r];
-      remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[r];
+      remWinInfo[r].dataAddr = remoteBaseBufs[exchangeRank];
+      remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[exchangeRank];
       remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
-          reinterpret_cast<size_t>(remoteBaseBufs[r]) + allRankSizes[r]);
-      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+          reinterpret_cast<size_t>(remoteBaseBufs[exchangeRank]) +
+          allRankSizes[r]);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     } else {
-      remWinInfo[r].dataAddr = remoteUserBufs[r];
-      remWinInfo[r].dataRkey = remoteUserBufAccessKeys[r];
-      remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(remoteBaseBufs[r]);
-      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+      remWinInfo[r].dataAddr = remoteUserBufs[exchangeRank];
+      remWinInfo[r].dataRkey = remoteUserBufAccessKeys[exchangeRank];
+      remWinInfo[r].signalAddr =
+          reinterpret_cast<uint64_t*>(remoteBaseBufs[exchangeRank]);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     }
   }
   CLOGF_SUBSYS(
@@ -152,12 +297,12 @@ commResult_t CtranWin::exchange() {
 
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
-  FB_COMMCHECK(mapper->barrier());
+  FB_COMMCHECK(windowBarrier(comm, mapper));
   return commSuccess;
 }
 
 bool CtranWin::allGatherPSupported(CtranComm* comm) {
-  if (!ctranInitialized(comm)) {
+  if (comm == nullptr || comm->isSplitShare() || !ctranInitialized(comm)) {
     return false;
   }
   auto statex = comm->statex_.get();
@@ -242,7 +387,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
   if (statex == nullptr) {
     FB_ERRORRETURN(commInternalError, "Empty communicator statex.");
   }
-  auto mapper = comm->ctran_->mapper.get();
+  CtranMapper* mapper = nullptr;
+  FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
 
   CLOGF_SUBSYS(
@@ -261,7 +407,7 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // ensure the host process waits for CUDA streams where put/wait operations
   // are launched.
   if (!skipBarrier) {
-    FB_COMMCHECK(mapper->barrier());
+    FB_COMMCHECK(windowBarrier(comm, mapper));
   }
 
   auto nRanks = statex->nRanks();
@@ -293,23 +439,22 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
   }
 
-  // User-provided data buffer: deregister locally without remote IPC
-  // notifications. Remove from export cache first (so mapper destructor
-  // won't access the freed RegElem), then free segments locally, then
-  // release locally-imported remote handles.
+  // User-provided data buffer: release the scoped local registration (SW-only,
+  // segment stays cached) and RAII-release the locally-imported remote NVL
+  // handles. No export-cache removal is needed (recordExport=false means
+  // nothing was recorded), and no per-peer remote release is needed (the
+  // scoped handles' destructors perform the deferred releaseRemReg). Drain the
+  // parked imports afterwards so their CUDA mappings are torn down here rather
+  // than lingering until a later dereg.
   if (!allocDataBuf_) {
-    mapper->removeFromExportCache(dataRegHdl);
-    FB_COMMCHECK(
-        ctran::globalDeregisterWithPtr(
-            winDataPtr, dataBytes, true /* skipRemRelease */));
-    for (auto i = 0; i < nRanks; ++i) {
-      if (i != statex->rank()) {
-        FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].dataRkey));
-      }
-    }
+    dataScopedReg = ScopedRegHdl{};
+    dataScopedIpcRegHdls.clear();
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    ipcRegCache->cleanupInvalidImports();
   }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // HostWindow handles cleanup via RAII
   hostWindow_.reset();
 #endif
@@ -320,14 +465,20 @@ commResult_t CtranWin::free(bool skipBarrier) {
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
+  CtranMapper* mapper = nullptr;
+  int resourceRank = -1;
+  if (getWindowMapper(comm, &mapper) != commSuccess ||
+      getWindowResourceRank(comm, rank, &resourceRank) != commSuccess) {
+    return false;
+  }
   return isGpuMem() &&
-      comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
+      mapper->hasBackend(resourceRank, CtranMapperBackend::NVL);
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 commResult_t CtranWin::getDeviceWin(
-    comms::pipes::DeviceWindow* devWin,
-    const comms::pipes::WindowConfig& config) {
+    comms::prims::DeviceWindow* devWin,
+    const comms::prims::WindowConfig& config) {
   auto* transport = comm->multiPeerTransport_.get();
   if (!transport) {
     FB_ERRORRETURN(
@@ -349,7 +500,7 @@ commResult_t CtranWin::getDeviceWin(
         winDataPtr,
         dataBytes);
 
-    hostWindow_ = std::make_unique<comms::pipes::HostWindow>(
+    hostWindow_ = std::make_unique<comms::prims::HostWindow>(
         *transport, config, winDataPtr, dataBytes);
 
     hostWindow_->exchange();
@@ -358,10 +509,10 @@ commResult_t CtranWin::getDeviceWin(
         INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
   }
 
-  new (devWin) comms::pipes::DeviceWindow(hostWindow_->getDeviceWindow());
+  new (devWin) comms::prims::DeviceWindow(hostWindow_->getDeviceWindow());
   return commSuccess;
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
 commResult_t ctranWinAllocate(
     size_t size,
@@ -392,6 +543,12 @@ commResult_t ctranWinAllocate(
       comm,
       size,
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
+  auto winGuard = folly::makeGuard([&newWin]() {
+    // On any early error return, release partial resources (SW + backend
+    // dereg, no barrier) and delete the window so it does not leak.
+    (void)newWin->free(/*skipBarrier=*/true);
+    delete newWin;
+  });
   newWin->setAtomicCapable(true);
   FB_COMMCHECK(newWin->allocate(nullptr));
   FB_COMMCHECK(newWin->exchange());
@@ -399,6 +556,7 @@ commResult_t ctranWinAllocate(
     *baseptr = newWin->winDataPtr;
   }
   *win = newWin;
+  winGuard.dismiss();
   return commSuccess;
 }
 
@@ -445,6 +603,12 @@ commResult_t ctranWinRegister(
       // if user buffer is on host CPU, allocate kHostPinned buffer for
       // signal otherwise is on GPU device, allocate kCumem buffer for signal
       userBufType);
+  auto winGuard = folly::makeGuard([&newWin]() {
+    // On any early error return, release partial resources (SW + backend
+    // dereg, no barrier) and delete the window so it does not leak.
+    (void)newWin->free(/*skipBarrier=*/true);
+    delete newWin;
+  });
   newWin->setAtomicCapable(
       reinterpret_cast<uintptr_t>(databuf) % sizeof(uint64_t) == 0 &&
       size % sizeof(uint64_t) == 0);
@@ -454,6 +618,7 @@ commResult_t ctranWinRegister(
   FB_COMMCHECK(newWin->exchange()); // register and exchange both signal
                                     // & data buffer
   *win = newWin;
+  winGuard.dismiss();
   return commSuccess;
 }
 

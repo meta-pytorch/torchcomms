@@ -193,14 +193,8 @@ const char *qp_attr_to_string(int attr) {
             return "AH_ATTR";
         case DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC:
             return "MAX_QP_RD_ATOMIC";
-// NCCLX 2.30 neutralizes both MAX_(QP|DEST)_RD_ATOMIC bit defines to 0 in the
-// local doca_verbs.h (DOCA 3.x setter APIs aren't present in our vendored 2.x
-// bundle). Skip the duplicate `case 0:` so this file compiles under conda's
-// Make build. Buck excludes this .cpp via def_build.bzl and is unaffected.
-#if DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC != DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC
         case DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC:
             return "MAX_DEST_RD_ATOMIC";
-#endif
         default:
             break;
     }

@@ -54,6 +54,9 @@ class RdmaSlabPoolTest : public ::testing::Test {
   ibv_mr fakeMr0_{};
   ibv_mr fakeMr1_{};
 
+  static constexpr uint8_t kTestGidIndex = 3;
+  static constexpr uint8_t kMockGidTblLen = kTestGidIndex + 1;
+
   std::shared_ptr<std::vector<NicResources>> makeNics(size_t count = 1) {
     auto nics = std::make_shared<std::vector<NicResources>>();
 
@@ -70,6 +73,7 @@ class RdmaSlabPoolTest : public ::testing::Test {
             attr->lid = 0;
             attr->active_mtu = IBV_MTU_4096;
             attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+            attr->gid_tbl_len = kMockGidTblLen;
             return Ok();
           });
       ON_CALL(*mockIbvApi_, queryGid(ctx, 1, _, _)).WillByDefault(Return(Ok()));
@@ -84,10 +88,11 @@ class RdmaSlabPoolTest : public ::testing::Test {
 
     nics->reserve(count);
     setupNic(&fakeDev0_, &fakeCtx0_, &fakePd0_);
-    nics->emplace_back(&fakeDev0_, mockIbvApi_, 3, uint8_t{1});
+    nics->emplace_back(&fakeDev0_, mockIbvApi_, -1, kTestGidIndex, uint8_t{1});
     if (count > 1) {
       setupNic(&fakeDev1_, &fakeCtx1_, &fakePd1_);
-      nics->emplace_back(&fakeDev1_, mockIbvApi_, 3, uint8_t{1});
+      nics->emplace_back(
+          &fakeDev1_, mockIbvApi_, -1, kTestGidIndex, uint8_t{1});
     }
     return nics;
   }

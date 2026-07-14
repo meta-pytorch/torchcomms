@@ -91,7 +91,8 @@ class CtranIb {
       std::shared_ptr<Abort> abortCtrl =
           ::ctran::utils::createAbort(/*enabled=*/false),
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt);
+      std::optional<int> maxNumCqe = std::nullopt,
+      std::optional<int> maxNumNic = std::nullopt);
 
   ~CtranIb();
 
@@ -481,7 +482,7 @@ class CtranIb {
   // the per-VC mutex via CTRAN_IB_PER_OBJ_LOCK_GUARD.
 
   inline int getNumIbDevices() const {
-    return NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    return numNics;
   }
   inline int getMaxVcsPerPeer() const {
     return vcLayout_.maxVcsPerPeer;
@@ -566,6 +567,10 @@ class CtranIb {
     return maxCqe;
   }
 
+  int getNumNics() const {
+    return numNics;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -580,7 +585,8 @@ class CtranIb {
       std::shared_ptr<Abort> abortCtrl =
           ::ctran::utils::createAbort(/*enabled=*/false),
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt);
+      std::optional<int> maxNumCqe = std::nullopt,
+      std::optional<int> maxNumNic = std::nullopt);
 
   commResult_t setPgToTrafficClassMap();
 
@@ -625,14 +631,11 @@ class CtranIb {
       int& deviceBegin,
       int& deviceEnd) {
     deviceBegin = 0;
-    deviceEnd = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    deviceEnd = numNics;
     if (device.has_value()) {
-      if (*device < 0 || *device >= NCCL_CTRAN_IB_DEVICES_PER_RANK) {
+      if (*device < 0 || *device >= numNics) {
         CLOGF(
-            ERR,
-            "CTRAN-IB: invalid device {} (numNics={})",
-            *device,
-            NCCL_CTRAN_IB_DEVICES_PER_RANK);
+            ERR, "CTRAN-IB: invalid device {} (numNics={})", *device, numNics);
         return commInternalError;
       }
       deviceBegin = *device;
@@ -1060,7 +1063,7 @@ class CtranIb {
           continueWhileLoop = true;
         }
 
-        if (enableLocalFlush) {
+        if (enableLocalFlush_) {
           CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
             auto& vc = localVc;
             // First check if it is a local flush CQE
@@ -1110,6 +1113,7 @@ class CtranIb {
   std::mutex cqMutex;
 
   int maxCqe{-1};
+  int numNics{-1};
   std::vector<CtranIbDevice> devices; // IB device info
   std::vector<ibverbx::IbvCq> cqs;
   int cudaDev{-1};
@@ -1117,7 +1121,7 @@ class CtranIb {
   uint64_t commHash{0};
   std::string commDesc;
   CommLogData ncclLogData;
-  bool enableLocalFlush{true};
+  bool enableLocalFlush_{true};
   BootstrapMode bootstrapMode{BootstrapMode::kDefaultServer};
 
   std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;

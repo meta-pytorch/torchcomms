@@ -7,7 +7,6 @@
 #include "comm.h"
 #include "device.h"
 
-#include "comms/analyzer/if/gen-cpp2/CommsTracingService_types.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
@@ -15,8 +14,6 @@
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
-::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
-
 struct CommStateInfo {
   int localRank{0};
   int node{0};
@@ -28,7 +25,6 @@ struct CommStateInfo {
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
   CommStateInfo stateInfo;
-  ::comms::CommsTopologyInfo topoInfo;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
   std::shared_ptr<ProxyTrace> proxyTrace;
   // ptr for the new colltrace interface.
@@ -67,10 +63,6 @@ class CommsMonitor {
 
   static std::optional<NcclCommMonitorInfo> getCommInfoByCommPtr(
       ncclComm_t comm);
-
-  static std::vector<::comms::CommsTopologyInfo> getAllTopologies();
-  static std::optional<::comms::CommsTopologyInfo> getTopologyByCommDesc(
-      const std::string& commDesc);
 
   // Get the total number of communicators CommsMonitor is currently monitoring
   // If any failure happened during calling this function, it will return -1.

@@ -16,7 +16,7 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.1";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.2";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -286,6 +286,31 @@ class TorchCommBackend {
    */
   virtual bool isAborted() const {
     return false;
+  }
+
+  /**
+   * Set the communicator-level default operation timeout.
+   *
+   * Backends can use this as a mutable fallback for operations whose per-call
+   * timeout is unset.
+   */
+  virtual void setTimeout(std::chrono::milliseconds /*timeout*/) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: setTimeout not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
+  /**
+   * Set communicator-level key-value hints.
+   *
+   * Backends can use these as mutable fallbacks for operations whose per-call
+   * hints are unset. Mutable across CUDA-graph replays without recapture.
+   */
+  virtual void setHints(
+      std::unordered_map<std::string, std::string> /*hints*/) {
+    throw std::runtime_error(
+        "[TorchCommBackend]: setHints not implemented for communicator:" +
+        std::string(getCommName()));
   }
 
   /**

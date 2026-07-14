@@ -27,10 +27,13 @@ target_include_directories(torchcomms_comms_rccl PRIVATE
     ${ROCM_INCLUDE}
     ${ROCM_INCLUDE}/hip
 )
+torchcomms_use_torch_pybind11(torchcomms_comms_rccl)
 target_compile_features(torchcomms_comms_rccl PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_rccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_rccl PRIVATE
     torchcomms
+    glog::glog
+    fmt::fmt
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     ${RCCL_SHARED_LIB}

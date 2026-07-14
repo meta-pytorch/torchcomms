@@ -516,4 +516,8 @@ Status NvmlApi::nvmlSystemGetConfComputeStatus(NvmlCCStatus* status) {
   return Ok();
 }
 
+std::shared_ptr<NvmlApi> createNvmlApi() {
+  return std::make_shared<NvmlApi>();
+}
+
 } // namespace uniflow

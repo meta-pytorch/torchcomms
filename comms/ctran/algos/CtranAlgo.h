@@ -15,7 +15,15 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#else
+// prims not compiled in; the member/getter are pointer-only, so a forward
+// declaration suffices (mirrors SendRecv/Types.h).
+namespace comms::prims {
+class P2pNvlTransportDevice;
+} // namespace comms::prims
+#endif // defined(ENABLE_PRIMS)
 #include "comms/utils/logger/Logger.h"
 
 #include <folly/Synchronized.h>
@@ -49,7 +57,7 @@ class CtranAlgo {
   CtranAlgoDeviceState* getDevState();
   // Get base pointer to pre-allocated P2pNvlTransportDevice array
   // Array is indexed by peer local rank
-  comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
+  comms::prims::P2pNvlTransportDevice* getNvlTransportsBase();
 
   // Thread-safe get-or-create for persistent algorithm plans.
   // Returns a non-owning pointer to the plan (lifetime owned by this map).
@@ -160,7 +168,7 @@ class CtranAlgo {
   // Pre-allocated array of P2pNvlTransportDevice objects for all peers
   // Allocated with cudaMalloc for device accessibility
   // Indexed by peer local rank, slot for self (localRank) is unused
-  comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
+  comms::prims::P2pNvlTransportDevice* nvlTransports_{nullptr};
 
   // Generic persistent plan map: any algorithm can register a cached plan.
   folly::Synchronized<std::unordered_map<
@@ -239,7 +247,6 @@ class CtranPersistentRequest {
     ALLTOALL_DEDUP,
     ALLTOALL_P,
     ALLTOALLV_DEDUP,
-    ALLGATHER_P_WIN,
   };
 
   Type type;
@@ -251,6 +258,14 @@ class CtranPersistentRequest {
 
   cudaStream_t stream;
   void* segHdl{nullptr};
+
+  // One-shot cleanup token co-owned by this request, the comm registry, and
+  // (for graph requests) the CUDA graph user-object. The eager free path
+  // reaches the token through here; running it releases the pooled pipeSync +
+  // scoped registration (via destroyPersistentRequest), at most once across all
+  // teardown paths. The token does NOT delete this request object -- that stays
+  // with the object's owner -- so ~CtranPersistentRequest stays defaulted.
+  std::shared_ptr<PersistentCleanup> cleanup_;
 
   CtranPersistentRequest(
       Type type,

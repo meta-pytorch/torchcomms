@@ -6,6 +6,9 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
+#include <variant>
+#include <vector>
 
 #include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
 #include <fmt/core.h>
@@ -91,6 +94,7 @@ void TorchCommRCCL::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
+  TC_LOG(INFO, this) << "Initializing TorchCommRCCL for device: " << device;
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -102,7 +106,6 @@ void TorchCommRCCL::init(
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommRCCL already finalized");
   }
-  init_state_ = InitializationState::INITIALIZED;
 
   // Initialize default NCCL API implementation if not already set
   if (!rccl_api_) {
@@ -112,6 +115,14 @@ void TorchCommRCCL::init(
   // Initialize default HIP API implementation if not already set
   if (!hip_api_) {
     hip_api_ = std::make_unique<DefaultHipApi>();
+  }
+
+  if (options.enable_reconfigure) {
+    options_.enable_reconfigure = true;
+    reconfigure_store_ = options_.store;
+    TC_LOG(INFO, this)
+        << "TorchCommRCCL dynamic regime enabled, deferring initialization";
+    return;
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
@@ -124,6 +135,15 @@ void TorchCommRCCL::init(
     }
   }
 
+  initRcclResources();
+
+  init_state_ = InitializationState::INITIALIZED;
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+
+  TC_LOG(INFO, this) << "TorchCommRCCL initialized for rank: " << rank_;
+}
+
+void TorchCommRCCL::initRcclResources() {
   // Set HIP device and verify it's accessible
   HIP_CHECK(
       hip_api_,
@@ -146,8 +166,8 @@ void TorchCommRCCL::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  is_high_priority_stream_ =
+      options_.getHint<bool>(kHintIsHighPriorityStream, false);
 
   // Create internal stream
   //
@@ -155,7 +175,7 @@ void TorchCommRCCL::init(
   int stream_priority = 0;
 
   // Check for high priority stream hint
-  if (high_priority_stream_) {
+  if (is_high_priority_stream_) {
     int leastPriority, greatestPriority;
     HIP_CHECK(
         hip_api_,
@@ -164,26 +184,33 @@ void TorchCommRCCL::init(
     stream_priority = greatestPriority;
   }
 
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->streamCreateWithPriority(
-          &internal_stream_, hipStreamNonBlocking, stream_priority),
-      fmt::format(
-          "Failed to create internal CUDA stream on device {}",
-          device_.index()));
+  // Create internal stream if not already created
+  if (!internal_stream_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->streamCreateWithPriority(
+            &internal_stream_, hipStreamNonBlocking, stream_priority),
+        fmt::format(
+            "Failed to create internal CUDA stream on device {}",
+            device_.index()));
+  }
 
   // Create dependency event for stream synchronization
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->eventCreate(&dependency_event_),
-      fmt::format(
-          "Failed to create dependency event on device {}", device_.index()));
+  if (!dependency_event_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->eventCreate(&dependency_event_),
+        fmt::format(
+            "Failed to create dependency event on device {}", device_.index()));
+  }
 
   // Allocate CUDA buffer for barrier operations
-  HIP_CHECK(
-      hip_api_,
-      hip_api_->malloc(&barrier_buffer_, sizeof(float)),
-      "Failed to allocate barrier buffer");
+  if (!barrier_buffer_) {
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->malloc(&barrier_buffer_, sizeof(float)),
+        "Failed to allocate barrier buffer");
+  }
 
   max_event_pool_size_ =
       options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
@@ -210,13 +237,25 @@ void TorchCommRCCL::init(
       rccl_api_->commCount(nccl_comm_, &comm_size_),
       "RCCL Count failed");
 
-  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
-
   // Start timeout watchdog thread
-  timeout_thread_ = std::thread(&TorchCommRCCL::timeoutWatchdog, this);
+  if (!shutdown_) {
+    timeout_thread_ = std::thread(&TorchCommRCCL::timeoutWatchdog, this);
+  }
 
   // Register comm with CachingAllocator
   attachMemoryHook();
+}
+
+// getInitHandle() and reconfigure() are implemented in
+// TorchCommRCCLReconfigure.cpp
+
+void TorchCommRCCL::abort() {
+  if (options_.enable_reconfigure) {
+    revokeRcclComm();
+  } else {
+    abortRcclComm();
+  }
+  comm_state_ = CommState::ERROR;
 }
 
 void TorchCommRCCL::finalize() {
@@ -226,6 +265,8 @@ void TorchCommRCCL::finalize() {
     throw std::runtime_error("TorchCommRCCL already finalized");
   }
   init_state_ = InitializationState::FINALIZED;
+
+  auto comm_state_on_entry = comm_state_.load();
 
   // Signal shutdown to timeout watchdog
   shutdown_ = true;
@@ -253,7 +294,9 @@ void TorchCommRCCL::finalize() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortRcclComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (comm_state_ == CommState::ERROR) {
+  } else if (
+      comm_state_ == CommState::ERROR &&
+      comm_state_on_entry != CommState::ERROR) {
     ncclResult_t asyncErr;
     RCCL_CHECK(
         rccl_api_,
@@ -331,6 +374,19 @@ void TorchCommRCCL::abortRcclComm() {
         rccl_api_->commAbort(nccl_comm_),
         "RCCL Abort failed");
     nccl_comm_ = nullptr;
+  }
+}
+
+void TorchCommRCCL::revokeRcclComm() {
+  TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
+  runAbortHooks();
+  detachMemoryHook();
+  if (nccl_comm_) {
+    RCCL_CHECK(
+        rccl_api_,
+        nccl_comm_,
+        rccl_api_->commRevoke(nccl_comm_),
+        "RCCL Revoke failed");
   }
 }
 

@@ -25,6 +25,7 @@
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/transport/IP2pHostTransport.h"
+#include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -41,13 +42,21 @@ namespace ncclx::colltrace {
 class MapperTrace;
 }
 
+namespace ctran {
+class ScopedIpcRegHdl;
+}
+
 class CtranMapperImpl;
 
 const std::string getReqTypeStr(CtranMapperRequest::ReqType type);
 
 class CtranMapper : public ctran::regcache::IpcExportClient {
  public:
-  CtranMapper(CtranComm* comm);
+  // `profiler` may be null when the comm has profiling disabled. When
+  // non-null, it is forwarded to the underlying CtranTcpDm so the
+  // transport can register its hooks during construction (avoiding a
+  // separate post-construction wiring pass).
+  CtranMapper(CtranComm* comm, ctran::Profiler* profiler = nullptr);
   ~CtranMapper();
 
   // Allow caller to mapper to mark the mapper object is being destroyed.
@@ -174,6 +183,66 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *   - peerRanks: the ranks of the peers to be connected
    */
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
+
+  bool hasTcpDmBackend() const {
+    return ctranTcpDm != nullptr;
+  }
+
+  void abortTcpDm(const char* reason) {
+    if (ctranTcpDm != nullptr) {
+      ctranTcpDm->abortOutstanding(reason);
+    }
+  }
+
+  template <typename Func>
+  void runTcpDmCollectiveAbortGuard(Func&& func, int opType, uint64_t opCount) {
+    try {
+      func();
+    } catch (const ctran::utils::Exception& e) {
+      CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount);
+      if (comm->testAbort()) {
+        abortTcpDm(e.what());
+      }
+    } catch (const std::runtime_error& e) {
+      ctran::utils::Exception ex(e.what(), commRemoteError);
+      CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, ex, opType, opCount);
+      if (comm->testAbort()) {
+        abortTcpDm(e.what());
+      }
+    }
+  }
+
+  [[noreturn]] void throwTcpDmNotifyAbort(CtranMapperNotify* notify) {
+    CLOGF(
+        WARN,
+        "CTRAN-MAPPER: TCPDM notify abort notify={} rank {} commHash {:x}",
+        notify->toString(),
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash);
+    this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
+
+    auto _abort = comm->getAbort();
+    std::string _ctx =
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        _ctx,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        fmt::format("checkNotify for peer {}", notify->peer));
+  }
+
+  [[noreturn]] void throwTcpDmRequestsAbort(size_t numRequests) {
+    auto _abort = comm->getAbort();
+    std::string _ctx =
+        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        _ctx,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        fmt::format("testSomeRequests with {} requests", numRequests));
+  }
 
   /* Post a send control op to associated backend.
    * Input arguments:
@@ -387,13 +456,45 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
+   *   - outIpcHdls: optional; if non-null, receives the imported NVL peers'
+   *                 scoped-ownership handles, sized to nLocalRanks and indexed
+   *                 by local rank (self and non-NVL peers are empty handles).
+   *                 The caller owns the imports and releases them via RAII
+   *                 (deferred releaseRemReg at handle destruction).
    */
   commResult_t intraAllGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true,
+      std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
+
+  /* Blocking allgather control messages among all local ranks, importing the
+   * intra-node NVL peers self-managed (recordExport=false) and returning them
+   * as scoped RAII owners the caller releases on teardown.
+   *
+   * The two output kinds have different shapes and purposes:
+   *   - remoteBufs / remoteAccessKeys: for rank-based lookup. The caller must
+   *     pre-size them to nRanks (they are indexed by global rank); this fills
+   *     only the local-peer slots at their global-rank indices (self is left
+   *     UNSET, non-local ranks untouched). IB/other keys are returned here too.
+   *   - remoteIpcRegHdls: resource-ownership handles for the imported NVL
+   *     peers, with size of nLocalRanks. For localRank that cannot be imported
+   *     (including self), an empty handle is inserted as placeholder. The
+   *     caller releases the imports via RAII.
+   */
+  commResult_t intraAllGatherCtrl(
+      const void* buf,
+      void* hdl,
+      std::vector<void*>& remoteBufs,
+      std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+      std::vector<ctran::ScopedIpcRegHdl>& remoteIpcRegHdls);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -409,6 +510,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
+   *   - outIpcHdls: optional; if non-null, receives the imported NVL peers'
+   *                 scoped-ownership handles, sized to nLocalRanks and indexed
+   *                 by local rank (self and non-NVL peers are empty handles).
+   *                 The caller owns the imports and releases them via RAII
+   *                 (deferred releaseRemReg at handle destruction).
    */
   commResult_t allGatherCtrl(
       const void* buf,
@@ -416,7 +526,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const std::vector<int>& ranks,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true,
+      std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
 
   /* Blocking allgather control messages among ranks of the mapper associated
    * communicator specified in ranks. It returns after sent and received all
@@ -432,13 +544,24 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *                 including the rank itself
    *   - remoteAccessKeys: the allgathered remote access keys from all local
    *                       ranks
+   *   - recordExport: whether to record NVL exports in exportRegCache_ so that
+   *                   remReleaseMem notifies peers to release imports at
+   *                   deregistration. Set false when the caller self-manages
+   *                   its imports (e.g., AGP) to avoid double-release.
+   *   - outIpcHdls: optional; if non-null, receives the imported NVL peers'
+   *                 scoped-ownership handles, sized to nLocalRanks and indexed
+   *                 by local rank (self and non-NVL peers are empty handles).
+   *                 The caller owns the imports and releases them via RAII
+   *                 (deferred releaseRemReg at handle destruction).
    */
   commResult_t allGatherCtrl(
       const void* buf,
       void* hdl,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true,
+      std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
@@ -632,6 +755,38 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       if (req) {
         *req = new CtranMapperRequest();
         (*req)->setComplete();
+      }
+    }
+    return commSuccess;
+  }
+
+  /* Drain pending NIC PCIe writes into GPU HBM after RDMA receives complete
+   * and before host or stream-side work reads the just-received buffer. On
+   * split-path topologies, PCIe write ordering does not necessarily extend to
+   * GPU memory visibility, so callers that need immediate GPU-side visibility
+   * should issue a flush and wait for it to complete.
+   */
+  template <typename PerfConfig = DefaultPerfCollConfig>
+  inline commResult_t flush(const void* buf, const void* regHdl) {
+    if (this->ctranIb) {
+      auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
+          const_cast<void*>(regHdl));
+      if (!regElem) {
+        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        return commSuccess;
+      }
+
+      CtranIbRequest ibReq;
+      {
+        auto regLk = regElem->stateMnger.rlock();
+        FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, &ibReq));
+      }
+      while (!ibReq.isComplete() && !comm->testAbort()) {
+        FB_COMMCHECK(this->ctranIb->progress<PerfConfig>());
+      }
+
+      if (comm->testAbort()) {
+        throwCommAbortException("flush");
       }
     }
     return commSuccess;
@@ -852,6 +1007,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   bool hasBackend(int rank, CtranMapperBackend specified);
 
+  /* Get the set of transport backends this rank uses to reach all peer ranks,
+   * indexed by CtranMapperBackend. Entry true if this rank uses that backend to
+   * any peer. The returned vector has size CtranMapperBackend::NUM_BACKENDS.
+   */
+  std::vector<bool> getBackends();
+
   /* Some backends, notably NVL and TCPDM, require notifiers on the receiver
    * side. This method indicates whether the notifier is needed for
    * the specified peer rank.
@@ -930,6 +1091,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         return "SOCKET";
       case CtranMapperBackend::TCPDM:
         return "TCPDM";
+      case CtranMapperBackend::EXTERNAL:
+        return "EXTERNAL";
       default:
         return "UNKNOWN";
     }
@@ -965,6 +1128,29 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
  private:
+  commResult_t allGatherCtrlImpl(
+      const void* buf,
+      void* hdl,
+      const std::vector<int>& ranks,
+      std::vector<void*>& remoteBufs,
+      std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+      CtranMapperBackend backend,
+      bool recordExport = true,
+      std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
+
+  [[noreturn]] inline void throwCommAbortException(
+      const std::string& abortContext) {
+    auto commAbort = comm->getAbort();
+    std::string message =
+        commAbort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    throw ctran::utils::Exception(
+        message,
+        commRemoteError,
+        comm->logMetaData_.rank,
+        comm->logMetaData_.commHash,
+        abortContext);
+  }
+
   inline commResult_t checkComplete(CtranMapperRequest* req, bool* isComplete) {
     if (req->isComplete()) {
       *isComplete = true;
@@ -1056,9 +1242,13 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       FB_COMMCHECK(this->ctranIb->waitNotify<PerfConfig>(
           notify->peer, notify->notifyCnt));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // TODO(T239012482): enable and test TCPDM FT
-      while (!notify->tcpDmReq.isComplete()) {
+      bool done = false;
+      while (!done && !comm->testAbort()) {
         FB_COMMCHECK(this->ctranTcpDm->progress());
+        FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, &done));
+      }
+      if (comm->testAbort()) {
+        this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
       }
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
@@ -1100,6 +1290,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t testRequestImpl(
       CtranMapperRequest* req,
       bool* isComplete) {
+    FB_COMMCHECK(this->checkComplete(req, isComplete));
+    if (*isComplete) {
+      return commSuccess;
+    }
+
     FB_COMMCHECK(this->progress<PerfConfig>());
     FB_COMMCHECK(this->checkComplete(req, isComplete));
 
@@ -1115,14 +1310,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      auto _abort = comm->getAbort();
-      std::string _ctx =
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
-      throw ctran::utils::Exception(
-          _ctx,
-          commRemoteError,
-          comm->logMetaData_.rank,
-          comm->logMetaData_.commHash,
+      if (req->backend == CtranMapperBackend::TCPDM) {
+        this->ctranTcpDm->cancelQueuedRecv(&req->tcpDmReq);
+      }
+      throwCommAbortException(
           fmt::format("waitRequest for peer {}", req->peer));
     }
 
@@ -1135,7 +1326,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       void* hdl,
       ControlMsg& msg,
       std::vector<ctran::utils::CtranIpcSegDesc>* extraSegments,
-      CtranMapperBackend backend = CtranMapperBackend::UNSET) {
+      CtranMapperBackend backend = CtranMapperBackend::UNSET,
+      bool recordExport = true) {
     auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
     // TODO: Enforce that a communicator can only export memory it registered
     // itself except the memory registered by globalRegister. Currently any comm
@@ -1151,15 +1343,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
+      auto ipcRegCache = ctran::IpcRegCache::getInstance();
+      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
       if (extraSegments) {
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->exportMem(
-                buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
+        FB_COMMCHECK(ipcRegCache->exportMem(
+            buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
       } else {
         std::vector<ctran::utils::CtranIpcSegDesc> tmpExtraSegments;
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->exportMem(
-                buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
+        FB_COMMCHECK(ipcRegCache->exportMem(
+            buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
         if (!tmpExtraSegments.empty()) {
           CLOGF(
               ERR,
@@ -1170,8 +1362,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
       }
 
-      // Record the exported remote rank to notify at deregistration
-      if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+      // Record the exported remote rank to notify at deregistration.
+      if (recordExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         exportRegCache_.wlock()->record(regElem, rank);
       }
 
@@ -1206,7 +1398,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const ControlMsg& msg,
       void** buf,
       CtranMapperRemoteAccessKey* remKey,
-      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {}) {
+      const std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments = {},
+      ctran::ScopedIpcRegHdl* outHdl = nullptr) {
     switch (msg.type) {
       case ControlMsgType::IB_EXPORT_MEM:
         if (!this->ctranIb) {
@@ -1229,15 +1422,17 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        FB_COMMCHECK(
-            ctran::IpcRegCache::getInstance()->importMem(
-                peerId,
-                msg.ipcDesc,
-                comm->statex_->cudaDev(),
-                buf,
-                &(remKey->nvlKey),
-                &this->logMetaData_,
-                extraSegments));
+        auto ipcRegCache = ctran::IpcRegCache::getInstance();
+        ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+        FB_COMMCHECK(ipcRegCache->importMem(
+            peerId,
+            msg.ipcDesc,
+            comm->statex_->cudaDev(),
+            buf,
+            &(remKey->nvlKey),
+            &this->logMetaData_,
+            extraSegments,
+            outHdl));
         break;
       }
       default:
@@ -1895,33 +2090,38 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       kernElem->revoke();
       kernElem = nullptr;
     } else if (backend == CtranMapperBackend::TCPDM) {
-      // We are mapping two-sided communications (i.e., send/receive) to
-      // one-sided communications (i.e., iPUT/waitNotify). Due to this, we
-      // handle TCP differently. Specifically, for iPUT, TCP performs the send
-      // operation, and for waitNotify, TCP performs the receive operation.
-      // Consequently, we need to progress TCP to ensure it completes the
-      // receive operation. Once it does, it will mark tcpDmReq as complete,
-      // allowing us to exit the loop.
-
-      if (kernElem == nullptr) {
-        CLOGF(ERR, "TCP Device Memory requires kernElem in the notifier");
-        return commInternalError;
+      const void* rbuff = nullptr;
+      size_t len = 0;
+      if (kernElem != nullptr) {
+        rbuff = kernElem->waitNotify.recvbuff;
+        len = kernElem->waitNotify.nbytes;
+        if (rbuff == nullptr || len == 0) {
+          CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
+          return commInternalError;
+        }
+      } else {
+        const DevMemType type = regElem->getType();
+        if (type != kHostUnregistered && type != kHostPinned) {
+          CLOGF(
+              ERR,
+              "TCP Device Memory requires kernElem in the notifier "
+              "(memType {})",
+              devMemTypeStr(type));
+          return commInternalError;
+        }
+        rbuff = regElem->buf;
+        const auto recvMsgSize = this->context.getRecvMsgSize(peerRank);
+        len = recvMsgSize != 0 ? recvMsgSize : regElem->len;
       }
 
-      const void* rbuff = kernElem->waitNotify.recvbuff;
-      size_t len = kernElem->waitNotify.nbytes;
-
-      if (rbuff == nullptr || len == 0) {
-        CLOGF(ERR, "TCP Device Memory requires recvbuff in the notifier");
-        return commInternalError;
-      }
-
-      FB_COMMCHECK(this->ctranTcpDm->irecv(
+      // Counter-based: request managed internally by CtranTcpDm.
+      // Completions are tracked via a per-peer counter, checked by
+      // checkNotify (analogous to IB's notifyCount_).
+      FB_COMMCHECK(this->ctranTcpDm->irecvCounted(
           peerRank,
           regElem->tcpRegElem,
           (void*)rbuff,
           len,
-          notify->tcpDmReq,
           this->context.unpackPool));
     }
 
@@ -1943,17 +2143,25 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t checkNotifyImpl(CtranMapperNotify* notify, bool* done) {
+    const bool isTcpDmNotify = notify->backend == CtranMapperBackend::TCPDM;
+    if (isTcpDmNotify && comm->testAbort()) {
+      throwTcpDmNotifyAbort(notify);
+    }
+
     if (notify->backend == CtranMapperBackend::NVL) {
       *done = notify->kernElem->isComplete();
     } else if (notify->backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(this->ctranIb->checkNotify<PerfConfig>(notify->peer, done));
     } else if (notify->backend == CtranMapperBackend::TCPDM) {
-      // Progress TCPDM transport to post any queued irecv requests
       FB_COMMCHECK(this->ctranTcpDm->progress());
-      *done = notify->tcpDmReq.isComplete();
+      FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, done));
     } else {
       CLOGF(ERR, "CTRAN-MAPPER: unexpected backend {}", notify->backend);
       return commInternalError;
+    }
+
+    if (isTcpDmNotify && comm->testAbort()) {
+      throwTcpDmNotifyAbort(notify);
     }
 
     if (*done) {
@@ -1971,9 +2179,23 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       std::vector<std::unique_ptr<CtranMapperRequest>>& reqs,
       std::vector<CtranMapperTimestampPoint>& tps,
       bool recordTime) {
+    const bool aborted = comm->testAbort();
+    bool cancelledTcpDmReq = false;
+
     for (auto it = reqs.begin(); it != reqs.end();) {
       auto& req = *it;
       if (req) {
+        if (cancelledTcpDmReq) {
+          it++;
+          continue;
+        }
+        if (aborted && req->backend == CtranMapperBackend::TCPDM) {
+          this->ctranTcpDm->cancelQueuedRecv(&req->tcpDmReq);
+          cancelledTcpDmReq = true;
+          it++;
+          continue;
+        }
+
         // Only icopy request doesn't have peer; expect it is not used in
         // testSomeRequests with timepoints.
         if (req->peer == -1) {
@@ -1995,6 +2217,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         // Remove completed requests
         it = reqs.erase(it);
       }
+    }
+    if (cancelledTcpDmReq) {
+      throwTcpDmRequestsAbort(reqs.size());
     }
     return commSuccess;
   }

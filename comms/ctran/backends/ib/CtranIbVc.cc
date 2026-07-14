@@ -50,6 +50,8 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   qpScalingTh_ = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
   vcMode_ = NCCL_CTRAN_IB_VC_MODE;
   maxQpMsgs_ = NCCL_CTRAN_IB_QP_MAX_MSGS;
+  qpInterleaveDevices_ = NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE;
+  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
   ConnectionType connTyp = ConnectionType::NO_STATEX;
   std::vector<std::string>* configList{nullptr};
   if (comm_ && comm_->statex_) {
@@ -586,14 +588,26 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   };
 
   remoteQpInfo.qpn = remoteBusCardStruct->controlQpn;
-  FOLLY_EXPECTED_CHECK(
-      rtrQp(remoteQpInfo, *ibvControlQp_, NCCL_CTRAN_IB_CTRL_TC));
+  FOLLY_EXPECTED_CHECK(rtrQp(
+      remoteQpInfo,
+      *ibvControlQp_,
+      NCCL_CTRAN_IB_CTRL_TC,
+      NCCL_IB_GID_INDEX,
+      NCCL_IB_SL));
   remoteQpInfo.qpn = remoteBusCardStruct->notifQpn;
-  FOLLY_EXPECTED_CHECK(
-      rtrQp(remoteQpInfo, *ibvNotifyQp_, NCCL_CTRAN_IB_CTRL_TC));
+  FOLLY_EXPECTED_CHECK(rtrQp(
+      remoteQpInfo,
+      *ibvNotifyQp_,
+      NCCL_CTRAN_IB_CTRL_TC,
+      NCCL_IB_GID_INDEX,
+      NCCL_IB_SL));
   remoteQpInfo.qpn = remoteBusCardStruct->atomicQpn;
-  FOLLY_EXPECTED_CHECK(
-      rtrQp(remoteQpInfo, *ibvAtomicQp_, NCCL_CTRAN_IB_CTRL_TC));
+  FOLLY_EXPECTED_CHECK(rtrQp(
+      remoteQpInfo,
+      *ibvAtomicQp_,
+      NCCL_CTRAN_IB_CTRL_TC,
+      NCCL_IB_GID_INDEX,
+      NCCL_IB_SL));
   /* Then, set QP to RTR state for data QPs*/
   for (int i = 0; i < maxNumQps_; i++) {
     remoteQpInfo.qpn = remoteBusCardStruct->dataQpn[i];
@@ -609,16 +623,24 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     // Only use NCCL_CTRAN_IB_CTRL_TC for the control QP; switch back to
     // NCCL_IB_TC for data QPs
 
-    FOLLY_EXPECTED_CHECK(
-        rtrQp(remoteQpInfo, ibvDataQps_.at(i), pgTrafficClass_));
+    FOLLY_EXPECTED_CHECK(rtrQp(
+        remoteQpInfo,
+        ibvDataQps_.at(i),
+        pgTrafficClass_,
+        NCCL_IB_GID_INDEX,
+        NCCL_IB_SL));
   }
 
   /* set QP to RTS state */
-  FOLLY_EXPECTED_CHECK(rtsQp(*ibvControlQp_));
-  FOLLY_EXPECTED_CHECK(rtsQp(*ibvNotifyQp_));
-  FOLLY_EXPECTED_CHECK(rtsQp(*ibvAtomicQp_));
+  FOLLY_EXPECTED_CHECK(
+      rtsQp(*ibvControlQp_, NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
+  FOLLY_EXPECTED_CHECK(
+      rtsQp(*ibvNotifyQp_, NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
+  FOLLY_EXPECTED_CHECK(
+      rtsQp(*ibvAtomicQp_, NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
   for (int i = 0; i < maxNumQps_; i++) {
-    FOLLY_EXPECTED_CHECK(rtsQp(ibvDataQps_.at(i)));
+    FOLLY_EXPECTED_CHECK(
+        rtsQp(ibvDataQps_.at(i), NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
   }
 
   /* post control WQEs */

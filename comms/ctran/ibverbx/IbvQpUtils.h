@@ -42,11 +42,22 @@ initQp(IbvQp& ibvQp, int port, int qp_access_flags);
 
 // rtrQp - Transitions QP to Ready To Receive (RTR) state with remote
 // endpoint info
-folly::Expected<folly::Unit, Error>
-rtrQp(const RemoteQpInfo& remoteQpInfo, IbvQp& ibvQp, uint8_t trafficClass);
+folly::Expected<folly::Unit, Error> rtrQp(
+    const RemoteQpInfo& remoteQpInfo,
+    IbvQp& ibvQp,
+    uint8_t trafficClass,
+    uint8_t gid_index,
+    uint8_t ib_sl,
+    uint32_t psn = 0,
+    uint8_t maxRdAtomic = 1);
 
 // rtsQp - Transitions QP to Ready To Send (RTS) state for active
 // communication
-folly::Expected<folly::Unit, Error> rtsQp(IbvQp& ibvQp);
+folly::Expected<folly::Unit, Error> rtsQp(
+    IbvQp& ibvQp,
+    uint8_t timeout,
+    uint8_t retryCnt,
+    uint32_t psn = 0,
+    uint8_t maxRdAtomic = 1);
 
 } // namespace ibverbx

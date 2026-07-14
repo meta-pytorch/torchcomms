@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "tuner.h"
 #include "plugin.h"
+#include "meta/tuner/MetaTuner.h"
 
 extern ncclTuner_t* getNcclTuner_v2(void* lib);
 extern ncclTuner_t* getNcclTuner_v3(void* lib);
@@ -40,6 +41,10 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
   const char* tunerName;
   // Initialize to nullptr by default if plugin tuner cannot be loaded.
   comm->tuner = nullptr;
+  // [META] built-in CSV/JSON tuner takes precedence when set; see meta/tuner/MetaTuner.h
+  if (ncclx::tuner::tryLoadMetaTuner(comm)) {
+    return ncclSuccess;
+  }
   if (tunerPluginLoadFailed == status) {
     return ncclSuccess;
   }

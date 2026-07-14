@@ -41,16 +41,40 @@ std::string formatAlgoStats(const AlgoStatsMap& algoStats) {
   return result;
 }
 
-// Check if any algorithm matching the substring was used (callCount > 0).
+// Check algorithm usage (callCount > 0) against a substring.
+// When matchAll is false (default), returns true if ANY used algorithm name
+// contains algoSubstr. When matchAll is true, returns true IFF there is at
+// least one used algorithm AND every used algorithm name contains algoSubstr.
 bool findAlgoWithCalls(
     const AlgoStatsMap& stats,
-    const std::string& algoSubstr) {
+    const std::string& algoSubstr,
+    const bool matchAll = false) {
+  int numValid = 0;
   for (const auto& [algoName, callCount] : stats) {
-    if (algoName.find(algoSubstr) != std::string::npos && callCount > 0) {
-      return true;
+    if (callCount <= 0) {
+      continue;
+    }
+    numValid++;
+    const bool matches = algoName.find(algoSubstr) != std::string::npos;
+    if (matches) {
+      // early return if match any
+      if (!matchAll) {
+        return true;
+      }
+    } else if (matchAll) {
+      // early return if any mismatch found but match all is required
+      return false;
     }
   }
-  return false;
+
+  if (matchAll) {
+    // any mismatch should have returned false above, so true if valid records
+    // exists
+    return numValid > 0;
+  } else {
+    // match any, any match should have returned true above.
+    return false;
+  }
 }
 
 } // namespace
@@ -86,6 +110,28 @@ void VerifyAlgoStatsHelper::verifyNot(
       << "Unexpected algorithm containing '" << unexpectedAlgoSubstr
       << "' was used in " << collective << ". Found algorithms: ["
       << formatAlgoStats(stats) << "]";
+}
+
+void VerifyAlgoStatsHelper::verifyExact(
+    ncclComm_t comm,
+    const std::string& collective,
+    const std::string& expectedSubstr) const {
+  const auto stats = getAlgoStats(comm, collective);
+  EXPECT_TRUE(findAlgoWithCalls(stats, expectedSubstr, /*matchAll=*/true))
+      << "Not all " << collective << " algorithms contain '" << expectedSubstr
+      << "'. Recorded: [" << formatAlgoStats(stats) << "]";
+}
+
+void VerifyAlgoStatsHelper::verifyEqual(
+    ncclComm_t expected,
+    ncclComm_t actual,
+    const std::string& collective) const {
+  const auto expectedStats = getAlgoStats(expected, collective);
+  const auto actualStats = getAlgoStats(actual, collective);
+  EXPECT_EQ(expectedStats, actualStats)
+      << "Algo stats for " << collective << " differ: expected ["
+      << formatAlgoStats(expectedStats) << "], actual ["
+      << formatAlgoStats(actualStats) << "]";
 }
 
 } // namespace ncclx::test

@@ -1,5 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+// This entire translation unit is the comms::prims-backed NVLink P2P sendrecv
+// kernel. It is compiled only when prims is enabled; otherwise it becomes an
+// empty TU (mirrors AllToAll/DeviceAllToAllvPipes.cu,
+// AllReduce/AllReduceIbTree.cu).
+#if defined(ENABLE_PRIMS)
+
 #include <stdio.h>
 #include <cstddef>
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -7,30 +13,63 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
 __device__ __forceinline__ void sendImpl(
     ctran::sendrecv::SendRecvOp* sends,
     size_t numSends,
-    comms::pipes::P2pNvlTransportDevice* nvlTransportsBase,
-    comms::pipes::ThreadGroup& group) {
+    comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
+    comms::prims::ThreadGroup& group) {
   for (auto i = 0; i < numSends; i++) {
+    if (group.group_id >= sends[i].nGroups) {
+      continue;
+    }
     const auto nbytes = sends[i].nbytes;
     const auto peerLocalRank = sends[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].send_group(group, sends[i].buff, nbytes);
+    comms::prims::ThreadGroup opGroup{
+        .thread_id_in_group = group.thread_id_in_group,
+        .group_size = group.group_size,
+        .group_id = group.group_id,
+        .block_id = group.block_id,
+        .total_groups = static_cast<uint32_t>(sends[i].nGroups),
+        .scope = group.scope};
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(sends[i].buff), nbytes, opGroup);
+    nvlTransportsBase[peerLocalRank].send(
+        opGroup,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0);
   }
 }
 
 __device__ __forceinline__ void recvImpl(
     ctran::sendrecv::SendRecvOp* recvs,
     size_t numRecvs,
-    comms::pipes::P2pNvlTransportDevice* nvlTransportsBase,
-    comms::pipes::ThreadGroup& group) {
+    comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
+    comms::prims::ThreadGroup& group) {
   for (auto i = 0; i < numRecvs; i++) {
+    if (group.group_id >= recvs[i].nGroups) {
+      continue;
+    }
     const auto nbytes = recvs[i].nbytes;
     const auto peerLocalRank = recvs[i].peerLocalRank;
-    nvlTransportsBase[peerLocalRank].recv_group(group, recvs[i].buff, nbytes);
+    comms::prims::ThreadGroup opGroup{
+        .thread_id_in_group = group.thread_id_in_group,
+        .group_size = group.group_size,
+        .group_id = group.group_id,
+        .block_id = group.block_id,
+        .total_groups = static_cast<uint32_t>(recvs[i].nGroups),
+        .scope = group.scope};
+    comms::prims::TiledBuffer<char> tiles(
+        static_cast<char*>(recvs[i].buff), nbytes, opGroup);
+    nvlTransportsBase[peerLocalRank].recv(
+        opGroup,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -46,8 +85,8 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
     ctran::device::KernelStartGpe(flag);
   }
 
-  auto group = args.useBlockGroup ? comms::pipes::make_block_group()
-                                  : comms::pipes::make_warp_group();
+  auto group = args.useBlockGroup ? comms::prims::make_block_group()
+                                  : comms::prims::make_warp_group();
 
   // TODO: currently first args.numSendBlocks blocks allocated for send, and
   // rest for recv. Sends and recvs will happen sequentially in allocated blocks
@@ -56,7 +95,7 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
       static_cast<uint32_t>(args.numSendBlocks),
       static_cast<uint32_t>(args.numRecvBlocks)};
   auto [partition_id, subgroup] =
-      group.partition(comms::pipes::make_device_span(weights, 2u));
+      group.partition(comms::prims::make_device_span(weights, 2u));
 
   // Use list format if enabled (fallback for > kCtranMaxNvlSendRecvOps),
   // otherwise use static arrays (fast path for common cases)
@@ -75,3 +114,5 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
+
+#endif // defined(ENABLE_PRIMS)

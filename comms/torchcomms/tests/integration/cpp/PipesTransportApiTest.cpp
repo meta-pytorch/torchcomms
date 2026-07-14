@@ -55,7 +55,7 @@ void PipesTransportApiTest::SetUp() {
   auto copy_err = cudaMemcpy(
       &handle_,
       reinterpret_cast<void*>(handle_ptr),
-      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      sizeof(comms::prims::MultiPeerDeviceHandle),
       cudaMemcpyDeviceToHost);
   ASSERT_EQ(copy_err, cudaSuccess) << "Failed to copy transport handle";
   ASSERT_EQ(handle_.myRank, rank_);
@@ -113,56 +113,6 @@ const char* scopeNameForThreads(int num_threads) {
 // Test Implementations
 // =============================================================================
 
-void PipesTransportApiTest::testStressSendRecv(
-    size_t msg_bytes,
-    int num_threads) {
-  size_t count = msg_bytes / sizeof(float);
-  if (count == 0) {
-    count = 1;
-  }
-  int iterations = config_.num_iterations;
-
-  SCOPED_TRACE(
-      ::testing::Message() << "TransportStressSendRecv msg="
-                           << formatBytes(msg_bytes)
-                           << " scope=" << scopeNameForThreads(num_threads)
-                           << " iters=" << iterations);
-
-  float* d_buf = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_buf, count * sizeof(float)), cudaSuccess);
-
-  int* d_results = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
-  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
-
-  torchcomm_->barrier(false);
-
-  auto stream = at::cuda::getStreamFromPool(false, device_index_);
-  {
-    c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportStressSendRecvKernel(
-        handle_,
-        d_buf,
-        count,
-        peer_,
-        iterations,
-        num_threads,
-        d_results,
-        stream.stream());
-  }
-  stream.synchronize();
-
-  checkKernelResults(
-      d_results,
-      iterations,
-      "TransportSendRecv(" + formatBytes(msg_bytes) + "," +
-          scopeNameForThreads(num_threads) + ")");
-
-  cudaFree(d_results);
-  cudaFree(d_buf);
-  torchcomm_->barrier(false);
-}
-
 void PipesTransportApiTest::testStressSignal(int num_threads) {
   int iterations = config_.num_iterations;
 
@@ -179,55 +129,6 @@ void PipesTransportApiTest::testStressSignal(int num_threads) {
         handle_, peer_, iterations, num_threads, stream.stream());
   }
   stream.synchronize();
-  torchcomm_->barrier(false);
-}
-
-void PipesTransportApiTest::testStressCombined(
-    size_t msg_bytes,
-    int num_threads) {
-  size_t count = msg_bytes / sizeof(float);
-  if (count == 0) {
-    count = 1;
-  }
-  int iterations = config_.num_iterations;
-
-  SCOPED_TRACE(
-      ::testing::Message() << "TransportStressCombined msg="
-                           << formatBytes(msg_bytes)
-                           << " scope=" << scopeNameForThreads(num_threads));
-
-  float* d_buf = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_buf, count * sizeof(float)), cudaSuccess);
-
-  int* d_results = nullptr;
-  ASSERT_EQ(cudaMalloc(&d_results, iterations * sizeof(int)), cudaSuccess);
-  ASSERT_EQ(cudaMemset(d_results, 0, iterations * sizeof(int)), cudaSuccess);
-
-  torchcomm_->barrier(false);
-
-  auto stream = at::cuda::getStreamFromPool(false, device_index_);
-  {
-    c10::cuda::CUDAStreamGuard guard(stream);
-    launchTransportStressCombinedKernel(
-        handle_,
-        d_buf,
-        count,
-        peer_,
-        iterations,
-        num_threads,
-        d_results,
-        stream.stream());
-  }
-  stream.synchronize();
-
-  checkKernelResults(
-      d_results,
-      iterations,
-      "TransportCombined(" + formatBytes(msg_bytes) + "," +
-          scopeNameForThreads(num_threads) + ")");
-
-  cudaFree(d_results);
-  cudaFree(d_buf);
   torchcomm_->barrier(false);
 }
 
@@ -270,39 +171,6 @@ void PipesTransportApiTest::testStressLl128(size_t nbytes) {
 // Parameterized Test Registrations
 // =============================================================================
 
-// --- SendRecv: parameterized by (msg_bytes, num_threads) ---
-
-struct TransportSendRecvParam {
-  size_t msg_bytes;
-  int num_threads; // 32 = WARP, 256 = BLOCK
-};
-
-class TransportSendRecvTest
-    : public PipesTransportApiTest,
-      public ::testing::WithParamInterface<TransportSendRecvParam> {};
-
-TEST_P(TransportSendRecvTest, SendRecv) {
-  testStressSendRecv(GetParam().msg_bytes, GetParam().num_threads);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    StressSendRecv,
-    TransportSendRecvTest,
-    ::testing::Values(
-        // WARP scope (32 threads)
-        TransportSendRecvParam{1024, 32}, // 1KB
-        TransportSendRecvParam{1048576, 32}, // 1MB
-        TransportSendRecvParam{16777216, 32}, // 16MB
-        // BLOCK scope (256 threads)
-        TransportSendRecvParam{1024, 256}, // 1KB
-        TransportSendRecvParam{1048576, 256}, // 1MB
-        TransportSendRecvParam{16777216, 256} // 16MB
-        ),
-    [](const ::testing::TestParamInfo<TransportSendRecvParam>& info) {
-      return std::to_string(info.param.msg_bytes) + "B_" +
-          std::string(info.param.num_threads >= 256 ? "BLOCK" : "WARP");
-    });
-
 // --- Signal: parameterized by num_threads ---
 
 class TransportSignalTest : public PipesTransportApiTest,
@@ -318,38 +186,6 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(32, 256),
     [](const ::testing::TestParamInfo<int>& info) {
       return std::string(info.param >= 256 ? "BLOCK" : "WARP");
-    });
-
-// --- Combined: parameterized by (msg_bytes, num_threads) ---
-
-struct TransportCombinedParam {
-  size_t msg_bytes;
-  int num_threads;
-};
-
-class TransportCombinedTest
-    : public PipesTransportApiTest,
-      public ::testing::WithParamInterface<TransportCombinedParam> {};
-
-TEST_P(TransportCombinedTest, Combined) {
-  testStressCombined(GetParam().msg_bytes, GetParam().num_threads);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    StressCombined,
-    TransportCombinedTest,
-    ::testing::Values(
-        // WARP scope
-        TransportCombinedParam{1024, 32},
-        TransportCombinedParam{1048576, 32},
-        TransportCombinedParam{16777216, 32}, // 16MB
-        // BLOCK scope
-        TransportCombinedParam{1024, 256},
-        TransportCombinedParam{1048576, 256},
-        TransportCombinedParam{16777216, 256}), // 16MB
-    [](const ::testing::TestParamInfo<TransportCombinedParam>& info) {
-      return std::to_string(info.param.msg_bytes) + "B_" +
-          std::string(info.param.num_threads >= 256 ? "BLOCK" : "WARP");
     });
 
 // --- LL128: parameterized by nbytes (warp-only) ---

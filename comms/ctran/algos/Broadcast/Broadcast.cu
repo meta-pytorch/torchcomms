@@ -43,7 +43,9 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
         args.unpack.sq[blockIdx.x],
         &broadcastUnpack,
         &flag[blockIdx.x],
-        KERNEL_TERMINATE);
+        KERNEL_TERMINATE,
+        &flag[blockIdx.x],
+        KERNEL_HOST_ABORT);
   }
 #endif
 

@@ -93,7 +93,7 @@ void computePacketSlice(
 
 } // namespace
 
-CtranMapper::CtranMapper(CtranComm* comm) {
+CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
   const auto statex = comm->statex_.get();
   if (NCCL_MAPPERTRACE_ENABLE) {
     this->mapperTrace = std::make_unique<ncclx::colltrace::MapperTrace>();
@@ -113,11 +113,13 @@ CtranMapper::CtranMapper(CtranComm* comm) {
         INIT,
         "CTRAN-MAPPER: IpcRegCache socket server enabled, initializing");
     // Initialize IpcRegCache singleton (idempotent - only initializes once)
-    ctran::IpcRegCache::getInstance()->init();
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    ipcRegCache->init();
 
     // Register this mapper as an IpcExportClient so globalDeregister
     // can iterate all active mappers to send remote releases.
-    ctran::IpcRegCache::getInstance()->registerExportClient(this);
+    ipcRegCache->registerExportClient(this);
 
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
@@ -177,7 +179,8 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
-    this->ctranTcpDm = std::make_unique<class ctran::CtranTcpDm>(comm);
+    this->ctranTcpDm =
+        std::make_unique<class ctran::CtranTcpDm>(comm, profiler);
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 
@@ -456,9 +459,8 @@ CtranMapper::~CtranMapper() {
   // Deregister from IpcRegCache so globalDeregister won't call this mapper
   // after it's destroyed.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  if (ipcRegCache) {
-    ipcRegCache->deregisterExportClient(this);
-  }
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->deregisterExportClient(this);
 
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
@@ -489,8 +491,9 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
   const int myRank = comm->statex_->rank();
   peerIpcServerAddrs_.resize(nRanks);
 
-  ctran::IpcRegCache::getInstance()->getServerAddr().getAddress(
-      &peerIpcServerAddrs_[myRank]);
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->getServerAddr().getAddress(&peerIpcServerAddrs_[myRank]);
   auto resFuture = comm->bootstrap_->allGather(
       peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
@@ -540,13 +543,14 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
     std::unique_ptr<regcache::IpcReqCb> req =
         std::make_unique<regcache::IpcReqCb>();
-    FB_COMMCHECK(
-        ctran::IpcRegCache::getInstance()->notifyRemoteIpcRelease(
-            comm->statex_->gPid(),
-            peerAddr,
-            reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
-            req.get(),
-            exportCount));
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    FB_COMMCHECK(ipcRegCache->notifyRemoteIpcRelease(
+        comm->statex_->gPid(),
+        peerAddr,
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
+        req.get(),
+        exportCount));
 
     CLOGF_TRACE(
         COLL,
@@ -733,9 +737,12 @@ commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
       FB_CHECKABORT(
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
-      FB_COMMCHECK(
-          ctran::IpcRegCache::getInstance()->releaseRemReg(
-              rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
+      auto ipcRegCache = ctran::IpcRegCache::getInstance();
+      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+      FB_COMMCHECK(ipcRegCache->releaseRemReg(
+          rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
+      // actual release of deferred deregistrations
+      ipcRegCache->cleanupInvalidImports();
       break;
     }
     default:
@@ -929,6 +936,27 @@ bool CtranMapper::hasBackend() {
   return true;
 }
 
+std::vector<bool> CtranMapper::getBackends() {
+  std::vector<bool> backends(CtranMapperBackend::NUM_BACKENDS, false);
+  const int rank = comm->statex_->rank();
+  const int nRanks = comm->statex_->nRanks();
+  backends.at(CtranMapperBackend::IB) =
+      hasBackend(rank, CtranMapperBackend::IB);
+  backends.at(CtranMapperBackend::SOCKET) =
+      hasBackend(rank, CtranMapperBackend::SOCKET);
+  backends.at(CtranMapperBackend::TCPDM) =
+      hasBackend(rank, CtranMapperBackend::TCPDM);
+  for (int peer = 0; peer < nRanks; peer++) {
+    if (peer == rank) {
+      continue;
+    }
+    if (hasBackend(peer, CtranMapperBackend::NVL)) {
+      backends.at(CtranMapperBackend::NVL) = true;
+    }
+  }
+  return backends;
+}
+
 CtranIb* CtranMapper::ctranIbPtr() {
   return ctranIb.get();
 }
@@ -995,7 +1023,9 @@ commResult_t CtranMapper::intraAllGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport,
+    std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls) {
   const auto& statex = comm->statex_;
   const int nLocalRanks = statex->nLocalRanks();
 
@@ -1005,7 +1035,30 @@ commResult_t CtranMapper::intraAllGatherCtrl(
   }
 
   return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+      buf,
+      hdl,
+      ranks,
+      remoteBufs,
+      remoteAccessKeys,
+      backend,
+      recordExport,
+      outIpcHdls);
+}
+
+commResult_t CtranMapper::intraAllGatherCtrl(
+    const void* buf,
+    void* hdl,
+    std::vector<void*>& remoteBufs,
+    std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+    std::vector<ctran::ScopedIpcRegHdl>& remoteIpcRegHdls) {
+  return this->intraAllGatherCtrl(
+      buf,
+      hdl,
+      remoteBufs,
+      remoteAccessKeys,
+      CtranMapperBackend::NVL,
+      /*recordExport=*/false,
+      &remoteIpcRegHdls);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -1013,14 +1066,23 @@ commResult_t CtranMapper::allGatherCtrl(
     void* hdl,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport,
+    std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls) {
   const int nRanks = comm->statex_->nRanks();
   std::vector<int> ranks(nRanks);
   for (int i = 0; i < nRanks; i++) {
     ranks[i] = i;
   }
-  return this->allGatherCtrl(
-      buf, hdl, ranks, remoteBufs, remoteAccessKeys, backend);
+  return this->allGatherCtrlImpl(
+      buf,
+      hdl,
+      ranks,
+      remoteBufs,
+      remoteAccessKeys,
+      backend,
+      recordExport,
+      outIpcHdls);
 }
 
 commResult_t CtranMapper::allGatherCtrl(
@@ -1029,8 +1091,37 @@ commResult_t CtranMapper::allGatherCtrl(
     const std::vector<int>& ranks,
     std::vector<void*>& remoteBufs,
     std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-    CtranMapperBackend backend) {
+    CtranMapperBackend backend,
+    bool recordExport,
+    std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls) {
+  return this->allGatherCtrlImpl(
+      buf,
+      hdl,
+      ranks,
+      remoteBufs,
+      remoteAccessKeys,
+      backend,
+      recordExport,
+      outIpcHdls);
+}
+
+commResult_t CtranMapper::allGatherCtrlImpl(
+    const void* buf,
+    void* hdl,
+    const std::vector<int>& ranks,
+    std::vector<void*>& remoteBufs,
+    std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+    CtranMapperBackend backend,
+    bool recordExport,
+    std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls) {
   const int rank = comm->statex_->rank();
+
+  // outIpcHdls is indexed by local rank in the import loop below; size it here
+  // at the point of use so every caller is safe -- including the ranks overload
+  // that does not pre-size it.
+  if (outIpcHdls != nullptr) {
+    outIpcHdls->resize(comm->statex_->nLocalRanks());
+  }
 
   // Skip if rank is not in the ranks list
   if (std::find(ranks.begin(), ranks.end(), rank) == ranks.end()) {
@@ -1088,8 +1179,9 @@ commResult_t CtranMapper::allGatherCtrl(
             hdl,
             nvlSendMsg,
             &nvlExtraSegments,
-            peerBackends[i]));
-      } else if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+            peerBackends[i],
+            recordExport));
+      } else if (recordExport && NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
         // exportMem not called for this peer, record explicitly
         exportRegCache_.wlock()->record(regElem, peerList[i]);
       }
@@ -1219,12 +1311,18 @@ commResult_t CtranMapper::allGatherCtrl(
         }
       }
       if (!hasPending) {
+        ctran::ScopedIpcRegHdl importedHdl;
         FB_COMMCHECK(this->importMem(
             peerList[i],
             recvMsgs[i],
             &remoteBufs[peerList[i]],
             &remoteAccessKeys[peerList[i]],
-            allRecvExtraSegments[i]));
+            allRecvExtraSegments[i],
+            outIpcHdls != nullptr ? &importedHdl : nullptr));
+        if (outIpcHdls != nullptr && importedHdl) {
+          const auto peerLocalRank = comm->statex_->localRank(peerList[i]);
+          (*outIpcHdls)[peerLocalRank] = std::move(importedHdl);
+        }
         peerImported[i] = true;
         numPeersImported++;
       }

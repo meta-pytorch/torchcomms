@@ -11,10 +11,10 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
-#include "comms/pipes/tests/Utils.cuh"
+#include "comms/prims/tests/Utils.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -67,13 +67,13 @@ TEST_F(MultiPeerTransportTest, InitAndExchange) {
   for (int peer = 0; peer < numRanks; peer++) {
     auto transportType = comm->multiPeerTransport_->get_transport_type(peer);
     if (peer == globalRank) {
-      EXPECT_EQ(transportType, comms::pipes::TransportType::SELF)
+      EXPECT_EQ(transportType, comms::prims::TransportType::SELF)
           << "Transport to self should be SELF";
     } else {
       // Should be either NVL or IBGDA depending on topology
       EXPECT_TRUE(
-          transportType == comms::pipes::TransportType::P2P_NVL ||
-          transportType == comms::pipes::TransportType::P2P_IBGDA)
+          transportType == comms::prims::TransportType::P2P_NVL ||
+          transportType == comms::prims::TransportType::P2P_IBGDA)
           << "Transport to peer " << peer << " should be P2P_NVL or P2P_IBGDA";
     }
     XLOG(INFO) << "Rank " << globalRank << ": transport to peer " << peer
@@ -153,15 +153,15 @@ TEST_F(MultiPeerTransportTest, TransportBufferPointersMatchStagingBuffers) {
     // Copy the P2pNvlTransportDevice from device memory back to host.
     // P2pNvlTransportDevice has const members so default ctor is deleted;
     // use a raw byte buffer and reinterpret_cast.
-    alignas(comms::pipes::P2pNvlTransportDevice) char
-        buf[sizeof(comms::pipes::P2pNvlTransportDevice)];
+    alignas(comms::prims::P2pNvlTransportDevice) char
+        buf[sizeof(comms::prims::P2pNvlTransportDevice)];
     CUDACHECK_TEST(cudaMemcpy(
         buf,
         &nvlTransportsBase[peer],
-        sizeof(comms::pipes::P2pNvlTransportDevice),
+        sizeof(comms::prims::P2pNvlTransportDevice),
         cudaMemcpyDeviceToHost));
     auto& transportHost =
-        *reinterpret_cast<comms::pipes::P2pNvlTransportDevice*>(buf);
+        *reinterpret_cast<comms::prims::P2pNvlTransportDevice*>(buf);
 
     // Verify data buffer pointers match SharedResource staging buffers
     char* expectedLocalData =
@@ -227,7 +227,7 @@ TEST_F(MultiPeerTransportTest, StagingBufferIpcAccessible) {
       static_cast<int*>(devStateHost.localStagingBufsMap[peerLocalRank]);
   ASSERT_NE(localDataBuffer, nullptr);
 
-  comms::pipes::test::fillBuffer(localDataBuffer, globalRank, kNumElements);
+  comms::prims::test::fillBuffer(localDataBuffer, globalRank, kNumElements);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Barrier to ensure all ranks have written their patterns
@@ -246,7 +246,7 @@ TEST_F(MultiPeerTransportTest, StagingBufferIpcAccessible) {
   auto* d_errorCount = static_cast<int*>(errorCountBuffer.get());
   CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
 
-  comms::pipes::test::verifyBuffer(
+  comms::prims::test::verifyBuffer(
       remoteDataBuffer, peerGlobalRank, kNumElements, d_errorCount);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 

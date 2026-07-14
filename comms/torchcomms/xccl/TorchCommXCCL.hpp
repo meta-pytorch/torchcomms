@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <glog/logging.h>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 #include "comms/torchcomms/TorchComm.hpp"
@@ -26,7 +27,8 @@
 namespace torch::comms {
 
 // Hint key names for XCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
@@ -46,6 +48,25 @@ class XCCLException : public std::exception {
   std::string message_;
   onecclResult_t result_;
 };
+
+#define XCCL_CHECK(xccl_api, call, err_str)            \
+  do {                                                 \
+    onecclResult_t status = call;                      \
+    if (status != onecclSuccess) {                     \
+      throw XCCLException(*xccl_api, err_str, status); \
+    }                                                  \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define XCCL_CHECK_IGNORE(xccl_api, call, err_str)                         \
+  do {                                                                     \
+    onecclResult_t status = call;                                          \
+    if (status != onecclSuccess) {                                         \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << xccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
+  } while (0)
 
 class TorchCommXCCL : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommXCCL> {
@@ -183,6 +204,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
+  friend class XcclCachingAllocatorHookImpl;
 
   // Getter for XPU API (for friend classes)
   XpuApi* getXpuApi() const {
@@ -218,6 +240,15 @@ class TorchCommXCCL : public TorchCommBackend,
   void returnEvent(xpuEvent_t&& event);
   void abortXcclComm();
 
+  struct Address {
+    void* addr;
+  };
+
+  struct AddressWithLen {
+    void* addr;
+    size_t len;
+  };
+
   enum class CommState {
     NORMAL,
     ERROR,
@@ -226,6 +257,9 @@ class TorchCommXCCL : public TorchCommBackend,
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
+
+  void register_address(const AddressWithLen& addr);
+  void deregister_address(const Address& addr);
 
   onecclDataType_t getXcclDataType(const at::Tensor& tensor);
   c10::intrusive_ptr<TorchWorkXCCL> createWork(
@@ -236,6 +270,15 @@ class TorchCommXCCL : public TorchCommBackend,
       xpuStream_t stream,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
+
+  // Work tracking per stream
+  TorchWorkXCCLQueue workq_;
+
+  std::optional<xpuEvent_t>
+      dependency_event_; // Pre-allocated event for stream dependencies
+
+  size_t max_event_pool_size_{};
+  bool is_high_priority_stream_{false};
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -265,6 +308,31 @@ class TorchCommXCCL : public TorchCommBackend,
     std::shared_ptr<XcclApi> xccl_api_;
   };
 
+  // Struct to hold the registration handle for a buffer
+  struct RegistrationHandle {
+    void* regHandle;
+
+    explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
+
+    RegistrationHandle(RegistrationHandle&& other) noexcept
+        : regHandle{other.regHandle} {
+      other.regHandle = nullptr;
+    }
+
+    RegistrationHandle(const RegistrationHandle&) = delete;
+    RegistrationHandle& operator=(const RegistrationHandle&) = delete;
+
+    RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
+      if (this != &other) {
+        regHandle = other.regHandle;
+        other.regHandle = nullptr;
+      }
+      return *this;
+    }
+
+    ~RegistrationHandle() = default;
+  };
+
   // Constructor for split communicators
   explicit TorchCommXCCL(const onecclComm_t xccl_comm);
 
@@ -277,10 +345,14 @@ class TorchCommXCCL : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
+  [[noreturn]] void throwAsyncError(bool abort_comm = true);
   void checkWorkQueue();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
+
+  void attachMemoryHook();
+  void detachMemoryHook();
 
   // Member variables
   onecclComm_t xccl_comm_{};
@@ -288,16 +360,17 @@ class TorchCommXCCL : public TorchCommBackend,
   int comm_size_{};
   int rank_{};
   CommOptions options_;
-  size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
-  std::optional<xpuEvent_t>
-      dependency_event_; // Pre-allocated event for stream dependencies
   void* barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
     INITIALIZED,
     FINALIZED,
   } init_state_;
+
+  // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
+  // buffer address to the registeration handle
+  std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
 
   // XCCL API abstraction
   std::shared_ptr<XcclApi> xccl_api_;
@@ -309,16 +382,12 @@ class TorchCommXCCL : public TorchCommBackend,
   std::queue<xpuEvent_t> event_pool_;
   std::mutex event_pool_mutex_;
 
-  // Work tracking per stream
-  TorchWorkXCCLQueue workq_;
-
   // Timeout monitoring
   std::thread timeout_thread_;
   std::atomic<bool> shutdown_;
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
   std::string name_;
   std::string backend_version_{"unknown"};
 };

@@ -42,7 +42,7 @@ class CtranUtilsLogTest : public ::testing::Test {
 
   const int getCurrentGpuIndex() {
     int gpuIndex = -1;
-    cudaGetDevice(&gpuIndex);
+    CUDACHECK_TEST(cudaGetDevice(&gpuIndex));
     return gpuIndex;
   }
 

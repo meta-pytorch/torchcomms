@@ -33,6 +33,8 @@ constexpr const char* CtranMapperBackendToString(CtranMapperBackend backend) {
       return "SOCKET";
     case CtranMapperBackend::TCPDM:
       return "TCPDM";
+    case CtranMapperBackend::EXTERNAL:
+      return "EXTERNAL";
     case CtranMapperBackend::NUM_BACKENDS:
       return "NUM_BACKENDS";
     default:

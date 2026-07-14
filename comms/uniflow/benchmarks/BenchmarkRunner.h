@@ -23,9 +23,26 @@ struct BenchmarkConfig {
   int numNics{0}; // 0 = use all topology-selected NICs
   size_t chunkSize{512 * 1024};
   int cudaDevice{-1};
+  /*
+   * Multiple GPU device indices for single-process multi-GPU runs. When
+   * non-empty, the benchmark drives one transport per device concurrently and
+   * reports aggregate bandwidth. Empty falls back to the single cudaDevice.
+   */
+  std::vector<int> cudaDevices;
+  /*
+   * Optional explicit NIC assignment per GPU (one inner list per cudaDevices
+   * entry). When set, each GPU uses its own NICs instead of topology selection,
+   * which avoids NICs being double-booked across adjacent GPUs.
+   */
+  std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
+  bool dataDirect{false}; // Register GPU memory over the mlx5 Data Direct path.
   std::string direction{"both"};
   std::vector<int> numStreams{1, 2, 4, 8};
+  std::string topology{"fanout"}; // "fanout", "fanin"
+  int pipelineDepth{2}; // send/recv staging pipeline depth
+  size_t slabSize{0}; // 0 = use chunk-size
+  int slabNum{0}; // 0 = use pipeline-depth
 };
 
 class Benchmark {

@@ -6,6 +6,22 @@
 
 #include "comms/uniflow/Result.h"
 
+#if defined(__HIP_PLATFORM_AMD__)
+// hipify-perl does not map this newer VMM dma-buf handle type; alias the CUDA
+// spelling (which survives hipification untranslated) to the HIP type so the
+// hipified interface still names a valid type on AMD. The dma-buf export path
+// that uses it is implemented for AMD in a later diff.
+using CUmemRangeHandleType = hipMemRangeHandleType;
+// Same hipify gap for the dma-buf-fd enumerator used by callers of
+// cuMemGetHandleForAddressRange.
+inline constexpr hipMemRangeHandleType CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD =
+    hipMemRangeHandleTypeDmaBufFd;
+// hipify-perl also misses the stream write-value flag enumerator used by
+// streamWriteValue64. HIP has no named constant for it; the CUDA default value
+// is 0x0 (no memory barrier), which is also HIP's default, so alias to 0.
+inline constexpr unsigned int CU_STREAM_WRITE_VALUE_DEFAULT = 0u;
+#endif
+
 namespace uniflow {
 
 /// Thin wrapper around CUDA Driver (cu*) APIs loaded via

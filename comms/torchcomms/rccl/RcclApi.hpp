@@ -37,6 +37,8 @@ class RcclApi {
 
   [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
+  [[nodiscard]] virtual ncclResult_t commRevoke(ncclComm_t comm) = 0;
+
   [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
@@ -45,6 +47,26 @@ class RcclApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) = 0;
+
+  [[nodiscard]] virtual ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) = 0;
 
@@ -199,6 +221,8 @@ class DefaultRcclApi : public RcclApi {
 
   [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
 
+  [[nodiscard]] ncclResult_t commRevoke(ncclComm_t comm) override;
+
   [[nodiscard]] ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) override;
@@ -207,6 +231,26 @@ class DefaultRcclApi : public RcclApi {
       ncclComm_t comm,
       int color,
       int key,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config) override;
+
+  [[nodiscard]] ncclResult_t commShrink(
+      ncclComm_t comm,
+      int* excludeRanksList,
+      int excludeRanksCount,
+      ncclComm_t* newcomm,
+      ncclConfig_t* config,
+      int shrinkFlags) override;
+
+  [[nodiscard]] ncclResult_t commGetUniqueId(
+      ncclComm_t comm,
+      ncclUniqueId* uniqueId) override;
+
+  [[nodiscard]] ncclResult_t commGrow(
+      ncclComm_t comm,
+      int nRanks,
+      const ncclUniqueId* uniqueId,
+      int rank,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
 

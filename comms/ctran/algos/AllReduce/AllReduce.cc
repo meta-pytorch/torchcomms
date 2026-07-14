@@ -28,6 +28,19 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
     case NCCL_ALLREDUCE_ALGO::ctran:
     case NCCL_ALLREDUCE_ALGO::ctdirect:
       return true;
+    /*
+     * ctree is hosted by MCCL (McclComm routes NCCL_ALLREDUCE_ALGO=ctree to the
+     * MCCL-owned fused collective); CTRAN no longer implements it.
+     */
+    case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+      // The real support predicate and implementation land in the next stacked
+      // diff. Return false for now so explicit selection falls back at the
+      // McclComm layer (non-silent WARN) rather than reaching the
+      // not-yet-implemented stub.
+      CLOGF(
+          WARN,
+          "cthierarchical_ring algo is not yet implemented; falling back to baseline");
+      return false;
     default: // invalid query
       return false;
   }
@@ -64,6 +77,13 @@ commResult_t ctranAllReduce(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       return ctranAllReduceRing(
+          sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+    /*
+     * ctree is hosted by MCCL now (see ctranAllReduceSupport); it never reaches
+     * this dispatcher.
+     */
+    case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+      return ctranAllReduceHierarchicalRing(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:
     default:

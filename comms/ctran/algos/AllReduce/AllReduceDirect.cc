@@ -69,23 +69,6 @@ static const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctdirect;
     }                                                                          \
   } while (0)
 
-// Drain pending NIC PCIe writes into GPU HBM after RDMA receives complete and
-// before launching the GPU kernel that reads the just-received buffer. On
-// GB200 (split-path topology: NIC<->SoC over PCIe, CPU<->GPU over NVLink-C2C),
-// PCIe write ordering does not extend across the SoC<->C2C boundary, so the
-// CPU may observe waitNotify completion before the RDMA payload has committed
-// to HBM. Issuing an RDMA READ per device drains the PCIe write pipeline.
-// Companion to D103775295 (proxy receive path) and D103503273 (ctrd AG).
-static commResult_t flushAfterRecv(CtranComm* comm, void* buf, void* hdl) {
-  CtranMapperRequest* rawReq = nullptr;
-  FB_COMMCHECK(comm->ctran_->mapper->iflush(buf, hdl, &rawReq));
-  std::unique_ptr<CtranMapperRequest> req(rawReq);
-  if (req) {
-    FB_COMMCHECK(comm->ctran_->mapper->waitRequest(req.get()));
-  }
-  return commSuccess;
-}
-
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
@@ -334,9 +317,9 @@ static commResult_t impl(
         }
       }
 
-      // See flushAfterRecv: drain peers' RDMA WRITEs into tmpBuf before the
+      // Drain peers' RDMA WRITEs into tmpBuf before the
       // kInterReduceScatter kernel reads it.
-      FB_COMMCHECK(flushAfterRecv(comm, tmpBuf, tmpbufRegHdl));
+      FB_COMMCHECK(comm->ctran_->mapper->flush(tmpBuf, tmpbufRegHdl));
     }
 
     /* local reduction from tmpbuf */
@@ -390,10 +373,10 @@ static commResult_t impl(
         }
       }
 
-      // See flushAfterRecv: drain peers' RDMA WRITEs into recvbuff before the
+      // Drain peers' RDMA WRITEs into recvbuff before the
       // kIntraAllGather kernel (Step 4) reads it for NVLink bcast.
-      FB_COMMCHECK(
-          flushAfterRecv(comm, BUFOFFSET(recvbuff, localOffset), recvHdl));
+      FB_COMMCHECK(comm->ctran_->mapper->flush(
+          BUFOFFSET(recvbuff, localOffset), recvHdl));
     }
     THROW_IF_ABORTED(, "ctdirect step 3: inter-node allgather");
 
@@ -517,9 +500,9 @@ static commResult_t impl(
       }
     }
 
-    // See flushAfterRecv: drain peers' RDMA WRITEs into tmpBuf before the
+    // Drain peers' RDMA WRITEs into tmpBuf before the
     // kRemInterReduce kernel reads it.
-    FB_COMMCHECK(flushAfterRecv(comm, tmpBuf, tmpbufRegHdl));
+    FB_COMMCHECK(comm->ctran_->mapper->flush(tmpBuf, tmpbufRegHdl));
 
     /* local reduction from tmpbuf */
     elem = op->allreduce.kElemStepMap.at(

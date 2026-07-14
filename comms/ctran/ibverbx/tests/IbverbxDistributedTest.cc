@@ -425,7 +425,7 @@ void IbverbxSingleQpTestFixtureWithParam::runSendRecvTest(int devBufSize) {
         .num_sge = 1,
         .opcode = IBV_WR_SEND,
         .send_flags = IBV_SEND_SIGNALED};
-    ibv_send_wr sendWrBad{};
+    ibv_send_wr* sendWrBad{nullptr};
     ASSERT_TRUE(qp->postSend(&sendWr, &sendWrBad));
     pollOneWcFromCq(globalRank, *cq);
   }
@@ -573,7 +573,7 @@ void IbverbxSingleQpTestFixtureWithParam::runRdmaWriteTest(int devBufSize) {
     sendWr.wr.rdma.rkey = remoteCard.rkey;
     sendWr.imm_data = 1;
 
-    ibv_send_wr sendWrBad{};
+    ibv_send_wr* sendWrBad{nullptr};
     ASSERT_TRUE(qp->postSend(&sendWr, &sendWrBad));
 
     pollOneWcFromCq(globalRank, *cq);

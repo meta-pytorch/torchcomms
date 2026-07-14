@@ -4,6 +4,7 @@
 /// Requires real GPUs, NVML, and ibverbs — not for CI without GPU hardware.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <string>
@@ -19,7 +20,7 @@ namespace uniflow {
 class MultiTransportFactoryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    topo_ = &Topology::get();
+    topo_ = &sharedTopology();
     if (!topo_->available()) {
       GTEST_SKIP() << "Topology not available";
     }
@@ -33,7 +34,7 @@ class MultiTransportFactoryTest : public ::testing::Test {
     auto factory =
         std::unique_ptr<MultiTransportFactory>(new MultiTransportFactory({}));
     factory->deviceId_ = deviceId;
-    factory->nicFilter_ = std::move(nicFilter);
+    factory->options_.nicFilter = std::move(nicFilter);
     return factory;
   }
 
@@ -73,7 +74,9 @@ class MultiTransportFactoryTest : public ::testing::Test {
 
     if (!platform.empty()) {
       cudaDeviceProp prop{};
-      cudaGetDeviceProperties(&prop, 0);
+      if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+        return Err(ErrCode::DriverError, "cudaGetDeviceProperties failed");
+      }
       std::string gpuName(prop.name);
       if (gpuName.find(platform) == std::string::npos) {
         std::string errMsg =
@@ -161,13 +164,18 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndRdma) {
   }
 
   MultiTransportFactory factory(0);
-  // GPU mode: NVLink factory first, then RDMA if PIX NICs exist.
   ASSERT_GE(factoryCount(factory), 1u);
+#if defined(__HIP_PLATFORM_AMD__)
+  // NVLink is NVIDIA-only and is compiled out on AMD, so the GPU factory
+  // provides RDMA as the GPU transport (see MultiTransport.cpp).
+  EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
+#else
+  // GPU mode: NVLink factory first, then RDMA if PIX NICs exist.
   EXPECT_EQ(factoryTransportType(factory, 0), TransportType::NVLink);
-
   if (factoryCount(factory) > 1) {
     EXPECT_EQ(factoryTransportType(factory, 1), TransportType::RDMA);
   }
+#endif
 }
 
 TEST_F(MultiTransportFactoryTest, ConstructorRejectsInvalidDeviceId) {

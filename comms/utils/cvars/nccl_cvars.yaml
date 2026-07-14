@@ -86,6 +86,17 @@ cvars:
       to e.g. "scuba:nccl_profiler_gpe".
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
+ - name        : NCCL_CTRAN_GPE_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Kill-switch for ctran::GpeProfiler's per-tracepoint Scuba flush
+     (table nccl_profiler_gpe). When false (default), CtranGpe nulls the
+     reporter regardless of caller injection — no Scuba rows are emitted.
+     The profiler still tracks per-iteration state internally so the
+     consolidated abort ERR line on stderr (gpeProfiler_->debugString())
+     keeps producing per-phase latencies. Set true to enable Scuba flush.
+
  - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
    type        : int
    default     : 1000
@@ -666,6 +677,14 @@ cvars:
      Blackwell per-channel tuning bandwidths, and uses NET node
      count for system->inter.
 
+ - name        : NCCL_TOPO_BOND_V229
+   type        : bool
+   default     : true
+   description : |-
+     Controls v2.29 vs v2.30 SM100 inter-node topology speed tiers.
+     When true (default, v2.29-like): skips the 86GB/s inter-node
+     speed tier. When false (v2.30 behavior): includes that tier.
+
  - name        : NCCL_NTHREADS
    type        : int64_t
    default     : -2
@@ -1143,13 +1162,6 @@ cvars:
      When enabled, dedicated IB blocks publish chunk-ready counters and
      dedicated NVLink blocks fan out chunks as soon as they arrive.
 
- - name        : NCCL_CTRAN_HIER_AG_NVL_NUM_BLOCKS
-   type        : int
-   default     : 16
-   description : |-
-     Number of CUDA thread blocks for the experimental overlapped
-     cthierarchical_ring AllGather NVLink fanout role.
-
  - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
    type        : uint64_t
    default     : 0
@@ -1505,10 +1517,9 @@ cvars:
    type        : uint64_t
    default     : 128
    description : |-
-     Maximum chunks of a staging buffer in P2P NVL copy-based kernel, this is
-     used to allocate IPC buffer for chunk states. The value = 16M/128k (maximum
-     staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
-     is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
+     Maximum chunks of a staging buffer in P2P NVL copy-based kernel. The value
+     = 16M/128k (maximum staging buffer / minimum chunk size). Currently unused
+     after the cooperative chunk-state path was removed.
 
  - name        : NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH
    type        : size_t
@@ -1621,6 +1632,32 @@ cvars:
      complete and CQEs are generated, new messages will be posted to keep the
      send queue full of this many WQEs.
 
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+   type        : bool
+   default     : True
+   description : |-
+     When a VC spans multiple NICs (NCCL_CTRAN_IB_DEVICES_PER_RANK > 1 with a
+     single VC striped across them), distribute a single put/get's QP-scaling
+     sub-chunks round-robin across all NICs first (interleaved visit order
+     qp0, qpK, qp2K, ... advancing the device before the next QP on a device,
+     where K = MAX_QPS / devices, instead of filling one NIC's qp0..K-1 before
+     the next). This lets a put smaller than
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD * (MAX_QPS / devices) still drive all
+     NICs, capturing the multi-NIC bandwidth without extra QP or channel setup.
+     No effect when the VC is bound to a single NIC (the mapping is the
+     identity).
+
+ - name        : NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE
+   type        : uint64_t
+   default     : 65536
+   description : |-
+     Minimum per-WQE size (bytes) for NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE
+     to take effect. A single op's WQEs are interleaved across NICs only when
+     each WQE exceeds this size. WQEs at or below it (e.g. the 64K pieces a
+     NUM_SPLIT=2 AllGather ring produces from a 128K per-rank chunk) are
+     latency-bound -- one NIC handles them fine and spreading them across NICs
+     only adds cross-NIC ordering/straggler cost, so interleaving is skipped.
+
  - name        : NCCL_CTRAN_IB_MAX_NUM_CQE
    type        : int
    default     : -1
@@ -1630,6 +1667,15 @@ cvars:
      NICs report max_cqe ~4M which causes the driver to allocate ~256MB
      per CQ. For example, setting to 32768 keeps per-CQ memory at ~2MB.
      Default -1 to use the device-reported maximum.
+
+ - name        : NCCL_CTRAN_NET_FORCE_FLUSH
+   type        : int
+   default     : 0
+   description : |-
+     Enable PCIe flush support (RDMA READ) for CTRAN network receives. On
+     platforms where the NIC-PCIe-GPU topology does not guarantee immediate
+     GPU visibility for DMA writes, the flush drains pending writes before
+     received data is forwarded or read by GPU copy engines/kernels.
 
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
@@ -1806,13 +1852,27 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : NCCL_CTRAN_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
+
+ - name        : NCCL_CTRAN_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental benchmarking.
+     Valid values are 1 through the compile-time maximum tree children.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
    description : |-
      Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
-     compact per-phase events to an HRDW ring buffer and the host logs them
-     after the collective stream reaches the kernel.
+     compact per-phase events to an HRDW ring buffer and a host background
+     thread polls the buffer on an interval, so breadcrumbs are logged while
+     the kernel is still running (including when it hangs).
 
  - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
    type        : uint64_t
@@ -1821,20 +1881,21 @@ cvars:
      Number of HRDW ring-buffer entries reserved per communicator for
      NCCL_CTRAN_PIPES_TRACE_ENABLE.
 
+ - name        : NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS
+   type        : uint64_t
+   default     : 50
+   description : |-
+     Interval in milliseconds at which the host background thread polls the
+     HRDW ring buffer for NCCL_CTRAN_PIPES_TRACE_ENABLE. Smaller values reduce
+     the chance of losing events to ring wraparound on high-rate kernels at the
+     cost of more frequent polling; a final drain always runs on teardown.
+
  - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
    type        : uint64_t
    default     : 524288
    description : |-
      Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
      Controls the granularity of parallel copy operations over NVLink.
-
- - name        : NCCL_CTRAN_PIPES_USE_DUAL_STATE_BUFFER
-   type        : bool
-   default     : false
-   description : |-
-     Enable dual state buffer mode for NVL transport in Pipes
-     MultiPeerTransport. When enabled, uses two chunk state buffers
-     instead of one, allowing overlap of copy and signal operations.
 
  - name        : NCCL_CTRAN_PIPES_DISABLE_IB
    type        : bool
@@ -1845,6 +1906,15 @@ cvars:
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
+ - name        : NCCL_CTRAN_PIPES_IB_MODE
+   type        : enum
+   default     : ibgda
+   choices     : ibgda, ibrc
+   description : |-
+     Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
+     ibgda - use GPU-posted IBGDA.
+     ibrc - use CPU-posted IBRC.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 1024
@@ -1854,6 +1924,21 @@ cvars:
      ThreadGroup size used in group-scope put operations (e.g., 256 for
      block-scope). Higher values allow more pipelining but use more
      memory.
+
+ - name        : NCCL_CTRAN_IB_MAX_GROUPS
+   type        : int
+   default     : 64
+   description : |-
+     Maximum number of physical CUDA block groups that may own IB QP
+     resources. Device-side IB QP selection uses ThreadGroup::block_id
+     and requires block_id < NCCL_CTRAN_IB_MAX_GROUPS.
+
+ - name        : NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC
+   type        : int
+   default     : 1
+   description : |-
+     Number of main IB QPs owned by each physical CUDA block on each NIC.
+     Puts from a block round-robin across its NIC-first QP lanes.
 
  - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
    type        : uint64_t
@@ -1916,13 +2001,6 @@ cvars:
      NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE or the per-communicator
      pipesIbgdaDataBufferSize hint.
 
- - name        : NCCL_CTRAN_IBGDA_SENDRECV_MAX_GROUPS
-   type        : int
-   default     : 128
-   description : |-
-     Maximum number of block-groups for IBGDA send/recv staging.
-     Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
-
  - name        : NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH
    type        : int
    default     : 2
@@ -1933,7 +2011,7 @@ cvars:
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
-   choices     : ib, nvl, socket, tcpdm
+   choices     : ib, nvl, socket, tcpdm, external
    description : |-
      Backends to enable for ctran
      ib - RoCE/IB backend
@@ -2114,15 +2192,12 @@ cvars:
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
    default     : ctpipeline
-   choices     : ctdirect, ctpipeline, ctrdpipeline, ctsrdpipeline
+   choices     : ctdirect, ctpipeline, ctsrdpipeline
    description : |-
      The algorithm to use for AllgatherP communication
      ctdirect - Ctran-based direct point-to-point algorithm
      ctpipeline - Ctran-based pipeline algorithm that pipelines
                   inter-node rail ring and intra-node CopyEngine based copy
-     ctrdpipeline - Ctran-based hybrid algorithm that does recursive doubling across
-                    rails for inter-node exchange and CopyEngine based broadcast
-                    within the NVLink domain. Requires nNodes to be a power of 2.
      ctsrdpipeline - Ctran-based hybrid algorithm that streams recursive-doubling
                      forwards across rails while keeping NVLink-domain CopyEngine
                      broadcast step-based. Requires nNodes to be a power of 2.
@@ -2169,12 +2244,13 @@ cvars:
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrhd
+   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctrhd
    description : |-
      The algorithm to use for ReduceScatter communication
      orig - Copy-based ring algorithm
      ctran - Ctran-based algorithm automatically picked by the library
      ctdirect - Ctran-based direct point-to-point algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
 
@@ -2649,13 +2725,15 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
+     ctree - Ctran-based tree algorithm (Pipes-native)
+     cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
@@ -2803,29 +2881,6 @@ cvars:
    default     : false
    description : |-
      Enable top level nccl comm register/deregister call logging.
-
- - name        : NCCL_COMM_TRACING_SERVICE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable thrift server for analyzer debugging. NCCL_COMMS_TRACING_SERVICE_PORTS
-     must also be set
-
- - name        : NCCL_COMMS_TRACING_SERVICE_PORTS
-   type        : stringlist
-   default     :
-   description : |-
-     Comma separated list of ports to use for comms tracing service.
-     Local rank i will use port i in the list.
-
- - name        : NCCL_COMM_TRACING_SERVICE_WARN_ON_PORT_CONFLICT
-   type        : bool
-   default     : false
-   description : |-
-     By default, the tracing service will crash the main process,
-     if it cannot start due to port conflict.
-     This flag allows users to choose to only log a warning in that case,
-     and the main process will continue to run.
 
  - name        : NCCL_NET_GDR_C2C
    type        : bool
@@ -3137,6 +3192,25 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
+   type        : bool
+   default     : true
+   description : |-
+     Enable MCCL Bootstrap READY-socket health polling. When enabled, Bootstrap
+     polls established peer sockets and converts kernel-observed socket errors
+     or peer close into communicator abort. Disable this as a kill switch for
+     the socket-health polling path; active Bootstrap socket I/O errors still
+     use the separate callback path.
+
+ - name        : MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED
+   type        : bool
+   default     : false
+   description : |-
+     Enable TCP keepalive on MCCL Bootstrap sockets. When enabled, Bootstrap
+     applies its TCP keepalive options to outgoing and accepted CoroSocket
+     instances so the kernel can surface half-open peer failures. Disabled by
+     default so production behavior is unchanged unless explicitly opted in.
+
  - name        : MCCL_SCUBA_ENABLED
    type        : bool
    default     : true
@@ -3147,7 +3221,7 @@ cvars:
 
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
-   default     : HIGH
+   default     : NORMAL
    choices     : CRITICAL, HIGH, NORMAL, LOW
    description : |-
      Minimum log priority level for MCCL Scuba logging. Only logs at or above
@@ -3164,11 +3238,15 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Enable ctran transport profiling for MCCL. When true, MCCL overrides
-     NCCL_CTRAN_TRANSPORT_PROFILER to true during init so that the ctran
-     Profiler is created and algo profiling data flows to the
-     mccl_operation_trace Scuba table via McclAlgoProfilerReporter. Set to
-     false to disable ctran profiling from the MCCL level.
+     Enable ctran transport profiling for MCCL. When true (and the rank
+     passes MCCL_FILTER_PROFILER_LOGGING_BY_RANKS), MCCL sets
+     comm_->config_.enableProfiler and injects BOTH
+     McclAlgoProfilerReporter and McclGpeProfilerReporter into
+     ctranInit. Algo rows land in mccl_operation_trace with
+     mcclop="ALGO_PROFILING"; GPE per-tracepoint rows land in the same
+     table with mcclop="GPE_PROFILING". Set to false to disable both
+     reporters from the MCCL level (CTRAN-side defaults for the GPE
+     profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist
@@ -3727,3 +3805,37 @@ cvars:
    type        : int64_t
    default     : -1
    description : Maximum number of P2P peers (added in NCCL 2.30). Uses NCCL_CONFIG_UNDEF_INT as default.
+
+ - name        : NCCLX_TUNER_CONFIG_FILE
+   type        : string
+   default     : ""
+   description : |-
+     Absolute path to a CSV or JSON file (.json extension -> JSON, otherwise
+     CSV) that overrides NCCL core algorithm/protocol/chunkSize selection per
+     (collective, message-size range, topology). When empty, the built-in
+     tuner is disabled and NCCL's default cost-model selection is used.
+     When set, this built-in tuner takes precedence over any external
+     NCCL_TUNER_PLUGIN.
+
+ - name        : NCCLX_TUNER_IGNORE_CONFIG_ERRORS
+   type        : bool
+   default     : false
+   description : |-
+     Controls how the built-in tuner reacts to a malformed NCCLX_TUNER_CONFIG_FILE.
+     When false (default), any tuner config parse error (file cannot be opened,
+     malformed JSON, missing/non-array "rules", an unknown collective/algorithm/
+     protocol, an invalid interval, a present-but-invalid numeric, or a bad JSON
+     value type) fails communicator initialization. When true, parse errors are
+     logged and the offending rule is skipped (or the whole file is ignored) and
+     init continues with the remaining valid rules. An empty/unset
+     NCCLX_TUNER_CONFIG_FILE means the tuner is simply disabled and is never an
+     error regardless of this setting.
+
+ - name        : NCCLX_META_TUNER_LOG_MISMATCH
+   type        : bool
+   default     : false
+   description : |-
+     When true, the built-in meta tuner logs (at INFO, subsys TUNING) the reason
+     a tuning rule did NOT match a collective -- which field disqualified it and
+     the rule's expected value vs the actual value. Useful for debugging why a
+     config rule is not taking effect. Default false (no mismatch logging).

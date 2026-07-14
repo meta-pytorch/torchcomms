@@ -1,28 +1,50 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include <atomic>
+#include <memory>
+#include <vector>
+
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/utils/commSpecs.h"
 
 using ctran::algos::GpeKernelSync;
 
 struct CtranMapperRemoteAccessKey;
+
+namespace ctran {
+class ScopedIpcRegHdl;
+class ScopedRegHdl;
+} // namespace ctran
+
 namespace ctran::allgatherp {
+enum class InitState { kUninitialized, kSubmitted, kInitialized };
+
 struct PersistArgs {
   void* recvbuff;
-  void* recvHdl;
   size_t maxRecvCount;
   commDataType_t datatype;
+  // Read only fields; ownership held by scoped regHdls.
+  void* recvHdl;
   std::vector<void*> remoteRecvBuffs;
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
+  // Hold ownership of registered handles
+  std::vector<ctran::ScopedIpcRegHdl> remoteIpcRegHdls_;
+  std::unique_ptr<ctran::ScopedRegHdl> recvRegHdl_;
 
   // Initialization offloads the remote handle exchange to GPE thread to avoid
   // potential deadlock on mapper epoch lock, if init is called again on the
   // main thread while there is an outstanding exec. Init returns without
   // waiting for the completion of async init. Any subsequent execution call
-  // should wait for its completion via the initialized_ flag, before the main
+  // should wait for its completion via the initState flag, before the main
   // thread can schedule copy engine copies
-  std::atomic<bool> initialized{false};
+  std::atomic<InitState> initState{InitState::kUninitialized};
+
+  // Set once the ring's rail peer IB rkeys are populated in remoteRecvBuffs /
+  // remoteAccessKeys -- by the full-comm exchange (eager) or the gpeFn's
+  // first-replay neighbor exchange -- so later replays only re-sync.
+  // GPE-thread-only, so not atomic.
+  bool ibKeysExchanged{false};
 };
 
 struct Resource {

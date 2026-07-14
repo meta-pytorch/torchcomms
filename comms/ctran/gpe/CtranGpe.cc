@@ -8,7 +8,10 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
+#include "comms/ctran/profiler/DefaultGpeProfilerReporter.h"
+#include "comms/ctran/profiler/GpeProfiler.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
@@ -350,11 +353,31 @@ std::string KernelConfig::toString() {
   return ss.str();
 }
 
-CtranGpe::CtranGpe(int cudaDev, CtranComm* comm) {
+CtranGpe::CtranGpe(
+    int cudaDev,
+    CtranComm* comm,
+    std::unique_ptr<ctran::IGpeProfilerReporter> reporter) {
   this->pimpl = std::make_unique<Impl>();
   this->pimpl->comm = comm;
   this->pimpl->cudaDev = cudaDev;
   this->pimpl->gpe = this;
+  // The cvar is the kill-switch at this integration layer. When false,
+  // the reporter is nulled regardless of caller injection — production
+  // operators always control whether Scuba rows flow. The profiler still
+  // exists and tracks internal state so gpeProfiler_->debugString() keeps
+  // populating the abort ERR line on stderr.
+  if (!NCCL_CTRAN_GPE_PROFILING_ENABLE) {
+    reporter.reset();
+  } else if (!reporter) {
+    reporter = std::make_unique<ctran::DefaultGpeProfilerReporter>();
+  }
+  this->pimpl->gpeProfiler_ = std::make_unique<ctran::GpeProfiler>(
+      &comm->logMetaData_,
+      comm->statex_->rank(),
+      comm->statex_->commHash(),
+      NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT,
+      std::move(reporter),
+      comm->getAbort());
   this->pimpl->start();
 }
 

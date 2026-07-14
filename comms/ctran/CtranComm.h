@@ -12,6 +12,8 @@
 #include <vector>
 
 #include <folly/Synchronized.h>
+#include <folly/container/F14Set.h>
+#include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
@@ -22,25 +24,23 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
-namespace comms::pipes {
+namespace comms::prims {
 class MultiPeerTransport;
 class PipesTrace;
 struct Transport;
-} // namespace comms::pipes
+} // namespace comms::prims
 
 using meta::comms::CommBackend;
 
-// Per-communicator Pipes transport overrides.
+// Per-communicator Prims transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
-  int useDualStateBuffer{-1}; // -1=cvar, 0=single, 1=dual
   bool ibLazyConnect{false};
   int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
     return nvlChunkSize == other.nvlChunkSize &&
-        useDualStateBuffer == other.useDualStateBuffer &&
         ibLazyConnect == other.ibLazyConnect &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
@@ -67,7 +67,7 @@ class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
-namespace comms::pipes {
+namespace comms::prims {
 class MultiPeerTransport;
 }
 
@@ -152,10 +152,27 @@ class CtranComm {
     return ctranOpCount_;
   }
 
+  inline bool isSplitShare() const {
+    return isSplitShare_;
+  }
+
+  inline CtranComm* resourceComm() {
+    return resourceComm_ == nullptr ? this : resourceComm_;
+  }
+
+  inline const CtranComm* resourceComm() const {
+    return resourceComm_ == nullptr ? this : resourceComm_;
+  }
+
+  // For splitShare children: child-rank -> parent-rank map. Empty otherwise.
+  inline const std::vector<int>& parentRanks() const {
+    return parentRanks_;
+  }
+
   // Get a pointer to the Transport array from MultiPeerTransport,
   // indexed by global rank. Returns nullptr if MultiPeerTransport is not
   // initialized.
-  comms::pipes::Transport* getMultiPeerTransportsPtr() const;
+  comms::prims::Transport* getMultiPeerTransportsPtr() const;
 
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
@@ -194,16 +211,25 @@ class CtranComm {
   // TODO: change shared_prt to unique_ptr after refactor all ctran code using
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
+
+  // Split-share comms define a rank group over a parent comm and share the
+  // parent's Ctran resources. They must not be used directly for
+  // collectives/RMA.
+  // Persistent window internals can borrow resourceComm_ for registration.
+  bool isSplitShare_{false};
+  CtranComm* resourceComm_{nullptr};
+  std::vector<int> parentRanks_;
+
   std::unique_ptr<meta::comms::ICtranBootstrap> bootstrap_;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
-#if defined(ENABLE_PIPES)
-  std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+#if defined(ENABLE_PRIMS)
+  std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
   size_t hierarchicalAgReadyCounterCount_{0};
-  std::unique_ptr<comms::pipes::PipesTrace> pipesTrace_;
-#endif // defined(ENABLE_PIPES)
+  std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
+#endif // defined(ENABLE_PRIMS)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
   // callbacks cannot call CUDA APIs, so cleanup is enqueued here and
@@ -226,11 +252,24 @@ class CtranComm {
   };
   CudagraphDeferredCleanup cudagraphDeferredCleanup;
 
+  // Registry of persistent-request cleanup tokens (see PersistentCleanup.h).
+  // Each token releases one persistent request's pooled GpeKernelSync
+  // (pipeSync) + scoped registration. destroy() drains this set (running each
+  // token once) BEFORE ctran_.reset() -> CtranGpe::terminate(), guaranteeing
+  // every pooled pipeSync is returned before terminate()'s pool-drain
+  // spin-wait -- no matter which teardown path (eager free, graph-destroy
+  // callback, comm cleanup) fires first.
+  void registerPersistentCleanup(std::shared_ptr<PersistentCleanup> cleanup);
+  void unregisterPersistentCleanup(
+      const std::shared_ptr<PersistentCleanup>& cleanup);
+  void drainPersistentCleanups();
+
  private:
   friend class CtranGpe;
   friend commResult_t ctranInit(
       CtranComm* comm,
-      std::unique_ptr<ctran::IProfilerReporter> reporter);
+      std::unique_ptr<ctran::IProfilerReporter> reporter,
+      std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter);
   std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats_;
   // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
@@ -248,4 +287,7 @@ class CtranComm {
   std::shared_ptr<AsyncError> asyncErr_;
   std::shared_ptr<Abort> abort_;
   uint64_t ctranOpCount_{0};
+
+  folly::Synchronized<folly::F14FastSet<std::shared_ptr<PersistentCleanup>>>
+      persistentCleanups_;
 };

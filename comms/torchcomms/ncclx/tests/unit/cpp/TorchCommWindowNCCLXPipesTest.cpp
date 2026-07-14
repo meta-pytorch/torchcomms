@@ -15,7 +15,7 @@
 #include "comms/torchcomms/ncclx/tests/unit/cpp/TorchCommNCCLXTestBase.hpp"
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
@@ -213,5 +213,5 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferSuccess) {
 
 } // namespace torch::comms::test
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API

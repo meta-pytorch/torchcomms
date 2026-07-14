@@ -16,9 +16,12 @@ bool ctranReduceScatterSupport(
   const int rank = comm->statex_->rank();
   const int nNodes = comm->statex_->nNodes();
   const int nLocalRanks = comm->statex_->nLocalRanks();
+  const bool directIbReduceScatter =
+      algo == NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
 
   // Check backend availability (except for single rank case)
-  if (nRanks > 1 && !comm->ctran_->mapper->hasBackend()) {
+  if (nRanks > 1 && !directIbReduceScatter &&
+      !comm->ctran_->mapper->hasBackend()) {
     CLOGF_EVERY_MS(
         WARN,
         60000,
@@ -78,6 +81,8 @@ bool ctranReduceScatterSupport(
         return false;
       }
       break;
+    case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
+      return true;
     case NCCL_REDUCESCATTER_ALGO::orig: // invalid query
       return false;
   }
@@ -94,7 +99,8 @@ commResult_t ctranReduceScatter(
     CtranComm* comm,
     cudaStream_t stream,
     enum NCCL_REDUCESCATTER_ALGO algo) {
-  if (comm->statex_->nRanks() == 1) {
+  if (comm->statex_->nRanks() == 1 &&
+      algo != NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
     return reduceScatterSingleRankImpl(
         sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
   }
@@ -127,6 +133,9 @@ commResult_t ctranReduceScatter(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
     case NCCL_REDUCESCATTER_ALGO::ctrhd:
       return ctranReduceScatterRHD(
+          sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
+    case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
+      return ctranReduceScatterDirectIb(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
     default:
       CLOGF(

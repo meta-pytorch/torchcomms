@@ -49,10 +49,21 @@ COLLECTIVE_RUNNERS = {
 }
 
 
+def _default_perf_params() -> PerfParams:
+    params = PerfParams()
+    if os.environ.get("TEST_FULL_SWEEP") == "0":
+        # Keep Buck/TestX runs as smoke coverage. Manual benchmark runs can use
+        # `-c comms.full_sweep=1` or pass explicit command-line values.
+        params.warmup_iterations = 1
+        params.measure_iterations = 3
+        params.max_size = 1024
+    return params
+
+
 def parse_args(args: list) -> Tuple[str, PerfParams, Optional[str]]:
     """Parse command-line arguments and return (collective, params, error)."""
     collective = "all"
-    params = PerfParams()
+    params = _default_perf_params()
 
     i = 0
     while i < len(args):

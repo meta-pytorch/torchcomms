@@ -43,172 +43,133 @@ class SendRecvTest(unittest.TestCase):
         """Synchronize all ranks after each test."""
         dist.barrier()
 
-    def test_send_recv(self) -> None:
-        """Test synchronous send and recv between rank 0 and rank 1."""
+    def _get_pair_peer(self) -> int:
+        """Return this rank's peer for world-wide pairwise P2P tests."""
         rank = dist.get_rank()
         num_ranks = dist.get_world_size()
-        device = get_device(rank)
 
         if num_ranks < 2:
             self.skipTest("Need at least 2 ranks for send/recv test")
+        if num_ranks % 2 != 0:
+            self.skipTest("Need an even number of ranks for pairwise send/recv test")
 
-        if rank == 0:
-            tensor = torch.ones(1024, dtype=torch.float, device=device) * 42
-            dist.send(tensor, dst=1)
-        elif rank == 1:
+        return rank + 1 if rank % 2 == 0 else rank - 1
+
+    def test_send_recv(self) -> None:
+        """Test synchronous send and recv between paired ranks."""
+        rank = dist.get_rank()
+        peer = self._get_pair_peer()
+        device = get_device(rank)
+
+        if rank % 2 == 0:
+            tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 42)
+            dist.send(tensor, dst=peer)
+        else:
             tensor = torch.zeros(1024, dtype=torch.float, device=device)
-            dist.recv(tensor, src=0)
-            expected = torch.full_like(tensor.cpu(), 42)
+            dist.recv(tensor, src=peer)
+            expected = torch.full_like(tensor.cpu(), peer + 42)
             torch.testing.assert_close(tensor.cpu(), expected)
 
     def test_isend_irecv(self) -> None:
-        """Test asynchronous isend and irecv between rank 0 and rank 1."""
+        """Test asynchronous isend and irecv between paired ranks."""
         rank = dist.get_rank()
-        num_ranks = dist.get_world_size()
+        peer = self._get_pair_peer()
         device = get_device(rank)
 
-        if num_ranks < 2:
-            self.skipTest("Need at least 2 ranks for isend/irecv test")
-
-        if rank == 0:
-            tensor = torch.ones(1024, dtype=torch.float, device=device) * 99
-            work = dist.isend(tensor, dst=1)
+        if rank % 2 == 0:
+            tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 99)
+            work = dist.isend(tensor, dst=peer)
             work.wait()
-        elif rank == 1:
+        else:
             tensor = torch.zeros(1024, dtype=torch.float, device=device)
-            work = dist.irecv(tensor, src=0)
+            work = dist.irecv(tensor, src=peer)
             work.wait()
-            expected = torch.full_like(tensor.cpu(), 99)
+            expected = torch.full_like(tensor.cpu(), peer + 99)
             torch.testing.assert_close(tensor.cpu(), expected)
 
     def test_bidirectional_send_recv(self) -> None:
-        """Test bidirectional send/recv between rank 0 and rank 1."""
+        """Test bidirectional send/recv between paired ranks."""
         rank = dist.get_rank()
-        num_ranks = dist.get_world_size()
+        peer = self._get_pair_peer()
         device = get_device(rank)
 
-        if num_ranks < 2:
-            self.skipTest("Need at least 2 ranks for bidirectional test")
+        send_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 10)
+        recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
-        if rank == 0:
-            send_tensor = torch.ones(1024, dtype=torch.float, device=device) * 10
-            recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
+        if rank % 2 == 0:
+            send_work = dist.isend(send_tensor, dst=peer)
+            recv_work = dist.irecv(recv_tensor, src=peer)
+        else:
+            recv_work = dist.irecv(recv_tensor, src=peer)
+            send_work = dist.isend(send_tensor, dst=peer)
 
-            send_work = dist.isend(send_tensor, dst=1)
-            recv_work = dist.irecv(recv_tensor, src=1)
+        send_work.wait()
+        recv_work.wait()
 
-            send_work.wait()
-            recv_work.wait()
-
-            expected = torch.full_like(recv_tensor.cpu(), 20)
-            torch.testing.assert_close(recv_tensor.cpu(), expected)
-
-        elif rank == 1:
-            send_tensor = torch.ones(1024, dtype=torch.float, device=device) * 20
-            recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
-
-            recv_work = dist.irecv(recv_tensor, src=0)
-            send_work = dist.isend(send_tensor, dst=0)
-
-            recv_work.wait()
-            send_work.wait()
-
-            expected = torch.full_like(recv_tensor.cpu(), 10)
-            torch.testing.assert_close(recv_tensor.cpu(), expected)
+        expected = torch.full_like(recv_tensor.cpu(), peer + 10)
+        torch.testing.assert_close(recv_tensor.cpu(), expected)
 
     def test_batch_isend_irecv(self) -> None:
         """Test batch_isend_irecv for batched point-to-point operations."""
         rank = dist.get_rank()
-        num_ranks = dist.get_world_size()
+        peer = self._get_pair_peer()
         device = get_device(rank)
 
-        if num_ranks < 2:
-            self.skipTest("Need at least 2 ranks for batch_isend_irecv test")
+        send_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 77)
+        recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
-        if rank == 0:
-            send_tensor = torch.ones(1024, dtype=torch.float, device=device) * 77
-            recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
-
+        if rank % 2 == 0:
             p2p_ops = [
-                dist.P2POp(dist.isend, send_tensor, peer=1),
-                dist.P2POp(dist.irecv, recv_tensor, peer=1),
+                dist.P2POp(dist.isend, send_tensor, peer=peer),
+                dist.P2POp(dist.irecv, recv_tensor, peer=peer),
+            ]
+        else:
+            p2p_ops = [
+                dist.P2POp(dist.irecv, recv_tensor, peer=peer),
+                dist.P2POp(dist.isend, send_tensor, peer=peer),
             ]
 
-            works = dist.batch_isend_irecv(p2p_ops)
-            for work in works:
-                work.wait()
+        works = dist.batch_isend_irecv(p2p_ops)
+        for work in works:
+            work.wait()
 
-            expected = torch.full_like(recv_tensor.cpu(), 88)
-            torch.testing.assert_close(recv_tensor.cpu(), expected)
-
-        elif rank == 1:
-            send_tensor = torch.ones(1024, dtype=torch.float, device=device) * 88
-            recv_tensor = torch.zeros(1024, dtype=torch.float, device=device)
-
-            p2p_ops = [
-                dist.P2POp(dist.irecv, recv_tensor, peer=0),
-                dist.P2POp(dist.isend, send_tensor, peer=0),
-            ]
-
-            works = dist.batch_isend_irecv(p2p_ops)
-            for work in works:
-                work.wait()
-
-            expected = torch.full_like(recv_tensor.cpu(), 77)
-            torch.testing.assert_close(recv_tensor.cpu(), expected)
+        expected = torch.full_like(recv_tensor.cpu(), peer + 77)
+        torch.testing.assert_close(recv_tensor.cpu(), expected)
 
     def test_batch_isend_irecv_multiple_ops(self) -> None:
         """Test batch_isend_irecv with multiple send/recv operations."""
         rank = dist.get_rank()
-        num_ranks = dist.get_world_size()
+        peer = self._get_pair_peer()
         device = get_device(rank)
 
-        if num_ranks < 2:
-            self.skipTest("Need at least 2 ranks for batch_isend_irecv test")
+        send_tensor1 = torch.ones(512, dtype=torch.float, device=device) * (rank + 11)
+        send_tensor2 = torch.ones(512, dtype=torch.float, device=device) * (rank + 22)
+        recv_tensor1 = torch.zeros(512, dtype=torch.float, device=device)
+        recv_tensor2 = torch.zeros(512, dtype=torch.float, device=device)
 
-        if rank == 0:
-            send_tensor1 = torch.ones(512, dtype=torch.float, device=device) * 11
-            send_tensor2 = torch.ones(512, dtype=torch.float, device=device) * 22
-            recv_tensor1 = torch.zeros(512, dtype=torch.float, device=device)
-            recv_tensor2 = torch.zeros(512, dtype=torch.float, device=device)
-
+        if rank % 2 == 0:
             p2p_ops = [
-                dist.P2POp(dist.isend, send_tensor1, peer=1),
-                dist.P2POp(dist.isend, send_tensor2, peer=1),
-                dist.P2POp(dist.irecv, recv_tensor1, peer=1),
-                dist.P2POp(dist.irecv, recv_tensor2, peer=1),
+                dist.P2POp(dist.isend, send_tensor1, peer=peer),
+                dist.P2POp(dist.isend, send_tensor2, peer=peer),
+                dist.P2POp(dist.irecv, recv_tensor1, peer=peer),
+                dist.P2POp(dist.irecv, recv_tensor2, peer=peer),
+            ]
+        else:
+            p2p_ops = [
+                dist.P2POp(dist.irecv, recv_tensor1, peer=peer),
+                dist.P2POp(dist.irecv, recv_tensor2, peer=peer),
+                dist.P2POp(dist.isend, send_tensor1, peer=peer),
+                dist.P2POp(dist.isend, send_tensor2, peer=peer),
             ]
 
-            works = dist.batch_isend_irecv(p2p_ops)
-            for work in works:
-                work.wait()
+        works = dist.batch_isend_irecv(p2p_ops)
+        for work in works:
+            work.wait()
 
-            expected1 = torch.full_like(recv_tensor1.cpu(), 33)
-            expected2 = torch.full_like(recv_tensor2.cpu(), 44)
-            torch.testing.assert_close(recv_tensor1.cpu(), expected1)
-            torch.testing.assert_close(recv_tensor2.cpu(), expected2)
-
-        elif rank == 1:
-            send_tensor1 = torch.ones(512, dtype=torch.float, device=device) * 33
-            send_tensor2 = torch.ones(512, dtype=torch.float, device=device) * 44
-            recv_tensor1 = torch.zeros(512, dtype=torch.float, device=device)
-            recv_tensor2 = torch.zeros(512, dtype=torch.float, device=device)
-
-            p2p_ops = [
-                dist.P2POp(dist.irecv, recv_tensor1, peer=0),
-                dist.P2POp(dist.irecv, recv_tensor2, peer=0),
-                dist.P2POp(dist.isend, send_tensor1, peer=0),
-                dist.P2POp(dist.isend, send_tensor2, peer=0),
-            ]
-
-            works = dist.batch_isend_irecv(p2p_ops)
-            for work in works:
-                work.wait()
-
-            expected1 = torch.full_like(recv_tensor1.cpu(), 11)
-            expected2 = torch.full_like(recv_tensor2.cpu(), 22)
-            torch.testing.assert_close(recv_tensor1.cpu(), expected1)
-            torch.testing.assert_close(recv_tensor2.cpu(), expected2)
+        expected1 = torch.full_like(recv_tensor1.cpu(), peer + 11)
+        expected2 = torch.full_like(recv_tensor2.cpu(), peer + 22)
+        torch.testing.assert_close(recv_tensor1.cpu(), expected1)
+        torch.testing.assert_close(recv_tensor2.cpu(), expected2)
 
 
 if __name__ == "__main__":

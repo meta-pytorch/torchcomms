@@ -660,7 +660,7 @@ class RcEndPoint : public EndPointBase {
     wr.wr.rdma.rkey = targetCard.rkey;
 
     ibv_send_wr* badWr = nullptr;
-    auto result = qp_->postSend(&wr, badWr);
+    auto result = qp_->postSend(&wr, &badWr);
     return result.hasError() ? -1 : 0;
   }
 
@@ -820,7 +820,7 @@ inline int postRcRdmaWrite(
   wr.wr.rdma.rkey = rkey;
 
   ibv_send_wr* badWr = nullptr;
-  auto result = qp.postSend(&wr, badWr);
+  auto result = qp.postSend(&wr, &badWr);
   return result.hasError() ? -1 : 0;
 }
 

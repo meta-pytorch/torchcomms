@@ -3,6 +3,7 @@
 #include "comms/uniflow/Uniflow.h"
 
 #include "comms/uniflow/controller/TcpController.h"
+#include "comms/uniflow/logging/Logger.h"
 
 namespace uniflow {
 
@@ -82,12 +83,23 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
     bool sendFirst) {
   auto myTopo = factory_->getTopology();
 
+  /*
+   * The recv() calls below are bounded by the connected-socket timeout: if the
+   * peer's transport setup silently failed, a blocked recv now fails with
+   * ConnectionFailed instead of hanging forever. These DEBUG phase logs bracket
+   * each blocking exchange so, when enabled, a stall/timeout is attributable to
+   * a specific handshake step. Kept at DEBUG to avoid per-connection noise.
+   */
+  UNIFLOW_LOG_DEBUG("establishConnection: start (sendFirst={})", sendFirst);
+
   // Exchange topology
   std::vector<uint8_t> peerTopo;
   if (sendFirst) {
     CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
+    UNIFLOW_LOG_DEBUG("establishConnection: topology sent, awaiting peer");
     CHECK_EXPR(ctrl->recv(peerTopo).get());
   } else {
+    UNIFLOW_LOG_DEBUG("establishConnection: awaiting peer topology");
     CHECK_EXPR(ctrl->recv(peerTopo).get());
     CHECK_EXPR(ctrl->send({myTopo.begin(), myTopo.end()}).get());
   }
@@ -98,6 +110,8 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
   auto& transport = transportResult.value();
 
   // Bind and exchange transport info
+  UNIFLOW_LOG_DEBUG(
+      "establishConnection: topology exchanged, binding transport");
   auto bindResult = transport->bind();
   CHECK_RETURN(bindResult);
   auto& localInfo = bindResult.value();
@@ -105,14 +119,20 @@ Result<std::unique_ptr<Connection>> UniflowAgent::establishConnection(
   std::vector<uint8_t> remoteInfo;
   if (sendFirst) {
     CHECK_EXPR(ctrl->send(localInfo).get());
+    UNIFLOW_LOG_DEBUG(
+        "establishConnection: transport info sent, awaiting peer");
     CHECK_EXPR(ctrl->recv(remoteInfo).get());
   } else {
+    UNIFLOW_LOG_DEBUG("establishConnection: awaiting peer transport info");
     CHECK_EXPR(ctrl->recv(remoteInfo).get());
     CHECK_EXPR(ctrl->send(localInfo).get());
   }
 
   // Connect transport with remote endpoint info
+  UNIFLOW_LOG_DEBUG(
+      "establishConnection: transport info exchanged, connecting");
   CHECK_EXPR(transport->connect(remoteInfo));
+  UNIFLOW_LOG_DEBUG("establishConnection: connection established");
   return std::make_unique<Connection>(std::move(ctrl), std::move(transport));
 }
 

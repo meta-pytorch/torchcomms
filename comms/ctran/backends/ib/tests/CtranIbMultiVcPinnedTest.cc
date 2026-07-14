@@ -92,7 +92,7 @@ class CtranIbMultiVcPinnedTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    cudaDeviceReset();
+    EXPECT_EQ(cudaDeviceReset(), cudaSuccess);
     unsetenv("NCCL_CTRAN_IB_DEVICES_PER_RANK");
     unsetenv("NCCL_CTRAN_IB_MAX_QPS");
     unsetenv("NCCL_CTRAN_IB_NUM_VCS_PER_RANK");

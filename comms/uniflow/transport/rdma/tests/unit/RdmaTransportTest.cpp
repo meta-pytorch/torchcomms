@@ -8,7 +8,9 @@
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
 #include <cstring>
+#include <map>
 #include <queue>
+#include <utility>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -141,7 +143,7 @@ TEST(RdmaTransportInfoTest, DeserializeTruncatedHeader) {
 TEST(RdmaTransportInfoTest, DeserializeTruncatedPayload) {
   // Provide a full header but no NicInfo/QpInfo payload.
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 3;
   info.header.numNics = 2;
 
@@ -155,7 +157,7 @@ TEST(RdmaTransportInfoTest, DeserializeTruncatedPayload) {
 
 TEST(RdmaTransportInfoTest, SerializeZeroQps) {
   RdmaTransportInfo info;
-  info.header.version = 1;
+  info.header.version = kRdmaVersion;
   info.header.numQps = 0;
   info.header.numNics = 1;
   info.nicInfos = {{.lid = 1}};
@@ -179,7 +181,8 @@ NicResources makeNic(
     std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi,
     uint16_t lid = 0,
     ibv_gid gid = {},
-    uint8_t port = 1) {
+    uint8_t port = 1,
+    int numaNode = -1) {
   ON_CALL(*mockApi, openDevice(dev))
       .WillByDefault(Return(Result<ibv_context*>(ctx)));
   ON_CALL(*mockApi, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
@@ -191,6 +194,7 @@ NicResources makeNic(
         attr->active_mtu = IBV_MTU_4096;
         attr->link_layer = IBV_LINK_LAYER_ETHERNET;
         attr->state = IBV_PORT_ACTIVE;
+        attr->gid_tbl_len = 8;
         return Ok();
       });
   ON_CALL(*mockApi, queryGid(ctx, port, _, _))
@@ -206,7 +210,197 @@ NicResources makeNic(
   ON_CALL(*mockApi, deallocPd(pd)).WillByDefault(Return(Ok()));
   ON_CALL(*mockApi, closeDevice(ctx)).WillByDefault(Return(Ok()));
 
-  return NicResources(dev, mockApi, 3, port);
+  return NicResources(dev, mockApi, numaNode, 3, port);
+}
+
+// Configures the common NicResources ON_CALLs for an Ethernet (RoCE) port with
+// the given GID table length. Callers set queryGidEx / isQueryGidExSupported
+// behavior separately before constructing the NicResources.
+void setupGidNicMock(
+    testing::NiceMock<MockIbvApi>& api,
+    ibv_device* dev,
+    ibv_context* ctx,
+    ibv_pd* pd,
+    int gidTblLen) {
+  ON_CALL(api, openDevice(dev))
+      .WillByDefault(Return(Result<ibv_context*>(ctx)));
+  ON_CALL(api, allocPd(ctx)).WillByDefault(Return(Result<ibv_pd*>(pd)));
+  ON_CALL(api, isDmaBufSupported(pd))
+      .WillByDefault(Return(Result<bool>(false)));
+  ON_CALL(api, queryPort(ctx, 1, _))
+      .WillByDefault([gidTblLen](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+        attr->active_mtu = IBV_MTU_4096;
+        attr->state = IBV_PORT_ACTIVE;
+        attr->gid_tbl_len = gidTblLen;
+        return Ok();
+      });
+  ON_CALL(api, queryGid(ctx, 1, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, int, ibv_gid* out) {
+        *out = ibv_gid{};
+        return Ok();
+      });
+  ON_CALL(api, deallocPd(pd)).WillByDefault(Return(Ok()));
+  ON_CALL(api, closeDevice(ctx)).WillByDefault(Return(Ok()));
+}
+
+// Builds a queryGidEx stub from a {index -> gid_type} table, marking the entry
+// at @p ipv4Index (if >= 0) as IPv4-mapped, the entry at @p linkLocalIndex (if
+// >= 0) as an IPv6 link-local (fe80::) address, and the entry at @p
+// ipv4LinkLocalIndex (if >= 0) as an IPv4-mapped IPv4 link-local (169.254.x.x)
+// address.
+auto makeGidExStub(
+    std::map<uint32_t, uint32_t> typesByIndex,
+    int ipv4Index,
+    int linkLocalIndex = -1,
+    int ipv4LinkLocalIndex = -1) {
+  return [typesByIndex = std::move(typesByIndex),
+          ipv4Index,
+          linkLocalIndex,
+          ipv4LinkLocalIndex](
+             ibv_context*,
+             uint32_t,
+             uint32_t index,
+             ibv_gid_entry* entry,
+             uint32_t) -> Status {
+    auto it = typesByIndex.find(index);
+    if (it == typesByIndex.end()) {
+      return Err(ErrCode::DriverError, "empty GID entry");
+    }
+    *entry = ibv_gid_entry{};
+    entry->gid_index = index;
+    entry->gid_type = it->second;
+    if (static_cast<int>(index) == ipv4Index) {
+      entry->gid.raw[10] = 0xff;
+      entry->gid.raw[11] = 0xff;
+    }
+    if (static_cast<int>(index) == linkLocalIndex) {
+      entry->gid.raw[0] = 0xfe;
+      entry->gid.raw[1] = 0x80;
+    }
+    if (static_cast<int>(index) == ipv4LinkLocalIndex) {
+      entry->gid.raw[10] = 0xff;
+      entry->gid.raw[11] = 0xff;
+      entry->gid.raw[12] = 169;
+      entry->gid.raw[13] = 254;
+    }
+    return Ok();
+  };
+}
+
+class NicResourcesGidTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    api_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    ctx_.device = &dev_;
+  }
+
+  void setupMock(int gidTblLen = 8) {
+    setupGidNicMock(*api_, &dev_, &ctx_, &pd_, gidTblLen);
+  }
+
+  std::shared_ptr<testing::NiceMock<MockIbvApi>> api_;
+  ibv_device dev_{};
+  ibv_context ctx_{};
+  ibv_pd pd_{};
+};
+
+TEST_F(NicResourcesGidTest, AutoSelectPrefersIpv4MappedRoceV2) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 2: RoCEv2 (not IPv4); index 5: RoCEv2 IPv4-mapped (preferred).
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_ROCE_V1},
+           {2, IBV_GID_TYPE_ROCE_V2},
+           {5, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/5));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 5);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectFallsBackWhenGidExUnsupported) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(false));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3); // Mellanox RoCEv2 default.
+}
+
+TEST_F(NicResourcesGidTest, ForcedIndexSkipsScan) {
+  setupMock(/*gidTblLen=*/8);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  EXPECT_CALL(*api_, queryGidEx(_, _, _, _, _)).Times(0);
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/5, 1);
+  EXPECT_EQ(nic.gidIndex, 5);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectFallsBackWhenNoRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_IB},
+           {1, IBV_GID_TYPE_ROCE_V1},
+           {2, IBV_GID_TYPE_ROCE_V1}},
+          /*ipv4Index=*/-1));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectSkipsLinkLocalRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 1: link-local RoCEv2 (skipped); index 3: global RoCEv2 (selected).
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{1, IBV_GID_TYPE_ROCE_V2}, {3, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/1));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectSkipsIpv4LinkLocalRoceV2) {
+  setupMock(/*gidTblLen=*/4);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // index 2: IPv4 link-local (169.254.x.x) RoCEv2 (skipped); index 3: global.
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{2, IBV_GID_TYPE_ROCE_V2}, {3, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/-1,
+          /*ipv4LinkLocalIndex=*/2));
+
+  NicResources nic(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1);
+  EXPECT_EQ(nic.gidIndex, 3);
+}
+
+TEST_F(NicResourcesGidTest, ForcedIndexOutOfRangeThrows) {
+  setupMock(/*gidTblLen=*/4);
+
+  EXPECT_THROW(
+      NicResources(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/10, 1),
+      std::runtime_error);
+}
+
+TEST_F(NicResourcesGidTest, AutoSelectThrowsWhenNoGlobalAndDefaultOutOfRange) {
+  setupMock(/*gidTblLen=*/2);
+  ON_CALL(*api_, isQueryGidExSupported()).WillByDefault(Return(true));
+  // Only a link-local RoCEv2 entry exists and default index 3 >= gid_tbl_len.
+  ON_CALL(*api_, queryGidEx(&ctx_, 1, _, _, _))
+      .WillByDefault(makeGidExStub(
+          {{0, IBV_GID_TYPE_ROCE_V1}, {1, IBV_GID_TYPE_ROCE_V2}},
+          /*ipv4Index=*/-1,
+          /*linkLocalIndex=*/1));
+
+  EXPECT_THROW(
+      NicResources(&dev_, api_, /*numaNode=*/-1, /*configuredGidIndex=*/-1, 1),
+      std::runtime_error);
 }
 
 // --- Mock-based transport tests ---
@@ -265,12 +459,13 @@ TEST_F(RdmaTransportTest, ConstructorRejectsZeroQps) {
       std::invalid_argument);
 }
 
-TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
+TEST_F(RdmaTransportTest, BindKeepsNicsWhenQpCountIsSmaller) {
   fakeQp0_.qp_num = 10;
 
   EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
       .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
-  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
   EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
       .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
   EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
@@ -280,7 +475,7 @@ TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
   nics->push_back(
       makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
   nics->push_back(
-      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x2222, gid1));
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
   RdmaTransportConfig config{.numQps = 1};
   RdmaTransport transport(
       mockApi_,
@@ -296,10 +491,97 @@ TEST_F(RdmaTransportTest, BindClampsNicsToQpCount) {
 
   auto result = RdmaTransportInfo::deserialize(data);
   ASSERT_TRUE(result.hasValue());
-  EXPECT_EQ(result.value().header.numNics, 1);
   EXPECT_EQ(result.value().header.numQps, 1);
-  ASSERT_EQ(result.value().nicInfos.size(), 1);
+  EXPECT_EQ(result.value().header.numNics, 2);
+  ASSERT_EQ(result.value().nicInfos.size(), 2);
   EXPECT_EQ(result.value().nicInfos[0].lid, 0x1111);
+  EXPECT_EQ(result.value().nicInfos[1].lid, 0x2222);
+}
+
+TEST_F(RdmaTransportTest, PutAcceptsAllNicHandlesWhenQpCountIsSmaller) {
+  constexpr uint64_t kLocalDomainId = 42;
+  constexpr uint64_t kRemoteDomainId = 99;
+
+  fakeQp0_.qp_num = 100;
+
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq0_)));
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx1_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&fakeCq1_)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&fakeQp0_)));
+  EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
+
+  ibv_gid gid0{}, gid1{};
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(
+      makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0x1111, gid0));
+  nics->push_back(
+      makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0x2222, gid1));
+
+  RdmaTransportConfig config{.numQps = 1};
+  config.maxWr = kTestMaxWr;
+  RdmaTransport transport(
+      mockApi_,
+      mockCudaApi_,
+      nullptr,
+      evbThread_.getEventBase(),
+      nics,
+      kLocalDomainId,
+      config);
+  transport.bind();
+
+  RdmaTransportInfo remoteInfo;
+  remoteInfo.header.version = kRdmaVersion;
+  remoteInfo.header.numQps = 1;
+  remoteInfo.header.numNics = 2;
+  remoteInfo.header.domainId = kRemoteDomainId;
+  remoteInfo.nicInfos = {{.lid = 0x3333}, {.lid = 0x4444}};
+  remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+  remoteInfo.ctrl.rkeys = {0, 0};
+  remoteInfo.slab.rkeys = {0, 0};
+  auto connectStatus = transport.connect(remoteInfo.serialize());
+  ASSERT_FALSE(connectStatus.hasError()) << connectStatus.error().message();
+
+  std::vector<char> localBuf(4096);
+  std::vector<char> remoteBuf(4096);
+  Segment localSeg(localBuf.data(), localBuf.size(), MemoryType::DRAM);
+  ibv_mr fakeMr0{};
+  ibv_mr fakeMr1{};
+  fakeMr0.addr = localBuf.data();
+  fakeMr0.length = localBuf.size();
+  fakeMr0.lkey = 0x1111;
+  fakeMr1.addr = localBuf.data();
+  fakeMr1.length = localBuf.size();
+  fakeMr1.lkey = 0x2222;
+
+  auto localReg = SegmentTest::makeRegistered(
+      localSeg,
+      std::make_unique<RdmaRegistrationHandle>(
+          std::vector<ibv_mr*>{&fakeMr0, &fakeMr1}, mockApi_, kLocalDomainId));
+  auto remoteReg = SegmentTest::makeRemote(
+      remoteBuf.data(),
+      remoteBuf.size(),
+      std::make_unique<RdmaRemoteRegistrationHandle>(
+          std::vector<uint32_t>{0x3333, 0x4444}, kRemoteDomainId));
+
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp0_, _, _)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq0_, _, _))
+      .WillOnce([](ibv_cq*, int, ibv_wc* wcs) {
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = 1;
+        return Result<int>(1);
+      })
+      .WillRepeatedly(Return(Result<int>(0)));
+
+  TransferRequest req{
+      .local = localReg.span(0ul, localBuf.size()),
+      .remote = remoteReg.span(0ul, remoteBuf.size()),
+  };
+  std::vector<TransferRequest> reqs = {req};
+  auto status = transport.put(reqs).get();
+  EXPECT_FALSE(status.hasError()) << status.error().message();
 }
 
 TEST_F(RdmaTransportTest, SingleNicBindCreatesQPs) {
@@ -441,7 +723,7 @@ TEST_F(RdmaTransportTest, ConnectTransitionsQPs) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 0x5678}};
@@ -471,7 +753,7 @@ TEST_F(RdmaTransportTest, ConnectRejectsQpCountMismatch) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 2;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
@@ -493,7 +775,7 @@ TEST_F(RdmaTransportTest, ConnectWithoutBindFails) {
 
   // Don't call bind() - go straight to connect()
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 1;
   remoteInfo.header.numNics = 1;
   remoteInfo.nicInfos = {{.lid = 1}};
@@ -714,6 +996,26 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReflectsConfiguredQps) {
   EXPECT_EQ(topo1[0], topo4[0]);
 }
 
+// --- Slab pool ownership tests ---
+
+TEST_F(RdmaTransportFactoryTest, DefaultConfigSkipsSlabPool) {
+  setupSingleDevice();
+  RdmaTransportFactory factory(
+      {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
+}
+
+TEST_F(RdmaTransportFactoryTest, SlabPoolFailurePropagates) {
+  setupSingleDevice();
+  ON_CALL(*mockApi_, regMr(_, _, _, _))
+      .WillByDefault(
+          Return(Err(ErrCode::DriverError, "simulated regMr failure")));
+  RdmaTransportConfig config{.slabPoolConfig = {.slabNum = 4}};
+  EXPECT_THROW(
+      RdmaTransportFactory(
+          {"mlx5_0"}, evbThread_.getEventBase(), config, mockApi_),
+      std::runtime_error);
+}
+
 // --- supported() tests ---
 
 TEST_F(RdmaTransportFactoryTest, SupportedReturnsTrueWithActiveDevice) {
@@ -873,7 +1175,7 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
-    remoteInfo.header.version = 1;
+    remoteInfo.header.version = kRdmaVersion;
     remoteInfo.header.numQps = 1;
     remoteInfo.header.numNics = 1;
     remoteInfo.header.domainId = kRemoteDomainId;
@@ -991,7 +1293,7 @@ TEST_P(RdmaTransportOpcodeTest, DisconnectedTransportReturnsError) {
 TEST_P(RdmaTransportOpcodeTest, EmptyRequestsReturnsOk) {
   std::vector<TransferRequest> reqs;
   auto status = transfer(reqs).get();
-  EXPECT_FALSE(status.hasError());
+  EXPECT_FALSE(status.hasError()) << status.error().message();
 }
 
 TEST_P(RdmaTransportOpcodeTest, MismatchedSpanSizesReturnsError) {
@@ -1187,7 +1489,7 @@ TEST_F(RdmaTransportTest, CompletionRoutingDisambiguatesDuplicateQpNumbers) {
   transport.bind();
 
   RdmaTransportInfo remoteInfo;
-  remoteInfo.header.version = 1;
+  remoteInfo.header.version = kRdmaVersion;
   remoteInfo.header.numQps = 2;
   remoteInfo.header.numNics = 2;
   remoteInfo.header.domainId = kRemoteDomainId;
@@ -1788,3 +2090,99 @@ INSTANTIATE_TEST_SUITE_P(
             IBV_WR_RDMA_READ,
             "Get_unaligned_x3"}),
     putGetParamName);
+
+// --- NUMA-aware getQpAvail tests ---
+// Uses friend access to test getQpAvail with NUMA filtering directly.
+// 2 NICs: NIC0 on NUMA 0, NIC1 on NUMA 1.
+// 4 QPs round-robin: QP0→NIC0, QP1→NIC1, QP2→NIC0, QP3→NIC1.
+
+namespace uniflow {
+
+class GetQpAvailNumaTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
+    mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
+
+    auto nics = std::make_shared<std::vector<NicResources>>();
+    nics->reserve(2);
+    nics->push_back(
+        makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, {}, 1, 0));
+    nics->push_back(
+        makeNic(&fakeDev1_, &fakeCtx1_, &fakePd1_, mockApi_, 0, {}, 1, 1));
+
+    RdmaTransportConfig config;
+    config.numQps = 4;
+    config.maxWr = 100;
+
+    transport_ = std::make_unique<RdmaTransport>(
+        mockApi_, mockCudaApi_, nullptr, &evb_, nics, 42, config);
+    transport_->numWrsPerQp_.resize(4, 0);
+  }
+
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail, int bufNuma) {
+    return transport_->getQpAvail(qpAvail, bufNuma);
+  }
+
+  void setNumWrsPerQp(uint32_t qpIdx, uint32_t val) {
+    transport_->numWrsPerQp_[qpIdx] = val;
+  }
+
+  std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
+  std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
+  LockFreeEventBase evb_;
+  std::unique_ptr<RdmaTransport> transport_;
+
+  ibv_device fakeDev0_{};
+  ibv_device fakeDev1_{};
+  ibv_context fakeCtx0_{.device = &fakeDev0_};
+  ibv_context fakeCtx1_{.device = &fakeDev1_};
+  ibv_pd fakePd0_{};
+  ibv_pd fakePd1_{};
+};
+
+} // namespace uniflow
+
+TEST_F(GetQpAvailNumaTest, NumaMatchFiltersToLocalNics) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 0);
+
+  EXPECT_EQ(qpAvail[0], 100u);
+  EXPECT_EQ(qpAvail[1], 0u);
+  EXPECT_EQ(qpAvail[2], 100u);
+  EXPECT_EQ(qpAvail[3], 0u);
+  EXPECT_EQ(total, 200u);
+}
+
+TEST_F(GetQpAvailNumaTest, NoLocalNicFallsBackToAll) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 99);
+
+  EXPECT_EQ(total, 400u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 100u);
+  }
+}
+
+TEST_F(GetQpAvailNumaTest, UnknownNumaUsesAllQps) {
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, -1);
+
+  EXPECT_EQ(total, 400u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 100u);
+  }
+}
+
+TEST_F(GetQpAvailNumaTest, LocalQpsFullReturnsZeroNoSpill) {
+  setNumWrsPerQp(0, 100);
+  setNumWrsPerQp(2, 100);
+
+  std::vector<uint32_t> qpAvail(4);
+  uint32_t total = getQpAvail(qpAvail, 0);
+
+  EXPECT_EQ(total, 0u);
+  for (auto avail : qpAvail) {
+    EXPECT_EQ(avail, 0u);
+  }
+}

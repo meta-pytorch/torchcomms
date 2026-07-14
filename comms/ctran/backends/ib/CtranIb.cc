@@ -47,7 +47,19 @@ constexpr int kGb300CudaArch = 1030;
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
 
 bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
-  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch;
+#if defined(USE_ROCM)
+  // AMD GPUs always require local flush.
+  // https://ontrack.amd.com/browse/FBA-633
+  return true;
+#else
+  // Turn on flush by default for NVidia GPUs older than H100 and for GB300.
+  // Multi-NIC topologies with cross-NIC DMA ordering hazards must opt in via
+  // NCCL_CTRAN_NET_FORCE_FLUSH=1.
+  // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
+  // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology detection.
+  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch ||
+      NCCL_CTRAN_NET_FORCE_FLUSH;
+#endif
 }
 
 commResult_t checkEpochLock(CtranIb* ctranIb) {
@@ -320,33 +332,16 @@ CtranIb::CtranIb(
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
     std::optional<int> maxNumCqe)
     : comm(comm) {
-  // enableLocalFlush: whether to support local flush. If true, CtranIb
-  // will enable resource required for local flush.
-  bool enableLocalFlush_ = false;
-  if (enableLocalFlush.has_value()) {
-    // Honor user specified value
-    enableLocalFlush_ = enableLocalFlush.value();
-  } else {
-#if defined(USE_ROCM)
-    // AMD GPUs always require local flush
-    // https://ontrack.amd.com/browse/FBA-633
-    enableLocalFlush_ = true;
-#else
-    // Turn on flush for NVidia GPUs older than H100 and GB300.
-    // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
-    // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology
-    // detection.
-    enableLocalFlush_ =
-        CtranIb::shouldEnableLocalFlushByDefault(comm->statex_->cudaArch());
-#endif
-  }
   init(
       comm,
       comm->statex_->rank(),
       comm->statex_->cudaDev(),
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
-      enableLocalFlush_,
+      // Honor a caller-specified value; otherwise use the platform default.
+      enableLocalFlush.has_value()
+          ? *enableLocalFlush
+          : shouldEnableLocalFlushByDefault(comm->statex_->cudaArch()),
       BootstrapMode::kDefaultServer,
       std::nullopt,
       ::ctran::utils::createAbort(/*enabled=*/false),
@@ -358,7 +353,7 @@ CtranIb::CtranIb(
       "CTRAN-IB: Initialized {} from comm {} enableLocalFlush {}",
       (void*)this,
       (void*)comm,
-      this->enableLocalFlush);
+      this->enableLocalFlush_);
 }
 
 CtranIb::CtranIb(
@@ -374,7 +369,8 @@ CtranIb::CtranIb(
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe) {
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic) {
   init(
       nullptr,
       rank,
@@ -386,7 +382,8 @@ CtranIb::CtranIb(
       qpServerAddr,
       abortCtrl,
       socketFactory,
-      maxNumCqe);
+      maxNumCqe,
+      maxNumNic);
 
   CLOGF_SUBSYS(
       INFO,
@@ -397,7 +394,7 @@ CtranIb::CtranIb(
       cudaDev,
       commHash,
       commDesc,
-      this->enableLocalFlush);
+      this->enableLocalFlush_);
 }
 
 void CtranIb::init(
@@ -411,7 +408,8 @@ void CtranIb::init(
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe) {
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic) {
   bool foundPort = false;
   this->comm = comm;
   this->rank = rank;
@@ -425,10 +423,14 @@ void CtranIb::init(
       .commDesc = commDesc,
       .rank = rank,
       .nRanks = comm ? comm->statex_->nRanks() : 1};
-  this->enableLocalFlush = enableLocalFlush;
+  this->enableLocalFlush_ = enableLocalFlush;
   this->bootstrapMode = bootstrapMode;
-  this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  this->numNics = maxNumNic
+      ? std::min(*maxNumNic, NCCL_CTRAN_IB_DEVICES_PER_RANK)
+      : NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  FB_CHECKTHROW_EX_LOGDATA(this->numNics > 0, ncclLogData, "numNics > 0");
+  this->devices.resize(this->numNics);
+  this->cqs.reserve(this->numNics);
   FB_COMMCHECKTHROW_EX(this->setPgToTrafficClassMap(), this->ncclLogData);
 
   auto s = CtranIbSingleton::getInstance();
@@ -484,7 +486,7 @@ void CtranIb::init(
         this->commDesc);
   }
 
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; ++device) {
+  for (int device = 0; device < numNics; ++device) {
     int singletonDevIdx =
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
@@ -637,15 +639,14 @@ void CtranIb::init(
     CLOGF(ERR, msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
   }
-  vcLayout_ =
-      ctran::ib::VcLayout(NCCL_CTRAN_IB_DEVICES_PER_RANK, maxVcsPerPeer);
+  vcLayout_ = ctran::ib::VcLayout(numNics, maxVcsPerPeer);
   CLOGF_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: VC layout: {} (numNics={}, NCCL_CTRAN_IB_MAX_QPS={}). "
       "Per-VC data-QP count is determined per connection class inside CtranIbVirtualConn.",
       vcLayout_.describe(),
-      NCCL_CTRAN_IB_DEVICES_PER_RANK,
+      numNics,
       NCCL_CTRAN_IB_MAX_QPS);
 
   // Optionally start internal bootstrap service.
@@ -904,7 +905,7 @@ commResult_t CtranIb::iflush(
     CtranIbRequest* req) {
   FB_COMMCHECK(checkEpochLock(this));
 
-  if (enableLocalFlush) {
+  if (enableLocalFlush_) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
       auto& vc = localVc;
       return vc->iflush(dbuf, localRegHdl, req);
@@ -966,12 +967,12 @@ commResult_t CtranIb::initRemoteTransStates(void) {
   // resources; We still need per-object lock here to ensure the internal
   // listenThread doesn't read garbage data
 
-  this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+  this->cqs.reserve(this->numNics);
 
   // create a new cq
   {
     std::unique_lock<std::mutex> lock(cqMutex);
-    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    for (int device = 0; device < numNics; device++) {
       auto createCqResult =
           devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
       FOLLY_EXPECTED_CHECK(createCqResult);

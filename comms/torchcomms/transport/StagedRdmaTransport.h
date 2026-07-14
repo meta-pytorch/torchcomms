@@ -14,12 +14,11 @@
 #include <folly/io/async/EventBase.h>
 
 #include <comms/ctran/ibverbx/IbvCommon.h>
+#include <comms/ctran/ibverbx/IbvCq.h>
 #include <comms/ctran/ibverbx/IbvDevice.h>
 #include <comms/ctran/ibverbx/IbvMr.h>
 #include <comms/ctran/ibverbx/IbvPd.h>
-#include <comms/ctran/ibverbx/IbvVirtualCq.h>
-#include <comms/ctran/ibverbx/IbvVirtualQp.h>
-#include <comms/ctran/ibverbx/IbvVirtualWr.h>
+#include <comms/ctran/ibverbx/IbvQp.h>
 #include <comms/utils/commSpecs.h>
 
 namespace torch::comms {
@@ -126,6 +125,19 @@ struct ScatterGatherDescriptor {
   }
 };
 
+// QP transport parameters sourced from NCCL_IB_* cvars. Read once at
+// transport construction and held constant for the object's lifetime so all
+// QP setup steps (INIT/RTR/RTS, GID query) see consistent IB policy even if
+// the environment changes afterwards. Constructed via makeQpTransportConfig().
+struct QpTransportConfig {
+  uint8_t timeout;
+  uint8_t retryCnt;
+  uint8_t gidIndex;
+  uint8_t trafficClass;
+  uint8_t sl;
+  uint16_t pkeyIndex;
+};
+
 // Base class for staged RDMA transports. Holds shared IB resources and
 // provides protected helpers for IB setup and QP connection.
 //
@@ -175,15 +187,12 @@ class StagedRdmaTransportBase {
   // IB resources (H100: single device/PD; GB200 diff expands to vectors)
   std::optional<ibverbx::IbvDevice> device_;
   std::optional<ibverbx::IbvPd> pd_;
-  std::optional<ibverbx::IbvVirtualCq> vcq_;
+  std::optional<ibverbx::IbvCq> cq_;
   std::optional<StagedBuffer> stagingBuf_;
   cudaStream_t stream_{nullptr};
 
-  // Virtual QP — declared last so it is destroyed first.
-  std::optional<ibverbx::IbvVirtualQp> vqp_;
-
-  // Get the device ID for building deviceKeys maps.
-  int32_t getDeviceId() const;
+  // QP — declared last so it is destroyed first.
+  std::optional<ibverbx::IbvQp> qp_;
 
   // Protected helpers — called explicitly by subclasses, no virtual dispatch.
 
@@ -193,7 +202,7 @@ class StagedRdmaTransportBase {
   // that first creates the stream, not on other threads that get a cache hit.
   void ensureCudaStream();
 
-  // Initialize IB resources: device, PD, CQ, VirtualQP, staging buffer.
+  // Initialize IB resources: device, PD, CQ, QP, staging buffer.
   // Must be called before connectQp().
   void initIbResources();
 
@@ -204,6 +213,12 @@ class StagedRdmaTransportBase {
   // Serialize local connection info (business card + GID/port/MTU + staging)
   // into a JSON string for exchange with the peer.
   std::string serializeConnInfo(const StagingRendezvousInfo& localStaging);
+
+ private:
+  // QP transport config read once from NCCL cvars in the constructor and held
+  // constant for the object's lifetime. Single source of truth for all QP
+  // setup call sites to avoid divergence.
+  const QpTransportConfig qpConfig_;
 };
 
 // Server-side staged RDMA transport. Sends data to the client via chunked

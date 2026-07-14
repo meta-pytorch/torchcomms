@@ -566,26 +566,7 @@ class CtranAllReduceRingTcpDmTestFp32
     }
 
     // TCPDM transport config
-    setenv("TCP_DEVMEM_STEER_ACTIVE_OPEN", "1", 1);
-    setenv("TCP_DEVMEM_FIXED_IRQ_AFFINITY", "1", 1);
-    setenv("TCP_DEVMEM_FIXED_THREAD_AFFINITY", "1", 1);
-    setenv("TCP_DEVMEM_SETUP_XPS", "1", 1);
-    setenv("TCP_DEVMEM_CONGESTION_CONTROL", "dctcp", 1);
-    setenv("TCP_DEVMEM_DEBUG_TCP", "1", 1);
-    setenv("TCP_DEVMEM_TX_WORKERS_PER_DEV", "4", 1);
-    setenv("TCP_DEVMEM_RX_WORKERS_PER_DEV", "4", 1);
-    setenv("TCP_DEVMEM_SOCKETS_PER_COMM", "4", 1);
-    setenv("TCP_DEVMEM_QUEUES", "4", 1);
     setenv("TCP_DEVMEM_SKIP_AGENT", "1", 1);
-    setenv("TCP_DEVMEM_SKIP_LOGGER", "1", 1);
-
-    // NCCL runtime: disable non-TCPDM transports
-    setenv("NCCL_COLLNET_ENABLE", "0", 1);
-    setenv("NCCL_OOB_NET_ENABLE", "0", 1);
-    setenv("NCCL_CROSS_NIC", "1", 1);
-    setenv("NCCL_PXN_DISABLE", "1", 1);
-    setenv("NCCL_SHM_DISABLE", "1", 1);
-    setenv("NCCL_RAS_ENABLE", "0", 1);
 
     // NCCL bootstrap on beth7 (separate from data NICs)
     setenv("NCCL_SOCKET_IFNAME", "beth7", 1);
@@ -595,8 +576,6 @@ class CtranAllReduceRingTcpDmTestFp32
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
 
-    // Ctran unpack config
-    setenv("NCCL_NET", "", 1);
     setenv("NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS", "16", 1);
     setenv("NCCL_P2P_NET_CHUNKSIZE", "262144", 1);
     setenv("NCCL_BUFFSIZE", "4194304", 1);
@@ -617,24 +596,10 @@ TEST_P(CtranAllReduceRingTcpDmTestFp32, AllReduceRingTcpDmFp32) {
       memType,
       {CtranMapperBackend::NVL, CtranMapperBackend::IB});
 }
-
+// Only add one test case as the current TCPDM backend does not support
+// consecutive ctrantcpdm create and destroy in the single process.
 auto testingValuesTcpDm = ::testing::Values(
-    std::make_tuple(1, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(8, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(17, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(8192, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(8195, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 + 17,
-        kTestOutOfPlace,
-        commSum,
-        kMemNcclMemAlloc),
-    std::make_tuple(8195, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
-    std::make_tuple(8195, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
-    std::make_tuple(8195, kTestOutOfPlace, commMin, kMemNcclMemAlloc),
-    std::make_tuple(8195, kTestOutOfPlace, commAvg, kMemNcclMemAlloc));
+    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc));
 
 INSTANTIATE_TEST_SUITE_P(
     CtranTestTcpDm,

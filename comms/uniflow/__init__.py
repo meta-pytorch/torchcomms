@@ -3,6 +3,7 @@
 
 from uniflow._core import (
     Connection,
+    CpuNicSelectionPolicy,
     Err,
     ErrCode,
     MemoryType,
@@ -24,6 +25,7 @@ from uniflow._core import (
 
 __all__ = [
     "Connection",
+    "CpuNicSelectionPolicy",
     "Err",
     "ErrCode",
     "MemoryType",

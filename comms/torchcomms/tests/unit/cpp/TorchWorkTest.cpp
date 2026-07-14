@@ -40,6 +40,19 @@ TEST(TorchWorkTest, StartHookFiredOnInProgress) {
   EXPECT_EQ(start_count, 1);
 }
 
+TEST(TorchWorkTest, StartHookFiredImmediatelyIfAlreadyInProgress) {
+  auto work = c10::make_intrusive<TestWork>();
+  work->setStatus(TorchWork::WorkStatus::INPROGRESS);
+
+  // A start hook registered after the work already transitioned to INPROGRESS
+  // must fire immediately (mirrors the end-hook fallback). This is the MCCL
+  // case: TorchWorkMCCL's ctor sets INPROGRESS before the clog post-hook
+  // registers the start hook, which otherwise drops the "S" clog event.
+  int start_count = 0;
+  work->registerWorkStartHook([&start_count]() { start_count++; });
+  EXPECT_EQ(start_count, 1);
+}
+
 TEST(TorchWorkTest, EndHookFiredOnCompleted) {
   auto work = c10::make_intrusive<TestWork>();
   int end_count = 0;
@@ -133,11 +146,12 @@ TEST(TorchWorkTest, AllHooksFiredInLifecycle) {
   auto work = c10::make_intrusive<TestWork>();
   std::vector<std::string> events;
 
-  work->registerWorkStartHook([&events]() { events.push_back("start"); });
-  work->registerWorkEndHook([&events]() { events.push_back("end"); });
-  work->registerWorkWaitPreHook([&events]() { events.push_back("wait_pre"); });
+  work->registerWorkStartHook([&events]() { events.emplace_back("start"); });
+  work->registerWorkEndHook([&events]() { events.emplace_back("end"); });
+  work->registerWorkWaitPreHook(
+      [&events]() { events.emplace_back("wait_pre"); });
   work->registerWorkWaitPostHook(
-      [&events]() { events.push_back("wait_post"); });
+      [&events]() { events.emplace_back("wait_post"); });
 
   work->setStatus(TorchWork::WorkStatus::INPROGRESS);
   work->wait();

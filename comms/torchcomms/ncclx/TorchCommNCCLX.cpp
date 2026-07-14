@@ -12,16 +12,16 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <fmt/core.h>
+#include <folly/String.h>
 #include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
-#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/utils/CudaRAII.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #endif
 
@@ -52,13 +52,46 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
 
 std::atomic<int> g_graphTimeoutMonitoringState{-1};
 
-bool isColltraceGraphTracingEnabled() {
+// Returns true if NCCL_COLLTRACE enables a full-trace mode ("trace" or
+// "verbose"), i.e. the colltrace worker thread and WatchdogPlugin will actually
+// be created by CollTraceWrapper::newCollTraceInit. NCCL_COLLTRACE is a
+// comma-separated stringlist, so we tokenize and trim exactly like the cvar
+// parser (comms/utils/cvars) and newCollTraceInit do — an exact whole-string
+// compare would miss valid multi-token configs such as "trace,algostat".
+bool colltraceTraceModeEnabled() {
+  const char* env = std::getenv("NCCL_COLLTRACE");
+  if (env == nullptr) {
+    return false;
+  }
+  std::vector<std::string> tokens;
+  folly::split(',', env, tokens, true /* ignoreEmpty */);
+  for (const auto& token : tokens) {
+    const std::string trimmed = folly::trimWhitespace(token).str();
+    if (trimmed == "trace" || trimmed == "verbose") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns true if NCCL_COLLTRACE_TRACE_CUDA_GRAPH requests cudagraph-captured
+// collective tracing.
+bool colltraceCudaGraphTracingRequested() {
   const char* env = std::getenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
   if (env == nullptr) {
     return false;
   }
-  std::string val(env);
+  const std::string val(env);
   return val == "1" || val == "true";
+}
+
+// The colltrace cudagraph watchdog only fires when BOTH the cudagraph tracing
+// flag is set AND colltrace itself is in trace/verbose mode — otherwise
+// CollTraceWrapper::newCollTraceInit short-circuits before installing the
+// WatchdogPlugin. Both conditions must hold before we hand graph-timeout
+// monitoring over to colltrace and disable GraphEventTracker.
+bool isColltraceGraphTracingEnabled() {
+  return colltraceCudaGraphTracingRequested() && colltraceTraceModeEnabled();
 }
 
 } // namespace
@@ -72,6 +105,25 @@ bool isGraphTimeoutMonitoringEnabled() {
       std::string val(env);
       enabled = (val != "0" && val != "false");
     }
+    // Misconfiguration guard: the operator asked for colltrace cudagraph
+    // tracing, but colltrace is not in trace/verbose mode, so
+    // CollTraceWrapper::newCollTraceInit will never install the timeout
+    // WatchdogPlugin. Warn loudly — otherwise both watchdogs can end up
+    // silently disabled (the failure mode that let a hang go undetected).
+    if (colltraceCudaGraphTracingRequested() && !colltraceTraceModeEnabled()) {
+      const char* colltraceEnv = std::getenv("NCCL_COLLTRACE");
+      LOG(WARNING)
+          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled but NCCL_COLLTRACE='"
+          << (colltraceEnv != nullptr ? colltraceEnv : "<unset>")
+          << "' does not enable a 'trace'/'verbose' mode — the colltrace timeout "
+          << "watchdog will NOT be installed. "
+          << (enabled
+                  ? "Keeping GraphEventTracker as the graph-collective watchdog."
+                  : "TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is also disabled, so "
+                    "NO graph-collective watchdog will be active.")
+          << " Set NCCL_COLLTRACE=trace to enable the colltrace watchdog.";
+    }
+
     if (enabled && isColltraceGraphTracingEnabled()) {
       LOG(WARNING)
           << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled — "
@@ -249,12 +301,12 @@ void TorchCommNCCLX::initNcclxResources() {
       cuda_api_->memGetInfo(&free_memory, &total_memory),
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  is_high_priority_stream_ =
+      options_.getHint<bool>(kHintIsHighPriorityStream, false);
 
   int stream_priority = 0;
 
-  if (high_priority_stream_) {
+  if (is_high_priority_stream_) {
     int leastPriority, greatestPriority;
     CUDA_CHECK(
         cuda_api_,
@@ -484,15 +536,33 @@ void TorchCommNCCLX::abortNcclComm() {
 }
 
 void TorchCommNCCLX::revokeNcclComm() {
+  // Idempotent: the timeout watchdog and a synchronous collective may both
+  // observe the same timeout and attempt a revoke. Run the teardown (abort
+  // hooks, commRevoke) at most once per communicator generation. revoked_ is
+  // reset on reconfigure.
+  if (revoked_.exchange(true)) {
+    return;
+  }
   TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
   runAbortHooks();
   if (nccl_comm_) {
-    NCCLX_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commRevoke(nccl_comm_),
-        "NCCLX Revoke failed");
+    // Best-effort: this may run on the timeout watchdog thread, so log instead
+    // of throwing on failure (the communicator is already being torn down).
+    NCCLX_CHECK_IGNORE(
+        nccl_api_, nccl_api_->commRevoke(nccl_comm_), "NCCLX Revoke failed");
   }
+}
+
+bool TorchCommNCCLX::isAbortSupported() const {
+  return true;
+}
+
+bool TorchCommNCCLX::isAborted() const {
+  // A non-NORMAL state means the communicator hit a timeout or error (set by
+  // the timeout watchdog, a synchronous collective, or abort()). Reading the
+  // atomic issues no CUDA/NCCL calls, so this is safe to poll during CUDA graph
+  // replay, where per-operation work handles are unavailable.
+  return comm_state_.load() != CommState::NORMAL;
 }
 
 int TorchCommNCCLX::getRank() const {
@@ -2113,7 +2183,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   std::shared_ptr<TorchCommWindow> win;
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
   // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
   const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
@@ -2339,7 +2409,7 @@ class NCCLXRegistration {
 static const NCCLXRegistration registration{};
 } // namespace
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 int64_t TorchCommNCCLX::get_device_transport() {
   if (!device_transport_handle_) {
     device_transport_handle_ =

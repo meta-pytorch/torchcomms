@@ -23,6 +23,10 @@ python --version
 which python
 
 pip install -r requirements.txt
+# pyyaml is a build-time-only dep (used by extractcvars.py codegen, run from
+# CMake); it is intentionally not in requirements.txt/install_requires so the
+# runtime wheel resolves from the PyTorch index alone.
+pip install pyyaml
 
 export NCCL_SKIP_CONDA_INSTALL=1
 export CLEAN_BUILD=1

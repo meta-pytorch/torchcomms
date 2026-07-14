@@ -12,10 +12,17 @@
 #include "comms/uniflow/benchmarks/Bootstrap.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/Reporter.h"
-#include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
-#include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/logging/Logger.h"
+// ConnectionSetup/NVLink/NcclSendRecv/SendRecv benchmarks are NVIDIA-only
+// (NVLink/NCCL transports, or not yet wired for the AMD/hipify build) and are
+// compiled out on AMD.
+#ifndef __HIP_PLATFORM_AMD__
+#include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
+#endif
 
 namespace {
 
@@ -35,8 +42,15 @@ struct CliOptions {
   int numNics{0};
   size_t chunkSize{512 * 1024};
   int cudaDevice{-1};
+  std::vector<int> cudaDevices;
+  std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
+  bool dataDirect{false};
   std::vector<int> numStreams{1, 2, 4, 8};
+  std::string topology{"fanout"};
+  int pipelineDepth{2};
+  size_t slabSize{0};
+  int slabNum{0};
   std::vector<std::string> rdmaDevices;
 };
 
@@ -67,6 +81,34 @@ std::vector<std::string> parseStringList(const std::string& s) {
   return result;
 }
 
+/*
+ * Parse a per-GPU NIC map: groups separated by ';', NICs within a group by ','.
+ * e.g. "mlx5_0,mlx5_1;mlx5_2,mlx5_3" -> [[mlx5_0, mlx5_1], [mlx5_2, mlx5_3]].
+ */
+std::vector<std::vector<std::string>> parseNicGroups(const std::string& s) {
+  std::vector<std::vector<std::string>> groups;
+  std::istringstream iss(s);
+  std::string group;
+  while (std::getline(iss, group, ';')) {
+    /*
+     * Preserve empty groups (leading or adjacent ';'). Dropping them would
+     * silently collapse the map and shift each GPU's NICs onto the wrong GPU;
+     * keeping them lets the per-GPU count check and NIC selection report a
+     * clear error for the empty slot instead.
+     */
+    groups.push_back(parseStringList(group));
+  }
+  /*
+   * getline emits no token after a trailing ';', so a trailing empty group must
+   * be appended explicitly to stay consistent with leading/adjacent empties
+   * (e.g. "mlx5_0;" -> two groups, the second empty).
+   */
+  if (!s.empty() && s.back() == ';') {
+    groups.emplace_back();
+  }
+  return groups;
+}
+
 void printUsage(const char* prog) {
   std::cerr
       << "Usage: " << prog << " [OPTIONS]\n"
@@ -90,6 +132,13 @@ void printUsage(const char* prog) {
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
+      << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
+      << "  --pipeline-depth <n>   Send/recv staging pipeline depth (default: 2)\n"
+      << "  --slab-size <bytes>    Staging slab size in bytes (default: chunk-size)\n"
+      << "  --slab-num <n>         Number of staging slabs (default: pipeline-depth)\n"
+      << "  --cuda-devices <list>  Comma-separated GPU indices for single-process multi-GPU (overrides --cuda-device)\n"
+      << "  --gpu-nics <groups>    Per-GPU NIC map for multi-GPU: ';'-separated groups of comma-separated NICs, one per --cuda-devices entry\n"
+      << "  --data-direct          Register GPU memory over the mlx5 Data Direct path (default: off)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -124,6 +173,13 @@ CliOptions parseArgs(int argc, char** argv) {
       {"num-nics", required_argument, nullptr, 258},
       {"chunk-size", required_argument, nullptr, 256},
       {"cuda-device", required_argument, nullptr, 'c'},
+      {"topology", required_argument, nullptr, 259},
+      {"pipeline-depth", required_argument, nullptr, 260},
+      {"slab-size", required_argument, nullptr, 261},
+      {"slab-num", required_argument, nullptr, 262},
+      {"data-direct", no_argument, nullptr, 263},
+      {"cuda-devices", required_argument, nullptr, 264},
+      {"gpu-nics", required_argument, nullptr, 265},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -183,6 +239,15 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 'B':
         opts.bidirectional = true;
+        break;
+      case 263:
+        opts.dataDirect = true;
+        break;
+      case 264:
+        opts.cudaDevices = parseIntList(optarg);
+        break;
+      case 265:
+        opts.gpuNicGroups = parseNicGroups(optarg);
         break;
       case 'd':
         opts.direction = optarg;
@@ -255,6 +320,52 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 259:
+        opts.topology = optarg;
+        if (opts.topology != "fanout" && opts.topology != "fanin") {
+          std::cerr << "Invalid value for --topology: '" << optarg
+                    << "' (expected fanout|fanin)\n";
+          std::exit(1);
+        }
+        break;
+      case 260:
+        try {
+          opts.pipelineDepth = std::stoi(optarg);
+          if (opts.pipelineDepth < 1 || opts.pipelineDepth > 65535) {
+            std::cerr
+                << "Invalid value for --pipeline-depth: must be in [1, 65535]\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --pipeline-depth: '" << optarg
+                    << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 261:
+        try {
+          opts.slabSize = std::stoull(optarg);
+          if (opts.slabSize < 1) {
+            std::cerr << "Invalid value for --slab-size: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --slab-size: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 262:
+        try {
+          opts.slabNum = std::stoi(optarg);
+          if (opts.slabNum < 1) {
+            std::cerr << "Invalid value for --slab-num: must be >= 1\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --slab-num: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
       case 'l':
         listMode = true;
         break;
@@ -285,12 +396,19 @@ int main(int argc, char** argv) {
 
   uniflow::benchmark::BenchmarkRunner runner;
   runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
-  runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
+#ifndef __HIP_PLATFORM_AMD__
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
+          opts.rdmaDevices));
+#endif
 
   if (opts.benchmark == "__list__") {
     std::cout << "Available benchmarks:\n";
@@ -315,13 +433,20 @@ int main(int argc, char** argv) {
   config.warmupIterations = opts.warmup;
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
+  config.dataDirect = opts.dataDirect;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
   config.txDepth = opts.txDepth;
   config.numNics = opts.numNics;
   config.chunkSize = opts.chunkSize;
   config.cudaDevice = opts.cudaDevice;
+  config.cudaDevices = opts.cudaDevices;
+  config.gpuNicGroups = opts.gpuNicGroups;
   config.numStreams = opts.numStreams;
+  config.topology = opts.topology;
+  config.pipelineDepth = opts.pipelineDepth;
+  config.slabSize = opts.slabSize;
+  config.slabNum = opts.slabNum;
 
   UNIFLOW_LOG_INFO(
       "Rank {}/{} starting benchmark (transport={})",

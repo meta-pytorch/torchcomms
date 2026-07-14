@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <glog/logging.h>
 
 #include "comms/torchcomms/TorchCommBackend.hpp"

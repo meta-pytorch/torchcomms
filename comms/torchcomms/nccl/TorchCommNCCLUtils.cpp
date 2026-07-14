@@ -30,6 +30,8 @@ ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
       return ncclInt8;
     case at::ScalarType::Byte:
       return ncclUint8;
+    case at::ScalarType::Bool:
+      return ncclUint8;
     default:
       throw std::runtime_error("Unsupported tensor data type for NCCL");
   }
@@ -241,7 +243,7 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     state_after = handleFatalTransitionFromWatchdog(state_before, state_after);
     maybeAbortProcessFromWatchdog(state_after);
 
-    // Check communicator for async error
+    // Detect a communicator-level async error while the comm is still healthy.
     if (comm_state_ == CommState::NORMAL) {
       ncclResult_t asyncErr;
       NCCL_CHECK(
@@ -251,14 +253,39 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
           "failed to get async error");
       if (asyncErr != ncclSuccess) {
         comm_state_ = CommState::ERROR;
-        TC_LOG(ERROR, this)
-            << "Aborting process due to error on rank " << rank_
-            << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
+        if (!options_.enable_reconfigure) {
+          TC_LOG(ERROR, this)
+              << "Aborting process due to error on rank " << rank_
+              << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
 
-        runAbortHooks();
+          runAbortHooks();
 
-        abort();
+          abort();
+        } else {
+          // Revoked below by the reconfigurable-mode handler.
+          TC_LOG(ERROR, this)
+              << "Async error on rank " << rank_ << ": "
+              << ncclGetErrorString(asyncErr) << " (reconfigurable mode)";
+        }
       }
+    }
+
+    // In reconfigurable mode, gracefully revoke the communicator on any failure
+    // -- timeout or error, whether surfaced by the work queue or an async comm
+    // error -- so in-flight operations are stopped and the comm can later be
+    // reconfigured. This is the only revoke path under CUDA graph replay, where
+    // no synchronous collective reaches checkAndAbortIfTimedOutOrError();
+    // isAborted() then reports the revoked state to the caller.
+    // revokeNcclComm() is idempotent and the revoked_ check keeps the watchdog
+    // from logging every iteration.
+    if (comm_state_ != CommState::NORMAL && options_.enable_reconfigure &&
+        !revoked_.load()) {
+      TC_LOG(ERROR, this) << "Revoking communicator on rank " << rank_
+                          << " - watchdog detected "
+                          << (comm_state_ == CommState::TIMEOUT ? "timeout"
+                                                                : "error")
+                          << " (reconfigurable mode)";
+      revokeNcclComm();
     }
   }
 
@@ -357,6 +384,12 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
         "failed to get async error");
     NCCLException ncclException(
         *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
+    if (options_.enable_reconfigure) {
+      // In reconfigurable mode we never abort the process: revoke the comm so
+      // it can be reconfigured and surface the error to the caller.
+      revokeNcclComm();
+      throw ncclException;
+    }
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "

@@ -70,8 +70,8 @@ class TestBackendWrapperCoalescing(unittest.TestCase):
         ]
         for req in dist.batch_isend_irecv(ops):
             req.wait()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
 
         expected = torch.full((4,), float(recv_peer), dtype=torch.float32)
         self.assertTrue(
@@ -104,8 +104,8 @@ class TestBackendWrapperCoalescing(unittest.TestCase):
 
         for req in dist.batch_isend_irecv(ops):
             req.wait()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
 
         for i in range(2):
             expected_value = float(recv_peers[i] * 10 + i)

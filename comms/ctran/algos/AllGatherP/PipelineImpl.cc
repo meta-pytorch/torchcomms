@@ -79,11 +79,26 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
-  // Sync to notify upPeer that I am ready to receive data
-  FB_COMMCHECK(mapper->isendCtrl(upPeer, &syncSreq));
-  FB_COMMCHECK(mapper->irecvCtrl(downPeer, &syncRreq));
-
-  FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+  // Ready-to-receive handshake with the rail neighbors. On the first replay it
+  // also exchanges the rail IB rkey with just those neighbors: export our
+  // recvbuff to upPeer (which puts to us) and import downPeer's (we put to it)
+  // into pArgs->remote* for the puts below. The rkey is replay-invariant, so
+  // later replays only re-sync.
+  if (!pArgs->ibKeysExchanged) {
+    FB_COMMCHECK(
+        mapper->isendCtrl(pArgs->recvbuff, pArgs->recvHdl, upPeer, &syncSreq));
+    FB_COMMCHECK(mapper->irecvCtrl(
+        &pArgs->remoteRecvBuffs[downPeer],
+        &pArgs->remoteAccessKeys[downPeer],
+        downPeer,
+        &syncRreq));
+    FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+    pArgs->ibKeysExchanged = true;
+  } else {
+    FB_COMMCHECK(mapper->isendCtrl(upPeer, &syncSreq));
+    FB_COMMCHECK(mapper->irecvCtrl(downPeer, &syncRreq));
+    FB_COMMCHECK(mapper->waitRequest(&syncRreq));
+  }
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
@@ -120,7 +135,11 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
     // Wait till received data from upstream peer
     FB_COMMCHECK(mapper->waitNotify(notify.get()));
 
-    // Kick off local broadcast of the received data
+    // Drain received RDMA writes before the stream-side CE/cudaMemcpyAsync
+    // broadcast reads the chunk.
+    FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+
+    // Kick off local broadcast of the received data.
     resource->pipeSync->post(step);
   }
 
@@ -198,6 +217,21 @@ commResult_t AlgoImpl::execPipeline(
   // the remote address
   if (nLocalRanks > 1) {
     FB_COMMCHECK(waitInit());
+
+    // Pipeline broadcasts intra-node only via nvlCeBcast (no IB fallback), so
+    // bail cleanly here -- before any GPE work -- if a local peer is non-NVL,
+    // rather than failing inside nvlCeBcast. Mirrors nvlCeBcast's own check.
+    for (int r = 1; r < nLocalRanks; r++) {
+      const auto localPeer = (statex->localRank() + r) % nLocalRanks;
+      const auto peer = statex->localRankToRank(localPeer);
+      if (pArgs.remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
+        FB_ERRORRETURN(
+            commInvalidUsage,
+            "AllGatherP pipeline requires an NVL backend for all local peers; "
+            "peer {} has a non-NVL backend",
+            peer);
+      }
+    }
   }
 
   auto config = KernelConfig(

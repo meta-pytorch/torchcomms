@@ -568,16 +568,18 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   return c10::make_intrusive<WorkWrapper>(comm_->barrier(opts.asyncOp, bopts));
 }
 
-c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
-    std::vector<at::Tensor>& tensors,
-    int dstRank,
-    int /*tag*/) {
+c10::intrusive_ptr<c10d::Work>
+BackendWrapper::send(std::vector<at::Tensor>& tensors, int dstRank, int tag) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
       tensors.size(),
       " tensors");
   if (coalescing_batch_.has_value()) {
+    // NOTE: `tag` is intentionally not threaded through the coalesced path.
+    // BatchSendRecv/P2POp carry no per-op tag, and only the Gloo backend
+    // consumes SendOptions::tag; coalescing is used for NCCL-style grouped
+    // P2P (batch_isend_irecv), which matches by order, not tag.
     coalescing_batch_->send(tensors.at(0), dstRank);
     // Per-op Work returned during coalescing is a no-op sentinel; the real
     // Work covering the whole batch is returned by endCoalescing(). c10d's
@@ -585,26 +587,31 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::send(
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  SendOptions opts;
+  opts.timeout = options_->timeout;
+  opts.tag = tag;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->send(tensors.at(0), dstRank, /*async_op=*/true), tensors);
+      comm_->send(tensors.at(0), dstRank, /*async_op=*/true, opts), tensors);
 }
 
-c10::intrusive_ptr<c10d::Work> BackendWrapper::recv(
-    std::vector<at::Tensor>& tensors,
-    int srcRank,
-    int /*tag*/) {
+c10::intrusive_ptr<c10d::Work>
+BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
   TORCH_CHECK(
       tensors.size() == 1,
       "Only single tensor supported, but got ",
       tensors.size(),
       " tensors");
   if (coalescing_batch_.has_value()) {
+    // See the note in send(): the coalesced path does not thread `tag`.
     coalescing_batch_->recv(tensors.at(0), srcRank);
     return c10::make_intrusive<WorkWrapper>(
         c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
+  RecvOptions opts;
+  opts.timeout = options_->timeout;
+  opts.tag = tag;
   return c10::make_intrusive<WorkWrapper>(
-      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true), tensors);
+      comm_->recv(tensors.at(0), srcRank, /*async_op=*/true, opts), tensors);
 }
 
 void BackendWrapper::startCoalescing() {
@@ -710,7 +717,7 @@ c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
     commOpts.abort_process_on_timeout_or_error =
         backendOpts->abort_process_on_timeout_or_error;
     commOpts.timeout = backendOpts->timeout;
-    commOpts.high_priority_stream = backendOpts->high_priority_stream;
+    commOpts.is_high_priority_stream = backendOpts->is_high_priority_stream;
     commOpts.store = backendOpts->store;
     commOpts.hints = backendOpts->hints;
   }

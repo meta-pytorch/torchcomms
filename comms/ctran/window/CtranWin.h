@@ -10,20 +10,22 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/IbgdaBuffer.h"
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #endif
 
-#if defined(ENABLE_PIPES)
-namespace comms::pipes {
+#if defined(ENABLE_PRIMS)
+namespace comms::prims {
 class DeviceWindow;
 class HostWindow;
 struct WindowConfig;
-} // namespace comms::pipes
+} // namespace comms::prims
 #endif
 
 namespace ctran {
@@ -51,6 +53,14 @@ struct CtranWin {
   void* dataSegHdl{nullptr};
   // The ctran mapper handles for caching the data registration
   void* dataRegHdl{nullptr};
+  // Scoped registration owning the user-provided data buffer's local
+  // registration ref (SW refcnt only). dataRegHdl aliases its borrowed
+  // RegElem* for the export ctrl path.
+  ScopedRegHdl dataScopedReg;
+  // Scoped RAII owners of this rank's imported NVL peer registrations for the
+  // user data buffer (sized nLocalRanks, empty for self / non-NVL peers).
+  // Released SW-only in free(); replaces the old per-peer deregRemReg loop.
+  std::vector<ctran::ScopedIpcRegHdl> dataScopedIpcRegHdls;
   // The base pointer of allocated buffer by the window
   void* winBasePtr{nullptr};
   // The pointer of the data buffer of this window
@@ -108,7 +118,7 @@ struct CtranWin {
   commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // COLLECTIVE on first call: all ranks must call this together.
   // Prerequisite: allocate() and exchange() must have been called first.
   // Registers the window data buffer with pipes' MultiPeerTransport for
@@ -118,13 +128,13 @@ struct CtranWin {
   // @param devWin  Output: populated device-side window handle.
   // @param config  WindowConfig controlling signal/counter/barrier allocation.
   commResult_t getDeviceWin(
-      comms::pipes::DeviceWindow* devWin,
-      const comms::pipes::WindowConfig& config);
+      comms::prims::DeviceWindow* devWin,
+      const comms::prims::WindowConfig& config);
 
   // Returns the pipes HostWindow pointer for this window.
   // The caller does not take ownership.
   // Returns nullptr if pipes device window is not initialized.
-  comms::pipes::HostWindow* getPipesHostWindow() const {
+  comms::prims::HostWindow* getPipesHostWindow() const {
     return hostWindow_.get();
   }
 #endif
@@ -176,8 +186,8 @@ struct CtranWin {
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
 
-#if defined(ENABLE_PIPES)
-  std::unique_ptr<comms::pipes::HostWindow> hostWindow_;
+#if defined(ENABLE_PRIMS)
+  std::unique_ptr<comms::prims::HostWindow> hostWindow_;
 #endif
 };
 

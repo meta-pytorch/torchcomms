@@ -1,11 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // PipesDeviceBackend - Static method implementations
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/rdma/NicConstants.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/rdma/NicConstants.h"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
@@ -23,11 +23,11 @@ using torch::comms::RegisteredBuffer;
 // pipes per-NIC IBGDA constants meet. Verify they all agree at compile
 // time so RegisteredBuffer.hpp can stay free of NCCLx and pipes deps.
 static_assert(
-    NCCLX_MAX_NICS_PER_GPU == ::comms::pipes::kMaxNicsPerGpu,
-    "NCCLX_MAX_NICS_PER_GPU must match comms::pipes::kMaxNicsPerGpu");
+    NCCLX_MAX_NICS_PER_GPU == ::comms::prims::kMaxNicsPerGpu,
+    "NCCLX_MAX_NICS_PER_GPU must match comms::prims::kMaxNicsPerGpu");
 static_assert(
-    torch::comms::kMaxNicsPerGpu == ::comms::pipes::kMaxNicsPerGpu,
-    "torch::comms::kMaxNicsPerGpu must match comms::pipes::kMaxNicsPerGpu");
+    torch::comms::kMaxNicsPerGpu == ::comms::prims::kMaxNicsPerGpu,
+    "torch::comms::kMaxNicsPerGpu must match comms::prims::kMaxNicsPerGpu");
 
 // =============================================================================
 // DeviceWindowDeleter Implementation
@@ -98,7 +98,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
   // Step 2: Build TorchCommDeviceWindow<PipesDeviceBackend> on host.
   // comm_ = nullptr (unused for Pipes; no separate communicator handle)
   // window_ = typed device pointer to DeviceWindow
-  auto* device_win = static_cast<comms::pipes::DeviceWindow*>(pipes_device_win);
+  auto* device_win = static_cast<comms::prims::DeviceWindow*>(pipes_device_win);
   TorchCommDeviceWindow<PipesDeviceBackend> host_dev_window(
       nullptr, // Comm = void*, unused for Pipes
       device_win, // Window = DeviceWindow*, device pointer
@@ -210,7 +210,7 @@ void PipesDeviceBackend::deregister_local_buffer(
 // fetch_transport_handle Implementation
 // =============================================================================
 
-comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
+comms::prims::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api) {
   void* transports_ptr = nullptr;
@@ -234,12 +234,12 @@ comms::pipes::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
         "Ensure NCCL_CTRAN_USE_PIPES=1 is set.");
   }
 
-  return comms::pipes::MultiPeerDeviceHandle{
+  return comms::prims::MultiPeerDeviceHandle{
       my_rank,
       n_ranks,
-      {static_cast<comms::pipes::Transport*>(transports_ptr),
+      {static_cast<comms::prims::Transport*>(transports_ptr),
        static_cast<
-           comms::pipes::DeviceSpan<comms::pipes::Transport>::size_type>(
+           comms::prims::DeviceSpan<comms::prims::Transport>::size_type>(
            n_ranks)},
       num_nvl_peers,
       num_ib_peers};
@@ -277,7 +277,7 @@ PipesDeviceBackend::get_device_transport(
   // Allocate device memory
   void* device_ptr = nullptr;
   cudaError_t err = cuda_api->malloc(
-      &device_ptr, sizeof(comms::pipes::MultiPeerDeviceHandle));
+      &device_ptr, sizeof(comms::prims::MultiPeerDeviceHandle));
   if (err != cudaSuccess) {
     throw std::runtime_error(
         "[PipesDeviceBackend::get_device_transport]: "
@@ -290,7 +290,7 @@ PipesDeviceBackend::get_device_transport(
   err = cuda_api->memcpy(
       device_ptr,
       &handle,
-      sizeof(comms::pipes::MultiPeerDeviceHandle),
+      sizeof(comms::prims::MultiPeerDeviceHandle),
       cudaMemcpyHostToDevice);
   if (err != cudaSuccess) {
     CUDA_CHECK_IGNORE(
@@ -308,4 +308,4 @@ PipesDeviceBackend::get_device_transport(
 
 } // namespace torchcomms::device
 
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

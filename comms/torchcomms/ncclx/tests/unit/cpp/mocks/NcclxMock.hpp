@@ -376,7 +376,7 @@ class NcclxMock : public NcclxApi {
 #endif
 #endif
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   MOCK_METHOD(
       ncclResult_t,
       winCreateDeviceWin,

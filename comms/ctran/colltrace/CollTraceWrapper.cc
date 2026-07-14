@@ -200,7 +200,7 @@ CollectiveMetadata getCollectiveMetadata(
           static_cast<const ctran::device_alltoallv_pipes::KernArgs*>(
               kernelConfig.algoArgs);
       return CollectiveMetadata{
-          .opName = "DeviceAllToAllv_Pipes",
+          .opName = "DeviceAllToAllv_Prims",
           .algoName = kernelConfig.algoName,
           .opCount = opCount,
           .sendbuff = reinterpret_cast<uintptr_t>(pipesArgs->sendbuff),

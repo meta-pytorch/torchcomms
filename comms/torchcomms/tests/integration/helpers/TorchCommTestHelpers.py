@@ -36,6 +36,8 @@ def get_dtype_name(dtype):
         return "Int"
     elif dtype == torch.int8:
         return "SignedChar"
+    elif dtype == torch.bool:
+        return "Bool"
     else:
         return "Unknown"
 
@@ -181,6 +183,43 @@ def create_store():
             is_master=(rank == 0),
             wait_for_workers=False,
         )
+
+    NEXT_STORE_ID += 1
+    return PrefixStore(f"test_comm_{NEXT_STORE_ID}", _root_store)
+
+
+def create_store_on_free_port(torchcomm):
+    """Create a PrefixStore on an ephemeral port coordinated by torchcomm."""
+    maybe_set_rank_envs()
+
+    global _root_store, NEXT_STORE_ID
+    if _root_store is None:
+        rank, _ = get_rank_and_size()
+        host = os.environ["MASTER_ADDR"]
+        port = 0
+
+        if rank == 0:
+            _root_store = TCPStore(
+                host_name=host,
+                port=0,
+                is_master=True,
+                wait_for_workers=False,
+            )
+            port = _root_store.port
+
+        port_tensor = torch.tensor(
+            [float(port)], dtype=torch.float, device=torchcomm.get_device()
+        )
+        torchcomm.broadcast(port_tensor, 0, False)
+        port = int(port_tensor.cpu().item())
+
+        if rank != 0:
+            _root_store = TCPStore(
+                host_name=host,
+                port=port,
+                is_master=False,
+                wait_for_workers=False,
+            )
 
     NEXT_STORE_ID += 1
     return PrefixStore(f"test_comm_{NEXT_STORE_ID}", _root_store)

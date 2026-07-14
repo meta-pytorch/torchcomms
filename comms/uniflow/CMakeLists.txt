@@ -97,6 +97,7 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_SOURCES}
     ${UNIFLOW_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
+    ${UNIFLOW_CORE_SOURCES}
     $<TARGET_OBJECTS:uniflow_controller>
     $<TARGET_OBJECTS:uniflow_transport>
     $<TARGET_OBJECTS:uniflow_nvlink_transport>

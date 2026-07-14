@@ -269,7 +269,7 @@ Returns:
       py::call_guard<py::gil_scoped_release>());
 #endif
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // --- Pipes backend window class ---
   auto pipes_cls = py::class_<
       TorchCommWindowNCCLXPipes,

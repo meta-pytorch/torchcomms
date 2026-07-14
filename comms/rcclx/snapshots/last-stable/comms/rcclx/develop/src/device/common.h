@@ -166,11 +166,16 @@ struct ncclShmemData {
 #endif
 };
 
+#ifdef RCCL_DEVICE_LINKER
+__shared__ ncclShmemData ncclShmem;
+__shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize()*(NCCL_MAX_NTHREADS/WARP_SIZE)/sizeof(ulong2)];
+#else
 extern __shared__ ncclShmemData ncclShmem;
 #if __CUDA_ARCH__ >= 700
   extern __shared__ ulong2 ncclShmemPerWarp[/*ncclShmemDynamicSize()/sizeof(ulong2)*/];
 #else
   extern __shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize()*(NCCL_MAX_NTHREADS/WARP_SIZE)/sizeof(ulong2)];
+#endif
 #endif
 
 #ifdef ENABLE_FAULT_INJECTION
@@ -574,7 +579,9 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     if (0 <= SpecializedFnId && ncclShmem.funcId == (unsigned)SpecializedFnId) {
       SpecializedRunWorkBatch().run();
     } else {
+#ifndef RCCL_DEVICE_TABLE_OMIT
       NCCL_CALL_FUNCTIONS<COLL_UNROLL>(ncclShmem.funcId);
+#endif
     }
 
     if (ncclShmem.nextBatchIx == -1) break;
@@ -619,7 +626,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 #define DEFINE_ncclDevKernel_nop(suffix, coll, redop, ty, algo, proto, specializedFnId) \
   __global__ void ncclDevKernel_##suffix(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K) {}
 
-#ifdef USE_INDIRECT_FUNCTION_CALL
+#if defined(USE_INDIRECT_FUNCTION_CALL) || defined(RCCL_DEVICE_LINKER)
 #define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto, unroll) \
   __device__ void ncclDevFunc_##suffix() { \
     RunWorkBatch<coll, ty, redop<ty>, algo, proto, unroll>().run(); \

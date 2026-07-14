@@ -41,7 +41,7 @@ class BackendWrapper : public c10d::Backend {
   struct TORCH_API Options : c10d::Backend::Options {
     bool abort_process_on_timeout_or_error{true};
     std::chrono::milliseconds timeout{kDefaultTimeout};
-    bool high_priority_stream{false};
+    bool is_high_priority_stream{false};
     c10::intrusive_ptr<c10d::Store> store{nullptr};
     std::unordered_map<std::string, std::string> hints;
 

@@ -360,7 +360,7 @@ class NcclxApi {
       ncclComm_t comm) = 0;
 #endif
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // Create a DeviceWindow in device memory from a ctran-registered NcclxWindow.
   // COLLECTIVE on first call — all ranks must call together.
   // Returns opaque device pointer via outDevicePtr; free with
@@ -702,7 +702,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm) override;
 #endif
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   ncclResult_t winCreateDeviceWin(
       NcclxWindow win,
       int signal_count,

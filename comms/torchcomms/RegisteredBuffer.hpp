@@ -23,7 +23,7 @@ namespace torch::comms {
 // device-side kernel code (TorchCommDeviceWindow) without circular includes.
 
 // Maximum number of IBGDA NICs per GPU surfaced through RegisteredBuffer.
-// Must match NCCLX_MAX_NICS_PER_GPU in nccl.h and comms::pipes::kMaxNicsPerGpu
+// Must match NCCLX_MAX_NICS_PER_GPU in nccl.h and comms::prims::kMaxNicsPerGpu
 // — verified by static_assert at the bridge layer (PipesDeviceBackend.cpp,
 // the only translation unit that pulls in all three headers). Increase
 // only if a future platform supports > 2 NICs per GPU; update all three

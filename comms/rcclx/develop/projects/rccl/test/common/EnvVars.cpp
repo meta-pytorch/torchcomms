@@ -45,10 +45,13 @@ namespace RcclUnitTesting
           break;
         }
       }
-      if (write(pipefd[1], &isGfxTest, sizeof(isGfxTest)) != sizeof(isGfxTest)) return TEST_FAIL;
+      if (write(pipefd[1], &isGfxTest, sizeof(isGfxTest)) != sizeof(isGfxTest)) _exit(TEST_FAIL);
       close(pipefd[0]);
       close(pipefd[1]);
-      exit(EXIT_SUCCESS);
+      // Forked child of a multithreaded folly binary: must _exit() to skip
+      // atexit handlers / static destructors (folly singleton teardown would
+      // hang on threads that don't exist post-fork and abort after a timeout).
+      _exit(EXIT_SUCCESS);
     }
     else {
       int status;
@@ -75,10 +78,13 @@ namespace RcclUnitTesting
     {
       int dev;
       hipGetDeviceCount(&dev);
-      if (write(pipefd[1], &dev, sizeof(dev)) != sizeof(dev)) return TEST_FAIL;
+      if (write(pipefd[1], &dev, sizeof(dev)) != sizeof(dev)) _exit(TEST_FAIL);
       close(pipefd[0]);
       close(pipefd[1]);
-      exit(EXIT_SUCCESS);
+      // Forked child of a multithreaded folly binary: must _exit() to skip
+      // atexit handlers / static destructors (folly singleton teardown would
+      // hang on threads that don't exist post-fork and abort after a timeout).
+      _exit(EXIT_SUCCESS);
     }
     else
     {
@@ -108,10 +114,13 @@ namespace RcclUnitTesting
       int deviceIdx = 0;
       hipDeviceGetAttribute(&numDeviceCUs, hipDeviceAttributeMultiprocessorCount, deviceIdx);
       if(numDeviceCUs == 20 || numDeviceCUs == 38) isCpxMode = true;
-      if (write(pipefd[1], &isCpxMode, sizeof(isCpxMode)) != sizeof(isCpxMode)) return TEST_FAIL;
+      if (write(pipefd[1], &isCpxMode, sizeof(isCpxMode)) != sizeof(isCpxMode)) _exit(TEST_FAIL);
       close(pipefd[0]);
       close(pipefd[1]);
-      exit(EXIT_SUCCESS);
+      // Forked child of a multithreaded folly binary: must _exit() to skip
+      // atexit handlers / static destructors (folly singleton teardown would
+      // hang on threads that don't exist post-fork and abort after a timeout).
+      _exit(EXIT_SUCCESS);
     }
     else {
       int status;
@@ -173,12 +182,15 @@ namespace RcclUnitTesting
           }
       } catch (const std::exception& e) {
           std::cerr << "Error: " << e.what() << std::endl;
-          return 1;
+          _exit(1);
       }
-      if (write(pipefd[1], result.data(), gpuPriorityOrder->size() * sizeof(int)) != gpuPriorityOrder->size() * sizeof(int)) return TEST_FAIL;
+      if (write(pipefd[1], result.data(), gpuPriorityOrder->size() * sizeof(int)) != gpuPriorityOrder->size() * sizeof(int)) _exit(TEST_FAIL);
       close(pipefd[0]);
       close(pipefd[1]);
-      exit(EXIT_SUCCESS);
+      // Forked child of a multithreaded folly binary: must _exit() to skip
+      // atexit handlers / static destructors (folly singleton teardown would
+      // hang on threads that don't exist post-fork and abort after a timeout).
+      _exit(EXIT_SUCCESS);
     }
     else {
       int status;

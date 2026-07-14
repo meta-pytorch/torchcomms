@@ -205,12 +205,12 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include <cuda_runtime_api.h>
 
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/window/DeviceWindow.cuh"
+#include "comms/prims/window/HostWindow.h"
 
 NCCL_API(
     ncclResult_t,
@@ -232,7 +232,7 @@ ncclResult_t ncclWinCreateDeviceWin(
   //
   // Subsequent calls on the same window return cached results (config ignored).
   //
-  // The returned void* is a device pointer to comms::pipes::DeviceWindow.
+  // The returned void* is a device pointer to comms::prims::DeviceWindow.
   // The caller must free it via ncclWinDestroyDeviceWin().
   if (win == nullptr || outDevicePtr == nullptr) {
     return ncclInvalidArgument;
@@ -244,7 +244,7 @@ ncclResult_t ncclWinCreateDeviceWin(
   }
 
   // Build WindowConfig from parameters.
-  comms::pipes::WindowConfig config{
+  comms::prims::WindowConfig config{
       .peerSignalCount = static_cast<std::size_t>(std::max(signal_count, 0)),
       .peerCounterCount = static_cast<std::size_t>(std::max(counter_count, 0)),
       .barrierCount = static_cast<std::size_t>(std::max(barrier_count, 0)),
@@ -252,7 +252,7 @@ ncclResult_t ncclWinCreateDeviceWin(
 
   // Populate DeviceWindow on host stack. getDeviceWin() fills in transport
   // handles, remote buffer descriptors, and signal pointers.
-  comms::pipes::DeviceWindow host_dev_win{};
+  comms::prims::DeviceWindow host_dev_win{};
   auto result = nw->ctranWindow->getDeviceWin(&host_dev_win, config);
   if (result != commSuccess) {
     WARN("ncclWinCreateDeviceWin: getDeviceWin failed with error %d", result);
@@ -262,9 +262,9 @@ ncclResult_t ncclWinCreateDeviceWin(
   // Allocate device memory for DeviceWindow.
   // NOTE: Uses raw cudaMalloc; the caller frees via ncclWinDestroyDeviceWin()
   // or cuda_api->free() (which wraps cudaFree — compatible).
-  comms::pipes::DeviceWindow* dev_ptr = nullptr;
+  comms::prims::DeviceWindow* dev_ptr = nullptr;
   cudaError_t cuda_err = cudaMalloc(
-      reinterpret_cast<void**>(&dev_ptr), sizeof(comms::pipes::DeviceWindow));
+      reinterpret_cast<void**>(&dev_ptr), sizeof(comms::prims::DeviceWindow));
   if (cuda_err != cudaSuccess) {
     WARN(
         "ncclWinCreateDeviceWin: cudaMalloc failed: %s",
@@ -278,7 +278,7 @@ ncclResult_t ncclWinCreateDeviceWin(
   cuda_err = cudaMemcpy(
       dev_ptr,
       &host_dev_win,
-      sizeof(comms::pipes::DeviceWindow),
+      sizeof(comms::prims::DeviceWindow),
       cudaMemcpyHostToDevice);
   if (cuda_err != cudaSuccess) {
     WARN(
@@ -316,8 +316,8 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     size_t size,
     ncclLkeyPerDevice* outLkeys) {
   static_assert(
-      NCCLX_MAX_NICS_PER_GPU == ::comms::pipes::kMaxNicsPerGpu,
-      "NCCLX_MAX_NICS_PER_GPU in nccl.h must match comms::pipes::kMaxNicsPerGpu");
+      NCCLX_MAX_NICS_PER_GPU == ::comms::prims::kMaxNicsPerGpu,
+      "NCCLX_MAX_NICS_PER_GPU in nccl.h must match comms::prims::kMaxNicsPerGpu");
   if (comm == nullptr || ptr == nullptr || outLkeys == nullptr) {
     return ncclInvalidArgument;
   }
@@ -344,7 +344,7 @@ ncclResult_t ncclWinLocalRegisterBuffer(
   // used for IBGDA WQE construction during RDMA writes; NVLink puts never
   // read them. This mirrors HostWindow::registerLocalBuffer which guards
   // the same call with nIbgdaPeers > 0.
-  if (mpt->ibgda_peer_ranks().empty()) {
+  if (mpt->ib_peer_ranks().empty()) {
     return ncclSuccess;
   }
 
@@ -392,4 +392,4 @@ ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t comm, void* ptr) {
     return ncclInternalError;
   }
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS

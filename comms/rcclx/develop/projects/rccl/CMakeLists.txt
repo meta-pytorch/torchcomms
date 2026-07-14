@@ -44,6 +44,7 @@ option(TRACE                                   "Enable additional tracing"      
 option(FAULT_INJECTION                         "Enable fault injection"                        ON)
 option(QUIET_WARNINGS                          "Supress compiler warnings"                     OFF)
 option(ENABLE_ROCSHMEM                         "Enable rocSHMEM support in RCCL"               OFF)
+option(ENABLE_PRIMS                            "Compile comms/prims (pipes) into RCCLX"        OFF)
 
 # Third-party dependency paths
 #==================================================================================================
@@ -825,7 +826,7 @@ set(RCCLX_FILES
 
 # Automatically collect all ctran and pipes source files.
 # Glob paths must be absolute because these dirs live outside CMAKE_SOURCE_DIR
-# (at fbcode/comms/ctran/ and fbcode/comms/pipes/, not under comms/rcclx/develop/).
+# (at fbcode/comms/ctran/ and fbcode/comms/prims/, not under comms/rcclx/develop/).
 file(GLOB_RECURSE CTRAN_SOURCES_ABS
     "${FBCODE_DIR}/comms/ctran/*.cc"
     "${FBCODE_DIR}/comms/ctran/*.cu"
@@ -855,12 +856,14 @@ if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/backends/tcpdevmem/.*")
 endif()
 
-# Automatically collect all pipes source files.
+# comms/prims (pipes) sources, gated on ENABLE_PRIMS (default OFF) so the
+# AMD/ROCm build is isolated from comms/prims churn.
+if(ENABLE_PRIMS)
 file(GLOB_RECURSE PIPES_SOURCES_ABS
-    "${FBCODE_DIR}/comms/pipes/*.cc"
-    "${FBCODE_DIR}/comms/pipes/*.cu"
-    "${FBCODE_DIR}/comms/pipes/*.h"
-    "${FBCODE_DIR}/comms/pipes/*.cuh"
+    "${FBCODE_DIR}/comms/prims/*.cc"
+    "${FBCODE_DIR}/comms/prims/*.cu"
+    "${FBCODE_DIR}/comms/prims/*.h"
+    "${FBCODE_DIR}/comms/prims/*.cuh"
 )
 
 set(PIPES_SOURCES "")
@@ -874,28 +877,56 @@ endforeach()
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Ii]bgda")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Dd]oca")
 # MultiPeerTransport unconditionally includes MultipeerIbgdaTransport.h, so exclude it too.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/MultiPeerTransport\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerTransport\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerTransportAmd\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "AllToAllvAmd\\.")
 # Exclude Dispatchv files (currently disabled)
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "Dispatchv\\.")
 # Exclude tests and benchmarks (they depend on gtest/mpi which are not available in this build)
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/benchmarks/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/.*/benchmarks/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/benchmarks/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/tests/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/benchmarks/.*")
 # Exclude all pipes collectives — they depend on CUDA-only headers (cuda_bf16.h,
 # P2pIbgdaTransportDevice.cuh, __trap) that are not available on ROCm/HIP.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/collectives/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/collectives/.*")
 # Exclude rdma files — they depend on spdlog which is not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/rdma/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/rdma/.*")
+# Exclude the ibrc transport and the MultiPeerIbTransport CRTP base. They are
+# the last remaining piece of the multi-peer IB stack (ibgda/rdma/amd are already
+# excluded above) and instantiate comms::prims::GpuNicDiscovery, whose definition
+# lives in the excluded comms/prims/transport/rdma/NicDiscovery.cc (needs spdlog).
+# Leaving them in produces an undefined vtable for GpuNicDiscovery in librccl at
+# load time. No other compiled source references them.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/ibrc/.*")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerIbTransport\\.")
 # Exclude window files — they depend on IbgdaBuffer.h which is excluded.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/pipes/window/.*")
-# Exclude GpuMemHandler and CudaDriverLazy — they depend on cudaTypedefs.h which is not available.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/window/.*")
+# Exclude GpuMemHandler, NvlMemExchange, CuMemAllocation, CuMemMapping, and
+# CudaDriverLazy — they depend on cudaTypedefs.h / the CUDA driver API which
+# is not available here.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "NvlMemExchange\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemAllocation\\.")
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemMapping\\.")
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
+# Exclude MultimemHandler — it is NVIDIA-only (NVSwitch multicast) and owns a
+# std::unique_ptr<CuMemMapping>, so its TU emits an out-of-line reference to
+# CuMemMapping::~CuMemMapping(), whose definition lives in the excluded
+# CuMemMapping.cc. Leaving it in compiles clean but leaves that symbol
+# undefined in librccl at load time. No other compiled source references it.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultimemHandler\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
+# Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
+# (pipes_gda, mlx5/bnxt nic backends) is only consumed by the excluded
+# MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
+# (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
+list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/amd/.*")
+else()
+# ENABLE_PRIMS off: compile no comms/prims sources into librccl.
+set(PIPES_SOURCES "")
+endif()
 
 # Run this command to get RCCLX_LIB_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sort
@@ -920,12 +951,18 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.cc
   comms/rcclx/develop/meta/lpcoll/low_precision_buffer_pool.h
   comms/rcclx/develop/meta/lpcoll/low_precision_common.h
+  comms/rcclx/develop/meta/lpcoll/low_precision_kernels.cu
   comms/rcclx/develop/meta/lpcoll/low_precision_kernels.h
   comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.cc
   comms/rcclx/develop/meta/lpcoll/low_precision_reduce_scatter.h
   comms/rcclx/develop/meta/lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.h
+  # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/relay/*" \( -name "*.cc" -o -name "*.h" -o -name "*.cu" \) | sort
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce.h
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu
+  comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.h
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
@@ -939,7 +976,7 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common comms/pipes -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common comms/prims -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
@@ -1002,6 +1039,13 @@ set(COMMON_FILES
   comms/utils/colltrace/DummyCollTraceHandle.h
   comms/utils/colltrace/GenericMetadata.cc
   comms/utils/colltrace/GenericMetadata.h
+  comms/utils/colltrace/GraphCollTraceEvent.h
+  comms/utils/colltrace/GraphCollTraceHandle.h
+  comms/utils/colltrace/GraphCollTraceState.h
+  comms/utils/colltrace/GraphCudaWaitEvent.cc
+  comms/utils/colltrace/GraphCudaWaitEvent.h
+  comms/utils/colltrace/HRDWRingBufferInstantiations.cu
+  comms/utils/colltrace/HRDWRingBufferInstantiations.cuh
   comms/utils/colltrace/NetworkPerfMonitor.cc
   comms/utils/colltrace/NetworkPerfMonitor.h
   comms/utils/colltrace/plugins/CommDumpPlugin.cc
@@ -1025,6 +1069,8 @@ set(COMMON_FILES
   comms/utils/cvars/nccl_cvars.h
   comms/utils/EnvUtils.cc
   comms/utils/EnvUtils.h
+  comms/utils/GraphCaptureSideStream.cc
+  comms/utils/GraphCaptureSideStream.h
   comms/utils/InitFolly.cc
   comms/utils/InitFolly.h
   comms/utils/kernels/rng/philox_rng.cuh
@@ -1062,6 +1108,10 @@ set(COMMON_FILES
   comms/utils/logger/ScubaLogger.h
   comms/utils/MemUtils.cc
   comms/utils/MemUtils.h
+  comms/utils/memtrace/MemoryTrace.cc
+  comms/utils/memtrace/MemoryTrace.h
+  comms/utils/PrecisionClock.cc
+  comms/utils/PrecisionClock.h
   comms/utils/RankUtils.cc
   comms/utils/RankUtils.h
   comms/utils/StrUtils.h
@@ -1238,6 +1288,11 @@ if (NOT Python3_FOUND)
   message(FATAL_ERROR "RCCL requires Python3 for generating host/device tables")
 endif()
 
+# Abseil (absl::log / absl::check) is used by
+# comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc, which is compiled into
+# librccl. Resolved from CONDA_PREFIX via CMAKE_PREFIX_PATH (env), same as fmt.
+find_package(absl CONFIG REQUIRED)
+
 set(GEN_DIR "${HIPIFY_DIR}/gensrc")
 set(GEN_SYM_DIR "${GEN_DIR}/symmetric")
 
@@ -1312,6 +1367,14 @@ endforeach()
 # Find the generated files in the output directory
 file(GLOB_RECURSE GENERATED_FILES "${GEN_DIR}/*")
 
+# Exclude the per-function "specialized" kernel files (gensrc/specialized/*.cpp
+# and gensrc/specialized_files.txt). They are an alternative parallel-build code
+# path that re-emits DEFINE_ncclDevFunc for the same ncclDevFunc_* symbols
+# already defined by the grouped impl files above; compiling both causes
+# "duplicate symbol" errors at device (amdgcn) link time. The grouped impl
+# files plus device_table.cpp are the complete, referenced set.
+list(FILTER GENERATED_FILES EXCLUDE REGEX "/specialized")
+
 # Append all found generated files to the list
 foreach(file ${GENERATED_FILES})
   list(APPEND HIP_SOURCES ${file})
@@ -1362,6 +1425,14 @@ target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop/meta/ctran)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran/utils)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
+# comms/prims/transport/amd/ is excluded from sources (not hipified), but its
+# headers (HipDeviceCompat.h, nic/NicConfig.h) are included by compiled
+# transport/ibrc code via bare paths, so put the original source dir on the
+# include path. See the EXCLUDE for comms/prims/transport/amd/.* above.
+# Only needed when comms/prims sources are compiled in (ENABLE_PRIMS).
+if(ENABLE_PRIMS)
+target_include_directories(rccl PRIVATE ${FBCODE_DIR}/comms/prims/transport/amd)
+endif()
 
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})
@@ -1410,6 +1481,9 @@ if(ENABLE_WARP_SPEED)
 endif()
 if(ENABLE_ROCSHMEM)
   target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM)
+endif()
+if(ENABLE_PRIMS)
+  target_compile_definitions(rccl PRIVATE ENABLE_PRIMS)
 endif()
 
 # ==== rocSHMEM integration (optional) ====
@@ -1627,6 +1701,11 @@ target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
 target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
+# comms/utils/PrecisionClock.cc finds time/fbclock/fbclock.h via the `-I fbcode`
+# in env CXXFLAGS, but this build does not link fbclock_c. Opt out so PrecisionClock
+# falls back to std::chrono::system_clock instead of leaving fbclock_init /
+# fbclock_gettime_utc undefined in librccl.so (which breaks PyTorch's dlopen).
+target_compile_definitions(rccl PRIVATE COMMS_NO_FBCLOCK)
 
 # Undefine __HIPCC__ for host-only .cc files that need types guarded by
 # #if !defined(__CUDACC__) (hipified to __HIPCC__) in AllReduce/Types.h.
@@ -1782,8 +1861,13 @@ target_link_libraries(rccl PRIVATE   Threads::Threads)
 target_link_libraries(rccl INTERFACE hip::host)
 target_link_libraries(rccl PRIVATE   hip::device)
 target_link_libraries(rccl PRIVATE   dl)
+# 128-bit atomics (__atomic_load_16/__atomic_store_16, emitted as libcalls on
+# x86_64) are not lock-free, so the compiler lowers them to libatomic. Without
+# this librccl.so has undefined __atomic_*_16 and PyTorch's dlopen fails.
+target_link_libraries(rccl PRIVATE   atomic)
 target_link_libraries(rccl PRIVATE   ${SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE fmt::fmt-header-only)
+target_link_libraries(rccl PRIVATE absl::log absl::check)  # GpuClockCalibration.cc
 if(ENABLE_MSCCLPP)
   target_link_libraries(rccl PRIVATE mscclpp_nccl)
 endif()
@@ -1858,6 +1942,12 @@ set(thrift_group_list
   ${CONDA_LIB_DIR}/libthriftprotocol.a
   ${CONDA_LIB_DIR}/libthrifttype.a
   ${CONDA_LIB_DIR}/libthrifttyperep.a
+  # New in thrift v2026.05.25.00: apache::thrift::dynamic (and its deps) are
+  # referenced by the thrift libs above but live in separate archives.
+  ${CONDA_LIB_DIR}/libthrift_dynamic_value.a
+  ${CONDA_LIB_DIR}/libthrift_path.a
+  ${CONDA_LIB_DIR}/libthriftannotation.a
+  ${CONDA_LIB_DIR}/libthriftfrozen2.a
   ${CONDA_LIB_DIR}/librpcmetadata.a
   ${CONDA_LIB_DIR}/libruntime.a
   ${CONDA_LIB_DIR}/libserverdbginfo.a
@@ -1887,6 +1977,8 @@ target_link_libraries(rccl PRIVATE
   ${CONDA_LIB_DIR}/libssl.a
   ${CONDA_LIB_DIR}/libcrypto.a
   ${CONDA_LIB_DIR}/libzstd.so
+  ${CONDA_LIB_DIR}/libsnappy.a
+  ${CONDA_LIB_DIR}/libbz2.a
   ${CONDA_LIB_DIR}/libsodium.a
 )
 

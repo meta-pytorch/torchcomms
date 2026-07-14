@@ -26,9 +26,25 @@ void RcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, commDestroy(_)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, commAbort(_)).WillByDefault(Return(ncclSuccess));
 
+  ON_CALL(*this, commRevoke(_)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, commSplit(_, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*this, commShrink(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x6000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*this, commGetUniqueId(_, _))
+      .WillByDefault(
+          DoAll(SetArgPointee<1>(ncclUniqueId{}), Return(ncclSuccess)));
+
+  ON_CALL(*this, commGrow(_, _, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<4>(reinterpret_cast<ncclComm_t>(0x7000)),
           Return(ncclSuccess)));
 
   ON_CALL(*this, commCount(_, _))

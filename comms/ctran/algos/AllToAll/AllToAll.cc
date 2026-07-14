@@ -8,17 +8,17 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/Transport.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/Transport.cuh"
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
     int* flag,
@@ -187,7 +187,7 @@ bool ctranAllToAllSupport(
   return commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD;
 }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 // ============================================================================
 // Device AllToAllv (split sizes on device)
 // NVLink domain only — all peers must be reachable via NVLink.
@@ -276,19 +276,19 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);
-    if (type != comms::pipes::TransportType::P2P_NVL &&
-        type != comms::pipes::TransportType::SELF) {
+    if (type != comms::prims::TransportType::P2P_NVL &&
+        type != comms::prims::TransportType::SELF) {
       return false;
     }
   }
 
   return true;
 }
-#endif // ENABLE_PIPES
+#endif // ENABLE_PRIMS
 
-// Stubs when ENABLE_PIPES is not defined — prevents linker errors from
+// Stubs when ENABLE_PRIMS is not defined — prevents linker errors from
 // unconditional declarations in Ctran.h.
-#if !defined(ENABLE_PIPES)
+#if !defined(ENABLE_PRIMS)
 commResult_t ctranDeviceAllToAllv(
     const void* /*sendbuff*/,
     void* /*recvbuff*/,
@@ -306,4 +306,4 @@ commResult_t ctranDeviceAllToAllv(
 bool ctranDeviceAllToAllvSupport(CtranComm* /*comm*/) {
   return false;
 }
-#endif // !ENABLE_PIPES
+#endif // !ENABLE_PRIMS

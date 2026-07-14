@@ -73,7 +73,9 @@ struct HostArgs {
   void* rightRemBuf{nullptr};
   CtranMapperRemoteAccessKey rightRemKey;
 
-  // Forward: receive notifications from left
+  // Forward: receive notifications from left.
+  // Single notify for both IB and TCPDM. IB uses IMM sequence numbers;
+  // TCPDM uses counter-based checkRecvNotify in the backend.
   std::unique_ptr<CtranMapperNotify> leftNotify{nullptr};
 
   // Reverse: remote receive buffer on left (left neighbor's tmpRecvBufRev)

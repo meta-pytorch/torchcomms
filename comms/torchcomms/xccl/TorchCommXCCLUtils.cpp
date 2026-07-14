@@ -1,9 +1,11 @@
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
 
 namespace torch::comms {
 
@@ -26,6 +28,8 @@ onecclDataType_t getXcclDataTypeInternal(const at::Tensor& tensor) {
     case at::ScalarType::Char:
       return onecclInt8;
     case at::ScalarType::Byte:
+      return onecclUint8;
+    case at::ScalarType::Bool:
       return onecclUint8;
     default:
       throw std::runtime_error("Unsupported tensor data type for XCCL");
@@ -161,13 +165,13 @@ TorchCommXCCL::RedOpRAII TorchCommXCCL::getXcclReduceOp(
 }
 
 void TorchCommXCCL::checkWorkQueue() {
-  TorchWorkXCCL::WorkStatus status = workq_.garbageCollect();
+  TorchWork::WorkStatus status = workq_.garbageCollect();
 
   switch (status) {
-    case TorchWorkXCCL::WorkStatus::TIMEDOUT:
+    case TorchWork::WorkStatus::TIMEDOUT:
       comm_state_ = CommState::TIMEOUT;
       break;
-    case TorchWorkXCCL::WorkStatus::ERROR:
+    case TorchWork::WorkStatus::ERROR:
       comm_state_ = CommState::ERROR;
       break;
     default:
@@ -176,8 +180,8 @@ void TorchCommXCCL::checkWorkQueue() {
   }
 }
 
-// The timeout thread cannot make XCCL calls.  The only XPU call it can make
-// it xpuEventQuery.
+// The timeout thread cannot make XCCL calls. The only XPU call it can make is
+// xpuEventQuery via the work status checks.
 void TorchCommXCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
   while (!shutdown_) {
@@ -214,7 +218,7 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
 
       runAbortHooks();
 
-      abort();
+      ::abort();
     }
   }
 
@@ -236,23 +240,12 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
       runAbortHooks();
-      abort();
+      ::abort();
     } else {
       throw std::runtime_error("XCCL operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
-    onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
-    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    //    abortXcclComm(); // cannot abort oneCCL communicator
-    if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << xcclException.what();
-      runAbortHooks();
-      abort();
-    } else {
-      throw xcclException;
-    }
+    throwAsyncError(false);
   }
 }
 
@@ -343,4 +336,13 @@ void TorchCommXCCL::returnEvent(xpuEvent_t&& event) {
         xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
   }
 }
+
+void TorchCommXCCL::attachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().registerComm(this);
+}
+
+void TorchCommXCCL::detachMemoryHook() {
+  XcclCachingAllocatorHook::getInstance().deregisterComm(this);
+}
+
 } // namespace torch::comms

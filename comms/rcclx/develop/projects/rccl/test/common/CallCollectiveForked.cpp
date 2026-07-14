@@ -8,6 +8,7 @@
 #include "CollectiveArgs.hpp"
 #include <rccl/rccl.h>
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #define HIPCALL(cmd)                                                                          \
     do {                                                                                      \
@@ -68,7 +69,7 @@ void callCollective(ncclUniqueId id, int collID, int rank, int nranks, const std
         sendSize = send.size();
         recvSize = nranks*send.size();
         break;
-      default: exit(0);
+      default: _exit(0);
     }
 
     if(!use_managed_mem){
@@ -93,7 +94,7 @@ void callCollective(ncclUniqueId id, int collID, int rank, int nranks, const std
       case ncclCollAllGather:
         NCCLCHECK(ncclAllGather(sendbuff, recvbuff, sendSize, ncclInt, comm, stream));
         break;
-      default: exit(0);
+      default: _exit(0);
     }
 
     HIPCALL(hipStreamSynchronize(stream));
@@ -145,7 +146,10 @@ void callCollectiveForked(int nranks,  int collID, const std::vector<int>& sendB
         int ngpus = 0;
         HIPCALL(hipGetDeviceCount(&ngpus));
         if(ngpus != nranks){
-          exit(0);
+          // Forked child of a multithreaded folly binary: _exit() skips atexit
+          // handlers / static destructors that would hang on folly singleton
+          // teardown post-fork and abort after a timeout.
+          _exit(0);
         }
         //child processes
         if(r == 0)
@@ -157,7 +161,7 @@ void callCollectiveForked(int nranks,  int collID, const std::vector<int>& sendB
         for(int i = 0; i < recvBuff.size(); ++i){
           ASSERT_EQ(recvBuff[i], expected[i]);
         }
-        exit(0);
+        _exit(0);
       }
     }
 

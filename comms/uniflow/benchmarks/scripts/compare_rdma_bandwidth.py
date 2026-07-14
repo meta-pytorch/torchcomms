@@ -27,36 +27,73 @@ _verbose = False
 
 REMOTE_DIR = "/tmp/uniflow_compare"
 
-# SSH throttling mitigation: remote hosts enforce MaxStartups limits on
-# concurrent SSH connections. These delays prevent back-to-back sush2/suscp
-# calls from being rejected.
-SSH_THROTTLE_DELAY = 3  # seconds between SSH retries on throttle errors
+# SSH login user for sush2/suscp. Default "root" needs the root_<host> machine
+# ACL; set to your unixname via --ssh-user to authenticate with your own login.
+SSH_USER = "root"
+
 IB_SERVER_INIT_DELAY_LOCAL = 3  # seconds for ib_write_bw server startup (local)
 IB_SERVER_INIT_DELAY_REMOTE = 10  # seconds for ib_write_bw server startup (remote)
 IB_PER_SIZE_DELAY = 3  # seconds between sizes in ib_write_bw loop
 
+# Hard minimum wall-clock spacing between ANY two sush2/suscp invocations to a
+# remote host. Bare-metal SSH gateways permanently blacklist identities that
+# open connections too rapidly, so this is a safety floor, not a perf knob.
+# _ssh_gate() sleeps as needed before every remote SSH call; --ssh-interval can
+# raise it but is clamped to never go below this value.
+MIN_SSH_INTERVAL = 30
+_last_ssh_ts = 0.0
+
+
+def _ssh_gate():
+    """Block until >= MIN_SSH_INTERVAL seconds have elapsed since the last
+    remote SSH call, then stamp the current time. Call immediately before every
+    sush2/suscp subprocess launch to a remote host."""
+    global _last_ssh_ts
+    wait = MIN_SSH_INTERVAL - (time.monotonic() - _last_ssh_ts)
+    if wait > 0:
+        _log(
+            f"SSH gate: sleeping {wait:.0f}s to keep >= {MIN_SSH_INTERVAL}s between SSH calls"
+        )
+        time.sleep(wait)
+    _last_ssh_ts = time.monotonic()
+
+
 GPU_PATTERNS = [
     ("H100", "h100"),
     ("H200", "h200"),
+    ("GB300", "b300"),
     ("GB200", "b200"),
     ("B200", "b200"),
     ("A100", "a100"),
 ]
 
+# Per-GPU extra buck flags. GB300 (b300) is Grace/aarch64 with the b200a nvcc
+# arch and CUDA 13 (matches the uniflow_disagg/comms_rdma_bench MAST fbpkg).
+_B200_FLAGS = (
+    " -c fbcode.arch=aarch64"
+    " -c fbcode.enable_gpu_sections=true"
+    " -c fbcode.nvcc_arch=b200"
+    " -c fbcode.platform010_cuda_version=12.8"
+)
+_B300_FLAGS = (
+    " -c fbcode.arch=aarch64"
+    " -c fbcode.enable_gpu_sections=true"
+    " -c fbcode.nvcc_arch=b200a"
+    " -c fbcode.platform010_cuda_version=13.0"
+)
+
 BUILD_SPECS = {
     "uniflow_bench": {
         "target": "fbcode//comms/uniflow/benchmarks:uniflow_bench",
-        "b200_flags": (
-            " -c fbcode.arch=aarch64"
-            " -c fbcode.enable_gpu_sections=true"
-            " -c fbcode.nvcc_arch=b200"
-            " -c fbcode.platform010_cuda_version=12.8"
-        ),
-        "supported_gpus": ("h100", "b200"),
+        "arch_flags": {"b200": _B200_FLAGS, "b300": _B300_FLAGS},
+        "supported_gpus": ("h100", "b200", "b300"),
     },
     "ib_write_bw": {
         "target": "fbsource//third-party/perftest/25.07.0-0.104:ib_write_bw",
-        "b200_flags": " -c fbcode.arch=aarch64",
+        "arch_flags": {
+            "b200": " -c fbcode.arch=aarch64",
+            "b300": " -c fbcode.arch=aarch64",
+        },
         "supported_gpus": None,
     },
 }
@@ -74,11 +111,13 @@ IP=$(ip -4 addr show eth1 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]
 [ -z "$IP" ] && IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
 [ -z "$IP" ] && IP=$(hostname -i 2>/dev/null | awk '{print $1}')
 echo "IP:$IP"
-GID_NIC=${__NIC_OVERRIDE__:-$NIC}
+GID_NIC=__NIC_OVERRIDE__
+[ -z "$GID_NIC" ] && GID_NIC=$NIC
 GID=$(show_gids 2>/dev/null | awk "/$GID_NIC/ && /v2/ && !/fe80/ {print \\$3; exit}")
 echo "GID:${GID:-3}"
 test -x __REMOTE_DIR__/uniflow_bench && echo "HAS:uniflow_bench"
 test -x __REMOTE_DIR__/ib_write_bw && echo "HAS:ib_write_bw"
+echo "LINKAGE:$(cat __REMOTE_DIR__/uniflow_bench.linkage 2>/dev/null)"
 pkill -9 -f uniflow_bench 2>/dev/null
 pkill -9 -f ib_write_bw 2>/dev/null
 mkdir -p __REMOTE_DIR__
@@ -91,6 +130,7 @@ GID=$(show_gids 2>/dev/null | awk "/__NIC__/ && /v2/ && !/fe80/ {print \\$3; exi
 echo "GID:${GID:-3}"
 test -x __REMOTE_DIR__/uniflow_bench && echo "HAS:uniflow_bench"
 test -x __REMOTE_DIR__/ib_write_bw && echo "HAS:ib_write_bw"
+echo "LINKAGE:$(cat __REMOTE_DIR__/uniflow_bench.linkage 2>/dev/null)"
 pkill -9 -f uniflow_bench 2>/dev/null
 pkill -9 -f ib_write_bw 2>/dev/null
 mkdir -p __REMOTE_DIR__
@@ -163,7 +203,7 @@ class RemoteHost:
         remote = f"{{ {cmd} ; }} 2>&1"
         return (
             f"sush2 --reason 'RDMA bandwidth comparison'"
-            f" root@{self.hostname} {shlex.quote(remote)}"
+            f" {SSH_USER}@{self.hostname} {shlex.quote(remote)}"
         )
 
     @staticmethod
@@ -175,6 +215,8 @@ class RemoteHost:
         _log(f"[{self.hostname}] {cmd}")
         full = self._wrap(cmd)
         if not capture:
+            if not self.is_local:
+                _ssh_gate()
             subprocess.run(full, shell=True, timeout=timeout)
             return ""
         # Retry on SSH throttling (empty stdout + non-zero rc).
@@ -183,7 +225,8 @@ class RemoteHost:
         for attempt in range(3):
             if attempt > 0:
                 _log(f"sush2 retry {attempt + 1}/3 after SSH throttle delay")
-                time.sleep(SSH_THROTTLE_DELAY)
+            if not self.is_local:
+                _ssh_gate()
             r = subprocess.run(
                 full, shell=True, capture_output=True, text=True, timeout=timeout
             )
@@ -199,6 +242,8 @@ class RemoteHost:
     def run_bg(self, cmd, quiet=False):
         _log(f"[{self.hostname} bg] {cmd}")
         full = self._wrap(cmd)
+        if not self.is_local:
+            _ssh_gate()
         fd, log_path = tempfile.mkstemp(suffix=".log", prefix="uniflow_bg_", dir="/tmp")
         log_file = os.fdopen(fd, "w")
         p = subprocess.Popen(
@@ -230,7 +275,7 @@ class RemoteHost:
         for attempt in range(3):
             if attempt > 0:
                 _log(f"suscp retry {attempt + 1}/3 after SSH throttle delay")
-                time.sleep(SSH_THROTTLE_DELAY)
+            _ssh_gate()
             rc = subprocess.run(cmd, shell=True, timeout=timeout).returncode
             if rc == 0:
                 return
@@ -241,23 +286,31 @@ class RemoteHost:
     def copy_to(self, local_path, remote_name):
         self._suscp(
             local_path,
-            f"root@{self.hostname}:{REMOTE_DIR}/{remote_name}",
+            f"{SSH_USER}@{self.hostname}:{REMOTE_DIR}/{remote_name}",
             "copy benchmark binary",
         )
 
     def copy_from(self, remote_name, local_path):
         self._suscp(
-            f"root@{self.hostname}:{REMOTE_DIR}/{remote_name}",
+            f"{SSH_USER}@{self.hostname}:{REMOTE_DIR}/{remote_name}",
             local_path,
             "retrieve results",
             timeout=60,
         )
 
-    def verify_and_chmod(self, names):
+    def verify_and_chmod(self, names, uniflow_linkage=None):
         checks = " && ".join(
             f"test -f {REMOTE_DIR}/{n} && chmod +x {REMOTE_DIR}/{n}" for n in names
         )
-        out = self.run(f"{checks} && echo OK", timeout=15)
+        cmd = checks
+        if uniflow_linkage and "uniflow_bench" in names:
+            # Stamp the deployed linkage so a later run can detect a switch and
+            # re-copy instead of silently running a stale build.
+            cmd += (
+                f" && echo {shlex.quote(uniflow_linkage)} >"
+                f" {REMOTE_DIR}/uniflow_bench.linkage"
+            )
+        out = self.run(f"{cmd} && echo OK", timeout=15)
         if "OK" not in (out or ""):
             sys.exit(
                 f"ERROR: Binaries not found on {self.hostname} after copy."
@@ -266,7 +319,7 @@ class RemoteHost:
 
     def setup_primary(self, nic_override=""):
         script = SETUP_SCRIPT_HOST0.replace("__REMOTE_DIR__", REMOTE_DIR).replace(
-            "__NIC_OVERRIDE__", nic_override or ""
+            "__NIC_OVERRIDE__", shlex.quote(nic_override or "")
         )
         return self._parse_setup(_run_script_on_host(self, script))
 
@@ -316,13 +369,19 @@ class RemoteHost:
 CACHE_DIR = os.path.expanduser("~/.cache/uniflow_compare")
 
 
-def get_cached_binary(name, gpu):
-    path = os.path.join(CACHE_DIR, gpu, name)
+def _cache_subdir(gpu, linkage):
+    # Keep dynamic-linkage binaries in a separate dir so they never get confused
+    # with the default static build for the same GPU.
+    return gpu if linkage == "static" else f"{gpu}-{linkage}"
+
+
+def get_cached_binary(name, gpu, linkage="static"):
+    path = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage), name)
     return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
 
 
-def build_binary(name, gpu, rebuild=False):
-    cached = get_cached_binary(name, gpu)
+def build_binary(name, gpu, rebuild=False, linkage="static"):
+    cached = get_cached_binary(name, gpu, linkage)
     if cached and not rebuild:
         print(f"  {name}: {cached} (cached)")
         return cached
@@ -332,7 +391,10 @@ def build_binary(name, gpu, rebuild=False):
         sys.exit(f"ERROR: Unsupported GPU for {name}: {gpu}")
 
     print(f"  Building {name}...")
-    extra = spec["b200_flags"] if gpu == "b200" else ""
+    extra = spec.get("arch_flags", {}).get(gpu, "")
+    # Only uniflow_bench honors the rdma_linkage toggle; ib_write_bw ignores it.
+    if name == "uniflow_bench" and linkage == "dynamic":
+        extra += " -c uniflow.rdma_linkage=dynamic"
     cmd = f"buck2 build @fbcode//mode/opt{extra} {spec['target']} --show-full-output"
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
@@ -347,7 +409,7 @@ def build_binary(name, gpu, rebuild=False):
     if not built or not os.path.isfile(built):
         sys.exit(f"ERROR: Build of {name} produced no output binary")
 
-    dest_dir = os.path.join(CACHE_DIR, gpu)
+    dest_dir = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage))
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, name)
     shutil.copy2(built, dest)
@@ -367,11 +429,10 @@ class UniflowBenchmark:
         self.rank1_host = rank1_host
         self.binary_path = f"{REMOTE_DIR}/{self.binary_name}"
 
-    def run(self, dry_run=False):
-        print("--- Running uniflow ---")
+    def _build_bench_flags(self):
+        """Assemble the uniflow_bench CLI flags from args (shared by both ranks)."""
         a = self.args
-
-        bench_flags = (
+        flags = (
             f"--benchmark rdma_bandwidth --transport rdma"
             f" --iterations {a.iterations} --warmup {a.warmup}"
             f" --min-size {a.min_size} --max-size {a.max_size}"
@@ -381,11 +442,28 @@ class UniflowBenchmark:
             f" --format csv --output {REMOTE_DIR}/results.csv"
         )
         if a.num_nics > 0:
-            bench_flags += f" --num-nics {a.num_nics}"
+            flags += f" --num-nics {a.num_nics}"
         if a.use_cuda:
-            bench_flags += " --cuda-device 0"
+            if a.cuda_devices:
+                flags += f" --cuda-devices {shlex.quote(a.cuda_devices)}"
+            else:
+                flags += " --cuda-device 0"
+        if a.gpu_nics:
+            # shlex.quote the value for the REMOTE shell (sush2 runs the command
+            # through a shell on the far side): --gpu-nics contains ';' group
+            # separators that would otherwise be treated as command terminators.
+            flags += f" --gpu-nics {shlex.quote(a.gpu_nics)}"
         if a.nics:
-            bench_flags += f" --rdma-devices {a.nics}"
+            flags += f" --rdma-devices {shlex.quote(a.nics)}"
+        if a.data_direct:
+            flags += " --data-direct"
+        return flags
+
+    def run(self, dry_run=False):
+        print("--- Running uniflow ---")
+        a = self.args
+
+        bench_flags = self._build_bench_flags()
 
         env = f"MASTER_ADDR={a.master_ip} MASTER_PORT={a.master_port} WORLD_SIZE=2"
         if _verbose:
@@ -417,6 +495,11 @@ class UniflowBenchmark:
         # Prepend rm to the rank0 command to clear stale results within
         # the same sush2 session (zero extra SSH calls).
         r0_cmd_full = f"rm -f {REMOTE_DIR}/results.csv; {r0_cmd}"
+        # rank 1 (RANK=1, the connecting side) launches first in the background;
+        # rank 0 (RANK=0, the rendezvous server) follows. The 30s SSH gate makes
+        # host0.run() below wait ~30s before starting rank 0, so rank 1 must
+        # tolerate a ~30s rendezvous wait -- uniflow's TcpController connect-retry
+        # window covers this today. Revisit if MIN_SSH_INTERVAL grows.
         p1 = self.rank1_host.run_bg(r1_cmd)
         time.sleep(1)
         self.host0.run(r0_cmd_full, capture=False)
@@ -567,8 +650,8 @@ class IbWriteBwBenchmark:
         total = len(self.sizes)
 
         common = f"--report_gbits --CPU-freq -n {a.iterations}"
-        srv_flags = f"-x {a.gid0} {common} -d {a.nic0}"
-        cli_flags = f"-x {a.gid1} {common} -d {a.nic1}"
+        srv_flags = f"-x {a.gid0} {common} -d {shlex.quote(a.nic0)}"
+        cli_flags = f"-x {a.gid1} {common} -d {shlex.quote(a.nic1)}"
         for flag in [a.ipv6_flag, cuda_flag]:
             if flag:
                 srv_flags += f" {flag}"
@@ -732,6 +815,10 @@ def _setup_hosts(args):
 
     hosts[args.host0] = h0
     has_bins_all = dict.fromkeys(info0["has_bins"], True)
+    # rdma-core linkage stamped on the remote uniflow_bench, so a linkage switch
+    # forces a re-copy (the HAS check can't tell a static build from a dynamic
+    # one). Empty when no binary/stamp is present or the hosts disagree.
+    remote_linkage = info0.get("LINKAGE", "")
 
     if args.host1 != args.host0:
         h1 = RemoteHost(args.host1)
@@ -742,6 +829,8 @@ def _setup_hosts(args):
         for name in ("uniflow_bench", "ib_write_bw"):
             if name not in info1["has_bins"]:
                 has_bins_all.pop(name, None)
+        if info1.get("LINKAGE", "") != remote_linkage:
+            remote_linkage = ""  # hosts disagree → re-copy to both
     else:
         args.gid1 = args.gid0
 
@@ -752,6 +841,7 @@ def _setup_hosts(args):
 
     args._hosts = hosts
     args._has_remote_bins = has_bins_all
+    args._remote_uniflow_linkage = remote_linkage
 
 
 def _copy_binaries(args, benchmarks):
@@ -764,6 +854,14 @@ def _copy_binaries(args, benchmarks):
         need = b.binary_name not in has
         if force in ("both", b.name):
             need = True
+        # uniflow_bench's build depends on --rdma-linkage, but the remote HAS
+        # check only tests executability and can't tell a static build from a
+        # dynamic one. Re-copy when the linkage stamped on the remote differs
+        # from the requested one, so we never silently run a stale build.
+        if b.name == "uniflow" and (
+            getattr(args, "_remote_uniflow_linkage", "") != args.rdma_linkage
+        ):
+            need = True
         if need:
             to_copy.append(b)
         else:
@@ -773,18 +871,19 @@ def _copy_binaries(args, benchmarks):
         return
 
     print("  Copying binaries to remote hosts...")
+    # copy_to (via _suscp) and verify_and_chmod each call _ssh_gate(), which
+    # already enforces the MIN_SSH_INTERVAL floor between SSH calls, so no extra
+    # inter-copy sleep is needed here.
     for host in hosts:
-        for i, b in enumerate(to_copy):
-            if i > 0:
-                _log(f"sleeping {SSH_THROTTLE_DELAY}s to avoid SSH throttling")
-                time.sleep(SSH_THROTTLE_DELAY)
+        for b in to_copy:
             host.copy_to(b.local_binary_path, b.binary_name)
-        _log(f"sleeping {SSH_THROTTLE_DELAY}s to avoid SSH throttling")
-        time.sleep(SSH_THROTTLE_DELAY)
-        host.verify_and_chmod([b.binary_name for b in to_copy])
+        host.verify_and_chmod(
+            [b.binary_name for b in to_copy], uniflow_linkage=args.rdma_linkage
+        )
 
 
 def _parse_args():
+    global _verbose, SSH_USER, MIN_SSH_INTERVAL
     parser = argparse.ArgumentParser(
         description="Compare uniflow RDMA bandwidth against ib_write_bw (perftest)",
     )
@@ -796,7 +895,7 @@ def _parse_args():
     parser.add_argument(
         "--gpu",
         default="",
-        help="GPU type: h100 or b200 (default: auto-detect)",
+        help="GPU type: h100 | b200 | b300 (default: auto-detect)",
     )
     parser.add_argument(
         "--nics",
@@ -879,6 +978,65 @@ def _parse_args():
         help="Which tool(s) to run (default: uniflow)",
     )
     parser.add_argument(
+        "--cuda-devices",
+        default="",
+        help=(
+            "Comma-separated GPU indices for single-process multi-GPU aggregate"
+            " (e.g. 0,1,2,3), overriding the default single --cuda-device 0."
+            " uniflow only; each rank drives all listed GPUs and BW is summed."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-nics",
+        default="",
+        help=(
+            "Per-GPU NIC map for --cuda-devices: ';'-separated groups of"
+            " comma-separated NICs, one group per GPU (e.g."
+            " 'mlx5_0,mlx5_1;mlx5_2,mlx5_3'). Omit to let the binary auto-select"
+            " NICs per GPU."
+        ),
+    )
+    parser.add_argument(
+        "--ssh-interval",
+        type=int,
+        default=MIN_SSH_INTERVAL,
+        help=(
+            "Minimum seconds between remote SSH calls (default and hard floor:"
+            f" {MIN_SSH_INTERVAL}). Values below the floor are clamped up to it to"
+            " avoid a permanent SSH blacklist."
+        ),
+    )
+    parser.add_argument(
+        "--ssh-user",
+        default="root",
+        help=(
+            "SSH login user for sush2/suscp (default: root, needs the"
+            " root_<host> machine ACL). Pass your unixname to authenticate with"
+            " your own login instead."
+        ),
+    )
+    parser.add_argument(
+        "--rdma-linkage",
+        default="static",
+        choices=["static", "dynamic"],
+        help=(
+            "uniflow rdma-core linkage. 'static' (default) links the pinned"
+            " fbsource third-party rdma-core. 'dynamic' builds with"
+            " -c uniflow.rdma_linkage=dynamic so the binary dlopens the HOST's"
+            " /usr/lib64 libibverbs/libmlx5 at runtime — use when the host ships"
+            " a newer mlx5 (e.g. GB300 Data Direct needing rdma-core > the pin)."
+        ),
+    )
+    parser.add_argument(
+        "--data-direct",
+        action="store_true",
+        help=(
+            "Enable mlx5 Data Direct (NIC<->GPU HBM over PCIe, bypassing Grace"
+            " C2C). Requires a DD-provisioned node and VRAM buffers; uniflow"
+            " only."
+        ),
+    )
+    parser.add_argument(
         "--rebuild",
         action="store_true",
         help="Force rebuild of binaries even if cached",
@@ -908,9 +1066,21 @@ def _parse_args():
     )
     args = parser.parse_args()
 
-    global _verbose
     _verbose = args.verbose
+    SSH_USER = args.ssh_user
+    if args.ssh_interval < MIN_SSH_INTERVAL:
+        print(
+            f"WARNING: --ssh-interval {args.ssh_interval}s is below the {MIN_SSH_INTERVAL}s"
+            f" safety floor; clamping to {MIN_SSH_INTERVAL}s to avoid an SSH blacklist."
+        )
+    else:
+        MIN_SSH_INTERVAL = args.ssh_interval
     args.use_cuda = not args.no_cuda
+
+    if args.data_direct and not args.use_cuda:
+        parser.error(
+            "--data-direct requires GPU buffers; do not combine with --no-cuda"
+        )
 
     if args.hosts:
         parts = [h.strip() for h in args.hosts.split(",") if h.strip()]
@@ -967,7 +1137,10 @@ def _create_benchmarks(args, sizes, host0, rank1_host):
     print()
     local_bins = {}
     for name in binary_names:
-        local_bins[name] = build_binary(name, args.gpu, rebuild=args.rebuild)
+        linkage = args.rdma_linkage if name == "uniflow_bench" else "static"
+        local_bins[name] = build_binary(
+            name, args.gpu, rebuild=args.rebuild, linkage=linkage
+        )
 
     benchmarks = []
     if args.tool in ("uniflow", "both"):

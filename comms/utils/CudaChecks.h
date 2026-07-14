@@ -24,19 +24,57 @@ namespace comms::utils::cuda {
  * available).
  */
 template <typename FuncPtr>
-inline FuncPtr loadDriverFunction(const char* funcName) {
+inline FuncPtr loadDriverFunction(const char* funcName, int version) {
   FuncPtr func = nullptr;
-#if CUDART_VERSION >= 12000
+#if CUDART_VERSION >= 13000
   cudaDriverEntryPointQueryResult driverStatus =
       cudaDriverEntryPointSymbolNotFound;
-  cudaGetDriverEntryPoint(
+  cudaError_t res = cudaGetDriverEntryPointByVersion(
+      funcName,
+      reinterpret_cast<void**>(&func),
+      version,
+      cudaEnableDefault,
+      &driverStatus);
+  if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) {
+    CLOGF(
+        WARN,
+        "Failed to load CUDA driver symbol {} version {} (cudaError={}, status={})",
+        funcName,
+        version,
+        static_cast<int>(res),
+        static_cast<int>(driverStatus));
+    return nullptr;
+  }
+#elif CUDART_VERSION >= 12000
+  cudaDriverEntryPointQueryResult driverStatus =
+      cudaDriverEntryPointSymbolNotFound;
+  cudaError_t res = cudaGetDriverEntryPoint(
       funcName,
       reinterpret_cast<void**>(&func),
       cudaEnableDefault,
       &driverStatus);
+  if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) {
+    CLOGF(
+        WARN,
+        "Failed to load CUDA driver symbol {} version {} (cudaError={}, status={})",
+        funcName,
+        version,
+        static_cast<int>(res),
+        static_cast<int>(driverStatus));
+    return nullptr;
+  }
 #elif CUDART_VERSION >= 11030
-  cudaGetDriverEntryPoint(
+  cudaError_t res = cudaGetDriverEntryPoint(
       funcName, reinterpret_cast<void**>(&func), cudaEnableDefault);
+  if (res != cudaSuccess) {
+    CLOGF(
+        WARN,
+        "Failed to load CUDA driver symbol {} version {} (cudaError={})",
+        funcName,
+        version,
+        static_cast<int>(res));
+    return nullptr;
+  }
 #endif
   return func;
 }
@@ -50,7 +88,7 @@ inline FuncPtr loadDriverFunction(const char* funcName) {
 inline const char* getCuErrorString(CUresult err) {
 #if CUDART_VERSION >= 11030
   static auto pfn_cuGetErrorString =
-      loadDriverFunction<PFN_cuGetErrorString_v6000>("cuGetErrorString");
+      loadDriverFunction<PFN_cuGetErrorString_v6000>("cuGetErrorString", 6000);
   if (pfn_cuGetErrorString != nullptr) {
     const char* errStr = nullptr;
     pfn_cuGetErrorString(err, &errStr);
@@ -75,7 +113,7 @@ inline CUresult cuMemGetAddressRangeDynamic(
 #if CUDART_VERSION >= 11030
   static auto pfn_cuMemGetAddressRange =
       loadDriverFunction<PFN_cuMemGetAddressRange_v3020>(
-          "cuMemGetAddressRange");
+          "cuMemGetAddressRange", 3020);
   if (pfn_cuMemGetAddressRange != nullptr) {
     return pfn_cuMemGetAddressRange(pbase, psize, dptr);
   }

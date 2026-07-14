@@ -1,9 +1,16 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
-#include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+
+// RDMA is the GPU transport on AMD as well as NVIDIA. NVLink is NVIDIA-only
+// (NVML-backed topology, fabric/FD IPC) and is compiled out on AMD/HIP.
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#ifndef __HIP_PLATFORM_AMD__
+#include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+#endif
 
 #include <cstring>
 
@@ -21,25 +28,64 @@ bool isCpu(int deviceId) {
 // MultiTransport Implementation
 // ============================================================================
 
+std::vector<std::string> MultiTransportFactory::selectCpuNics() {
+  auto& topo = sharedTopology();
+  auto nics = topo.selectCpuNics(options_.nicFilter, options_.netdevPrefix);
+  const auto candidateNicCount = nics.size();
+  if (options_.cpuNicSelectionPolicy == CpuNicSelectionPolicy::kAll) {
+    UNIFLOW_LOG_INFO(
+        "CPU RDMA NIC selection policy=all selected_nics={}",
+        candidateNicCount);
+    return nics;
+  }
+
+  auto localNics =
+      topo.selectCpuNicsForNumaNodes(options_.nicFilter, options_.maxCpuNics);
+  if (localNics.empty()) {
+    localNics = std::move(nics);
+    if (options_.maxCpuNics > 0 && localNics.size() > options_.maxCpuNics) {
+      localNics.resize(options_.maxCpuNics);
+    }
+  }
+
+  UNIFLOW_LOG_INFO(
+      "CPU RDMA NIC selection policy=numa_local_bounded selected_nics={} "
+      "candidate_nics={} numa_nodes={} max_cpu_nics_per_numa={}",
+      localNics.size(),
+      candidateNicCount,
+      topo.numaNodeCount(),
+      options_.maxCpuNics);
+  return localNics;
+}
+
 std::vector<std::string> MultiTransportFactory::selectNics() {
-  auto& topo = Topology::get();
-  return isCpu(deviceId_) ? topo.selectCpuNics(nicFilter_)
-                          : topo.selectGpuNics(deviceId_, nicFilter_);
+  auto& topo = sharedTopology();
+  if (isCpu(deviceId_)) {
+    return selectCpuNics();
+  }
+  return topo.selectGpuNics(
+      deviceId_, options_.nicFilter, options_.netdevPrefix);
 }
 
 Status MultiTransportFactory::supported(TransportType type) {
   switch (type) {
-    case TransportType::NVLink:
-      return NVLinkTransportFactory::supported();
     case TransportType::RDMA:
       return RdmaTransportFactory::supported();
+#ifndef __HIP_PLATFORM_AMD__
+    case TransportType::NVLink:
+      return NVLinkTransportFactory::supported();
+#else
+    case TransportType::NVLink:
+      return Err(ErrCode::NotImplemented, "nvlink is not supported on AMD");
+#endif
     case TransportType::TCP:
       return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
     case TransportType::Mock:
       return Ok();
-    default:
-      return Err(ErrCode::InvalidArgument, "unknown transport type");
+    case TransportType::NumTransportType:
+      break;
   }
+  return Err(ErrCode::InvalidArgument, "unknown transport type");
 }
 
 Status MultiTransport::validateRequests(
@@ -83,24 +129,30 @@ Transport* MultiTransport::findTransport(TransportType type) const {
   return nullptr;
 }
 
-MultiTransportFactory::MultiTransportFactory(int deviceId, NicFilter nicFilter)
+MultiTransportFactory::MultiTransportFactory(
+    int deviceId,
+    MultiTransportFactoryOptions options)
     : deviceId_(deviceId),
-      nicFilter_(std::move(nicFilter)),
+      options_(std::move(options)),
       eventBaseThread_(std::make_shared<ScopedEventBaseThread>()) {
-  auto& topo = Topology::get();
+  auto& topo = sharedTopology();
   CHECK_THROW_EXCEPTION(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
-  // cuda device
-  if (deviceId_ >= 0) {
+
+#ifndef __HIP_PLATFORM_AMD__
+  if (deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
   }
+#endif
 
   auto nics = selectNics();
   if (!nics.empty()) {
     RdmaTransportConfig config;
+    config.gidIndex = options_.gidIndex;
+    config.trafficClass = options_.trafficClass;
     config.numQps = static_cast<uint32_t>(nics.size());
     auto rdma = std::make_shared<RdmaTransportFactory>(
         std::move(nics), eventBaseThread_->getEventBase(), config);
@@ -120,7 +172,20 @@ Result<TransportInfo> MultiTransport::bind() {
   size_t totalSize = sizeof(uint8_t);
   totalSize += sizeof(uint32_t) * numTransport;
   for (auto& t : transports_) {
-    infoData.emplace_back(t->bind());
+    auto data = t->bind();
+    /*
+     * A successful bind always yields a non-empty serialized TransportInfo
+     * (header + QP/NIC info). An empty result means the underlying transport
+     * failed to acquire its resources (CQ/QP/MR) and set itself to Error.
+     * Surface that as a real error instead of packing an empty sub-info that
+     * the peer would fail to deserialize during connect().
+     */
+    if (data.empty()) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          "MultiTransport::bind: a transport failed to bind (empty info)");
+    }
+    infoData.emplace_back(std::move(data));
     totalSize += infoData.back().size();
   }
 

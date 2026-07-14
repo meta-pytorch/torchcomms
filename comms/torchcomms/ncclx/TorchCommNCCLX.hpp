@@ -25,14 +25,15 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
 #include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
 #endif
 
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 constexpr std::string_view kHintGarbageCollectIntervalMs =
     "garbage_collect_interval_ms";
@@ -64,8 +65,12 @@ constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 // Global call-once check for graph timeout monitoring (env var gated).
 // Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
 // Default: enabled. Set to "0" or "false" to disable (for benchmarking).
-// Also returns false when NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled, since
-// the colltrace watchdog plugin handles graph timeout detection instead.
+// Also returns false when the colltrace cudagraph watchdog will actually run —
+// i.e. NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled AND NCCL_COLLTRACE selects a
+// "trace"/"verbose" mode — since the colltrace watchdog plugin then handles
+// graph timeout detection instead. If cudagraph tracing is requested but
+// colltrace is not in trace/verbose mode (so no watchdog plugin is installed),
+// GraphEventTracker is kept active and a warning is logged.
 bool isGraphTimeoutMonitoringEnabled();
 
 // Test-only: reset the cached state so next call re-reads the env var.
@@ -255,6 +260,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
   void abort() override;
+  bool isAbortSupported() const override;
+  bool isAborted() const override;
 
   std::unordered_map<std::string, std::string> comm_dump();
   // Friend access for TorchCommNCCLX
@@ -297,7 +304,7 @@ class TorchCommNCCLX : public TorchCommBackend,
     return device_;
   }
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   // Get device-allocated transport handle for Triton/CUDA kernels.
   // Returns device pointer as int64 (same pointer on subsequent calls).
   // The handle is freed when TorchCommNCCLX is destroyed.
@@ -319,6 +326,12 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
+
+  // Set once the communicator has been revoked (the graceful abort path used in
+  // reconfigurable mode). Guards revokeNcclComm() so its teardown runs at most
+  // once per communicator generation, even when both the timeout watchdog and a
+  // synchronous collective observe the same failure. Reset on reconfigure.
+  std::atomic<bool> revoked_{false};
 
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
@@ -388,7 +401,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   };
   Configs configs_;
 
-  bool high_priority_stream_{false};
+  bool is_high_priority_stream_{false};
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -491,7 +504,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
 
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
       device_transport_handle_;
 #endif

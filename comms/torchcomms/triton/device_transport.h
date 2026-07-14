@@ -5,10 +5,10 @@
 // (P2pNvlTransportDevice or P2pIbgdaTransportDevice send/recv).
 // Compiled to LLVM bitcode with clang for linking with Triton kernels.
 //
-// Handle: void* device pointer to comms::pipes::MultiPeerDeviceHandle,
+// Handle: void* device pointer to comms::prims::MultiPeerDeviceHandle,
 // allocated by PipesDeviceBackend::create_device_transport().
 //
-// All operations use comms::pipes::make_block_group() internally —
+// All operations use comms::prims::make_block_group() internally —
 // all 128 Triton threads cooperate as one block group.
 // Send/recv are __noinline__ to prevent memcpy_vectorized alloca inlining.
 
@@ -19,20 +19,6 @@ extern "C" {
 #endif
 
 typedef void* TorchCommsTransportHandle;
-
-// --- Data Transfer (grid-collective, NVLink only) ---
-
-__device__ int torchcomms_transport_send_groups(
-    TorchCommsTransportHandle handle,
-    int peer,
-    void* src_ptr,
-    unsigned long long nbytes);
-
-__device__ int torchcomms_transport_recv_groups(
-    TorchCommsTransportHandle handle,
-    int peer,
-    void* dst_ptr,
-    unsigned long long nbytes);
 
 // --- Signaling ---
 
@@ -53,7 +39,6 @@ __device__ int torchcomms_transport_wait_signal(
     unsigned long long value);
 
 // --- Send/Recv (block-cooperative, pipelined transport) ---
-// active_blocks: number of groups calling concurrently (0 = tile_max_groups)
 // max_signal_bytes: hint for signaling granularity (0 = one signal per slot)
 
 __device__ int torchcomms_transport_send(
@@ -61,7 +46,6 @@ __device__ int torchcomms_transport_send(
     int peer,
     void* src_ptr,
     unsigned long long nbytes,
-    int active_blocks,
     unsigned long long max_signal_bytes);
 
 __device__ int torchcomms_transport_recv(
@@ -69,7 +53,6 @@ __device__ int torchcomms_transport_recv(
     int peer,
     void* dst_ptr,
     unsigned long long nbytes,
-    int active_blocks,
     unsigned long long max_signal_bytes);
 
 // --- Barrier ---

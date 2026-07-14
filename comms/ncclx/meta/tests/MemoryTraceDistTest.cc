@@ -212,6 +212,30 @@ class MemoryTraceTestFixture : public NcclxBaseTestFixture,
     }
   }
 
+  void verifyEventMemType(
+      const std::string& output,
+      const std::string& use,
+      const std::string& expectedMemType) {
+    bool found = false;
+    std::istringstream iss(output);
+    std::string line;
+    while (std::getline(iss, line)) {
+      folly::dynamic jsonLog = folly::parseJson(line);
+      if (jsonLog["normal"]["use"].asString().find(use) != std::string::npos) {
+        ASSERT_EQ(jsonLog["normal"].count("memType"), 1)
+            << "use " << use << " missing memType column on globalRank "
+            << this->globalRank;
+        EXPECT_EQ(jsonLog["normal"]["memType"].asString(), expectedMemType)
+            << "use " << use << " unexpected memType on globalRank "
+            << this->globalRank;
+        found = true;
+      }
+    }
+    EXPECT_TRUE(found) << "use " << use
+                       << " not found for memType check on globalRank "
+                       << this->globalRank;
+  }
+
  protected:
   void runNcclInternalBufferLogTest();
   void runUserBufferLoggingTest();
@@ -417,6 +441,7 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
     verifyEventsUse(
         output,
         {"eagerRegMem", "deregMem", "ncclCommRegister", "ncclCommDeregister"});
+    verifyEventMemType(output, "eagerRegMem", "cudaMalloc");
   } else {
     // Expect other ranks to have no events logged
     EXPECT_EQ(output, "");

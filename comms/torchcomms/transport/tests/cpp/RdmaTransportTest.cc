@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 
 #include <folly/futures/Future.h>
@@ -58,7 +59,8 @@ class RdmaTransportTest : public ::testing::Test {
   // Common thread function that handles both server and client logic for write
   void runRdmaTransportThreadWrite(
       bool isServer,
-      ThreadSyncObjects& syncObjects) {
+      ThreadSyncObjects& syncObjects,
+      std::optional<int> maxNumNic = std::nullopt) {
     const size_t bufferSize = 8192;
     const int cudaDev = isServer ? 0 : 1;
     // Set CUDA device
@@ -66,7 +68,10 @@ class RdmaTransportTest : public ::testing::Test {
 
     // Create RdmaTransport instance
     auto transport = std::make_unique<torch::comms::RdmaTransport>(
-        cudaDev, evbThread_->getEventBase());
+        cudaDev,
+        evbThread_->getEventBase(),
+        std::nullopt /* maxNumCqe */,
+        maxNumNic);
 
     // Bind and get URL
     std::string myUrl = transport->bind();
@@ -305,6 +310,53 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
   EXPECT_FALSE(memory.contains(buffer_, bufferSize_ + 1));
 }
 
+TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
+  auto regCache = ctran::RegCache::getInstance();
+  // Initialize the ctran/IB environment: a bare RdmaMemory ctor runs
+  // initEnvironment(). On this unregistered buffer it takes the dynamic-MISS
+  // path (reused == false) and deregisters on scope exit.
+  {
+    RdmaMemory warmup(buffer_, bufferSize_, cudaDev_);
+    EXPECT_FALSE(warmup.reusedRegistration());
+  }
+  // Pre-register (cache) the buffer; subsequent RdmaMemory instances HIT and
+  // reuse the same cached registration.
+  ASSERT_EQ(
+      regCache->globalRegister(
+          buffer_,
+          bufferSize_,
+          /*forceReg=*/false,
+          /*ncclManaged=*/false,
+          cudaDev_),
+      commSuccess);
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_TRUE(firstMemory.reusedRegistration());
+  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_TRUE(secondMemory.reusedRegistration());
+  EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
+  EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
+}
+
+TEST_F(RdmaMemoryTest, CacheMissDynamicRegistrationsAreNotReused) {
+  auto regCache = ctran::RegCache::getInstance();
+
+  // The buffer is never globalRegister'd, so it is not in the segment cache.
+  // Both RdmaMemory instances take the cache-MISS path, which creates an
+  // isolated dynamic registration that is neither cached nor reused. As a
+  // result, even two registrations over the SAME buffer each register
+  // independently and neither reports a reused registration.
+  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(firstMemory.reusedRegistration());
+
+  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+  EXPECT_FALSE(secondMemory.reusedRegistration());
+
+  // The dynamic registrations never pollute the shared segment cache.
+  EXPECT_EQ(
+      regCache->searchIbRegHandle(buffer_, bufferSize_, cudaDev_), nullptr);
+}
+
 TEST_F(RdmaMemoryTest, ViewCreation) {
   RdmaMemory memory(buffer_, bufferSize_, cudaDev_);
 
@@ -445,35 +497,6 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
 }
 
-TEST_F(RdmaMemoryTest, CacheRegConstruction) {
-  // Without globalRegister, RdmaMemory should throw because the buffer
-  // is not cached and searchIbRegHandle returns nullptr
-  EXPECT_THROW(
-      RdmaMemory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */),
-      std::runtime_error);
-
-  // After globalRegister, RdmaMemory should succeed
-  auto regCache = ctran::RegCache::getInstance();
-  EXPECT_EQ(
-      regCache->globalRegister(
-          buffer_,
-          bufferSize_,
-          false /* forceReg */,
-          false /* ncclManaged */,
-          cudaDev_),
-      commSuccess);
-  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
-  EXPECT_EQ(memory.getDevice(), cudaDev_);
-  EXPECT_NE(memory.localKey(), nullptr);
-  EXPECT_FALSE(memory.remoteKey().empty());
-  EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
-  // Views should work the same as non-cached
-  auto view = memory.createView();
-  EXPECT_EQ(view.data(), buffer_);
-  EXPECT_EQ(view.size(), bufferSize_);
-  EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
-}
-
 TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
   // Promise/future pairs for exchanging URLs between threads
   auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
@@ -507,6 +530,52 @@ TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
       [&]() { runRdmaTransportThreadWrite(false, clientSyncObjects); });
 
   // Wait for both threads to complete
+  serverThread.join();
+  clientThread.join();
+
+  // Verify the communication was successful
+  bool success = std::move(communicationFuture).get();
+  EXPECT_TRUE(success);
+}
+
+// Same bind -> connect -> write round-trip as above, but caps each transport to
+// a single NIC (maxNumNic=1). This mirrors the shard_service default
+// (kDefaultMaxNumNic=1) and guards the transfer path when maxNumNic <
+// NCCL_CTRAN_IB_DEVICES_PER_RANK.
+TEST_F(RdmaTransportTest, ServerClientDataTransferWriteMaxNumNic) {
+  // Promise/future pairs for exchanging URLs between threads
+  auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
+  auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
+  auto [memoryInfoPromise, memoryInfoFuture] =
+      folly::makePromiseContract<RdmaRemoteBuffer>();
+  auto [communicationResult, communicationFuture] =
+      folly::makePromiseContract<bool>();
+
+  // Setup synchronization objects for server (CUDA device 0)
+  ThreadSyncObjects serverSyncObjects{
+      std::move(urlPromise0),
+      std::move(urlFuture1),
+      folly::Promise<RdmaRemoteBuffer>(), // server doesn't export memory
+      std::move(memoryInfoFuture),
+      std::move(communicationResult)};
+
+  // Setup synchronization objects for client (CUDA device 1)
+  ThreadSyncObjects clientSyncObjects{
+      std::move(urlPromise1),
+      std::move(urlFuture0),
+      std::move(memoryInfoPromise),
+      folly::SemiFuture<RdmaRemoteBuffer>::makeEmpty(), // client doesn't import
+                                                        // memory
+      folly::Promise<bool>()}; // client doesn't set communication result
+
+  constexpr int kMaxNumNic = 1;
+  std::thread serverThread([&]() {
+    runRdmaTransportThreadWrite(true, serverSyncObjects, kMaxNumNic);
+  });
+  std::thread clientThread([&]() {
+    runRdmaTransportThreadWrite(false, clientSyncObjects, kMaxNumNic);
+  });
+
   serverThread.join();
   clientThread.join();
 

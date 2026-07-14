@@ -4,10 +4,13 @@
 
 #include <cuda_runtime.h>
 
+#include <folly/container/F14Set.h>
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
@@ -19,26 +22,32 @@
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
 
-#if defined(ENABLE_PIPES)
-#include "comms/pipes/MultiPeerDeviceHandle.cuh"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/PipesTrace.h"
-#endif // defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/trace/PipesTrace.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#endif // defined(ENABLE_PRIMS)
 
 Ctran::Ctran(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter)
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter)
     : comm_(comm) {
   ctran::logging::initCtranLogging();
 
-  mapper = std::make_unique<CtranMapper>(comm_);
-  gpe = std::make_unique<CtranGpe>(comm->statex_->cudaDev(), comm_);
-
-  algo = std::make_unique<CtranAlgo>(comm, this);
-
+  // Profiler is constructed first so it can be passed into the mapper
+  // (and through to CtranTcpDm) -- CtranTcpDm registers its profiler
+  // hooks during construction, removing the need for a separate
+  // post-construction registerProfilerHooks() round-trip via the mapper.
   if (comm->config_.enableProfiler) {
     profiler = std::make_unique<ctran::Profiler>(comm, std::move(reporter));
   }
+
+  mapper = std::make_unique<CtranMapper>(comm_, profiler.get());
+  gpe = std::make_unique<CtranGpe>(
+      comm->statex_->cudaDev(), comm_, std::move(gpeReporter));
+
+  algo = std::make_unique<CtranAlgo>(comm, this);
 }
 
 Ctran::~Ctran() {
@@ -102,18 +111,18 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
-#if defined(ENABLE_PIPES)
-comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+#if defined(ENABLE_PRIMS)
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   if (!multiPeerTransport_) {
     return nullptr;
   }
   return multiPeerTransport_->get_device_handle().transports.data();
 }
 #else
-comms::pipes::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   return nullptr;
 }
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
 
 std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
     const {
@@ -132,13 +141,33 @@ void CtranComm::recordAlgoStats(
   }
 }
 
+void CtranComm::registerPersistentCleanup(
+    std::shared_ptr<PersistentCleanup> cleanup) {
+  persistentCleanups_.wlock()->insert(std::move(cleanup));
+}
+
+void CtranComm::unregisterPersistentCleanup(
+    const std::shared_ptr<PersistentCleanup>& cleanup) {
+  persistentCleanups_.wlock()->erase(cleanup);
+}
+
+void CtranComm::drainPersistentCleanups() {
+  folly::F14FastSet<std::shared_ptr<PersistentCleanup>> local;
+  persistentCleanups_.withWLock([&local](auto& set) { local.swap(set); });
+  for (const auto& cleanup : local) {
+    cleanup->run();
+  }
+}
+
 commResult_t ctranInit(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter) {
+    std::unique_ptr<ctran::IProfilerReporter> reporter,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter) {
   NcclScubaEvent initEvent(&comm->logMetaData_);
   initEvent.lapAndRecord("CtranInit START");
   try {
-    comm->ctran_ = std::make_shared<Ctran>(comm, std::move(reporter));
+    comm->ctran_ = std::make_shared<Ctran>(
+        comm, std::move(reporter), std::move(gpeReporter));
   } catch (std::exception& e) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
@@ -189,7 +218,7 @@ void CtranComm::destroy() {
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
   pipesTrace_.reset();
   if (hierarchicalAgReadyCounters_ != nullptr) {
     cudaFree(hierarchicalAgReadyCounters_);
@@ -200,7 +229,12 @@ void CtranComm::destroy() {
   // buffers used as external data buffers) and before bootstrap_ (since
   // multiPeerTransport_ holds a non-owning reference to it).
   multiPeerTransport_.reset();
-#endif // defined(ENABLE_PIPES)
+#endif // defined(ENABLE_PRIMS)
+  // Release every outstanding persistent request's pooled pipeSync + scoped
+  // registration before ctran_.reset() (which triggers CtranGpe::terminate()'s
+  // pool-drain spin-wait). Runs each cleanup token at most once; tokens already
+  // run by an eager free / graph-destroy callback no-op here.
+  drainPersistentCleanups();
   ctran_.reset();
   bootstrap_.reset();
   colltraceNew_.reset();

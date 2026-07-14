@@ -13,6 +13,7 @@
 #include "rccl_metadata.h"
 #include "msccl/msccl_struct.h"
 #include "network/unpack/unpack.h"
+#include "device.h"
 #include <cassert>
 
 enum primsMode {
@@ -68,7 +69,11 @@ class Primitives<
   uint64_t* barriers_pat;
   uint64_t barrier_next_pat = 0;
   int repeat;
-  bool skip_fence = 0;
+#if defined(__GFX9__)
+  uint8_t gfx9CheapFenceMode = ncclGfx9PostPeerFenceThread;
+#else
+  uint8_t gfx9CheapFenceMode = ncclGfx9PostPeerFenceSystem;
+#endif
 
 #if defined(ENABLE_NPKIT)
 public:
@@ -83,12 +88,16 @@ private:
   inline __device__ void barrier() {
     if (nthreads == WARP_SIZE)
       __syncwarp();
-    else
-      #if defined(__gfx942__) || defined(__gfx950__)
+    else {
+      unsigned const m = (unsigned)ncclShmem.comm.gfx9BarrierMode;
+      if (m == (unsigned)ncclGfx9BarrierFenceBlock) {
         barrier_generic(__threadfence_block(), nworkers, barrier_next, barriers);
-      #else
+      } else if (m == (unsigned)ncclGfx9BarrierFenceThread) {
         barrier_generic(__threadfence(), nworkers, barrier_next, barriers);
-      #endif
+      } else {
+        barrier_generic(__threadfence_system(), nworkers, barrier_next, barriers);
+      }
+    }
   }
   inline __device__ void subBarrier() {
     if (nworkers == WARP_SIZE) __syncwarp();
@@ -122,7 +131,11 @@ private:
     #endif
     // volatile is faster than acquire but not as correct. Make sure reduceCopy
     // loads data using volatile so it doesn't see stale data in L1.
-#if defined(__gfx1200__) || defined(__gfx1201__)
+#if defined(__gfx950__)
+    // NET no-GDR can publish host-staged payloads from the CPU proxy.
+    // Acquire the tail before GPU workers consume the payload.
+    return ld_acquire_sys_global(ptr);
+#elif defined(__gfx1200__) || defined(__gfx1201__)
     return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
 #else
     return __atomic_load_n(ptr, __ATOMIC_RELAXED);
@@ -214,17 +227,16 @@ private:
 
   template<int Recv, int Send>
   inline __device__ void postPeer(bool dataStored) {
-    if (skip_fence){
+    if (gfx9CheapFenceMode == ncclGfx9PostPeerFenceCheap) {
       __atomic_signal_fence(__ATOMIC_SEQ_CST);
       barrier_generic(asm volatile("s_waitcnt lgkmcnt(0) vmcnt(0)"), nworkers, barrier_next, barriers);
       __atomic_signal_fence(__ATOMIC_SEQ_CST);
-    }
-    else if((flags & RolePostSend) && dataStored){
-#ifdef __GFX9__
-    __threadfence();
-#else
-    __threadfence_system();
-#endif
+    } else if ((flags & RolePostSend) && dataStored) {
+      if (gfx9CheapFenceMode == ncclGfx9PostPeerFenceThread) {
+        __threadfence();
+      } else {
+        __threadfence_system();
+      }
     }
 
     if ((flags & Send*RolePostSend) && next_hdp_reg)
@@ -902,8 +914,10 @@ public:
       }
       patBarrier();
     }
-    if(collWork){
-      skip_fence = !collWork -> gfx9CheapFenceOff;
+    if (collWork) {
+      gfx9CheapFenceMode = (uint8_t)collWork->gfx9CheapFenceMode;
+    } else if (p2pWork) {
+      gfx9CheapFenceMode = (uint8_t)p2pWork->gfx9CheapFenceMode;
     }
   }
 

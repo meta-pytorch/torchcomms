@@ -89,7 +89,8 @@ def extract_rcclx_from_commit(
     Only extracts the essential AMD drop bits:
     - BUCK
     - defs.bzl
-    - develop/
+    - develop/ (includes the device-compile driver + asm_extract tools)
+    - device_linker.bzl
     - rccl_build_config.bzl
     - utils.bzl
 
@@ -105,7 +106,9 @@ def extract_rcclx_from_commit(
         archive_path = Path(tmpdir) / "rcclx.tar"
 
         # Use sl archive to extract only the core rcclx files from specific commit
-        # Only include: BUCK, defs.bzl, develop/, rccl_build_config.bzl, utils.bzl
+        # Only include: BUCK, defs.bzl, develop/ (with the parallel device-linker
+        # driver under develop/projects/rccl/tools), device_linker.bzl,
+        # rccl_build_config.bzl, utils.bzl
         cmd = [
             "sl",
             "archive",
@@ -117,6 +120,8 @@ def extract_rcclx_from_commit(
             "fbcode/comms/rcclx/defs.bzl",
             "--include",
             "fbcode/comms/rcclx/develop/**",
+            "--include",
+            "fbcode/comms/rcclx/device_linker.bzl",
             "--include",
             "fbcode/comms/rcclx/rccl_build_config.bzl",
             "--include",
@@ -277,6 +282,25 @@ def _fix_load_paths(file_path: Path, snapshot_pkg: str) -> None:
         (
             '"//comms/rcclx:utils.bzl"',
             f'"{snapshot_pkg}:utils.bzl"',
+        ),
+        # @fbcode//comms/rcclx:device_linker.bzl -> snapshot:device_linker.bzl
+        (
+            '"@fbcode//comms/rcclx:device_linker.bzl"',
+            f'"{snapshot_pkg}:device_linker.bzl"',
+        ),
+        # //comms/rcclx:device_linker.bzl -> snapshot:device_linker.bzl
+        (
+            '"//comms/rcclx:device_linker.bzl"',
+            f'"{snapshot_pkg}:device_linker.bzl"',
+        ),
+        # rccl-device-compile driver target -> snapshot package
+        (
+            '"fbcode//comms/rcclx/develop/projects/rccl/tools:rccl-device-compile"',
+            f'"{snapshot_pkg}/develop/projects/rccl/tools:rccl-device-compile"',
+        ),
+        (
+            '"//comms/rcclx/develop/projects/rccl/tools:rccl-device-compile"',
+            f'"{snapshot_pkg}/develop/projects/rccl/tools:rccl-device-compile"',
         ),
     ]
 

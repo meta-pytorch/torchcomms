@@ -3,6 +3,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import unittest
+from datetime import timedelta
+from typing import cast
 
 import torch
 import torchcomms
@@ -25,6 +27,7 @@ class DummyPyBackend(TorchCommBackend):
         self._name = ""
         self._device = torch.device("cpu")
         self._initialized = False
+        self._timeout = None
 
     def init(self, device, name, options) -> None:
         self._device = device
@@ -105,6 +108,9 @@ class DummyPyBackend(TorchCommBackend):
         backend._initialized = True
         return backend
 
+    def set_timeout(self, timeout) -> None:
+        self._timeout = timeout
+
 
 class AllReduceSumBackend(DummyPyBackend):
     def all_reduce(self, tensor, op, async_op):
@@ -131,6 +137,18 @@ class TestPythonBackend(unittest.TestCase):
         self.assertEqual(comm.get_rank(), 0)
         self.assertEqual(comm.get_size(), 1)
         self.assertEqual(comm.get_backend(), "dummy_py")
+        comm.finalize()
+
+    def test_set_timeout(self) -> None:
+        comm = torchcomms.new_comm(
+            "dummy_py", torch.device("cpu"), name="test_set_timeout"
+        )
+        comm.set_timeout(timedelta(milliseconds=1234))
+
+        backend = comm.get_backend_impl()
+        self.assertIsInstance(backend, DummyPyBackend)
+        dummy_backend = cast(DummyPyBackend, backend)
+        self.assertEqual(dummy_backend._timeout, timedelta(milliseconds=1234))
         comm.finalize()
 
     def test_all_reduce_sync(self) -> None:

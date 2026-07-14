@@ -28,7 +28,8 @@
 namespace torch::comms {
 
 // Hint key names for RCCLX backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintIsHighPriorityStream =
+    "is_high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
@@ -89,6 +90,15 @@ class TorchCommRCCLX : public TorchCommBackend,
   void finalize() override;
   int getRank() const override;
   int getSize() const override;
+
+  // Fault Tolerance API
+  bool supportsReconfigure() const override {
+    return true;
+  }
+  InitHandle getInitHandle() const override;
+  c10::intrusive_ptr<TorchWork> reconfigure(
+      const ReconfigureOptions& opts) override;
+  void abort() override;
 
   // Point-to-Point Operations
   c10::intrusive_ptr<TorchWork> send(
@@ -256,6 +266,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclxComm();
+  void revokeRcclxComm();
 
   enum class CommState {
     NORMAL,
@@ -391,6 +402,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   void attachMemoryHook();
   void detachMemoryHook();
+  void initRcclxResources();
 
   // Member variables
   ncclComm_t nccl_comm_{};
@@ -411,6 +423,9 @@ class TorchCommRCCLX : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  // Store held for reconfigure bootstrap (kept alive across reconfigure calls)
+  c10::intrusive_ptr<c10d::Store> reconfigure_store_;
 
   // RCCLX API abstraction
   std::shared_ptr<RcclxApi> rcclx_api_;
@@ -435,8 +450,12 @@ class TorchCommRCCLX : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  bool high_priority_stream_{false};
+  bool is_high_priority_stream_{false};
   std::string name_;
+  // UUID of the current communicator quorum, set at end of reconfigure().
+  // Embedded in getInitHandle() so findQuorum() can identify which ranks
+  // shared the same previous communicator.
+  int64_t uuid_{-1};
 };
 
 } // namespace torch::comms

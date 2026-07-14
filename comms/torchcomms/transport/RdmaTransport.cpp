@@ -2,6 +2,13 @@
 
 #include "RdmaTransport.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+#include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
@@ -12,6 +19,7 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/commSpecs.h"
 
 namespace {
 
@@ -29,40 +37,101 @@ void initEnvironment() {
   });
 }
 
+// Gates verbose RDMA registration logs via env var
+// TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG. Disabled when unset/empty or set to a
+// falsy value (case-insensitive: "0", "false", "off", "no"); any other value
+// enables it.
+bool rdmaRegVerboseLogEnabled() {
+  static const bool enabled = [] {
+    const char* env = std::getenv("TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG");
+    if (env == nullptr || env[0] == '\0') {
+      return false;
+    }
+    std::string value(env);
+    std::transform(
+        value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
+    return value != "0" && value != "false" && value != "off" && value != "no";
+  }();
+  return enabled;
+}
+
 } // namespace
+
+// Logs a verbose RDMA registration message (prefixed with [RDMA]) only when
+// TORCHCOMMS_RDMA_ENABLE_REG_VERBOSE_LOG is enabled. fmtStr must be a string
+// literal; trailing args are the fmt arguments.
+#define REG_VERBOSE_LOG(fmtStr, ...)                            \
+  do {                                                          \
+    if (rdmaRegVerboseLogEnabled()) {                           \
+      XLOGF(INFO, "[RDMA] " fmtStr __VA_OPT__(, ) __VA_ARGS__); \
+    }                                                           \
+  } while (0)
+
+extern "C" int RdmaRegTensor(void* addr, size_t len) {
+  initEnvironment();
+  const auto regCache = ctran::RegCache::getInstance();
+  REG_VERBOSE_LOG(
+      "RdmaRegTensor regcache={} addr={} len={}",
+      fmt::ptr(regCache.get()),
+      addr,
+      len);
+  return static_cast<int>(regCache->globalRegister(
+      addr, len, /*forceReg=*/false, /*ncclManaged=*/false, /*deviceId=*/-1));
+}
+
+extern "C" int RdmaDeregTensor(void* addr, size_t len) {
+  initEnvironment();
+  const auto regCache = ctran::RegCache::getInstance();
+  REG_VERBOSE_LOG(
+      "RdmaDeregTensor regcache={} addr={} len={}",
+      fmt::ptr(regCache.get()),
+      addr,
+      len);
+  return static_cast<int>(regCache->globalDeregister(
+      addr, len, /*skipRemRelease=*/false, /*deviceId=*/-1));
+}
 
 namespace torch::comms {
 
-RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
-    : buf_(buf), len_(len), cudaDev_(cudaDev), cacheReg_(cacheReg) {
+RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
+    : buf_(buf), len_(len), cudaDev_(cudaDev) {
   initEnvironment();
   // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
   // scope
   regCache_ = ctran::RegCache::getInstance();
 
-  // Try to find an existing registration first.
   regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
-
   if (regHdl_ != nullptr) {
-    // Buffer is already registered. If caller didn't expect that, upgrade to
-    // cache-managed so the destructor won't deregister a handle it doesn't own.
+    // Cache HIT: reuse the existing cached registration. This RdmaMemory does
+    // not own it (no dynamic handle), so the dtor will not deregister it.
     cacheReg_ = true;
-  } else if (cacheReg_) {
-    // Caller asserted the buffer is pre-registered, but it wasn't found.
-    throw std::runtime_error(
-        "Failed to fetch the IB handle from regCache. The buffer may not be registered");
   } else {
-    // Not registered yet; do it now.
-    FB_COMMCHECKTHROW(regCache_->globalRegister(
-        buf_, len_, true /* forceReg */, false /* ncclManaged */, cudaDev_));
-    regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
-    if (regHdl_ == nullptr) {
-      FB_COMMCHECKIGNORE(regCache_->globalDeregister(
-          buf_, len_, false /* skipRemRelease */, cudaDev_));
-      throw std::runtime_error("Failed to fetch the IB handle from regCache.");
-    }
+    // Cache MISS: register dynamically with an IB-only backend set — an
+    // isolated registration that is NOT cached and NOT reused (searchRegElem
+    // skips dynamic RegElems), so a transient per-buffer registration never
+    // pollutes the shared segment cache or force-frees a segment another
+    // buffer still needs. This RdmaMemory owns it (deregistered in the dtor).
+    std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+    backends[CommBackend::IB] = true;
+    ctran::regcache::RegElem* dynHdl = nullptr;
+    FB_COMMCHECKTHROW(
+        regCache_->regDynamic(buf_, len_, cudaDev_, backends, &dynHdl));
+    dynRegHdl_ = dynHdl;
+    regHdl_ = dynHdl->ibRegElem;
   }
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
+  REG_VERBOSE_LOG(
+      "RdmaMemory regcache={} buf={} len={} cudaDev={} cacheReg_={} regHdl={} dynRegHdl={} remoteKey={}",
+      fmt::ptr(regCache_.get()),
+      buf_,
+      len_,
+      cudaDev_,
+      cacheReg_,
+      fmt::ptr(regHdl_),
+      fmt::ptr(dynRegHdl_),
+      remoteKey_);
 }
 
 RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
@@ -70,6 +139,7 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
       len_(other.len_),
       cudaDev_(other.cudaDev_),
       regHdl_(other.regHdl_),
+      dynRegHdl_(other.dynRegHdl_),
       remoteKey_(std::move(other.remoteKey_)),
       cacheReg_(other.cacheReg_),
       regCache_(std::move(other.regCache_)) {
@@ -79,18 +149,18 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
   other.len_ = 0;
   other.cudaDev_ = -1;
   other.regHdl_ = nullptr;
+  other.dynRegHdl_ = nullptr;
   other.cacheReg_ = false;
   // Note: remoteKey_ is already moved, leaving other.remoteKey_ empty
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
-  if (cacheReg_) {
-    // cacheReg path only queried the handle; caller owns registration lifetime
-    return;
-  }
-  if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKIGNORE(regCache_->globalDeregister(
-        buf_, len_, false /* skipRemRelease */, cudaDev_));
+  // Ownership is keyed on dynRegHdl_: the HIT path has dynRegHdl_ == nullptr,
+  // so this is a no-op there and only the owned dynamic registration is freed.
+  if (dynRegHdl_ != nullptr) {
+    FB_COMMCHECKIGNORE(regCache_->deregDynamic(
+        static_cast<ctran::regcache::RegElem*>(dynRegHdl_)));
+    dynRegHdl_ = nullptr;
     regHdl_ = nullptr;
   }
 }
@@ -117,7 +187,8 @@ struct RdmaTransport::Work {
 RdmaTransport::RdmaTransport(
     int cudaDev,
     folly::EventBase* evb,
-    std::optional<int> maxNumCqe)
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
   // Create IB Instance
@@ -131,7 +202,8 @@ RdmaTransport::RdmaTransport(
       std::nullopt /* qpServerAddr */,
       ::ctran::utils::createAbort(/*enabled=*/false),
       nullptr /* socketFactory */,
-      maxNumCqe);
+      maxNumCqe,
+      maxNumNic);
 
   if (evb_) {
     // Optionally create progress timeout; skip it if the transport is never
@@ -215,6 +287,10 @@ bool RdmaTransport::connected() const {
 
 int RdmaTransport::getMaxCqe() const {
   return ib_->getMaxCqe();
+}
+
+int RdmaTransport::getNumNics() const {
+  return ib_->getNumNics();
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -12,6 +13,7 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -155,7 +157,89 @@ TEST_F(CtranTcpTest, SendRecv) {
         ctranTcpDm->isend(recvRank, memHandle, &send, sizeof(send), req));
     COMMCHECK_TEST(waitTcpReq(req, ctranTcpDm));
   }
-  COMMCHECK_TEST(CtranTcpDm::deregMem(memHandle));
+  // Ranks outside the sender/receiver pair never registered memory.
+  if (memHandle != nullptr) {
+    COMMCHECK_TEST(CtranTcpDm::deregMem(memHandle));
+  }
+}
+
+TEST_F(CtranTcpTest, SyncCtrlMsg) {
+  this->printTestDesc(
+      "SyncCtrlMsg",
+      "Expect CtranTcpDm to deliver a SYNC control message over a "
+      "lazily-established ctrl socket.");
+
+  if (this->numRanks < 2) {
+    GTEST_SKIP() << "Test requires at least 2 ranks. Skip test.";
+  }
+
+  ControlMsg msg{};
+  msg.setType(ControlMsgType::SYNC);
+  CtranTcpDmRequest req{};
+
+  if (this->globalRank == sendRank) {
+    // Sender lazily connects the ctrl socket and pushes the sync byte; the
+    // send request completes synchronously.
+    COMMCHECK_TEST(ctranTcpDm->isendCtrlMsg(msg, recvRank, req));
+    EXPECT_TRUE(req.isComplete());
+  } else if (this->globalRank == recvRank) {
+    // Receiver queues the sync recv and drains it via progress().
+    COMMCHECK_TEST(ctranTcpDm->irecvCtrlMsg(msg, sendRank, req));
+    COMMCHECK_TEST(waitTcpReq(req, ctranTcpDm));
+  }
+}
+
+TEST_F(CtranTcpTest, SyncCtrlMsgBackPressure) {
+  this->printTestDesc(
+      "SyncCtrlMsgBackPressure",
+      "Expect CtranTcpDm to deliver multiple SYNC control messages in FIFO "
+      "order over a single ctrl socket.");
+
+  if (this->numRanks < 2) {
+    GTEST_SKIP() << "Test requires at least 2 ranks. Skip test.";
+  }
+
+  constexpr int kNumSyncs = 8;
+  ControlMsg msg{};
+  msg.setType(ControlMsgType::SYNC);
+
+  if (this->globalRank == sendRank) {
+    for (int i = 0; i < kNumSyncs; i++) {
+      CtranTcpDmRequest req{};
+      COMMCHECK_TEST(ctranTcpDm->isendCtrlMsg(msg, recvRank, req));
+      EXPECT_TRUE(req.isComplete());
+    }
+  } else if (this->globalRank == recvRank) {
+    // Post all sync recvs up-front so they are completed from the pending
+    // queue in FIFO order as bytes arrive.
+    std::vector<CtranTcpDmRequest> reqs(kNumSyncs);
+    for (auto& req : reqs) {
+      COMMCHECK_TEST(ctranTcpDm->irecvCtrlMsg(msg, sendRank, req));
+    }
+    for (auto& req : reqs) {
+      COMMCHECK_TEST(waitTcpReq(req, ctranTcpDm));
+    }
+  }
+}
+
+TEST_F(CtranTcpTest, NonSyncCtrlMsgIsNoop) {
+  this->printTestDesc(
+      "NonSyncCtrlMsgIsNoop",
+      "Expect non-SYNC control messages to complete immediately without "
+      "establishing a ctrl socket.");
+
+  // Non-SYNC ctrl messages are a local no-op on the TCPDM backend, so every
+  // rank can exercise this independently without peer interaction.
+  ControlMsg msg{};
+  msg.setType(ControlMsgType::UNSPECIFIED);
+
+  CtranTcpDmRequest sendReq{};
+  COMMCHECK_TEST(ctranTcpDm->isendCtrlMsg(msg, recvRank, sendReq));
+  EXPECT_TRUE(sendReq.isComplete());
+
+  CtranTcpDmRequest recvReq{};
+  COMMCHECK_TEST(ctranTcpDm->irecvCtrlMsg(msg, sendRank, recvReq));
+  EXPECT_TRUE(recvReq.isComplete());
 }
 
 TEST_F(CtranTcpTest, getIfNames) {

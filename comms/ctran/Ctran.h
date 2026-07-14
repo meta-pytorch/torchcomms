@@ -25,7 +25,8 @@ class Ctran : public ICtran {
  public:
   Ctran(
       CtranComm* comm,
-      std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr);
+      std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr,
+      std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter = nullptr);
   ~Ctran();
 
   bool isInitialized() const override;
@@ -254,23 +255,6 @@ commResult_t allGatherPExec(
 commResult_t allGatherPDestroy(CtranPersistentRequest* request);
 bool allGatherPSupport(CtranComm* comm);
 
-/* Window-based allgather using the same CE+IB algorithm as allGatherP.
- * Buffer metadata is sourced from CtranWin (post-exchange) instead of
- * PersistArgs. The window must have been allocated and exchanged before init.
- */
-commResult_t allGatherWinInit(
-    CtranWin* win,
-    CtranComm* comm,
-    cudaStream_t stream,
-    CtranPersistentRequest*& request);
-
-commResult_t allGatherWinExec(
-    const void* sendbuff,
-    const size_t count,
-    commDataType_t datatype,
-    CtranPersistentRequest* request);
-
-commResult_t allGatherWinDestroy(CtranPersistentRequest* request);
 bool AllToAllPSupport(CtranComm* comm);
 
 commResult_t AllToAllPInit(

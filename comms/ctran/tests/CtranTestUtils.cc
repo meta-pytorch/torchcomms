@@ -23,7 +23,9 @@
 
 namespace ctran {
 
-std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(
+    int devId,
+    bool abortEnabled) {
   CUDACHECK_TEST(cudaSetDevice(devId));
 
   CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
@@ -33,7 +35,8 @@ std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
   std::string commDesc = fmt::format("DummyCtranTestComm-{}", 0);
 
-  auto result = createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc);
+  auto result =
+      createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc, abortEnabled);
 
   // Create a TestCtranCommRAII that also holds the bootstrap
   auto raii = std::make_unique<TestCtranCommRAII>(std::move(result.ctranComm));
@@ -182,17 +185,17 @@ commResult_t commMemFreeDisjoint(
   CUdevice ptrDev = 0;
 
   if (ptr == NULL) {
-    cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commInvalidArgument);
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
-    cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
   if (!ctran::utils::getCuMemSysSupported()) {
-    cudaSetDevice(saveDevice);
+    FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
     return ErrorStackTraceUtil::log(commSystemError);
   }
 
@@ -232,7 +235,7 @@ commResult_t commMemFreeDisjoint(
     curPtr = ctran::utils::addDevicePtr(curPtr, alignedSizes[i]);
   }
   FB_CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, vaSize));
-  cudaSetDevice(saveDevice);
+  FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
   return ret;
 }
 
@@ -427,7 +430,7 @@ void commMemFree(
       break;
     }
     case kMemHostManaged:
-      cudaFreeHost(buf);
+      CUDACHECK_TEST(cudaFreeHost(buf));
       break;
     case kMemCuMemAlloc: {
       std::vector<size_t> segSize(1, bufSize);
@@ -778,7 +781,7 @@ void CtranTestHelpers::releaseDevArgs() {
 }
 
 void CtranTestHelpers::releaseDevArg(void* ptr) {
-  cudaFree(ptr);
+  CUDACHECK_TEST(cudaFree(ptr));
   devArgs_.erase(ptr);
 }
 

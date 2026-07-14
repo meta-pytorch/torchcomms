@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "comms/uniflow/Segment.h"
+#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/transport/TransportType.h"
 
@@ -22,13 +23,15 @@ namespace uniflow {
 /// obtained from ibv_reg_mr. Each MR pins the same memory region but
 /// is associated with a different protection domain.
 ///
-/// The serialized payload contains a domain id and per-MR rkeys, which
-/// the peer needs to perform one-sided RDMA operations on this memory.
+/// The serialized payload contains a domain id, a registrationBase, and
+/// per-MR rkeys, which the peer needs to perform one-sided RDMA operations
+/// on this memory.
 class RdmaRegistrationHandle : public RegistrationHandle {
  public:
   /// Packed wire format for serialization.
   struct __attribute__((packed)) Header {
     uint64_t domainId{0}; // Factory instance key
+    uint64_t registrationBase{0}; // VA → wire-address offset
     uint8_t numMrs{0}; // Number of MRs (one per NIC)
     // Followed by numMrs uint32_t rkeys.
   };
@@ -38,7 +41,11 @@ class RdmaRegistrationHandle : public RegistrationHandle {
   RdmaRegistrationHandle(
       std::vector<ibv_mr*> mrs,
       std::shared_ptr<IbvApi> ibvApi,
-      uint64_t domainId);
+      uint64_t domainId,
+      uint64_t registrationBase = 0,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr,
+      int deviceId = -1,
+      int bufferNumaNode = -1);
 
   ~RdmaRegistrationHandle() override;
 
@@ -75,10 +82,33 @@ class RdmaRegistrationHandle : public RegistrationHandle {
     return domainId_;
   }
 
+  /// NUMA node of the registered host buffer (-1 = unknown, device memory,
+  /// or mixed locality across NUMA nodes). Detected at registration time by
+  /// sampling pages after ibv_reg_mr has pinned (non-ODP) memory.
+  int hostBufferNumaNode() const noexcept {
+    return hostBufferNumaNode_;
+  }
+
+  /// Value to subtract from a VA to produce the address the NIC expects
+  /// on the wire (SGE.addr / wr.rdma.remote_addr). Zero for ordinary
+  /// single-buffer registrations; non-zero when the underlying MR covers
+  /// a larger containing region.
+  uint64_t registrationBase() const noexcept {
+    return registrationBase_;
+  }
+
+  /// Translate a client-supplied pointer to the wire address the NIC
+  /// expects in an SGE (`sge.addr`). Folds two platform-specific steps.
+  uint64_t toWireAddr(const void* ptr) const;
+
  private:
   std::vector<ibv_mr*> mrs_;
   std::shared_ptr<IbvApi> ibvApi_;
   uint64_t domainId_;
+  int hostBufferNumaNode_{-1};
+  uint64_t registrationBase_{0};
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
+  int deviceId_{-1};
 };
 
 // ---------------------------------------------------------------------------
@@ -90,7 +120,11 @@ class RdmaRegistrationHandle : public RegistrationHandle {
 /// used in RDMA work requests posted on QPs belonging to that NIC.
 class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
  public:
-  RdmaRemoteRegistrationHandle(std::vector<uint32_t> rkeys, uint64_t domainId);
+  RdmaRemoteRegistrationHandle(
+      std::vector<uint32_t> rkeys,
+      uint64_t domainId,
+      uint64_t registrationBase = 0,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
 
   ~RdmaRemoteRegistrationHandle() override = default;
 
@@ -114,9 +148,21 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
     return domainId_;
   }
 
+  /// Mirror of the sender's `RdmaRegistrationHandle::registrationBase()` —
+  /// subtract from remote VA to form `wr.rdma.remote_addr`.
+  uint64_t registrationBase() const noexcept {
+    return registrationBase_;
+  }
+
+  /// Translate a client-supplied pointer to the wire address the NIC
+  /// expects in an SGE (`sge.addr`). Folds two platform-specific steps.
+  uint64_t toWireAddr(const void* ptr) const;
+
  private:
   std::vector<uint32_t> rkeys_;
   uint64_t domainId_;
+  uint64_t registrationBase_{0};
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
 };
 
 } // namespace uniflow

@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "filter": { "collective": "allreduce", "bytesPerRank": "[0,1048576]" },
+      "config": { "algorithm": "ring", "protocol": "ll128" }
+    },
+    {
+      "filter": { "collective": "allgather", "bytesPerRank": "[0,2097152]", "nNodes": 2, "nLocalRanks": 8 },
+      "config": { "algorithm": "tree", "protocol": "simple", "channels": 4 }
+    },
+    {
+      "filter": { "collective": "allreduce", "bytesPerRank": "(1048576,)" },
+      "config": { "algorithm": "ring", "protocol": "simple", "chunkSize": 524288 }
+    },
+    {
+      "filter": { "collective": "reducescatter", "bytesPerRank": "(1048576,)", "nNodes": "(1,)" },
+      "config": { "algorithm": "ring", "protocol": "simple" }
+    },
+    {
+      "filter": { "collective": "allgather", "bytesPerRank": "[8388608,16777216]" },
+      "config": { "algorithm": "ring", "protocol": "ll128" }
+    }
+  ]
+}

@@ -169,6 +169,14 @@ PYBIND11_MODULE(_core, m) {
       .value("RDMA", TransportType::RDMA, "InfiniBand or RoCE RDMA")
       .value("TCP", TransportType::TCP, "TCP/IP fallback");
 
+  py::enum_<CpuNicSelectionPolicy>(
+      m, "CpuNicSelectionPolicy", "CPU-buffer RDMA NIC selection policy.")
+      .value("All", CpuNicSelectionPolicy::kAll, "Preserve existing behavior.")
+      .value(
+          "NumaLocalBounded",
+          CpuNicSelectionPolicy::kNumaLocalBounded,
+          "Select NUMA-local CPU NICs and cap fanout.");
+
   // ---------------------------------------------------------------------------
   // Err
   // ---------------------------------------------------------------------------
@@ -527,16 +535,25 @@ PYBIND11_MODULE(_core, m) {
       "MultiTransportFactory",
       "Factory for creating transports and registering memory segments.")
       .def(
-          py::init([](int deviceId, const std::string& nicFilter) {
-            if (nicFilter.empty()) {
-              return std::make_shared<MultiTransportFactory>(deviceId);
-            }
+          py::init([](int deviceId,
+                      const std::string& nicFilter,
+                      CpuNicSelectionPolicy cpuNicSelectionPolicy,
+                      size_t maxCpuNics) {
+            MultiTransportFactoryOptions options{
+                .nicFilter =
+                    nicFilter.empty() ? NicFilter() : NicFilter(nicFilter),
+                .cpuNicSelectionPolicy = cpuNicSelectionPolicy,
+                .maxCpuNics = maxCpuNics,
+            };
             return std::make_shared<MultiTransportFactory>(
-                deviceId, NicFilter(nicFilter));
+                deviceId, std::move(options));
           }),
           "Create a MultiTransportFactory for the given device.",
           py::arg("device_id"),
-          py::arg("nic_filter") = "")
+          py::arg("nic_filter") = "",
+          py::arg("cpu_nic_selection_policy") =
+              CpuNicSelectionPolicy::kNumaLocalBounded,
+          py::arg("max_cpu_nics") = 2)
       .def(
           "register_segment",
           [](MultiTransportFactory& f, Segment& seg) {

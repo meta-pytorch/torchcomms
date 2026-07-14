@@ -339,6 +339,15 @@ class LazyBackend : public TorchCommBackend {
     return primary_->split(ranks, name, options);
   }
 
+  void setTimeout(std::chrono::milliseconds timeout) override {
+    checkInitialized();
+    primary_->setTimeout(timeout);
+    std::lock_guard<std::mutex> lk(p2p_mu_);
+    for (auto& [_, channel] : p2p_comms_) {
+      channel->setTimeout(timeout);
+    }
+  }
+
   const CommOptions& getOptions() const override {
     return options_;
   }

@@ -37,7 +37,7 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
         {KernelConfig::KernelType::RECV, "Recv"},
         {KernelConfig::KernelType::SENDRECV, "SendRecv"},
         {KernelConfig::KernelType::ALLTOALL, "AllToAll"},
-        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPipes"},
+        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPrims"},
         {KernelConfig::KernelType::ALLTOALLV, "AllToAllv"},
 };
 
@@ -297,8 +297,9 @@ commResult_t CtranGpe::Impl::submit(
   // can synchronize with the kernel before running cleanup. During graph
   // capture the cleanup is retained directly on the graph via
   // retainUserObject, avoiding host-node overhead.
-  bool needsKernelFlag =
-      !opGroup.empty() || (kernelConfig.postKernelCleanup && !isCapturing);
+  bool needsKernelFlag = !opGroup.empty() ||
+      kernelConfig.unpackPool != nullptr ||
+      (kernelConfig.postKernelCleanup && !isCapturing);
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   volatile int* flag = nullptr;
@@ -388,6 +389,31 @@ commResult_t CtranGpe::Impl::submit(
     if (isCapturing) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
+      if (cmd->unpackPool != nullptr) {
+        auto existingCleanup = std::move(cmd->postKernelCleanup);
+        auto* unpackPool = cmd->unpackPool;
+        cmd->postKernelCleanup = [comm = comm,
+                                  unpackPool,
+                                  existingCleanup =
+                                      std::move(existingCleanup)]() mutable {
+          if (existingCleanup) {
+            existingCleanup();
+          }
+          if (!ctranInitialized(comm) || comm->ctran_->mapper == nullptr) {
+            return;
+          }
+          auto result =
+              comm->ctran_->mapper->teardownUnpackConsumer(unpackPool);
+          if (result != commSuccess) {
+            CLOGF_SUBSYS(
+                WARN,
+                COLL,
+                "CTRAN-GPE: failed to teardown graph unpack pool {}: result {}",
+                unpackPool,
+                static_cast<int>(result));
+          }
+        };
+      }
       // Mark the flag as persistent so reclaim() won't steal it between
       // graph replays (the kernel writes KERNEL_UNSET after each replay).
       if (kernelFlag) {
@@ -705,6 +731,16 @@ void CtranGpe::Impl::terminate() {
       statex->commDesc());
 }
 
+void CtranGpe::Impl::injectGpeProfilerMetadata(CtranGpeCmd* cmd) {
+  if (cmd->coll.opGroup.empty()) {
+    return;
+  }
+  gpeProfiler_->injectMetadata({
+      .opCount = cmd->coll.opGroup.front()->opCount,
+      .opType = static_cast<int>(cmd->coll.opGroup.front()->type),
+  });
+}
+
 void CtranGpe::Impl::gpeThreadFn() {
   const auto& statex = comm->statex_;
   assert(statex != nullptr);
@@ -719,7 +755,15 @@ void CtranGpe::Impl::gpeThreadFn() {
     FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
 
     while (1) {
+      gpeProfiler_->mark(ctran::GpeTracePoint::ITER_START);
       auto cmd = cmdDequeue();
+      injectGpeProfilerMetadata(cmd);
+      gpeProfiler_->mark(ctran::GpeTracePoint::CMD_DEQUEUE);
+
+      // Captured before SCOPE_EXIT so the lambda can safely see it after
+      // the TERMINATE branch deletes cmd + returns.
+      const bool isTerminateCmd =
+          (cmd->type == CtranGpeCmd::TypeEnum::TERMINATE);
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
@@ -729,29 +773,33 @@ void CtranGpe::Impl::gpeThreadFn() {
         comm->setTimeout(*d);
       }
       SCOPE_EXIT {
-        // if comm is aborted for any reason, we mark it as aborted to avoid
-        // resetting the state.
         if (comm->testAbort()) {
-          auto abort = comm->getAbort();
-          if (abort->TimedOut()) {
-            CLOGF(
-                ERR,
-                "Communicator aborted due to timeout on rank {} commHash {:x}",
-                statex->rank(),
-                statex->commHash());
-          } else {
-            CLOGF(
-                ERR,
-                "Communicator aborted (explicit) on rank {} commHash {:x}",
-                statex->rank(),
-                statex->commHash());
-          }
+          // Preserve abort state across cancelTimeout(): an aborted comm
+          // must never flip back to not-aborted.
           comm->setAbort();
+          const std::string_view reason =
+              comm->getAbort()->TimedOut() ? "timeout" : "explicit";
+
+          // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
+          if (!isTerminateCmd) {
+            gpeProfiler_->mark(ctran::GpeTracePoint::ALGO_ABORTED, reason);
+          }
+
+          const std::string_view phase = isTerminateCmd ? " now TERMINATE" : "";
+          CLOGF(
+              ERR,
+              "Communicator aborted ({}){} on rank {} commHash {:x} {}",
+              reason,
+              phase,
+              statex->rank(),
+              statex->commHash(),
+              gpeProfiler_->debugString());
         }
         comm->cancelTimeout();
       };
 
       if (cmd->type == CtranGpeCmd::TypeEnum::TERMINATE) {
+        gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_CMD);
         CLOGF_SUBSYS(
             INFO,
             INIT,
@@ -776,6 +824,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           std::this_thread::yield();
         }
       }
+      gpeProfiler_->mark(ctran::GpeTracePoint::WAIT_KERNEL);
 
       if (cmd->coll.collHandle != nullptr) {
         cmd->coll.collHandle->trigger(
@@ -835,15 +884,28 @@ void CtranGpe::Impl::gpeThreadFn() {
                     "collective skipped: communicator aborted",
                     commRemoteError));
           }
+          if (mapper != nullptr && mapper->hasTcpDmBackend()) {
+            mapper->abortTcpDm("collective skipped: communicator aborted");
+          }
         } else if (!cmd->coll.opGroup.empty() /* skip when opGroup is empty, i.e,. we are only here for post-kernel cmd destruction/cleanup */) {
-          CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
-              comm,
-              {
-                FB_COMMCHECKTHROW_EX(
-                    cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
-              },
-              static_cast<int>(cmd->coll.opGroup.front()->type),
-              cmd->coll.opGroup.front()->opCount);
+          if (mapper != nullptr && mapper->hasTcpDmBackend()) {
+            mapper->runTcpDmCollectiveAbortGuard(
+                [&] {
+                  FB_COMMCHECKTHROW_EX(
+                      cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+                },
+                static_cast<int>(cmd->coll.opGroup.front()->type),
+                cmd->coll.opGroup.front()->opCount);
+          } else {
+            CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+                comm,
+                {
+                  FB_COMMCHECKTHROW_EX(
+                      cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
+                },
+                static_cast<int>(cmd->coll.opGroup.front()->type),
+                cmd->coll.opGroup.front()->opCount);
+          }
         }
 
         if (cmd->persistent) {
@@ -854,6 +916,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           cmd->coll.opGroup.clear();
         }
       }
+      gpeProfiler_->mark(ctran::GpeTracePoint::HOST_ALGO);
 
       if (kernelFlag) {
         volatile int* flag_d = kernelFlag->flag_;
@@ -877,12 +940,12 @@ void CtranGpe::Impl::gpeThreadFn() {
           // termination
           kernelFlag->setFlagPerGroup(
               comm->testAbort() ? KERNEL_HOST_ABORT : KERNEL_TERMINATE);
+          gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_KERNEL);
         }
-        // Teardown unpack queue if it was allocated for this operation (TcpDM
-        // backend). Don't wait for kernel to finish, the pool manages
-        // the allocations in the round robin fashion to avoid immediate
-        // reuse.
-        if (cmd->unpackPool != nullptr) {
+        // Teardown eager unpack queues after this kernel. Persistent graph
+        // commands keep the pool alive across replays and release it from
+        // cmdDestroy when the graph is destroyed.
+        if (cmd->unpackPool != nullptr && !cmd->persistent) {
           FB_COMMCHECKTHROW_EX(
               comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
               comm->logMetaData_);

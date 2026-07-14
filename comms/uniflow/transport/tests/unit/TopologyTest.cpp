@@ -2,6 +2,8 @@
 
 #include "comms/uniflow/transport/Topology.h"
 
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
+#include "comms/uniflow/drivers/cuda/CudaTopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/drivers/nvml/mock/MockNvmlApi.h"
@@ -174,7 +176,9 @@ class TopologyTest : public ::testing::Test {
   }
 
   std::unique_ptr<Topology> createTopology() {
-    return std::unique_ptr<Topology>(new Topology(cuda_, nvml_, ibv_, sysfs_));
+    auto topo = std::make_unique<Topology>();
+    CudaTopologyDiscovery(cuda_, nvml_, ibv_, sysfs_).discover(*topo);
+    return topo;
   }
 
   std::shared_ptr<NiceMock<MockCudaApi>> cuda_;
@@ -947,6 +951,14 @@ class TopologyNicTest : public TopologyTest {
     ON_CALL(*ibv_, closeDevice(_)).WillByDefault(Return(Ok()));
   }
 
+  /// Stub the backing netdev name reported for an IB device via
+  /// /sys/class/infiniband/<dev>/device/net.
+  void setNetdev(const std::string& devName, const std::string& netdev) {
+    ON_CALL(
+        *sysfs_, listDir("/sys/class/infiniband/" + devName + "/device/net", _))
+        .WillByDefault(Return(std::vector<std::string>{netdev}));
+  }
+
   std::string gpu0_, nic0_, nic1_, nic2_, sw0_, sw1_, root_;
   std::vector<ibv_device> nicDevices_;
   std::vector<ibv_device*> nicDevicePtrs_;
@@ -1051,6 +1063,82 @@ TEST_F(TopologyNicTest, NodeNamesAreSet) {
   EXPECT_EQ(topo->getGpuNode(0).name, "cuda:0");
   EXPECT_EQ(topo->getCpuNode(0).name, "cpu:0");
   EXPECT_EQ(topo->getNicNode(0).name, "mlx5_0");
+}
+
+TEST_F(TopologyNicTest, NicNumaNodeLookup) {
+  // Override nic2_ to NUMA node 1 so we can verify per-NIC differentiation.
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_EQ(topo->nicNumaNode("mlx5_0"), 0);
+  EXPECT_EQ(topo->nicNumaNode("mlx5_2"), 1);
+  EXPECT_EQ(topo->nicNumaNode("missing_nic"), -1);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsKeepsAllBestPerNicNumaCandidates) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNics(), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaPrefersLocalNics) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> numa0Nics{"mlx5_0", "mlx5_1"};
+  const std::vector<std::string> numa1Nics{"mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0), numa0Nics);
+  EXPECT_EQ(topo->selectCpuNicsForNuma(1), numa1Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaAppliesCapAfterLocality) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> boundedNuma0Nics{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0, NicFilter(), 1), boundedNuma0Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaNodesKeepsBoundedPoolPerNuma) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNumaNodes(NicFilter(), 1), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaUnknownNodeReturnsEmpty) {
+  setupNics({{"mlx5_0", nic0_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(-1).empty());
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(99).empty());
 }
 
 TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {
@@ -1203,6 +1291,65 @@ TEST_F(TopologyNicTest, MixedPhysicalAndVirtualNics) {
   EXPECT_NE(phys.bdf, "virtual");
   EXPECT_EQ(virt.bdf, "virtual");
   EXPECT_EQ(virt.numaNode, 0);
+}
+
+// --- Netdev-prefix NIC selection ---
+
+TEST_F(TopologyNicTest, NetdevNameCapturedFromSysfs) {
+  setupNics({{"mlx5_0", nic0_}});
+  setNetdev("mlx5_0", "beth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.netdevName, "beth0");
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixSelectsMatchingNic) {
+  // Two equidistant NICs; only mlx5_0 has a backend-ethernet ("beth") netdev.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixFallsBackWhenNoMatch) {
+  // Neither NIC has a "beth" netdev → fall back to filter-only selection.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "eth0");
+  setNetdev("mlx5_1", "eth1");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, EmptyNetdevPrefixConsidersAllNics) {
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  // Empty prefix disables the predicate: both equidistant NICs are selected.
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, ""), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixIgnoredWhenNoNetdevNames) {
+  // No NIC has a netdev name (e.g. a backend that does not populate it). The
+  // prefix predicate is skipped entirely rather than excluding every NIC.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
 }
 
 } // namespace uniflow

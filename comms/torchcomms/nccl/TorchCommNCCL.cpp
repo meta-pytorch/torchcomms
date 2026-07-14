@@ -152,12 +152,12 @@ void TorchCommNCCL::initNcclResources() {
       cuda_api_->memGetInfo(&free_memory, &total_memory),
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
-  high_priority_stream_ =
-      options_.getHint<bool>(kHintHighPriorityStream, false);
+  is_high_priority_stream_ =
+      options_.getHint<bool>(kHintIsHighPriorityStream, false);
 
   int stream_priority = 0;
 
-  if (high_priority_stream_) {
+  if (is_high_priority_stream_) {
     int leastPriority, greatestPriority;
     CUDA_CHECK(
         cuda_api_,
@@ -342,7 +342,10 @@ void TorchCommNCCL::abortNcclComm() {
         "NCCL Abort failed");
     nccl_comm_ = nullptr;
   }
-  if (options_.abort_process_on_timeout_or_error) {
+  // Never abort the process in reconfigurable mode: callers fall back to
+  // revoke + throw so the failure can be handled by reconfiguring.
+  if (options_.abort_process_on_timeout_or_error &&
+      !options_.enable_reconfigure) {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
     runAbortHooks();
     ::abort();
@@ -350,16 +353,34 @@ void TorchCommNCCL::abortNcclComm() {
 }
 
 void TorchCommNCCL::revokeNcclComm() {
+  // Idempotent: the timeout watchdog and a synchronous collective may both
+  // observe the same timeout and attempt a revoke. Run the teardown (abort
+  // hooks, memory hook detach, commRevoke) at most once per communicator
+  // generation. revoked_ is reset on reconfigure.
+  if (revoked_.exchange(true)) {
+    return;
+  }
   TC_LOG(INFO, this) << "Calling abort hooks before commRevoke.";
   runAbortHooks();
   detachMemoryHook();
   if (nccl_comm_) {
-    NCCL_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commRevoke(nccl_comm_),
-        "NCCL Revoke failed");
+    // Best-effort: this may run on the timeout watchdog thread, so log instead
+    // of throwing on failure (the communicator is already being torn down).
+    NCCL_CHECK_IGNORE(
+        nccl_api_, nccl_api_->commRevoke(nccl_comm_), "NCCL Revoke failed");
   }
+}
+
+bool TorchCommNCCL::isAbortSupported() const {
+  return true;
+}
+
+bool TorchCommNCCL::isAborted() const {
+  // A non-NORMAL state means the communicator hit a timeout or error (set by
+  // the timeout watchdog, a synchronous collective, or abort()). Reading the
+  // atomic issues no CUDA/NCCL calls, so this is safe to poll during CUDA graph
+  // replay, where per-operation work handles are unavailable.
+  return comm_state_.load() != CommState::NORMAL;
 }
 
 int TorchCommNCCL::getRank() const {
@@ -392,6 +413,10 @@ std::string_view TorchCommNCCL::getBackendName() const {
 
 std::string_view TorchCommNCCL::getCommName() const {
   return name_;
+}
+
+int64_t TorchCommNCCL::getCommPtr() const {
+  return reinterpret_cast<int64_t>(nccl_comm_);
 }
 
 static inline std::chrono::milliseconds getOperationTimeout(
@@ -429,17 +454,34 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
   // Record start event before NCCL operation
   work->recordStart("send");
 
+  // Wrap in ncclGroupStart/End so the kernel is enqueued on the stream
+  // before we record the end event.  Without the group wrapper,
+  // non-blocking NCCL comms may defer kernel launch past the event
+  // record, causing the end event to fire before the data transfer
+  // completes.  (Matches c10d ProcessGroupNCCL::pointToPoint.)
   NCCL_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->send(
-          tensor.data_ptr(),
-          tensor.numel(),
-          getNcclDataType(tensor),
-          dst,
-          nccl_comm_,
-          stream),
-      "NCCL Send failed");
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
+  try {
+    NCCL_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->send(
+            tensor.data_ptr(),
+            tensor.numel(),
+            getNcclDataType(tensor),
+            dst,
+            nccl_comm_,
+            stream),
+        "NCCL Send failed");
+  } catch (...) {
+    // Close the group even on failure so the comm is not left mid-group for
+    // subsequent operations on this thread. groupEnd's own error is only logged
+    // (not thrown) since we are already propagating the original error.
+    NCCL_CHECK_IGNORE(nccl_api_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
+    throw;
+  }
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();
@@ -469,17 +511,30 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
   // Record start event before NCCL operation
   work->recordStart("recv");
 
+  // Wrap in ncclGroupStart/End — see send() comment for rationale.
   NCCL_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->recv(
-          tensor.data_ptr(),
-          tensor.numel(),
-          getNcclDataType(tensor),
-          src,
-          nccl_comm_,
-          stream),
-      "NCCL Recv failed");
+      nccl_api_, nccl_comm_, nccl_api_->groupStart(), "NCCL GroupStart failed");
+  try {
+    NCCL_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->recv(
+            tensor.data_ptr(),
+            tensor.numel(),
+            getNcclDataType(tensor),
+            src,
+            nccl_comm_,
+            stream),
+        "NCCL Recv failed");
+  } catch (...) {
+    // Close the group even on failure so the comm is not left mid-group for
+    // subsequent operations on this thread. groupEnd's own error is only logged
+    // (not thrown) since we are already propagating the original error.
+    NCCL_CHECK_IGNORE(nccl_api_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
+    throw;
+  }
+  NCCL_CHECK(
+      nccl_api_, nccl_comm_, nccl_api_->groupEnd(), "NCCL GroupEnd failed");
 
   // Record end event after NCCL operation
   work->recordEnd();

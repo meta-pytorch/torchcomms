@@ -311,7 +311,8 @@ enum CommBackend {
   NVL = 2,
   SOCKET = 3,
   TCPDM = 4,
-  NUM_BACKENDS = 5
+  EXTERNAL = 5,
+  NUM_BACKENDS = 6
 };
 
 class CommsError {

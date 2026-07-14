@@ -15,5 +15,6 @@ PYBIND11_MODULE(_comms_nccl, m, py::mod_gil_not_used()) {
   m.doc() = "NCCL specific python bindings for TorchComm";
 
   py::class_<TorchCommNCCL, TorchCommBackend, std::shared_ptr<TorchCommNCCL>>(
-      m, "TorchCommNCCL");
+      m, "TorchCommNCCL")
+      .def("get_nccl_comm_ptr", &TorchCommNCCL::getCommPtr);
 }

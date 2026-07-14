@@ -37,7 +37,12 @@ cudaError_t GraphSideStream::fork_from(
   cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
   const cudaGraphNode_t* deps = nullptr;
   size_t num_deps = 0;
-#if CUDART_VERSION >= 13000
+  // hipify-perl (ROCm 7.0) does not map cudaStreamGetCaptureInfo_v2, so call
+  // the HIP symbol explicitly on AMD (mirrors GraphCudaWaitEvent.cc).
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  cudaError_t err = hipStreamGetCaptureInfo_v2(
+      stream, &status, nullptr, nullptr, &deps, &num_deps);
+#elif CUDART_VERSION >= 13000
   const cudaGraphEdgeData* edge_data = nullptr;
   cudaError_t err = cudaStreamGetCaptureInfo(
       stream, &status, nullptr, nullptr, &deps, &edge_data, &num_deps);
@@ -70,7 +75,10 @@ cudaError_t GraphSideStream::fork_from(
   // cudaEventRecord above.
   deps = nullptr;
   num_deps = 0;
-#if CUDART_VERSION >= 13000
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  err = hipStreamGetCaptureInfo_v2(
+      stream, &status, nullptr, nullptr, &deps, &num_deps);
+#elif CUDART_VERSION >= 13000
   edge_data = nullptr;
   err = cudaStreamGetCaptureInfo(
       stream, &status, nullptr, nullptr, &deps, &edge_data, &num_deps);

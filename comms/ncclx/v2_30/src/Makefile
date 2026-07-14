@@ -6,12 +6,15 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PIPES ?= 1
+ENABLE_PRIMS ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
 NCCLDIR = $(abspath ../)
 SHAREDDIR = $(abspath ${NCCLDIR}/..)
+
+# fbcode/prims CUDA sources include Folly headers that require C++20.
+CXXSTD ?= -std=c++20
 
 include ../makefiles/common.mk
 include ../makefiles/version.mk
@@ -21,12 +24,22 @@ CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
 # Use header-only fmt to avoid runtime dependency on libfmt.so
 CXXFLAGS += -DFMT_HEADER_ONLY=1
 
+# Enable JSON parsing in the NCCLX built-in CSV/JSON tuner (meta/tuner) when
+# folly is available. The conda feedstock build sets NCCLX_TUNER_WITH_FOLLY_JSON=1
+# (folly is already linked there); a bare OSS `make` without folly leaves it off,
+# so meta/tuner compiles only its CSV parser -- matching def_build.bzl.
+NCCLX_TUNER_WITH_FOLLY_JSON ?= 0
+ifeq ($(NCCLX_TUNER_WITH_FOLLY_JSON),1)
+CXXFLAGS += -DNCCLX_TUNER_WITH_FOLLY_JSON
+endif
+
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
 endif
 
-ifeq ($(ENABLE_PIPES),1)
-CXXFLAGS += -DENABLE_PIPES
+ifeq ($(ENABLE_PRIMS),1)
+CXXFLAGS += -DENABLE_PRIMS
+NVCUFLAGS += -DENABLE_PRIMS
 endif
 
 ##### src files
@@ -68,9 +81,9 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/DeviceRackSerial.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/NcclxConfig.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commHash.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/RankUtil.cc)
-LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/analyzer/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/colltrace/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/nvls/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/transport/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
@@ -82,6 +95,7 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/ctran-integration/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/hints/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/algoconf/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tuner/*.cc)
 
 #### Start of fbcode source files
 ## Trainer Context for getting/setting trainer steps.
@@ -137,6 +151,32 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/AllToAll/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
+
+ifeq ($(ENABLE_PRIMS),1)
+LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemAllocation.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemMapping.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMulticastAllocation.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/MultimemHandler.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerIbTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransport.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransportCuda.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIb.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIbLauncher.cu
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
+endif
 
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
@@ -278,8 +318,8 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PIPES),1)
-LDFLAGS    += -lpipes
+ifeq ($(ENABLE_PRIMS),1)
+LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
 endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
@@ -468,7 +508,7 @@ $(OBJDIR)/%.o : %.c $(INCTARGETS)
 $(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@
 	mkdir -p `dirname $@`
-	$(NVCC) $(NVCC_GENCODE) $(CXXSTD) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
+	$(NVCC) $(NVCUFLAGS) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
 
 $(OBJDIR)/misc/git_version.o: $(GIT_VERSION_FILE)
 

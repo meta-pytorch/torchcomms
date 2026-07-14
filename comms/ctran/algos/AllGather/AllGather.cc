@@ -58,7 +58,7 @@ bool ctranAllGatherSupport(
       }
       break;
     case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
-#if defined(ENABLE_PIPES)
+#if defined(ENABLE_PRIMS)
       if (statex->nRanks() <= 1 || statex->nNodes() <= 1) {
         CLOGF_SUBSYS(
             WARN,

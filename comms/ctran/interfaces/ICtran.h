@@ -4,6 +4,7 @@
 
 #include <memory>
 
+#include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/profiler/IProfilerReporter.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -64,7 +65,8 @@ inline bool ctranIsUsed() {
 
 commResult_t ctranInit(
     CtranComm* comm,
-    std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr);
+    std::unique_ptr<ctran::IProfilerReporter> reporter = nullptr,
+    std::unique_ptr<ctran::IGpeProfilerReporter> gpeReporter = nullptr);
 // Check whether the default CTran associated with the comm is initialized.
 // If to check a dedicated CTran instance, use ctran->isInitialized() instead.
 bool ctranInitialized(CtranComm* comm);

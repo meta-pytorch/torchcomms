@@ -8,7 +8,7 @@
 // Forward declarations
 struct KernelElem;
 
-namespace comms::pipes {
+namespace comms::prims {
 struct Transport;
 }
 
@@ -60,7 +60,7 @@ struct KernArgs {
   int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
 
   // Transport array from MultiPeerTransport, indexed by global rank
-  comms::pipes::Transport* transports;
+  comms::prims::Transport* transports;
 
   // If true, use block-level scheduling (make_block_group) instead of
   // warp-level scheduling (make_warp_group). Block scheduling dedicates

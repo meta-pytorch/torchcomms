@@ -9,12 +9,12 @@
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/pipes/MultiPeerTransport.h"
-#include "comms/pipes/window/DeviceWindow.cuh"
-#include "comms/pipes/window/HostWindow.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/window/DeviceWindow.cuh"
+#include "comms/prims/window/HostWindow.h"
 
-using comms::pipes::DeviceWindow;
-using comms::pipes::WindowConfig;
+using comms::prims::DeviceWindow;
+using comms::prims::WindowConfig;
 using ctran::CtranWin;
 
 class CtranWinDeviceEnvironment : public ctran::CtranEnvironmentBase {
@@ -59,11 +59,14 @@ TEST_F(CtranWinDeviceTest, GetDeviceWin) {
   // Verify peer count is consistent with n_ranks
   EXPECT_EQ(devWin.num_peers(), numRanks - 1);
 
-  // NVL and IBGDA peer sets overlap: IBGDA is the universal transport
-  // covering all non-self peers, while NVL is additionally available for
-  // NVLink-connected peers. Verify each independently.
-  EXPECT_EQ(devWin.num_nvl_peers(), numRanks - 1);
-  EXPECT_EQ(devWin.num_ibgda_peers(), numRanks - 1);
+  // Verify peer counts reflect the transport topology. A fully NVL-local run
+  // does not construct IBGDA resources.
+  EXPECT_EQ(
+      devWin.num_nvl_peers(),
+      static_cast<int>(comm->multiPeerTransport_->nvl_peer_ranks().size()));
+  EXPECT_EQ(
+      devWin.num_ibgda_peers(),
+      static_cast<int>(comm->multiPeerTransport_->ib_peer_ranks().size()));
 
   ctran::ctranWinFree(win);
 }

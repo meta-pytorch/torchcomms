@@ -68,6 +68,9 @@ struct AlgoContext : CtsrdAlgoContext {
 
   inline commResult_t onStepComplete(int step) {
     if (nLocalRanks > 1) {
+      // pipeSync releases NVL readers for this step's received chunks.
+      FB_COMMCHECK(
+          ctran::allgather::ctsrd::common::waitStepFlushes(*this, step));
       resource->pipeSync->post(step);
     }
     return commSuccess;
@@ -77,7 +80,8 @@ struct AlgoContext : CtsrdAlgoContext {
     return (static_cast<size_t>(node) * nLocalRanks + localRank) * sendSize;
   }
 
-  inline void enqueuePut(int step, int node) {
+  inline void
+  enqueuePut(int step, int node, CtranMapperRequest* flushReq = nullptr) {
     const auto nth = putCount.at(step)++;
     const auto expectedNode = sendPlan.chunk(step, nth);
     FB_CHECKABORT(
@@ -87,7 +91,7 @@ struct AlgoContext : CtsrdAlgoContext {
         nth,
         expectedNode,
         node);
-    putQ.push_back({step, node});
+    putQ.push_back({step, node, flushReq});
   }
 };
 

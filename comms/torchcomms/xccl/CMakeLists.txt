@@ -41,9 +41,11 @@ target_include_directories(torchcomms_comms_xccl PRIVATE
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
+torchcomms_use_torch_pybind11(torchcomms_comms_xccl)
 target_compile_features(torchcomms_comms_xccl PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_xccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_xccl PRIVATE
+    fmt::fmt
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     torchcomms
@@ -68,3 +70,7 @@ target_compile_options(torchcomms_comms_xccl PRIVATE ${XCCL_COMPILE_OPTIONS})
 install(TARGETS torchcomms_comms_xccl
     LIBRARY DESTINATION .
 )
+
+if (BUILD_TESTS)
+    add_subdirectory(comms/torchcomms/xccl/tests/unit/cpp)
+endif()

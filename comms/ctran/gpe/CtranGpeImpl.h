@@ -17,6 +17,8 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/profiler/GpeProfiler.h"
+#include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
@@ -156,7 +158,8 @@ class CtranGpeCmd {
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
 
-  // Unpack queue to teardown after kernel completes (for TcpDM backend)
+  // Unpack queue to teardown after the eager kernel completes, or when
+  // a persistent CUDA graph command is destroyed (for TcpDM backend).
   void* unpackPool{nullptr};
 
   // Post-kernel cleanup callback. Called by GPE thread after kernel finishes.
@@ -327,6 +330,9 @@ class CtranGpe::Impl {
   int cudaDev{-1};
   CtranGpe* gpe{nullptr};
 
+  // Used only by the GPE thread.
+  std::unique_ptr<ctran::GpeProfiler> gpeProfiler_;
+
  private:
   struct CmdQueue {
     std::queue<CtranGpeCmd*> queue;
@@ -359,6 +365,14 @@ class CtranGpe::Impl {
     locked->queue.pop();
     return cmd;
   }
+
+  // Forwards opCount/opType from the dequeued command's leading op to
+  // the GPE profiler, which uses opCount to compute this iter's
+  // sampling verdict. No-op when opGroup is empty (TERMINATE cmd or
+  // post-kernel cleanup-only cmd) since there is no meaningful op to
+  // attribute metadata to. The TERMINATE iter still gets an explicit
+  // TERMINATE_CMD tracepoint via the always-on path.
+  void injectGpeProfilerMetadata(CtranGpeCmd* cmd);
 
   static void CUDART_CB cmdCb(void* data);
   static void CUDART_CB cmdDestroy(void* data);

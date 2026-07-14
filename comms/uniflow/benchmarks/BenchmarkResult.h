@@ -21,6 +21,7 @@ struct BenchmarkResult {
   Stats latency{}; // in microseconds
   double messageRateMops{0};
   int numStreams{0};
+  int numPeers{0};
 };
 
 } // namespace uniflow::benchmark

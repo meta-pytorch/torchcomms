@@ -249,6 +249,17 @@ std::shared_ptr<TorchCommBackend> PyTorchCommBackend::split(
       "Tried to call pure virtual function \"TorchCommBackend::split\"");
 }
 
+void PyTorchCommBackend::setTimeout(std::chrono::milliseconds timeout) {
+  py::gil_scoped_acquire gil;
+  auto override = py::get_override(
+      static_cast<const TorchCommBackend*>(this), "set_timeout");
+  if (override) {
+    override(timeout);
+    return;
+  }
+  TorchCommBackend::setTimeout(timeout);
+}
+
 // --- Pybind bindings ---
 
 void initPyBackendBindings(py::module_& m) {

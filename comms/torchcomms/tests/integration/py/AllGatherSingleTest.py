@@ -19,7 +19,11 @@ class AllGatherSingleTest(unittest.TestCase):
 
     # Class variables for test parameters
     counts = [0, 4, 1024, 1024 * 1024] if is_full_sweep() else [4, 1024 * 1024]
-    dtypes = [torch.float, torch.int, torch.int8] if is_full_sweep() else [torch.float]
+    dtypes = (
+        [torch.float, torch.int, torch.int8, torch.bool]
+        if is_full_sweep()
+        else [torch.float]
+    )
     num_replays = 4
 
     def get_wrapper(self):
@@ -215,6 +219,11 @@ class AllGatherSingleTest(unittest.TestCase):
             return torch.ones(count, **options) * int(self.rank + 1)
         elif dtype == torch.int8:
             return torch.ones(count, **options) * int(self.rank + 1)
+        elif dtype == torch.bool:
+            # bool can't encode the rank as a magnitude, so use an alternating
+            # per-rank pattern (even ranks True, odd ranks False) that keeps each
+            # section distinguishable after the gather.
+            return torch.full((count,), (self.rank % 2) == 0, **options)
         return None
 
     def _create_output_tensor(self, count, dtype):
@@ -237,6 +246,12 @@ class AllGatherSingleTest(unittest.TestCase):
                 self.assertTrue(
                     torch.allclose(section.cpu(), expected),
                     f"Tensors not close enough for rank {i} section",
+                )
+            elif section.dtype == torch.bool:
+                expected = torch.full((count,), (i % 2) == 0, dtype=torch.bool)
+                self.assertTrue(
+                    torch.equal(section.cpu(), expected),
+                    f"Tensors not equal for rank {i} section",
                 )
             else:
                 expected = torch.ones(count, dtype=section.dtype) * int(i + 1)

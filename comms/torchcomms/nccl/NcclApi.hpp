@@ -25,6 +25,10 @@
 typedef struct ncclWindow_vidmem* ncclWindow_t;
 #endif
 
+#ifndef NCCL_WIN_COLL_SYMMETRIC
+#define NCCL_WIN_COLL_SYMMETRIC 0x01
+#endif
+
 namespace torch::comms {
 /**
  * Abstract interface for NCCL API operations.

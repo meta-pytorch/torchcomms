@@ -8,6 +8,7 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/RMA/WaitSignalImpl.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -59,6 +60,9 @@ class CtranRMATest : public ctran::CtranDistTestFixture, public CtranBaseTest {
     // If userBuf is true, allocate buffer and use ctranWinRegister API
     if (isUserBuf) {
       *winBasePtr = commMemAlloc(sizeBytes, bufType, segments);
+      COMMCHECK_TEST(
+          ctran::RegCache::getInstance()->globalRegister(
+              *winBasePtr, sizeBytes));
       res = ctranWinRegister(
           (void*)*winBasePtr, sizeBytes, ctranComm.get(), winPtr, hints);
 
@@ -79,6 +83,8 @@ class CtranRMATest : public ctran::CtranDistTestFixture, public CtranBaseTest {
   void
   freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
     if (isUserBuf) {
+      COMMCHECK_TEST(
+          ctran::RegCache::getInstance()->globalDeregister(ptr, size));
       commMemFree(ptr, size, bufType);
       if (bufType == MemAllocType::kCuMemAllocDisjoint) {
         // Disjoint allocations create multiple sub-segment entries in the

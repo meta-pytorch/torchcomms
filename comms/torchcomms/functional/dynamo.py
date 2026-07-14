@@ -22,9 +22,17 @@ from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.constant import ConstantVariable
 from torch._dynamo.variables.lists import ListVariable
 
+# PyTorch 2.14+ renamed TorchScriptObjectVariable to CustomClassObjectVariable
+# (pytorch/pytorch#188460) with no back-compat alias; support both.
+try:
+    from torch._dynamo.variables.script_object import (
+        CustomClassObjectVariable as TorchScriptObjectVariable,
+    )
+except ImportError:
+    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
+
 if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
-    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +71,6 @@ class TorchCommMethodVariable(VariableTracker):
         # Directly call the torch op - no tracing through patched method
         from torch._dynamo.variables import TensorVariable
         from torch._dynamo.variables.builder import wrap_fx_proxy
-        from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
         op_name = self.op_info["op_name"]
         schema = self.op_info["param_schema"]
@@ -336,6 +343,10 @@ class AsyncWorkVariable(VariableTracker):
         if name == "wait":
             return AsyncWorkWaitMethod(self)
         raise AttributeError(f"AsyncWorkVariable has no attribute {name}")
+
+    # PyTorch 2.14+ dispatches attribute access to getattro_impl instead of
+    # var_getattr (pytorch/pytorch#186013); support both.
+    getattro_impl = var_getattr
 
     def call_method(
         self,
@@ -622,10 +633,16 @@ def _patch_var_getattr() -> None:
     register_opaque_type with members=MemberType.USE_REAL.
     """
     from torch._dynamo.source import AttrSource
-    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
+
+    # PyTorch 2.14+ renamed var_getattr to getattro_impl
+    # (pytorch/pytorch#186013); patch whichever the installed version has.
+    if hasattr(TorchScriptObjectVariable, "getattro_impl"):
+        getattr_method_name = "getattro_impl"
+    else:
+        getattr_method_name = "var_getattr"
 
     # Store the original method
-    original_var_getattr = TorchScriptObjectVariable.var_getattr
+    original_var_getattr = getattr(TorchScriptObjectVariable, getattr_method_name)
 
     def patched_var_getattr(
         self: TorchScriptObjectVariable,
@@ -668,10 +685,10 @@ def _patch_var_getattr() -> None:
         return original_var_getattr(self, tx, name)
 
     # Apply the patch
-    TorchScriptObjectVariable.var_getattr = patched_var_getattr  # type: ignore[method-assign]
+    setattr(TorchScriptObjectVariable, getattr_method_name, patched_var_getattr)
 
     logger.info(
-        f"Patched TorchScriptObjectVariable.var_getattr for {len(_METHOD_TO_OP)} collective methods"
+        f"Patched TorchScriptObjectVariable.{getattr_method_name} for {len(_METHOD_TO_OP)} collective methods"
     )
 
 

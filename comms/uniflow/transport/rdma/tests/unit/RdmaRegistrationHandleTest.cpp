@@ -22,6 +22,9 @@ using ::testing::Return;
 
 // --- RdmaRegistrationHandle tests ---
 
+constexpr uint8_t kTestGidIndex = 3;
+constexpr uint8_t kMockGidTblLen = kTestGidIndex + 1;
+
 class RdmaRegistrationHandleTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -132,6 +135,25 @@ TEST_F(RdmaRegistrationHandleTest, SerializeMultipleMrs) {
   EXPECT_EQ(rkeys[1], 0xBBu);
 }
 
+TEST_F(RdmaRegistrationHandleTest, HostNumaNodeExplicit) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle(
+      {&mr},
+      ibv_,
+      42,
+      /*registrationBase=*/0,
+      /*deviceAdapter=*/nullptr,
+      /*deviceId=*/-1,
+      /*bufferNumaNode=*/3);
+  EXPECT_EQ(handle.hostBufferNumaNode(), 3);
+}
+
+TEST_F(RdmaRegistrationHandleTest, HostNumaNodeDefaultIsUnknown) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42);
+  EXPECT_EQ(handle.hostBufferNumaNode(), -1);
+}
+
 TEST_F(RdmaRegistrationHandleTest, DestructorDeregsAllMrs) {
   ibv_mr mr0{};
   ibv_mr mr1{};
@@ -180,11 +202,131 @@ TEST_F(RdmaRegistrationHandleTest, SerializeDeserializeRoundTrip) {
       header.numMrs * sizeof(uint32_t));
 
   // addr and length are provided by the caller, not from the wire.
-  RdmaRemoteRegistrationHandle remote(std::move(rkeys), header.domainId);
+  RdmaRemoteRegistrationHandle remote(
+      std::move(rkeys), header.domainId, header.registrationBase);
 
   EXPECT_EQ(remote.numMrs(), handle.numMrs());
   EXPECT_EQ(remote.rkey(0), handle.rkey(0));
   EXPECT_EQ(remote.rkey(1), handle.rkey(1));
+  EXPECT_EQ(remote.registrationBase(), handle.registrationBase());
+}
+
+TEST_F(RdmaRegistrationHandleTest, RegistrationBaseDefaultsToZero) {
+  ibv_mr mr{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42);
+  EXPECT_EQ(handle.registrationBase(), 0u);
+}
+
+TEST_F(RdmaRegistrationHandleTest, RegistrationBaseRoundTripsNonZero) {
+  ibv_mr mr{};
+  mr.rkey = 0x77;
+  constexpr uint64_t kPoolBase = 0x7f0000000000ULL;
+  RdmaRegistrationHandle handle(
+      {&mr}, ibv_, 42, /*registrationBase=*/kPoolBase);
+  EXPECT_EQ(handle.registrationBase(), kPoolBase);
+
+  auto serialized = handle.serialize();
+  RdmaRegistrationHandle::Header header;
+  std::memcpy(&header, serialized.data(), sizeof(header));
+  EXPECT_EQ(header.domainId, 42u);
+  EXPECT_EQ(header.registrationBase, kPoolBase);
+  EXPECT_EQ(header.numMrs, 1u);
+}
+
+// --- toWireAddr tests ---
+
+namespace {
+// Minimal DeviceAdapter test double whose resolveDevicePointer returns a
+// fixed, caller-controlled address. Only resolveDevicePointer is exercised by
+// toWireAddr; the remaining methods are unused and return an error.
+class FakeDeviceAdapter : public DeviceAdapter {
+ public:
+  explicit FakeDeviceAdapter(uint64_t resolvedAddr) noexcept
+      : resolvedAddr_(resolvedAddr) {}
+
+  uint64_t resolveDevicePointer(const void* /*ptr*/) const noexcept override {
+    return resolvedAddr_;
+  }
+
+  Result<void*> pinnedHostAlloc(size_t) override {
+    return ErrCode::NotImplemented;
+  }
+  Status pinnedHostFree(void*) override {
+    return ErrCode::NotImplemented;
+  }
+  Result<void*> hostGetDevicePointer(void*) override {
+    return ErrCode::NotImplemented;
+  }
+  Result<bool> isDmaBuffSupported(int) override {
+    return ErrCode::NotImplemented;
+  }
+  Result<DmaBuff> exportDmaBuff(
+      int,
+      void*,
+      size_t,
+      DmaBufMapping = DmaBufMapping::Default) override {
+    return ErrCode::NotImplemented;
+  }
+  Status closeDmaBuff(DmaBuff&) override {
+    return ErrCode::NotImplemented;
+  }
+
+ private:
+  uint64_t resolvedAddr_;
+};
+} // namespace
+
+// Host pointer (deviceId < 0) with zero base: wire address is the raw pointer.
+TEST_F(RdmaRegistrationHandleTest, ToWireAddrHostPointerNoBaseReturnsRawAddr) {
+  ibv_mr mr{};
+  char buf[16]{};
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42);
+  EXPECT_EQ(handle.toWireAddr(buf), reinterpret_cast<uint64_t>(buf));
+}
+
+// Host pointer (deviceId < 0) with a non-zero base: base is subtracted.
+TEST_F(RdmaRegistrationHandleTest, ToWireAddrHostPointerSubtractsBase) {
+  ibv_mr mr{};
+  char buf[16]{};
+  constexpr uint64_t kBase = 0x1000;
+  RdmaRegistrationHandle handle({&mr}, ibv_, 42, /*registrationBase=*/kBase);
+  EXPECT_EQ(handle.toWireAddr(buf), reinterpret_cast<uint64_t>(buf) - kBase);
+}
+
+// Device pointer (deviceId >= 0): the adapter resolves the address, then base
+// is subtracted. The input pointer is opaque to the adapter.
+TEST_F(
+    RdmaRegistrationHandleTest,
+    ToWireAddrDevicePointerResolvesThenSubtractsBase) {
+  ibv_mr mr{};
+  char buf[16]{};
+  constexpr uint64_t kDevAddr = 0x7f0000005000ULL;
+  constexpr uint64_t kBase = 0x7f0000000000ULL;
+  auto adapter = std::make_shared<FakeDeviceAdapter>(kDevAddr);
+  RdmaRegistrationHandle handle(
+      {&mr}, ibv_, 42, /*registrationBase=*/kBase, adapter, /*deviceId=*/0);
+  EXPECT_EQ(handle.toWireAddr(buf), kDevAddr - kBase);
+}
+
+// Remote handle with zero base: wire address is the raw pointer (no adapter
+// dereference, so a null adapter is fine).
+TEST(RdmaRemoteRegistrationHandleTest, ToWireAddrZeroBaseReturnsRawAddr) {
+  char buf[16]{};
+  RdmaRemoteRegistrationHandle handle({0x1}, 42);
+  EXPECT_EQ(handle.toWireAddr(buf), reinterpret_cast<uint64_t>(buf));
+}
+
+// Remote handle with a non-zero base: the adapter resolves the address, then
+// base is subtracted.
+TEST(
+    RdmaRemoteRegistrationHandleTest,
+    ToWireAddrNonZeroBaseResolvesThenSubtractsBase) {
+  char buf[16]{};
+  constexpr uint64_t kDevAddr = 0x7f0000005000ULL;
+  constexpr uint64_t kBase = 0x7f0000000000ULL;
+  auto adapter = std::make_shared<FakeDeviceAdapter>(kDevAddr);
+  RdmaRemoteRegistrationHandle handle({0x1}, 42, kBase, adapter);
+  EXPECT_EQ(handle.toWireAddr(buf), kDevAddr - kBase);
 }
 
 // --- Factory registerSegment/importSegment tests ---
@@ -220,9 +362,11 @@ class RdmaFactoryRegistrationTest : public ::testing::Test {
           attr->active_mtu = IBV_MTU_4096;
           attr->link_layer = IBV_LINK_LAYER_ETHERNET;
           attr->state = IBV_PORT_ACTIVE;
+          attr->gid_tbl_len = kMockGidTblLen;
           return Ok();
         });
-    EXPECT_CALL(*ibv_, queryGid(&fakeCtx_, 1, 3, _)).WillOnce(Return(Ok()));
+    EXPECT_CALL(*ibv_, queryGid(&fakeCtx_, 1, kTestGidIndex, _))
+        .WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, freeDeviceList(_)).WillOnce(Return(Ok()));
     // Cleanup on destruction.
     EXPECT_CALL(*ibv_, deallocPd(&fakePd_)).WillOnce(Return(Ok()));
@@ -471,10 +615,12 @@ class RdmaFactoryMultiNicTest : public ::testing::Test {
           attr->lid = 1;
           attr->active_mtu = IBV_MTU_4096;
           attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+          attr->gid_tbl_len = kMockGidTblLen;
           attr->state = IBV_PORT_ACTIVE;
           return Ok();
         });
-    EXPECT_CALL(*ibv_, queryGid(_, 1, 3, _)).WillRepeatedly(Return(Ok()));
+    EXPECT_CALL(*ibv_, queryGid(_, 1, kTestGidIndex, _))
+        .WillRepeatedly(Return(Ok()));
     EXPECT_CALL(*ibv_, freeDeviceList(_)).WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, deallocPd(&fakePd0_)).WillOnce(Return(Ok()));
     EXPECT_CALL(*ibv_, deallocPd(&fakePd1_)).WillOnce(Return(Ok()));

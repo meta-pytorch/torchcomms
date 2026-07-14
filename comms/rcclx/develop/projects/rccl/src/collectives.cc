@@ -105,7 +105,7 @@ NCCL_API(ncclResult_t, ncclAllGather, const void* sendbuff, void* recvbuff, size
 ncclResult_t ncclAllGather_impl(const void* sendbuff, void* recvbuff, size_t sendcount,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream) {
   // Check if low precision is enabled
-  if (isLowPrecisionFp8E4M3Enabled()) {
+  if (isLowPrecisionFp8E4M3AllGatherEnabled()) {
     int nRanks;
     NCCLCHECK(ncclCommCount(comm, &nRanks));
     size_t messageSize = nRanks * sendcount * ncclTypeSize(datatype);
@@ -212,7 +212,7 @@ NCCL_API(ncclResult_t, ncclAlltoAll, const void* sendbuff, void* recvbuff, size_
 ncclResult_t ncclAlltoAll_impl(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream) {
   // Check for quantized ARG alltoall via environment variable
-  if (isLowPrecisionFp8E4M3Enabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16)) {
+  if (isLowPrecisionFp8E4M3AllToAllEnabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16)) {
     int nRanks;
     NCCLCHECK(ncclCommCount(comm, &nRanks));
     if (nRanks * count * ncclTypeSize(datatype) >=
@@ -336,7 +336,7 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
 ncclResult_t ncclAllReduce_impl(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
 // Check for quantized ARG allreduce via environment variable
-if (isLowPrecisionFp8E4M3Enabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16) &&
+if (isLowPrecisionFp8E4M3AllReduceEnabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16) &&
     op == ncclSum &&
     count * ncclTypeSize(datatype) >= LOW_PRECISION_MSG_SIZE_THRESHOLD) {
   TRACE(
@@ -589,7 +589,7 @@ NCCL_API(ncclResult_t, ncclReduceScatter, const void* sendbuff, void* recvbuff, 
 ncclResult_t ncclReduceScatter_impl(const void* sendbuff, void* recvbuff, size_t recvcount,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
   // Check for quantized ARG reduce-scatter via environment variable
-  if (isLowPrecisionFp8E4M3Enabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16) &&
+  if (isLowPrecisionFp8E4M3ReduceScatterEnabled() && (datatype == ncclFloat32 || datatype == ncclBfloat16) &&
       op == ncclSum) {
     int nRanks;
     NCCLCHECK(ncclCommCount(comm, &nRanks));

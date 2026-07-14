@@ -382,10 +382,12 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     printHeader();
     printTableHeader();
 
-    // Check nNodes for pipeline support
+    // pipelineSupported is decided after init by probing the algo once (below).
     const auto statex = ctranComm_->statex_.get();
     const auto nNodes = statex->nNodes();
-    const bool pipelineSupported = nNodes > 1;
+    const bool wantPipeline =
+        (FLAGS_algo == "ctpipeline" || FLAGS_algo == "all");
+    bool pipelineSupported = false;
 
     // Generate size range (powers of 2)
     std::vector<size_t> sizes;
@@ -442,6 +444,27 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
       CUDACHECK_TEST(cudaDeviceSynchronize());
       ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+
+      // Probe pipeline once: execPipeline fail-fasts with commInvalidUsage when
+      // intra-node NVL is unavailable, so skip the pipeline measurement then.
+      if (wantPipeline && nNodes > 1) {
+        EnvRAII algoEnv(
+            NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
+        commResult_t probeRc = ctran::allGatherPExec(
+            FLAGS_in_place ? recvbuf : sendbuf, /*count=*/1, dt_, request);
+        CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+        if (probeRc == commInvalidUsage) {
+          if (globalRank == 0) {
+            std::cout
+                << "Skipping AllGatherP_Pipeline: intra-node NVL backend "
+                   "unavailable (pipeline requires NVL for all local peers)."
+                << std::endl;
+          }
+        } else {
+          COMMCHECK_TEST(probeRc); // commSuccess, or surface a real error
+          pipelineSupported = true;
+        }
+      }
     }
 
     // Run benchmarks for all sizes using the same persistent request

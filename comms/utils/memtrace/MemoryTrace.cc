@@ -108,7 +108,8 @@ void recordReg(
     uintptr_t addr,
     std::optional<int64_t> bytes,
     std::optional<int> numSegments,
-    std::optional<int64_t> durationUs) {
+    std::optional<int64_t> durationUs,
+    const std::optional<std::string>& memType) {
   if (!NCCL_MEMTRACE_ENABLE) {
     return;
   }
@@ -120,6 +121,7 @@ void recordReg(
       bytes,
       numSegments,
       durationUs,
+      memType,
       /*isRegMemEvent=*/true);
 }
 

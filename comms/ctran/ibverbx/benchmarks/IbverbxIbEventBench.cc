@@ -405,7 +405,7 @@ static void BM_Ibverbx_IbEvent_RdmaWriteWithImm(benchmark::State& state) {
     sendWr.wr.rdma.remote_addr = (uint64_t)setup.recvBuffer;
     sendWr.wr.rdma.rkey = setup.recvMr->mr()->rkey;
     sendWr.imm_data = imm_data;
-    ibv_send_wr sendWrBad{};
+    ibv_send_wr* sendWrBad{nullptr};
 
     // Construct recv WRs
     ibv_sge sgList = {};

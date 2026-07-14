@@ -35,6 +35,11 @@ done
 
 BRANCH_TO_USE="${CUSTOM_BRANCH:-$DEFAULT_BRANCH}"
 
+# Install into a writable prefix. /lib64 requires root, which is why the install
+# step failed; build_rcclx.sh installs into $PWD/build/rcclx instead. Default to
+# the active conda env (overridable via RCCL_INSTALL_PREFIX).
+RCCL_INSTALL_PREFIX="${RCCL_INSTALL_PREFIX:-${CONDA_PREFIX:-$PWD/build/rccl-install}}"
+
 function build_rccl_oss_library() {
   local repo_url="$1"
   local repo_tag="$2"
@@ -47,15 +52,33 @@ function build_rccl_oss_library() {
   mkdir -p build-output
   cd "$library_name" || exit 1
 
+  # Point the ROCm toolchain at the fbcode platform010 install (mirrors
+  # build_rcclx.sh). The default /opt/rocm does not ship amdclang++ here, so
+  # CMake fails with "is not a full path to an existing compiler tool".
+  export ROCM_PATH="${ROCM_PATH:-/usr/local/fbcode/platform010/lib/rocm-7.0}"
+  export CXX="${CXX:-$ROCM_PATH/lib/llvm/bin/amdclang++}"
+  export CC="${CC:-$ROCM_PATH/lib/llvm/bin/amdclang}"
+
+  # Build flags mirror build_rcclx.sh: build for the production GPU archs
+  # (NOT --fast, which builds local-gpu-only), disable colltrace + msccl
+  # kernels, and --install into a known prefix so RCCL_HOME points at a real
+  # library. AMDGPU_TARGETS is overridable from the environment.
+  local amdgpu_targets="${AMDGPU_TARGETS:-gfx942,gfx950}"
+  local install_prefix="$RCCL_INSTALL_PREFIX"
+
   # We want to disable mscclpp as it is not needed for torchcomms_rccl
   # rocm-7.0.0 branch has an option to disable mscclpp (--disable-mscclpp)
   # develop branch does not have this option, since mscclpp is disabled by default
   if ./install.sh --help 2>&1 | grep -q "\-\-disable-mscclpp"; then
     echo "Using --disable-mscclpp option (found in install.sh)"
-    ./install.sh --disable-mscclpp --fast --disable-msccl-kernel
+    ./install.sh --install --prefix "$install_prefix" \
+      --amdgpu_targets "$amdgpu_targets" \
+      --disable-mscclpp --disable-colltrace --disable-msccl-kernel
   else
-    echo "Using --fast --disable-msccl-kernel options (--disable-mscclpp not found in install.sh)"
-    ./install.sh --install --prefix /lib64/rccl  --fast --disable-msccl-kernel
+    echo "Using --disable-colltrace --disable-msccl-kernel options (--disable-mscclpp not found in install.sh)"
+    ./install.sh --install --prefix "$install_prefix" \
+      --amdgpu_targets "$amdgpu_targets" \
+      --disable-colltrace --disable-msccl-kernel
   fi
 
   cd .. || exit 1
@@ -69,11 +92,10 @@ if [ "$FORCE_BUILD" = true ] || [ ! -f "$ROCM_HOME/lib/librccl.so" ]; then
     echo "librccl.so not found in $ROCM_HOME/lib, building OSS library with branch: $BRANCH_TO_USE"
   fi
   build_rccl_oss_library "https://github.com/ROCm/rccl.git" "$BRANCH_TO_USE" "rccl"
-  export RCCL_HOME=/lib64/rccl/lib
+  export RCCL_HOME="$RCCL_INSTALL_PREFIX/lib"
 else
   echo "librccl.so found in $ROCM_HOME/lib, skipping OSS library build (use --custom-branch to override)"
   export RCCL_HOME=$ROCM_HOME/lib
 fi
 
-popd || true
 pip install numpy

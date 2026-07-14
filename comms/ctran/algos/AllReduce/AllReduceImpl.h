@@ -5,6 +5,7 @@
 
 #include <chrono>
 
+#include "comms/ctran/algos/AllReduce/AllReduceFusedImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -38,6 +39,10 @@ static inline const std::string allReduceAlgoName(
       return "Baseline";
     case NCCL_ALLREDUCE_ALGO::ctring:
       return "CtranAllReduceRing";
+    case NCCL_ALLREDUCE_ALGO::ctree:
+      return "CtranAllReduceTreeDirect";
+    case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
+      return "CtranAllReduceRingDirect";
     default:
       return "Unknown";
   }

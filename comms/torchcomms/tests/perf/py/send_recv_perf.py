@@ -21,15 +21,15 @@ def _do_ping_pong(
     peer: int,
     async_op: bool,
 ) -> None:
-    """Execute one ping-pong iteration between rank 0 and rank 1."""
-    if rank == 0:
+    """Execute one ping-pong iteration between paired ranks."""
+    if rank % 2 == 0:
         work = comm.send(tensor, peer, async_op)
         if async_op:
             work.wait()
         work2 = comm.recv(tensor, peer, async_op)
         if async_op:
             work2.wait()
-    elif rank == 1:
+    else:
         work = comm.recv(tensor, peer, async_op)
         if async_op:
             work.wait()
@@ -50,13 +50,17 @@ def run_send_recv_perf(
         if rank == 0:
             print("SendRecv test requires at least 2 ranks, skipping")
         return
+    if num_ranks % 2 != 0:
+        if rank == 0:
+            print("SendRecv test requires an even number of ranks, skipping")
+        return
 
     if rank == 0:
         mode = "Asynchronous" if params.async_op else "Synchronous"
         print(f"\n=== {mode} SendRecv Performance ===")
     print_perf_header(rank)
 
-    peer = 1 if rank == 0 else 0
+    peer = rank + 1 if rank % 2 == 0 else rank - 1
     element_size = torch.tensor([], dtype=params.dtype).element_size()
 
     msg_size = params.min_size

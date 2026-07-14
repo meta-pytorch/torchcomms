@@ -111,8 +111,7 @@ function build_folly {
   # Hide liburing headers — the conda liburing package lacks the ZCRX APIs
   # that folly's IoUringZeroCopyBufferPool.cpp requires, and ncclx does not
   # use io_uring anyway. Moving the headers makes __has_include(<liburing.h>)
-  # return false so FOLLY_HAS_LIBURING=0 for folly and all downstream libs
-  # (fizz, wangle, thrift).
+  # return false so FOLLY_HAS_LIBURING=0 for folly.
   local uring_h="$CMAKE_PREFIX_PATH/include/liburing.h"
   local uring_dir="$CMAKE_PREFIX_PATH/include/liburing"
   if [[ -f "$uring_h" ]]; then
@@ -120,52 +119,6 @@ function build_folly {
     [[ -d "$uring_dir" ]] && mv "$uring_dir" "${uring_dir}.disabled"
   fi
   build_fb_oss_library $PWD $XPLAT_DIR folly
-  popd
-}
-
-function build_thrift {
-  # builds thrift and installs it into the cmake prefix path
-  local thrift_conda_deps=(
-    gflags
-    gtest
-    xxhash
-    zstd
-  )
-  if [ -z "$SKIP_CONDA_INSTALL" ]; then
-    conda install -p "$CONDA_DIR" "${thrift_conda_deps[@]}" --yes
-  fi
-
-  mkdir -p $THRIFT_STAGING_DIR
-  pushd $THRIFT_STAGING_DIR
-
-  export LD_LIBRARY_PATH="$CMAKE_PREFIX_PATH/lib"
-
-  build_fb_oss_library $PWD $XPLAT_DIR fizz
-  build_fb_oss_library $PWD $XPLAT_DIR quic
-  build_fb_oss_library $PWD $XPLAT_DIR wangle
-  build_fb_oss_library $PWD $XPLAT_DIR thrift
-  popd
-}
-
-function build_comms_tracing_service {
-  local include_prefix="comms/analyzer/if"
-  mkdir -p "$COMMS_TRACING_SERVICE_STAGING_DIR"
-  pushd "$COMMS_TRACING_SERVICE_STAGING_DIR"
-
-  # set up the directory structure
-  mkdir -p "$include_prefix"
-  cp -r "$FBCODE_DIR/$include_prefix"/* "$include_prefix"
-  mv "$include_prefix"/CMakeLists.txt .
-
-  # set up the cmake config
-  cp "$FBCODE_DIR"/opensource/fbcode_builder/CMake/*.cmake "$CMAKE_PREFIX_PATH"
-
-  # build the thrift service library
-  export LD_LIBRARY_PATH="$CMAKE_PREFIX_PATH/lib"
-  mkdir -p build
-  cd build
-  do_cmake_build ..
-
   popd
 }
 
@@ -218,8 +171,6 @@ fi
 NCCL_BUILD_SKIP_SANITY_CHECK=${NCCL_BUILD_SKIP_SANITY_CHECK:=0}
 NCCL_PYTHON_PACKAGE_SKIP_SANITY_CHECK=${NCCL_PYTHON_PACKAGE_SKIP_SANITY_CHECK:=0}
 FOLLY_STAGING_DIR="${STAGINGDIR}/folly"
-THRIFT_STAGING_DIR="${STAGINGDIR}/thrift"
-COMMS_TRACING_SERVICE_STAGING_DIR="${STAGINGDIR}/comms_tracing_service"
 CONDA_INCLUDE_DIR="${CONDA_PREFIX}/include"
 CONDA_LIB_DIR="${CONDA_PREFIX}/lib"
 CONDA_BIN_DIR="${CONDA_PREFIX}/bin"
@@ -229,8 +180,6 @@ THIRD_PARTY_LDFLAGS=""
 
 if [[ -z "${NVCC_BUILD_SKIP_FOLLY}" ]]; then
   build_folly
-  build_thrift
-  build_comms_tracing_service
 fi
 
 echo "BUILDDIR=${BUILDDIR}"
@@ -241,35 +190,6 @@ echo "NCCL_FP8=${NCCL_FP8}"
 echo "NCCL_ENABLE_IN_TRAINER_TUNE=${NCCL_ENABLE_IN_TRAINER_TUNE}"
 
 export PKG_CONFIG_PATH="${CONDA_LIB_DIR}"/pkgconfig
-THRIFT_SERVICE_LDFLAGS=(
-  "-l:libcomms_tracing_service.a"
-  "-Wl,--start-group"
-  "-l:libasync.a"
-  "-l:libconcurrency.a"
-  "-l:libthrift-core.a"
-  "-l:libthriftannotation.a"
-  "-l:libthriftanyrep.a"
-  "-l:libthriftcpp2.a"
-  "-l:libthrift_dynamic_value.a"
-  "-l:libthrift_path.a"
-  "-l:libthriftfrozen2.a"
-  "-l:libthriftmetadata.a"
-  "-l:libthriftprotocol.a"
-  "-l:libthrifttype.a"
-  "-l:libthrifttyperep.a"
-  "-l:librpcmetadata.a"
-  "-l:libruntime.a"
-  "-l:libserverdbginfo.a"
-  "-l:libtransport.a"
-  "-l:libcommon.a"
-  "-Wl,--end-group"
-  "-l:libwangle.a"
-  "-l:libfizz.a"
-  "-lcrypto"
-  "-lssl"
-  "-lxxhash"
-)
-THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) -lboost_context -lfmt -lgflags -lglog"
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then

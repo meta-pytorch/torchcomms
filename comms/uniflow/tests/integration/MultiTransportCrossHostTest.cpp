@@ -14,6 +14,7 @@
 
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/MultiTransport.h"
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/transport/Topology.h"
 
@@ -103,7 +104,7 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     ASSERT_EQ(numRanks, 2)
         << "MultiTransportCrossHostTest requires exactly 2 MPI ranks";
 
-    auto& topo = Topology::get();
+    auto& topo = sharedTopology();
     ASSERT_TRUE(topo.available());
     ASSERT_GT(topo.nicCount(), 0u) << "Need at least 1 NIC";
   }

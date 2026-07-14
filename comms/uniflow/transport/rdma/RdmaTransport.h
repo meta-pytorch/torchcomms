@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "comms/uniflow/transport/rdma/CopyEngine.h"
+#include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
@@ -21,7 +22,7 @@
 
 namespace uniflow {
 
-constexpr uint8_t kRdmaVersion{1};
+constexpr uint8_t kRdmaVersion{2};
 
 // Forward declarations.
 class RdmaRegistrationHandle;
@@ -41,7 +42,9 @@ class RdmaSlabPool;
  */
 struct RdmaTransportConfig {
   uint32_t numQps{1}; /* Total QPs distributed round-robin across NICs. */
-  uint8_t gidIndex{3}; /* GID table index for RoCE addressing (3 = RoCEv2). */
+  /* RoCE GID table index. -1 = auto-select a RoCEv2 entry by scanning the GID
+   * table; >= 0 forces that index (3 is the Mellanox RoCEv2 convention). */
+  int16_t gidIndex{-1};
   uint8_t timeout{14}; /* IB timeout exponent for QP retransmission. */
   uint8_t retryCnt{7}; /* Number of retries before reporting an error. */
   uint8_t trafficClass{0}; /* Traffic class for GRH (QoS / DSCP). */
@@ -58,6 +61,13 @@ struct RdmaTransportConfig {
   uint32_t maxInlineData{16}; /* Max inline data bytes per WR. */
   size_t chunkSize{512 * 1024}; /* Transfer chunk size in bytes (512KB). */
   uint16_t pipelineDepth{2}; /* Send/recv pipeline depth (D staging slabs). */
+  RdmaSlabPoolConfig slabPoolConfig{.slabNum = 0}; /* Disabled by default. */
+  /* Register GPU memory over the mlx5 Data Direct path (NIC<->GPU via PCIe
+   * BAR1) instead of the standard dmabuf path (which traverses the Grace C2C
+   * link on GB300). Only applies to NICs that expose a data-direct sysfs path;
+   * other NICs fall back to the standard path. Default off = existing behavior.
+   */
+  bool dataDirect{false};
 };
 
 /*
@@ -421,7 +431,11 @@ class RdmaTransport : public Transport {
   bool putGetIoProcess(PutGetTransfer& entry) noexcept;
   bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;
 
-  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail);
+  /// Computes per-QP available SQ capacity. When bufNuma >= 0 (host memory with
+  /// a known NUMA node), QPs whose NIC is on a different NUMA node are capped
+  /// to zero so put/get only targets NUMA-local NICs; falls back to all NICs if
+  /// none are NUMA-local.
+  uint32_t getQpAvail(std::vector<uint32_t>& qpAvail, int bufNuma = -1);
 
   uint32_t assignToQps(
       const uint32_t remaining,
@@ -444,18 +458,6 @@ class RdmaTransport : public Transport {
   /// ensuring pollCompletions will decrement it back to zero.
   Result<uint32_t>
   spray(std::vector<SendWr>& wrs, size_t& idx, uint32_t taskId, Task& task);
-
-  /// Returns whether a pending transfer may begin posting without exceeding
-  /// the transport's conservative SQ admission budget.
-  bool canStartTransfer(const PutGetTransfer& transfer) const;
-
-  /// Conservative global WR budget used to admit complete transfers. A single
-  /// transfer larger than this budget may still start when no other WRs are
-  /// outstanding, so very large messages continue to make progress.
-  size_t admissionBudgetWrs() const;
-
-  /// Total WRs currently outstanding across all QPs.
-  size_t outstandingWrs() const;
 
   /// Posts a chain of WRs to a single QP. On partial failure, posts a
   /// flush WR so the HCA generates a CQE for the consumed unsignaled WRs.
@@ -519,6 +521,8 @@ class RdmaTransport : public Transport {
   Status recvDoneProgress(SendRecvTransfer& transfer, uint32_t depth);
   Result<bool>
   postCts(uint32_t slot, uint16_t slabIdx, uint32_t taskId, Task& task);
+
+  friend class GetQpAvailNumaTest;
 
   const std::shared_ptr<IbvApi> ibvApi_;
   const std::shared_ptr<CudaApi> cudaApi_;
@@ -683,10 +687,17 @@ class RdmaTransportFactory : public TransportFactory {
 
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
-  size_t pageSize_{0};
   std::atomic<uint64_t> dmaBufFallbackCount_{0};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
+  std::shared_ptr<DeviceAdapter> deviceAdapter_;
   const RdmaTransportConfig config_;
+  std::shared_ptr<RdmaSlabPool> slabPool_;
+
+  /// Set once the "Data Direct requested but unavailable" fallback has been
+  /// logged, so this per-factory-invariant warning fires at most once rather
+  /// than on every registerSegment call. Atomic so the check-then-set latch is
+  /// race-free if registerSegment is ever called concurrently.
+  std::atomic<bool> dataDirectFallbackWarned_{false};
 };
 
 } // namespace uniflow

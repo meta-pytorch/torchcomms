@@ -34,7 +34,7 @@
 #include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 #include "comms/common/AtomicUtils.cuh"
-#include "comms/pipes/CopyUtils.cuh"
+#include "comms/prims/core/CopyUtils.cuh"
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 
 namespace torchcomms::device {
@@ -74,14 +74,14 @@ __device__ inline bool cmp_op(CmpOp cmp, uint64_t lhs, uint64_t rhs) {
 
 // Build a pipes::ThreadGroup for the given CoopScope.
 // Delegates to the pipes factory functions for each scope.
-__device__ inline comms::pipes::ThreadGroup make_thread_group(CoopScope scope) {
+__device__ inline comms::prims::ThreadGroup make_thread_group(CoopScope scope) {
   switch (scope) {
     case CoopScope::WARP:
-      return comms::pipes::make_warp_group();
+      return comms::prims::make_warp_group();
     case CoopScope::BLOCK:
-      return comms::pipes::make_block_group();
+      return comms::prims::make_block_group();
     case CoopScope::THREAD:
-      return comms::pipes::make_thread_solo();
+      return comms::prims::make_thread_solo();
   }
   // Unreachable — all CoopScope values are handled above.
   __builtin_unreachable();
@@ -94,7 +94,7 @@ __device__ inline comms::pipes::ThreadGroup make_thread_group(CoopScope scope) {
 __device__ inline void
 memcpy_nvl(void* dst, const void* src, size_t bytes, CoopScope scope) {
   auto group = make_thread_group(scope);
-  comms::pipes::memcpy_vectorized(
+  comms::prims::memcpy_vectorized(
       static_cast<char*>(dst), static_cast<const char*>(src), bytes, group);
 }
 
