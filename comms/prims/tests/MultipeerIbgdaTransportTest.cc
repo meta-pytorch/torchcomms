@@ -1242,12 +1242,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1262,13 +1259,7 @@ TEST_F(
     CUDACHECK_TEST(cudaMemset(d_output, 0, 2 * sizeof(int64_t)));
 
     test::testProgressReservations(
-        peerTransportPtr,
-        d_output,
-        sendBytes,
-        recvBytes,
-        numBlocks,
-        numBlocks,
-        blockSize);
+        peerTransportPtr, d_output, sendBytes, recvBytes, numBlocks, blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     std::array<int64_t, 2> output{};
@@ -1308,12 +1299,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1342,7 +1330,6 @@ TEST_F(
           peerTransportPtr,
           sendBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           true,
           numBlocks,
@@ -1352,7 +1339,6 @@ TEST_F(
           peerTransportPtr,
           recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           false,
           numBlocks,
@@ -1394,7 +1380,6 @@ TEST_F(
           peerTransportPtr,
           sendBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           true,
           numBlocks,
@@ -1404,7 +1389,6 @@ TEST_F(
           peerTransportPtr,
           recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           false,
           numBlocks,
@@ -1459,12 +1443,9 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -1494,7 +1475,6 @@ TEST_F(
           peerTransportPtr,
           isSender ? sendBuffer.get() : recvBuffer.get(),
           nbytes,
-          numBlocks,
           maxSignalBytes,
           isSender,
           numBlocks,
@@ -1538,11 +1518,11 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SendRecvReuseCreditCadence) {
     GTEST_SKIP() << "progress send/recv is not supported for this build";
   }
 
-  constexpr std::size_t dataBufferSize = 64 * 1024;
+  constexpr std::size_t perChannelSize = 64 * 1024;
   constexpr int pipelineDepth = 2;
   constexpr std::size_t protocolBytes = 16;
   constexpr int numBlocks = 1;
-  constexpr std::size_t perBlockSlot = dataBufferSize / numBlocks;
+  constexpr std::size_t perBlockSlot = perChannelSize;
   constexpr std::size_t nicDoneCreditQuantum =
       detail::ib_send_recv_nic_done_credit_quantum(perBlockSlot, pipelineDepth);
   constexpr std::size_t slotFreeCreditQuantum =
@@ -1615,12 +1595,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SendRecvReuseCreditCadence) {
         << testCase.name << (useProgress ? " progress" : " blocking"));
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .dataBufferSize = dataBufferSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = numBlocks,
-                .pipelineDepth = pipelineDepth,
-            },
+        .perChannelSize = perChannelSize,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();

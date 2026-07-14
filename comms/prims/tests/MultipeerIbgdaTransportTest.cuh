@@ -75,7 +75,6 @@ __global__ void sendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send);
 
@@ -84,7 +83,6 @@ __global__ void progressSendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send);
 
@@ -92,8 +90,7 @@ __global__ void progressReservationKernel(
     P2pIbgdaTransportDevice* transport,
     int64_t* output,
     std::size_t sendBytes,
-    std::size_t recvBytes,
-    int activeBlocks);
+    std::size_t recvBytes);
 
 __global__ void sendRecvReuseCreditKernel(
     P2pIbgdaTransportDevice* transport,

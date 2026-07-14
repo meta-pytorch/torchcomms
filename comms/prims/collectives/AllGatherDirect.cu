@@ -116,7 +116,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
   const auto& topo = args.ib_ring;
   auto& prev = *topo.prev;
   auto& next = *topo.next;
-  const std::size_t pipeline_window = next.pipeline_window(group.total_groups);
+  const std::size_t pipeline_window = next.pipeline_window();
   PIPES_DEVICE_CHECK_MSG(
       pipeline_window != 0,
       "hierarchical allgather IB pipeline window is zero");
@@ -130,13 +130,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
 
     const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
-        group,
-        send_src,
-        window,
-        group.total_groups,
-        max_sig,
-        timeout,
-        own_dst + off);
+        group, send_src, window, max_sig, timeout, own_dst + off);
 
     int fwd_current_rank = args.ib_rank;
     for (int step = 0; step < W - 1; step++) {
@@ -148,10 +142,9 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(
-            group, dst, next, window, group.total_groups, max_sig, timeout);
+        prev.forward(group, dst, next, window, max_sig, timeout);
       } else {
-        prev.recv(group, dst, window, group.total_groups, max_sig, timeout);
+        prev.recv(group, dst, window, max_sig, timeout);
       }
     }
   }
@@ -305,7 +298,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       auto& prev = *topo.prev;
       auto& next = *topo.next;
       const int stride = (args.ib_rank - topo.prev_rank + W) % W;
-      const std::size_t ib_window = next.pipeline_window(args.ib_num_blocks);
+      const std::size_t ib_window = next.pipeline_window();
       PIPES_DEVICE_CHECK_MSG(
           ib_window != 0,
           "hierarchical allgather overlap IB pipeline window is zero");
@@ -320,7 +313,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             group,
             send_src + chunk_off,
             window,
-            args.ib_num_blocks,
             args.ib_signaling_data_size,
             timeout,
             args.trace,
@@ -342,7 +334,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 dst,
                 next,
                 window,
-                args.ib_num_blocks,
                 args.ib_signaling_data_size,
                 timeout,
                 args.trace,
@@ -352,7 +343,6 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 group,
                 dst,
                 window,
-                args.ib_num_blocks,
                 args.ib_signaling_data_size,
                 timeout,
                 args.trace,

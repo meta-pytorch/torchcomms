@@ -445,16 +445,14 @@ enum class IbSendRecvProgressStage : uint8_t {
  * Buffer layout:
  *   sendStaging / recvStaging: pipelineDepth * dataBufferSize bytes each.
  *     Logically divided into pipelineDepth slots of dataBufferSize bytes.
- *     For one send()/recv() call, a caller chooses active_blocks
- *     (1 <= active_blocks <= maxGroups). Each slot is then partitioned into
- *     active_blocks per-block regions:
- *       perBlockSlot = (dataBufferSize / active_blocks) & ~15ULL
+ *     Each slot is partitioned into maxGroups fixed channel regions:
+ *       perBlockSlot = (dataBufferSize / maxGroups) & ~15ULL
  *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
  *     is further subdivided into signaled sub-chunks:
  *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
  *     state[].nextStep counts 16-byte-aligned protocol bytes, not sub-chunks,
- *     so max_signal_bytes may change between calls as long as active_blocks is
- *     unchanged.
+ *     so max_signal_bytes may change between calls without changing the
+ *     staging layout.
  *
  *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
  *     [0, maxGroups)             — DATA_READY (sender -> receiver)

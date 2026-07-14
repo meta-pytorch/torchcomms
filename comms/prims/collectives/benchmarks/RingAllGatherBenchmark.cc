@@ -158,13 +158,11 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     const int maxGroups = config.num_blocks * config.num_rings;
     MultipeerIbgdaTransportConfig transport_config{
         .cudaDevice = localRank,
-        .dataBufferSize = config.data_buffer_size,
-        .maxGroups = maxGroups,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .pipelineDepth = config.pipeline_depth,
-            },
-        .qpsPerBlockPerNic = config.num_qps,
+        .perChannelSize =
+            config.data_buffer_size / static_cast<std::size_t>(maxGroups),
+        .max_num_channels = maxGroups,
+        .pipelineDepth = config.pipeline_depth,
+        .qpsPerConnection = config.num_qps,
     };
 
     if (config.use_ibrc) {

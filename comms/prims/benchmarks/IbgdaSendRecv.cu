@@ -27,7 +27,7 @@ __device__ __forceinline__ std::size_t section_bytes(
 __device__ __forceinline__ std::size_t
 protocol_bytes_for_tiled_group_per_launch(
     std::size_t totalBytes,
-    int activeBlocks,
+    int numBlocks,
     std::size_t slotSize,
     int groupId) {
   const std::size_t sectionBytes = min(slotSize, totalBytes);
@@ -37,7 +37,7 @@ protocol_bytes_for_tiled_group_per_launch(
 
   const std::size_t totalSections = totalBytes / sectionBytes;
   const std::size_t tileElements =
-      (((sectionBytes + activeBlocks - 1) / activeBlocks) + 15ULL) & ~15ULL;
+      (((sectionBytes + numBlocks - 1) / numBlocks) + 15ULL) & ~15ULL;
   const std::size_t tileOffset = groupId * tileElements;
   if (tileOffset >= sectionBytes) {
     return 0;
@@ -74,11 +74,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
       transport->send(
-          sub, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
       transport->recv(
-          sub, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
     }
   }
 }
@@ -121,27 +121,17 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
 
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
-      transport->init_send_progress(
-          sub, tiles.bytes(), numBlocks, maxSignalBytes);
+      transport->init_send_progress(sub, tiles.bytes(), maxSignalBytes);
       while (transport->progress_send_once(
-                 sub,
-                 tiles.data(),
-                 tiles.bytes(),
-                 numBlocks,
-                 maxSignalBytes,
-                 timeout) != IbgdaSendRecvProgressStatus::Done) {
+                 sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+             IbgdaSendRecvProgressStatus::Done) {
       }
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
-      transport->init_recv_progress(
-          sub, tiles.bytes(), numBlocks, maxSignalBytes);
+      transport->init_recv_progress(sub, tiles.bytes(), maxSignalBytes);
       while (transport->progress_recv_once(
-                 sub,
-                 tiles.data(),
-                 tiles.bytes(),
-                 numBlocks,
-                 maxSignalBytes,
-                 timeout) != IbgdaSendRecvProgressStatus::Done) {
+                 sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+             IbgdaSendRecvProgressStatus::Done) {
       }
     }
   }
@@ -197,37 +187,17 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
   if (isSender) {
     TiledBuffer<char> first(src, firstBytes, sub);
     transport->send(
-        sub,
-        first.data(),
-        first.bytes(),
-        numBlocks,
-        firstMaxSignalBytes,
-        timeout);
+        sub, first.data(), first.bytes(), firstMaxSignalBytes, timeout);
     TiledBuffer<char> second(src + firstBytes, secondBytes, sub);
     transport->send(
-        sub,
-        second.data(),
-        second.bytes(),
-        numBlocks,
-        secondMaxSignalBytes,
-        timeout);
+        sub, second.data(), second.bytes(), secondMaxSignalBytes, timeout);
   } else {
     TiledBuffer<char> first(dst, firstBytes, sub);
     transport->recv(
-        sub,
-        first.data(),
-        first.bytes(),
-        numBlocks,
-        firstMaxSignalBytes,
-        timeout);
+        sub, first.data(), first.bytes(), firstMaxSignalBytes, timeout);
     TiledBuffer<char> second(dst + firstBytes, secondBytes, sub);
     transport->recv(
-        sub,
-        second.data(),
-        second.bytes(),
-        numBlocks,
-        secondMaxSignalBytes,
-        timeout);
+        sub, second.data(), second.bytes(), secondMaxSignalBytes, timeout);
   }
 }
 
@@ -274,7 +244,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
     transport->send(
-        group, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
+        group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
   }
 }
 
@@ -293,7 +263,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
     transport->recv(
-        group, tiles.data(), tiles.bytes(), numBlocks, maxSignalBytes, timeout);
+        group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
   }
 }
 
@@ -331,12 +301,12 @@ void launch_ibgda_recv(
 
 __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
-    int activeBlocks,
+    int numBlocks,
     std::size_t totalBytes,
     int iterations,
     Timeout timeout) {
   auto group = make_block_group();
-  if (group.group_id >= static_cast<uint32_t>(activeBlocks)) {
+  if (group.group_id >= static_cast<uint32_t>(numBlocks)) {
     return;
   }
 
@@ -344,7 +314,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
   const auto& state = transport->send_recv_state();
   const std::size_t expectedBytes =
       protocol_bytes_for_tiled_group_per_launch(
-          totalBytes, activeBlocks, state.dataBufferSize, groupId) *
+          totalBytes, numBlocks, state.dataBufferSize, groupId) *
       iterations;
   if (expectedBytes == 0) {
     return;
@@ -364,7 +334,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
 
 void launch_ibgda_drain_send_recv(
     P2pIbgdaTransportDevice* transport,
-    int activeBlocks,
+    int numBlocks,
     std::size_t totalBytes,
     int iterations,
     cudaStream_t stream,
@@ -372,8 +342,8 @@ void launch_ibgda_drain_send_recv(
   if (totalBytes == 0 || iterations == 0) {
     return;
   }
-  ibgda_drain_send_recv_kernel<<<activeBlocks, 512, 0, stream>>>(
-      transport, activeBlocks, totalBytes, iterations, timeout);
+  ibgda_drain_send_recv_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, numBlocks, totalBytes, iterations, timeout);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("[PIPES] Drain launch failed: %s\n", cudaGetErrorString(err));
@@ -440,15 +410,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
-    transport->init_send_progress(
-        group, tiles.bytes(), numBlocks, maxSignalBytes);
+    transport->init_send_progress(group, tiles.bytes(), maxSignalBytes);
     while (transport->progress_send_once(
-               group,
-               tiles.data(),
-               tiles.bytes(),
-               numBlocks,
-               maxSignalBytes,
-               timeout) != IbgdaSendRecvProgressStatus::Done) {
+               group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
     }
   }
 }
@@ -467,15 +432,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
-    transport->init_recv_progress(
-        group, tiles.bytes(), numBlocks, maxSignalBytes);
+    transport->init_recv_progress(group, tiles.bytes(), maxSignalBytes);
     while (transport->progress_recv_once(
-               group,
-               tiles.data(),
-               tiles.bytes(),
-               numBlocks,
-               maxSignalBytes,
-               timeout) != IbgdaSendRecvProgressStatus::Done) {
+               group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
     }
   }
 }

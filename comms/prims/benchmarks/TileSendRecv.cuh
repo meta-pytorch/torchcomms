@@ -85,7 +85,7 @@
 // Because signals are monotonically increasing, old signal values from
 // previous calls are always < current expected values, so no ABA issue.
 // Since the cursor is in bytes, changing max_signal_bytes between calls with
-// the same active_blocks is safe. Changing active_blocks changes the staging
+// the same maxGroups is safe. Changing maxGroups changes the staging
 // layout and requires a barrier first.
 //
 // PRECONDITION: stepState must be zeroed before the first kernel launch.
