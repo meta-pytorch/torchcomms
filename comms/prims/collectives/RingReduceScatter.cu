@@ -43,7 +43,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
       ring_group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const std::size_t pipeline_window = next.pipeline_window(group.total_groups);
+  const std::size_t pipeline_window = next.pipeline_window();
 
   const int my_rank = args.my_rank;
   const int stride = (my_rank - topo.prev_rank + W) % W;
@@ -61,7 +61,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
     // Step 0: Send raw input chunk to next.
     const char* send_src = input_base + current_rank * chunk_bytes +
         ring_offset + io_tile_offset + off;
-    next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+    next.send(group, send_src, window, max_sig, timeout);
 
     // W-1 receive steps: forward for intermediate, recv for final.
     for (int step = 0; step < W - 1; step++) {
@@ -71,25 +71,12 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
 
       if (step < W - 2) {
         prev.template forward<ReduceOp>(
-            group,
-            nullptr,
-            next,
-            window,
-            group.total_groups,
-            max_sig,
-            timeout,
-            local_input);
+            group, nullptr, next, window, max_sig, timeout, local_input);
       } else {
         char* dst = reinterpret_cast<char*>(args.output) + ring_offset +
             io_tile_offset + off;
         prev.template recv<ReduceOp>(
-            group,
-            dst,
-            window,
-            group.total_groups,
-            max_sig,
-            timeout,
-            local_input);
+            group, dst, window, max_sig, timeout, local_input);
       }
     }
   }

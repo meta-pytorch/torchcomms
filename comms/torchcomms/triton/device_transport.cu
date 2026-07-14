@@ -84,12 +84,10 @@ __device__ __noinline__ int torchcomms_transport_send(
           static_cast<std::size_t>(max_signal_bytes));
       break;
     case TransportType::P2P_IBGDA:
-      // IBGDA's active_blocks defaults to 0 (use tile_max_groups).
       handle->get_ibgda(peer).send(
           group,
           src_ptr,
           static_cast<std::size_t>(nbytes),
-          /*active_blocks=*/0,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:
@@ -117,12 +115,10 @@ __device__ __noinline__ int torchcomms_transport_recv(
           static_cast<std::size_t>(max_signal_bytes));
       break;
     case TransportType::P2P_IBGDA:
-      // IBGDA's active_blocks defaults to 0 (use tile_max_groups).
       handle->get_ibgda(peer).recv(
           group,
           dst_ptr,
           static_cast<std::size_t>(nbytes),
-          /*active_blocks=*/0,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:

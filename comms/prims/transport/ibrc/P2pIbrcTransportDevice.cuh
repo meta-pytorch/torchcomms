@@ -469,27 +469,22 @@ class P2pIbrcTransportDevice {
     return sendRecv_.send_recv_state();
   }
 
-  __device__ __forceinline__ std::size_t pipeline_window(
-      int active_blocks) const {
-    return sendRecv_.pipeline_window(active_blocks);
+  __device__ __forceinline__ std::size_t pipeline_window() const {
+    return sendRecv_.pipeline_window();
   }
 
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_send_progress(
-        group, nbytes, active_blocks, max_signal_bytes);
+    sendRecv_.init_send_progress(group, nbytes, max_signal_bytes);
   }
 
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_recv_progress(
-        group, nbytes, active_blocks, max_signal_bytes);
+    sendRecv_.init_recv_progress(group, nbytes, max_signal_bytes);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -497,19 +492,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_send_once<P2pIbrcTransportDevice, CopyOp>(
-        *this,
-        group,
-        src,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
+        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -517,19 +504,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     return sendRecv_.progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
-        *this,
-        group,
-        dst,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
+        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -537,19 +516,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     sendRecv_.send<P2pIbrcTransportDevice, CopyOp>(
-        *this,
-        group,
-        src,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
+        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -557,19 +528,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
     sendRecv_.recv<P2pIbrcTransportDevice, CopyOp>(
-        *this,
-        group,
-        dst,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
+        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -578,7 +541,6 @@ class P2pIbrcTransportDevice {
       void* __restrict__ dst,
       P2pIbrcTransportDevice& fwd,
       std::size_t nbytes,
-      int active_blocks = 0,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
@@ -589,7 +551,6 @@ class P2pIbrcTransportDevice {
         fwd.sendRecv_,
         fwd,
         nbytes,
-        active_blocks,
         max_signal_bytes,
         timeout,
         args...);

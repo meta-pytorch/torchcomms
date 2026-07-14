@@ -36,7 +36,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
       ring_group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const std::size_t pipeline_window = next.pipeline_window(group.total_groups);
+  const std::size_t pipeline_window = next.pipeline_window();
 
   const int my_rank = args.my_rank;
   const int stride = (my_rank - topo.prev_rank + W) % W;
@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
     // Step 0: Send own chunk to next.
     char* send_src = args.recvbuf + my_rank * chunk_bytes + ring_offset +
         io_tile_offset + off;
-    next.send(group, send_src, window, group.total_groups, max_sig, timeout);
+    next.send(group, send_src, window, max_sig, timeout);
 
     // Steps 1..W-1: receive and forward (or just receive on last step).
     int current_rank = my_rank;
@@ -66,10 +66,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(
-            group, dst, next, window, group.total_groups, max_sig, timeout);
+        prev.forward(group, dst, next, window, max_sig, timeout);
       } else {
-        prev.recv(group, dst, window, group.total_groups, max_sig, timeout);
+        prev.recv(group, dst, window, max_sig, timeout);
       }
     }
   }

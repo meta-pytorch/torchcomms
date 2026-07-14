@@ -101,7 +101,7 @@ void launch_ibgda_recv(
  */
 void launch_ibgda_drain_send_recv(
     P2pIbgdaTransportDevice* transport,
-    int activeBlocks,
+    int numBlocks,
     std::size_t totalBytes,
     int iterations,
     cudaStream_t stream,

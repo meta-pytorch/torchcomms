@@ -129,7 +129,6 @@ void testSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
@@ -142,7 +141,6 @@ void testProgressSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
@@ -157,7 +155,6 @@ void testProgressReservations(
     int64_t* output,
     std::size_t sendBytes,
     std::size_t recvBytes,
-    int activeBlocks,
     int numBlocks,
     int blockSize);
 

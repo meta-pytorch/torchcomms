@@ -211,12 +211,9 @@ class IbgdaSendRecvBenchmarkContext {
 
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank_,
-        .dataBufferSize = kSlotSize,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = kNumBlocks,
-                .pipelineDepth = kPipelineDepth,
-            },
+        .perChannelSize = kSlotSize / kNumBlocks,
+        .max_num_channels = kNumBlocks,
+        .pipelineDepth = kPipelineDepth,
     };
     transport_ = std::make_unique<MultipeerIbgdaTransport>(
         globalRank_, worldSize_, bootstrap_, transportConfig);
