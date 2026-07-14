@@ -326,18 +326,15 @@ __global__ void sendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send) {
   auto group = make_block_group();
   Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
-    transport->send(
-        group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout);
+    transport->send(group, buffer, nbytes, maxSignalBytes, timeout);
   } else {
-    transport->recv(
-        group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout);
+    transport->recv(group, buffer, nbytes, maxSignalBytes, timeout);
   }
 }
 
@@ -345,13 +342,12 @@ void testSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
     int blockSize) {
   sendRecvKernel<<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+      transport, buffer, nbytes, maxSignalBytes, send);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -364,22 +360,21 @@ __global__ void progressSendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send) {
   auto group = make_block_group();
   Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
-    transport->init_send_progress(group, nbytes, activeBlocks, maxSignalBytes);
+    transport->init_send_progress(group, nbytes, maxSignalBytes);
     while (transport->progress_send_once(
-               group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout) !=
+               group, buffer, nbytes, maxSignalBytes, timeout) !=
            IbgdaSendRecvProgressStatus::Done) {
     }
   } else {
-    transport->init_recv_progress(group, nbytes, activeBlocks, maxSignalBytes);
+    transport->init_recv_progress(group, nbytes, maxSignalBytes);
     while (transport->progress_recv_once(
-               group, buffer, nbytes, activeBlocks, maxSignalBytes, timeout) !=
+               group, buffer, nbytes, maxSignalBytes, timeout) !=
            IbgdaSendRecvProgressStatus::Done) {
     }
   }
@@ -389,11 +384,10 @@ __global__ void progressReservationKernel(
     P2pIbgdaTransportDevice* transport,
     int64_t* output,
     std::size_t sendBytes,
-    std::size_t recvBytes,
-    int activeBlocks) {
+    std::size_t recvBytes) {
   auto group = make_block_group();
-  transport->init_send_progress(group, sendBytes, activeBlocks);
-  transport->init_recv_progress(group, recvBytes, activeBlocks);
+  transport->init_send_progress(group, sendBytes);
+  transport->init_recv_progress(group, recvBytes);
 
   if (group.is_leader()) {
     const auto& sendRecvState = transport->send_recv_state();
@@ -414,6 +408,7 @@ __global__ void sendRecvReuseCreditKernel(
     uint64_t waitExpectedNicDoneCredit,
     uint64_t waitExpectedSlotFreeCredit,
     uint64_t* output) {
+  (void)activeBlocks;
   auto group = make_block_group();
   Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
@@ -421,23 +416,23 @@ __global__ void sendRecvReuseCreditKernel(
   for (int i = 0; i < iterations; ++i) {
     if (useProgress) {
       if (send) {
-        transport->init_send_progress(group, nbytes, activeBlocks);
-        while (transport->progress_send_once(
-                   group, buffer, nbytes, activeBlocks, 0, timeout) !=
-               IbgdaSendRecvProgressStatus::Done) {
+        transport->init_send_progress(group, nbytes);
+        while (
+            transport->progress_send_once(group, buffer, nbytes, 0, timeout) !=
+            IbgdaSendRecvProgressStatus::Done) {
         }
       } else {
-        transport->init_recv_progress(group, nbytes, activeBlocks);
-        while (transport->progress_recv_once(
-                   group, buffer, nbytes, activeBlocks, 0, timeout) !=
-               IbgdaSendRecvProgressStatus::Done) {
+        transport->init_recv_progress(group, nbytes);
+        while (
+            transport->progress_recv_once(group, buffer, nbytes, 0, timeout) !=
+            IbgdaSendRecvProgressStatus::Done) {
         }
       }
     } else {
       if (send) {
-        transport->send(group, buffer, nbytes, activeBlocks, 0, timeout);
+        transport->send(group, buffer, nbytes, 0, timeout);
       } else {
-        transport->recv(group, buffer, nbytes, activeBlocks, 0, timeout);
+        transport->recv(group, buffer, nbytes, 0, timeout);
       }
     }
   }
@@ -475,7 +470,6 @@ void testProgressSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
@@ -484,7 +478,6 @@ void testProgressSendRecv(
   (void)transport;
   (void)buffer;
   (void)nbytes;
-  (void)activeBlocks;
   (void)maxSignalBytes;
   (void)send;
   (void)numBlocks;
@@ -492,7 +485,7 @@ void testProgressSendRecv(
   throw std::runtime_error("progress send/recv is NVIDIA-only");
 #else
   progressSendRecvKernel<<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+      transport, buffer, nbytes, maxSignalBytes, send);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -555,7 +548,6 @@ void testProgressReservations(
     int64_t* output,
     std::size_t sendBytes,
     std::size_t recvBytes,
-    int activeBlocks,
     int numBlocks,
     int blockSize) {
 #ifdef __HIP_PLATFORM_AMD__
@@ -563,13 +555,12 @@ void testProgressReservations(
   (void)output;
   (void)sendBytes;
   (void)recvBytes;
-  (void)activeBlocks;
   (void)numBlocks;
   (void)blockSize;
   throw std::runtime_error("progress send/recv is NVIDIA-only");
 #else
   progressReservationKernel<<<numBlocks, blockSize>>>(
-      transport, output, sendBytes, recvBytes, activeBlocks);
+      transport, output, sendBytes, recvBytes);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

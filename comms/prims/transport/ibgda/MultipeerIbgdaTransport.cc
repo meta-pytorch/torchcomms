@@ -710,11 +710,12 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     allocateResources();
     registerMemory();
 
-    // Allocate send/recv staging buffers (if configured). Eager mode delegates
-    // to the shared base (Device counter: NIC loopback atomic); lazy mode only
-    // sizes the inherited per-peer view vector — the shared base
-    // allocateSendRecvBufferForPeer() fills it per peer at materialization.
-    if (config_.sendRecv.has_value()) {
+    // Allocate send/recv staging buffers when fixed channels are configured.
+    // Eager mode delegates to the shared base (Device counter: NIC loopback
+    // atomic); lazy mode only sizes the inherited per-peer view vector — the
+    // shared base allocateSendRecvBufferForPeer() fills it per peer at
+    // materialization.
+    if (sendRecvBuffersEnabled()) {
       if (!config_.ibLazyConnect) {
         allocateSendRecvBuffersEager(IbCounterStorage::Device);
       } else {

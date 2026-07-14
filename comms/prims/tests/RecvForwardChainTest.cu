@@ -34,16 +34,16 @@ __global__ void recv_forward_chain_kernel(
   if (my_rank == 0) {
     // First rank: send to next
     P2pIbgdaTransportDevice& next = *transports[next_rank];
-    next.send(group, send_buf + my_off, my_bytes, num_blocks);
+    next.send(group, send_buf + my_off, my_bytes);
   } else if (my_rank == world_size - 1) {
     // Last rank: receive from prev
     P2pIbgdaTransportDevice& prev = *transports[prev_rank];
-    prev.recv(group, recv_buf + my_off, my_bytes, num_blocks);
+    prev.recv(group, recv_buf + my_off, my_bytes);
   } else {
     P2pIbgdaTransportDevice& prev = *transports[prev_rank];
     P2pIbgdaTransportDevice& next = *transports[next_rank];
     char* dst = use_dst ? (recv_buf + my_off) : nullptr;
-    prev.forward(group, dst, next, my_bytes, num_blocks);
+    prev.forward(group, dst, next, my_bytes);
     if (out != nullptr && group.is_leader()) {
       const auto& prevState = prev.send_recv_state();
       const auto& nextState = next.send_recv_state();

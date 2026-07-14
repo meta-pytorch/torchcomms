@@ -41,14 +41,13 @@ TEST_P(RingAllGatherTest, Correctness) {
 
   std::unique_ptr<MultipeerIbgdaTransport> transport;
   try {
+    const int maxChannels = config.num_blocks * params.num_rings;
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
-        .dataBufferSize = params.data_buffer_size,
-        .sendRecv =
-            MultipeerIbgdaTransportConfig::SendRecvConfig{
-                .maxGroups = config.num_blocks * params.num_rings,
-                .pipelineDepth = params.pipeline_depth,
-            },
+        .perChannelSize =
+            params.data_buffer_size / static_cast<std::size_t>(maxChannels),
+        .max_num_channels = maxChannels,
+        .pipelineDepth = params.pipeline_depth,
         .ibLazyConnect = params.ibLazyConnect,
     };
     transport = std::make_unique<MultipeerIbgdaTransport>(

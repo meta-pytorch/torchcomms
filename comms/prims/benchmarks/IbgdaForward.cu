@@ -30,22 +30,14 @@ __global__ void __launch_bounds__(512, 1) ibgda_forward_kernel(
 
     if (my_rank == 0) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, group);
-      next_transport->send(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
     } else if (my_rank == 2) {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
       prev_transport->forward(
-          group,
-          tiles.data(),
-          *next_transport,
-          tiles.bytes(),
-          numBlocks,
-          0,
-          timeout);
+          group, tiles.data(), *next_transport, tiles.bytes(), 0, timeout);
     }
   }
 }
@@ -74,18 +66,14 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_send_kernel(
 
     if (my_rank == 0) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, group);
-      next_transport->send(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
     } else if (my_rank == 2) {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
-      next_transport->send(
-          group, tiles.data(), tiles.bytes(), numBlocks, 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
     }
   }
 }
