@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -51,6 +52,30 @@ class NvlBootstrapAdapter : public meta::comms::IBootstrap {
     return underlying_->barrierNvlDomain(rank, nranks, localRankToCommRank_);
   }
 
+  folly::SemiFuture<int> allGatherNvlDomain(
+      void* buf,
+      int len,
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override {
+    return underlying_->allGatherNvlDomain(
+        buf,
+        len,
+        nvlLocalRank,
+        nvlNranks,
+        translateLocalRanks(std::move(nvlRankToCommRank)));
+  }
+
+  folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override {
+    return underlying_->barrierNvlDomain(
+        nvlLocalRank,
+        nvlNranks,
+        translateLocalRanks(std::move(nvlRankToCommRank)));
+  }
+
   folly::SemiFuture<int> send(void* buf, int len, int peer, int tag) override {
     return underlying_->send(buf, len, localRankToCommRank_[peer], tag);
   }
@@ -60,6 +85,13 @@ class NvlBootstrapAdapter : public meta::comms::IBootstrap {
   }
 
  private:
+  std::vector<int> translateLocalRanks(std::vector<int> localRanks) const {
+    for (auto& rank : localRanks) {
+      rank = localRankToCommRank_.at(static_cast<std::size_t>(rank));
+    }
+    return localRanks;
+  }
+
   std::shared_ptr<meta::comms::IBootstrap> underlying_;
   std::vector<int> localRankToCommRank_;
 };
