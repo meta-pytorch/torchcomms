@@ -530,13 +530,20 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
-  if (type == P2pIbBackendType::IBRC) {
+  if (type == P2pIbBackendType::IBRC && fwd.type == P2pIbBackendType::IBRC) {
     ibrc->forward<CopyOp>(
         group, dst, *fwd.ibrc, nbytes, max_signal_bytes, timeout, args...);
-  } else {
+    return;
+  }
+  if (type == P2pIbBackendType::IBGDA && fwd.type == P2pIbBackendType::IBGDA) {
     ibgda->forward<CopyOp>(
         group, dst, *fwd.ibgda, nbytes, max_signal_bytes, timeout, args...);
+    return;
   }
+  if (group.is_leader()) {
+    printf("[PIPES] FATAL: mixed IB backend forward is unsupported\n");
+  }
+  PIPES_DEVICE_TRAP();
 }
 
 __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window()

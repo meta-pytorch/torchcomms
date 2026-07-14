@@ -93,7 +93,7 @@ __device__ __forceinline__ void trace_ibgda_event(
 #endif
 
 /**
- * IbSendRecvDevice — transport-agnostic pipelined RDMA send/recv.
+ * IbSendRecvOps — transport-agnostic pipelined RDMA send/recv.
  *
  * This class owns master's full async send/recv algorithm: the blocking
  * `send`/`recv`/`forward`, the resumable `init_*_progress` /
@@ -102,14 +102,14 @@ __device__ __forceinline__ void trace_ibgda_event(
  * common explicit-buffer IB device ops `put` (fused signal+counter),
  * `signal`, `wait_signal`, `wait_counter`, `read_signal`, and `read_counter`.
  *
- * Every public method takes the backend-owned `IbSendRecvState` plus the owning
+ * Every public method takes the backend-owned `IbChannelLayout` plus the owning
  * transport as parameters and routes every transport op through that transport.
  * `P2pIbgdaTransportDevice` and `P2pIbrcTransportDevice` own the state and use
  * this helper only for the shared send/recv algorithm.
  */
-class IbSendRecvDevice {
+class IbSendRecvOps {
  public:
-  __host__ __device__ IbSendRecvDevice() = default;
+  __host__ __device__ IbSendRecvOps() = default;
 
   /**
    * Initialize transport-owned state for one pipelined send operation.
@@ -137,31 +137,33 @@ class IbSendRecvDevice {
    * @param nbytes Number of user-buffer bytes to send for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename Transport>
   __device__ __forceinline__ void init_send_progress(
-      IbSendRecvState& sendRecvState,
+      Transport& transport,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    const int progressIndex = progress_send_index(sendRecvState, group);
-    auto& slot = progress_state_slot(sendRecvState, group, progressIndex);
+    auto& slot = progress_send_slot(transport, channelLayout, group);
     assert_progress_slot_idle(group, slot, "send");
-    IbSendRecvState::ProgressSlot state{};
+    IbChannelProgress state{};
     state.reuseCreditStep = slot.reuseCreditStep;
     state.activeStage = nbytes == 0
         ? detail::IbSendRecvProgressStage::Done
         : detail::IbSendRecvProgressStage::WaitNicDone;
     if (nbytes == 0) {
-      store_progress_state(sendRecvState, group, progressIndex, state);
+      store_progress_state(group, slot, state);
       return;
     }
     // Validate the transfer before reserving the transport byte cursor.
     const ProgressGeometry geometry = make_progress_geometry(
-        sendRecvState, group, nbytes, max_signal_bytes, "init_send_progress");
-    state.activeBaseStep = reserve_progress_step(
-        sendRecvState, group, progressIndex, geometry.protocolBytes);
-    store_progress_state(sendRecvState, group, progressIndex, state);
+        channelLayout, group, nbytes, max_signal_bytes, "init_send_progress");
+    state.activeBaseStep =
+        reserve_progress_step(group, slot, geometry.protocolBytes);
+    store_progress_state(group, slot, state);
 #else
+    (void)transport;
     (void)group;
     (void)nbytes;
     (void)max_signal_bytes;
@@ -192,31 +194,33 @@ class IbSendRecvDevice {
    * @param nbytes Number of user-buffer bytes to receive for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename Transport>
   __device__ __forceinline__ void init_recv_progress(
-      IbSendRecvState& sendRecvState,
+      Transport& transport,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    const int progressIndex = progress_recv_index(sendRecvState, group);
-    auto& slot = progress_state_slot(sendRecvState, group, progressIndex);
+    auto& slot = progress_recv_slot(transport, channelLayout, group);
     assert_progress_slot_idle(group, slot, "recv");
-    IbSendRecvState::ProgressSlot state{};
+    IbChannelProgress state{};
     state.reuseCreditStep = slot.reuseCreditStep;
     state.activeStage = nbytes == 0
         ? detail::IbSendRecvProgressStage::Done
         : detail::IbSendRecvProgressStage::WaitDataReady;
     if (nbytes == 0) {
-      store_progress_state(sendRecvState, group, progressIndex, state);
+      store_progress_state(group, slot, state);
       return;
     }
     // Validate the transfer before reserving the transport byte cursor.
     const ProgressGeometry geometry = make_progress_geometry(
-        sendRecvState, group, nbytes, max_signal_bytes, "init_recv_progress");
-    state.activeBaseStep = reserve_progress_step(
-        sendRecvState, group, progressIndex, geometry.protocolBytes);
-    store_progress_state(sendRecvState, group, progressIndex, state);
+        channelLayout, group, nbytes, max_signal_bytes, "init_recv_progress");
+    state.activeBaseStep =
+        reserve_progress_step(group, slot, geometry.protocolBytes);
+    store_progress_state(group, slot, state);
 #else
+    (void)transport;
     (void)group;
     (void)nbytes;
     (void)max_signal_bytes;
@@ -257,7 +261,7 @@ class IbSendRecvDevice {
   template <typename Transport, typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       Transport& transport,
-      IbSendRecvState& sendRecvState,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
@@ -268,16 +272,15 @@ class IbSendRecvDevice {
 #ifdef __HIP_PLATFORM_AMD__
     static_assert(
         sizeof(CopyOp) == 0,
-        "IbSendRecvDevice::progress_send_once() requires NVIDIA GPU");
+        "IbSendRecvOps::progress_send_once() requires NVIDIA GPU");
 #endif
-    const int progressIndex = progress_send_index(sendRecvState, group);
-    IbSendRecvState::ProgressSlot state =
-        progress_state_slot(sendRecvState, group, progressIndex);
+    auto& progressSlot = progress_send_slot(transport, channelLayout, group);
+    IbChannelProgress state = progressSlot;
     if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
       return IbgdaSendRecvProgressStatus::Done;
     }
     const ProgressGeometry progress_params = make_progress_geometry(
-        sendRecvState, group, nbytes, max_signal_bytes, "progress_send_once");
+        channelLayout, group, nbytes, max_signal_bytes, "progress_send_once");
     if (state.activeNextByte >= progress_params.protocolBytes) {
       if (group.is_leader()) {
         printf(
@@ -293,19 +296,26 @@ class IbSendRecvDevice {
     const detail::IbSendRecvProgressStage initialStage = state.activeStage;
     const std::size_t initialNextByte = state.activeNextByte;
     const std::size_t pipelineBytes = progress_params.perBlockSlot *
-        static_cast<std::size_t>(sendRecvState.pipelineDepth);
+        static_cast<std::size_t>(channelLayout.pipelineDepth);
+    IbLocalChannel& localChannel =
+        transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
+    const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
+    const IbgdaLocalBuffer localNicDoneWait = localChannel.nicDoneWait;
+    const IbgdaLocalBuffer localNicDoneCompletion =
+        localChannel.nicDoneCompletion;
+    const IbRemoteChannel remoteChannel =
+        makeIbRemoteChannel(channelLayout, progress_params.groupId);
 
     if (state.activeStage == detail::IbSendRecvProgressStage::WaitNicDone) {
       const ProgressChunk chunk =
-          next_chunk(sendRecvState, state, progress_params);
+          next_chunk(channelLayout, state, progress_params);
       if (chunk.streamEnd > pipelineBytes) {
         const uint64_t expected = chunk.streamEnd - pipelineBytes;
         uint32_t ready = 1;
         unsigned long long current = 0;
         if (group.is_leader()) {
           current = static_cast<unsigned long long>(
-              transport.read_counter(sendRecvState.localCounterBuf.subBuffer(
-                  progress_params.groupId * sizeof(uint64_t))));
+              transport.read_counter(localNicDoneWait));
           ready = current >= expected ? 1U : 0U;
           if (!ready) {
             TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
@@ -326,7 +336,7 @@ class IbSendRecvDevice {
           chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
       if (validBytes > 0) {
         CopyOp::send(
-            sendRecvState.sendStagingPtr + chunk.stagingOff,
+            channelLayout.sendStagingPtr + chunk.stagingOff,
             static_cast<const char*>(src) + chunk.dataOff,
             validBytes,
             group,
@@ -340,16 +350,14 @@ class IbSendRecvDevice {
 
     if (state.activeStage == detail::IbSendRecvProgressStage::WaitSlotFree) {
       const ProgressChunk chunk =
-          next_chunk(sendRecvState, state, progress_params);
+          next_chunk(channelLayout, state, progress_params);
       if (chunk.streamEnd > pipelineBytes) {
         const uint64_t expected = chunk.streamEnd - pipelineBytes;
         uint32_t ready = 1;
         unsigned long long current = 0;
         if (group.is_leader()) {
           current = static_cast<unsigned long long>(
-              transport.read_signal(sendRecvState.localSignalBuf.subBuffer(
-                  (sendRecvState.maxGroups + progress_params.groupId) *
-                  sizeof(uint64_t))));
+              transport.read_signal(localSlotFree));
           ready = current >= expected ? 1U : 0U;
           if (!ready) {
             TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
@@ -364,7 +372,7 @@ class IbSendRecvDevice {
         if (!ready) {
           if (state.activeStage != initialStage ||
               state.activeNextByte != initialNextByte) {
-            store_progress_state(sendRecvState, group, progressIndex, state);
+            store_progress_state(group, progressSlot, state);
             return IbgdaSendRecvProgressStatus::Progressed;
           }
           return IbgdaSendRecvProgressStatus::Waiting;
@@ -377,25 +385,20 @@ class IbSendRecvDevice {
       uint64_t counterVal = 0;
       if (group.is_leader()) {
         if (should_post_nic_done_credit(
-                sendRecvState,
-                chunk.streamEnd,
-                state.reuseCreditStep,
-                progress_params)) {
+                chunk.streamEnd, state.reuseCreditStep, progress_params)) {
           counterVal =
               reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
-          counterBuf = sendRecvState.localCounterCompletionBuf.subBuffer(
-              progress_params.groupId * sizeof(uint64_t));
+          counterBuf = localNicDoneCompletion;
           state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
         }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         transport.put(
             solo,
-            sendRecvState.sendStagingBuf.subBuffer(chunk.stagingOff),
-            sendRecvState.recvStagingBuf.subBuffer(chunk.stagingOff),
+            channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
+            remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
             chunk.bytes,
-            sendRecvState.remoteSignalBuf.subBuffer(
-                progress_params.groupId * sizeof(uint64_t)),
+            remoteChannel.dataReady,
             chunk.bytes,
             counterBuf,
             counterVal);
@@ -406,7 +409,7 @@ class IbSendRecvDevice {
       if (state.activeNextByte >= progress_params.protocolBytes) {
         transition_progress_stage(
             group, state, detail::IbSendRecvProgressStage::Done);
-        store_progress_state(sendRecvState, group, progressIndex, state);
+        store_progress_state(group, progressSlot, state);
         return IbgdaSendRecvProgressStatus::Done;
       }
       transition_progress_stage(
@@ -418,7 +421,7 @@ class IbSendRecvDevice {
     // advances. Check both fields so that case reports Progressed.
     if (state.activeStage != initialStage ||
         state.activeNextByte != initialNextByte) {
-      store_progress_state(sendRecvState, group, progressIndex, state);
+      store_progress_state(group, progressSlot, state);
       return IbgdaSendRecvProgressStatus::Progressed;
     }
     return IbgdaSendRecvProgressStatus::Waiting;
@@ -464,7 +467,7 @@ class IbSendRecvDevice {
   template <typename Transport, typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       Transport& transport,
-      IbSendRecvState& sendRecvState,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
@@ -475,16 +478,15 @@ class IbSendRecvDevice {
 #ifdef __HIP_PLATFORM_AMD__
     static_assert(
         sizeof(CopyOp) == 0,
-        "IbSendRecvDevice::progress_recv_once() requires NVIDIA GPU");
+        "IbSendRecvOps::progress_recv_once() requires NVIDIA GPU");
 #endif
-    const int progressIndex = progress_recv_index(sendRecvState, group);
-    IbSendRecvState::ProgressSlot state =
-        progress_state_slot(sendRecvState, group, progressIndex);
+    auto& progressSlot = progress_recv_slot(transport, channelLayout, group);
+    IbChannelProgress state = progressSlot;
     if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
       return IbgdaSendRecvProgressStatus::Done;
     }
     const ProgressGeometry progress_params = make_progress_geometry(
-        sendRecvState, group, nbytes, max_signal_bytes, "progress_recv_once");
+        channelLayout, group, nbytes, max_signal_bytes, "progress_recv_once");
     if (state.activeNextByte >= progress_params.protocolBytes) {
       if (group.is_leader()) {
         printf(
@@ -498,14 +500,18 @@ class IbSendRecvDevice {
     validate_recv_progress_stage(group, state);
 
     const ProgressChunk chunk =
-        next_chunk(sendRecvState, state, progress_params);
+        next_chunk(channelLayout, state, progress_params);
+    IbLocalChannel& localChannel =
+        transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
+    const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
+    const IbRemoteChannel remoteChannel =
+        makeIbRemoteChannel(channelLayout, progress_params.groupId);
     const uint64_t expected = chunk.streamEnd;
     uint32_t ready = 1;
     unsigned long long current = 0;
     if (group.is_leader()) {
       current = static_cast<unsigned long long>(
-          transport.read_signal(sendRecvState.localSignalBuf.subBuffer(
-              progress_params.groupId * sizeof(uint64_t))));
+          transport.read_signal(localDataReady));
       ready = current >= expected ? 1U : 0U;
       if (!ready) {
         TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
@@ -526,7 +532,7 @@ class IbSendRecvDevice {
     if (validBytes > 0) {
       CopyOp::recv(
           static_cast<char*>(dst) + chunk.dataOff,
-          sendRecvState.recvStagingPtr + chunk.stagingOff,
+          channelLayout.recvStagingPtr + chunk.stagingOff,
           validBytes,
           group,
           chunk.dataOff,
@@ -537,10 +543,7 @@ class IbSendRecvDevice {
     uint64_t slotFreeVal = 0;
     if (group.is_leader()) {
       if (should_post_slot_free_credit(
-              sendRecvState,
-              chunk.streamEnd,
-              state.reuseCreditStep,
-              progress_params)) {
+              chunk.streamEnd, state.reuseCreditStep, progress_params)) {
         slotFreeVal =
             reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
         state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
@@ -549,23 +552,18 @@ class IbSendRecvDevice {
     slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
     if (slotFreeVal != 0) {
       transport.signal(
-          group,
-          sendRecvState.remoteSignalBuf.subBuffer(
-              (sendRecvState.maxGroups + progress_params.groupId) *
-              sizeof(uint64_t)),
-          slotFreeVal,
-          IbDirection::Recv);
+          group, remoteChannel.slotFree, slotFreeVal, IbDirection::Recv);
     }
 
     state.activeNextByte += chunk.bytes;
     if (state.activeNextByte >= progress_params.protocolBytes) {
       transition_progress_stage(
           group, state, detail::IbSendRecvProgressStage::Done);
-      store_progress_state(sendRecvState, group, progressIndex, state);
+      store_progress_state(group, progressSlot, state);
       return IbgdaSendRecvProgressStatus::Done;
     }
 
-    store_progress_state(sendRecvState, group, progressIndex, state);
+    store_progress_state(group, progressSlot, state);
     return IbgdaSendRecvProgressStatus::Progressed;
 #else
     (void)transport;
@@ -596,9 +594,10 @@ class IbSendRecvDevice {
    *   DATA_READY — sender increments by bytesThis, piggybacked on put.
    *                recv waits on this before reading recvStaging.
    *
-   * state[].nextStep persists across calls, so send() resumes the staging-ring
-   * cursor and protocol sequence numbers on each invocation. This allows
-   * callers to pipeline across repeated send() calls without a separate drain.
+   * The channel progress cursor persists across calls, so send() resumes the
+   * staging-ring cursor and protocol sequence numbers on each invocation. This
+   * allows callers to pipeline across repeated send() calls without a separate
+   * drain.
    *
    * The caller must keep the transport layout stable while a sequence is in
    * flight. `max_signal_bytes` may vary across calls because it changes only
@@ -618,7 +617,7 @@ class IbSendRecvDevice {
   template <typename Transport, typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
       Transport& transport,
-      IbSendRecvState& sendRecvState,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
@@ -639,7 +638,7 @@ class IbSendRecvDevice {
     const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
-    const int maxGroups = sendRecvState.maxGroups;
+    const int maxGroups = channelLayout.maxChannels;
     if (groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
@@ -650,14 +649,13 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
 
-    const std::size_t perBlockSlot =
-        (sendRecvState.dataBufferSize / maxGroups) & ~15ULL;
+    const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: send perBlockSlot=0 "
             "(dataBufferSize=%llu, maxGroups=%d)\n",
-            (unsigned long long)sendRecvState.dataBufferSize,
+            (unsigned long long)channelLayout.data_buffer_size(),
             maxGroups);
       }
       PIPES_DEVICE_TRAP();
@@ -671,10 +669,17 @@ class IbSendRecvDevice {
       chunkSize = perBlockSlot;
     }
 
-    const int pipelineDepth = sendRecvState.pipelineDepth;
-    const std::size_t dataBufferSize = sendRecvState.dataBufferSize;
-    const int stateIndex = progress_send_index(sendRecvState, group);
-    auto& state = progress_state_slot(sendRecvState, group, stateIndex);
+    const int pipelineDepth = channelLayout.pipelineDepth;
+    const std::size_t dataBufferSize = channelLayout.data_buffer_size();
+    auto& state = progress_send_slot(transport, channelLayout, group);
+    IbLocalChannel& localChannel =
+        transport.local_channel(static_cast<uint32_t>(groupId));
+    const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
+    const IbgdaLocalBuffer localNicDoneWait = localChannel.nicDoneWait;
+    const IbgdaLocalBuffer localNicDoneCompletion =
+        localChannel.nicDoneCompletion;
+    const IbRemoteChannel remoteChannel =
+        makeIbRemoteChannel(channelLayout, groupId);
     assert_progress_slot_idle(group, state, "send");
     const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
     const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
@@ -703,10 +708,7 @@ class IbSendRecvDevice {
       // (1) Wait for NIC to finish with this slot's local sendStaging.
       if (streamEnd > pipelineBytes) {
         transport.wait_counter(
-            group,
-            sendRecvState.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)),
-            streamEnd - pipelineBytes,
-            timeout);
+            group, localNicDoneWait, streamEnd - pipelineBytes, timeout);
       }
 
       // (2) Cooperative copy: src -> local sendStaging via CopyOp.
@@ -714,7 +716,7 @@ class IbSendRecvDevice {
           valid_payload_bytes(dataOff, bytesThis, nbytes);
       if (validBytes > 0) {
         CopyOp::send(
-            sendRecvState.sendStagingPtr + stagingOff,
+            channelLayout.sendStagingPtr + stagingOff,
             static_cast<const char*>(src) + dataOff,
             validBytes,
             group,
@@ -727,11 +729,7 @@ class IbSendRecvDevice {
       //     recvStaging offset. Symmetric with DATA_READY.
       if (streamEnd > pipelineBytes) {
         transport.wait_signal(
-            group,
-            sendRecvState.localSignalBuf.subBuffer(
-                (maxGroups + groupId) * sizeof(uint64_t)),
-            streamEnd - pipelineBytes,
-            timeout);
+            group, localSlotFree, streamEnd - pipelineBytes, timeout);
       }
 
       // (4) threadfence_system + leader-only single-WQE RDMA put with
@@ -743,23 +741,22 @@ class IbSendRecvDevice {
         IbgdaLocalBuffer counterBuf{};
         uint64_t counterVal = 0;
         if (should_post_nic_done_credit(
-                sendRecvState,
                 streamEnd,
                 state.reuseCreditStep,
-                perBlockSlot)) {
+                perBlockSlot,
+                pipelineDepth)) {
           counterVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
-          counterBuf = sendRecvState.localCounterCompletionBuf.subBuffer(
-              groupId * sizeof(uint64_t));
+          counterBuf = localNicDoneCompletion;
           state.reuseCreditStep = static_cast<int64_t>(streamEnd);
         }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         transport.put(
             solo,
-            sendRecvState.sendStagingBuf.subBuffer(stagingOff),
-            sendRecvState.recvStagingBuf.subBuffer(stagingOff),
+            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            remoteChannel.recvStaging.subBuffer(stagingOff),
             bytesThis,
-            sendRecvState.remoteSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
+            remoteChannel.dataReady,
             bytesThis,
             counterBuf,
             counterVal);
@@ -808,7 +805,7 @@ class IbSendRecvDevice {
   template <typename Transport, typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
       Transport& transport,
-      IbSendRecvState& sendRecvState,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
@@ -829,7 +826,7 @@ class IbSendRecvDevice {
     const std::size_t protocolBytes = align_protocol_bytes(nbytes);
 
     const int groupId = group.group_id;
-    const int maxGroups = sendRecvState.maxGroups;
+    const int maxGroups = channelLayout.maxChannels;
     if (groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
@@ -840,14 +837,13 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
 
-    const std::size_t perBlockSlot =
-        (sendRecvState.dataBufferSize / maxGroups) & ~15ULL;
+    const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: recv perBlockSlot=0 "
             "(dataBufferSize=%llu, maxGroups=%d)\n",
-            (unsigned long long)sendRecvState.dataBufferSize,
+            (unsigned long long)channelLayout.data_buffer_size(),
             maxGroups);
       }
       PIPES_DEVICE_TRAP();
@@ -861,10 +857,14 @@ class IbSendRecvDevice {
       chunkSize = perBlockSlot;
     }
 
-    const int pipelineDepth = sendRecvState.pipelineDepth;
-    const std::size_t dataBufferSize = sendRecvState.dataBufferSize;
-    const int stateIndex = progress_recv_index(sendRecvState, group);
-    auto& state = progress_state_slot(sendRecvState, group, stateIndex);
+    const int pipelineDepth = channelLayout.pipelineDepth;
+    const std::size_t dataBufferSize = channelLayout.data_buffer_size();
+    auto& state = progress_recv_slot(transport, channelLayout, group);
+    IbLocalChannel& localChannel =
+        transport.local_channel(static_cast<uint32_t>(groupId));
+    const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
+    const IbRemoteChannel remoteChannel =
+        makeIbRemoteChannel(channelLayout, groupId);
     assert_progress_slot_idle(group, state, "recv");
     const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
     const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
@@ -891,11 +891,7 @@ class IbSendRecvDevice {
       const uint64_t streamEnd = streamStart + bytesThis;
 
       // (1) Wait for sender's DATA_READY signal.
-      transport.wait_signal(
-          group,
-          sendRecvState.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
-          streamEnd,
-          timeout);
+      transport.wait_signal(group, localDataReady, streamEnd, timeout);
 
       // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
       const std::size_t validBytes =
@@ -903,7 +899,7 @@ class IbSendRecvDevice {
       if (validBytes > 0) {
         CopyOp::recv(
             static_cast<char*>(dst) + dataOff,
-            sendRecvState.recvStagingPtr + stagingOff,
+            channelLayout.recvStagingPtr + stagingOff,
             validBytes,
             group,
             dataOff,
@@ -916,10 +912,10 @@ class IbSendRecvDevice {
       uint64_t slotFreeVal = 0;
       if (group.is_leader()) {
         if (should_post_slot_free_credit(
-                sendRecvState,
                 streamEnd,
                 state.reuseCreditStep,
-                perBlockSlot)) {
+                perBlockSlot,
+                pipelineDepth)) {
           slotFreeVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
           state.reuseCreditStep = static_cast<int64_t>(streamEnd);
         }
@@ -927,11 +923,7 @@ class IbSendRecvDevice {
       slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
       if (slotFreeVal != 0) {
         transport.signal(
-            group,
-            sendRecvState.remoteSignalBuf.subBuffer(
-                (maxGroups + groupId) * sizeof(uint64_t)),
-            slotFreeVal,
-            IbDirection::Recv);
+            group, remoteChannel.slotFree, slotFreeVal, IbDirection::Recv);
       }
       dataOff += bytesThis;
     }
@@ -991,7 +983,6 @@ class IbSendRecvDevice {
    * @param group           ThreadGroup (all threads participate).
    * @param dst             Application destination (may be nullptr if
    *                        CopyOp handles it, e.g. reduce-scatter).
-   * @param fwdDevice       Forward-side send/recv device (next peer).
    * @param fwdTransport    Forward transport (sends to next peer in ring).
    * @param nbytes          Bytes to receive and forward.
    * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
@@ -1001,11 +992,10 @@ class IbSendRecvDevice {
   template <typename CopyOp = Memcpy, typename Transport, typename... Args>
   __device__ __forceinline__ void forward(
       Transport& transport,
-      IbSendRecvState& sendRecvState,
+      IbChannelLayout& channelLayout,
       ThreadGroup& group,
       void* __restrict__ dst,
-      IbSendRecvDevice& fwdDevice,
-      IbSendRecvState& fwdSendRecvState,
+      IbChannelLayout& fwdChannelLayout,
       Transport& fwdTransport,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
@@ -1015,7 +1005,7 @@ class IbSendRecvDevice {
 #ifdef __HIP_PLATFORM_AMD__
     static_assert(
         sizeof(CopyOp) == 0,
-        "IbSendRecvDevice::forward() requires NVIDIA GPU (DOCA/IBGDA)");
+        "IbSendRecvOps::forward() requires NVIDIA GPU (DOCA/IBGDA)");
 #endif
     if (nbytes == 0) {
       return;
@@ -1025,7 +1015,7 @@ class IbSendRecvDevice {
     const int groupId = group.group_id;
 
     // --- recv side (this transport) ---
-    const int recvMaxGroups = sendRecvState.maxGroups;
+    const int recvMaxGroups = channelLayout.maxChannels;
     if (groupId >= recvMaxGroups) {
       if (group.is_leader()) {
         printf(
@@ -1036,8 +1026,7 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
 
-    const std::size_t recvPerBlockSlot =
-        (sendRecvState.dataBufferSize / recvMaxGroups) & ~15ULL;
+    const std::size_t recvPerBlockSlot = channelLayout.perChannelSize & ~15ULL;
     if (recvPerBlockSlot == 0) {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
@@ -1046,7 +1035,7 @@ class IbSendRecvDevice {
     }
 
     // --- fwd side (fwd transport) ---
-    const int fwdMaxGroups = fwdSendRecvState.maxGroups;
+    const int fwdMaxGroups = fwdChannelLayout.maxChannels;
     if (groupId >= fwdMaxGroups) {
       if (group.is_leader()) {
         printf(
@@ -1058,7 +1047,7 @@ class IbSendRecvDevice {
     }
 
     const std::size_t fwdPerBlockSlot =
-        (fwdSendRecvState.dataBufferSize / fwdMaxGroups) & ~15ULL;
+        fwdChannelLayout.perChannelSize & ~15ULL;
     if (fwdPerBlockSlot == 0) {
       if (group.is_leader()) {
         printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
@@ -1082,22 +1071,31 @@ class IbSendRecvDevice {
       fwdChunkSize = fwdPerBlockSlot;
     }
 
-    const int recvPipelineDepth = sendRecvState.pipelineDepth;
-    const std::size_t recvDataBufSize = sendRecvState.dataBufferSize;
-    const int recvStateIndex = progress_recv_index(sendRecvState, group);
-    auto& recvSlotState =
-        progress_state_slot(sendRecvState, group, recvStateIndex);
+    const int recvPipelineDepth = channelLayout.pipelineDepth;
+    const std::size_t recvDataBufSize = channelLayout.data_buffer_size();
+    auto& recvSlotState = progress_recv_slot(transport, channelLayout, group);
+    IbLocalChannel& recvLocalChannel =
+        transport.local_channel(static_cast<uint32_t>(groupId));
+    const IbgdaLocalBuffer recvDataReady = recvLocalChannel.dataReady;
+    const IbRemoteChannel recvRemoteChannel =
+        makeIbRemoteChannel(channelLayout, groupId);
     assert_progress_slot_idle(group, recvSlotState, "forward recv");
     const uint64_t recvBaseByte = static_cast<uint64_t>(recvSlotState.nextStep);
     const std::size_t recvPipelineBytes = recvPerBlockSlot * recvPipelineDepth;
 
-    const int fwdPipelineDepth = fwdSendRecvState.pipelineDepth;
-    const std::size_t fwdDataBufSize = fwdSendRecvState.dataBufferSize;
-    const int fwdStateIndex =
-        fwdDevice.progress_send_index(fwdSendRecvState, group);
+    const int fwdPipelineDepth = fwdChannelLayout.pipelineDepth;
+    const std::size_t fwdDataBufSize = fwdChannelLayout.data_buffer_size();
     auto& fwdSlotState =
-        fwdDevice.progress_state_slot(fwdSendRecvState, group, fwdStateIndex);
-    fwdDevice.assert_progress_slot_idle(group, fwdSlotState, "forward send");
+        progress_send_slot(fwdTransport, fwdChannelLayout, group);
+    IbLocalChannel& fwdLocalChannel =
+        fwdTransport.local_channel(static_cast<uint32_t>(groupId));
+    const IbgdaLocalBuffer fwdSlotFree = fwdLocalChannel.slotFree;
+    const IbgdaLocalBuffer fwdNicDoneWait = fwdLocalChannel.nicDoneWait;
+    const IbgdaLocalBuffer fwdNicDoneCompletion =
+        fwdLocalChannel.nicDoneCompletion;
+    const IbRemoteChannel fwdRemoteChannel =
+        makeIbRemoteChannel(fwdChannelLayout, groupId);
+    assert_progress_slot_idle(group, fwdSlotState, "forward send");
     const uint64_t fwdBaseByte = static_cast<uint64_t>(fwdSlotState.nextStep);
     const std::size_t fwdPipelineBytes = fwdPerBlockSlot * fwdPipelineDepth;
     if (group.is_leader()) {
@@ -1143,20 +1141,12 @@ class IbSendRecvDevice {
       const uint64_t fwdStreamEnd = fwdStreamStart + bytesThis;
 
       // (1) Wait for sender's DATA_READY.
-      transport.wait_signal(
-          group,
-          sendRecvState.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)),
-          recvStreamEnd,
-          timeout);
+      transport.wait_signal(group, recvDataReady, recvStreamEnd, timeout);
 
       // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
       if (fwdStreamEnd > fwdPipelineBytes) {
         fwdTransport.wait_counter(
-            group,
-            fwdSendRecvState.localCounterBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            fwdStreamEnd - fwdPipelineBytes,
-            timeout);
+            group, fwdNicDoneWait, fwdStreamEnd - fwdPipelineBytes, timeout);
       }
 
       // (3) CopyOp::forward — transform recv staging -> dst + fwd staging.
@@ -1165,8 +1155,8 @@ class IbSendRecvDevice {
       if (validBytes > 0) {
         CopyOp::forward(
             dst ? static_cast<char*>(dst) + dataOff : nullptr,
-            fwdSendRecvState.sendStagingPtr + fwdStagingOff,
-            sendRecvState.recvStagingPtr + recvStagingOff,
+            fwdChannelLayout.sendStagingPtr + fwdStagingOff,
+            channelLayout.recvStagingPtr + recvStagingOff,
             validBytes,
             group,
             dataOff,
@@ -1175,15 +1165,9 @@ class IbSendRecvDevice {
       group.sync();
 
       // (4) SLOT_FREE, posted unbatched every chunk. This must happen before
-      //     the step-5 wait to break circular ring dependency. Advance
-      //     reuseCreditStep so an interleaved recv() on this shared slot
-      //     computes reuse credit from a current cursor.
+      //     the step-5 wait to break circular ring dependency.
       transport.signal(
-          group,
-          sendRecvState.remoteSignalBuf.subBuffer(
-              (recvMaxGroups + groupId) * sizeof(uint64_t)),
-          bytesThis,
-          IbDirection::Recv);
+          group, recvRemoteChannel.slotFree, bytesThis, IbDirection::Recv);
       if (group.is_leader()) {
         recvSlotState.reuseCreditStep = static_cast<int64_t>(recvStreamEnd);
       }
@@ -1192,31 +1176,36 @@ class IbSendRecvDevice {
       //     recvStaging).
       if (fwdStreamEnd > fwdPipelineBytes) {
         fwdTransport.wait_signal(
-            group,
-            fwdSendRecvState.localSignalBuf.subBuffer(
-                (fwdMaxGroups + groupId) * sizeof(uint64_t)),
-            fwdStreamEnd - fwdPipelineBytes,
-            timeout);
+            group, fwdSlotFree, fwdStreamEnd - fwdPipelineBytes, timeout);
       }
 
       // (6) threadfence_system + RDMA put via fwd transport.
       __threadfence_system();
       group.sync();
       if (group.is_leader()) {
-        fwdSlotState.reuseCreditStep = static_cast<int64_t>(fwdStreamEnd);
+        IbgdaLocalBuffer counterBuf{};
+        uint64_t counterVal = 0;
+        if (should_post_nic_done_credit(
+                fwdStreamEnd,
+                fwdSlotState.reuseCreditStep,
+                fwdPerBlockSlot,
+                fwdPipelineDepth)) {
+          counterVal =
+              reuse_credit_value(fwdStreamEnd, fwdSlotState.reuseCreditStep);
+          counterBuf = fwdNicDoneCompletion;
+          fwdSlotState.reuseCreditStep = static_cast<int64_t>(fwdStreamEnd);
+        }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         fwdTransport.put(
             solo,
-            fwdSendRecvState.sendStagingBuf.subBuffer(fwdStagingOff),
-            fwdSendRecvState.recvStagingBuf.subBuffer(fwdStagingOff),
+            fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+            fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
             bytesThis,
-            fwdSendRecvState.remoteSignalBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
+            fwdRemoteChannel.dataReady,
             bytesThis,
-            fwdSendRecvState.localCounterCompletionBuf.subBuffer(
-                groupId * sizeof(uint64_t)),
-            bytesThis);
+            counterBuf,
+            counterVal);
       }
       group.sync();
       dataOff += bytesThis;
@@ -1237,11 +1226,10 @@ class IbSendRecvDevice {
     group.sync();
 #else
     (void)transport;
-    (void)sendRecvState;
+    (void)channelLayout;
     (void)group;
     (void)dst;
-    (void)fwdDevice;
-    (void)fwdSendRecvState;
+    (void)fwdChannelLayout;
     (void)fwdTransport;
     (void)nbytes;
     (void)max_signal_bytes;
@@ -1261,10 +1249,9 @@ class IbSendRecvDevice {
    * that send()/forward() never stall waiting for a free slot.
    */
   __device__ __forceinline__ std::size_t pipeline_window(
-      const IbSendRecvState& sendRecvState) const {
-    const std::size_t per_block_slot =
-        (sendRecvState.dataBufferSize / sendRecvState.maxGroups) & ~15ULL;
-    return per_block_slot * sendRecvState.pipelineDepth;
+      const IbChannelLayout& channelLayout) const {
+    return channelLayout.perChannelSize *
+        static_cast<std::size_t>(channelLayout.pipelineDepth);
   }
 
  private:
@@ -1290,7 +1277,7 @@ class IbSendRecvDevice {
   /**
    * Register-only geometry for one resumable progress call.
    *
-   * This is intentionally not stored in `IbSendRecvState::ProgressSlot`:
+   * This is intentionally not stored in `IbChannelProgress`:
    * callers pass the same static geometry to init and progress, and each
    * progress call derives these values in registers instead of reloading
    * duplicated fields from HBM-backed progress state.
@@ -1301,6 +1288,7 @@ class IbSendRecvDevice {
     std::size_t protocolBytes;
     std::size_t perBlockSlot;
     std::size_t chunkSize;
+    int pipelineDepth;
   };
 
   /**
@@ -1325,90 +1313,49 @@ class IbSendRecvDevice {
     return chunkBytes < remaining ? chunkBytes : remaining;
   }
 
-  /**
-   * Return the internal send progress slot index for `group`.
-   */
-  __device__ __forceinline__ int progress_send_index(
-      const IbSendRecvState& sendRecvState,
+  __device__ __forceinline__ void validate_progress_group(
+      const IbChannelLayout& channelLayout,
       ThreadGroup& group) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    return progress_index_for_group(sendRecvState, group, 0);
-#else
-    (void)sendRecvState;
-    (void)group;
-    return 0;
-#endif
-  }
-
-  /**
-   * Return the internal recv progress slot index for `group`.
-   */
-  __device__ __forceinline__ int progress_recv_index(
-      const IbSendRecvState& sendRecvState,
-      ThreadGroup& group) const {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    return progress_index_for_group(
-        sendRecvState, group, sendRecvState.maxGroups);
-#else
-    (void)sendRecvState;
-    (void)group;
-    return 0;
-#endif
-  }
-
-  /**
-   * Validate a progress group and map it into the transport-owned slot array.
-   */
-  __device__ __forceinline__ int progress_index_for_group(
-      const IbSendRecvState& sendRecvState,
-      ThreadGroup& group,
-      int baseIndex) const {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    if (sendRecvState.state.empty() || sendRecvState.state.data() == nullptr) {
+    if (channelLayout.maxChannels <= 0) {
       if (group.is_leader()) {
-        printf("[PIPES] FATAL: send/recv state is null\n");
+        printf(
+            "[PIPES] FATAL: send/recv maxChannels must be > 0, got %d\n",
+            channelLayout.maxChannels);
       }
       PIPES_DEVICE_TRAP();
     }
-    if (sendRecvState.maxGroups <= 0) {
+    if (group.group_id >= static_cast<uint32_t>(channelLayout.maxChannels)) {
       if (group.is_leader()) {
         printf(
-            "[PIPES] FATAL: send/recv maxGroups must be > 0, got %d\n",
-            sendRecvState.maxGroups);
-      }
-      PIPES_DEVICE_TRAP();
-    }
-    const auto requiredStateSlots =
-        static_cast<uint32_t>(2 * sendRecvState.maxGroups);
-    if (sendRecvState.state.size() < requiredStateSlots ||
-        group.group_id >= static_cast<uint32_t>(sendRecvState.maxGroups)) {
-      if (group.is_leader()) {
-        printf(
-            "[PIPES] FATAL: progress group_id=%u out of range [0, %d), "
-            "state slots=%u\n",
+            "[PIPES] FATAL: progress group_id=%u out of range [0, %d)\n",
             group.group_id,
-            sendRecvState.maxGroups,
-            static_cast<unsigned>(sendRecvState.state.size()));
+            channelLayout.maxChannels);
       }
       PIPES_DEVICE_TRAP();
     }
-    return baseIndex + static_cast<int>(group.group_id);
 #else
+    (void)channelLayout;
     (void)group;
-    (void)baseIndex;
-    return 0;
 #endif
   }
 
-  /**
-   * Return a reference to a transport-owned progress state slot.
-   */
-  __device__ __forceinline__ IbSendRecvState::ProgressSlot& progress_state_slot(
-      IbSendRecvState& sendRecvState,
-      ThreadGroup& group,
-      int progressIndex) const {
-    (void)group;
-    return sendRecvState.state[progressIndex];
+  template <typename Transport>
+  __device__ __forceinline__ IbChannelProgress& progress_send_slot(
+      Transport& transport,
+      const IbChannelLayout& channelLayout,
+      ThreadGroup& group) const {
+    validate_progress_group(channelLayout, group);
+    return transport.local_channel(group).sendProgress;
+  }
+
+  template <typename Transport>
+  __device__ __forceinline__ IbChannelProgress& progress_recv_slot(
+      Transport& transport,
+      const IbChannelLayout& channelLayout,
+      ThreadGroup& group) const {
+    validate_progress_group(channelLayout, group);
+    return transport.local_channel(group).recvProgress;
   }
 
   /**
@@ -1419,7 +1366,7 @@ class IbSendRecvDevice {
    */
   __device__ __forceinline__ void assert_progress_slot_idle(
       ThreadGroup& group,
-      const IbSendRecvState::ProgressSlot& state,
+      const IbChannelProgress& state,
       const char* direction) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     uint32_t idle = 1;
@@ -1453,13 +1400,11 @@ class IbSendRecvDevice {
    * The trailing sync orders the leader's store before later group work.
    */
   __device__ __forceinline__ void store_progress_state(
-      IbSendRecvState& sendRecvState,
       ThreadGroup& group,
-      int progressIndex,
-      const IbSendRecvState::ProgressSlot& state) const {
+      IbChannelProgress& slot,
+      const IbChannelProgress& state) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (group.is_leader()) {
-      auto& slot = sendRecvState.state[progressIndex];
       slot.reuseCreditStep = state.reuseCreditStep;
       slot.activeNextByte = state.activeNextByte;
       slot.activeBaseStep = state.activeBaseStep;
@@ -1468,7 +1413,7 @@ class IbSendRecvDevice {
     group.sync();
 #else
     (void)group;
-    (void)progressIndex;
+    (void)slot;
     (void)state;
 #endif
   }
@@ -1494,7 +1439,7 @@ class IbSendRecvDevice {
    * protocol counts here; copy callbacks still see only valid payload bytes.
    */
   __device__ __forceinline__ ProgressGeometry make_progress_geometry(
-      const IbSendRecvState& sendRecvState,
+      const IbChannelLayout& channelLayout,
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes,
@@ -1510,7 +1455,7 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
     const int groupId = static_cast<int>(group.group_id);
-    const int maxGroups = sendRecvState.maxGroups;
+    const int maxGroups = channelLayout.maxChannels;
     if (groupId < 0 || groupId >= maxGroups) {
       if (group.is_leader()) {
         printf(
@@ -1522,15 +1467,14 @@ class IbSendRecvDevice {
       PIPES_DEVICE_TRAP();
     }
 
-    const std::size_t perBlockSlot =
-        (sendRecvState.dataBufferSize / maxGroups) & ~15ULL;
+    const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
     if (perBlockSlot == 0) {
       if (group.is_leader()) {
         printf(
             "[PIPES] FATAL: %s perBlockSlot=0 "
             "(dataBufferSize=%llu, maxGroups=%d)\n",
             opName,
-            (unsigned long long)sendRecvState.dataBufferSize,
+            (unsigned long long)channelLayout.data_buffer_size(),
             maxGroups);
       }
       PIPES_DEVICE_TRAP();
@@ -1550,6 +1494,7 @@ class IbSendRecvDevice {
         .protocolBytes = protocolBytes,
         .perBlockSlot = perBlockSlot,
         .chunkSize = chunkSize,
+        .pipelineDepth = channelLayout.pipelineDepth,
     };
 #else
     (void)group;
@@ -1561,57 +1506,61 @@ class IbSendRecvDevice {
   }
 
   __device__ __forceinline__ std::size_t nic_done_credit_quantum(
-      const IbSendRecvState& sendRecvState,
-      std::size_t perBlockSlot) const {
+      std::size_t perBlockSlot,
+      int pipelineDepth) const {
     return detail::ib_send_recv_nic_done_credit_quantum(
-        perBlockSlot, sendRecvState.pipelineDepth);
+        perBlockSlot, pipelineDepth);
   }
 
   __device__ __forceinline__ std::size_t slot_free_credit_quantum(
-      const IbSendRecvState& sendRecvState,
-      std::size_t perBlockSlot) const {
+      std::size_t perBlockSlot,
+      int pipelineDepth) const {
     return detail::ib_send_recv_slot_free_credit_quantum(
-        perBlockSlot, sendRecvState.pipelineDepth);
+        perBlockSlot, pipelineDepth);
   }
 
   __device__ __forceinline__ bool should_post_nic_done_credit(
-      const IbSendRecvState& sendRecvState,
       uint64_t streamEnd,
       int64_t reuseCreditStep,
       const ProgressGeometry& geometry) const {
     return should_post_nic_done_credit(
-        sendRecvState, streamEnd, reuseCreditStep, geometry.perBlockSlot);
+        streamEnd,
+        reuseCreditStep,
+        geometry.perBlockSlot,
+        geometry.pipelineDepth);
   }
 
   __device__ __forceinline__ bool should_post_nic_done_credit(
-      const IbSendRecvState& sendRecvState,
       uint64_t streamEnd,
       int64_t reuseCreditStep,
-      std::size_t perBlockSlot) const {
+      std::size_t perBlockSlot,
+      int pipelineDepth) const {
     return should_post_credit_at_quantum(
         streamEnd,
         reuseCreditStep,
-        nic_done_credit_quantum(sendRecvState, perBlockSlot));
+        nic_done_credit_quantum(perBlockSlot, pipelineDepth));
   }
 
   __device__ __forceinline__ bool should_post_slot_free_credit(
-      const IbSendRecvState& sendRecvState,
       uint64_t streamEnd,
       int64_t reuseCreditStep,
       const ProgressGeometry& geometry) const {
     return should_post_slot_free_credit(
-        sendRecvState, streamEnd, reuseCreditStep, geometry.perBlockSlot);
+        streamEnd,
+        reuseCreditStep,
+        geometry.perBlockSlot,
+        geometry.pipelineDepth);
   }
 
   __device__ __forceinline__ bool should_post_slot_free_credit(
-      const IbSendRecvState& sendRecvState,
       uint64_t streamEnd,
       int64_t reuseCreditStep,
-      std::size_t perBlockSlot) const {
+      std::size_t perBlockSlot,
+      int pipelineDepth) const {
     return should_post_credit_at_quantum(
         streamEnd,
         reuseCreditStep,
-        slot_free_credit_quantum(sendRecvState, perBlockSlot));
+        slot_free_credit_quantum(perBlockSlot, pipelineDepth));
   }
 
   __device__ __forceinline__ bool should_post_credit_at_quantum(
@@ -1635,21 +1584,19 @@ class IbSendRecvDevice {
   /**
    * Reserve a non-overlapping protocol byte range for one progress state.
    *
-   * Blocking send()/recv() read `state[].nextStep` at call entry and commit it
+   * Blocking send()/recv() read the channel cursor at call entry and commit it
    * at completion. Progress init cannot wait until completion because progress
    * operations may complete across many bounded calls. Reserving at init gives
-   * the transport-owned state a stable byte-stream base and makes later
+   * the transport-owned channel state a stable byte-stream base and makes later
    * blocking calls start after all in-flight progress ranges.
    */
   __device__ __forceinline__ int64_t reserve_progress_step(
-      IbSendRecvState& sendRecvState,
       ThreadGroup& group,
-      int stateIndex,
+      IbChannelProgress& slot,
       std::size_t nbytes) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     uint64_t baseStep = 0;
     if (group.is_leader()) {
-      auto& slot = sendRecvState.state[stateIndex];
       baseStep = static_cast<uint64_t>(slot.nextStep);
       slot.nextStep = static_cast<int64_t>(baseStep + nbytes);
     }
@@ -1657,7 +1604,7 @@ class IbSendRecvDevice {
     return static_cast<int64_t>(baseStep);
 #else
     (void)group;
-    (void)stateIndex;
+    (void)slot;
     (void)nbytes;
     return 0;
 #endif
@@ -1673,7 +1620,7 @@ class IbSendRecvDevice {
    */
   __device__ __forceinline__ void validate_send_progress_stage(
       ThreadGroup& group,
-      const IbSendRecvState::ProgressSlot& state) const {
+      const IbChannelProgress& state) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (state.activeStage != detail::IbSendRecvProgressStage::WaitNicDone &&
         state.activeStage != detail::IbSendRecvProgressStage::WaitSlotFree &&
@@ -1696,7 +1643,7 @@ class IbSendRecvDevice {
    */
   __device__ __forceinline__ void validate_recv_progress_stage(
       ThreadGroup& group,
-      const IbSendRecvState::ProgressSlot& state) const {
+      const IbChannelProgress& state) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (state.activeStage != detail::IbSendRecvProgressStage::WaitDataReady &&
         state.activeStage != detail::IbSendRecvProgressStage::Done) {
@@ -1741,7 +1688,7 @@ class IbSendRecvDevice {
    */
   __device__ __forceinline__ void transition_progress_stage(
       ThreadGroup& group,
-      IbSendRecvState::ProgressSlot& state,
+      IbChannelProgress& state,
       detail::IbSendRecvProgressStage next) const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     const detail::IbSendRecvProgressStage current = state.activeStage;
@@ -1774,18 +1721,18 @@ class IbSendRecvDevice {
    * staging slots.
    */
   __device__ __forceinline__ ProgressChunk next_chunk(
-      const IbSendRecvState& sendRecvState,
-      const IbSendRecvState::ProgressSlot& state,
+      const IbChannelLayout& channelLayout,
+      const IbChannelProgress& state,
       const ProgressGeometry& geometry) const {
     const uint64_t streamStart =
         static_cast<uint64_t>(state.activeBaseStep) + state.activeNextByte;
     const std::size_t pipelineBytes = geometry.perBlockSlot *
-        static_cast<std::size_t>(sendRecvState.pipelineDepth);
+        static_cast<std::size_t>(channelLayout.pipelineDepth);
     const std::size_t pipelineOff =
         static_cast<std::size_t>(streamStart % pipelineBytes);
     const int slot = static_cast<int>(pipelineOff / geometry.perBlockSlot);
     const std::size_t slotOff =
-        static_cast<std::size_t>(slot) * sendRecvState.dataBufferSize;
+        static_cast<std::size_t>(slot) * channelLayout.data_buffer_size();
     const std::size_t chunkOff =
         pipelineOff - static_cast<std::size_t>(slot) * geometry.perBlockSlot;
     const std::size_t slotRemaining = geometry.perBlockSlot - chunkOff;
@@ -1985,7 +1932,7 @@ struct P2pIbTransportDevice {
 
   __device__ void fence();
 
-  // Pipelined send/recv — forwarded to the active backend's IbSendRecvDevice.
+  // Pipelined send/recv — forwarded to the active backend's IbSendRecvOps.
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,

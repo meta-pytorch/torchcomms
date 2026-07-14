@@ -435,65 +435,16 @@ enum class IbSendRecvProgressStage : uint8_t {
 
 } // namespace detail
 
-/**
- * IbSendRecvState — device-side state for pipelined RDMA send/recv.
- *
- * Holds all buffer handles and config needed by send/recv.
- * All physical memory is allocated by MultipeerIbgdaTransport on the host;
- * this struct contains only pointers/handles into those allocations.
- *
- * Buffer layout:
- *   sendStaging / recvStaging: pipelineDepth * dataBufferSize bytes each.
- *     Logically divided into pipelineDepth slots of dataBufferSize bytes.
- *     Each slot is partitioned into maxGroups fixed channel regions:
- *       perBlockSlot = (dataBufferSize / maxGroups) & ~15ULL
- *     If max_signal_bytes is smaller than perBlockSlot, each per-block region
- *     is further subdivided into signaled sub-chunks:
- *       chunkSize = floor16(min(perBlockSlot, max_signal_bytes))
- *     state[].nextStep counts 16-byte-aligned protocol bytes, not sub-chunks,
- *     so max_signal_bytes may change between calls without changing the
- *     staging layout.
- *
- *   signalBuf: 2 * maxGroups * sizeof(uint64_t).
- *     [0, maxGroups)             — DATA_READY (sender -> receiver)
- *     [maxGroups, 2*maxGroups)   — SLOT_FREE (receiver -> sender)
- *
- *   counterBuf: maxGroups * sizeof(uint64_t).
- *     [0, maxGroups)             — NIC_DONE counters (loopback atomic)
- *
- *   state: 2 * maxGroups ProgressSlot entries.
- *     [0, maxGroups)             — sender state slots
- *     [maxGroups, 2*maxGroups)   — receiver state slots
- *
- *     nextStep is the persistent protocol-byte cursor used by both blocking
- *     and async send/recv APIs. The active* fields describe at most one
- *     outstanding async progress operation or blocking call in that
- *     direction/group.
- *     Static transfer geometry is passed to init/progress calls and computed
- *     in registers.
- */
-struct IbSendRecvState {
-  /**
-   * Internal protocol state for one transport-owned send/recv direction.
-   *
-   * The state is indexed by direction and transport group. `nextStep` is the
-   * shared byte-stream cursor used by blocking send/recv and async init.
-   * `reuseCreditStep` is the persistent byte cursor for reuse credits: NIC_DONE
-   * on sender slots and SLOT_FREE on receiver slots. It may lag `nextStep`
-   * because those credits can be batched without delaying DATA_READY
-   * visibility. `activeBaseStep`, `activeNextByte`, and `activeStage` track the
-   * currently initialized async operation or a blocking call in progress, if
-   * any.
-   */
-  struct ProgressSlot {
-    int64_t nextStep{0};
-    int64_t reuseCreditStep{0};
-    std::size_t activeNextByte{0};
-    int64_t activeBaseStep{0};
-    detail::IbSendRecvProgressStage activeStage{
-        detail::IbSendRecvProgressStage::Done};
-  };
+struct IbChannelProgress {
+  int64_t nextStep{0};
+  int64_t reuseCreditStep{0};
+  std::size_t activeNextByte{0};
+  int64_t activeBaseStep{0};
+  detail::IbSendRecvProgressStage activeStage{
+      detail::IbSendRecvProgressStage::Done};
+};
 
+struct IbChannelLayout {
   IbgdaLocalBuffer
       sendStagingBuf; ///< Registered sendStaging (lkey for put src)
   IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
@@ -505,10 +456,13 @@ struct IbSendRecvState {
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
   IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
-  DeviceSpan<ProgressSlot> state; ///< Protocol cursors + async state
-  int maxGroups{0}; ///< Layout size for signal/state arrays
+  int maxChannels{0}; ///< Layout size for channel-indexed resources
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
-  std::size_t dataBufferSize{0}; ///< Size of one pipeline slot in bytes
+  std::size_t perChannelSize{0}; ///< Bytes per channel in one pipeline slot
+
+  __host__ __device__ std::size_t data_buffer_size() const {
+    return perChannelSize * static_cast<std::size_t>(maxChannels);
+  }
 };
 
 enum class IbDirection : uint8_t {
@@ -526,8 +480,8 @@ struct IbQpState {
 };
 
 struct IbLocalChannel {
-  IbSendRecvState::ProgressSlot sendProgress;
-  IbSendRecvState::ProgressSlot recvProgress;
+  IbChannelProgress sendProgress;
+  IbChannelProgress recvProgress;
 
   IbgdaLocalBuffer dataReady;
   IbgdaLocalBuffer slotFree;
@@ -543,5 +497,34 @@ struct IbRemoteChannel {
   IbgdaRemoteBuffer slotFree;
   IbgdaRemoteBuffer recvStaging;
 };
+
+IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
+    const IbChannelLayout& layout,
+    int channelId) {
+  IbLocalChannel channel{};
+  channel.dataReady = layout.localSignalBuf.subBuffer(
+      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
+  channel.slotFree = layout.localSignalBuf.subBuffer(
+      static_cast<std::size_t>(layout.maxChannels + channelId) *
+      sizeof(uint64_t));
+  channel.nicDoneWait = layout.localCounterBuf.subBuffer(
+      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
+  channel.nicDoneCompletion = layout.localCounterCompletionBuf.subBuffer(
+      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
+  return channel;
+}
+
+IBGDA_HOST_DEVICE inline IbRemoteChannel makeIbRemoteChannel(
+    const IbChannelLayout& layout,
+    int channelId) {
+  return IbRemoteChannel{
+      .dataReady = layout.remoteSignalBuf.subBuffer(
+          static_cast<std::size_t>(channelId) * sizeof(uint64_t)),
+      .slotFree = layout.remoteSignalBuf.subBuffer(
+          static_cast<std::size_t>(layout.maxChannels + channelId) *
+          sizeof(uint64_t)),
+      .recvStaging = layout.recvStagingBuf,
+  };
+}
 
 } // namespace comms::prims

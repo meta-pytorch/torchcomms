@@ -367,16 +367,13 @@ enum class IbCounterStorage {
 };
 
 // Per-peer send/recv staging-ring views. Eager mode owns the bulk allocations
-// and slices these; the device side reads them via sendRecvStateForPeer().
+// and slices these; the device side reads them via channelLayoutForPeer().
 struct IbSendRecvPeerBuffers {
   IbgdaLocalBuffer sendStaging;
   IbgdaLocalBuffer recvStaging;
   IbgdaLocalBuffer signal;
   IbgdaLocalBuffer counter;
   IbgdaLocalBuffer counterCompletion;
-  // DeviceSpan has a const data_ member (no copy-assign), so wrap in optional
-  // and emplace() the per-peer slice.
-  std::optional<DeviceSpan<IbSendRecvState::ProgressSlot>> state;
   IbgdaRemoteBuffer remoteRecvStaging;
   IbgdaRemoteBuffer remoteSignal;
 };
@@ -520,15 +517,15 @@ class MultiPeerIbTransportBase {
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
   // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
-  // = pipelineDepth * dataBufferSize per direction; signal/state are sized off
+  // = pipelineDepth * dataBufferSize per direction; signal is sized off
   // max_num_channels. Per-peer staging + signal are device-registered;
   // recvStaging + signal are collectively exchanged so peers can RDMA into our
   // ring.
   bool sendRecvBuffersEnabled() const {
     return config_.perChannelSize > 0;
   }
-  IbSendRecvState sendRecvStateForPeer(int peerIndex) const;
-  // Allocate + register the per-peer staging/signal/state bulks and slice them.
+  IbChannelLayout channelLayoutForPeer(int peerIndex) const;
+  // Allocate + register the per-peer staging/signal bulks and slice them.
   // counterStorage selects the NIC_DONE counter: Device (transport-allocated,
   // registered) or HostPinned (transport-allocated host-mapped, never
   // registered).
@@ -561,7 +558,6 @@ class MultiPeerIbTransportBase {
   std::size_t sendRecvStagingBytesPerPeer() const;
   std::size_t sendRecvSignalBytesPerPeer() const;
   std::size_t sendRecvCounterBytesPerPeer() const;
-  std::size_t sendRecvStateBytesPerPeer() const;
 
   void allocateSignalCounterResources(
       IbCounterStorage counterStorage,
@@ -653,9 +649,6 @@ class MultiPeerIbTransportBase {
   // Host-counter configs put only the signal region here. See
   // allocateSendRecvBuffersEager.
   std::unique_ptr<meta::comms::DeviceBuffer> sendRecvControlBulk_;
-  // Device-local progress state (never RDMA-registered / shared): separate,
-  // natural size, no alignment needed.
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvStateBulk_;
   IbgdaLocalBuffer sendRecvRecvStagingBulkReg_;
   IbgdaLocalBuffer sendRecvSignalBulkReg_;
   IbgdaLocalBuffer sendRecvCounterBulkReg_;

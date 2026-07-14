@@ -80,7 +80,7 @@ class P2pIbrcTransportDevice {
       IbgdaLocalBuffer ownedCounterHostBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
-      IbSendRecvState sendRecvState = {})
+      IbChannelLayout channelLayout = {})
       : cmdQueues(queues),
         numNics(nics),
         maxChannels_(maxChannels),
@@ -92,7 +92,7 @@ class P2pIbrcTransportDevice {
         ownedCounterHostBuf_(ownedCounterHostBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
-        sendRecvState_(sendRecvState) {}
+        channelLayout_(channelLayout) {}
 
   __device__ void put(
       ThreadGroup& group,
@@ -458,36 +458,49 @@ class P2pIbrcTransportDevice {
   }
 
   // ===========================================================================
-  // Pipelined send/recv — delegated to the shared stateless IbSendRecvDevice.
+  // Pipelined send/recv — delegated to the shared stateless IbSendRecvOps.
   // ===========================================================================
   //
   // The send/recv algorithm is transport-agnostic and lives in
-  // `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh). The protocol state is
+  // `IbSendRecvOps` (P2pIbTransportDeviceDecl.cuh). The protocol state is
   // owned by this backend device; each method routes every transport op through
   // `*this`, so IBRC reuses IBGDA's send/recv unchanged.
 
-  __host__ __device__ const IbSendRecvState& send_recv_state() const {
-    return sendRecvState_;
+  __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {
+    validate_channel_id(channelId);
+    return localChannels_[channelId];
+  }
+
+  __device__ __forceinline__ IbLocalChannel& local_channel(ThreadGroup& group) {
+    return local_channel(group.group_id);
+  }
+
+  __host__ __device__ IbChannelLayout& channel_layout() {
+    return channelLayout_;
+  }
+
+  __host__ __device__ const IbChannelLayout& channel_layout() const {
+    return channelLayout_;
   }
 
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return sendRecv_.pipeline_window(sendRecvState_);
+    return IbSendRecvOps{}.pipeline_window(channelLayout_);
   }
 
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_send_progress(
-        sendRecvState_, group, nbytes, max_signal_bytes);
+    IbSendRecvOps{}.init_send_progress(
+        *this, channelLayout_, group, nbytes, max_signal_bytes);
   }
 
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_recv_progress(
-        sendRecvState_, group, nbytes, max_signal_bytes);
+    IbSendRecvOps{}.init_recv_progress(
+        *this, channelLayout_, group, nbytes, max_signal_bytes);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -498,9 +511,9 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return sendRecv_.progress_send_once<P2pIbrcTransportDevice, CopyOp>(
+    return IbSendRecvOps{}.progress_send_once<P2pIbrcTransportDevice, CopyOp>(
         *this,
-        sendRecvState_,
+        channelLayout_,
         group,
         src,
         nbytes,
@@ -517,9 +530,9 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return sendRecv_.progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
+    return IbSendRecvOps{}.progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
         *this,
-        sendRecvState_,
+        channelLayout_,
         group,
         dst,
         nbytes,
@@ -536,9 +549,9 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    sendRecv_.send<P2pIbrcTransportDevice, CopyOp>(
+    IbSendRecvOps{}.send<P2pIbrcTransportDevice, CopyOp>(
         *this,
-        sendRecvState_,
+        channelLayout_,
         group,
         src,
         nbytes,
@@ -555,9 +568,9 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    sendRecv_.recv<P2pIbrcTransportDevice, CopyOp>(
+    IbSendRecvOps{}.recv<P2pIbrcTransportDevice, CopyOp>(
         *this,
-        sendRecvState_,
+        channelLayout_,
         group,
         dst,
         nbytes,
@@ -575,13 +588,12 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    sendRecv_.forward<CopyOp>(
+    IbSendRecvOps{}.forward<CopyOp>(
         *this,
-        sendRecvState_,
+        channelLayout_,
         group,
         dst,
-        fwd.sendRecv_,
-        fwd.sendRecvState_,
+        fwd.channelLayout_,
         fwd,
         nbytes,
         max_signal_bytes,
@@ -925,8 +937,7 @@ class P2pIbrcTransportDevice {
   IbgdaLocalBuffer ownedCounterHostBuf_{};
   int numSignalSlots_{0};
   int numCounterSlots_{0};
-  IbSendRecvState sendRecvState_{};
-  IbSendRecvDevice sendRecv_{};
+  IbChannelLayout channelLayout_{};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);
