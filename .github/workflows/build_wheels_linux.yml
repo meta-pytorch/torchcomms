@@ -14,31 +14,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  generate-matrix:
-    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+  build-cuda:
+    uses: ./.github/workflows/build-wheels-arch.yml
     with:
-      package-type: wheel
-      os: linux
-      test-infra-repository: pytorch/test-infra
-      test-infra-ref: main
-      with-cuda: enable
-      with-rocm: disable
-      with-cpu: disable
-  build:
-    needs: generate-matrix
-    name: ${{ matrix.repository }}
-    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
-    with:
-      repository: meta-pytorch/torchcomms
-      ref: ""
-      pre-script: ""
-      post-script: ""
-      build-platform: "python-build-package"
-      build-command: "scripts/_build_wheel.sh"
-      smoke-test-script: "scripts/smoke_test.py"
-      package-name: torchcomms
-      test-infra-repository: pytorch/test-infra
-      test-infra-ref: main
-      build-matrix: ${{ needs.generate-matrix.outputs.matrix }}
-      trigger-event: ${{ github.event_name }}
       runner: linux.g5.12xlarge.nvidia.gpu
+      with-cuda: enable
+      trigger-event: ${{ github.event_name }}
+
+  build-rocm:
+    uses: ./.github/workflows/build-wheels-arch.yml
+    with:
+      runner: linux.4xlarge
+      with-rocm: enable
+      trigger-event: ${{ github.event_name }}
