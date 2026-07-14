@@ -274,10 +274,6 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 } // namespace
 
 namespace ctran::alltoallp {
-extern __global__ void ncclKernelAllToAllPInitWait(
-    int* flag,
-    CtranAlgoDeviceState* devState);
-
 commResult_t AlgoImpl::init() {
   // No MemHdl exchange needed if no remote peer.
   if (comm_->statex_->nNodes() < 2) {
