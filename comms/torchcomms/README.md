@@ -69,18 +69,19 @@ TorchComm provides the following categories of operations:
 #### Constructor
 
 ```python
-torchcomms.new_comm(backend, device, ...)
+torchcomms.new_comm(backend, device, name, ...)
 ```
 
 - **backend** (str): Communication backend to use (e.g., "ncclx")
 - **device** (torch.device): Device to use for communication
-- **options** (CommOptions, optional): Configuration options including store,
-  timeout, and other settings
+- **name** (str): Communicator name, unique within the process
+- **optional keyword arguments**: `abort_process_on_timeout_or_error`,
+  `timeout`, `is_high_priority_stream`, `store`, `enable_reconfigure`, and
+  `hints`
 
-**Note**: The store parameter is now optional and can be provided through the
-options parameter. TorchComms supports multiple bootstrap backends including
-TCPStore, and Torchrun. If no store is provided, TorchComms will automatically
-detect the environment and use the appropriate bootstrap mechanism.
+**Note**: TorchComms supports multiple bootstrap backends including TCPStore
+and Torchrun. If no store is provided, TorchComms will automatically detect the
+environment and use the appropriate bootstrap mechanism.
 
 #### Initialization Methods
 
@@ -443,18 +444,25 @@ arguments:
 
 **Backend-Specific Hints:**
 
-- **"is_high_priority_stream"**: Set to "true" to enable high priority CUDA stream
-  for NCCL operations (default: not set, equivalent to false)
+- **"is_high_priority_stream"**: Set to `"true"` or `"false"` to override the
+  high-priority stream setting for GPU backends. If both this hint and the
+  `is_high_priority_stream` communicator option are provided, the hint takes
+  precedence.
 
 #### Communicator Options
 
-The `new_comm` function accepts several optional parameters for configuration:
+The `new_comm` function accepts the following parameters for configuration:
 
 - **abort_process_on_timeout_or_error** (bool, optional): Whether to abort the
   process on timeout or error
 - **timeout** (timedelta, optional): Default timeout for operations
+- **is_high_priority_stream** (bool, optional): Whether to use a
+  high-priority stream by default for GPU backends when the
+  `is_high_priority_stream` hint is not provided
 - **store** (Store, optional): Store for communication between processes
-- **name** (str, optional): Communicator name
+- **name** (str): Communicator name
+- **enable_reconfigure** (bool, optional): Enables `reconfigure()` for fault
+  tolerance on supported backends
 - **hints** (Dict[str, str], optional): Dictionary of string hints for
   backend-specific options
 
@@ -497,7 +505,7 @@ store = torch.distributed.FileStore("/tmp/torchcomm_test", 2)
 
 # Create a communicator
 device = torch.device("cuda:0")
-comm = torchcomms.new_comm("nccl", device, store=store)
+comm = torchcomms.new_comm("nccl", device, name="example_comm", store=store)
 
 # Get rank and world size
 rank = comm.get_rank()
@@ -525,7 +533,7 @@ import torchcomms
 # Create a communicator
 store = torch.distributed.FileStore("/tmp/torchcomm_test", 2)
 device = torch.device("cuda:0")
-comm = torchcomms.new_comm("nccl", device, store=store)
+comm = torchcomms.new_comm("nccl", device, name="async_example", store=store)
 
 rank = comm.get_rank()
 world_size = comm.get_size()
@@ -558,7 +566,7 @@ import torchcomms
 
 # Create a communicator
 device = torch.device("cuda:0")
-comm = torchcomms.new_comm("ncclx", device)
+comm = torchcomms.new_comm("ncclx", device, name="cuda_graph_example")
 
 rank = comm.get_rank()
 world_size = comm.get_size()
@@ -594,6 +602,7 @@ device = torch.device("cuda:0")
 comm = torchcomms.new_comm(
     "ncclx",
     device,
+    name="custom_options_example",
     timeout=torch.timedelta(seconds=60),
     abort_process_on_timeout_or_error=False,
     hints={
