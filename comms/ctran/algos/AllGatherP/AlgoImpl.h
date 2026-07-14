@@ -5,7 +5,6 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 
 namespace ctran::allgatherp {
@@ -18,7 +17,6 @@ class AlgoImpl {
       : comm_(comm), stream_(stream) {};
   ~AlgoImpl();
 
-  commResult_t initialize();
   commResult_t destroy();
 
   // Execute the direct algorithm of allgatherP.
@@ -73,9 +71,9 @@ class AlgoImpl {
   // Allocate pipeSync and other internal resources.
   commResult_t initResources();
 
- private:
   // Wait till either the async initialization is done or hit async error.
-  // It is called before execution scheduling any CE copy to the stream.
+  // Called before exec schedules any CE copy to the stream, and by
+  // createPersistentRequest for the synchronous (graph-capture) init path.
   inline commResult_t waitInit() {
     while (pArgs.initState.load() != InitState::kInitialized) {
       FB_COMMCHECK(comm_->getAsyncResult());
@@ -83,6 +81,7 @@ class AlgoImpl {
     return commSuccess;
   }
 
+ private:
   Resource resource_;
   CtranComm* comm_{nullptr};
   cudaStream_t stream_{nullptr};
@@ -91,7 +90,11 @@ class AlgoImpl {
 commResult_t createPersistentRequest(
     CtranComm* comm,
     cudaStream_t stream,
-    CtranPersistentRequest** out);
+    void* recvbuff,
+    size_t maxRecvCount,
+    commDataType_t datatype,
+    CtranPersistentRequest** out,
+    bool waitForInit);
 
 commResult_t destroyPersistentRequest(CtranPersistentRequest* const request);
 } // namespace ctran::allgatherp

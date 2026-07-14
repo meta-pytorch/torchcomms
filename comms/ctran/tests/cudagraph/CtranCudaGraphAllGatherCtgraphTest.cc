@@ -581,7 +581,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Multiple persistent AGP requests over the same recvbuf coexist in one
 // captured graph: each ctranAllGather builds its own persistent request
-// (setupPersistentRequest) whose NVL IPC imports refcount up on the shared
+// (createPersistentRequest) whose NVL IPC imports refcount up on the shared
 // recvbuf. Capturing three back-to-back allgathers on the same recvbuf in a
 // single graph exercises this coexistence, and the CTRAN-AGP log shows the
 // IpcImport refCount rising 1->2->3 across the three requests.
