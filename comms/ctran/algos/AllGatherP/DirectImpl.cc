@@ -69,15 +69,33 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
-  // Sync to make sure ib peers are ready to receive
+  rReqs.reserve(nRanks - 1);
+  sReqs.reserve(nRanks - 1);
+
+  // First exec: exchange the inter-node IB rkeys with every non-NVL peer.
+  // Export our recvbuff so the peer can put to us, and import the peer's
+  // recvbuff+rkey (sets backend=IB on that slot) so we can put to it. The
+  // rkey is exec-invariant, so later execs only re-sync.
   for (int p = 1; p < nRanks; p++) {
-    CtranMapperRequest* req = nullptr;
+    CtranMapperRequest *sreq = nullptr, *rreq = nullptr;
     const int peer = (rank + p) % nRanks;
-    if (pArgs->remoteAccessKeys[peer].backend == CtranMapperBackend::IB) {
-      FB_COMMCHECK(mapper->irecvCtrl(peer, &req));
-      rReqs.push_back(std::unique_ptr<CtranMapperRequest>(req));
-      FB_COMMCHECK(mapper->isendCtrl(peer, &req));
-      sReqs.push_back(std::unique_ptr<CtranMapperRequest>(req));
+    // After the intra-only init, inter-node peers are UNSET (not IB) until the
+    // first-exec exchange below sets them to IB.
+    if (pArgs->remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
+      if (!pArgs->ibKeysExchanged) {
+        FB_COMMCHECK(
+            mapper->isendCtrl(pArgs->recvbuff, pArgs->recvHdl, peer, &sreq));
+        FB_COMMCHECK(mapper->irecvCtrl(
+            &pArgs->remoteRecvBuffs[peer],
+            &pArgs->remoteAccessKeys[peer],
+            peer,
+            &rreq));
+      } else {
+        FB_COMMCHECK(mapper->irecvCtrl(peer, &rreq));
+        FB_COMMCHECK(mapper->isendCtrl(peer, &sreq));
+      }
+      sReqs.push_back(std::unique_ptr<CtranMapperRequest>(sreq));
+      rReqs.push_back(std::unique_ptr<CtranMapperRequest>(rreq));
     }
   }
   for (auto& req : rReqs) {
@@ -86,6 +104,8 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& req : sReqs) {
     FB_COMMCHECK(mapper->waitRequest(req.get()));
   }
+  pArgs->ibKeysExchanged = true;
+
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 

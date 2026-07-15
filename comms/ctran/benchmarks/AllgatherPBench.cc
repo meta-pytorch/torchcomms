@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -134,11 +135,18 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     } else {
       NCCLCHECK_TEST(ncclMemAlloc(&buf, size));
     }
+    // Mimic the real CCA allocator hook: cache (but do not force-register)
+    // every allocation. Eager AGP relies on the buffer being cached so its
+    // acquireScopedRegister is the first registration (ncclManaged=true),
+    // yielding a valid IPC handle even for cudaMalloc.
+    COMMCHECK_TEST(ctran::RegCache::getInstance()->globalRegister(buf, size));
     return buf;
   }
 
   // Free memory based on memory type
-  void freeBuffer(void* buf) {
+  void freeBuffer(void* buf, size_t size) {
+    // Release the CCA cache entry acquired in allocateBuffer before freeing.
+    COMMCHECK_TEST(ctran::RegCache::getInstance()->globalDeregister(buf, size));
     if (memType_ == kMemCudaMalloc) {
       CUDACHECK_TEST(cudaFree(buf));
     } else {
@@ -387,6 +395,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     const auto nNodes = statex->nNodes();
     const bool wantPipeline =
         (FLAGS_algo == "ctpipeline" || FLAGS_algo == "all");
+    const bool wantDirect = (FLAGS_algo == "ctdirect" || FLAGS_algo == "all");
     bool pipelineSupported = false;
 
     // Generate size range (powers of 2)
@@ -406,13 +415,16 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
 
     void* sendbuf = nullptr;
     void* recvbuf = nullptr;
-    void *sendHdl = nullptr, *recvHdl = nullptr;
-    CtranPersistentRequest* request = nullptr;
+    CtranPersistentRequest* requestDirect = nullptr;
+    CtranPersistentRequest* requestPipeline = nullptr;
 
     // Only allocate and initialize if running AllGatherP algorithms
     if (FLAGS_algo == "ctdirect" || FLAGS_algo == "ctpipeline" ||
         FLAGS_algo == "all") {
-      // Allocate and initialize buffers ONCE for max size
+      // Allocate and initialize buffers ONCE for max size. allocateBuffer
+      // caches each buffer via the allocator hook; no commRegister is needed
+      // since eager allGatherPInit scoped-registers recvbuf and sendbuf is
+      // resolved from the cache at exec.
       sendbuf = allocateBuffer(maxSizeBytes);
       recvbuf = allocateBuffer(maxRecvBytes);
 
@@ -420,25 +432,34 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       CUDACHECK_TEST(cudaMemset(recvbuf, 0, maxRecvBytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
-      // Register memory ONCE for max size
-      COMMCHECK_TEST(
-          ctranComm_->ctran_->commRegister(recvbuf, maxRecvBytes, &recvHdl));
-      if (!FLAGS_in_place) {
-        COMMCHECK_TEST(
-            ctranComm_->ctran_->commRegister(sendbuf, maxSizeBytes, &sendHdl));
-      }
-
-      // Initialize AllGatherP ONCE globally with max size
+      // Each algorithm gets its OWN persistent request bound to the same
+      // recvbuf. A preq exchanges its inter-node IB rkeys on first exec for the
+      // peer set its algorithm needs (ctdirect: all non-NVL peers; ctpipeline:
+      // rail neighbors only) and never re-exchanges them, so sharing one preq
+      // across algorithms would reuse the wrong keys and hang.
       meta::comms::Hints hints;
-      COMMCHECK_TEST(
-          ctran::allGatherPInit(
-              recvbuf,
-              maxCount * numRanks,
-              hints,
-              dt_,
-              ctranComm_.get(),
-              stream_,
-              request));
+      if (wantDirect) {
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                hints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                requestDirect));
+      }
+      if (wantPipeline) {
+        COMMCHECK_TEST(
+            ctran::allGatherPInit(
+                recvbuf,
+                maxCount * numRanks,
+                hints,
+                dt_,
+                ctranComm_.get(),
+                stream_,
+                requestPipeline));
+      }
 
       // Wait for async init to complete
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
@@ -451,7 +472,10 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         EnvRAII algoEnv(
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
         commResult_t probeRc = ctran::allGatherPExec(
-            FLAGS_in_place ? recvbuf : sendbuf, /*count=*/1, dt_, request);
+            FLAGS_in_place ? recvbuf : sendbuf,
+            /*count=*/1,
+            dt_,
+            requestPipeline);
         CUDACHECK_TEST(cudaStreamSynchronize(stream_));
         if (probeRc == commInvalidUsage) {
           if (globalRank == 0) {
@@ -482,7 +506,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       if (FLAGS_algo == "ctdirect" || FLAGS_algo == "all") {
         EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Direct", request, sendbuf, recvbuf);
+            count, "AllGatherP_Direct", requestDirect, sendbuf, recvbuf);
         printResult(result);
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
@@ -493,7 +517,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         EnvRAII algoEnv(
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
+            count, "AllGatherP_Pipeline", requestPipeline, sendbuf, recvbuf);
         printResult(result);
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
@@ -511,29 +535,27 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     }
 
     // Cleanup ONCE at the very end after all sizes
-    if (request != nullptr) {
-      COMMCHECK_TEST(ctran::allGatherPDestroy(request));
-      delete request;
-
+    if (requestDirect != nullptr) {
+      COMMCHECK_TEST(ctran::allGatherPDestroy(requestDirect));
+      delete requestDirect;
+    }
+    if (requestPipeline != nullptr) {
+      COMMCHECK_TEST(ctran::allGatherPDestroy(requestPipeline));
+      delete requestPipeline;
+    }
+    if (requestDirect != nullptr || requestPipeline != nullptr) {
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
       CUDACHECK_TEST(cudaDeviceSynchronize());
       ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
     }
 
-    // Deregister memory ONCE
-    if (recvHdl != nullptr) {
-      COMMCHECK_TEST(ctranComm_->ctran_->commDeregister(recvHdl));
-    }
-    if (sendHdl != nullptr) {
-      COMMCHECK_TEST(ctranComm_->ctran_->commDeregister(sendHdl));
-    }
-
-    // Free buffers ONCE
+    // Free buffers ONCE (releases their CCA cache entries), after
+    // allGatherPDestroy.
     if (sendbuf != nullptr) {
-      freeBuffer(sendbuf);
+      freeBuffer(sendbuf, maxSizeBytes);
     }
     if (recvbuf != nullptr) {
-      freeBuffer(recvbuf);
+      freeBuffer(recvbuf, maxRecvBytes);
     }
 
     if (globalRank == 0) {

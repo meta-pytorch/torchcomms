@@ -16,6 +16,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
@@ -53,8 +54,10 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
   char expectedVal;
   commDataType_t dt = commBfloat16;
   size_t sendBytes, recvBytes;
+  // Padded allocation sizes (as passed to prepareBuf), used to release the CCA
+  // cache entry with the same range that was cached.
+  size_t sendBufSize_{0}, recvBufSize_{0};
   void *sendbuf, *recvbuf;
-  void *sendHdl, *recvHdl;
   std::unique_ptr<CtranComm> ctranComm;
   cudaStream_t stream = 0;
 
@@ -111,10 +114,22 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
     } else {
       NCCLCHECK_TEST(ncclMemAlloc(&buf, bufSize));
     }
+    // Mimic the real CCA allocator hook: cache (but do not force-register)
+    // every allocation, leaving ncclManaged to the first real registrar. Eager
+    // AGP relies on the buffer being cached so its acquireScopedRegister is the
+    // first registration (ncclManaged=true), yielding a valid IPC handle even
+    // for cudaMalloc.
+    COMMCHECK_TEST(
+        ctran::RegCache::getInstance()->globalRegister(buf, bufSize));
     return reinterpret_cast<char*>(buf);
   }
 
-  void releaseBuf(char* buf, MemAllocType memType) {
+  void releaseBuf(char* buf, size_t bufSize, MemAllocType memType) {
+    // Release the CCA cache entry acquired in prepareBuf before freeing.
+    // Callers free buffers only at test teardown after allGatherPDestroy, so
+    // any AGP scoped registration on this buffer has already been released.
+    COMMCHECK_TEST(
+        ctran::RegCache::getInstance()->globalDeregister(buf, bufSize));
     if (memType == kMemCudaMalloc) {
       CUDACHECK_TEST(cudaFree(buf));
     } else {
@@ -128,14 +143,15 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
     const size_t pageSize = getpagesize();
     sendbuf = recvbuf = nullptr;
-    sendHdl = recvHdl = nullptr;
     sendBytes = sendCount * commTypeSize(dt);
     recvBytes = maxRecvCount * commTypeSize(dt);
 
     size_t bufSize;
     bufSize = ((sendBytes + pageSize - 1) / pageSize) * pageSize;
+    sendBufSize_ = bufSize;
     sendbuf = prepareBuf(bufSize, memType);
     bufSize = ((recvBytes + pageSize - 1) / pageSize) * pageSize;
+    recvBufSize_ = bufSize;
     recvbuf = prepareBuf(bufSize, memType);
 
     CUDACHECK_TEST(cudaMemset(sendbuf, expectedVal, sendBytes));
@@ -154,8 +170,13 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
-  void
-  cumemBufSetup(size_t sendCount, size_t recvCount, char** sBuf, char** rBuf) {
+  void cumemBufSetup(
+      size_t sendCount,
+      size_t recvCount,
+      char** sBuf,
+      char** rBuf,
+      size_t* sBufSize,
+      size_t* rBufSize) {
     expectedVal = globalRank;
 
     const size_t pageSize = getpagesize();
@@ -164,8 +185,10 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
     size_t bufSize;
     bufSize = ((sBytes + pageSize - 1) / pageSize) * pageSize;
+    *sBufSize = bufSize;
     *sBuf = prepareBuf(bufSize, kMemNcclMemAlloc);
     bufSize = ((rBytes + pageSize - 1) / pageSize) * pageSize;
+    *rBufSize = bufSize;
     *rBuf = prepareBuf(bufSize, kMemNcclMemAlloc);
 
     CUDACHECK_TEST(cudaMemset(*sBuf, expectedVal, sBytes));
@@ -173,14 +196,15 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
-  void cumemBufCleanUp(void* sBuf, void* rBuf) {
-    releaseBuf((char*)sBuf, kMemNcclMemAlloc);
-    releaseBuf((char*)rBuf, kMemNcclMemAlloc);
+  void
+  cumemBufCleanUp(char* sBuf, char* rBuf, size_t sBufSize, size_t rBufSize) {
+    releaseBuf(sBuf, sBufSize, kMemNcclMemAlloc);
+    releaseBuf(rBuf, rBufSize, kMemNcclMemAlloc);
   }
 
   void memoryCleanUp(MemAllocType memType) {
-    releaseBuf((char*)sendbuf, memType);
-    releaseBuf((char*)recvbuf, memType);
+    releaseBuf((char*)sendbuf, sendBufSize_, memType);
+    releaseBuf((char*)recvbuf, recvBufSize_, memType);
   }
 
   void run(
@@ -188,19 +212,13 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
       size_t count,
       TestInPlaceType inplace,
       MemAllocType memType,
-      CtranComm* testComm,
-      bool sendbufReg = true) {
+      CtranComm* testComm) {
     const auto maxRecvCount = maxSendCount * numRanks;
     memorySetUp(memType, count, maxRecvCount);
 
     void* usedSendBuf = sendbuf;
-    COMMCHECK_TEST(
-        testComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
     if (inplace == kTestInPlace) {
       usedSendBuf = (char*)recvbuf + globalRank * sendBytes;
-    } else if (sendbufReg) {
-      COMMCHECK_TEST(
-          testComm->ctran_->commRegister(sendbuf, sendBytes, &sendHdl));
     }
     meta::comms::Hints hints;
     CtranPersistentRequest* request;
@@ -261,11 +279,6 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
     ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
     delete request;
-
-    if (inplace == kTestOutOfPlace && sendbufReg) {
-      COMMCHECK_TEST(testComm->ctran_->commDeregister(sendHdl));
-    }
-    COMMCHECK_TEST(testComm->ctran_->commDeregister(recvHdl));
 
     memoryCleanUp(memType);
   }
@@ -399,12 +412,7 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegDirect) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else {
-    run(maxSendCount,
-        count,
-        inplace,
-        memType,
-        ctranComm.get(),
-        false /* sendbufReg */);
+    run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
 }
 
@@ -420,12 +428,7 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegPipeline) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else {
-    run(maxSendCount,
-        count,
-        inplace,
-        memType,
-        ctranComm.get(),
-        false /* sendbufReg */);
+    run(maxSendCount, count, inplace, memType, ctranComm.get());
   }
 }
 
@@ -436,6 +439,35 @@ TEST_F(CtranAllgatherPTest, InvalidPreq) {
   ASSERT_EQ(
       ctran::allGatherPExec(sendBuf, 64, commInt32, request.get()),
       commInvalidArgument);
+}
+
+TEST_F(CtranAllgatherPTest, UncachedRecvbufFailsCleanly) {
+  // Eager AGP registers recvbuf via the scoped regcache API, which requires the
+  // buffer's segment to already be CCA-cached. An uncached recvbuf must be
+  // rejected cleanly with commInvalidUsage. Allocate via raw cudaMalloc (NOT
+  // prepareBuf, which caches every allocation) so the buffer stays uncached.
+  const size_t maxRecvCount = 8192 * numRanks;
+  const size_t recvRegBytes = maxRecvCount * commTypeSize(dt);
+  void* uncachedRecvbuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&uncachedRecvbuf, recvRegBytes));
+
+  meta::comms::Hints hints;
+  CtranPersistentRequest* request = nullptr;
+  ASSERT_EQ(
+      ctran::allGatherPInit(
+          uncachedRecvbuf,
+          maxRecvCount,
+          hints,
+          dt,
+          ctranComm.get(),
+          stream,
+          request),
+      commInvalidUsage);
+  // createPersistentRequest sets *out = nullptr up front, so request stays null
+  // when it fails early (here, on the uncached recvbuf) before any allocation.
+  ASSERT_EQ(request, nullptr);
+
+  CUDACHECK_TEST(cudaFree(uncachedRecvbuf));
 }
 
 TEST_F(CtranAllgatherPTest, InvalidCount) {
@@ -457,10 +489,6 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
 
     memorySetUp(memType, count, maxRecvCount);
 
-    COMMCHECK_TEST(
-        ctranComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
-    COMMCHECK_TEST(
-        ctranComm->ctran_->commRegister(sendbuf, sendBytes, &sendHdl));
     meta::comms::Hints hints;
     CtranPersistentRequest* request;
 
@@ -495,8 +523,6 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
     ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
     delete request;
 
-    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(sendHdl));
-    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
     memoryCleanUp(memType);
   }
 }
@@ -604,8 +630,8 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   std::vector<CtranPersistentRequest*> requests(kComms * kBufs);
   std::vector<char*> sendBufs(kBufs);
   std::vector<char*> recvBufs(kBufs);
-  std::vector<void*> sendHdls(kBufs);
-  std::vector<void*> recvHdls(kBufs);
+  std::vector<size_t> sendBufSizes(kBufs);
+  std::vector<size_t> recvBufSizes(kBufs);
 
   for (int c = 0; c < kComms; c++) {
     CUDACHECK_TEST(cudaStreamCreate(&streams[c]));
@@ -618,18 +644,18 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
     return;
   }
 
-  // Allocate persistent buffers and register with ALL communicators
-  // before any allGatherPInit (export) calls
+  // Allocate persistent buffers before any allGatherPInit (export) calls.
+  // cumemBufSetup caches each buffer via the allocator hook; no commRegister is
+  // needed since eager allGatherPInit scoped-registers recvbuf and sendbuf is
+  // resolved from the cache at exec.
   for (int b = 0; b < kBufs; b++) {
-    cumemBufSetup(sendCount, recvCount, &sendBufs.at(b), &recvBufs.at(b));
-    for (int c = 0; c < kComms; c++) {
-      COMMCHECK_TEST(
-          testComms[c]->ctran_->commRegister(
-              recvBufs.at(b), recvCount * commTypeSize(dt), &recvHdls.at(b)));
-      COMMCHECK_TEST(
-          testComms[c]->ctran_->commRegister(
-              sendBufs.at(b), sendCount * commTypeSize(dt), &sendHdls.at(b)));
-    }
+    cumemBufSetup(
+        sendCount,
+        recvCount,
+        &sendBufs.at(b),
+        &recvBufs.at(b),
+        &sendBufSizes.at(b),
+        &recvBufSizes.at(b));
   }
   // Convert to int8_t for init to mimic FSDP use case
   const auto initMaxRecvCount =
@@ -672,13 +698,11 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
     delete requests[r];
   }
 
-  // Deregister buffers from all communicators
+  // Free buffers (regcache release handled by cumemBufCleanUp similar to CCA
+  // hook)
   for (int b = 0; b < kBufs; b++) {
-    for (int c = 0; c < kComms; c++) {
-      COMMCHECK_TEST(testComms[c]->ctran_->commDeregister(sendHdls.at(b)));
-      COMMCHECK_TEST(testComms[c]->ctran_->commDeregister(recvHdls.at(b)));
-    }
-    cumemBufCleanUp(sendBufs.at(b), recvBufs.at(b));
+    cumemBufCleanUp(
+        sendBufs.at(b), recvBufs.at(b), sendBufSizes.at(b), recvBufSizes.at(b));
   }
 
   // Destroy comms before streams
@@ -705,16 +729,17 @@ TEST_F(CtranAllgatherPTest, DestroyOneShareRecvBuf) {
 
   char* localSendBuf = nullptr;
   char* localRecvBuf = nullptr;
-  cumemBufSetup(sendCount, recvCount, &localSendBuf, &localRecvBuf);
+  size_t localSendBufSize = 0;
+  size_t localRecvBufSize = 0;
+  cumemBufSetup(
+      sendCount,
+      recvCount,
+      &localSendBuf,
+      &localRecvBuf,
+      &localSendBufSize,
+      &localRecvBufSize);
 
-  const auto recvRegBytes = recvCount * commTypeSize(dt);
   const auto sendRegBytes = sendCount * commTypeSize(dt);
-  void* localRecvHdl = nullptr;
-  void* localSendHdl = nullptr;
-  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
-      localRecvBuf, recvRegBytes, &localRecvHdl));
-  COMMCHECK_TEST(ctranComm->ctran_->commRegister(
-      localSendBuf, sendRegBytes, &localSendHdl));
 
   const auto initMaxRecvCount =
       recvCount * commTypeSize(dt) / commTypeSize(commInt8);
@@ -793,9 +818,8 @@ TEST_F(CtranAllgatherPTest, DestroyOneShareRecvBuf) {
   ASSERT_EQ(ctran::allGatherPDestroy(reqB), commSuccess);
   delete reqB;
 
-  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localSendHdl));
-  COMMCHECK_TEST(ctranComm->ctran_->commDeregister(localRecvHdl));
-  cumemBufCleanUp(localSendBuf, localRecvBuf);
+  cumemBufCleanUp(
+      localSendBuf, localRecvBuf, localSendBufSize, localRecvBufSize);
 }
 
 // Validates the ctran-level persistent-request teardown-safety mechanism: a
@@ -814,7 +838,6 @@ TEST_F(CtranAllgatherPTest, CommDestroyBeforePreqDestroy) {
   const auto recvCount = 2097152UL * numRanks;
   const auto sendCount = recvCount / numRanks;
   const auto sendRegBytes = sendCount * commTypeSize(dt);
-  const auto recvRegBytes = recvCount * commTypeSize(dt);
   const auto initMaxRecvCount =
       recvCount * commTypeSize(dt) / commTypeSize(commInt8);
   const auto initDt = commInt8;
@@ -826,16 +849,11 @@ TEST_F(CtranAllgatherPTest, CommDestroyBeforePreqDestroy) {
                             CtranPersistentRequest*& request,
                             char*& sendBuf,
                             char*& recvBuf,
-                            void*& sendHdl,
-                            void*& recvHdl) {
+                            size_t& sendBufSize,
+                            size_t& recvBufSize) {
     comm = makeCtranComm();
-    cumemBufSetup(sendCount, recvCount, &sendBuf, &recvBuf);
-
-    // allGatherPInit resolves the recvbuf's registration via searchRegHandle,
-    // so the recvbuf must be pre-registered on this comm; mirror the sibling
-    // AGP tests by also registering the sendbuf used by exec.
-    COMMCHECK_TEST(comm->ctran_->commRegister(recvBuf, recvRegBytes, &recvHdl));
-    COMMCHECK_TEST(comm->ctran_->commRegister(sendBuf, sendRegBytes, &sendHdl));
+    cumemBufSetup(
+        sendCount, recvCount, &sendBuf, &recvBuf, &sendBufSize, &recvBufSize);
 
     meta::comms::Hints hints;
     COMMCHECK_TEST(
@@ -865,15 +883,13 @@ TEST_F(CtranAllgatherPTest, CommDestroyBeforePreqDestroy) {
     std::unique_ptr<CtranComm> comm;
     CtranPersistentRequest* request = nullptr;
     char *sendBuf = nullptr, *recvBuf = nullptr;
-    void *sendHdl = nullptr, *recvHdl = nullptr;
-    makeReqAndExec(comm, request, sendBuf, recvBuf, sendHdl, recvHdl);
+    size_t sendBufSize = 0, recvBufSize = 0;
+    makeReqAndExec(comm, request, sendBuf, recvBuf, sendBufSize, recvBufSize);
 
     ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
     delete request;
-    COMMCHECK_TEST(comm->ctran_->commDeregister(sendHdl));
-    COMMCHECK_TEST(comm->ctran_->commDeregister(recvHdl));
     comm.reset();
-    cumemBufCleanUp(sendBuf, recvBuf);
+    cumemBufCleanUp(sendBuf, recvBuf, sendBufSize, recvBufSize);
   }
 
   // Sub-case 2: the hang case -- destroy the COMM before the preq. The comm
@@ -884,14 +900,12 @@ TEST_F(CtranAllgatherPTest, CommDestroyBeforePreqDestroy) {
     std::unique_ptr<CtranComm> comm;
     CtranPersistentRequest* request = nullptr;
     char *sendBuf = nullptr, *recvBuf = nullptr;
-    void *sendHdl = nullptr, *recvHdl = nullptr;
-    makeReqAndExec(comm, request, sendBuf, recvBuf, sendHdl, recvHdl);
+    size_t sendBufSize = 0, recvBufSize = 0;
+    makeReqAndExec(comm, request, sendBuf, recvBuf, sendBufSize, recvBufSize);
 
-    // The comm is destroyed first; its drain releases the registrations, so no
-    // explicit commDeregister is valid post-comm-destroy.
     comm.reset();
     delete request;
-    cumemBufCleanUp(sendBuf, recvBuf);
+    cumemBufCleanUp(sendBuf, recvBuf, sendBufSize, recvBufSize);
   }
 }
 
