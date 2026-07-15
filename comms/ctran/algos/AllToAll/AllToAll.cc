@@ -14,6 +14,7 @@
 #include "comms/prims/transport/Transport.cuh"
 #endif
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -21,7 +22,7 @@
 #if defined(ENABLE_PRIMS)
 template <PipeProtocol Proto>
 extern __global__ void ncclKernelDeviceAllToAllvPipes(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
 #endif

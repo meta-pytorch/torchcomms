@@ -8,16 +8,17 @@
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 
 __global__ void CtranGpeTestKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   int* a = const_cast<int*>(reinterpret_cast<const int*>(args.sendbuff));
   int* expValInt = reinterpret_cast<int*>(args.recvbuff);
   // Assume data type = commInt8
   size_t count = args.count;
 
   if (flag) {
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   for (int i = 0; i < count; i++) {
@@ -30,7 +31,7 @@ __global__ void CtranGpeTestKernel(
 }
 
 __global__ void CtranGpeTestCustomArgsKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     CtranKernelCustomArgs args) {
   const auto gtId = blockIdx.x * blockDim.x + threadIdx.x;
@@ -41,17 +42,18 @@ __global__ void CtranGpeTestCustomArgsKernel(
   __syncthreads();
 }
 
-__global__ void CtranGpeTestTerminateKernel(int* flag) {
-  ctran::device::KernelStartGpe(flag);
+__global__ void CtranGpeTestTerminateKernel(ctran::gpe::KernelFlagDev* f) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::KernelStartGpe(f);
   ctran::device::KernelWaitGpeTerminate(flag);
 }
 
-__global__ void CtranGpeTestStartAndExitKernel(int* flag) {
-  ctran::device::KernelStartGpeAndExit(flag);
+__global__ void CtranGpeTestStartAndExitKernel(ctran::gpe::KernelFlagDev* f) {
+  ctran::device::KernelStartGpeAndExit(f);
 }
 
 __global__ void CtranGpeTestKElemsKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args) {
   KernelElem* elemList = const_cast<KernelElem*>(
@@ -67,12 +69,13 @@ __global__ void CtranGpeTestKElemsKernel(
 }
 
 __global__ void CtranGpeTestOneFlagKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   auto gtIdx = blockIdx.x * blockDim.x + threadIdx.x;
   if (flag && gtIdx == 0) {
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   devStateLoadToShm(devState_d);
@@ -83,13 +86,14 @@ __global__ void CtranGpeTestOneFlagKernel(
 }
 
 __global__ void CtranGpeTestPerBlockFlagKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   auto tId = threadIdx.x;
   auto bId = blockIdx.x;
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   devStateLoadToShm(devState_d);
@@ -101,13 +105,14 @@ __global__ void CtranGpeTestPerBlockFlagKernel(
 }
 
 __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   devStateLoadToShm(devState_d);
@@ -122,13 +127,14 @@ __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
 }
 
 __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   devStateLoadToShm(devState_d);
@@ -148,13 +154,14 @@ __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
 }
 
 __global__ void CtranGpeTestFtBaseKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   devStateLoadToShm(&flag[bId], devState_d);
@@ -169,13 +176,14 @@ __global__ void CtranGpeTestFtBaseKernel(
 }
 
 __global__ void CtranGpeTestFtShmAbortKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   devStateLoadToShm(&flag[bId], devState_d);

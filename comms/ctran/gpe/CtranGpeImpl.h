@@ -39,11 +39,11 @@ struct alignas(128) KernelFlagItem {
 
   void reset() {
     for (int i = 0; i < numGroups_; i++) {
-      flag_[i] = KERNEL_UNSET;
+      dev.flag_[i] = KERNEL_UNSET;
     }
     // Clear the full ring header so enabled==1 always implies ring/cmdId are
     // current; submit() re-arms it per-cmd on the ring path.
-    gpeHdr = {};
+    dev.gpeHdr = {};
   }
 
   bool inUse() {
@@ -51,7 +51,7 @@ struct alignas(128) KernelFlagItem {
       return true;
     }
     for (int i = 0; i < numGroups_; i++) {
-      if (flag_[i] != KERNEL_UNSET) {
+      if (dev.flag_[i] != KERNEL_UNSET) {
         return true;
       }
     }
@@ -60,17 +60,17 @@ struct alignas(128) KernelFlagItem {
 
   void onPop() {
     for (int i = 0; i < CTRAN_ALGO_MAX_THREAD_BLOCKS; ++i) {
-      flag_[i] = KERNEL_SCHEDULED;
+      dev.flag_[i] = KERNEL_SCHEDULED;
     }
     numGroups_ = 1;
     // Clear the full ring header (not just enabled) so a stale ring/cmdId can
     // never be published; submit() re-arms it per-cmd on the ring path.
-    gpeHdr = {};
+    dev.gpeHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
     for (int i = 0; i < numGroups_; ++i) {
-      if (flag_[i] != flag) {
+      if (dev.flag_[i] != flag) {
         return false;
       }
     }
@@ -79,7 +79,7 @@ struct alignas(128) KernelFlagItem {
 
   void setFlagPerGroup(int flag) {
     for (int i = 0; i < numGroups_; ++i) {
-      flag_[i] = flag;
+      dev.flag_[i] = flag;
     }
   }
 
@@ -94,11 +94,10 @@ struct alignas(128) KernelFlagItem {
     persistent_ = false;
   }
 
-  volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
-  // Device-ring dispatch header. MUST be the first member after flag_: the
-  // kernel's KernelStartGpe prologue recovers it at
-  // flag + CTRAN_ALGO_MAX_THREAD_BLOCKS to publish its cmd id to the ring.
-  ctran::gpe::GpeKernelFlagHeader gpeHdr{};
+  // Device-facing flag object (per-block flags + ring header). Passed to the
+  // kernel as &dev (a ctran::gpe::KernelFlagDev*); MUST be the first member so
+  // that pointer is at offset 0 of the KernelFlagItem.
+  ctran::gpe::KernelFlagDev dev;
   int numGroups_{1};
   // If true, inUse() always returns true — prevents reclaim() from stealing
   // the flag while a persistent cmd (graph capture) still owns it.
@@ -108,11 +107,6 @@ struct alignas(128) KernelFlagItem {
   void _() {
     // Make sure KernelFlagItem satisfies the PinnedHostItem concept
     static_assert(PinnedHostItem<Self>);
-
-    // gpeHdr must sit immediately after the flag array so the device prologue
-    // can recover it from the flag pointer via +CTRAN_ALGO_MAX_THREAD_BLOCKS.
-    static_assert(
-        offsetof(Self, gpeHdr) == sizeof(int) * CTRAN_ALGO_MAX_THREAD_BLOCKS);
   }
 };
 

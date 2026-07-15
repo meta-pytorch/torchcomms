@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 __device__ inline void prepareBcastArg(
@@ -47,14 +48,15 @@ static __device__ __forceinline__ void bcastOnPost(
 
 template <typename T>
 __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   devStateLoadToShm(devState);
@@ -70,6 +72,6 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
 
 #define DECL_CTRAN_ALLGATHERDIRECT_KERN(T)                    \
   template __global__ void ncclKernelAllGatherCtranDirect<T>( \
-      int* flag,                                              \
-      CtranAlgoDeviceState* devState,                         \
+      ctran::gpe::KernelFlagDev * flag,                       \
+      CtranAlgoDeviceState * devState,                        \
       ctran::allgather::KernelArgs args)

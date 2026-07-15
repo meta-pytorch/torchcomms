@@ -3,12 +3,13 @@
 
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 constexpr int numKElems = 10;
 
 __global__ void CtranGpeTestKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args);
 
@@ -19,26 +20,26 @@ struct CtranKernelCustomArgs {
 };
 
 __global__ void CtranGpeTestCustomArgsKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelCustomArgs args);
 
-__global__ void CtranGpeTestStartAndExitKernel(int* flag);
+__global__ void CtranGpeTestStartAndExitKernel(ctran::gpe::KernelFlagDev* flag);
 
-__global__ void CtranGpeTestTerminateKernel(int* flag);
+__global__ void CtranGpeTestTerminateKernel(ctran::gpe::KernelFlagDev* flag);
 
 __global__ void CtranGpeTestKElemsKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestOneFlagKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestPerBlockFlagKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     ctran::allgather::KernelArgs args);
 
@@ -47,21 +48,21 @@ struct CtranKernelFtArgs {
 };
 
 __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtBaseKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtShmAbortKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args);

@@ -128,9 +128,10 @@ __device__ void reduceScatterDirect(ctran::reducescatter::KernelArgs& args) {
 
 template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
   // channels.
   shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
@@ -138,7 +139,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   devStateLoadToShm(devState);
@@ -156,8 +157,8 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
 #define DECL_CTRAN_REDUCESCATTERDIRECT_KERN(T, RedOp) \
   template __global__ void __launch_bounds__(1024, 1) \
       ncclKernelReduceScatterDirect<T, RedOp>(        \
-          int* flag,                                  \
-          CtranAlgoDeviceState* devState,             \
+          ctran::gpe::KernelFlagDev * flag,           \
+          CtranAlgoDeviceState * devState,            \
           ctran::reducescatter::KernelArgs args)
 
 #endif

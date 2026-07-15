@@ -2,6 +2,7 @@
 
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/algos/tests/CtranDevWaitUTKernels.cuh"
 
 namespace ctran::testing {
@@ -44,10 +45,11 @@ __device__ void testDeviceWait(int bId, CtranTestDeviceWaitArgs& args) {
 } // namespace ctran::testing
 
 __global__ void ncclKernelTestDeviceWait(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     CtranTestDeviceWaitArgs args) {
   const auto bId = blockIdx.x;
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
 
   devStateLoadToShm(&flag[bId], devState);
 

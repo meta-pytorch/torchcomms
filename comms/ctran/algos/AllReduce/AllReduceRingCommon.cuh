@@ -6,6 +6,7 @@
 #include <chrono>
 
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevAttribute.h"
 #include "comms/utils/commSpecs.h"
 
@@ -586,7 +587,7 @@ template <
     bool EnableBidirAg,
     bool Unpack = false>
 __global__ void ncclKernelAllReduceCtranRing(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allreduce::ring::KernArgs args);
 

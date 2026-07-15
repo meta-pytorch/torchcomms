@@ -4,6 +4,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 using namespace ctran::algos;
@@ -16,10 +17,11 @@ namespace ctran::allgatherp {
 // Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is called once
 // to start the algorithm
 __global__ void ncclKernelAllGatherPPipeStart(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
-    ctran::device::KernelStartGpeAndExit(flag);
+    ctran::device::KernelStartGpeAndExit(f);
   }
 }
 
@@ -28,9 +30,10 @@ __global__ void ncclKernelAllGatherPPipeStart(
 // Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is called
 // nNode - 1 times.
 __global__ void ncclKernelAllGatherPPipeSync(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     PipeSyncKernArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   ctran::device::devLoadAbortFlags(flag, devState);
   // wait till GPE thread post the current stepId
   GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.stepId);
@@ -39,11 +42,12 @@ __global__ void ncclKernelAllGatherPPipeSync(
 // Stub kernel to hold stream while GPE thread does inter-node transfer.
 // Used when nLocalRanks == 1 in allgatherP pipeline algorithm
 __global__ void ncclKernelAllGatherPPipe(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
@@ -52,7 +56,7 @@ __global__ void ncclKernelAllGatherPPipe(
 // broadcast. Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is
 // called once at the end.
 __global__ void ncclKernelAllGatherPPipeEnd(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args) {
   // Reset sync flag for next GPE->kernel pipeline sync to use

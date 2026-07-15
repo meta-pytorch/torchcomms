@@ -393,9 +393,10 @@ __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
 // - false: IB path (no kernel-side unpack)
 template <typename T, commRedOp_t RedOp, bool EnableBidirAg, bool Unpack>
 __global__ void ncclKernelAllReduceCtranRing(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::allreduce::ring::KernArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -404,7 +405,7 @@ __global__ void ncclKernelAllReduceCtranRing(
   devStateLoadToShm(&flag[bId], devState);
 
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   // Run algorithm main body
@@ -424,24 +425,24 @@ __global__ void ncclKernelAllReduceCtranRing(
 #define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)  \
   template __global__ void                             \
   ncclKernelAllReduceCtranRing<T, RedOp, true, false>( \
-      int* flag,                                       \
-      CtranAlgoDeviceState* devState,                  \
+      ctran::gpe::KernelFlagDev * flag,                \
+      CtranAlgoDeviceState * devState,                 \
       ctran::allreduce::ring::KernArgs args);
 
 // Instantiation macro for simple kernel (no bidir AG, lower register usage)
 #define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)  \
   template __global__ void                              \
   ncclKernelAllReduceCtranRing<T, RedOp, false, false>( \
-      int* flag,                                        \
-      CtranAlgoDeviceState* devState,                   \
+      ctran::gpe::KernelFlagDev * flag,                 \
+      CtranAlgoDeviceState * devState,                  \
       ctran::allreduce::ring::KernArgs args);
 
 // Instantiation macro for simple kernel with TCPDM unpack
 #define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE_UNPACK(T, RedOp) \
   template __global__ void                                    \
   ncclKernelAllReduceCtranRing<T, RedOp, false, true>(        \
-      int* flag,                                              \
-      CtranAlgoDeviceState* devState,                         \
+      ctran::gpe::KernelFlagDev * flag,                       \
+      CtranAlgoDeviceState * devState,                        \
       ctran::allreduce::ring::KernArgs args);
 
 // Combined macro to instantiate all kernel variants

@@ -27,36 +27,32 @@ static inline __device__ void devLoadAbortFlags(
   kernelDoAbort = false;
 }
 
-// Publish this cmd's id to the per-comm device dispatch ring, in GPU execution
-// order, when the device-ring GPE path is armed for this launch. The ring
-// header (GpeKernelFlagHeader) is co-located in the KernelFlagItem immediately
-// after its flag array, so it is recovered from `flag` alone — no kernel needs
-// a dedicated ring parameter. Single-writer election (block 0, thread 0). A
-// no-op when the ring is not armed (enabled == 0), e.g. eager launches, so it
-// is safe to call unconditionally at kernel start. The GPE worker consumes the
-// ring to learn which command started and in what order. The ring write is the
-// HRDWRingBuffer System-scope 128b atomic path (requires sm_90+).
+// Publish this launch's cmd id to the device ring in GPU execution order.
+// Single-writer election (block 0, thread 0); no-op when not armed
+// (hdr.enabled == 0). The GPE worker consumes the ring to order started cmds.
+// The ring write is the HRDWRingBuffer System-scope 128b atomic path.
 static __forceinline__ __device__ void KernelPublishGpeRing(
-    volatile int* flag) {
-  if (blockIdx.x == 0 && threadIdx.x == 0) {
-    // flag points at KernelFlagItem::flag_[0]; the header sits right after the
-    // CTRAN_ALGO_MAX_THREAD_BLOCKS-int flag array.
-    auto* hdr = reinterpret_cast<ctran::gpe::GpeKernelFlagHeader*>(
-        const_cast<int*>(flag + CTRAN_ALGO_MAX_THREAD_BLOCKS));
-    if (hdr->enabled) {
-      hdr->ring.write(hdr->cmdId);
-    }
+    ctran::gpe::GpeKernelFlagHeader hdr) {
+  if (blockIdx.x == 0 && threadIdx.x == 0 && hdr.enabled) {
+    hdr.ring.write(hdr.cmdId);
   }
 }
 
-static inline __device__ void KernelStartGpe(volatile int* flag) {
-  KernelPublishGpeRing(flag);
-  comms::device::st_volatile_global(flag, KERNEL_STARTED);
+// Kernel start prologue: publish this cmd's id to the ring (block 0 only, no-op
+// when not armed), then signal the GPE worker that block `bId` has started. The
+// ring header is read directly from f->gpeHdr — no pointer-offset recovery.
+static inline __device__ void KernelStartGpe(
+    ctran::gpe::KernelFlagDev* f,
+    int bId = 0) {
+  KernelPublishGpeRing(f->gpeHdr);
+  comms::device::st_volatile_global(&f->flag_[bId], KERNEL_STARTED);
 }
 
-static inline __device__ void KernelStartGpeAndExit(volatile int* flag) {
-  KernelPublishGpeRing(flag);
-  comms::device::st_volatile_global(flag, KERNEL_STARTED_AND_EXIT);
+static inline __device__ void KernelStartGpeAndExit(
+    ctran::gpe::KernelFlagDev* f,
+    int bId = 0) {
+  KernelPublishGpeRing(f->gpeHdr);
+  comms::device::st_volatile_global(&f->flag_[bId], KERNEL_STARTED_AND_EXIT);
 }
 
 static inline __device__ bool KernelTestHostAbort(volatile int* flag) {

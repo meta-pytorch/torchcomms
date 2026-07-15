@@ -6,13 +6,14 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 __global__ void ncclKernelAllGatherCtranStreamedRd(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }

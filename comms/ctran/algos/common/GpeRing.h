@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace ctran::gpe {
@@ -35,16 +36,24 @@ using GpeRing =
 using GpeRingHandle = hrdw_ring_buffer::
     HRDWRingBufferDeviceHandle<GpeCmdId, kGpeRingScope, kGpeRingPolicy>;
 
-// Co-located in each per-cmd KernelFlagItem, immediately after its flag array.
-// The GPE fills these host-side at submit() on the device-ring path (per-cmd,
-// so no concurrent-kernel race); the kernel's KernelStartGpe prologue recovers
-// this header from the flag pointer and publishes cmdId to the ring. This is
-// how a kernel becomes ring-capable WITHOUT a dedicated ring parameter — every
-// GPE kernel already receives its flag and already calls KernelStartGpe.
+// Per-cmd ring header. The GPE fills it host-side at submit() on the
+// device-ring path (per-cmd, so no concurrent-kernel race); the kernel's
+// KernelStartGpe prologue reads it via KernelFlagDev::gpeHdr and publishes
+// cmdId to the ring.
 struct GpeKernelFlagHeader {
   GpeRingHandle ring{};
   GpeCmdId cmdId{0};
   uint32_t enabled{0};
+};
+
+// Device-facing view of a per-cmd kernel flag object: the per-block start/stop
+// flags plus the ring header, laid out in pinned host memory. Every GPE kernel
+// takes a KernelFlagDev* as its first argument and reads gpeHdr directly — no
+// pointer-offset recovery. KernelFlagItem (host) embeds this as its first
+// member, so &kernelFlag->dev is the pointer handed to the kernel.
+struct KernelFlagDev {
+  volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
+  GpeKernelFlagHeader gpeHdr{};
 };
 
 } // namespace ctran::gpe

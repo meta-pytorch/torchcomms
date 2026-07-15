@@ -7,11 +7,12 @@
 #include "comms/ctran/algos/AllGather/StreamedRd/Common.h"
 #include "comms/ctran/algos/AllGather/StreamedRd/Plan.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 __global__ void ncclKernelAllGatherCtranStreamedRd(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 

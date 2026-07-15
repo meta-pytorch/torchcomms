@@ -2,6 +2,7 @@
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 // Enumerate functions to test
@@ -37,6 +38,6 @@ struct CtranTestDeviceWaitArgs {
 };
 
 extern __global__ void ncclKernelTestDeviceWait(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     CtranTestDeviceWaitArgs args);

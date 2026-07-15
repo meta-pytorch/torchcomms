@@ -54,6 +54,7 @@ class CtranGpeTest : public ::testing::Test {
 class CtranGpeKernelTest : public ::testing::Test {
  public:
   volatile int* testFlag;
+  ctran::gpe::KernelFlagDev* testKfd{nullptr};
   CtranAlgoDeviceState* dummyDevState_d{nullptr};
   std::unique_ptr<ctran::TestCtranCommRAII> dummyCommRAII;
   CtranComm* dummyComm{nullptr};
@@ -71,14 +72,18 @@ class CtranGpeKernelTest : public ::testing::Test {
     dummyCommRAII = ctran::createDummyCtranComm();
     dummyComm = dummyCommRAII->ctranComm.get();
 
-    FB_CUDACHECKIGNORE(
-        cudaHostAlloc((void**)&testFlag, sizeof(int), cudaHostAllocDefault));
+    FB_CUDACHECKIGNORE(cudaHostAlloc(
+        (void**)&testKfd,
+        sizeof(ctran::gpe::KernelFlagDev),
+        cudaHostAllocDefault));
+    *testKfd = {};
+    testFlag = &testKfd->flag_[0];
     *testFlag = KERNEL_UNSET;
 
     CUDACHECK_TEST(cudaMalloc(&dummyDevState_d, sizeof(CtranAlgoDeviceState)));
   }
   void TearDown() override {
-    FB_CUDACHECKIGNORE(cudaFreeHost((void*)testFlag));
+    FB_CUDACHECKIGNORE(cudaFreeHost(testKfd));
     CUDACHECK_TEST(cudaFree(dummyDevState_d));
   }
 };
@@ -1821,7 +1826,7 @@ TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
 TEST_F(CtranGpeKernelTest, launchTerminateStallKernel) {
   dim3 grid = {1, 1, 1};
   dim3 blocks = {1, 1, 1};
-  void* args[] = {&testFlag};
+  void* args[] = {&testKfd};
   ASSERT_EQ(
       cudaFuncSetAttribute(
           reinterpret_cast<void*>(CtranGpeTestTerminateKernel),
