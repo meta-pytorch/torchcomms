@@ -19,11 +19,11 @@
 #include "nic/NicConfig.h" // @manual
 
 #if defined(NIC_BNXT)
-#include "nic/BnxtNicBackend.h" // @manual
+#include "nic/bnxt/BnxtNicBackend.h" // @manual
 #elif defined(NIC_IONIC)
-#include "nic/IonicNicBackend.h" // @manual
+#include "nic/ionic/IonicNicBackend.h" // @manual
 #else
-#include "nic/Mlx5NicBackend.h" // @manual
+#include "nic/mlx5/Mlx5NicBackend.h" // @manual
 #endif
 
 namespace pipes_gda {

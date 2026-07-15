@@ -31,6 +31,10 @@
 #include "comms/prims/transport/amd/DocaCompat.h"
 // meta::comms::DeviceBuffer (HIP shim) for the send/recv staging bulks.
 #include "comms/prims/transport/amd/HipHostCompat.h"
+#if defined(NIC_IONIC)
+// ionic (AMD Pensando) routable RoCEv2 GID discovery — see call site below.
+#include "comms/prims/transport/amd/nic/ionic/IonicGidDiscovery.h"
+#endif
 #else
 #include <cuda_runtime.h>
 
@@ -885,6 +889,10 @@ void MultiPeerIbTransportBase::openNics() {
   relaxedOrderingCapable_ = numNics_ > 0;
 
   // Open + setup each NIC: find by name, open ctx, alloc PD, query GID + port.
+  // Each NIC resolves its GID starting from the caller-configured default, not
+  // a previous NIC's discovered index; captured once so per-NIC discovery below
+  // cannot leak across iterations.
+  const int callerGidIndex = gidIndex_;
   for (int n = 0; n < numNics_; ++n) {
     int nicIdx = -1;
     for (int i = 0; i < numDevices; i++) {
@@ -930,12 +938,29 @@ void MultiPeerIbTransportBase::openNics() {
           deviceList[nicIdx], nics_[n].ibvCtx, nics_[n].ibvPd);
     }
 
+    int nicGidIndex = callerGidIndex;
     if (symbols.ibv_internal_query_gid(
-            nics_[n].ibvCtx, 1, gidIndex_, &nics_[n].localGid) != 0) {
+            nics_[n].ibvCtx, 1, nicGidIndex, &nics_[n].localGid) != 0) {
       throw std::runtime_error(
-          "Failed to query GID at index " + std::to_string(gidIndex_) +
+          "Failed to query GID at index " + std::to_string(nicGidIndex) +
           " on NIC " + nics_[n].deviceName);
     }
+
+#if defined(NIC_IONIC)
+    // ionic's routable RoCEv2 GID is not at the shared default index 3 (that
+    // slot is empty), so auto-discover it; see IonicGidDiscovery.h.
+    resolveRoceGidIndex(
+        symbols,
+        nics_[n].ibvCtx,
+        nics_[n].deviceName,
+        /*port=*/1,
+        /*callerPinnedIndex=*/config_.gidIndex.has_value(),
+        nicGidIndex,
+        nics_[n].localGid);
+#endif
+    // The transport uses one shared sgid_index for all NICs' address handles;
+    // ionic deployments are homogeneous, so each NIC resolves the same index.
+    gidIndex_ = nicGidIndex;
 
     auto gidStr = fmt::format(
         "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:"

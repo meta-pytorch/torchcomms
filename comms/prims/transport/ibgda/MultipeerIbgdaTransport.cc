@@ -173,8 +173,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
     checkDocaError(err, "Failed to set SGID index");
     err = doca_verbs_ah_attr_set_hop_limit(nicDoca_[n].ahAttr, kHopLimit);
     checkDocaError(err, "Failed to set hop limit");
-    err = doca_verbs_ah_attr_set_traffic_class(
-        nicDoca_[n].ahAttr, config_.trafficClass);
+    // ionic RoCE fabric: the mlx5/NCCL default TC=224 (DSCP 56) lands on a
+    // PFC-paused/rate-limited priority that caps a single QP at ~3.9 GB/s; TC=0
+    // is unthrottled and restores line rate. Only override the default (224) so
+    // an explicit traffic class is still honored.
+    uint8_t effectiveTc = config_.trafficClass;
+#if defined(NIC_IONIC)
+    if (effectiveTc == 224) {
+      effectiveTc = 0;
+    }
+#endif
+    err = doca_verbs_ah_attr_set_traffic_class(nicDoca_[n].ahAttr, effectiveTc);
     checkDocaError(err, "Failed to set traffic class");
     err = doca_verbs_ah_attr_set_sl(nicDoca_[n].ahAttr, config_.serviceLevel);
     checkDocaError(err, "Failed to set service level");
