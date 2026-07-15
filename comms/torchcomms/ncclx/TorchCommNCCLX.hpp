@@ -357,6 +357,9 @@ class TorchCommNCCLX : public TorchCommBackend,
     size_t len;
   };
 
+  void register_address(const AddressWithLen& addr);
+  void deregister_address(const Address& addr);
+
   // Global pointer-based registration that doesn't require a comm instance.
   // Used by NcclxCachingAllocatorHook for pre-comm memory registration.
   // The caller provides the NcclxApi to use for the registration.
@@ -457,12 +460,15 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Struct to hold the registration handle for a buffer
   struct RegistrationHandle {
     void* regHandle;
+    size_t allGatherPRefCount{0};
 
     explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
 
     RegistrationHandle(RegistrationHandle&& other) noexcept
-        : regHandle{other.regHandle} {
+        : regHandle{other.regHandle},
+          allGatherPRefCount{other.allGatherPRefCount} {
       other.regHandle = nullptr;
+      other.allGatherPRefCount = 0;
     }
 
     RegistrationHandle(const RegistrationHandle&) = delete;
@@ -471,7 +477,9 @@ class TorchCommNCCLX : public TorchCommBackend,
     RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
       if (this != &other) {
         regHandle = other.regHandle;
+        allGatherPRefCount = other.allGatherPRefCount;
         other.regHandle = nullptr;
+        other.allGatherPRefCount = 0;
       }
       return *this;
     }
@@ -492,6 +500,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   void initNcclxResources();
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
+  void cleanupAllGatherPHandle(AllGatherPHandle handle);
+  void cleanupAllGatherPHandles();
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
   void checkTensorDevice(const at::Tensor& tensor) const;
@@ -528,6 +538,11 @@ class TorchCommNCCLX : public TorchCommBackend,
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
   std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+
+  struct AllGatherPHandleState {
+    void* outputAddr{nullptr};
+  };
+  std::unordered_map<void*, AllGatherPHandleState> allGatherPHandleStates_;
 
   // NCCL API abstraction
   std::shared_ptr<NcclxApi> nccl_api_;
