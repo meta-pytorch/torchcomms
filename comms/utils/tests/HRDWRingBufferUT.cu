@@ -1,6 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -631,3 +633,198 @@ cudaError_t launchRingBufferWrite<CountedEvent>(
 }
 
 } // namespace hrdw_ring_buffer
+
+// ---------------------------------------------------------------------------
+// WritePolicy::Blocking — lossless device writes with reader backpressure.
+//
+// A Blocking ring pairs a device-side write_blocking() (spins until the reader
+// has consumed the slot being reused) with a reader that publishes its consume
+// cursor after each poll(). These tests exercise that end-to-end on the GPU:
+// the writer kernel is intentionally out-run by a slow host consumer, and a
+// correct Blocking ring loses nothing where an Overwrite ring would.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using hrdw_ring_buffer::MemoryCoherenceScope;
+using hrdw_ring_buffer::WritePolicy;
+
+using BlockingBuffer = HRDWRingBuffer<
+    TestEvent,
+    MemoryCoherenceScope::System,
+    WritePolicy::Blocking>;
+using BlockingReader = HRDWRingBufferReader<
+    TestEvent,
+    MemoryCoherenceScope::System,
+    WritePolicy::Blocking>;
+using BlockingHandle = hrdw_ring_buffer::HRDWRingBufferDeviceHandle<
+    TestEvent,
+    MemoryCoherenceScope::System,
+    WritePolicy::Blocking>;
+
+// Single-writer loop: publishes ids [0, n) via the unified write(). Because the
+// ring is WritePolicy::Blocking, write() backpressures against the reader; the
+// ring's abort flag (raised by requestAbort()) is what releases a blocked
+// writer — no per-call predicate.
+__global__ void blockingWriteLoopKernel(BlockingHandle handle, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i) {
+    handle.write(TestEvent{i});
+  }
+}
+
+cudaError_t launchBlockingWriteLoop(
+    cudaStream_t stream,
+    BlockingHandle handle,
+    uint32_t n) {
+  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
+  blockingWriteLoopKernel<<<1, 1, 0, stream>>>(handle, n);
+  return cudaGetLastError();
+}
+
+} // namespace
+
+// A few writes that fit in the ring: no backpressure, plain round-trip.
+TEST(HRDWRingBufferBlockingTest, RoundTripWithinCapacity) {
+  BlockingBuffer buf(8);
+  ASSERT_TRUE(buf.valid());
+  BlockingReader reader(buf);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+  ASSERT_EQ(
+      launchBlockingWriteLoop(stream, buf.deviceHandle(), 3), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+  std::vector<uint32_t> seen;
+  auto r = reader.poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
+  cudaStreamDestroy(stream);
+
+  EXPECT_EQ(r.entriesLost, 0u);
+  const std::vector<uint32_t> expected{0, 1, 2};
+  EXPECT_EQ(seen, expected);
+}
+
+// The core guarantee: publish far more entries than the ring holds while the
+// consumer drains slowly. Blocking backpressure means NOTHING is lost and the
+// ids arrive in order — an Overwrite ring would drop most of them here.
+TEST(HRDWRingBufferBlockingTest, LosslessUnderSlowConsumer) {
+  constexpr uint32_t kRingSize = 8;
+  constexpr uint32_t kN = 200; // 25x the ring
+  BlockingBuffer buf(kRingSize);
+  ASSERT_TRUE(buf.valid());
+  BlockingReader reader(buf);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+  // Launch async and consume concurrently — the writer will block on the ring.
+  ASSERT_EQ(
+      launchBlockingWriteLoop(stream, buf.deviceHandle(), kN), cudaSuccess);
+
+  std::vector<uint32_t> seen;
+  uint64_t lost = 0;
+  bool observedThrottle = false;
+  // Deliberately slow consumer (sleep per poll) so the ring stays full and the
+  // writer is forced to backpressure. Bounded so a bug fails instead of hangs.
+  for (int iter = 0; iter < 100000 && seen.size() < kN; ++iter) {
+    auto r = reader.poll(
+        [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
+    lost += r.entriesLost;
+    observedThrottle |= r.writerThrottled;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  // Final drain of anything published after the last poll.
+  auto r = reader.poll(
+      [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
+  lost += r.entriesLost;
+  cudaStreamDestroy(stream);
+
+  EXPECT_EQ(lost, 0u) << "Blocking ring must not drop entries";
+  ASSERT_EQ(seen.size(), static_cast<size_t>(kN));
+  for (uint32_t i = 0; i < kN; ++i) {
+    EXPECT_EQ(seen[i], i) << "entry " << i << " out of order or missing";
+  }
+  // Guard against a false pass: if the writer never actually saturated the
+  // ring, losslessness was never stressed through the backpressure path this
+  // test exists to cover.
+  EXPECT_TRUE(observedThrottle)
+      << "backpressure never engaged: writer was not throttled, so "
+         "losslessness was not actually exercised";
+}
+
+// A blocked writer (ring full, no consumer) must be released by requestAbort()
+// rather than hanging forever.
+TEST(HRDWRingBufferBlockingTest, AbortReleasesBlockedWriter) {
+  constexpr uint32_t kRingSize = 4;
+  BlockingBuffer buf(kRingSize);
+  ASSERT_TRUE(buf.valid());
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+  // Write more than the ring holds with NO consumer: the writer fills the ring
+  // then blocks in write().
+  ASSERT_EQ(
+      launchBlockingWriteLoop(stream, buf.deviceHandle(), kRingSize + 4),
+      cudaSuccess);
+
+  // Give the writer time to reach the blocked state, then abort the ring.
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_EQ(cudaStreamQuery(stream), cudaErrorNotReady)
+      << "writer should block";
+  buf.requestAbort();
+
+  // The writer must now finish. Bounded wait so a stuck writer fails the test.
+  bool done = false;
+  for (int i = 0; i < 5000; ++i) {
+    if (cudaStreamQuery(stream) == cudaSuccess) {
+      done = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  cudaStreamSynchronize(stream);
+  cudaStreamDestroy(stream);
+  EXPECT_TRUE(done) << "requestAbort did not release the blocked writer";
+}
+
+// poll() reports Result::writerThrottled when the ring is saturated (the device
+// writer is parked in write_blocking()), and clears it once the ring drains.
+TEST(HRDWRingBufferBlockingTest, ThrottledFlagReportsBackpressure) {
+  constexpr uint32_t kRingSize = 4;
+  constexpr uint32_t kN = kRingSize * 2;
+  BlockingBuffer buf(kRingSize);
+  ASSERT_TRUE(buf.valid());
+  BlockingReader reader(buf);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+  // No concurrent consumer: the writer fills the ring and blocks.
+  ASSERT_EQ(
+      launchBlockingWriteLoop(stream, buf.deviceHandle(), kN), cudaSuccess);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  std::vector<uint32_t> seen;
+  auto collect = [&](const TestEntry& e, uint64_t) {
+    seen.push_back(e.data.tag);
+  };
+
+  // First poll sees the ring full with the writer parked in write_blocking().
+  EXPECT_TRUE(reader.poll(collect).writerThrottled)
+      << "a full ring with a blocked writer must report throttling";
+
+  // Drain the rest so the writer completes, then a poll on the emptied ring
+  // must report no backpressure.
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  for (int i = 0; i < 100000 && seen.size() < kN; ++i) {
+    reader.poll(collect);
+  }
+  EXPECT_FALSE(reader.poll(collect).writerThrottled)
+      << "a drained ring must not report throttling";
+  cudaStreamDestroy(stream);
+
+  ASSERT_EQ(seen.size(), static_cast<size_t>(kN));
+  for (uint32_t i = 0; i < kN; ++i) {
+    EXPECT_EQ(seen[i], i) << "entry " << i << " out of order or missing";
+  }
+}

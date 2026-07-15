@@ -46,6 +46,11 @@ struct PollResult<MemoryCoherenceScope::System> {
   // True if poll() exited because the timeout elapsed before any new
   // entries arrived.
   bool timedOut{false};
+  // Blocking rings only: true if the ring was saturated at poll() entry, i.e.
+  // the device writer is (or just was) backpressured in write_blocking()
+  // waiting for the consumer to free a slot. Always false for Overwrite rings.
+  // The ring stays logging-free — consumers decide whether/how to surface it.
+  bool writerThrottled{false};
 };
 
 template <>
@@ -73,13 +78,16 @@ struct PollResult<MemoryCoherenceScope::Device> {
 //
 // Non-owning — the HRDWRingBuffer must outlive this reader. Single-
 // threaded (only one thread should call into the reader).
-template <typename DataT, MemoryCoherenceScope C = MemoryCoherenceScope::System>
+template <
+    typename DataT,
+    MemoryCoherenceScope C = MemoryCoherenceScope::System,
+    WritePolicy W = WritePolicy::Overwrite>
 class HRDWRingBufferReader;
 
 // State + ctor shared by the System and Device readers. The handle
 // fields (ring_, writeIndex_, size_, mask_, shift_) and the read
 // cursor are identical across scopes; only poll() differs.
-template <typename DataT, MemoryCoherenceScope C>
+template <typename DataT, MemoryCoherenceScope C, WritePolicy W>
 class HRDWRingBufferReaderBase {
  public:
   uint64_t lastReadIndex() const {
@@ -89,17 +97,31 @@ class HRDWRingBufferReaderBase {
  protected:
   using EntryT = HRDWEntry<DataT, C>;
 
-  explicit HRDWRingBufferReaderBase(const HRDWRingBuffer<DataT, C>& buffer)
+  explicit HRDWRingBufferReaderBase(const HRDWRingBuffer<DataT, C, W>& buffer)
       : ring_(buffer.ring_),
         writeIndex_(buffer.writeIndex_),
+        readIndex_(readIndexOf(buffer)),
         size_(buffer.size_),
         mask_(buffer.mask_),
         shift_(buffer.shift_) {
     assert(buffer.valid());
   }
 
+  static uint64_t* readIndexOf(const HRDWRingBuffer<DataT, C, W>& buffer) {
+    if constexpr (W == WritePolicy::Blocking) {
+      return buffer.readIndex_;
+    } else {
+      return nullptr;
+    }
+  }
+
   EntryT* ring_;
   uint64_t* writeIndex_;
+  // Consumer cursor for Blocking-ring backpressure; absent (zero bytes) on
+  // Overwrite readers via the same [[no_unique_address]]/define_if pattern the
+  // buffer and device handle use.
+  [[no_unique_address]] detail::define_if<W == WritePolicy::Blocking, uint64_t*>
+      readIndex_{};
   uint32_t size_;
   // size_ - 1. Cached so `slot & mask_` is one bitwise op per read
   // instead of `slot % size_`.
@@ -110,12 +132,13 @@ class HRDWRingBufferReaderBase {
   uint64_t lastReadIndex_{0};
 };
 
-template <typename DataT>
-class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
-    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System> {
-  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System>;
+template <typename DataT, WritePolicy W>
+class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System, W>
+    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System, W> {
+  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::System, W>;
   using Base::lastReadIndex_;
   using Base::mask_;
+  using Base::readIndex_;
   using Base::ring_;
   using Base::shift_;
   using Base::size_;
@@ -126,7 +149,7 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
   using Result = PollResult<MemoryCoherenceScope::System>;
 
   explicit HRDWRingBufferReader(
-      const HRDWRingBuffer<DataT, MemoryCoherenceScope::System>& buffer)
+      const HRDWRingBuffer<DataT, MemoryCoherenceScope::System, W>& buffer)
       : Base(buffer) {}
 
   enum class ReadResult { kSuccess, kOverwritten, kNotReady };
@@ -157,14 +180,22 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
       return ReadResult::kSuccess;
     }
 
-    // Reader stays within size_ of head, so |actual - expected| ≤ 1
-    // (modular). Signed delta disambiguates earlier vs later writes and
-    // wraps correctly.
-    int32_t delta = static_cast<int32_t>(dest.epoch - expected);
-    if (dest.epoch != HRDW_RINGBUFFER_SLOT_EMPTY && delta > 0) {
-      return ReadResult::kOverwritten;
+    if constexpr (W == WritePolicy::Blocking) {
+      // Backpressure guarantees the writer never laps a slot the reader still
+      // holds the cursor at, so it can never be overwritten out from under us.
+      // A non-matching epoch is therefore only ever EMPTY or a stale prior-lap
+      // epoch — i.e. "not published yet", never overwritten.
+      return ReadResult::kNotReady;
+    } else {
+      // Reader stays within size_ of head, so |actual - expected| ≤ 1
+      // (modular). Signed delta disambiguates earlier vs later writes and
+      // wraps correctly.
+      int32_t delta = static_cast<int32_t>(dest.epoch - expected);
+      if (dest.epoch != HRDW_RINGBUFFER_SLOT_EMPTY && delta > 0) {
+        return ReadResult::kOverwritten;
+      }
+      return ReadResult::kNotReady;
     }
-    return ReadResult::kNotReady;
   }
 
   // Poll for new entries. Calls callback(entry, slot) for each valid entry.
@@ -180,13 +211,25 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
       std::chrono::milliseconds timeout = std::chrono::milliseconds{0}) {
     Result result;
 
-    auto deadline = std::chrono::steady_clock::now() + timeout;
+    [[maybe_unused]] auto deadline = std::chrono::steady_clock::now() + timeout;
 
     // jump to the oldest valid entry if the reader fell behind by more than
     // size_ and returns the number of entries skipped (lost). also updates
     // head to the newest-read writeIndex_
     auto jumpToTail = [&](uint64_t& head) -> uint64_t {
       head = relaxedLoad(writeIndex_);
+      // A Blocking ring backpressures the writer, so the reader can never fall
+      // behind the published data by more than the ring size — it is lossless
+      // by construction. head may still sit one slot past that: a writer claims
+      // its slot with fetch_add(writeIndex) *before* blocking on backpressure,
+      // so a single blocked writer leaves writeIndex at readIndex + size + 1
+      // while the slot it is parked on stays unpublished (read as kNotReady,
+      // never lost). Applying the Overwrite skip here would drop that
+      // still-live entry and then release the writer to overwrite it — so never
+      // skip.
+      if constexpr (W == WritePolicy::Blocking) {
+        return 0;
+      }
       if (head > lastReadIndex_ && head - lastReadIndex_ > size_) {
         uint64_t lost = head - lastReadIndex_ - size_;
         lastReadIndex_ = head - size_;
@@ -196,6 +239,9 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
     };
 
     auto head = relaxedLoad(writeIndex_);
+    if constexpr (W == WritePolicy::Blocking) {
+      result.writerThrottled = (head - lastReadIndex_) >= size_;
+    }
     if (head <= lastReadIndex_ /* no new entries since last read */) {
       return result;
     }
@@ -212,18 +258,26 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
         case ReadResult::kSuccess:
           validEntries_.emplace_back(entry, lastReadIndex_);
           ++lastReadIndex_;
+          maybePublishConsumed(lastReadIndex_);
           break;
         case ReadResult::kOverwritten: {
-          auto lost = jumpToTail(head);
-          if (lost == 0 /* not lapped by full ring - just lost this entry */) {
-            ++lastReadIndex_;
-            lost = 1;
-          }
-          result.entriesLost += lost;
-          if (timeout.count() > 0 &&
-              std::chrono::steady_clock::now() > deadline) {
-            result.timedOut = true;
-            goto done;
+          if constexpr (W == WritePolicy::Overwrite) {
+            auto lost = jumpToTail(head);
+            if (lost ==
+                0 /* not lapped by full ring - just lost this entry */) {
+              ++lastReadIndex_;
+              lost = 1;
+            }
+            result.entriesLost += lost;
+            if (timeout.count() > 0 &&
+                std::chrono::steady_clock::now() > deadline) {
+              result.timedOut = true;
+              goto done;
+            }
+          } else {
+            assert(
+                false &&
+                "Blocking ring must never observe an overwritten slot");
           }
           break;
         }
@@ -242,6 +296,22 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
   }
 
  private:
+  // Publish the consumer cursor so a Blocking ring's device writer can tell
+  // which slots are safe to reuse. Release-store pairs with the acquire load in
+  // write_blocking(). No-op for Overwrite rings, which never allocate
+  // readIndex_.
+  __attribute__((always_inline)) inline void maybePublishConsumed(
+      uint64_t consumedUpTo) const {
+    if constexpr (W == WritePolicy::Blocking) {
+#if defined(__cpp_lib_atomic_ref)
+      std::atomic_ref<uint64_t>(*readIndex_)
+          .store(consumedUpTo, std::memory_order_release);
+#else
+      __atomic_store_n(readIndex_, consumedUpTo, __ATOMIC_RELEASE);
+#endif
+    }
+  }
+
   // Reusable buffer for accumulated entries — avoids allocation per poll().
   std::vector<std::pair<EntryT, uint64_t>> validEntries_;
 };
@@ -251,10 +321,10 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System>
 // callback for each fresh entry. The internal read cursor advances on
 // every poll, so successive calls only return entries written since
 // the previous one.
-template <typename DataT>
-class HRDWRingBufferReader<DataT, MemoryCoherenceScope::Device>
-    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device> {
-  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device>;
+template <typename DataT, WritePolicy W>
+class HRDWRingBufferReader<DataT, MemoryCoherenceScope::Device, W>
+    : public HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device, W> {
+  using Base = HRDWRingBufferReaderBase<DataT, MemoryCoherenceScope::Device, W>;
   using Base::lastReadIndex_;
   using Base::mask_;
   using Base::ring_;
@@ -267,7 +337,7 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::Device>
   using Result = PollResult<MemoryCoherenceScope::Device>;
 
   explicit HRDWRingBufferReader(
-      const HRDWRingBuffer<DataT, MemoryCoherenceScope::Device>& buffer)
+      const HRDWRingBuffer<DataT, MemoryCoherenceScope::Device, W>& buffer)
       : Base(buffer) {}
 
   // Poll for new entries since the last poll(). Synchronizes the stream,
