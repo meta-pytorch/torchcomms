@@ -349,13 +349,10 @@ __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   const auto stride = blockDim.x * gridDim.x;
 
-  auto* signalSlots = static_cast<uint64_t*>(layout.localSignalBuf.ptr);
-  auto* counterSlots = static_cast<uint64_t*>(layout.localCounterBuf.ptr);
-
   for (auto slot = idx; slot < static_cast<uint32_t>(2 * maxGroups);
        slot += stride) {
-    if (signalSlots != nullptr) {
-      signalSlots[slot] = 0;
+    if (SignalState* signal = layout.localSignalState(static_cast<int>(slot))) {
+      signal->signal_ = 0;
     }
     if (slot < static_cast<uint32_t>(maxGroups)) {
       auto& channel = transport->local_channel(slot);
@@ -366,8 +363,9 @@ __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
 
   for (auto slot = idx; slot < static_cast<uint32_t>(maxGroups);
        slot += stride) {
-    if (counterSlots != nullptr) {
-      counterSlots[slot] = 0;
+    if (SignalState* counter =
+            layout.localCounterState(static_cast<int>(slot))) {
+      counter->signal_ = 0;
     }
   }
 }
