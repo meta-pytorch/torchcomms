@@ -1686,6 +1686,104 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SendRecvReuseCreditCadence) {
 }
 
 // =============================================================================
+// Sustained chunked send/recv - repro for the GB200 per-channel DATA_READY
+// deadlock (two NICs atomic-FA the same flag at maxGroups>=8). Streams a large
+// volume through numBlocks channels with maxSignalBytes < perBlockSlot so each
+// slot is signaled in several sub-chunks and the per-lane DATA_READY flags are
+// exercised repeatedly. With per-lane (single-writer) DATA_READY flags this
+// runs to completion; the old single-flag layout hangs on GB200 (surfaces here
+// as a device timeout -> non-success cudaDeviceSynchronize).
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, SustainedChunkedSendRecvNoDeadlock) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  if (!test::supportsProgressSendRecv()) {
+    GTEST_SKIP() << "progress send/recv is not supported for this build";
+  }
+
+  constexpr std::size_t kTotalBytes = 1024ULL * 1024 * 1024; // 1 GiB/channel
+  constexpr int kIterations = 8;
+  constexpr std::size_t nbytes = kTotalBytes / kIterations; // 128 MiB per iter
+  constexpr std::size_t maxSignalBytes = 128 * 1024;
+  constexpr std::size_t dataBufferSize = 4 * 1024 * 1024;
+  constexpr int numBlocks = 8;
+  constexpr int blockSize = 128;
+  constexpr int pipelineDepth = 2;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr uint8_t testPattern = 0x6E;
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+    DeviceBuffer sendBuffer(nbytes);
+    DeviceBuffer recvBuffer(nbytes);
+    DeviceBuffer errorCountBuf(sizeof(int));
+    auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+
+    const bool isSender = globalRank == 0;
+    if (isSender) {
+      test::fillBufferWithPattern(
+          sendBuffer.get(), nbytes, testPattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, nbytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    for (int iter = 0; iter < kIterations; ++iter) {
+      test::testSendRecv(
+          peerTransportPtr,
+          isSender ? sendBuffer.get() : recvBuffer.get(),
+          nbytes,
+          maxSignalBytes,
+          isSender,
+          numBlocks,
+          blockSize);
+      const cudaError_t syncErr = cudaDeviceSynchronize();
+      ASSERT_EQ(syncErr, cudaSuccess)
+          << "rank " << globalRank << " send/recv iteration " << iter
+          << " failed: " << cudaGetErrorString(syncErr);
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    if (!isSender) {
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          recvBuffer.get(),
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0) << "sustained chunked send/recv corrupted "
+                                 << h_errorCount << " bytes";
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// =============================================================================
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================
 
