@@ -728,6 +728,7 @@ def _register_lowerings() -> None:  # noqa: C901
     try:
         from torch._inductor import ir
         from torch._inductor.lowering import register_lowering
+        from torchcomms.functional.inductor_lowering import _unpack_process_kernel
     except ImportError:
         logger.info("torch._inductor not available, skipping lowering registration")
         return
@@ -785,8 +786,10 @@ def _register_lowerings() -> None:  # noqa: C901
                             non_tensor_args,
                             unflatten_args,
                             unbacked_bindings,
-                        ) = ir._CollectiveKernel.process_kernel(
-                            captured_torch_op.default, *args
+                        ) = _unpack_process_kernel(
+                            ir._CollectiveKernel.process_kernel(
+                                captured_torch_op.default, *args
+                            )
                         )
                     assert not unbacked_bindings
 
