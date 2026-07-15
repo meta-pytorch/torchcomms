@@ -37,6 +37,13 @@ namespace comms::prims {
 
 struct Memcpy;
 
+namespace tests {
+// Test-only accessor for private lane selection
+// (MultipeerIbgdaDeviceTransportTest verifies the block-owned-QP + group-
+// staggered-NIC mapping).
+struct IbgdaLaneTestAccess;
+} // namespace tests
+
 inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
 // `PIPES_DEVICE_TRAP()` is defined in `comms/prims/core/DeviceMacros.cuh` and
@@ -98,18 +105,21 @@ struct NicDeviceIbgdaResources {
  *
  * Every method has two overloads:
  *   Group-scope: put(group, ...) — all threads in group must call.
- *     QP selection is owned by the physical CUDA block. The block
- *     round-robins put operations across NIC-first QP lanes and preserves
- *     signal/flush ordering for operations issued by the same block_id.
- *     Data transfer uses the exact buffer span supplied by the caller.
- *     Threads in the group coordinate the operation; callers that want the
- *     transport to shard a larger buffer should use put_cooperative().
- *     Signal/counter/flush are leader-only with group.sync().
+ *     The physical QP send-queue is owned by the CUDA block (block_id): the
+ *     groups in a block share the block's QP on each NIC. The round-robin
+ *     cursor and flush bookkeeping are owned per group (group_id), and the NIC
+ *     lane is staggered by group_id so co-resident groups spread across NICs.
+ *     For single-group-per-block kernels group_id == block_id. See
+ *     qp_owner_channel/lane_state_channel. Data transfer uses the exact buffer
+ *     span supplied by the caller; callers that want the transport to shard a
+ *     larger buffer should use put_cooperative(). Signal/counter/flush are
+ *     leader-only with group.sync().
  *
- *   Thread-scope: put(...) — single thread calls.
- *     QP selection uses the caller's physical blockIdx.x. Implemented as a
- *     thin wrapper: creates a solo ThreadGroup with block_id=blockIdx.x, then
- *     forwards to the group-scope implementation.
+ *   Thread-scope: put(...) — single thread calls. Creates a solo ThreadGroup
+ *     and forwards to the group-scope implementation. NOTE: the solo group's
+ *     group_id is the global thread id, which is a valid flow-control channel
+ *     only when it is < maxChannels; fixed-channel callers must use the
+ *     group-scope APIs (which carry a real group_id/block_id).
  *
  * CRITICAL: Do not rely on scope-family mixing for synchronization.
  *   Thread-scope wrappers do not synchronize with other threads in the block.
@@ -149,6 +159,10 @@ struct NicDeviceIbgdaResources {
  *      Buffer ptr==nullptr means "disabled" (no signal/counter).
  */
 class P2pIbgdaTransportDevice {
+  // Test-only access to private lane selection (block-owned QP + group
+  // stagger).
+  friend struct tests::IbgdaLaneTestAccess;
+
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
@@ -843,7 +857,8 @@ class P2pIbgdaTransportDevice {
           "cluster-scope ThreadGroup yet\n");
       PIPES_DEVICE_TRAP();
     }
-    validate_channel_id(group.group_id);
+    validate_channel_id(lane_state_channel(group));
+    validate_channel_id(qp_owner_channel(group));
   }
 
   __device__ __forceinline__ IbQpState& qp_state(
@@ -854,11 +869,42 @@ class P2pIbgdaTransportDevice {
     return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
   }
 
+  // QP ownership vs. flow-control state.
+  //
+  // Physical QP send-queues are owned by the CUDA block (block_id): the groups
+  // in a block share the block's QP on each NIC, so the NIC sees only
+  // num_blocks active QPs per rail (deep per-QP WQE batching) regardless of how
+  // many multiwarp groups a block runs. The round-robin cursor and flush
+  // bookkeeping are owned per group (group_id), so each group advances its NIC
+  // lane independently; the lane is staggered by group_id (see select_put_lane)
+  // so the groups sharing a block spread across NICs instead of all landing on
+  // the same NIC each step. For single-group-per-block kernels group_id ==
+  // block_id, so this reduces to block-owned QPs with a per-block lane stagger.
+  //
+  // Invariant relied on here: a given group_id is driven from exactly one
+  // block_id (DATA_READY/SLOT_FREE/NIC_DONE are all group_id-indexed), so a
+  // group's flush tickets — recorded in its per-group IbQpState but waited on
+  // via the block's physical QP — always target that block's QP.
+  __device__ __forceinline__ uint32_t
+  qp_owner_channel(const ThreadGroup& group) const {
+    return group.block_id;
+  }
+  __device__ __forceinline__ uint32_t
+  lane_state_channel(const ThreadGroup& group) const {
+    return group.group_id;
+  }
+
+  // stateChannel owns the flow-control state (cursor/flush IbQpState) and is
+  // the returned lane's channel_id; the physical QP is resolved from
+  // qpOwnerChannel. They differ when a block runs multiple groups (see
+  // qp_owner_channel/lane_state_channel).
   __device__ __forceinline__ IbgdaLane lane_from_ordinal(
-      uint32_t channelId,
+      uint32_t stateChannel,
+      uint32_t qpOwnerChannel,
       IbDirection direction,
       uint32_t laneOrdinal) const {
-    validate_channel_id(channelId);
+    validate_channel_id(stateChannel);
+    validate_channel_id(qpOwnerChannel);
     const uint32_t numNics = static_cast<uint32_t>(nicDevices_.size());
     if (numNics == 0) {
       printf(
@@ -887,7 +933,7 @@ class P2pIbgdaTransportDevice {
       PIPES_DEVICE_TRAP();
     }
     const uint32_t qpSlotPerNic =
-        ((channelId * static_cast<uint32_t>(qpDirectionCount_) +
+        ((qpOwnerChannel * static_cast<uint32_t>(qpDirectionCount_) +
           directionIndex) *
          static_cast<uint32_t>(qpsPerConnection_)) +
         qpIndex;
@@ -897,9 +943,11 @@ class P2pIbgdaTransportDevice {
         qpSlotPerNic >= nic.qps.size() ||
         companionSlotPerNic >= nic.companion_qps.size()) {
       printf(
-          "[PIPES] FATAL: invalid IBGDA lane channel=%u direction=%u nic=%u "
-          "qpIndex=%u qpsPerConnection=%d qps=%u companionQps=%u\n",
-          channelId,
+          "[PIPES] FATAL: invalid IBGDA lane stateChannel=%u qpChannel=%u "
+          "direction=%u nic=%u qpIndex=%u qpsPerConnection=%d qps=%u "
+          "companionQps=%u\n",
+          stateChannel,
+          qpOwnerChannel,
           directionIndex,
           nicId,
           qpIndex,
@@ -912,17 +960,19 @@ class P2pIbgdaTransportDevice {
         .nic_id = nicId,
         .qp_index = qpIndex,
         .lane_ordinal = laneOrdinal,
-        .channel_id = channelId,
+        .channel_id = stateChannel,
         .qp_slot_per_nic = qpSlotPerNic,
         .companion_slot_per_nic = companionSlotPerNic,
         .direction = direction,
-        .qp_state = &qp_state(channelId, direction),
+        .qp_state = &qp_state(stateChannel, direction),
         .qp = nic.qps[qpSlotPerNic],
         .companion_qp = nic.companion_qps[companionSlotPerNic]};
   }
 
-  __device__ __forceinline__ uint32_t
-  select_put_lane_ordinal(uint32_t channelId, IbDirection direction) {
+  __device__ __forceinline__ uint32_t select_put_lane_ordinal(
+      uint32_t channelId,
+      IbDirection direction,
+      uint32_t staggerOffset) {
     validate_channel_id(channelId);
     if (nicDevices_.empty()) {
       printf(
@@ -944,20 +994,27 @@ class P2pIbgdaTransportDevice {
     if (numLanes == 1) {
       return 0;
     }
+    // Per-group cursor: the group leader is the only writer, so a plain
+    // increment is sufficient (no atomic). staggerOffset (group_id) fans the
+    // groups sharing a block across NICs so they do not collide on one NIC.
     uint32_t seq = qp_state(channelId, direction).cursor++;
-    return seq % numLanes;
+    return (seq + staggerOffset) % numLanes;
   }
 
   __device__ __forceinline__ IbgdaLane
   select_put_lane(ThreadGroup& group, IbDirection direction) {
-    const uint32_t channelId = group.group_id;
+    const uint32_t stateChannel = lane_state_channel(group);
+    const uint32_t qpOwnerChannel = qp_owner_channel(group);
+    const uint32_t laneOrdinal =
+        select_put_lane_ordinal(stateChannel, direction, group.group_id);
     return lane_from_ordinal(
-        channelId, direction, select_put_lane_ordinal(channelId, direction));
+        stateChannel, qpOwnerChannel, direction, laneOrdinal);
   }
 
   __device__ __forceinline__ IbgdaLane
   control_lane(ThreadGroup& group, IbDirection direction) const {
-    return lane_from_ordinal(group.group_id, direction, 0);
+    return lane_from_ordinal(
+        lane_state_channel(group), qp_owner_channel(group), direction, 0);
   }
 
   __device__ __forceinline__ uint32_t num_qp_lanes() const {
@@ -1028,7 +1085,8 @@ class P2pIbgdaTransportDevice {
   }
 
   __device__ void wait_lanes(
-      uint32_t channelId,
+      uint32_t stateChannel,
+      uint32_t qpOwnerChannel,
       IbDirection direction,
       uint64_t mask,
       const uint64_t* tickets) {
@@ -1037,15 +1095,22 @@ class P2pIbgdaTransportDevice {
       if ((mask & (1ULL << laneId)) == 0) {
         continue;
       }
-      IbgdaLane lane = lane_from_ordinal(channelId, direction, laneId);
+      IbgdaLane lane =
+          lane_from_ordinal(stateChannel, qpOwnerChannel, direction, laneId);
       wait_local_on_qp(lane.qp, tickets[laneId]);
     }
   }
 
   __device__ void drain_flush_lanes(ThreadGroup& group, IbDirection direction) {
-    auto& state = qp_state(group.group_id, direction);
+    const uint32_t stateChannel = lane_state_channel(group);
+    auto& state = qp_state(stateChannel, direction);
     const uint64_t mask = atomic_exchange_u64(&state.pendingFlushLanesMask, 0);
-    wait_lanes(group.group_id, direction, mask, state.lastFlushWqe);
+    wait_lanes(
+        stateChannel,
+        qp_owner_channel(group),
+        direction,
+        mask,
+        state.lastFlushWqe);
   }
 
   __device__ void put_impl(
@@ -1124,13 +1189,16 @@ class P2pIbgdaTransportDevice {
 
     uint32_t laneOrdinal = 0;
     uint64_t lastPutWqeIdx = 0;
+    const uint32_t stateChannel = lane_state_channel(group);
+    const uint32_t qpOwnerChannel = qp_owner_channel(group);
     if (group.is_leader()) {
       validate_group_scope(group);
-      laneOrdinal = select_put_lane_ordinal(group.group_id, IbDirection::Send);
+      laneOrdinal = select_put_lane_ordinal(
+          stateChannel, IbDirection::Send, group.group_id);
     }
     laneOrdinal = group.broadcast<uint32_t>(laneOrdinal);
-    IbgdaLane lane =
-        lane_from_ordinal(group.group_id, IbDirection::Send, laneOrdinal);
+    IbgdaLane lane = lane_from_ordinal(
+        stateChannel, qpOwnerChannel, IbDirection::Send, laneOrdinal);
 
     lastPutWqeIdx =
         put_cooperative_data_impl(group, lane, localBuf, remoteBuf, nbytes);
@@ -1241,11 +1309,12 @@ class P2pIbgdaTransportDevice {
       const uint16_t qp_depth = __ldg(&qp->sq_wqe_num);
       if (group.group_size > qp_depth) {
         printf(
-            "[PIPES] FATAL: put group_size (%u) > QP depth (%u). "
-            "Set NCCL_CTRAN_IBGDA_QP_DEPTH >= %u to avoid deadlock.\n",
+            "[PIPES] FATAL: put_cooperative group_size (%u) > QP depth (%u). "
+            "This QP is block-owned (shared by all groups in the block), so "
+            "NCCL_CTRAN_IBGDA_QP_DEPTH must be >= (groups per block) * "
+            "group_size * in-flight puts to avoid send-queue overrun.\n",
             group.group_size,
-            qp_depth,
-            group.group_size);
+            qp_depth);
         PIPES_DEVICE_TRAP();
       }
     }

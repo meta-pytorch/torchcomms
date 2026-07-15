@@ -8,7 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <set>
 #include <vector>
 
 #include "comms/prims/tests/MultipeerIbgdaDeviceTransportTest.cuh"
@@ -206,6 +208,54 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<int>& info) {
       return std::to_string(info.param) + "Ranks";
     });
+
+// =============================================================================
+// V4 QP-ownership lane-mapping test
+//
+// select_put_lane() must map a ThreadGroup to a lane such that:
+//   (a) the physical QP slot is owned by block_id — all groups sharing a block
+//       resolve to the SAME qp_slot_per_nic (so the NIC sees only num_blocks
+//       active QPs per rail), and distinct blocks use distinct slots;
+//   (b) the NIC lane is staggered by group_id — the groups sharing a block
+//       spread across all NICs instead of colliding on one.
+// A channelId/qpOwnerChannel swap breaks (a); a dropped stagger breaks (b).
+// qpsPerConnection == 1 (the GB300 config) so each block owns exactly one QP
+// per NIC per direction.
+// =============================================================================
+TEST(V4LaneMappingTest, BlockOwnedQpAndGroupStagger) {
+  const int numNics = 2;
+  const int numBlocks = 4;
+  const int groupsPerBlock = 4;
+  const int qpsPerConn = 1;
+
+  std::vector<V4LaneResult> res;
+  runV4LaneMappingTest(numNics, numBlocks, groupsPerBlock, qpsPerConn, res);
+  ASSERT_EQ(res.size(), static_cast<std::size_t>(numBlocks * groupsPerBlock));
+
+  std::set<int> blockSlots;
+  for (int b = 0; b < numBlocks; ++b) {
+    const int blockSlot = res[b * groupsPerBlock].qp_slot_per_nic;
+    std::set<int> nicIds;
+    for (int j = 0; j < groupsPerBlock; ++j) {
+      const V4LaneResult& r = res[b * groupsPerBlock + j];
+      // (a) block-owned QP: every group in the block shares one physical slot.
+      EXPECT_EQ(r.qp_slot_per_nic, blockSlot)
+          << "block " << b << " group " << j
+          << " resolved to a different QP slot (" << r.qp_slot_per_nic
+          << " != " << blockSlot << ") — QP is not block-owned";
+      nicIds.insert(r.nic_id);
+    }
+    // (b) group stagger: the block's groups spread across all NICs.
+    EXPECT_EQ(nicIds.size(), static_cast<std::size_t>(numNics))
+        << "block " << b << " groups did not spread across all " << numNics
+        << " NICs (stagger missing)";
+    // (a cont.) distinct blocks own distinct physical slots.
+    EXPECT_EQ(blockSlots.count(blockSlot), 0u)
+        << "block " << b << " shares QP slot " << blockSlot
+        << " with another block";
+    blockSlots.insert(blockSlot);
+  }
+}
 
 } // namespace comms::prims::tests
 
