@@ -224,6 +224,10 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+  // AMD carve-out only: ENABLE_PRIMS is on for every non-AMD build (see
+  // comms/ctran/def_build.bzl), so these members exist everywhere except AMD.
+  // The guard changes CtranComm's layout, so consumers must compile with a
+  // consistent macro (the OSS build propagates it via MCCL_ENABLE_PRIMS).
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   uint64_t* hierarchicalAgReadyCounters_{nullptr};
