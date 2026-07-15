@@ -20,7 +20,7 @@
 
 int gWarmupIters = 5;
 int gBenchIters = 50;
-std::string gCtranAlgo = "cthierarchical_ring";
+std::string gCtranAlgo = "ctdirect";
 std::optional<size_t> gSizeBytes;
 bool gTotalSizeBytes = false;
 // When 0, the bench does not touch NCCL_CTRAN_PIPES_TRACE_ENABLE (so an
@@ -191,9 +191,6 @@ bool validateBenchmarkConfig() {
 }
 
 enum NCCL_ALLGATHER_ALGO parseCtranAlgo(const std::string& algo) {
-  if (algo == "cthierarchical_ring") {
-    return NCCL_ALLGATHER_ALGO::cthierarchical_ring;
-  }
   if (algo == "ctring") {
     return NCCL_ALLGATHER_ALGO::ctring;
   }
@@ -446,9 +443,7 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
   std::unique_ptr<CtranComm> ctranComm_;
   ncclComm_t ncclComm_{nullptr};
   cudaStream_t stream_{nullptr};
-  enum NCCL_ALLGATHER_ALGO ctranAlgo_ {
-    NCCL_ALLGATHER_ALGO::cthierarchical_ring
-  };
+  enum NCCL_ALLGATHER_ALGO ctranAlgo_ { NCCL_ALLGATHER_ALGO::ctdirect };
 };
 
 TEST_F(CtranAllGatherBenchmark, VsNccl) {
