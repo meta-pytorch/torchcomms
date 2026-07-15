@@ -7,9 +7,6 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/prims/transport/MultiPeerTransport.h"
-#endif
 #include "comms/utils/cvars/nccl_cvars.h"
 
 static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
@@ -39,9 +36,7 @@ bool ctranAllGatherSupport(
     CtranComm* comm,
     enum NCCL_ALLGATHER_ALGO algo,
     cudaStream_t stream) {
-  const bool pipesAlgo = algo == NCCL_ALLGATHER_ALGO::cthierarchical_ring;
-  if (!ctranInitialized(comm) ||
-      (!pipesAlgo && !comm->ctran_->mapper->hasBackend())) {
+  if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
     return false;
   }
 
@@ -61,58 +56,11 @@ bool ctranAllGatherSupport(
       }
       break;
     case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
-#if defined(ENABLE_PRIMS)
-      if (!comm->multiPeerTransport_) {
-        CLOGF_SUBSYS(
-            WARN,
-            COLL,
-            "AllGather {} requires MultiPeerTransport (NCCL_CTRAN_USE_PIPES=1)",
-            allGatherAlgoName(algo));
-        supported = false;
-        break;
-      }
-      {
-        const bool nvlAvailable =
-            !comm->multiPeerTransport_->nvl_peer_ranks().empty();
-        const int ibSize = nvlAvailable ? statex->nNodes() : statex->nRanks();
-        const int nvlSize = nvlAvailable ? statex->nLocalRanks() : 1;
-        if (statex->nRanks() <= 1 || ibSize <= 1) {
-          CLOGF_SUBSYS(
-              WARN,
-              COLL,
-              "AllGather {} requires multiple IB peers, got nRanks={} ibSize={}. Falling back to baseline",
-              allGatherAlgoName(algo),
-              statex->nRanks(),
-              ibSize);
-          supported = false;
-          break;
-        }
-        if (nvlSize < 1 || statex->nRanks() != ibSize * nvlSize) {
-          CLOGF_SUBSYS(
-              WARN,
-              COLL,
-              "AllGather {} requires rectangular rank geometry, got nRanks={} ibSize={} nvlSize={}. Falling back to baseline",
-              allGatherAlgoName(algo),
-              statex->nRanks(),
-              ibSize,
-              nvlSize);
-          supported = false;
-          break;
-        }
-      }
-      if (!NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
-        CLOGF_SUBSYS(
-            WARN,
-            COLL,
-            "AllGather {} requires NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1",
-            allGatherAlgoName(algo));
-        supported = false;
-        break;
-      }
-      supported = true;
-#else
+      // cthierarchical_ring is hosted by MCCL now (McclComm routes
+      // NCCL_ALLGATHER_ALGO=cthierarchical_ring to the MCCL-owned collective);
+      // CTRAN no longer implements it. Report unsupported so any non-MCCL
+      // caller (e.g. an NCCLX opt-in) falls back to baseline.
       supported = false;
-#endif
       break;
     case NCCL_ALLGATHER_ALGO::ctdirect:
     case NCCL_ALLGATHER_ALGO::ctran:
@@ -250,10 +198,6 @@ commResult_t ctranAllGather(
 
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return ctranAllGatherStreamedRd(
-          sendbuff, recvbuff, sendcount, datatype, comm, stream);
-
-    case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
-      return ctranAllGatherHierarchicalRing(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
 
     case NCCL_ALLGATHER_ALGO::ctdirect:
