@@ -9,6 +9,28 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+
+def _unpack_process_kernel(result):
+    """Normalize ``ExternKernel.process_kernel`` output to the legacy 5-tuple
+
+    PyTorch (pytorch/pytorch#189258, ~2026-07) changed ``process_kernel`` to
+    return a frozen ``ProcessKernelResult`` dataclass instead of the positional
+    5-tuple ``(example_output, tensor_args, non_tensor_args, unflatten_args,
+    unbacked_bindings)``. The dataclass exposes the same values under the same
+    names and in the same order. Accept both so we work across PyTorch
+    versions.
+    """
+    if isinstance(result, tuple):
+        return result
+    return (
+        result.example_output,
+        result.tensor_args,
+        result.non_tensor_args,
+        result.unflatten_args,
+        result.unbacked_bindings,
+    )
+
+
 try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
@@ -138,7 +160,9 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                ) = _unpack_process_kernel(
+                    ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                )
             assert not unbacked_bindings, f"{inplace_op} {unbacked_bindings}"
 
             # Create the collective kernel
@@ -325,9 +349,11 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._WaitKernel.process_kernel(
-                    torch.ops.torchcomms.torchcomm_wait_tensors_.default,
-                    flat_inputs,
+                ) = _unpack_process_kernel(
+                    ir._WaitKernel.process_kernel(
+                        torch.ops.torchcomms.torchcomm_wait_tensors_.default,
+                        flat_inputs,
+                    )
                 )
             assert not unbacked_bindings
 
