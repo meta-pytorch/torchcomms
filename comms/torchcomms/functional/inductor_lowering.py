@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
+    from torchcomms.functional.registry import _unpack_process_kernel
 
     def register_torchcomms_lowerings():
         from torchcomms.functional import collectives
@@ -138,7 +139,9 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                ) = _unpack_process_kernel(
+                    ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                )
             assert not unbacked_bindings, f"{inplace_op} {unbacked_bindings}"
 
             # Create the collective kernel
@@ -325,9 +328,11 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._WaitKernel.process_kernel(
-                    torch.ops.torchcomms.torchcomm_wait_tensors_.default,
-                    flat_inputs,
+                ) = _unpack_process_kernel(
+                    ir._WaitKernel.process_kernel(
+                        torch.ops.torchcomms.torchcomm_wait_tensors_.default,
+                        flat_inputs,
+                    )
                 )
             assert not unbacked_bindings
 

@@ -53,7 +53,10 @@ jobs:
         run: |
           set -eux
           conda install -y git
-          conda install -y -c conda-forge glog==0.4.0 gflags fmt
+          # gflags must match glog==0.4.0's ABI (built against gflags 2.2 ->
+          # needs libgflags.so.2.2). Leaving gflags unpinned floats it to 2.3.x,
+          # which ships libgflags.so.2.3 and breaks the runtime load.
+          conda install -y -c conda-forge glog==0.4.0 gflags==2.2.2 fmt
           pip install cmake==3.31.6
           pip install -r docs/requirements.txt
           export USE_NCCL=0
