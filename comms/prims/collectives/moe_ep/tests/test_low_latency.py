@@ -1,6 +1,7 @@
 # pyre-ignore-all-errors
 
 import argparse
+import os
 import random
 import sys
 from functools import partial
@@ -460,6 +461,23 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         allow_mnnvl=args.allow_mnnvl,
         enable_shrink=args.shrink_test,
     )
+
+    # Multi-node: wire IBGDA QPs across hosts so the kernel's hybrid branch
+    # can route cross-node peers via RDMA. Must run BEFORE any dispatch so
+    # the kernel doesn't issue cross-node sends with an uninitialized
+    # transport. Single-node runs (WORLD_SIZE=1) take the NVLink-IPC fast
+    # path for all peers and skip IBGDA setup entirely.
+    num_nodes = int(os.getenv("WORLD_SIZE", "1"))
+    if num_nodes > 1:
+        buffer.setup_low_latency_ibgda(num_tokens, hidden, num_experts)
+        dist.barrier(group=group)
+        if rank == 0:
+            print(
+                f"[setup] IBGDA wired up across {num_nodes} nodes "
+                f"({num_ranks} ranks total)",
+                flush=True,
+            )
+
     test_main(
         num_tokens,
         hidden,
@@ -555,6 +573,18 @@ if __name__ == "__main__":
         help="Whether to simulate failure and test shrink mode",
     )
     args = parser.parse_args()
+
+    # Early-load diagnostic: confirm the Python binary actually started
+    # and report which node/rank we are. Helps when mpirun reports a
+    # rank crashed but the per-rank stdout is empty.
+    print(
+        f"[startup] node_rank={os.getenv('RANK', '0')} "
+        f"world_size={os.getenv('WORLD_SIZE', '1')} "
+        f"master={os.getenv('MASTER_ADDR', '127.0.0.1')}:"
+        f"{os.getenv('MASTER_PORT', '8361')} "
+        f"num_processes={args.num_processes}",
+        flush=True,
+    )
 
     num_processes = args.num_processes
     torch.multiprocessing.spawn(

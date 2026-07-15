@@ -46,6 +46,74 @@ struct BnxtNicBackend {
     return hostKey; // bnxt uses native byte order
   }
 
+  // Spinlock around bnxt_re's per-QP shared state (msn, sq_tail, sq_flags
+  // epoch bit). Concurrent warps that update those fields without holding
+  // the lock corrupt the MSN-table tail and produce doorbell values with
+  // the wrong epoch, which surfaces on the device as `Memory access fault
+  // by GPU on address (nil)`.
+  __device__ void lockQp(pipes_gda_gpu_dev_verbs_qp* qp) {
+    int expected;
+    do {
+      expected = 0;
+    } while (0 ==
+             __hip_atomic_compare_exchange_strong(
+                 &qp->nic.bnxt.sq_lock,
+                 &expected,
+                 1,
+                 __ATOMIC_ACQUIRE,
+                 __ATOMIC_ACQUIRE,
+                 __HIP_MEMORY_SCOPE_SYSTEM));
+  }
+
+  __device__ void unlockQp(pipes_gda_gpu_dev_verbs_qp* qp) {
+    __hip_atomic_store(
+        &qp->nic.bnxt.sq_lock, 0, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+  }
+
+  // Back-pressure: spin until the SQ has at least `requestedSlots` free
+  // entries. Without it, warps can submit WQEs faster than the NIC completes
+  // them; the producer index then wraps past the consumer, new WQEs overwrite
+  // slots still owned by the NIC, and the resulting NIC-side fault surfaces
+  // as `Memory access fault by GPU on address (nil)`.
+  // Caller must hold the QP spinlock.
+  __device__ void waitForSqSlots(
+      pipes_gda_gpu_dev_verbs_qp* qp,
+      uint32_t requestedSlots) {
+    uint32_t sqDepth = qp->nic.bnxt.sq_depth;
+    if (sqDepth == 0) {
+      return;
+    }
+    volatile char* cqeBase =
+        reinterpret_cast<volatile char*>(qp->cq_sq.cqe_daddr);
+    volatile pipes_gda_bnxt_req_cqe* cqe =
+        reinterpret_cast<volatile pipes_gda_bnxt_req_cqe*>(cqeBase);
+    // Bounded spin: an SQ that never drains means the NIC has stopped
+    // completing WQEs (link down or QP in error), so an unbounded spin would
+    // hang the kernel forever. Trap once exhausted so the stall surfaces.
+    constexpr uint64_t kMaxSpins = 10000000ULL;
+    for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
+      uint32_t conIdx = cqe->con_indx & 0xFFFF;
+      uint32_t sqHead = (conIdx * PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT) % sqDepth;
+      uint32_t sqTail = qp->nic.bnxt.sq_tail;
+      uint32_t consumed = (sqTail - sqHead + sqDepth) % sqDepth;
+      uint32_t available = sqDepth - consumed;
+      if (available >= requestedSlots) {
+        return;
+      }
+    }
+    printf(
+        "BNXT waitForSqSlots TIMEOUT: requested=%u sq_depth=%u sq_tail=%u "
+        "con_indx=%u sq_id=%u\n",
+        requestedSlots,
+        sqDepth,
+        qp->nic.bnxt.sq_tail,
+        cqe->con_indx & 0xFFFF,
+        qp->nic.bnxt.sq_id);
+    // __builtin_trap() is the portable device trap (s_trap on AMDGPU); the
+    // CUDA-only __trap() intrinsic is not declared in this HIP header context.
+    __builtin_trap();
+  }
+
   __device__ void* getBnxtWqeSlot(
       pipes_gda_gpu_dev_verbs_qp* qp,
       uint32_t slotIdx) const {
@@ -206,6 +274,8 @@ struct BnxtNicBackend {
       uint64_t localAddr,
       uint32_t localKey,
       std::size_t size) {
+    // Back-pressure to keep producer behind NIC consumer (caller holds lock).
+    waitForSqSlots(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
     pipes_gda_bnxt_bsqe* hdr =
@@ -281,6 +351,8 @@ struct BnxtNicBackend {
       uint64_t localAddr,
       uint32_t localKey,
       uint64_t addVal) {
+    // Back-pressure to keep producer behind NIC consumer (caller holds lock).
+    waitForSqSlots(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
     pipes_gda_bnxt_bsqe* hdr =
