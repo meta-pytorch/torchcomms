@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 _REGISTERED_COLLECTIVES: dict[str, dict[str, Any]] = {}
 
 
+def _unpack_process_kernel_result(result):
+    if isinstance(result, tuple):
+        return result
+    return (
+        result.example_output,
+        result.tensor_args,
+        result.non_tensor_args,
+        result.unflatten_args,
+        result.unbacked_bindings,
+    )
+
+
 def _pack_result(results: list) -> Any:
     """Pack a list of results into the appropriate return value.
 
@@ -785,8 +797,10 @@ def _register_lowerings() -> None:  # noqa: C901
                             non_tensor_args,
                             unflatten_args,
                             unbacked_bindings,
-                        ) = ir._CollectiveKernel.process_kernel(
-                            captured_torch_op.default, *args
+                        ) = _unpack_process_kernel_result(
+                            ir._CollectiveKernel.process_kernel(
+                                captured_torch_op.default, *args
+                            )
                         )
                     assert not unbacked_bindings
 

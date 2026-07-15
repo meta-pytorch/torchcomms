@@ -13,6 +13,17 @@ try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
 
+    def _unpack_process_kernel_result(result):
+        if isinstance(result, tuple):
+            return result
+        return (
+            result.example_output,
+            result.tensor_args,
+            result.non_tensor_args,
+            result.unflatten_args,
+            result.unbacked_bindings,
+        )
+
     def register_torchcomms_lowerings():
         from torchcomms.functional import collectives
 
@@ -138,7 +149,9 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                ) = _unpack_process_kernel_result(
+                    ir._CollectiveKernel.process_kernel(inplace_op.default, *args)
+                )
             assert not unbacked_bindings, f"{inplace_op} {unbacked_bindings}"
 
             # Create the collective kernel
@@ -325,9 +338,11 @@ try:  # noqa: C901
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                ) = ir._WaitKernel.process_kernel(
-                    torch.ops.torchcomms.torchcomm_wait_tensors_.default,
-                    flat_inputs,
+                ) = _unpack_process_kernel_result(
+                    ir._WaitKernel.process_kernel(
+                        torch.ops.torchcomms.torchcomm_wait_tensors_.default,
+                        flat_inputs,
+                    )
                 )
             assert not unbacked_bindings
 
