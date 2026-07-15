@@ -129,9 +129,15 @@ static bool ensureHsaInitialized() {
   return g_hsaInitSuccess;
 }
 
-#ifdef NIC_MLX5
-// mlx5-only: the BNXT path doesn't need HSA UAR mapping (it uses
-// alloc_db_region's host-mapped DBR + hipHostRegister instead).
+// hsa_amd_memory_lock_to_pool gives a GPU-accessible alias for a host
+// pointer. Required for both:
+//   - mlx5: BlueFlame UAR doorbell page (was already using this).
+//   - bnxt: alloc_db_region's MMIO doorbell page. The hipHostRegister
+//     path that BNXT previously used produces a GPU-side mapping that
+//     is READ-ONLY on this ROCm release; the kernel's atomic store to
+//     `qp->nic.bnxt.dbr` then faults with `(nil)` / `Write access to
+//     a read-only page`. hsa_amd_memory_lock_to_pool produces a
+//     writable GPU alias, matching how mlx5's BlueFlame UAR is mapped.
 static bool
 hsaMemoryLockToGpu(void* hostPtr, size_t size, void** gpuPtr, int gpuId) {
   if (!ensureHsaInitialized()) {
@@ -153,15 +159,14 @@ hsaMemoryLockToGpu(void* hostPtr, size_t size, void** gpuPtr, int gpuId) {
       gpuPtr);
   return st == HSA_STATUS_SUCCESS;
 }
-#endif // NIC_MLX5
 
 #ifdef NIC_BNXT
 // ===========================================================================
 // SysIbv — dlopen wrapper for system libibverbs.so.1 (PABI 34)
 // ===========================================================================
 //
-// fbcode third-party/rdma-core stablev60 (PABI 59) statically links a BNXT
-// provider that only supports kernel uverbs ABI 1. The kernel bnxt_re module
+// A statically-linked rdma-core (PABI 59) bundles a BNXT provider that only
+// supports kernel uverbs ABI 1. The kernel bnxt_re module
 // on AMD/BNXT hosts reports uverbs ABI 8, so the static provider rejects every
 // device. The system /lib64/libibverbs.so.1 (PABI 34) +
 // /lib64/libbnxt_re-rdmav34.so DO support ABI 8 — we dlopen them at runtime
@@ -191,8 +196,8 @@ static SysIbv* getSysIbv() {
   static bool s_loaded = false;
   std::call_once(s_once, []() {
     // Force the SYSTEM libibverbs (PABI 34, supports kernel uverbs ABI 8).
-    // fbcode's /usr/local/fbcode/platform010/lib/libibverbs.so.1 (PABI 59)
-    // would otherwise win the search.
+    // A statically-linked libibverbs earlier in the loader search order
+    // (PABI 59) would otherwise win the search.
     void* lib = dlopen("/lib64/libibverbs.so.1", RTLD_LAZY | RTLD_GLOBAL);
     if (!lib) {
       lib = dlopen("libibverbs.so.1", RTLD_LAZY | RTLD_GLOBAL);
@@ -350,8 +355,11 @@ struct AmdBnxtQpInternal {
   void* rq_buf{nullptr};
   size_t rq_buf_size{0};
 
-  // Host-mapped DBR page we hipHostRegister'd so the GPU can store to it.
-  void* registered_dbr_page{nullptr};
+  // MMIO doorbell page registered via `hipHostRegister(Default)` so the GPU
+  // can issue 64-bit atomic stores. Released via `hipHostUnregister` in
+  // `freeQpResources`. Pointer is `dbRegion->dbr`, which is stored
+  // independently in the `bnxt_re_dv_db_region_attr*` referenced by the QP.
+  bool dbr_host_registered{false};
 };
 #else
 struct AmdQpInternal {
@@ -459,10 +467,10 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
 // ===========================================================================
 // ibverbs wrappers
 //
-// BNXT: route through SysIbv (system /lib64/libibverbs.so.1) — fbcode's
-// static libibverbs (PABI 59) cannot register the system BNXT provider
-// (PABI 34).
-// mlx5: direct calls into fbcode's static libibverbs.
+// BNXT: route through SysIbv (system /lib64/libibverbs.so.1) — the
+// statically-linked libibverbs (PABI 59) cannot register the system BNXT
+// provider (PABI 34).
+// mlx5: direct calls into the statically-linked libibverbs.
 // ===========================================================================
 
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
@@ -961,8 +969,8 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
 
   // RC QP responder/initiator depths are required by the kernel for the
   // INIT->RTR and RTR->RTS transitions, but NVIDIA DOCA's public API does
-  // not expose setters for `max_dest_rd_atomic` / `max_rd_atomic`. The
-  // deleted `MultipeerIbgdaTransportAmd::connectQp` set both to 16.
+  // not expose setters for `max_dest_rd_atomic` / `max_rd_atomic`. We set
+  // both to 16.
   if ((mask & IBV_QP_STATE) != 0) {
     if (ibvAttr.qp_state == IBV_QPS_RTR) {
       ibvAttr.max_dest_rd_atomic = 16;
@@ -1048,13 +1056,12 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   size_t rqBufSize = 0;
   void* cqBuf = nullptr;
   size_t cqBufSize = 0;
-  bool dbrReg = false;
-  void* dbrPage = nullptr;
+  bool dbrRegistered = false; // hipHostUnregister on unwind if true
   size_t pageSize = sysconf(_SC_PAGESIZE);
 
   auto unwind = [&]() {
-    if (dbrReg && dbrPage) {
-      hipHostUnregister(dbrPage);
+    if (dbRegion && dbrRegistered) {
+      hipHostUnregister(dbRegion->dbr);
     }
     if (qp && dv->destroy_qp) {
       dv->destroy_qp(qp);
@@ -1105,7 +1112,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   // CQ buffer in GPU device memory (uncached): GPU poll loop reads local
   // HBM (~100ns) instead of PCIe-mapped host memory (~1us).
   hipError_t herr =
-      hipExtMallocWithFlags(&cqBuf, cqBufSize, hipDeviceMallocUncached);
+      hipExtMallocWithFlags(&cqBuf, cqBufSize, hipDeviceMallocFinegrained);
   if (herr != hipSuccess || !cqBuf) {
     fprintf(
         stderr,
@@ -1207,9 +1214,14 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   }
   rqBufSize = memInfo.rq_len;
 
-  // SQ in GPU device memory (uncached). Same rationale as CQ: GPU writes
-  // (WQE prep) hit local HBM at ~100ns/store rather than ~1us/PCIe write.
-  herr = hipExtMallocWithFlags(&sqBuf, sqBufSize, hipDeviceMallocUncached);
+  // SQ in GPU device memory. Use `hipDeviceMallocFinegrained` to match
+  // rocSHMEM's QP buffer allocator (`HIPAllocatorFinegrained`).
+  // We previously used `hipDeviceMallocUncached`, but on AMD MI300X
+  // multiple-warp WQE writes to that memory type fault with `Memory
+  // access fault by GPU on (nil)` / `Write access to a read-only page`.
+  // Fine-grained coherent memory accepts the concurrent writes correctly
+  // and is what rocSHMEM (the validated baseline) uses for SQ/CQ/RQ.
+  herr = hipExtMallocWithFlags(&sqBuf, sqBufSize, hipDeviceMallocFinegrained);
   if (herr != hipSuccess || !sqBuf) {
     fprintf(
         stderr,
@@ -1222,7 +1234,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hipMemset(sqBuf, 0, sqBufSize);
 
   if (rqBufSize > 0) {
-    herr = hipExtMallocWithFlags(&rqBuf, rqBufSize, hipDeviceMallocUncached);
+    herr = hipExtMallocWithFlags(&rqBuf, rqBufSize, hipDeviceMallocFinegrained);
     if (herr != hipSuccess || !rqBuf) {
       fprintf(
           stderr,
@@ -1349,32 +1361,43 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   void* gpuSqBuf = sqBuf;
   void* gpuCqBuf = cqBuf;
 
-  // The DBR pointer returned by alloc_db_region is host-mapped; register
-  // its containing page so the GPU can issue 64-bit atomic stores to it.
-  dbrPage = reinterpret_cast<void*>(
-      reinterpret_cast<uintptr_t>(dbRegion->dbr) & ~(pageSize - 1));
-  hipError_t herr2 = hipHostRegister(dbrPage, pageSize, hipHostRegisterDefault);
-  if (herr2 != hipSuccess) {
+  // Map MMIO doorbell to GPU via `hipHostRegister(dbr, pagesize, Default)`
+  // + `hipHostGetDevicePointer`, mirroring rocSHMEM's BNXT GDA backend.
+  // This is the validated
+  // production path on BNXT MI300X: GPU writes directly to MMIO from the
+  // device-side `ringDoorbell` — no CPU relay involved.
+  long pageSizeForDbr = sysconf(_SC_PAGESIZE);
+  if (pageSizeForDbr <= 0) {
+    pageSizeForDbr = 4096;
+  }
+  hipError_t dbrRegErr = hipHostRegister(
+      dbRegion->dbr,
+      static_cast<size_t>(pageSizeForDbr),
+      hipHostRegisterDefault);
+  if (dbrRegErr != hipSuccess) {
     fprintf(
         stderr,
-        "[BNXT] hipHostRegister(dbrPage=%p sz=%zu) failed: %s\n",
-        dbrPage,
-        pageSize,
-        hipGetErrorString(herr2));
+        "[BNXT] hipHostRegister(dbr=%p, pagesize=%ld, Default) failed: %s\n",
+        dbRegion->dbr,
+        pageSizeForDbr,
+        hipGetErrorString(dbrRegErr));
     unwind();
     return PIPES_GDA_ERROR_DRIVER;
   }
-  dbrReg = true;
-  void* gpuDbrPage = nullptr;
-  if (hipHostGetDevicePointer(&gpuDbrPage, dbrPage, 0) != hipSuccess) {
-    fprintf(stderr, "[BNXT] hipHostGetDevicePointer(dbrPage) failed\n");
+  dbrRegistered = true;
+  void* gpuDbrPtr = nullptr;
+  hipError_t dbrGetErr = hipHostGetDevicePointer(&gpuDbrPtr, dbRegion->dbr, 0);
+  if (dbrGetErr != hipSuccess || gpuDbrPtr == nullptr) {
+    fprintf(
+        stderr,
+        "[BNXT] hipHostGetDevicePointer(dbr=%p) failed: %s (gpuDbrPtr=%p)\n",
+        dbRegion->dbr,
+        hipGetErrorString(dbrGetErr),
+        gpuDbrPtr);
     unwind();
     return PIPES_GDA_ERROR_DRIVER;
   }
-  size_t dbrOffset = reinterpret_cast<uintptr_t>(dbRegion->dbr) -
-      reinterpret_cast<uintptr_t>(dbrPage);
-  uint64_t* gpuDbr = reinterpret_cast<uint64_t*>(
-      reinterpret_cast<uintptr_t>(gpuDbrPage) + dbrOffset);
+  uint64_t* gpuDbr = reinterpret_cast<uint64_t*>(gpuDbrPtr);
 
   // ---- Step 10: Compute MSN table location (tail of SQ buffer) ----
   size_t msnOffset =
@@ -1429,10 +1452,10 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   ibv_port_attr portAttr{};
   uint32_t activeMtuBytes = 4096;
   // BNXT: route through `pipes_gda_verbs_wrapper_ibv_query_port` (which
-  // dispatches to `SysIbv->query_port`) rather than calling the fbcode
-  // static `ibv_query_port` directly — `ctx` was created via the SysIbv
-  // (system `libibverbs.so.1`, PABI 34) path, so calling fbcode's static
-  // libibverbs (PABI 59) on it risks an ABI mismatch.
+  // dispatches to `SysIbv->query_port`) rather than calling the
+  // statically-linked `ibv_query_port` directly — `ctx` was created via the
+  // SysIbv (system `libibverbs.so.1`, PABI 34) path, so calling the
+  // statically-linked libibverbs (PABI 59) on it risks an ABI mismatch.
   if (ctx &&
       pipes_gda_verbs_wrapper_ibv_query_port(ctx, /*port_num=*/1, &portAttr) ==
           PIPES_GDA_SUCCESS) {
@@ -1492,7 +1515,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   internal->cq_buf_size = cqBufSize;
   internal->rq_buf = rqBuf;
   internal->rq_buf_size = rqBufSize;
-  internal->registered_dbr_page = dbrPage;
+  internal->dbr_host_registered = dbrRegistered;
 
   auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
   if (!out) {
@@ -1519,7 +1542,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   sqBuf = nullptr;
   cqBuf = nullptr;
   rqBuf = nullptr;
-  dbrReg = false;
+  dbrRegistered = false; // ownership transferred to `internal`
   return PIPES_GDA_SUCCESS;
 }
 
@@ -1812,10 +1835,10 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
     if (qp->qp && dv && dv->destroy_qp) {
       dv->destroy_qp(qp->qp);
     }
-    // Unregister the DBR host page BEFORE free_db_region: kernel-side
-    // bnxt_re holds the page mapping until destroy_qp completes.
-    if (internal->registered_dbr_page) {
-      hipHostUnregister(internal->registered_dbr_page);
+    // Unregister the GPU mapping of the MMIO doorbell page BEFORE freeing
+    // the bnxt_re DB region (the DB region owns the underlying mmap).
+    if (internal->dbr_host_registered && internal->db_region) {
+      hipHostUnregister(internal->db_region->dbr);
     }
     if (internal->db_region && dv && dv->free_db_region && ctx) {
       dv->free_db_region(ctx, internal->db_region);

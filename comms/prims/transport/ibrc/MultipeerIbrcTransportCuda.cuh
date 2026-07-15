@@ -44,6 +44,6 @@ void writeIbrcDeviceSlot(
     IbgdaLocalBuffer counterHostBuf,
     int numSignalSlots,
     int numCounterSlots,
-    IbSendRecvState sendRecvState);
+    IbChannelLayout channelLayout);
 
 } // namespace comms::prims

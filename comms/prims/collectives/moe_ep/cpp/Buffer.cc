@@ -31,6 +31,7 @@
 #include "comms/prims/collectives/moe_ep/cpp/low_latency/kernels/Dispatch.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/KernelConfigs.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
+#include "secure_lib/secure_string.h"
 
 namespace comms::prims::moe_ep {
 
@@ -83,6 +84,90 @@ class StubBootstrap : public meta::comms::IBootstrap {
   const int nRanks_;
 };
 
+/**
+ * PyAllGatherBootstrap — IBootstrap that delegates allGather to a Python
+ * callable. The callable receives the local data slot as bytes and must
+ * return concatenated `nranks * len` bytes (peer i's data at offset i*len).
+ *
+ * This is how Python `dist.all_gather_object` (or similar) gets bridged
+ * into MultipeerIbgdaTransport's QP-info exchange. The callback runs with
+ * the GIL held, so it can safely invoke Python collective APIs.
+ *
+ * `barrier` is a no-op; assumes Python pre-barriered. send/recv unsupported.
+ */
+class PyAllGatherBootstrap : public meta::comms::IBootstrap {
+ public:
+  PyAllGatherBootstrap(int rank, int nRanks, py::object allGatherCb)
+      : rank_(rank), nRanks_(nRanks), allGatherCb_(std::move(allGatherCb)) {}
+
+  ~PyAllGatherBootstrap() override {
+    // Py_DECREF of the callback requires the GIL, but this object can be
+    // destroyed while the GIL is released (the last shared_ptr reference may
+    // be dropped inside setupIbgda under gil_scoped_release, possibly on
+    // another thread). Reset the member here under an explicit guard: a bare
+    // gil_scoped_acquire would not help since the member is destroyed after
+    // the destructor body, once the guard is already gone.
+    py::gil_scoped_acquire gil;
+    allGatherCb_ = py::object();
+  }
+
+  // Owned via shared_ptr and never copied/moved; declared to satisfy the
+  // rule-of-five now that a destructor is user-provided.
+  PyAllGatherBootstrap(const PyAllGatherBootstrap&) = delete;
+  PyAllGatherBootstrap& operator=(const PyAllGatherBootstrap&) = delete;
+  PyAllGatherBootstrap(PyAllGatherBootstrap&&) = delete;
+  PyAllGatherBootstrap& operator=(PyAllGatherBootstrap&&) = delete;
+
+  folly::SemiFuture<int> allGather(void* buf, int len, int rank, int nranks)
+      override {
+    if (rank != rank_ || nranks != nRanks_) {
+      return folly::makeSemiFuture<int>(
+          std::runtime_error("PyAllGatherBootstrap: rank/nranks mismatch"));
+    }
+    try {
+      // Extract local data slot, call Python, marshal gathered result back.
+      py::gil_scoped_acquire gil;
+      const char* localData =
+          static_cast<const char*>(buf) + static_cast<std::size_t>(rank) * len;
+      py::bytes localBytes(localData, len);
+      py::object result = allGatherCb_(localBytes);
+      std::string gathered = result.cast<std::string>();
+      const std::size_t expected = static_cast<std::size_t>(nranks) * len;
+      if (gathered.size() != expected) {
+        throw std::runtime_error(
+            "PyAllGatherBootstrap: Python callback returned " +
+            std::to_string(gathered.size()) + " bytes, expected " +
+            std::to_string(expected));
+      }
+      checked_memcpy(buf, expected, gathered.data(), expected);
+    } catch (const std::exception& e) {
+      return folly::makeSemiFuture<int>(std::runtime_error(e.what()));
+    }
+    return folly::makeSemiFuture(0);
+  }
+
+  folly::SemiFuture<int> barrier(int /*rank*/, int /*nranks*/) override {
+    return folly::makeSemiFuture(0);
+  }
+
+  folly::SemiFuture<int>
+  send(void* /*buf*/, int /*len*/, int /*peer*/, int /*tag*/) override {
+    return folly::makeSemiFuture<int>(
+        std::runtime_error("PyAllGatherBootstrap: send not supported"));
+  }
+
+  folly::SemiFuture<int>
+  recv(void* /*buf*/, int /*len*/, int /*peer*/, int /*tag*/) override {
+    return folly::makeSemiFuture<int>(
+        std::runtime_error("PyAllGatherBootstrap: recv not supported"));
+  }
+
+ private:
+  const int rank_;
+  const int nRanks_;
+  py::object allGatherCb_;
+};
+
 } // namespace
 
 Buffer::Buffer(
@@ -108,14 +193,16 @@ Buffer::Buffer(
   if (numRanks_ <= 0) {
     throw std::invalid_argument("Buffer: numRanks must be > 0");
   }
-  // Intranode-only dispatch / combine paths cap at NUM_MAX_NVL_PEERS.
-  // Multi-node LL mode allows numRanks > NUM_MAX_NVL_PEERS: cross-node
-  // peers go through IBGDA in LowLatencyRuntime; same-node peers still
-  // use NVL-IPC (peerIpcBuffers_[i] nullptr for cross-node, populated for
-  // same-node — see sync()).
-  if (numRanks_ > NUM_MAX_NVL_PEERS && !lowLatencyMode_) {
+  // For non-low-latency intranode mode, only one NVL node is supported
+  // (the intranode kernel addresses peers via the per-rank `buffer_ptrs`
+  // table sized at NUM_MAX_NVL_PEERS). Low-latency mode supports
+  // cross-node via the hybrid IPC+IBGDA path — same-node peers go via
+  // NVLink IPC, cross-node peers via `MultipeerIbgdaTransport` (wired
+  // up by `setup_low_latency_ibgda()` post-sync).
+  if (!lowLatencyMode_ && numRanks_ > NUM_MAX_NVL_PEERS) {
     throw std::invalid_argument(
-        "Buffer: numRanks > NUM_MAX_NVL_PEERS requires low_latency_mode=True");
+        "Buffer: numRanks > NUM_MAX_NVL_PEERS requires low_latency_mode=True "
+        "(internode intranode_dispatch/combine kernel is not yet implemented)");
   }
 
   checkCuda(cudaGetDevice(&deviceId_), "Buffer: cudaGetDevice failed");
@@ -294,10 +381,24 @@ void Buffer::sync(
     cudaIpcMemHandle_t peerHandle{};
     std::memcpy(&peerHandle, handleBytes.data(), sizeof(peerHandle));
     void* peerPtr = nullptr;
-    checkCuda(
-        cudaIpcOpenMemHandle(
-            &peerPtr, peerHandle, cudaIpcMemLazyEnablePeerAccess),
-        "Buffer::sync: cudaIpcOpenMemHandle failed");
+    // For LL mode, cross-node peers' IPC opens fail (P2P not available).
+    // Leave peerIpcBuffers_[i] = nullptr so the LL kernel's hybrid branch
+    // routes to the IBGDA path. For intranode mode, all peers must succeed
+    // (single-node-only requirement).
+    cudaError_t ipcErr = cudaIpcOpenMemHandle(
+        &peerPtr, peerHandle, cudaIpcMemLazyEnablePeerAccess);
+    if (ipcErr != cudaSuccess) {
+      if (lowLatencyMode_) {
+        // Cross-node peer: clear the sticky CUDA error so subsequent
+        // cudaMalloc / kernel launches don't fail with the stale error,
+        // then leave peerIpcBuffers_[i] = nullptr — kernel routes via IBGDA.
+        (void)cudaGetLastError();
+        continue;
+      }
+      throw std::runtime_error(
+          std::string("Buffer::sync: cudaIpcOpenMemHandle failed for peer ") +
+          std::to_string(i) + ": " + cudaGetErrorString(ipcErr));
+    }
     peerIpcBuffers_[i] = peerPtr;
   }
 
@@ -305,11 +406,11 @@ void Buffer::sync(
   // GpuMemHandler/transport entirely since Python already gathered IPC
   // handles for us.
   //
-  // Skip on multi-node LL mode (numRanks > NUM_MAX_NVL_PEERS) — only the
-  // LL path is reachable across nodes; the IntranodeRuntime ctor enforces
-  // its own (legitimate) NVL-peer cap and `intranode_dispatch` /
-  // `intranode_combine` are not callable in that mode.
-  if (numRanks_ <= NUM_MAX_NVL_PEERS) {
+  // Skip when low_latency_mode + numRanks > NUM_MAX_NVL_PEERS —
+  // IntranodeRuntime itself checks numRanks <= NUM_MAX_NVL_PEERS, and LL
+  // kernels don't use the intranode runtime at all (they use LowLatencyRuntime,
+  // constructed lazily on first low_latency_dispatch call).
+  if (!lowLatencyMode_ || numRanks_ <= NUM_MAX_NVL_PEERS) {
     intranode_ = std::make_unique<IntranodeRuntime>(
         rank_,
         numRanks_,
@@ -327,9 +428,9 @@ void Buffer::sync(
   // When low_latency_mode=true, also stand up the LL runtime
   // (owns the symmetric LL buffer, atomic counters, IBGDA transport).
   // The dispatch tokens / hidden / num_experts are not known at sync()
-  // time — those land on the first dispatch call. For now we lazily
-  // construct LowLatencyRuntime in `low_latency_dispatch` when needed
-  // and keep this branch as a placeholder to assert the mode.
+  // time — those land on the first dispatch call. LowLatencyRuntime is
+  // constructed lazily in `low_latency_dispatch`; this branch only
+  // validates the mode's invariants.
   if (lowLatencyMode_ && numRdmaBytes_ <= 0) {
     throw std::runtime_error(
         "Buffer::sync: low_latency_mode requires num_rdma_bytes > 0");
@@ -460,10 +561,10 @@ py::tuple Buffer::intranode_dispatch(
     x = xTuple[0].cast<torch::Tensor>();
     xScales = xTuple[1].cast<torch::Tensor>();
     isFp8 = true;
-    // FP8 scale path is deferred: the kernel derives num_scales from
+    // FP8 scale path is not yet supported: the kernel derives num_scales from
     // scale_hidden_stride (Dispatch.cu), which collapses to 1 for contiguous
     // scales and silently under-fills the recv-scale buffer. Reject the
-    // (data, scales) tuple until the FP8-enablement diff threads num_scales.
+    // (data, scales) tuple until the FP8 scale path threads num_scales.
     TORCH_CHECK(
         !isFp8,
         "intranode_dispatch: FP8 (x=(data, scales)) is not supported yet; the "
@@ -893,9 +994,8 @@ Buffer::intranode_combine(
 //
 // Lazily construct the LowLatencyRuntime on first call (the dispatch
 // dimensions aren't known at sync() time). These methods set up the
-// runtime, allocate
-// the output tensors, and call into the (no-op) kernel stubs so the
-// Python-side surface and tensor shapes are validated end-to-end.
+// runtime, allocate the output tensors, and call into the low-latency
+// kernels.
 
 py::tuple Buffer::low_latency_dispatch(
     const torch::Tensor& x,
@@ -971,11 +1071,18 @@ py::tuple Buffer::low_latency_dispatch(
 
   // Wire peer data pointers for NVLink IPC writes. Offset each peer's
   // base pointer to the LL RDMA region within the shared IPC buffer.
+  // For cross-node peers (peerIpcBuffers_[i] == nullptr because
+  // cudaIpcOpenMemHandle failed), keep the entry nullptr — the kernel
+  // branches on this to route to the IBGDA path. Adding llRdmaOffset_ to
+  // nullptr would produce a small invalid address that passes the kernel's
+  // `!= nullptr` check and triggers a memory fault on the IPC write.
   if (lowLatency_->getPeerDataPtrsDevice() == nullptr &&
       !peerIpcBuffers_.empty()) {
     std::vector<void*> llPeerPtrs(numRanks_);
     for (int i = 0; i < numRanks_; ++i) {
-      llPeerPtrs[i] = static_cast<uint8_t*>(peerIpcBuffers_[i]) + llRdmaOffset_;
+      llPeerPtrs[i] = (peerIpcBuffers_[i] != nullptr)
+          ? static_cast<uint8_t*>(peerIpcBuffers_[i]) + llRdmaOffset_
+          : nullptr;
     }
     lowLatency_->setPeerDataPtrs(llPeerPtrs);
   }
@@ -1034,6 +1141,13 @@ py::tuple Buffer::low_latency_dispatch(
       false, // roundScale
       false, // useUe8m0
       lowLatency_->getPeerDataPtrsDevice(),
+      // IBGDA cross-node descriptors. Populated by setupIbgda() (for
+      // multi-node configs); nullptr on single-node where all peers are
+      // P2P-capable and the kernel takes the IPC fast path.
+      lowLatency_->getIbgdaDeviceTransport(),
+      lowLatency_->getLocalRdmaXBufDevice(),
+      lowLatency_->getPeerRemoteRecvXDevice(),
+      lowLatency_->getPeerRemoteRecvCountDevice(),
       phase,
       stream);
 
@@ -1149,6 +1263,11 @@ py::tuple Buffer::low_latency_combine(
       numRanks_,
       lowLatency_->getCombineWorkspace(),
       lowLatency_->getPeerDataPtrsDevice(),
+      // IBGDA cross-node descriptors. nullptr on single-node.
+      lowLatency_->getIbgdaDeviceTransport(),
+      lowLatency_->getLocalCombineXBufDevice(),
+      lowLatency_->getPeerRemoteCombineRecvXDevice(),
+      lowLatency_->getPeerRemoteCombineRecvFlagDevice(),
       phase,
       false, // zero_copy
       stream);
@@ -1201,6 +1320,47 @@ void Buffer::set_low_latency_buffer_idx(int idx) {
         "Buffer::set_low_latency_buffer_idx: idx must be 0 or 1");
   }
   lowLatencyBufferIdx_ = idx;
+}
+
+void Buffer::setup_low_latency_ibgda(
+    int numMaxDispatchTokensPerRank,
+    int hidden,
+    int numExperts,
+    py::object allGatherCallback) {
+  if (!available_) {
+    throw std::runtime_error("Buffer::setup_low_latency_ibgda: not synced yet");
+  }
+  if (!lowLatencyMode_) {
+    throw std::runtime_error(
+        "Buffer::setup_low_latency_ibgda: requires low_latency_mode=True");
+  }
+  if (numRanks_ < 2) {
+    return; // single-rank: no peers, nothing to set up
+  }
+  // Eagerly construct the LL runtime so cross-node QPs can be set up before
+  // the first dispatch — otherwise the kernel would try to send to cross-node
+  // peers with no IBGDA wired.
+  if (!lowLatency_) {
+    const int numLocalExperts = numExperts / numRanks_;
+    auto bootstrap = std::make_shared<StubBootstrap>(rank_, numRanks_);
+    void* llBuffer = static_cast<uint8_t*>(localIpcBuffer_) + llRdmaOffset_;
+    lowLatency_ = std::make_unique<LowLatencyRuntime>(
+        bootstrap,
+        rank_,
+        numRanks_,
+        static_cast<std::size_t>(numRdmaBytes_),
+        numMaxDispatchTokensPerRank,
+        hidden,
+        numExperts,
+        /*numQpsPerRank=*/numLocalExperts,
+        /*externalRdmaBuffer=*/llBuffer);
+  }
+  auto bootstrap = std::make_shared<PyAllGatherBootstrap>(
+      rank_, numRanks_, std::move(allGatherCallback));
+  // Release GIL during the C++ collective so the Python callback can
+  // re-acquire it; the bootstrap re-acquires per-call.
+  py::gil_scoped_release release;
+  lowLatency_->setupIbgda(std::move(bootstrap));
 }
 
 void Buffer::notImplemented(const char* methodName) const {

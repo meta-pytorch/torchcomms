@@ -496,16 +496,13 @@ __device__ __forceinline__ void P2pIbTransportDevice::send(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->send<CopyOp>(
-        group, src, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+    ibrc->send<CopyOp>(group, src, nbytes, max_signal_bytes, timeout, args...);
   } else {
-    ibgda->send<CopyOp>(
-        group, src, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+    ibgda->send<CopyOp>(group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 }
 
@@ -514,16 +511,13 @@ __device__ __forceinline__ void P2pIbTransportDevice::recv(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->recv<CopyOp>(
-        group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+    ibrc->recv<CopyOp>(group, dst, nbytes, max_signal_bytes, timeout, args...);
   } else {
-    ibgda->recv<CopyOp>(
-        group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+    ibgda->recv<CopyOp>(group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 }
 
@@ -533,62 +527,52 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
     void* __restrict__ dst,
     P2pIbTransportDevice& fwd,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
-  if (type == P2pIbBackendType::IBRC) {
+  if (type == P2pIbBackendType::IBRC && fwd.type == P2pIbBackendType::IBRC) {
     ibrc->forward<CopyOp>(
-        group,
-        dst,
-        *fwd.ibrc,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
-  } else {
-    ibgda->forward<CopyOp>(
-        group,
-        dst,
-        *fwd.ibgda,
-        nbytes,
-        active_blocks,
-        max_signal_bytes,
-        timeout,
-        args...);
+        group, dst, *fwd.ibrc, nbytes, max_signal_bytes, timeout, args...);
+    return;
   }
+  if (type == P2pIbBackendType::IBGDA && fwd.type == P2pIbBackendType::IBGDA) {
+    ibgda->forward<CopyOp>(
+        group, dst, *fwd.ibgda, nbytes, max_signal_bytes, timeout, args...);
+    return;
+  }
+  if (group.is_leader()) {
+    printf("[PIPES] FATAL: mixed IB backend forward is unsupported\n");
+  }
+  PIPES_DEVICE_TRAP();
 }
 
-__device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window(
-    int active_blocks) const {
+__device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window()
+    const {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->pipeline_window(active_blocks);
+    return ibrc->pipeline_window();
   }
-  return ibgda->pipeline_window(active_blocks);
+  return ibgda->pipeline_window();
 }
 
 __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
     ThreadGroup& group,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->init_send_progress(group, nbytes, active_blocks, max_signal_bytes);
+    ibrc->init_send_progress(group, nbytes, max_signal_bytes);
   } else {
-    ibgda->init_send_progress(group, nbytes, active_blocks, max_signal_bytes);
+    ibgda->init_send_progress(group, nbytes, max_signal_bytes);
   }
 }
 
 __device__ __forceinline__ void P2pIbTransportDevice::init_recv_progress(
     ThreadGroup& group,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->init_recv_progress(group, nbytes, active_blocks, max_signal_bytes);
+    ibrc->init_recv_progress(group, nbytes, max_signal_bytes);
   } else {
-    ibgda->init_recv_progress(group, nbytes, active_blocks, max_signal_bytes);
+    ibgda->init_recv_progress(group, nbytes, max_signal_bytes);
   }
 }
 
@@ -598,16 +582,15 @@ P2pIbTransportDevice::progress_send_once(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     return ibrc->progress_send_once<CopyOp>(
-        group, src, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+        group, src, nbytes, max_signal_bytes, timeout, args...);
   }
   return ibgda->progress_send_once<CopyOp>(
-      group, src, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+      group, src, nbytes, max_signal_bytes, timeout, args...);
 }
 
 template <typename CopyOp, typename... Args>
@@ -616,16 +599,15 @@ P2pIbTransportDevice::progress_recv_once(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
-    int active_blocks,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     return ibrc->progress_recv_once<CopyOp>(
-        group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+        group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
   return ibgda->progress_recv_once<CopyOp>(
-      group, dst, nbytes, active_blocks, max_signal_bytes, timeout, args...);
+      group, dst, nbytes, max_signal_bytes, timeout, args...);
 }
 
 } // namespace comms::prims

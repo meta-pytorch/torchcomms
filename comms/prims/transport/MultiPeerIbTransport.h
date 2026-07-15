@@ -63,9 +63,9 @@ struct MultipeerIbTransportConfig {
   // during auto-discovery (not when gpuNicMap has a mapping for the GPU).
   std::string ibHca;
 
-  // Per-peer data buffer size in bytes. Raw put()/signal() users interpret
-  // this as the exported per-peer RDMA buffer size; send()/recv() users
-  // interpret it as the size of one logical staging slot.
+  // Per-peer data buffer size in bytes for raw put()/signal() users. When
+  // perChannelSize is set for send()/recv(), the transport derives this as
+  // perChannelSize * max_num_channels.
   std::size_t dataBufferSize{0};
 
   // Fixed-channel send/recv staging slice size in bytes. When this is nonzero,
@@ -100,21 +100,6 @@ struct MultipeerIbTransportConfig {
   // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
   // fixed-channel shape in the following stack diff.
   int qpsPerBlockPerNic{1};
-
-  // Send/recv configuration. When set, the transport allocates a private
-  // pipelined staging ring plus private signal/counter state for send()/recv().
-  // When nullopt (default), only the raw put/signal APIs are available.
-  struct SendRecvConfig {
-    // Maximum number of block-groups that may participate in one send()/recv()
-    // call. Sizes the private signal/counter/step arrays and caps
-    // active_blocks. A value of 0 inherits the top-level maxGroups.
-    int maxGroups{0};
-
-    // Number of logical slots in the send/recv staging ring. Total staging
-    // bytes per peer per direction: pipelineDepth * dataBufferSize.
-    int pipelineDepth{2};
-  };
-  std::optional<SendRecvConfig> sendRecv;
 
   // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
   // because qpDepth also sizes msn_tbl_sz on bnxt_re.
@@ -186,7 +171,7 @@ struct MultipeerIbTransportConfig {
   }
 
   int fixedChannelDirectionCount() const {
-    return sendRecv.has_value() ? kIbDirections : 1;
+    return perChannelSize > 0 ? kIbDirections : 1;
   }
 
   // mlx5 Data-Direct: register MRs through the NIC's data-direct (BAR1) PCIe
@@ -382,16 +367,13 @@ enum class IbCounterStorage {
 };
 
 // Per-peer send/recv staging-ring views. Eager mode owns the bulk allocations
-// and slices these; the device side reads them via sendRecvStateForPeer().
+// and slices these; the device side reads them via channelLayoutForPeer().
 struct IbSendRecvPeerBuffers {
   IbgdaLocalBuffer sendStaging;
   IbgdaLocalBuffer recvStaging;
   IbgdaLocalBuffer signal;
   IbgdaLocalBuffer counter;
   IbgdaLocalBuffer counterCompletion;
-  // DeviceSpan has a const data_ member (no copy-assign), so wrap in optional
-  // and emplace() the per-peer slice.
-  std::optional<DeviceSpan<IbSendRecvState::ProgressSlot>> state;
   IbgdaRemoteBuffer remoteRecvStaging;
   IbgdaRemoteBuffer remoteSignal;
 };
@@ -535,14 +517,15 @@ class MultiPeerIbTransportBase {
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
   // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
-  // = pipelineDepth * dataBufferSize per direction; signal/state are sized off
-  // maxGroups. Per-peer staging + signal are device-registered; recvStaging +
-  // signal are collectively exchanged so peers can RDMA into our ring.
+  // = pipelineDepth * dataBufferSize per direction; signal is sized off
+  // max_num_channels. Per-peer staging + signal are device-registered;
+  // recvStaging + signal are collectively exchanged so peers can RDMA into our
+  // ring.
   bool sendRecvBuffersEnabled() const {
-    return config_.sendRecv.has_value();
+    return config_.perChannelSize > 0;
   }
-  IbSendRecvState sendRecvStateForPeer(int peerIndex) const;
-  // Allocate + register the per-peer staging/signal/state bulks and slice them.
+  IbChannelLayout channelLayoutForPeer(int peerIndex) const;
+  // Allocate + register the per-peer staging/signal bulks and slice them.
   // counterStorage selects the NIC_DONE counter: Device (transport-allocated,
   // registered) or HostPinned (transport-allocated host-mapped, never
   // registered).
@@ -571,12 +554,10 @@ class MultiPeerIbTransportBase {
   // its views. Safe on an unmaterialized peer.
   void cleanupSendRecvBufferForPeer(int peerIndex) noexcept;
 
-  const MultipeerIbTransportConfig::SendRecvConfig& sendRecvConfig() const;
   void validateSendRecvConfig() const;
   std::size_t sendRecvStagingBytesPerPeer() const;
   std::size_t sendRecvSignalBytesPerPeer() const;
   std::size_t sendRecvCounterBytesPerPeer() const;
-  std::size_t sendRecvStateBytesPerPeer() const;
 
   void allocateSignalCounterResources(
       IbCounterStorage counterStorage,
@@ -668,9 +649,6 @@ class MultiPeerIbTransportBase {
   // Host-counter configs put only the signal region here. See
   // allocateSendRecvBuffersEager.
   std::unique_ptr<meta::comms::DeviceBuffer> sendRecvControlBulk_;
-  // Device-local progress state (never RDMA-registered / shared): separate,
-  // natural size, no alignment needed.
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvStateBulk_;
   IbgdaLocalBuffer sendRecvRecvStagingBulkReg_;
   IbgdaLocalBuffer sendRecvSignalBulkReg_;
   IbgdaLocalBuffer sendRecvCounterBulkReg_;

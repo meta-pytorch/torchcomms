@@ -120,7 +120,6 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/DeviceAllToAllvPipes.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/Impl.cu
@@ -128,7 +127,6 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherBrucksFF.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/AllGatherP.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu

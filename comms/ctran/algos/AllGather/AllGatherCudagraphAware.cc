@@ -20,16 +20,13 @@
 
 #include <folly/ScopeGuard.h>
 #include <memory>
-#include <string_view>
-#include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/algos/AllGatherP/CommUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
@@ -40,173 +37,6 @@ using ctran::allgatherp::destroyPersistentRequest;
 using ctran::utils::cudagraph::registerGraphDestroyCallback;
 
 namespace {
-
-// FIXME: consolidate with eager path AllgatherP
-commResult_t exchangeIpcMemHdl(
-    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
-  auto* op = opGroup.front().get();
-  auto* pArgs = reinterpret_cast<ctran::allgatherp::PersistArgs*>(
-      op->allgatherp_init.pArgs);
-  CtranComm* comm = op->comm_;
-  auto* mapper = comm->ctran_->mapper.get();
-  const auto* const statex = comm->statex_.get();
-  const int myRank = statex->rank();
-  const int nLocalRanks = statex->nLocalRanks();
-
-  std::unordered_map<std::string_view, double> timers;
-
-  {
-    CtranMapperTimer timer;
-    FB_COMMCHECK(mapper->intraAllGatherCtrl(
-        pArgs->recvbuff,
-        pArgs->recvHdl,
-        pArgs->remoteRecvBuffs,
-        pArgs->remoteAccessKeys,
-        pArgs->remoteIpcRegHdls_));
-    timers["ipcExchange"] = timer.durationUs();
-  }
-
-  {
-    CtranMapperTimer timer;
-    FB_COMMCHECK(mapper->intraBarrier());
-    timers["intraBarrier"] = timer.durationUs();
-  }
-
-  CLOGF_SUBSYS(
-      INFO,
-      INIT,
-      "CTRAN-AGP: Rank {} graph init local exchange comm {} recvbuff {} recvHdl {} nLocalRanks {} commHash {:x}: "
-      "initExchange breakdown [ipcExchange {} us, intraBarrier {} us]",
-      myRank,
-      (void*)comm,
-      pArgs->recvbuff,
-      pArgs->recvHdl,
-      nLocalRanks,
-      statex->commHash(),
-      timers["ipcExchange"],
-      timers["intraBarrier"]);
-  for (int i = 0; i < nLocalRanks; ++i) {
-    int peerRank = statex->localRankToRank(i);
-    CLOGF_SUBSYS(
-        INFO,
-        INIT,
-        "CTRAN-AGP     Peer {}: addr {} ipcImport {}",
-        i,
-        pArgs->remoteRecvBuffs[peerRank],
-        myRank == peerRank ? "(local)"
-                           : pArgs->remoteIpcRegHdls_.at(i).toString());
-  }
-
-  pArgs->initState = ctran::allgatherp::InitState::kInitialized;
-  return commSuccess;
-}
-
-// Acquire a graph-lifetime scoped local registration for recvbuff via the
-// regcache CCA-cached path. Requires the segment to already be allocator-cached
-// (CCA hook); otherwise acquireScopedRegister returns commInvalidUsage and this
-// fails cleanly.
-commResult_t setupScopedRegister(
-    CtranComm* comm,
-    void* const recvbuff,
-    const size_t recvBytes,
-    ctran::ScopedRegHdl& outRegHdl) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-  return regCache->acquireScopedRegister(
-      recvbuff,
-      recvBytes,
-      comm->statex_->cudaDev(),
-      comm->ctran_->mapper->getBackends(),
-      outRegHdl);
-}
-
-commResult_t setupPersistentRequest(
-    CtranComm* comm,
-    CtranPersistentRequest* const request,
-    cudaStream_t stream,
-    void* const recvbuff,
-    const size_t recvBytes,
-    const size_t maxRecvCount,
-    const commDataType_t datatype) {
-  auto* algo = reinterpret_cast<ctran::allgatherp::AlgoImpl*>(request->algo);
-  auto& pArgs = algo->pArgs;
-  pArgs.recvbuff = recvbuff;
-  pArgs.maxRecvCount = maxRecvCount;
-  pArgs.datatype = datatype;
-
-  // Acquire the local recv registration through the scoped regcache API. The
-  // recvbuff's segment must already be allocator-cached (CCA hook); otherwise
-  // acquireScopedRegister returns commInvalidUsage and fails cleanly. Scoped
-  // handles are owned by persistent request and released at graph destroy.
-  double scopedRegisterUs = 0;
-  {
-    ctran::ScopedRegHdl localRecvReg;
-    CtranMapperTimer timer;
-    FB_COMMCHECK(setupScopedRegister(comm, recvbuff, recvBytes, localRecvReg));
-    pArgs.recvHdl = localRecvReg.get();
-    pArgs.recvRegHdl_ =
-        std::make_unique<ctran::ScopedRegHdl>(std::move(localRecvReg));
-    scopedRegisterUs = timer.durationUs();
-  }
-
-  const int nRanks = comm->statex_->nRanks();
-  const int nLocalRanks = comm->statex_->nLocalRanks();
-  pArgs.remoteRecvBuffs.assign(nRanks, nullptr);
-  pArgs.remoteAccessKeys.assign(nRanks, CtranMapperRemoteAccessKey{});
-
-  const auto* const statex = comm->statex_.get();
-  const int myRank = statex->rank();
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::ALLGATHERP_INIT,
-      stream,
-      "CtranAllGatherPGraphInit",
-      comm->ctran_->getOpCount());
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  auto op = std::make_unique<OpElem>(
-      OpElem::opType::ALLGATHERP_INIT, stream, comm, config.opCount);
-  op->allgatherp_init.pArgs = &pArgs;
-  opGroup.push_back(std::move(op));
-
-  pArgs.initState = ctran::allgatherp::InitState::kSubmitted;
-  auto submitGuard = folly::makeGuard([&pArgs] {
-    pArgs.initState = ctran::allgatherp::InitState::kUninitialized;
-  });
-
-  double initExchangeUs = 0;
-  {
-    CtranMapperTimer timer;
-    FB_COMMCHECK(comm->ctran_->gpe->submitHost(
-        std::move(opGroup),
-        exchangeIpcMemHdl,
-        config,
-        /* cpuFlag */ nullptr));
-    submitGuard.dismiss();
-
-    while (pArgs.initState.load() !=
-           ctran::allgatherp::InitState::kInitialized) {
-      FB_COMMCHECK(comm->getAsyncResult());
-    }
-    initExchangeUs = timer.durationUs();
-  }
-
-  CLOGF_SUBSYS(
-      INFO,
-      INIT,
-      "CTRAN-AGP: Rank {} setupPersistentRequest comm {} recvbuff {} recvHdl {} nLocalRanks {} commHash {:x}: "
-      "scopedRegister {} us, initExchange {} us",
-      myRank,
-      (void*)comm,
-      recvbuff,
-      pArgs.recvHdl,
-      nLocalRanks,
-      statex->commHash(),
-      scopedRegisterUs,
-      initExchangeUs);
-
-  return commSuccess;
-}
 
 enum NCCL_ALLGATHER_ALGO selectCtgraphAlgo(
     size_t sendBytes,
@@ -269,21 +99,24 @@ commResult_t ctranAllGatherCudagraphAware(
       }
 
       CtranPersistentRequest* request = nullptr;
-      FB_COMMCHECK(createPersistentRequest(comm, stream, &request));
+      FB_COMMCHECK(createPersistentRequest(
+          comm,
+          stream,
+          recvbuff,
+          sendcount * nRanks,
+          datatype,
+          &request,
+          // Need wait for IPC exchange before capture CE copy
+          /*waitForInit=*/true));
       auto cleanupGuard = folly::makeGuard([request, comm]() {
+        // Unregister the cleanup token before deleting the request: the
+        // token's closure captures the raw request pointer, so leaving it in
+        // the comm registry would let a later drainPersistentCleanups() run it
+        // on freed memory (use-after-free).
         comm->unregisterPersistentCleanup(request->cleanup_);
         FB_COMMCHECKIGNORE(destroyPersistentRequest(request));
         delete request;
       });
-
-      FB_COMMCHECK(setupPersistentRequest(
-          comm,
-          request,
-          stream,
-          recvbuff,
-          recvBytes,
-          sendcount * nRanks,
-          datatype));
 
       // Hand teardown to the captured graph (SW-only) BEFORE capturing the
       // collective ops: if op capture fails, the graph tears down the request
@@ -327,9 +160,18 @@ commResult_t ctranAllGatherCudagraphAware(
     case NCCL_ALLGATHER_ALGO::ctgraph_rd: {
       // Scoped local registration of recvbuff, owned for the captured graph's
       // lifetime. Require segment already be allocator-cached (CCA hook).
+      // FIXME: ctgraph_ring|ctgraph_rd can be consolidated with
+      // ctgraph_{*}pipeline too.
       ctran::ScopedRegHdl localRecvReg;
-      FB_COMMCHECK(
-          setupScopedRegister(comm, recvbuff, recvBytes, localRecvReg));
+      auto regCache = ctran::RegCache::getInstance();
+      ctran::CHECK_VALID_REGCACHE(regCache);
+      FB_COMMCHECK(regCache->acquireScopedRegister(
+          recvbuff,
+          recvBytes,
+          comm->statex_->cudaDev(),
+          comm->ctran_->mapper->getBackends(),
+          localRecvReg));
+
       // Heap-own the scoped ref so a graph-destroy callback can release it.
       auto* heldReg = new ctran::ScopedRegHdl(std::move(localRecvReg));
       auto cleanupGuard = folly::makeGuard([heldReg]() { delete heldReg; });

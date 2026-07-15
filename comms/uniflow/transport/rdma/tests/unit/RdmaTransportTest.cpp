@@ -851,6 +851,7 @@ class RdmaTransportFactoryTest : public ::testing::Test {
           attr->active_mtu = IBV_MTU_4096;
           attr->link_layer = IBV_LINK_LAYER_ETHERNET;
           attr->state = IBV_PORT_ACTIVE;
+          attr->gid_tbl_len = 8;
           return Ok();
         });
     EXPECT_CALL(*mockApi_, queryGid(&fakeCtx0_, 1, 3, _))
@@ -975,6 +976,7 @@ TEST_F(RdmaTransportFactoryTest, GetTopologyReflectsConfiguredQps) {
         attr->active_mtu = IBV_MTU_4096;
         attr->link_layer = IBV_LINK_LAYER_ETHERNET;
         attr->state = IBV_PORT_ACTIVE;
+        attr->gid_tbl_len = 8;
         return Ok();
       });
   EXPECT_CALL(*mockApi_, queryGid(&fakeCtx0_, 1, 3, _))

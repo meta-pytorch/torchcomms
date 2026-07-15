@@ -40,9 +40,9 @@ struct PersistArgs {
   // thread can schedule copy engine copies
   std::atomic<InitState> initState{InitState::kUninitialized};
 
-  // Set once the ring's rail peer IB rkeys are populated in remoteRecvBuffs /
-  // remoteAccessKeys -- by the full-comm exchange (eager) or the gpeFn's
-  // first-replay neighbor exchange -- so later replays only re-sync.
+  // Set once the inter-node IB rkeys are populated in remoteRecvBuffs /
+  // remoteAccessKeys by the gpeFn's first-exec peer exchange -- both eager and
+  // graph defer the rkey exchange to first exec -- so later execs only re-sync.
   // GPE-thread-only, so not atomic.
   bool ibKeysExchanged{false};
 };

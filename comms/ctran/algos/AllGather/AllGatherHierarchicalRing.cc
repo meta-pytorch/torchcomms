@@ -103,7 +103,13 @@ size_t selectHierarchicalAgOverlapChunkBytes(size_t sendBytes) {
   return kHierarchicalAgOverlapChunk8MiB;
 }
 
-commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
+commResult_t validateHierarchicalRingParams(
+    CtranComm* comm,
+    int numBlocks,
+    int ibSize,
+    int ibRank,
+    int nvlSize,
+    int nvlRank) {
   if (!NCCL_CTRAN_IBGDA_SENDRECV_ENABLE) {
     CLOGF_SUBSYS(
         WARN,
@@ -154,57 +160,36 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
 
   const auto* statex = comm->statex_.get();
   const int nRanks = statex->nRanks();
-  const int nNodes = statex->nNodes();
-  const int nLocalRanks = statex->nLocalRanks();
-  if (nRanks <= 1 || nNodes <= 1) {
+  if (nRanks <= 1 || ibSize <= 1) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} requires multiple nodes, got nRanks={} nNodes={}",
+        "AllGather {} requires multiple IB peers, got nRanks={} ibSize={}",
         allGatherAlgoName(myAlgo),
         nRanks,
-        nNodes);
+        ibSize);
     return commInvalidArgument;
   }
-  if (nLocalRanks < 1 || nRanks != static_cast<int64_t>(nNodes) * nLocalRanks) {
+  if (nvlSize < 1 || nRanks != static_cast<int64_t>(ibSize) * nvlSize) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} requires rectangular rank geometry, got nRanks={} nNodes={} nLocalRanks={}",
+        "AllGather {} requires rectangular rank geometry, got nRanks={} ibSize={} nvlSize={}",
         allGatherAlgoName(myAlgo),
         nRanks,
-        nNodes,
-        nLocalRanks);
+        ibSize,
+        nvlSize);
     return commInvalidArgument;
   }
-  if (nLocalRanks > comms::prims::kDirectNvlMaxRanks) {
+  if (nvlSize > comms::prims::kDirectNvlMaxRanks) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} nLocalRanks={} exceeds direct NVLink peer capacity {}",
+        "AllGather {} nvlSize={} exceeds direct NVLink peer capacity {}",
         allGatherAlgoName(myAlgo),
-        nLocalRanks,
+        nvlSize,
         comms::prims::kDirectNvlMaxRanks);
     return commInvalidArgument;
-  }
-
-  for (int node = 0; node < nNodes; ++node) {
-    for (int localRank = 0; localRank < nLocalRanks; ++localRank) {
-      const int expectedRank = node * nLocalRanks + localRank;
-      const int rank = statex->localRankToRank(localRank, node);
-      if (rank != expectedRank) {
-        CLOGF_SUBSYS(
-            WARN,
-            COLL,
-            "AllGather {} requires contiguous node-major rank layout; localRankToRank({}, {})={} expected {}",
-            allGatherAlgoName(myAlgo),
-            localRank,
-            node,
-            rank,
-            expectedRank);
-        return commInvalidArgument;
-      }
-    }
   }
 
   if (!comm->multiPeerTransport_) {
@@ -217,21 +202,19 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
   }
 
   auto* mpt = comm->multiPeerTransport_.get();
-  const int myNode = statex->node();
-  const int localRank = statex->localRank();
-  auto rings = comms::prims::make_standard_rings(nNodes, myNode, 1);
+  auto rings = comms::prims::make_standard_rings(ibSize, ibRank, 1);
   if (!rings.has_value()) {
     CLOGF_SUBSYS(
         WARN,
         COLL,
-        "AllGather {} cannot construct IB ring for {} nodes",
+        "AllGather {} cannot construct IB ring for {} peers",
         allGatherAlgoName(myAlgo),
-        nNodes);
+        ibSize);
     return commInvalidArgument;
   }
   const auto& ibRing = (*rings)[0];
-  const int prevGlobal = ibRing.prev_rank * nLocalRanks + localRank;
-  const int nextGlobal = ibRing.next_rank * nLocalRanks + localRank;
+  const int prevGlobal = ibRing.prev_rank * nvlSize + nvlRank;
+  const int nextGlobal = ibRing.next_rank * nvlSize + nvlRank;
   if (!mpt->has_ibgda(prevGlobal) || !mpt->has_ibgda(nextGlobal)) {
     CLOGF_SUBSYS(
         WARN,
@@ -245,20 +228,41 @@ commResult_t validateHierarchicalRingParams(CtranComm* comm, int numBlocks) {
     return commInvalidArgument;
   }
 
-  for (int peerLocal = 0; peerLocal < nLocalRanks; ++peerLocal) {
-    if (peerLocal == localRank) {
-      continue;
+  if (nvlSize > 1) {
+    for (int n = 0; n < ibSize; ++n) {
+      for (int lr = 0; lr < nvlSize; ++lr) {
+        const int expectedRank = n * nvlSize + lr;
+        const int actualRank = statex->localRankToRank(lr, n);
+        if (actualRank != expectedRank) {
+          CLOGF_SUBSYS(
+              WARN,
+              COLL,
+              "AllGather {} requires contiguous node-major rank layout; localRankToRank({}, {})={} expected {}",
+              allGatherAlgoName(myAlgo),
+              lr,
+              n,
+              actualRank,
+              expectedRank);
+          return commInvalidArgument;
+        }
+      }
     }
-    const int peerGlobal = statex->localRankToRank(peerLocal);
-    if (!mpt->is_nvl_peer(peerGlobal)) {
-      CLOGF_SUBSYS(
-          WARN,
-          COLL,
-          "AllGather {} requires NVLink transport to local peer globalRank={} localRank={}",
-          allGatherAlgoName(myAlgo),
-          peerGlobal,
-          peerLocal);
-      return commInvalidArgument;
+
+    for (int peerLocal = 0; peerLocal < nvlSize; ++peerLocal) {
+      if (peerLocal == nvlRank) {
+        continue;
+      }
+      const int peerGlobal = statex->localRankToRank(peerLocal);
+      if (!mpt->is_nvl_peer(peerGlobal)) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather {} requires NVLink transport to local peer globalRank={} localRank={}",
+            allGatherAlgoName(myAlgo),
+            peerGlobal,
+            peerLocal);
+        return commInvalidArgument;
+      }
     }
   }
 
@@ -341,24 +345,40 @@ commResult_t ctranAllGatherHierarchicalRing(
   const bool inPlace =
       isAllGatherInPlace(sendbuff, recvbuff, sendBytes, rank, nRanks);
 
-  const bool useOverlap = NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nLocalRanks > 1;
+  auto* mpt = comm->multiPeerTransport_.get();
+  const bool nvlAvailable = mpt && !mpt->nvl_peer_ranks().empty();
+  const int ibSize = nvlAvailable ? nNodes : nRanks;
+  const int ibRank = nvlAvailable ? node : rank;
+  const int nvlSize = nvlAvailable ? nLocalRanks : 1;
+  const int nvlLocalRank = nvlAvailable ? localRank : 0;
+
+  const bool useOverlap = NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nvlSize > 1;
   const int numBlocks = static_cast<int>(NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS);
   const int nvlNumBlocks =
       NCCL_CTRAN_MAX_NBLOCKS > 0 ? static_cast<int>(NCCL_CTRAN_MAX_NBLOCKS) : 1;
-  FB_COMMCHECK(validateHierarchicalRingParams(comm, numBlocks));
+  FB_COMMCHECK(validateHierarchicalRingParams(
+      comm, numBlocks, ibSize, ibRank, nvlSize, nvlLocalRank));
 
-  auto* mpt = comm->multiPeerTransport_.get();
-  auto ibRings = comms::prims::make_standard_rings(nNodes, node, 1);
+  // validateHierarchicalRingParams guarantees a non-null MultiPeerTransport;
+  // re-check here so a future validator refactor cannot turn the unconditional
+  // dereferences below into a null-pointer dereference.
+  if (mpt == nullptr) {
+    return commInvalidArgument;
+  }
+
+  auto ibRings = comms::prims::make_standard_rings(ibSize, ibRank, 1);
   if (!ibRings.has_value()) {
     return commInvalidArgument;
   }
 
+  const auto& ibRing = (*ibRings)[0];
+
   comms::prims::HierarchicalAllgatherLaunchParams params{};
   params.num_ranks = nRanks;
-  params.ib_rank = node;
-  params.ib_size = nNodes;
-  params.nvl_rank = localRank;
-  params.nvl_size = nLocalRanks;
+  params.ib_rank = ibRank;
+  params.ib_size = ibSize;
+  params.nvl_rank = nvlLocalRank;
+  params.nvl_size = nvlSize;
   // Pipes allgather kernels operate on byte-addressed char buffers.
   params.sendcount = sendBytes;
   params.ib_signaling_data_size =
@@ -372,16 +392,15 @@ commResult_t ctranAllGatherHierarchicalRing(
   params.timeout_ms = NCCL_CTRAN_HIER_AG_TIMEOUT_MS;
   params.stream = stream;
 
-  const auto& ibRing = (*ibRings)[0];
-  const int prevGlobal = ibRing.prev_rank * nLocalRanks + localRank;
-  const int nextGlobal = ibRing.next_rank * nLocalRanks + localRank;
+  const int prevGlobal = ibRing.prev_rank * nvlSize + nvlLocalRank;
+  const int nextGlobal = ibRing.next_rank * nvlSize + nvlLocalRank;
   params.ib_ring.prev_rank = ibRing.prev_rank;
   params.ib_ring.next_rank = ibRing.next_rank;
   params.ib_ring.prev = mpt->get_p2p_ibgda_transport_device(prevGlobal);
   params.ib_ring.next = mpt->get_p2p_ibgda_transport_device(nextGlobal);
 
-  for (int peerLocal = 0; peerLocal < nLocalRanks; ++peerLocal) {
-    if (peerLocal == localRank) {
+  for (int peerLocal = 0; peerLocal < nvlSize; ++peerLocal) {
+    if (peerLocal == nvlLocalRank) {
       continue;
     }
     const int peerGlobal = statex->localRankToRank(peerLocal);
@@ -437,8 +456,8 @@ commResult_t ctranAllGatherHierarchicalRing(
     overlapParams.timeout_ms = params.timeout_ms;
     overlapParams.stream = params.stream;
     overlapParams.ib_ring = params.ib_ring;
-    for (int peer = 0; peer < nLocalRanks; ++peer) {
-      if (peer == localRank) {
+    for (int peer = 0; peer < nvlSize; ++peer) {
+      if (peer == nvlLocalRank) {
         continue;
       }
       new (&overlapParams.nvl_peers[peer])
@@ -447,7 +466,7 @@ commResult_t ctranAllGatherHierarchicalRing(
 
     const size_t totalChunks =
         (sendBytes + overlapParams.chunk_bytes - 1) / overlapParams.chunk_bytes;
-    const size_t readyCounters = static_cast<size_t>(nNodes) * totalChunks;
+    const size_t readyCounters = static_cast<size_t>(ibSize) * totalChunks;
     FB_COMMCHECK(
         ensureReadyCounterCapacity(comm, readyCounters, overlapParams.stream));
     overlapParams.ready_counters = comm->hierarchicalAgReadyCounters_;

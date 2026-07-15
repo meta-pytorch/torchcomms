@@ -198,5 +198,12 @@ PYBIND11_MODULE(_cpp, m) {
       .def(
           "set_low_latency_buffer_idx",
           &Buffer::set_low_latency_buffer_idx,
-          py::arg("idx"));
+          py::arg("idx"))
+      .def(
+          "setup_low_latency_ibgda",
+          &Buffer::setup_low_latency_ibgda,
+          py::arg("num_max_dispatch_tokens_per_rank"),
+          py::arg("hidden"),
+          py::arg("num_experts"),
+          py::arg("all_gather_callback"));
 }

@@ -230,18 +230,29 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
         return commInvalidArgument;
       }
-      config.ibConfig.sendRecv =
-          comms::prims::MultipeerIbTransportConfig::SendRecvConfig{
-              .maxGroups = config.ibConfig.maxGroups,
-              .pipelineDepth = directIbReduceScatter
-                  ? ctran::reducescatter::direct_ib::kPipelineDepth
-                  : static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH),
-          };
+      if (!directIbReduceScatter) {
+        if (config.ibConfig.dataBufferSize %
+                static_cast<std::size_t>(config.ibConfig.maxGroups) !=
+            0) {
+          CLOGF(
+              ERR,
+              "IBGDA data-buffer size {} must be divisible by maxGroups {}",
+              config.ibConfig.dataBufferSize,
+              config.ibConfig.maxGroups);
+          return commInvalidArgument;
+        }
+        config.ibConfig.perChannelSize = config.ibConfig.dataBufferSize /
+            static_cast<std::size_t>(config.ibConfig.maxGroups);
+        config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
+        config.ibConfig.pipelineDepth =
+            static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
+      }
       CLOGF(
           INFO,
-          "Prims IBGDA sendRecv configured: maxGroups={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
-          config.ibConfig.sendRecv->maxGroups,
-          config.ibConfig.sendRecv->pipelineDepth,
+          "Prims IBGDA sendRecv configured: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
+          config.ibConfig.perChannelSize,
+          config.ibConfig.max_num_channels,
+          config.ibConfig.pipelineDepth,
           config.ibConfig.dataBufferSize,
           directIbReduceScatter);
     }

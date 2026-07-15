@@ -21,8 +21,6 @@ using meta::comms::DeviceBuffer;
 
 namespace comms::prims::benchmark {
 
-using SendRecvConfig = MultipeerIbgdaTransportConfig::SendRecvConfig;
-
 class IbgdaForwardBenchmarkTest : public BenchmarkTestFixture {
  protected:
   void SetUp() override {
@@ -52,12 +50,9 @@ TEST_F(IbgdaForwardBenchmarkTest, Correctness) {
 
   MultipeerIbgdaTransportConfig transportConfig{
       .cudaDevice = localRank,
-      .dataBufferSize = kSlotSize,
-      .sendRecv =
-          SendRecvConfig{
-              .maxGroups = kNumBlocks,
-              .pipelineDepth = kPipelineDepth,
-          },
+      .perChannelSize = kSlotSize / kNumBlocks,
+      .max_num_channels = kNumBlocks,
+      .pipelineDepth = kPipelineDepth,
   };
 
   MultipeerIbgdaTransport transport(
@@ -141,12 +136,9 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
 
   MultipeerIbgdaTransportConfig transportConfig{
       .cudaDevice = localRank,
-      .dataBufferSize = kSlotSize,
-      .sendRecv =
-          SendRecvConfig{
-              .maxGroups = kNumBlocks,
-              .pipelineDepth = kPipelineDepth,
-          },
+      .perChannelSize = kSlotSize / kNumBlocks,
+      .max_num_channels = kNumBlocks,
+      .pipelineDepth = kPipelineDepth,
   };
 
   MultipeerIbgdaTransport transport(

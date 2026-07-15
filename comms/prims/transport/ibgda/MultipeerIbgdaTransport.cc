@@ -561,9 +561,8 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
   const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-  // Build the device-side send/recv state from the shared base (delegates to
-  // the inherited sendRecvPeerBuffers_).
-  P2pIbgdaTransportBuildParams params(sendRecvStateForPeer(peerIndex));
+  // Build the device-side send/recv layout from the shared base.
+  P2pIbgdaTransportBuildParams params(channelLayoutForPeer(peerIndex));
   params.maxChannels = config_.max_num_channels;
   params.qpDirectionCount = config_.fixedChannelDirectionCount();
   params.qpsPerConnection = config_.qpsPerConnection;
@@ -710,11 +709,12 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     allocateResources();
     registerMemory();
 
-    // Allocate send/recv staging buffers (if configured). Eager mode delegates
-    // to the shared base (Device counter: NIC loopback atomic); lazy mode only
-    // sizes the inherited per-peer view vector — the shared base
-    // allocateSendRecvBufferForPeer() fills it per peer at materialization.
-    if (config_.sendRecv.has_value()) {
+    // Allocate send/recv staging buffers when fixed channels are configured.
+    // Eager mode delegates to the shared base (Device counter: NIC loopback
+    // atomic); lazy mode only sizes the inherited per-peer view vector — the
+    // shared base allocateSendRecvBufferForPeer() fills it per peer at
+    // materialization.
+    if (sendRecvBuffersEnabled()) {
       if (!config_.ibLazyConnect) {
         allocateSendRecvBuffersEager(IbCounterStorage::Device);
       } else {

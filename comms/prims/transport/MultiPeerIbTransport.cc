@@ -244,23 +244,6 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
       config_(std::move(config)) {
-  if (config_.sendRecv.has_value() && config_.sendRecv->maxGroups == 0) {
-    config_.sendRecv->maxGroups = config_.maxGroups;
-  }
-  if (config_.perChannelSize == 0 && config_.sendRecv.has_value()) {
-    config_.max_num_channels = config_.sendRecv->maxGroups;
-    if (config_.max_num_channels <= 0) {
-      throw std::invalid_argument(
-          "sendRecv.maxGroups must be positive for fixed-channel IB");
-    }
-    config_.pipelineDepth = config_.sendRecv->pipelineDepth;
-    const auto channels = static_cast<std::size_t>(config_.max_num_channels);
-    if (config_.dataBufferSize % channels != 0) {
-      throw std::invalid_argument(
-          "IB fixed-channel dataBufferSize must be divisible by max_num_channels");
-    }
-    config_.perChannelSize = config_.dataBufferSize / channels;
-  }
   if (config_.perChannelSize > 0) {
     if (config_.max_num_channels <= 0) {
       throw std::invalid_argument(
@@ -275,9 +258,6 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
           "IB fixed-channel perChannelSize must be 16-byte aligned");
     }
     config_.dataBufferSize = config_.fixedChannelDataBufferSize();
-    config_.sendRecv = MultipeerIbTransportConfig::SendRecvConfig{
-        .maxGroups = config_.max_num_channels,
-        .pipelineDepth = config_.pipelineDepth};
     config_.maxGroups = config_.max_num_channels;
   }
   if (myRank_ < 0 || myRank_ >= nRanks_) {
@@ -352,70 +332,58 @@ MultiPeerIbTransportBase::~MultiPeerIbTransportBase() = default;
 
 // ---- shared send/recv staging-ring lifecycle (eager mode) ----
 
-const MultipeerIbTransportConfig::SendRecvConfig&
-MultiPeerIbTransportBase::sendRecvConfig() const {
-  if (!config_.sendRecv.has_value()) {
+void MultiPeerIbTransportBase::validateSendRecvConfig() const {
+  if (!sendRecvBuffersEnabled()) {
     throw std::runtime_error("MultiPeerIbTransport: send/recv not configured");
   }
-  return *config_.sendRecv;
-}
-
-void MultiPeerIbTransportBase::validateSendRecvConfig() const {
-  const auto& sr = sendRecvConfig();
-  if (sr.pipelineDepth < 1) {
+  if (config_.pipelineDepth < 1) {
     throw std::invalid_argument(
-        "MultiPeerIbTransport: sendRecv.pipelineDepth must be >= 1");
+        "MultiPeerIbTransport: pipelineDepth must be >= 1");
   }
-  if (sr.maxGroups < 1) {
+  if (config_.max_num_channels < 1) {
     throw std::invalid_argument(
-        "MultiPeerIbTransport: sendRecv.maxGroups must be >= 1");
+        "MultiPeerIbTransport: max_num_channels must be >= 1");
   }
   if (config_.dataBufferSize == 0) {
     throw std::invalid_argument(
-        "MultiPeerIbTransport: dataBufferSize must be > 0 when sendRecv is "
+        "MultiPeerIbTransport: dataBufferSize must be > 0 when send/recv is "
         "enabled");
   }
-  if ((config_.dataBufferSize / static_cast<std::size_t>(sr.maxGroups)) < 16) {
+  if ((config_.dataBufferSize /
+       static_cast<std::size_t>(config_.max_num_channels)) < 16) {
     throw std::invalid_argument(
         fmt::format(
-            "MultiPeerIbTransport: dataBufferSize / maxGroups must be >= 16, "
+            "MultiPeerIbTransport: dataBufferSize / max_num_channels must be >= 16, "
             "got {} / {} = {}",
             config_.dataBufferSize,
-            sr.maxGroups,
-            config_.dataBufferSize / sr.maxGroups));
+            config_.max_num_channels,
+            config_.dataBufferSize / config_.max_num_channels));
   }
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvStagingBytesPerPeer() const {
-  const auto& sr = sendRecvConfig();
-  return static_cast<std::size_t>(sr.pipelineDepth) * config_.dataBufferSize;
+  return static_cast<std::size_t>(config_.pipelineDepth) *
+      config_.dataBufferSize;
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
-  const auto& sr = sendRecvConfig();
-  return 2 * static_cast<std::size_t>(sr.maxGroups) * sizeof(uint64_t);
+  return 2 * static_cast<std::size_t>(config_.max_num_channels) *
+      sizeof(uint64_t);
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvCounterBytesPerPeer() const {
-  const auto& sr = sendRecvConfig();
-  return static_cast<std::size_t>(sr.maxGroups) * sizeof(uint64_t);
+  return static_cast<std::size_t>(config_.max_num_channels) * sizeof(uint64_t);
 }
 
-std::size_t MultiPeerIbTransportBase::sendRecvStateBytesPerPeer() const {
-  const auto& sr = sendRecvConfig();
-  return 2 * static_cast<std::size_t>(sr.maxGroups) *
-      sizeof(IbSendRecvState::ProgressSlot);
-}
-
-IbSendRecvState MultiPeerIbTransportBase::sendRecvStateForPeer(
+IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
     int peerIndex) const {
-  if (!config_.sendRecv.has_value() || sendRecvPeerBuffers_.empty() ||
+  if (!sendRecvBuffersEnabled() || sendRecvPeerBuffers_.empty() ||
       peerIndex < 0 ||
       peerIndex >= static_cast<int>(sendRecvPeerBuffers_.size())) {
     return {};
   }
   const auto& pb = sendRecvPeerBuffers_[peerIndex];
-  return IbSendRecvState{
+  return IbChannelLayout{
       .sendStagingBuf = pb.sendStaging,
       .recvStagingBuf = pb.remoteRecvStaging,
       .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
@@ -424,16 +392,15 @@ IbSendRecvState MultiPeerIbTransportBase::sendRecvStateForPeer(
       .remoteSignalBuf = pb.remoteSignal,
       .localCounterBuf = pb.counter,
       .localCounterCompletionBuf = pb.counterCompletion,
-      .state = pb.state.value_or(DeviceSpan<IbSendRecvState::ProgressSlot>()),
-      .maxGroups = config_.sendRecv->maxGroups,
-      .pipelineDepth = config_.sendRecv->pipelineDepth,
-      .dataBufferSize = config_.dataBufferSize,
+      .maxChannels = config_.max_num_channels,
+      .pipelineDepth = config_.pipelineDepth,
+      .perChannelSize = config_.perChannelSize,
   };
 }
 
 void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
     IbCounterStorage counterStorage) {
-  if (!config_.sendRecv.has_value()) {
+  if (!sendRecvBuffersEnabled()) {
     return;
   }
   validateSendRecvConfig();
@@ -447,10 +414,6 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   const std::size_t stagingPerPeer = sendRecvStagingBytesPerPeer();
   const std::size_t signalPerPeer = sendRecvSignalBytesPerPeer();
   const std::size_t counterPerPeer = sendRecvCounterBytesPerPeer();
-  const std::size_t statePerPeer = sendRecvStateBytesPerPeer();
-  const auto stateSlotsPerPeer =
-      static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
-          2 * config_.sendRecv->maxGroups);
 
   // Align every GPU bulk allocation to the CUDA VMM allocation granularity so
   // that any buffer which is later mlx5 Data-Direct (BAR1) registered has a 0
@@ -503,9 +466,7 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   // single granularity unit and share one aligned Data-Direct MR (offset 0),
   // instead of one aligned unit each. Region layout: [signal | (device
   // counter)], each 16B-aligned; the whole allocation rounded to the VMM
-  // granularity so the DD export offset is 0. The device-local progress state
-  // is never RDMA-registered or shared, so it needs no alignment and is
-  // allocated separately below at its natural size.
+  // granularity so the DD export offset is 0.
   const std::size_t signalTotal = signalPerPeer * numPeers;
   const bool deviceCounter = (counterStorage == IbCounterStorage::Device);
   const std::size_t counterTotal =
@@ -521,14 +482,6 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
       "MultiPeerIbTransport: zero send/recv control bulk");
   char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
-
-  // Device-local progress state: separate allocation, natural size,
-  // unregistered.
-  sendRecvStateBulk_ =
-      std::make_unique<meta::comms::DeviceBuffer>(statePerPeer * numPeers);
-  checkSlotGpu(
-      slotGpuMemset(sendRecvStateBulk_->get(), 0, statePerPeer * numPeers),
-      "MultiPeerIbTransport: zero send/recv state bulk");
 
   // Staging is bulk data: opt into Relaxed Ordering. Signal/counter stay strict
   // so a flag write can't be reordered ahead of the data on the shared route.
@@ -580,9 +533,6 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
     pb.counter = counterBulkBuf.subBuffer(i * counterPerPeer);
     pb.counterCompletion =
         counterCompletionBulkBuf.subBuffer(i * counterPerPeer);
-    auto* statePtr = reinterpret_cast<IbSendRecvState::ProgressSlot*>(
-        static_cast<char*>(sendRecvStateBulk_->get()) + i * statePerPeer);
-    pb.state.emplace(statePtr, stateSlotsPerPeer);
   }
 
   VLOG(1) << "MultiPeerIbTransport: rank " << myRank_
@@ -593,7 +543,7 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
 }
 
 void MultiPeerIbTransportBase::exchangeSendRecvBuffersEager() {
-  if (!config_.sendRecv.has_value() || sendRecvPeerBuffers_.empty()) {
+  if (!sendRecvBuffersEnabled() || sendRecvPeerBuffers_.empty()) {
     return;
   }
 
@@ -643,7 +593,6 @@ void MultiPeerIbTransportBase::cleanupSendRecvBuffers() noexcept {
   sendRecvSendStagingBulk_.reset();
   sendRecvRecvStagingBulk_.reset();
   sendRecvControlBulk_.reset();
-  sendRecvStateBulk_.reset();
   freeCounterSlotAllocation(sendRecvHostCounterAllocation_);
   sendRecvRecvStagingBulkReg_ = IbgdaLocalBuffer{};
   sendRecvSignalBulkReg_ = IbgdaLocalBuffer{};
@@ -666,7 +615,7 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
     int peerIndex,
     PeerBufferPayload& payload,
     IbCounterStorage counterStorage) {
-  if (!config_.sendRecv.has_value()) {
+  if (!sendRecvBuffersEnabled()) {
     return;
   }
   validateSendRecvConfig();
@@ -684,16 +633,12 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
   const std::size_t stagingPerPeer = sendRecvStagingBytesPerPeer();
   const std::size_t signalPerPeer = sendRecvSignalBytesPerPeer();
   const std::size_t counterPerPeer = sendRecvCounterBytesPerPeer();
-  const std::size_t statePerPeer = sendRecvStateBytesPerPeer();
-  const auto stateSlots =
-      static_cast<DeviceSpan<IbSendRecvState::ProgressSlot>::size_type>(
-          2 * config_.sendRecv->maxGroups);
   const bool deviceCounter = (counterStorage == IbCounterStorage::Device);
 
-  // One contiguous device buffer: sendStaging | recvStaging | signal | state,
+  // One contiguous device buffer: sendStaging | recvStaging | signal,
   // plus the counter when it is device-resident. A HostPinned counter is
   // allocated separately (host-mapped, never RDMA-registered).
-  std::size_t total = 2 * stagingPerPeer + signalPerPeer + statePerPeer;
+  std::size_t total = 2 * stagingPerPeer + signalPerPeer;
   if (deviceCounter) {
     total += counterPerPeer;
   }
@@ -714,9 +659,6 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
   void* signalPtr = p + off;
   pb.signal = IbgdaLocalBuffer(signalPtr, reg.lkey_per_device);
   off += signalPerPeer;
-  auto* statePtr = reinterpret_cast<IbSendRecvState::ProgressSlot*>(p + off);
-  off += statePerPeer;
-  pb.state.emplace(statePtr, stateSlots);
   if (deviceCounter) {
     pb.counter = IbgdaLocalBuffer(p + off, reg.lkey_per_device);
     pb.counterCompletion = pb.counter;
@@ -740,7 +682,7 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
 void MultiPeerIbTransportBase::applyRemoteSendRecvBuffer(
     int peerIndex,
     const PeerBufferPayload& remotePayload) {
-  if (!config_.sendRecv.has_value() || peerIndex < 0 ||
+  if (!sendRecvBuffersEnabled() || peerIndex < 0 ||
       peerIndex >= static_cast<int>(sendRecvPeerBuffers_.size())) {
     return;
   }
@@ -769,16 +711,15 @@ void MultiPeerIbTransportBase::cleanupSendRecvBufferForPeer(
   if (peerIndex < static_cast<int>(lazySendRecvHostCounters_.size())) {
     freeCounterSlotAllocation(lazySendRecvHostCounters_[peerIndex]);
   }
-  // Reset the per-peer views field-wise (IbSendRecvPeerBuffers is not
-  // copy-assignable due to its optional<DeviceSpan> state member).
+  // Reset the per-peer views field-wise.
   auto& pb = sendRecvPeerBuffers_[peerIndex];
   pb.sendStaging = IbgdaLocalBuffer{};
   pb.recvStaging = IbgdaLocalBuffer{};
   pb.signal = IbgdaLocalBuffer{};
   pb.counter = IbgdaLocalBuffer{};
+  pb.counterCompletion = IbgdaLocalBuffer{};
   pb.remoteRecvStaging = IbgdaRemoteBuffer{};
   pb.remoteSignal = IbgdaRemoteBuffer{};
-  pb.state.reset();
 }
 
 void MultiPeerIbTransportBase::openNics() {

@@ -10,6 +10,9 @@
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/KernelConfigs.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/KernelUtils.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/Launch.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::moe_ep::kernels {
 
@@ -78,6 +81,10 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
     int rank,
     int num_ranks,
     void** buffer_ptrs,
+    comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
+    const comms::prims::IbgdaLocalBuffer* local_x_buf,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_flag,
     int phases,
     bool zero_copy) {
   const int sm_id = static_cast<int>(blockIdx.x);
@@ -133,25 +140,92 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
       const auto* x_int4 = local_x + token_idx * hidden_bf16_int4;
       int src_idx = __ldg(local_src_info + token_idx);
 
-      // Write to peer's rdma_recv_x via NVLink IPC
-      auto* peer_base = reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]);
-      // Compute offset in peer's symmetric buffer
-      uintptr_t recv_x_offset = reinterpret_cast<uintptr_t>(rdma_recv_x) -
-          reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
-      auto* dst_ptr = reinterpret_cast<int4*>(
-          peer_base + recv_x_offset +
-          (global_expert_idx * num_max_dispatch_tokens_per_rank + src_idx) *
-              num_bytes_per_slot +
-          sizeof(int4));
+      // Hybrid path — same-node IPC vs cross-node IBGDA.
+      if (buffer_ptrs[dst_rank] != nullptr) {
+        // Same-node: NVLink IPC write into peer's symmetric buffer.
+        auto* peer_base = reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]);
+        uintptr_t recv_x_offset = reinterpret_cast<uintptr_t>(rdma_recv_x) -
+            reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
+        auto* dst_ptr = reinterpret_cast<int4*>(
+            peer_base + recv_x_offset +
+            (global_expert_idx * num_max_dispatch_tokens_per_rank + src_idx) *
+                num_bytes_per_slot +
+            sizeof(int4));
 
-      MOE_EP_UNROLLED_WARP_COPY(
-          kIntranodeUnrollFactor,
-          lane_id,
-          static_cast<int>(hidden_bf16_int4),
-          dst_ptr,
-          x_int4,
-          ld_nc_global,
-          st_na_global);
+        MOE_EP_UNROLLED_WARP_COPY(
+            kIntranodeUnrollFactor,
+            lane_id,
+            static_cast<int>(hidden_bf16_int4),
+            dst_ptr,
+            x_int4,
+            ld_nc_global,
+            st_na_global);
+      } else if (
+          device_transport != nullptr && local_x_buf != nullptr &&
+          peer_remote_recv_x != nullptr) {
+        // Cross-node IBGDA RDMA put. The user `x` tensor is NOT
+        // RDMA-registered, so we first stage this token's hidden data into
+        // the registered `combine_send_x` slot, then RDMA from there.
+        auto& peer_transport = device_transport->get(dst_rank);
+        // Stage x[token] -> rdma_send_x slot (data area, past the int4 header).
+        const std::size_t send_slot =
+            static_cast<std::size_t>(local_expert_idx) * num_ranks *
+                num_max_dispatch_tokens_per_rank +
+            static_cast<std::size_t>(token_idx);
+        auto* stage_ptr = reinterpret_cast<int4*>(
+            reinterpret_cast<uint8_t*>(rdma_send_x) +
+            send_slot * num_bytes_per_slot + sizeof(int4));
+        MOE_EP_UNROLLED_WARP_COPY(
+            kIntranodeUnrollFactor,
+            lane_id,
+            static_cast<int>(hidden_bf16_int4),
+            stage_ptr,
+            x_int4,
+            ld_nc_global,
+            st_na_global);
+        syncwarp();
+#ifdef __HIP_PLATFORM_AMD__
+        // Retire the non-coherent VMEM stores above before the RDMA reads them.
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        __builtin_amdgcn_s_waitcnt(0);
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+#endif
+        // Local source: the staged slot in the registered combine_send_x.
+        auto local_buf = local_x_buf->subBuffer(
+            send_slot * num_bytes_per_slot + sizeof(int4));
+        // Remote dest: peer's combine_recv_x slot for [global_expert_idx,
+        // src_idx], offset past the int4 slot header.
+        std::size_t remote_offset =
+            (static_cast<std::size_t>(global_expert_idx) *
+                 num_max_dispatch_tokens_per_rank +
+             static_cast<std::size_t>(src_idx)) *
+                num_bytes_per_slot +
+            sizeof(int4);
+        auto remote_slot =
+            peer_remote_recv_x[dst_rank].subBuffer(remote_offset);
+        auto warp_grp = make_warp_group();
+        // Key on this expert via block_id (the transport indexes QPs by
+        // block_id; see Dispatch.cu rationale): spreads QP-spinlock contention
+        // across the per-expert QP band. Data-before-flag ordering comes from
+        // the synchronous put drain + the __syncthreads below, not same-QP
+        // FIFO.
+        warp_grp.block_id = static_cast<uint32_t>(local_expert_idx);
+        peer_transport.put(
+            warp_grp,
+            local_buf,
+            remote_slot,
+            kHidden * sizeof(uint16_t),
+            IbgdaRemoteBuffer{}); // flag write below, same QP, ordered after
+      } else {
+        if (lane_id == 0) {
+          printf(
+              "moe_ep LL combine: cross-node peer with no IBGDA transport "
+              "(rank=%d, dst_rank=%d).\n",
+              rank,
+              dst_rank);
+          trap_kernel();
+        }
+      }
     }
 
     __syncthreads();
@@ -159,21 +233,70 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
       while (ld_volatile_global(atomic_clean_flag) == 0) {
       }
 
-      // Write completion flag to peer's rdma_recv_flag via NVLink
-      auto* peer_base = reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]);
-      uintptr_t flag_offset = reinterpret_cast<uintptr_t>(rdma_recv_flag) -
-          reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
-      auto* peer_flag = reinterpret_cast<int64_t*>(peer_base + flag_offset);
+      // Write completion flag to peer's rdma_recv_flag.
+      // Hybrid: NVLink IPC store for same-node, IBGDA store for cross-node.
+      if (buffer_ptrs[dst_rank] != nullptr) {
+        auto* peer_base = reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]);
+        uintptr_t flag_offset = reinterpret_cast<uintptr_t>(rdma_recv_flag) -
+            reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
+        auto* peer_flag = reinterpret_cast<int64_t*>(peer_base + flag_offset);
 #ifdef __HIP_PLATFORM_AMD__
-      __hip_atomic_store(
-          peer_flag + global_expert_idx,
-          static_cast<int64_t>(1),
-          __ATOMIC_RELEASE,
-          __HIP_MEMORY_SCOPE_SYSTEM);
+        __hip_atomic_store(
+            peer_flag + global_expert_idx,
+            static_cast<int64_t>(1),
+            __ATOMIC_RELEASE,
+            __HIP_MEMORY_SCOPE_SYSTEM);
 #else
-      *(peer_flag + global_expert_idx) = 1;
-      __threadfence_system();
+        *(peer_flag + global_expert_idx) = 1;
+        __threadfence_system();
 #endif
+      } else if (
+          device_transport != nullptr && peer_remote_recv_flag != nullptr &&
+          local_x_buf != nullptr) {
+        // Cross-node IBGDA. Use a regular RDMA Write (8B inline) of the
+        // flag value (1) instead of atomic-FA. The receiver only checks
+        // `flag != 0` — atomicity isn't required, and plain put is the
+        // most-validated cross-host RDMA path on AMD.
+        auto& peer_transport = device_transport->get(dst_rank);
+        std::size_t flag_offset =
+            static_cast<std::size_t>(global_expert_idx) * sizeof(int64_t);
+        auto remote_slot =
+            peer_remote_recv_flag[dst_rank].subBuffer(flag_offset);
+        int64_t local_flag = 1;
+        comms::prims::IbgdaLocalBuffer local_buf = local_x_buf->subBuffer(0);
+        // INVARIANT: local_flag is a device stack variable OUTSIDE the
+        // RDMA-registered combine_send_x region; we borrow local_x_buf's lkey
+        // only to fill a valid WQE lkey field. This is safe ONLY because a
+        // single 8B RDMA write is inline-encoded into the WQE at prepare time,
+        // so the backend reads *local_buf.ptr synchronously on this thread and
+        // never hands the (unregistered) stack address to the NIC for DMA. A
+        // larger payload would spill out of the inline segment and DMA the
+        // unregistered address (LOCAL_PROT / garbage), so pin the size here.
+        static_assert(
+            sizeof(local_flag) == sizeof(int64_t),
+            "cross-node combine flag must stay a single 8B inline-encoded word; "
+            "a larger payload would DMA the unregistered local_flag stack "
+            "address through the borrowed lkey");
+        local_buf.ptr = &local_flag;
+        auto thr = make_thread_solo();
+        // Key on this expert via block_id (same expert QP band as its data
+        // puts). The flag is ordered after the data by the synchronous put
+        // drain + __syncthreads above, not by same-QP FIFO. 8B INLINE-encoded.
+        thr.block_id = static_cast<uint32_t>(local_expert_idx);
+        peer_transport.put(
+            thr,
+            local_buf,
+            remote_slot,
+            sizeof(int64_t),
+            comms::prims::IbgdaRemoteBuffer{});
+      } else {
+        printf(
+            "moe_ep LL combine flag: cross-node peer with no IBGDA "
+            "transport (rank=%d, dst_rank=%d).\n",
+            rank,
+            dst_rank);
+        trap_kernel();
+      }
       atomicAdd(atomic_clean_flag, -1);
     }
   }
@@ -276,6 +399,10 @@ void low_latency_combine(
     int num_ranks,
     void* workspace,
     void** buffer_ptrs,
+    comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
+    const comms::prims::IbgdaLocalBuffer* local_x_buf,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_flag,
     int phase,
     bool zero_copy,
     cudaStream_t stream) {
@@ -320,6 +447,10 @@ void low_latency_combine(
       rank,                                                                   \
       num_ranks,                                                              \
       buffer_ptrs,                                                            \
+      device_transport,                                                       \
+      local_x_buf,                                                            \
+      peer_remote_recv_x,                                                     \
+      peer_remote_recv_flag,                                                  \
       phase,                                                                  \
       zero_copy)
 

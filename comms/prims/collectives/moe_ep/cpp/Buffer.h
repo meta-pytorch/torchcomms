@@ -188,10 +188,31 @@ class Buffer {
    *  slots used to overlap dispatch / combine. */
   void set_low_latency_buffer_idx(int idx);
 
+  /**
+   * `setup_low_latency_ibgda` — construct LowLatencyRuntime (if not already
+   * built) and wire MultipeerIbgdaTransport for cross-node IBGDA RDMA. The
+   * dispatch shape parameters are needed up front so the runtime's symmetric
+   * buffer layout, atomic counters, and per-expert workspace match the actual
+   * dispatch calls that follow.
+   *
+   * Required for multi-node configs (must be called before the first
+   * low_latency_dispatch). Single-node configs may skip this call entirely
+   * — the kernel takes the IPC fast path for all peers.
+   *
+   * Caller responsibility: `allGatherCallback` must do the equivalent of
+   * `dist.all_gather_object(local_bytes)` and return concatenated bytes
+   * `[rank_0_bytes, rank_1_bytes, ..., rank_n_bytes]`.
+   */
+  void setup_low_latency_ibgda(
+      int numMaxDispatchTokensPerRank,
+      int hidden,
+      int numExperts,
+      pybind11::object allGatherCallback);
+
   // ---- Internode ----
   // These are bound through the same pybind module (so the Python `Buffer`
-  // class's full method surface stays addressable), but throw at runtime
-  // until the matching kernels land. Concrete signatures + bindings live
+  // class's full method surface stays addressable); unsupported
+  // configurations throw at runtime. Concrete signatures + bindings live
   // in PyBindings.cpp.
   [[noreturn]] void notImplemented(const char* methodName) const;
 

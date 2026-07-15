@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/algos/AllGatherP/CommUtils.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -9,6 +10,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
+#include "comms/ctran/regcache/RegCache.h"
 
 #include <folly/ScopeGuard.h>
 
@@ -38,35 +40,20 @@ commResult_t exchangeMemHdl(
   struct OpElem* op = opGroup.front().get();
   auto* pArgs = reinterpret_cast<PersistArgs*>(op->allgatherp_init.pArgs);
   CtranComm* comm = opGroup.front()->comm_;
-  auto mapper = comm->ctran_->mapper.get();
 
   const auto statex = comm->statex_.get();
   const auto nRanks = statex->nRanks();
 
   CtranAlgoLogger logger(algoInitName, op->opCount, comm);
 
-  pArgs->remoteAccessKeys.resize(nRanks, CtranMapperRemoteAccessKey());
-  pArgs->remoteRecvBuffs.resize(nRanks, nullptr);
-  // Imports are self-managed by AGP (adopted into pArgs.remoteIpcRegHdls_ and
-  // released at eager/graph destroy), so recordExport=false keeps the
-  // export-notify path from double-releasing them. allGatherCtrl sizes
-  // remoteIpcRegHdls_ to nLocalRanks and fills the imported NVL peers' handles
-  // (indexed by local rank; self/non-imported slots stay empty).
-  FB_COMMCHECK(mapper->allGatherCtrl(
-      pArgs->recvbuff,
-      pArgs->recvHdl,
-      pArgs->remoteRecvBuffs,
-      pArgs->remoteAccessKeys,
-      CtranMapperBackend::UNSET,
-      /*recordExport=*/false,
-      &pArgs->remoteIpcRegHdls_));
-
-  // Ensure all ranks have finished remote importing before return
-  FB_COMMCHECK(mapper->barrier());
-
-  // The full-comm exchange above already imported the rail peer rkeys, so the
-  // gpeFn's per-replay handshake skips the rkey exchange and only re-syncs.
-  pArgs->ibKeysExchanged = true;
+  // Async (GPE-thread) invocation of the shared IPC-handle exchange. Imports
+  // only the intra-node NVL IPC handles (self-managed by AGP, released at
+  // eager/graph destroy) and marks initState kInitialized. remoteRecvBuffs /
+  // remoteAccessKeys are indexed by global rank; only local NVL-peer slots are
+  // filled (self and inter-node IB peers stay UNSET). Leaves ibKeysExchanged
+  // false so the first exec performs the real inter-node IB rkey exchange
+  // (matching the graph path); subsequent execs only re-sync.
+  FB_COMMCHECK(exchangeIpcReg(comm, *pArgs));
 
   if (NCCL_CTRAN_ENABLE_TRACE_LOG) {
     for (int i = 0; i < nRanks; i++) {
@@ -79,15 +66,8 @@ commResult_t exchangeMemHdl(
     }
   }
 
-  // Mark the remote registration as initialized, so that consequent execution
-  // can schedule CE based NVL copy
-  pArgs->initState = InitState::kInitialized;
   return commSuccess;
 }
-
-extern __global__ void ncclKernelAllGatherPInit(
-    int* flag,
-    CtranAlgoDeviceState* devState);
 
 commResult_t AlgoImpl::initResources() {
   std::vector<GpeKernelSync*> gpeKernelSyncs;
@@ -104,21 +84,119 @@ commResult_t AlgoImpl::initResources() {
 commResult_t createPersistentRequest(
     CtranComm* comm,
     cudaStream_t stream,
-    CtranPersistentRequest** out) {
+    void* recvbuff,
+    size_t maxRecvCount,
+    commDataType_t datatype,
+    CtranPersistentRequest** out,
+    bool waitForInit) {
   if (out == nullptr) {
     return commInvalidArgument;
   }
   *out = nullptr;
 
+  // Acquire the local recv registration through the scoped regcache API FIRST,
+  // before allocating any pooled resource (initResources allocates a
+  // GpeKernelSync into pArgs.pipeSync). The recvbuff's segment must already be
+  // allocator-cached (CCA hook); otherwise acquireScopedRegister returns
+  // commInvalidUsage and we return immediately with nothing allocated (no
+  // leak). Doing the scoped registration before initResources avoids leaking a
+  // pooled GpeKernelSync when it fails, since the local AlgoImpl below would
+  // only run its (empty) destructor, not AlgoImpl::destroy().
+  const size_t recvBytes = maxRecvCount * commTypeSize(datatype);
+  ctran::ScopedRegHdl localRecvReg;
+  CtranMapperTimer scopedRegisterTimer;
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
+  FB_COMMCHECK(regCache->acquireScopedRegister(
+      recvbuff,
+      recvBytes,
+      comm->statex_->cudaDev(),
+      comm->ctran_->mapper->getBackends(),
+      localRecvReg));
+  const double scopedRegisterUs = scopedRegisterTimer.durationUs();
+
   auto algo = std::make_unique<AlgoImpl>(comm, stream);
   FB_COMMCHECK(algo->initResources());
+
+  // The unique_ptr locals auto-clean the AlgoImpl/request on any failure below.
+  // The scoped handle is owned by the persistent request and released at
+  // destroy.
+  algo->pArgs.recvHdl = localRecvReg.get();
+  algo->pArgs.recvRegHdl_ =
+      std::make_unique<ctran::ScopedRegHdl>(std::move(localRecvReg));
+  algo->pArgs.recvbuff = recvbuff;
+  algo->pArgs.maxRecvCount = maxRecvCount;
+  algo->pArgs.datatype = datatype;
 
   auto request = std::make_unique<CtranPersistentRequest>(
       CtranPersistentRequest::Type::ALLGATHER_P, comm, stream);
   request->algo = algo.release();
+  // Once request->algo is set, the AlgoImpl (and its pooled GpeKernelSync) is
+  // only released via destroyPersistentRequest, not the unique_ptr destructor.
+  // Guard the pooled resource against early returns below and dismiss right
+  // before releasing ownership to *out.
+  auto reqGuard = folly::makeGuard([&request] {
+    FB_COMMCHECKIGNORE(destroyPersistentRequest(request.get()));
+  });
+
+  auto* algoPtr = reinterpret_cast<AlgoImpl*>(request->algo);
+
+  double ipcExchangeUs = 0.0;
+  {
+    CtranMapperTimer ipcExchangeTimer;
+
+    // Dummy placeholder for existing submitHost API, no actual kernel launch
+    // FIXME: submitHost() should not require it
+    KernelConfig config(
+        KernelConfig::KernelType::ALLGATHERP_INIT,
+        stream,
+        "CtranAllGatherPInit",
+        comm->ctran_->getOpCount());
+
+    std::vector<std::unique_ptr<OpElem>> opGroup;
+    auto op = std::make_unique<OpElem>(
+        OpElem::opType::ALLGATHERP_INIT, stream, comm, config.opCount);
+    op->allgatherp_init.pArgs = &algoPtr->pArgs;
+    opGroup.push_back(std::move(op));
+
+    // Publish kSubmitted BEFORE handing work to the GPE thread. exchangeMemHdl
+    // sets kInitialized on the GPE thread; setting kSubmitted after submit
+    // could clobber that back to kSubmitted and deadlock waitInit()/destroy().
+    // If submit fails, reset to kUninitialized so a later destroy() does not
+    // wait on an init that never ran.
+    algoPtr->pArgs.initState = InitState::kSubmitted;
+    auto submitGuard = folly::makeGuard(
+        [algoPtr] { algoPtr->pArgs.initState = InitState::kUninitialized; });
+    FB_COMMCHECK(comm->ctran_->gpe->submitHost(
+        std::move(opGroup), exchangeMemHdl, config, /* cpuFlag */ nullptr));
+    submitGuard.dismiss();
+
+    // Eager init returns async; graph capture waits synchronously so the
+    // captured collective ops see fully-populated pArgs.
+    if (waitForInit) {
+      FB_COMMCHECK(algoPtr->waitInit());
+    }
+    ipcExchangeUs = ipcExchangeTimer.durationUs();
+  }
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-AGP: Rank {} createPersistentRequest ({}): comm {} recvbuff {} recvHdl {} nLocalRanks {} commHash {:x}: scopedRegister {} us, ipcExchange {} us",
+      comm->statex_->rank(),
+      waitForInit ? "graph" : "eager",
+      (void*)comm,
+      algoPtr->pArgs.recvbuff,
+      algoPtr->pArgs.recvHdl,
+      comm->statex_->nLocalRanks(),
+      comm->statex_->commHash(),
+      scopedRegisterUs,
+      ipcExchangeUs);
+
+  reqGuard.dismiss();
   *out = request.release();
 
-  // Route teardown through the §9 one-shot cleanup token: it releases the
+  // Route teardown through the one-shot cleanup token: it releases the
   // pooled pipeSync + scoped registration (via destroyPersistentRequest),
   // running at most once regardless of which path (eager free, graph-destroy
   // callback, comm drain before terminate()) fires first. It does NOT delete
@@ -151,58 +229,16 @@ commResult_t destroyPersistentRequest(CtranPersistentRequest* const request) {
   return res;
 }
 
-commResult_t AlgoImpl::initialize() {
-  auto opCount = comm_->ctran_->getOpCount();
-  CTRAN_COLL_INFO(
-      algoInitName,
-      nullptr,
-      pArgs.recvbuff,
-      pArgs.maxRecvCount,
-      pArgs.datatype,
-      -1,
-      comm_,
-      stream_);
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::ALLGATHERP_INIT,
-      stream_,
-      algoInitName,
-      opCount);
-  config.numBlocks = 1;
-  config.numThreads = 1;
-  config.args.devState_d = comm_->ctran_->algo->getDevState();
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  auto op = std::make_unique<OpElem>(
-      OpElem::opType::ALLGATHERP_INIT, stream_, comm_, opCount);
-  op->allgatherp_init.pArgs = &pArgs;
-  opGroup.push_back(std::move(op));
-
-  // Publish kSubmitted BEFORE handing work to the GPE thread. exchangeMemHdl
-  // sets kInitialized on the GPE thread; setting kSubmitted after submit could
-  // clobber that back to kSubmitted and deadlock waitInit()/destroy(). If
-  // submit fails, reset to kUninitialized so a later destroy() does not wait on
-  // an init that never ran.
-  pArgs.initState = InitState::kSubmitted;
-  auto submitGuard =
-      folly::makeGuard([this] { pArgs.initState = InitState::kUninitialized; });
-  FB_COMMCHECK(comm_->ctran_->gpe->submit(
-      std::move(opGroup),
-      exchangeMemHdl,
-      config,
-      reinterpret_cast<void*>(ncclKernelAllGatherPInit)));
-  submitGuard.dismiss();
-
-  return commSuccess;
-};
-
 AlgoImpl::~AlgoImpl() = default;
 
 commResult_t AlgoImpl::destroy() {
   // Async init populates pArgs on the GPE thread; wait for it only while that
-  // async init is still in flight (kSubmitted).
+  // async init is still in flight (kSubmitted). Capture the result rather than
+  // early-returning, so the cleanup below always runs -- otherwise a failed
+  // async init would leak the pooled GpeKernelSync slot (never reset()).
+  auto res = commSuccess;
   if (pArgs.initState.load() == InitState::kSubmitted) {
-    FB_COMMCHECK(waitInit());
+    res = waitInit();
   }
   if (resource_.pipeSync != nullptr) {
     resource_.pipeSync->reset();
@@ -214,7 +250,7 @@ commResult_t AlgoImpl::destroy() {
   // would do actual release.
   pArgs.remoteIpcRegHdls_.clear();
   pArgs.recvRegHdl_.reset();
-  return commSuccess;
+  return res;
 }
 } // namespace ctran::allgatherp
 
@@ -246,41 +282,25 @@ commResult_t allGatherPInit(
     CtranComm* comm,
     cudaStream_t stream,
     CtranPersistentRequest*& request) {
-  auto mapper = comm->ctran_->mapper.get();
-  const auto maxRecvSize = maxRecvCount * commTypeSize(datatype);
-  void* recvHdl;
-  bool localRegRecv;
-
-  FB_COMMCHECK(
-      mapper->searchRegHandle(recvbuff, maxRecvSize, &recvHdl, &localRegRecv));
-  if (localRegRecv) {
-    FB_COMMCHECK(mapper->deregDynamic(recvHdl));
-    CLOGF(
-        ERR,
-        "recvbuff is not registered. Pointer: {} length: {}",
-        (void*)recvbuff,
-        maxRecvSize);
-    return commInternalError;
-  }
-
-  FB_COMMCHECK(createPersistentRequest(comm, stream, &request));
+  // createPersistentRequest owns the scoped local recv registration, the
+  // read-only pArgs fields (shared with the graph path), and the async IPC
+  // handle exchange submitted on the GPE thread; it fails cleanly with
+  // commInvalidUsage if recvbuff is not allocator-cached. waitForInit=false:
+  // eager init returns without waiting; the first exec waits via waitInit().
+  FB_COMMCHECK(createPersistentRequest(
+      comm,
+      stream,
+      recvbuff,
+      maxRecvCount,
+      datatype,
+      &request,
+      /*waitForInit=*/false));
   auto requestGuard = folly::makeGuard([&request, comm] {
     comm->unregisterPersistentCleanup(request->cleanup_);
     FB_COMMCHECKIGNORE(destroyPersistentRequest(request));
     delete request;
     request = nullptr;
   });
-
-  auto* algo = reinterpret_cast<AlgoImpl*>(request->algo);
-  // Set up persistent arguments
-  algo->pArgs.recvHdl = recvHdl;
-  algo->pArgs.recvbuff = recvbuff;
-  algo->pArgs.maxRecvCount = maxRecvCount;
-  algo->pArgs.datatype = datatype;
-
-  // Initialize algo internal resource and schedule handle exchange on GPE
-  // thread
-  FB_COMMCHECK(algo->initialize());
 
   requestGuard.dismiss();
   return commSuccess;

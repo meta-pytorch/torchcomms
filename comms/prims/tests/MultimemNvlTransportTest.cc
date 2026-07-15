@@ -14,10 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/memory/MultimemHandler.h"
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/nvl/MultimemNvlTransport.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
 #include "comms/testinfra/DistTestBase.h"
@@ -146,7 +149,60 @@ TEST_F(
   EXPECT_FALSE(MultimemNvlTransport::isEligible(2, localRank));
   EXPECT_EQ(
       MultimemNvlTransport::isEligible(3, localRank),
-      MultimemHandler::isMultimemSupported(localRank));
+      GpuMemHandler::isMultimemSupported(localRank));
+}
+
+TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {
+  // No multimem-eligibility skip here: with enableMultimem=false this test
+  // exercises only the disabled-path API (hasMultimemNvlTransport() == false,
+  // getMultimemNvlTransportDevice() throws) and never touches the multimem
+  // setup, so it must run on non-NVLS hosts too (skipping would drop coverage).
+  auto bootstrap = makeBootstrap("multimem_nvl_transport_multi_peer_lazy_test");
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      // Disable the tile P2P channels (a nonzero maxNumChannels requires
+      // pipelineDepth >= 1); this test checks only the disabled-path API.
+      .maxNumChannels = 0,
+      .enableMultimem = false,
+  };
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+  EXPECT_NO_THROW(transport.exchange());
+  EXPECT_THROW(
+      static_cast<void>(transport.getMultimemNvlTransportDevice()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerLazilyInitializesMultimemTransport) {
+  auto bootstrap = makeBootstrap("multimem_nvl_transport_multi_peer_test");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kBytesPerRank = 4096;
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      // This test exercises only the multimem path; disable the tile P2P
+      // channels (a nonzero maxNumChannels requires pipelineDepth >= 1).
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+      .multimem =
+          MultimemNvlTransportConfig{
+              .dataBufferSize =
+                  kBytesPerRank * static_cast<std::size_t>(numRanks),
+              .userSignalCount = 1,
+              .internalSignalCount = 1,
+          },
+  };
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  EXPECT_TRUE(transport.hasMultimemNvlTransport());
+  ASSERT_NO_THROW(transport.exchange());
+  EXPECT_NO_THROW(transport.getMultimemNvlTransportDevice());
 }
 
 // getDeviceTransport() must refuse to vend a handle before exchange() has

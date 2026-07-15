@@ -12,12 +12,15 @@
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/KernelConfigs.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/KernelUtils.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/shared/kernels/Launch.cuh"
+#include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
+#include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::moe_ep::kernels {
 
 namespace {
 
-// Phase flags for the send / recv phases.
+// Phase flags selecting the send and/or receive stage of the kernel.
 constexpr int kLLSendPhase = 1;
 constexpr int kLLRecvPhase = 2;
 
@@ -78,6 +81,10 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
     int rank,
     int num_ranks,
     void** buffer_ptrs,
+    comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
+    const comms::prims::IbgdaLocalBuffer* local_rdma_x_buf,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_count,
     int phases) {
   const int sm_id = static_cast<int>(blockIdx.x);
   const int thread_id = static_cast<int>(threadIdx.x);
@@ -148,29 +155,92 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
         const auto* src_int4_ptr =
             reinterpret_cast<const int4*>(rdma_x_src_idx);
 
-        // Destination: peer's rdma_recv_x buffer via IPC.
-        // Compute the offset of rdma_recv_x within the symmetric buffer,
-        // then apply the same offset to the peer's buffer base.
-        uintptr_t recv_x_off = reinterpret_cast<uintptr_t>(rdma_recv_x) -
-            reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
-        auto* dst_ptr = reinterpret_cast<int4*>(
-            reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]) + recv_x_off +
-            dst_expert_local_idx * num_ranks *
-                num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
-            rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
-            slot_idx * num_bytes_per_msg);
+        // Hybrid path.
+        // Same-node peers (P2P-capable): NVLink IPC fast path via
+        // UNROLLED_WARP_COPY into the peer's symmetric buffer.
+        // Cross-node peers: RDMA via MultipeerIbgdaTransport.
+        if (buffer_ptrs[dst_rank] != nullptr) {
+          // Destination: peer's rdma_recv_x buffer via IPC.
+          // Compute the offset of rdma_recv_x within the symmetric buffer,
+          // then apply the same offset to the peer's buffer base.
+          uintptr_t recv_x_off = reinterpret_cast<uintptr_t>(rdma_recv_x) -
+              reinterpret_cast<uintptr_t>(buffer_ptrs[rank]);
+          auto* dst_ptr = reinterpret_cast<int4*>(
+              reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]) + recv_x_off +
+              dst_expert_local_idx * num_ranks *
+                  num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
+              rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
+              slot_idx * num_bytes_per_msg);
 
-        // NVLink copy (same as intranode UNROLLED_WARP_COPY)
-        MOE_EP_UNROLLED_WARP_COPY(
-            kIntranodeUnrollFactor,
-            lane_id,
-            static_cast<int>(num_int4_per_msg),
-            dst_ptr,
-            src_int4_ptr,
-            ld_nc_global,
-            st_na_global);
+          // NVLink copy (same as intranode UNROLLED_WARP_COPY)
+          MOE_EP_UNROLLED_WARP_COPY(
+              kIntranodeUnrollFactor,
+              lane_id,
+              static_cast<int>(num_int4_per_msg),
+              dst_ptr,
+              src_int4_ptr,
+              ld_nc_global,
+              st_na_global);
+        } else {
+          // Cross-node IBGDA RDMA path: warp-collective put of the token
+          // message to the peer's recv buffer.
+          if (device_transport != nullptr && local_rdma_x_buf != nullptr &&
+              peer_remote_recv_x != nullptr) {
+            auto& peer_transport = device_transport->get(dst_rank);
+            // Local source: the rdma_x staging slot for this token
+            auto local_buf = local_rdma_x_buf->subBuffer(
+                static_cast<std::size_t>(token_idx) * num_bytes_per_msg);
+            // Remote dest: peer's rdma_recv_x slot for [dst_expert_local_idx,
+            // src_rank=rank, slot_idx]
+            std::size_t remote_offset =
+                static_cast<std::size_t>(dst_expert_local_idx) * num_ranks *
+                    num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
+                static_cast<std::size_t>(rank) *
+                    num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
+                static_cast<std::size_t>(slot_idx) * num_bytes_per_msg;
+            auto remote_slot =
+                peer_remote_recv_x[dst_rank].subBuffer(remote_offset);
+            auto warp_grp = make_warp_group();
+            // Key each put on the destination expert via block_id (the
+            // transport indexes QPs by block_id, giving expert E its own band
+            // of qpsPerBlockPerNic QPs per NIC). This spreads QP-spinlock
+            // contention across the per-expert QPs — pinning everything to one
+            // QP funnels every warp in the grid onto a single GPU spinlock
+            // whose holder may be a non-resident wavefront -> deadlock under
+            // load. Data-before-count does NOT depend on same-QP FIFO: the
+            // synchronous BNXT put drains each token's CQE before its
+            // finish-counter bump, and the count put (below) only fires once
+            // the counter shows all of this expert's data has landed.
+            warp_grp.block_id = static_cast<uint32_t>(dst_expert_local_idx);
+            peer_transport.put(
+                warp_grp,
+                local_buf,
+                remote_slot,
+                num_bytes_per_msg,
+                IbgdaRemoteBuffer{}); // no signal; count put below, same QP
+          } else {
+            // Should be unreachable in well-formed runs (caller passes
+            // either valid IBGDA or all peers same-node). Trap to surface
+            // misconfiguration.
+            if (lane_id == 0) {
+              printf(
+                  "moe_ep LL dispatch: cross-node peer with no IBGDA "
+                  "transport (rank=%d, dst_rank=%d). Configure with "
+                  "MultipeerIbgdaTransport or use single-node mode.\n",
+                  rank,
+                  dst_rank);
+              trap_kernel();
+            }
+          }
+        }
 
-        // Signal completion
+        // Signal completion. The AMD path needs `s_waitcnt` to retire any
+        // VMEM stores still in-flight (the IPC `MOE_EP_UNROLLED_WARP_COPY`
+        // above is non-coherent and would otherwise still be pending when
+        // the next warp/SM reads the destination). The signal-fence pair
+        // around it forces the compiler not to reorder unrelated writes
+        // across the barrier. NVIDIA doesn't need any of this — its store
+        // ordering is already strict enough for this pattern.
         syncwarp();
 #ifdef __HIP_PLATFORM_AMD__
         __atomic_signal_fence(__ATOMIC_SEQ_CST);
@@ -235,23 +305,71 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
            FINISHED_SUM_TAG) {
     }
 
-    // Write token count to peer's rdma_recv_count via NVLink.
+    // Write token count to peer's rdma_recv_count.
     // Encode as a single int64: -(count+1) so 0 means "not yet sent".
-    auto* peer_recv_count = reinterpret_cast<int64_t*>(
-        reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]) +
-        reinterpret_cast<uintptr_t>(rdma_recv_count) -
-        reinterpret_cast<uintptr_t>(buffer_ptrs[rank]));
+    // Hybrid path: NVLink IPC store for same-node, IBGDA store for
+    // cross-node.
     int64_t encoded = -static_cast<int64_t>(num_tokens_sent) - 1;
+    if (buffer_ptrs[dst_rank] != nullptr) {
+      auto* peer_recv_count = reinterpret_cast<int64_t*>(
+          reinterpret_cast<uint8_t*>(buffer_ptrs[dst_rank]) +
+          reinterpret_cast<uintptr_t>(rdma_recv_count) -
+          reinterpret_cast<uintptr_t>(buffer_ptrs[rank]));
 #ifdef __HIP_PLATFORM_AMD__
-    __hip_atomic_store(
-        peer_recv_count + dst_expert_local_idx * num_ranks + rank,
-        encoded,
-        __ATOMIC_RELEASE,
-        __HIP_MEMORY_SCOPE_SYSTEM);
+      __hip_atomic_store(
+          peer_recv_count + dst_expert_local_idx * num_ranks + rank,
+          encoded,
+          __ATOMIC_RELEASE,
+          __HIP_MEMORY_SCOPE_SYSTEM);
 #else
-    *(peer_recv_count + dst_expert_local_idx * num_ranks + rank) = encoded;
-    __threadfence_system();
+      *(peer_recv_count + dst_expert_local_idx * num_ranks + rank) = encoded;
+      __threadfence_system();
 #endif
+    } else if (
+        device_transport != nullptr && peer_remote_recv_count != nullptr &&
+        local_rdma_x_buf != nullptr) {
+      // Cross-node IBGDA. Use a regular RDMA Write (8B inline) of the
+      // `encoded` value instead of atomic-FA. Each (src_rank, dst_expert)
+      // pair has a unique destination slot — atomicity is not needed.
+      // Plain put is the most-validated cross-host RDMA path on AMD; the
+      // atomic-FA path is reportedly flaky for AMD+GPU-direct on MI300X.
+      auto& peer_transport = device_transport->get(dst_rank);
+      std::size_t slot_offset =
+          (static_cast<std::size_t>(dst_expert_local_idx) * num_ranks +
+           static_cast<std::size_t>(rank)) *
+          sizeof(int64_t);
+      auto remote_slot =
+          peer_remote_recv_count[dst_rank].subBuffer(slot_offset);
+      // Stage `encoded` in a local int64. Address is GPU-readable (stack
+      // register-spill or local memory). For 8B writes the BNXT/MLX5
+      // backends use INLINE encoding — the data is copied into the WQE
+      // at prepare time and never DMA-fetched from this address, so the
+      // lkey we pass is irrelevant. We borrow `local_rdma_x_buf`'s lkeys
+      // to satisfy IbgdaLocalBuffer's structural requirement.
+      int64_t local_encoded = encoded;
+      comms::prims::IbgdaLocalBuffer local_buf = local_rdma_x_buf->subBuffer(0);
+      local_buf.ptr = &local_encoded;
+      auto thr = make_thread_solo();
+      // Key on this expert via block_id (same expert QP band as its data puts).
+      // The count is ordered after all of the expert's data by the finish
+      // counter above + the synchronous put drain, not by same-QP FIFO. The 8B
+      // value is INLINE-encoded by the BNXT/MLX5 backend (<=16B), so
+      // local_buf's lkey is irrelevant.
+      thr.block_id = static_cast<uint32_t>(dst_expert_local_idx);
+      peer_transport.put(
+          thr,
+          local_buf,
+          remote_slot,
+          sizeof(int64_t),
+          comms::prims::IbgdaRemoteBuffer{});
+    } else {
+      printf(
+          "moe_ep LL dispatch count signal: cross-node peer with no IBGDA "
+          "transport (rank=%d, dst_rank=%d).\n",
+          rank,
+          dst_rank);
+      trap_kernel();
+    }
 
     // Clean workspace
     atomic_counter_per_expert[responsible_expert_idx] = 0;
@@ -295,15 +413,19 @@ LL_DISPATCH_RECV:
     if (sub_warp_id == 0 && lane_id == 0) {
       long long start_time = wall_clock64_compat();
       int64_t recv_val = 0;
-      while ((recv_val = *reinterpret_cast<volatile int64_t*>(
-                  rdma_recv_count + local_expert_idx * num_ranks + src_rank)) ==
-             0) {
+      auto* slot_ptr = reinterpret_cast<volatile int64_t*>(
+          rdma_recv_count + local_expert_idx * num_ranks + src_rank);
+      while ((recv_val = *slot_ptr) == 0) {
         long long elapsed = wall_clock64_compat() - start_time;
         if (elapsed > NUM_TIMEOUT_CYCLES) {
           printf(
-              "moe_ep LL dispatch recv timeout rank=%d expert=%d\n",
+              "moe_ep LL dispatch recv timeout rank=%d expert=%d "
+              "slot_ptr=%p slot_val=%lld src_rank=%d\n",
               rank,
-              local_expert_idx);
+              local_expert_idx,
+              const_cast<int64_t*>(slot_ptr),
+              (long long)recv_val,
+              src_rank);
           trap_kernel();
         }
       }
@@ -314,7 +436,7 @@ LL_DISPATCH_RECV:
           atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
       shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
       shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
-      // Pack layout range: (begin_idx << 32) | count
+      // Pack layout range: (begin_idx << 32) | count.
       recv_range[src_rank] =
           (static_cast<int64_t>(recv_token_begin_idx) << 32) |
           static_cast<int64_t>(num_recv_tokens);
@@ -378,6 +500,10 @@ void low_latency_dispatch(
     bool round_scale,
     bool use_ue8m0,
     void** buffer_ptrs,
+    comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
+    const comms::prims::IbgdaLocalBuffer* local_rdma_x_buf,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_count,
     int phase,
     cudaStream_t stream) {
   if (use_fp8) {
@@ -422,6 +548,10 @@ void low_latency_dispatch(
       rank,                                                       \
       num_ranks,                                                  \
       buffer_ptrs,                                                \
+      device_transport,                                           \
+      local_rdma_x_buf,                                           \
+      peer_remote_recv_x,                                         \
+      peer_remote_recv_count,                                     \
       phase)
 
   SWITCH_HIDDEN(LL_DISPATCH_LAUNCH);

@@ -90,13 +90,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
           : output_bytes;
       auto transport = args.peers[peer];
       transport.template recv<ReduceOp>(
-          group,
-          output_bytes,
-          tile_bytes,
-          channels,
-          max_sig,
-          timeout,
-          local_input);
+          group, output_bytes, tile_bytes, max_sig, timeout, local_input);
     }
   } else {
     if (W <= 1) {
@@ -116,7 +110,6 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
           group,
           reinterpret_cast<const char*>(send_tile.data()),
           send_tile.bytes(),
-          channels,
           max_sig,
           timeout);
     }

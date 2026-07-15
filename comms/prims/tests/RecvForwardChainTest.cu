@@ -34,24 +34,23 @@ __global__ void recv_forward_chain_kernel(
   if (my_rank == 0) {
     // First rank: send to next
     P2pIbgdaTransportDevice& next = *transports[next_rank];
-    next.send(group, send_buf + my_off, my_bytes, num_blocks);
+    next.send(group, send_buf + my_off, my_bytes);
   } else if (my_rank == world_size - 1) {
     // Last rank: receive from prev
     P2pIbgdaTransportDevice& prev = *transports[prev_rank];
-    prev.recv(group, recv_buf + my_off, my_bytes, num_blocks);
+    prev.recv(group, recv_buf + my_off, my_bytes);
   } else {
     P2pIbgdaTransportDevice& prev = *transports[prev_rank];
     P2pIbgdaTransportDevice& next = *transports[next_rank];
     char* dst = use_dst ? (recv_buf + my_off) : nullptr;
-    prev.forward(group, dst, next, my_bytes, num_blocks);
+    prev.forward(group, dst, next, my_bytes);
     if (out != nullptr && group.is_leader()) {
-      const auto& prevState = prev.send_recv_state();
-      const auto& nextState = next.send_recv_state();
-      out[0] =
-          prevState.state[prevState.maxGroups + group.group_id].reuseCreditStep;
-      out[1] = prevState.state[prevState.maxGroups + group.group_id].nextStep;
-      out[2] = nextState.state[group.group_id].reuseCreditStep;
-      out[3] = nextState.state[group.group_id].nextStep;
+      const auto& prevChannel = prev.local_channel(group.group_id);
+      const auto& nextChannel = next.local_channel(group.group_id);
+      out[0] = prevChannel.recvProgress.reuseCreditStep;
+      out[1] = prevChannel.recvProgress.nextStep;
+      out[2] = nextChannel.sendProgress.reuseCreditStep;
+      out[3] = nextChannel.sendProgress.nextStep;
     }
   }
 }
