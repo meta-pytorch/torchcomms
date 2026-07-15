@@ -156,10 +156,22 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   if (!cmd->persistent) {
     CLOGF(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
   }
+  // Erase the registry entry BEFORE waiting on inFlight: erase() and the
+  // worker's lookupAndFire() are mutually exclusive under the registry lock, so
+  // once erase returns no new ring fire can resolve to this cmd and inFlight
+  // can only fall to 0 and stay there. Erasing after the wait would let the
+  // worker fire the cmd between our inFlight check and the erase, then touch
+  // freed memory; a late/duplicate ring entry now becomes an ignored miss
+  // instead.
+  if (cmd->inDeviceRingRegistry && cmd->gpe != nullptr) {
+    cmd->gpe->pimpl->deviceRingCmdRegistry().erase(cmd->cmdId);
+  }
   // Wait for the GPE thread to finish processing any queued instances of
   // this cmd before deleting. With KERNEL_STARTED_AND_EXIT persistent cmds,
   // the GPE processes cmds instantly (stale flag), so cmdCb enqueues from
   // graph replays may still be in the GPE queue when the graph is destroyed.
+  // On the device-ring path the same inFlight guard covers a fire the GPE
+  // worker looked up from the ring but has not finished processing.
   while (cmd->inFlight.load(std::memory_order_acquire) > 0) {
     std::this_thread::yield();
   }
@@ -325,7 +337,10 @@ commResult_t CtranGpe::Impl::submit(
   }
 
   // Set first kernel argument as kernelFlag if GPE op is not empty.
-  // Check it before passing opGroup to cmd
+  // Check it before passing opGroup to cmd. Device-ring dispatch needs no
+  // kernel argument: the ring header is armed on the kernel's flag object
+  // (KernelFlagItem::gpeHdr) and the kernel recovers it in its KernelStartGpe
+  // prologue, so the arg list is just (flag, devState, algoArgs).
   std::array<void*, 3> kernelArgs;
   kernelArgs.at(0) = (void*)&flag;
   kernelArgs.at(1) = (void*)&kernelConfig.args.devState_d;
@@ -422,12 +437,8 @@ commResult_t CtranGpe::Impl::submit(
       cmd->gpe = this->gpe;
 
       FB_COMMCHECKGOTO(
-          utils::cudagraph::addHostNode(
-              /*data=*/cmd,
-              /*execCallback=*/cmdCb,
-              /*destroyCallback=*/cmdDestroy,
-              kernelConfig.stream,
-              streamCaptureInfo),
+          publishCapturedCmd(
+              cmd, kernelFlag, kernelConfig.stream, streamCaptureInfo),
           res,
           fail);
     } else {
@@ -626,6 +637,54 @@ fail:
   return res;
 }
 
+commResult_t CtranGpe::Impl::publishCapturedCmd(
+    CtranGpeCmd* cmd,
+    KernelFlagItem* kernelFlag,
+    cudaStream_t stream,
+    ctran::utils::cudagraph::StreamCaptureInfo& streamCaptureInfo) {
+  // Device-ring dispatch: when the ring is enabled and this cmd has a
+  // kernel flag (so its kernel runs the KernelStartGpe prologue and will
+  // publish), skip the in-graph HOST node entirely. Arm the ring via the
+  // flag's co-located header (GpeKernelFlagHeader) — no kernel parameter
+  // needed — then retain the cmd on the graph so it is freed at
+  // cudaGraphDestroy just as the host-node path retained it. The graph then
+  // self-drives via the ring at replay, avoiding the driver's blocking
+  // host-node launch. Cmds without a kernel flag (e.g. empty-opGroup sync
+  // kernels) never publish, so they keep the host-node path.
+  //
+  // No live-set sizing gate is needed: the ring is WritePolicy::Blocking,
+  // so a publish into a full ring backpressures the writer (spins until the
+  // GPE worker frees a slot) rather than lapping an unconsumed entry. The
+  // worker drains independently, so a blocked start-publish is always
+  // released; an undersized ring only throttles (logged), never loses a
+  // fire. cmdRegistry_ may therefore exceed the ring size and still use it.
+  const bool ringPath = deviceRingEnabled() && kernelFlag != nullptr;
+  if (ringPath) {
+    // Retain the cmd on the graph FIRST so a retain failure leaves no
+    // registry entry to clean up; only then register it and arm the ring
+    // header. (Registering before retain would leak a dangling registry
+    // entry on the fail path.)
+    FB_COMMCHECK(
+        utils::cudagraph::retainUserObject(
+            /*obj=*/cmd,
+            /*destroyCallback=*/cmdDestroy,
+            streamCaptureInfo));
+    ctran::gpe::GpeCmdId id = deviceRingCmdRegistry_.registerCmd(cmd);
+    kernelFlag->gpeHdr.ring = deviceRingHandle();
+    kernelFlag->gpeHdr.cmdId = id;
+    kernelFlag->gpeHdr.enabled = 1;
+  } else {
+    FB_COMMCHECK(
+        utils::cudagraph::addHostNode(
+            /*data=*/cmd,
+            /*execCallback=*/cmdCb,
+            /*destroyCallback=*/cmdDestroy,
+            stream,
+            streamCaptureInfo));
+  }
+  return commSuccess;
+}
+
 commResult_t CtranGpe::Impl::submitHost(
     CtranGpeCmd::TypeEnum type,
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
@@ -679,6 +738,12 @@ void CtranGpe::Impl::terminate() {
   cmd->type = CtranGpeCmd::TypeEnum::TERMINATE;
 
   cmdEnqueue(cmd);
+  // Release any device writer still blocked in the ring's backpressure spin:
+  // once the worker stops draining it would never free their slot, hanging the
+  // kernel. The abort flag makes them publish-and-continue instead.
+  if (deviceRingEnabled()) {
+    deviceRing_->requestAbort();
+  }
   thread_.join();
 
   // Pool elements are released by CUDA's async cmdDestroy callback
@@ -756,7 +821,7 @@ void CtranGpe::Impl::gpeThreadFn() {
 
     while (1) {
       gpeProfiler_->mark(ctran::GpeTracePoint::ITER_START);
-      auto cmd = cmdDequeue();
+      auto cmd = acquireNextCmd();
       injectGpeProfilerMetadata(cmd);
       gpeProfiler_->mark(ctran::GpeTracePoint::CMD_DEQUEUE);
 
@@ -800,6 +865,16 @@ void CtranGpe::Impl::gpeThreadFn() {
 
       if (cmd->type == CtranGpeCmd::TypeEnum::TERMINATE) {
         gpeProfiler_->mark(ctran::GpeTracePoint::TERMINATE_CMD);
+        // TERMINATE preempts ringPending_, so cmds already fired from the ring
+        // (inFlight bumped in lookupAndFire) but not yet returned would strand
+        // with inFlight > 0 and hang cmdDestroy. Undo their bumps here.
+        while (!ringPending_.empty()) {
+          auto* pending = ringPending_.front();
+          ringPending_.pop();
+          if (pending->persistent) {
+            pending->inFlight.fetch_sub(1, std::memory_order_release);
+          }
+        }
         CLOGF_SUBSYS(
             INFO,
             INIT,

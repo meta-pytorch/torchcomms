@@ -361,6 +361,7 @@ CtranGpe::CtranGpe(
   this->pimpl->comm = comm;
   this->pimpl->cudaDev = cudaDev;
   this->pimpl->gpe = this;
+  this->pimpl->initDeviceRing();
   // The cvar is the kill-switch at this integration layer. When false,
   // the reporter is nulled regardless of caller injection — production
   // operators always control whether Scuba rows flow. The profiler still
