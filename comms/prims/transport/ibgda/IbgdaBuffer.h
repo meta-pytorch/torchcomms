@@ -8,6 +8,7 @@
 
 #include <endian.h>
 
+#include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #include "comms/prims/transport/rdma/NicConstants.h"
@@ -303,10 +304,12 @@ struct IbgdaLocalBuffer {
 
   /**
    * Create a sub-buffer at the given byte offset.
-   * Propagates all NICs' lkeys.
+   * Propagates all NICs' lkeys. A null base stays null for optional buffers.
    */
   IBGDA_HOST_DEVICE IbgdaLocalBuffer subBuffer(std::size_t offset) const {
-    return IbgdaLocalBuffer(static_cast<char*>(ptr) + offset, lkey_per_device);
+    return IbgdaLocalBuffer(
+        ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
+        lkey_per_device);
   }
 };
 
@@ -330,10 +333,12 @@ struct IbgdaRemoteBuffer {
 
   /**
    * Create a sub-buffer at the given byte offset.
-   * Propagates all NICs' rkeys.
+   * Propagates all NICs' rkeys. A null base stays null for optional buffers.
    */
   IBGDA_HOST_DEVICE IbgdaRemoteBuffer subBuffer(std::size_t offset) const {
-    return IbgdaRemoteBuffer(static_cast<char*>(ptr) + offset, rkey_per_device);
+    return IbgdaRemoteBuffer(
+        ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
+        rkey_per_device);
   }
 };
 
@@ -445,6 +450,13 @@ struct IbChannelProgress {
       detail::IbSendRecvProgressStage::Done};
 };
 
+inline constexpr std::size_t kSendRecvSignalSlotStride = sizeof(SignalState);
+
+IBGDA_HOST_DEVICE inline std::size_t sendRecvSignalSlotOffset(int slot) {
+  assert(slot >= 0);
+  return static_cast<std::size_t>(slot) * kSendRecvSignalSlotStride;
+}
+
 struct IbChannelLayout {
   IbgdaLocalBuffer
       sendStagingBuf; ///< Registered sendStaging (lkey for put src)
@@ -463,6 +475,68 @@ struct IbChannelLayout {
 
   __host__ __device__ std::size_t data_buffer_size() const {
     return perChannelSize * static_cast<std::size_t>(maxChannels);
+  }
+
+  IBGDA_HOST_DEVICE int dataReadySignalSlot(int channelId) const {
+    return channelId;
+  }
+
+  IBGDA_HOST_DEVICE int slotFreeSignalSlot(int channelId) const {
+    return maxChannels + channelId;
+  }
+
+  IBGDA_HOST_DEVICE int counterSlot(int channelId) const {
+    return channelId;
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localDataReadySignal(int channelId) const {
+    return localSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
+  remoteDataReadySignal(int channelId) const {
+    return remoteSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localSlotFreeSignal(int channelId) const {
+    return localSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
+  remoteSlotFreeSignal(int channelId) const {
+    return remoteSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localCounter(int channelId) const {
+    return localCounterBuf.subBuffer(
+        sendRecvSignalSlotOffset(counterSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer
+  localCompletionCounter(int channelId) const {
+    return localCounterCompletionBuf.subBuffer(
+        sendRecvSignalSlotOffset(counterSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE SignalState* localSignalState(int slot) const {
+    return signalStateAt(localSignalBuf.ptr, slot);
+  }
+
+  IBGDA_HOST_DEVICE SignalState* localCounterState(int channelId) const {
+    return signalStateAt(localCounterBuf.ptr, counterSlot(channelId));
+  }
+
+ private:
+  IBGDA_HOST_DEVICE static SignalState* signalStateAt(void* base, int slot) {
+    if (base == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<SignalState*>(
+        static_cast<char*>(base) + sendRecvSignalSlotOffset(slot));
   }
 };
 
@@ -503,15 +577,10 @@ IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
     const IbChannelLayout& layout,
     int channelId) {
   IbLocalChannel channel{};
-  channel.dataReady = layout.localSignalBuf.subBuffer(
-      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
-  channel.slotFree = layout.localSignalBuf.subBuffer(
-      static_cast<std::size_t>(layout.maxChannels + channelId) *
-      sizeof(uint64_t));
-  channel.nicDoneWait = layout.localCounterBuf.subBuffer(
-      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
-  channel.nicDoneCompletion = layout.localCounterCompletionBuf.subBuffer(
-      static_cast<std::size_t>(channelId) * sizeof(uint64_t));
+  channel.dataReady = layout.localDataReadySignal(channelId);
+  channel.slotFree = layout.localSlotFreeSignal(channelId);
+  channel.nicDoneWait = layout.localCounter(channelId);
+  channel.nicDoneCompletion = layout.localCompletionCounter(channelId);
   return channel;
 }
 
@@ -519,11 +588,8 @@ IBGDA_HOST_DEVICE inline IbRemoteChannel makeIbRemoteChannel(
     const IbChannelLayout& layout,
     int channelId) {
   return IbRemoteChannel{
-      .dataReady = layout.remoteSignalBuf.subBuffer(
-          static_cast<std::size_t>(channelId) * sizeof(uint64_t)),
-      .slotFree = layout.remoteSignalBuf.subBuffer(
-          static_cast<std::size_t>(layout.maxChannels + channelId) *
-          sizeof(uint64_t)),
+      .dataReady = layout.remoteDataReadySignal(channelId),
+      .slotFree = layout.remoteSlotFreeSignal(channelId),
       .recvStaging = layout.recvStagingBuf,
   };
 }
