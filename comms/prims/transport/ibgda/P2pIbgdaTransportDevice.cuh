@@ -43,8 +43,8 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // is intentionally available across all `comms/prims` device headers.
 //
 // `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
-// the shared stateless `IbSendRecvDevice` (P2pIbTransportDeviceDecl.cuh);
-// backend-owned `sendRecvState_` carries the actual protocol state.
+// private shared helpers in P2pIbTransportDeviceDecl.cuh; backend-owned
+// `channelLayout_` carries the actual protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
@@ -186,7 +186,7 @@ class P2pIbgdaTransportDevice {
    * @param numCounterSlots       Number of uint64_t slots in the owned
    *                              counter buffer. Zero disables the
    *                              slot-index counter API.
-   * @param sendRecvState         Optional pipelined send/recv protocol state.
+   * @param channelLayout         Optional pipelined send/recv channel layout.
    *                              When empty, send()/recv() are unavailable.
    */
   __host__ __device__ P2pIbgdaTransportDevice(
@@ -200,7 +200,7 @@ class P2pIbgdaTransportDevice {
       int qpsPerConnection = 1,
       int qpDirectionCount = kIbDirections,
       DeviceSpan<IbLocalChannel> localChannels = {},
-      IbSendRecvState sendRecvState = {})
+      IbChannelLayout channelLayout = {})
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
@@ -211,7 +211,7 @@ class P2pIbgdaTransportDevice {
         qpsPerConnection_(qpsPerConnection),
         qpDirectionCount_(qpDirectionCount),
         localChannels_(localChannels),
-        sendRecvState_(sendRecvState) {}
+        channelLayout_(channelLayout) {}
 
   // =========================================================================
   // Slot-Index API (resolves owned buffers, forwards to explicit-buffer API)
@@ -1869,15 +1869,16 @@ class P2pIbgdaTransportDevice {
   //                      perBlockSlot. Otherwise:
   //                        chunkSize = floor16(min(perBlockSlot,
   //                                             max_signal_bytes))
-  //   state[].nextStep = persistent 16-byte-aligned protocol cursor.
-  //                      DATA_READY, SLOT_FREE, and NIC_DONE counters also
-  //                      advance by protocol bytes, which keeps cursor state
-  //                      independent of max_signal_bytes.
+  //   channel progress   = persistent 16-byte-aligned protocol cursor.
+  //                        DATA_READY, SLOT_FREE, and NIC_DONE counters also
+  //                        advance by protocol bytes, which keeps cursor state
+  //                        independent of max_signal_bytes.
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
-  //   std::size_t sectionBytes = transport->send_recv_state().dataBufferSize;
-  //   for (std::size_t s = 0; s < totalBytes / sectionBytes; ++s) {
+  //   std::size_t sectionBytes =
+  //   transport->channel_layout().data_buffer_size(); for (std::size_t s = 0; s
+  //   < totalBytes / sectionBytes; ++s) {
   //     TiledBuffer<char> tiles(data + s * sectionBytes, sectionBytes, sub);
   //     if (role == 0)
   //       transport->send(sub, tiles.data(), tiles.bytes());
@@ -1985,8 +1986,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_send_progress(
-        sendRecvState_, group, nbytes, max_signal_bytes);
+    detail::init_send_progress(*this, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2019,8 +2019,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    sendRecv_.init_recv_progress(
-        sendRecvState_, group, nbytes, max_signal_bytes);
+    detail::init_recv_progress(*this, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2063,15 +2062,8 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return sendRecv_.progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
-        *this,
-        sendRecvState_,
-        group,
-        src,
-        nbytes,
-        max_signal_bytes,
-        timeout,
-        args...);
+    return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
+        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
   /**
@@ -2111,15 +2103,8 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return sendRecv_.progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
-        *this,
-        sendRecvState_,
-        group,
-        dst,
-        nbytes,
-        max_signal_bytes,
-        timeout,
-        args...);
+    return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
+        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
   /**
@@ -2140,9 +2125,10 @@ class P2pIbgdaTransportDevice {
    *   DATA_READY — sender increments by bytesThis, piggybacked on put.
    *                recv waits on this before reading recvStaging.
    *
-   * state[].nextStep persists across calls, so send() resumes the staging-ring
-   * cursor and protocol sequence numbers on each invocation. This allows
-   * callers to pipeline across repeated send() calls without a separate drain.
+   * The channel progress cursor persists across calls, so send() resumes the
+   * staging-ring cursor and protocol sequence numbers on each invocation. This
+   * allows callers to pipeline across repeated send() calls without a separate
+   * drain.
    *
    * The caller must keep the transport layout stable while a sequence is in
    * flight. `max_signal_bytes` may vary across calls because it changes only
@@ -2201,15 +2187,8 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    sendRecv_.send<P2pIbgdaTransportDevice, CopyOp>(
-        *this,
-        sendRecvState_,
-        group,
-        src,
-        nbytes,
-        max_signal_bytes,
-        timeout,
-        args...);
+    detail::send<P2pIbgdaTransportDevice, CopyOp>(
+        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -2290,15 +2269,8 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    sendRecv_.recv<P2pIbgdaTransportDevice, CopyOp>(
-        *this,
-        sendRecvState_,
-        group,
-        dst,
-        nbytes,
-        max_signal_bytes,
-        timeout,
-        args...);
+    detail::recv<P2pIbgdaTransportDevice, CopyOp>(
+        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -2397,18 +2369,8 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    sendRecv_.forward<CopyOp>(
-        *this,
-        sendRecvState_,
-        group,
-        dst,
-        fwd.sendRecv_,
-        fwd.sendRecvState_,
-        fwd,
-        nbytes,
-        max_signal_bytes,
-        timeout,
-        args...);
+    detail::forward<CopyOp>(
+        *this, group, dst, fwd, nbytes, max_signal_bytes, timeout, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -2420,10 +2382,21 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
-  // Send/recv state accessors
+  __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {
+    validate_channel_id(channelId);
+    return localChannels_[channelId];
+  }
 
-  __host__ __device__ const IbSendRecvState& send_recv_state() const {
-    return sendRecvState_;
+  __device__ __forceinline__ IbLocalChannel& local_channel(ThreadGroup& group) {
+    return local_channel(group.group_id);
+  }
+
+  __host__ __device__ IbChannelLayout& channel_layout() {
+    return channelLayout_;
+  }
+
+  __host__ __device__ const IbChannelLayout& channel_layout() const {
+    return channelLayout_;
   }
 
   /**
@@ -2438,7 +2411,7 @@ class P2pIbgdaTransportDevice {
    * that send()/forward() never stall waiting for a free slot.
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return sendRecv_.pipeline_window(sendRecvState_);
+    return detail::pipeline_window(channelLayout_);
   }
 
  private:
@@ -2458,8 +2431,7 @@ class P2pIbgdaTransportDevice {
   int qpDirectionCount_{kIbDirections};
   DeviceSpan<IbLocalChannel> localChannels_{};
 
-  IbSendRecvState sendRecvState_{};
-  IbSendRecvDevice sendRecv_{};
+  IbChannelLayout channelLayout_{};
 };
 
 } // namespace comms::prims

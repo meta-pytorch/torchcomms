@@ -137,9 +137,23 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   CHECK(err == cudaSuccess)
       << "Failed to allocate GPU IB channel state: " << cudaGetErrorString(err);
   outGpuAllocations.push_back(d_allLocalChannels);
-  err = cudaMemset(d_allLocalChannels, 0, blockStateBytes);
-  CHECK(err == cudaSuccess)
-      << "Failed to zero GPU IB channel state: " << cudaGetErrorString(err);
+  std::vector<IbLocalChannel> h_localChannels(
+      static_cast<std::size_t>(numPeers) * params[0].maxChannels);
+  for (int i = 0; i < numPeers; ++i) {
+    for (int channel = 0; channel < params[i].maxChannels; ++channel) {
+      const auto channelIndex =
+          static_cast<std::size_t>(i) * params[0].maxChannels + channel;
+      h_localChannels[channelIndex] =
+          makeIbLocalChannel(params[i].channelLayout, channel);
+    }
+  }
+  err = cudaMemcpy(
+      d_allLocalChannels,
+      h_localChannels.data(),
+      blockStateBytes,
+      cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess) << "Failed to initialize GPU IB channel state: "
+                            << cudaGetErrorString(err);
 
   std::vector<P2pIbgdaTransportDevice> h_transports;
   h_transports.reserve(numPeers);
@@ -159,7 +173,7 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         DeviceSpan<IbLocalChannel>(
             d_allLocalChannels + i * params[i].maxChannels,
             params[i].maxChannels),
-        params[i].sendRecvState);
+        params[i].channelLayout);
   }
 
   // 4. Allocate and copy transport objects to GPU.
@@ -257,9 +271,19 @@ void writeDeviceTransportSlot(
   CHECK(err == cudaSuccess) << "Failed to allocate per-peer IB channel state: "
                             << cudaGetErrorString(err);
   outGpuAllocations.push_back(d_localChannels);
-  err = cudaMemset(d_localChannels, 0, blockStateBytes);
-  CHECK(err == cudaSuccess) << "Failed to zero per-peer IB channel state: "
-                            << cudaGetErrorString(err);
+  std::vector<IbLocalChannel> h_localChannels(params.maxChannels);
+  for (int channel = 0; channel < params.maxChannels; ++channel) {
+    h_localChannels[channel] =
+        makeIbLocalChannel(params.channelLayout, channel);
+  }
+  err = cudaMemcpy(
+      d_localChannels,
+      h_localChannels.data(),
+      blockStateBytes,
+      cudaMemcpyHostToDevice);
+  CHECK(err == cudaSuccess)
+      << "Failed to initialize per-peer IB channel state: "
+      << cudaGetErrorString(err);
 
   P2pIbgdaTransportDevice hostTransport(
       DeviceSpan<NicDeviceIbgdaResources>(d_nicResources, numNics),
@@ -272,7 +296,7 @@ void writeDeviceTransportSlot(
       params.qpsPerConnection,
       params.qpDirectionCount,
       DeviceSpan<IbLocalChannel>(d_localChannels, params.maxChannels),
-      params.sendRecvState);
+      params.channelLayout);
 
   err = cudaMemcpy(
       deviceArray + peerIndex,

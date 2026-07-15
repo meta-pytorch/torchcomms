@@ -355,7 +355,7 @@ void MultipeerIbrcTransport::exchange() {
         IbCounterStorage::HostPinned, /*allocateDiscardSignal=*/false);
     // Allocate + collectively exchange send/recv staging before building the
     // device transports, so updatePeerDeviceTransport can embed the resulting
-    // IbSendRecvState. Delegated to the shared base; IBRC uses a host-mapped
+    // IbChannelLayout. Delegated to the shared base; IBRC uses a host-mapped
     // NIC_DONE counter (CPU proxy writes it) via the HostPinned counter
     // storage.
     allocateSendRecvBuffersEager(IbCounterStorage::HostPinned);
@@ -949,6 +949,11 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
       static_cast<std::size_t>(config_.max_num_channels) *
           sizeof(IbLocalChannel),
       "per-peer channel state");
+  auto* channels = static_cast<IbLocalChannel*>(peer.channelState.host);
+  const IbChannelLayout channelLayout = channelLayoutForPeer(peerIndex);
+  for (int channel = 0; channel < config_.max_num_channels; ++channel) {
+    channels[channel] = makeIbLocalChannel(channelLayout, channel);
+  }
   peer.cmdQueues = std::move(cmdQueues);
   peer.cmdQueuesAllocated = true;
   updatePeerDeviceTransport(peerIndex);
@@ -1010,7 +1015,7 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       counterHostBuf,
       config_.numSignalSlots,
       config_.numCounterSlots,
-      sendRecvStateForPeer(peerIndex));
+      channelLayoutForPeer(peerIndex));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -1057,11 +1062,11 @@ MultipeerIbrcTransport::MappedAllocation MultipeerIbrcTransport::allocateMapped(
   return allocation;
 }
 
-// Send/recv staging allocation, exchange, cleanup, and IbSendRecvState
+// Send/recv staging allocation, exchange, cleanup, and IbChannelLayout
 // construction are provided by MultiPeerIbTransportBase. IBRC delegates via
 // allocateSendRecvBuffersEager(IbCounterStorage::HostPinned) /
 // exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers() /
-// sendRecvStateForPeer().
+// channelLayoutForPeer().
 
 void MultipeerIbrcTransport::destroyPeerQps(
     std::vector<PeerQpResource>& qpResources) noexcept {
@@ -1560,7 +1565,7 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
       /*allocateDiscardSignal=*/false);
   // Allocate this peer's send/recv rings on demand (HostPinned NIC_DONE
   // counter, CPU-proxy written) and publish them on the same bilateral round,
-  // so sendRecvStateForPeer(peerIndex) is populated when allocatePeerCmdQueues
+  // so channelLayoutForPeer(peerIndex) is populated when allocatePeerCmdQueues
   // -> updatePeerDeviceTransport bakes it into the device slot.
   allocateSendRecvBufferForPeer(
       peerIndex, localBuf, IbCounterStorage::HostPinned);

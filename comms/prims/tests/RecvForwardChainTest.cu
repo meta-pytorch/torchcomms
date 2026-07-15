@@ -45,13 +45,12 @@ __global__ void recv_forward_chain_kernel(
     char* dst = use_dst ? (recv_buf + my_off) : nullptr;
     prev.forward(group, dst, next, my_bytes);
     if (out != nullptr && group.is_leader()) {
-      const auto& prevState = prev.send_recv_state();
-      const auto& nextState = next.send_recv_state();
-      out[0] =
-          prevState.state[prevState.maxGroups + group.group_id].reuseCreditStep;
-      out[1] = prevState.state[prevState.maxGroups + group.group_id].nextStep;
-      out[2] = nextState.state[group.group_id].reuseCreditStep;
-      out[3] = nextState.state[group.group_id].nextStep;
+      const auto& prevChannel = prev.local_channel(group.group_id);
+      const auto& nextChannel = next.local_channel(group.group_id);
+      out[0] = prevChannel.recvProgress.reuseCreditStep;
+      out[1] = prevChannel.recvProgress.nextStep;
+      out[2] = nextChannel.sendProgress.reuseCreditStep;
+      out[3] = nextChannel.sendProgress.nextStep;
     }
   }
 }

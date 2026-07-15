@@ -390,10 +390,9 @@ __global__ void progressReservationKernel(
   transport->init_recv_progress(group, recvBytes);
 
   if (group.is_leader()) {
-    const auto& sendRecvState = transport->send_recv_state();
-    output[0] = sendRecvState.state[group.group_id].nextStep;
-    output[1] =
-        sendRecvState.state[sendRecvState.maxGroups + group.group_id].nextStep;
+    const auto& channel = transport->local_channel(group.group_id);
+    output[0] = channel.sendProgress.nextStep;
+    output[1] = channel.recvProgress.nextStep;
   }
 }
 
@@ -437,31 +436,21 @@ __global__ void sendRecvReuseCreditKernel(
     }
   }
 
-  const auto& state = transport->send_recv_state();
   const auto groupId = static_cast<int>(group.group_id);
+  auto& channel = transport->local_channel(static_cast<uint32_t>(groupId));
   if (send && waitExpectedNicDoneCredit != 0) {
     transport->wait_counter(
-        group,
-        state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)),
-        waitExpectedNicDoneCredit,
-        timeout);
+        group, channel.nicDoneWait, waitExpectedNicDoneCredit, timeout);
   }
   if (send && waitExpectedSlotFreeCredit != 0) {
     transport->wait_signal(
-        group,
-        state.localSignalBuf.subBuffer(
-            (state.maxGroups + groupId) * sizeof(uint64_t)),
-        waitExpectedSlotFreeCredit,
-        timeout);
+        group, channel.slotFree, waitExpectedSlotFreeCredit, timeout);
   }
 
   if (group.is_leader()) {
-    output[0] = transport->read_counter(
-        state.localCounterBuf.subBuffer(groupId * sizeof(uint64_t)));
-    output[1] = transport->read_signal(
-        state.localSignalBuf.subBuffer(groupId * sizeof(uint64_t)));
-    output[2] = transport->read_signal(state.localSignalBuf.subBuffer(
-        (state.maxGroups + groupId) * sizeof(uint64_t)));
+    output[0] = transport->read_counter(channel.nicDoneWait);
+    output[1] = transport->read_signal(channel.dataReady);
+    output[2] = transport->read_signal(channel.slotFree);
   }
 }
 #endif

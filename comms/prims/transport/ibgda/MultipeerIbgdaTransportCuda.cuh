@@ -58,8 +58,8 @@ struct NicDeviceIbgdaResourcesBuildSpec {
  */
 struct P2pIbgdaTransportBuildParams {
   P2pIbgdaTransportBuildParams() = default;
-  explicit P2pIbgdaTransportBuildParams(IbSendRecvState sendRecvStateIn)
-      : sendRecvState(sendRecvStateIn) {}
+  explicit P2pIbgdaTransportBuildParams(IbChannelLayout channelLayoutIn)
+      : channelLayout(channelLayoutIn) {}
 
   std::vector<NicDeviceIbgdaResourcesBuildSpec> h_nicDeviceIbgdaResources;
   IbgdaRemoteBuffer remoteSignalBuf{};
@@ -71,7 +71,7 @@ struct P2pIbgdaTransportBuildParams {
   int maxChannels{0};
   int qpsPerConnection{1};
   int qpDirectionCount{1};
-  IbSendRecvState sendRecvState{};
+  IbChannelLayout channelLayout{};
 };
 
 /**
@@ -80,7 +80,7 @@ struct P2pIbgdaTransportBuildParams {
  * For each peer, allocates GPU arrays for QP pointers, copies them,
  * then constructs P2pIbgdaTransportDevice objects in GPU memory.
  * All GPU allocations are pushed into outGpuAllocations for cleanup.
- * If sendRecvState is populated in the build params, it is passed through
+ * If channelLayout is populated in the build params, it is passed through
  * the transport constructor before copying to GPU.
  *
  * @param params Build parameters (one per peer)
