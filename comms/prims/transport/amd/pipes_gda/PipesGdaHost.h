@@ -25,7 +25,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 
 #include <hip/hip_runtime.h>
 #include <hsa/hsa.h>
@@ -371,43 +370,6 @@ pipes_gda_error_t pipes_gda_gpu_verbs_get_qp_dev(
     pipes_gda_gpu_verbs_qp* qp_gverbs,
     pipes_gda_gpu_dev_verbs_qp** out_dev_qp);
 
-// ===========================================================================
-// DMA-BUF export helpers
-// ===========================================================================
-//
-// HSA equivalent of NVIDIA's `cuMemGetAddressRange + doca_gpu_dmabuf_fd`.
-// Loads `hsa_amd_portable_export_dmabuf` lazily via dlsym.
-
 } // namespace pipes_gda
-
-namespace comms::prims {
-
-struct DmaBufAlignment {
-  void* alignedBase{nullptr};
-  std::size_t alignedSize{0};
-  uint64_t dmabufOffset{0};
-};
-
-struct DmaBufExport {
-  int fd{-1};
-  DmaBufAlignment alignment;
-};
-
-// Mapping requested when exporting a GPU allocation as a DMA-BUF fd. mlx5
-// Data-Direct (Pcie / BAR1 PCIe-mapped DMA-BUF) is NVIDIA/GB300-only; on AMD
-// the Pcie kind is unsupported and export returns std::nullopt. (Data-Direct is
-// also disabled in NIC discovery on AMD, so Pcie is never requested at runtime;
-// the enum exists so the shared registerBuffer compiles under HIP.)
-enum class DmaBufExportKind {
-  Default,
-  Pcie,
-};
-
-std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
-    void* ptr,
-    std::size_t size,
-    DmaBufExportKind kind = DmaBufExportKind::Default);
-
-} // namespace comms::prims
 
 #endif // __HIP_PLATFORM_AMD__

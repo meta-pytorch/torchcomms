@@ -314,8 +314,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
 #ifdef NIC_BNXT
   nic.unlockQp(qp);
 #endif
-#ifdef NIC_MLX5
-  // Mlx5: batched doorbell — single ring after all chunks prepared.
+#if defined(NIC_MLX5) || defined(NIC_IONIC)
+  // Mlx5 / ionic: batched doorbell — single ring after all chunks prepared.
   // Uses fast submit with ctrl segment captured on GPU stack (avoids
   // PCIe round-trip re-read from SQ buffer).
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, lastIdx);
@@ -681,7 +681,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
     lastIdx = mainBase + numChunks - 1;
   }
 
-#ifdef NIC_MLX5
+#if defined(NIC_MLX5) || defined(NIC_IONIC)
   pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, mainBase, lastIdx);
   pipes_gda_gpu_dev_verbs_submit(nic, mainQp, lastIdx + 1);
 #endif

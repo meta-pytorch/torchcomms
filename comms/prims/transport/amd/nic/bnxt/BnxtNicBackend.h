@@ -27,7 +27,7 @@
 #include <cstdint>
 
 #include "HipDeviceCompat.h" // @manual
-#include "nic/BnxtHsi.h" // @manual
+#include "nic/bnxt/BnxtHsi.h" // @manual
 #include "pipes_gda/PipesGdaDev.h" // @manual
 
 namespace pipes_gda {

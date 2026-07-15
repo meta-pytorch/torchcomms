@@ -261,6 +261,7 @@ __device__ __forceinline__ void doca_fence(doca_gpu_dev_verbs_qp* qp) {
 // intrinsics it uses (so the device chain pulled in by the existing
 // device-side translations above doesn't break the host pass).
 
+#include "pipes_gda/PipesGdaDmaBuf.h" // @manual
 #include "pipes_gda/PipesGdaHost.h" // @manual
 
 // --- Type aliases ---

@@ -38,7 +38,7 @@
 #ifndef PIPES_GDA_VERBS_DEV_H
 #define PIPES_GDA_VERBS_DEV_H
 
-#include "nic/Mlx5Hsi.h" // @manual
+#include "nic/mlx5/Mlx5Hsi.h" // @manual
 #include "pipes_gda/PipesGdaDef.h" // @manual
 
 #ifdef __cplusplus
@@ -212,9 +212,7 @@ struct pipes_gda_gpu_dev_verbs_qp_ionic {
   void* sq_buf; ///< SQ WQE buffer pointer (GPU-accessible)
 
   // SQ producer tracking
-  uint32_t sq_prod; ///< Next SQ producer index (atomic)
-  uint32_t sq_dbprod; ///< Last doorbell'd producer index
-  int sq_lock; ///< Spinlock for doorbell serialization
+  uint64_t sq_dbprod; ///< Monotonic doorbell'd producer high-water mark
 
   // CQ doorbell register (GPU-mapped via HSA)
   volatile uint64_t* cq_dbreg; ///< CQ doorbell register pointer
@@ -227,7 +225,6 @@ struct pipes_gda_gpu_dev_verbs_qp_ionic {
   // CQ consumer tracking
   uint32_t cq_pos; ///< Current CQ consumer position
   uint32_t cq_dbpos; ///< Last doorbell'd CQ consumer position
-  int cq_lock; ///< Spinlock for CQ polling serialization
 
   // MSN (Message Sequence Number) tracking
   uint32_t sq_msn; ///< Last completed MSN from CQ
