@@ -97,6 +97,49 @@ cvars:
      consolidated abort ERR line on stderr (gpeProfiler_->debugString())
      keeps producing per-phase latencies. Set true to enable Scuba flush.
 
+ - name        : NCCL_CTRAN_GPE_DEVICE_RING
+   type        : bool
+   default     : false
+   description : |-
+     Enable the device-ring GPE dispatch path (see
+     comms/ctran/gpe/docs/gpe_device_ring.md). When false (default), GPE
+     dispatch is unchanged: captured CUDA graphs use in-graph HOST nodes
+     that enqueue each command to the per-comm CPU FIFO on replay. When
+     true, ring-capable collective kernels publish their command id to a
+     per-comm host-mapped ring (HRDWRingBuffer) as they start, and the GPE
+     worker consumes the ring in true GPU execution order — no HOST nodes
+     are added to the graph, eliminating the driver's replay launch-blocking
+     bug while preserving the runtime-produced ordering that static
+     coalescing cannot reproduce. Requires sm_90+ (System-scope 128b atomic
+     exchange); ignored on HIP/pre-Hopper, where the host-node path is used.
+     The eager (non-capture) path is unchanged regardless of this setting.
+
+ - name        : NCCL_CTRAN_GPE_DEVICE_RING_SIZE
+   type        : int
+   default     : 8192
+   description : |-
+     Number of entries in the per-comm device dispatch ring used when
+     NCCL_CTRAN_GPE_DEVICE_RING is true. Rounded up to a power of two. The ring
+     is lossless (blocking write policy): an undersized ring never drops
+     entries. Instead a kernel that fills it stalls at start until the GPE
+     worker drains a slot, throttling device work (logged, rate-limited). Size
+     it to the maximum number of proxy-having collectives that can be
+     concurrently in flight on a single comm, so writers never stall. Each
+     entry is 16 bytes of pinned host memory.
+
+ - name        : NCCL_CTRAN_GPE_DEVICE_RING_POLL_US
+   type        : int
+   default     : 50
+   description : |-
+     Idle poll interval in microseconds for the device-ring GPE worker when
+     NCCL_CTRAN_GPE_DEVICE_RING is true. The worker blocks on the CPU FIFO
+     condvar and is woken immediately by control/eager submits (TERMINATE,
+     abort), but the device ring cannot signal the condvar, so it also wakes
+     every poll interval to drain the ring. This bounds device-ring dispatch
+     latency (and how long a full ring stalls the writer) while keeping an idle
+     worker off-core. Smaller = lower latency, more wakeups; larger = fewer
+     wakeups, higher latency. Ignored on the host-node path.
+
  - name        : NCCL_CTRAN_GPE_PROFILING_SAMPLING_WEIGHT
    type        : int
    default     : 1000
