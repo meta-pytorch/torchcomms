@@ -53,7 +53,6 @@ struct OpElem {
     ALLTOALLP,
     ALLTOALLV,
     DEVICE_ALLTOALLV,
-    ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
     REDUCESCATTER,
@@ -172,20 +171,6 @@ struct OpElem {
       commDataType_t datatype;
     } device_alltoallv;
     struct {
-      const void* sendbuff;
-      const size_t* sendcounts;
-      const size_t* sdispls;
-      void* recvbuff;
-      const size_t* recvcounts;
-      const size_t* rdispls;
-      commDataType_t datatype;
-      std::unordered_map<int, KernelElem*> bcastElemMap;
-      void* sendHdl;
-      void* recvHdl;
-      std::vector<void*> remoteRecvBuffs;
-      std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
-    } alltoall_dedup;
-    struct {
       // Reference to persistent algo fields
       void* pArgs;
       void* algoResource;
@@ -259,8 +244,6 @@ struct OpElem {
 
   OpElem(enum opType type, CtranComm* comm, ICtran* ctran, uint64_t opCount);
 
-  OpElem(OpElem* op);
-
   OpElem(
       enum opType type,
       cudaStream_t stream,
@@ -293,7 +276,6 @@ struct KernelConfig {
     ALLTOALL,
     DEVICE_ALLTOALLV,
     ALLTOALLV,
-    ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
     BROADCAST_UNPACK,
@@ -519,12 +501,6 @@ extern __global__ void ncclKernelAllToAllv(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllDedup(
-    ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoalldedup::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterDirect(

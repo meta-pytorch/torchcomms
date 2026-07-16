@@ -261,13 +261,13 @@ def gen_reduce_scatter_files(gensrc, srcs, rules):
 
 
 def gen_alltoall_files(gensrc, srcs, rules):
-    # Generate for regular AllToAll, AllToAllDedup, AllToAllv kernels (no variants)
+    # Generate for regular AllToAll and AllToAllv kernels (no variants)
     gen_algo_files(
         gensrc,
         srcs,
         rules,
         {
-            "bases": ["AllToAll", "AllToAllDedup", "AllToAllv"],
+            "bases": ["AllToAll", "AllToAllv"],
             "dir": "AllToAll",
             "has_ops": False,
             "variants": [""],  # No variants, just the base algorithms

@@ -317,9 +317,9 @@ ncclMemFree
 
 ### NCCL-Managed Buffers (internal)
 
-NCCL allocates temporary buffers internally (window, BufManager,
-AllToAllDedup, CtranAlgo). These use `deregMem` which handles both
-remote release and segment cache cleanup.
+NCCL allocates temporary buffers internally (window, BufManager, CtranAlgo).
+These use `deregMem` which handles both remote release and segment cache
+cleanup.
 
 ```
 internal cudaMalloc
