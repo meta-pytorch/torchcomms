@@ -213,6 +213,13 @@ class P2pIbgdaTransportDevice {
         localChannels_(localChannels),
         channelLayout_(channelLayout) {}
 
+  // IBGDA round-robins each send/recv chunk's RDMA_WRITE + DATA_READY atomic-FA
+  // across per-lane single-writer DATA_READY slots (one per QP lane; see
+  // put_impl's `signalPerLane` path). The receiver must therefore wait on the
+  // specific lane that carried each chunk (see detail::wait_recv_data_ready),
+  // not the summed cumulative, to avoid a fast lane's later chunk masking a
+  // slow lane's not-yet-landed data.
+
   // =========================================================================
   // Slot-Index API (resolves owned buffers, forwards to explicit-buffer API)
   // =========================================================================
@@ -498,7 +505,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      bool signalPerLane = false) {
     put_impl(
         group,
         localBuf,
@@ -507,7 +515,8 @@ class P2pIbgdaTransportDevice {
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        signalPerLane);
   }
 
   /**
@@ -1056,7 +1065,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal,
       const IbgdaLocalBuffer& counterBuf,
-      uint64_t counterVal) {
+      uint64_t counterVal,
+      bool signalPerLane = false) {
     const bool hasSignal = signalBuf.ptr != nullptr;
     if (nbytes == 0) {
       if (group.is_leader()) {
@@ -1073,20 +1083,30 @@ class P2pIbgdaTransportDevice {
       validate_group_scope(group);
       const bool hasCounter = counterBuf.ptr != nullptr;
       IbgdaLane lane = select_put_lane(group, IbDirection::Send);
+      // Per-lane DATA_READY: when signalPerLane is set (the send/recv path),
+      // offset the signal target by this lane's ordinal so each QP lane writes
+      // its own single-writer flag and two NICs never atomic-FA the same slot
+      // (the GB200 deadlock). Offset once here so the signal-only and
+      // signal+counter impls below both hit the per-lane slot; raw put callers
+      // (signalPerLane=false) leave signalBuf unchanged.
+      const IbgdaRemoteBuffer effectiveSignalBuf =
+          (signalPerLane && signalBuf.ptr != nullptr)
+          ? signalBuf.subBuffer(sendRecvSignalSlotOffset(lane.lane_ordinal))
+          : signalBuf;
       if (hasSignal && hasCounter) {
         const auto tickets = put_signal_counter_single_impl(
             lane,
             localBuf,
             remoteBuf,
             nbytes,
-            signalBuf,
+            effectiveSignalBuf,
             signalVal,
             counterBuf,
             counterVal);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasSignal) {
         const auto tickets = put_signal_single_impl(
-            lane, localBuf, remoteBuf, nbytes, signalBuf, signalVal);
+            lane, localBuf, remoteBuf, nbytes, effectiveSignalBuf, signalVal);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasCounter) {
         const uint64_t putTicket = put_counter_single_impl(

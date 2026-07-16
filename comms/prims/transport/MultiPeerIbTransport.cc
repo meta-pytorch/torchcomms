@@ -383,10 +383,19 @@ std::size_t MultiPeerIbTransportBase::sendRecvStagingBytesPerPeer() const {
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
-  // Slots are cacheline-strided (kSendRecvSignalSlotStride), not packed, to
-  // avoid cross-group false sharing of the send/recv sync flags.
-  return 2 * static_cast<std::size_t>(config_.max_num_channels) *
-      kSendRecvSignalSlotStride;
+  // Two cacheline-strided (kSendRecvSignalSlotStride) regions, sized so no flag
+  // has two atomic-FA writers:
+  //   DATA_READY: numLanes slots per channel (one single-writer flag per QP
+  //               lane); numLanes must equal the device QP-lane count.
+  //   SLOT_FREE:  one slot per channel.
+  // See the layout in IbgdaBuffer.h.
+  const std::size_t maxChannels =
+      static_cast<std::size_t>(config_.max_num_channels);
+  const std::size_t numLanes = static_cast<std::size_t>(numNics_) *
+      static_cast<std::size_t>(config_.qpsPerConnection);
+  const std::size_t dataReadySlots = numLanes * maxChannels;
+  const std::size_t slotFreeSlots = maxChannels;
+  return (dataReadySlots + slotFreeSlots) * kSendRecvSignalSlotStride;
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvCounterBytesPerPeer() const {
@@ -412,6 +421,7 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
       .localCounterBuf = pb.counter,
       .localCounterCompletionBuf = pb.counterCompletion,
       .maxChannels = config_.max_num_channels,
+      .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,
       .perChannelSize = config_.perChannelSize,
   };

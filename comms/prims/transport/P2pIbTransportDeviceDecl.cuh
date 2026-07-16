@@ -463,7 +463,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           remoteChannel.dataReady,
           chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
           localNicDoneCompletion,
-          chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0));
+          chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
+          /*signalPerLane=*/true);
     }
     group.sync();
 
@@ -495,6 +496,109 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   (void)max_signal_bytes;
   (void)timeout;
   return IbgdaSendRecvProgressStatus::Done;
+#endif
+}
+
+/**
+ * Blocking wait for one receive chunk's DATA_READY on its round-robin lane.
+ *
+ * Both IB backends round-robin each chunk's RDMA_WRITE + DATA_READY fetch-add
+ * across `numLanes` single-writer slots. Chunk i rides lane `i % numLanes`,
+ * driven by the sender's free-running per-(channel, Send) cursor, which the
+ * receiver mirrors in `localChannel.recvDataReadyLaneCursor`. Waiting on that
+ * lane's own slot (not the summed cumulative) guarantees chunk i's RDMA_WRITE
+ * has landed, because the lane's single RC QP delivers the DATA_READY fetch-add
+ * only after its data write. This removes the cross-lane out-of-order hazard
+ * where a fast lane's later chunk pushes the summed DATA_READY past chunk i's
+ * threshold while chunk i's data (on a slow lane) is still in flight. When
+ * `numLanes` is 1, this degenerates to exactly the single-slot cumulative wait
+ * on lane 0. On success the leader advances `recvDataReadyLaneCursor` and this
+ * lane's `recvLaneExpected` by exactly one chunk.
+ */
+template <typename Transport>
+__device__ __forceinline__ void wait_recv_data_ready(
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    std::size_t chunkBytes,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint32_t numLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  if (group.is_leader()) {
+    // Truncate recvDataReadyLaneCursor to 32 bits BEFORE the modulo so the lane
+    // matches the sender's uint32 Send cursor once it wraps at 2^32; otherwise
+    // a non-power-of-two numLanes would desync the lane after wrap.
+    const uint32_t lane =
+        static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
+    const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+    const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
+        sendRecvSignalSlotOffset(static_cast<int>(lane)));
+    ThreadGroup solo{
+        0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+    transport.wait_signal(solo, laneBuf, expected, timeout);
+    localChannel.recvLaneExpected[lane] = expected;
+    ++localChannel.recvDataReadyLaneCursor;
+  }
+  group.sync();
+#else
+  (void)transport;
+  (void)group;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)chunkBytes;
+  (void)timeout;
+#endif
+}
+
+/**
+ * Non-blocking poll for one receive chunk's DATA_READY on its round-robin lane.
+ *
+ * Leader-only. Mirrors wait_recv_data_ready's readiness test without spinning:
+ * returns true when the chunk's DATA_READY has landed on its lane, advancing
+ * `recvDataReadyLaneCursor`/`recvLaneExpected` by exactly one chunk on that
+ * (and only that) return. A false return leaves all receiver state untouched so
+ * the caller can retry the same chunk on a later progress attempt.
+ * `currentOut`/`expectedOut` are set for the caller's timeout diagnostic.
+ */
+template <typename Transport>
+__device__ __forceinline__ bool poll_recv_data_ready(
+    Transport& transport,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    std::size_t chunkBytes,
+    unsigned long long& currentOut,
+    unsigned long long& expectedOut) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint32_t numLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  // Truncate to 32 bits before the modulo to match the sender's uint32 cursor
+  // wrap (see wait_recv_data_ready).
+  const uint32_t lane =
+      static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
+  const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+  const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
+      sendRecvSignalSlotOffset(static_cast<int>(lane)));
+  const uint64_t current = transport.read_signal(laneBuf);
+  currentOut = static_cast<unsigned long long>(current);
+  expectedOut = static_cast<unsigned long long>(expected);
+  if (current < expected) {
+    return false;
+  }
+  localChannel.recvLaneExpected[lane] = expected;
+  ++localChannel.recvDataReadyLaneCursor;
+  return true;
+#else
+  (void)transport;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)chunkBytes;
+  currentOut = 0;
+  expectedOut = 0;
+  return false;
 #endif
 }
 
@@ -566,19 +670,28 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, progress_params.groupId);
-  const uint64_t expected = chunk.streamEnd;
   uint32_t ready = 1;
-  unsigned long long current = 0;
   if (group.is_leader()) {
-    current =
-        static_cast<unsigned long long>(transport.read_signal(localDataReady));
-    ready = current >= expected ? 1U : 0U;
+    // Poll the specific round-robin lane that carried this chunk and commit
+    // recvDataReadyLaneCursor/recvLaneExpected only on a ready result.
+    unsigned long long current = 0;
+    unsigned long long expected = 0;
+    ready = poll_recv_data_ready(
+                transport,
+                localChannel,
+                localDataReady,
+                chunk.bytes +
+                    (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
+                current,
+                expected)
+        ? 1U
+        : 0U;
     if (!ready) {
       TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
-          static_cast<unsigned long long>(expected),
+          expected,
           current);
     }
   }
@@ -806,7 +919,8 @@ __device__ __forceinline__ void send(
           remoteChannel.dataReady,
           protocolBytesThis,
           localNicDoneCompletion,
-          protocolBytesThis);
+          protocolBytesThis,
+          /*signalPerLane=*/true);
     }
     group.sync();
     dataOff += bytesThis;
@@ -940,10 +1054,16 @@ __device__ __forceinline__ void recv(
         chunkSize < dataRemaining ? chunkSize : dataRemaining;
     bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
     const std::size_t stagingOff = slotOff + groupId * perBlockSlot + chunkOff;
-    const uint64_t streamEnd = streamStart + bytesThis;
 
-    // (1) Wait for sender's DATA_READY signal.
-    transport.wait_signal(group, localDataReady, streamEnd, timeout);
+    // (1) Wait for sender's DATA_READY on the specific round-robin lane that
+    //     carried this chunk (mirrors the sender's per-channel Send cursor).
+    wait_recv_data_ready(
+        transport,
+        group,
+        localChannel,
+        localDataReady,
+        bytesThis + (dataOff == 0 ? protocolPadding : 0),
+        timeout);
 
     // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
     const std::size_t validBytes =
@@ -1193,11 +1313,18 @@ __device__ __forceinline__ void forward(
         bytesThis + (dataOff == 0 ? recvProtocolPadding : 0);
     const std::size_t fwdProtocolBytesThis =
         bytesThis + (dataOff == 0 ? fwdProtocolPadding : 0);
-    const uint64_t recvStreamEnd = recvStreamStart + bytesThis;
     const uint64_t fwdStreamEnd = fwdStreamStart + bytesThis;
 
-    // (1) Wait for sender's DATA_READY.
-    transport.wait_signal(group, recvDataReady, recvStreamEnd, timeout);
+    // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
+    //     lane that carried this chunk (mirrors the upstream sender's Send
+    //     cursor via recvLocalChannel.recvDataReadyLaneCursor).
+    wait_recv_data_ready(
+        transport,
+        group,
+        recvLocalChannel,
+        recvDataReady,
+        recvProtocolBytesThis,
+        timeout);
 
     // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
     if (fwdStreamEnd > fwdPipelineBytes) {
@@ -1249,7 +1376,8 @@ __device__ __forceinline__ void forward(
           fwdRemoteChannel.dataReady,
           fwdProtocolBytesThis,
           fwdNicDoneCompletion,
-          fwdProtocolBytesThis);
+          fwdProtocolBytesThis,
+          /*signalPerLane=*/true);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1836,7 +1964,8 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1);
+      uint64_t counterVal = 1,
+      bool signalPerLane = false);
 
   __device__ void put(
       const IbgdaLocalBuffer& localBuf,
