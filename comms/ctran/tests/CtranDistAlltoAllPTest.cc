@@ -187,10 +187,13 @@ class ctranAllToAllPTest : public ctran::CtranDistTestFixture,
           ctran::alltoallp::AlgoImpl::algoName(NCCL_ALLTOALL_ALGO::ctran));
     }
 
-    // Alltoall uses kernel staged copy not NVL iput
+    // AllToAllP moves intra-node data via host-issued NVL copy-engine copies,
+    // which use cudaMemcpyBatchAsync/icopy rather than mapper iput, so the NVL
+    // iput counter stays zero and NVL must stay excluded (mirrors the CE-based
+    // AllGather backend assertion). Inter-node data still uses IB iput.
     std::vector<CtranMapperBackend> excludedBackends = {
         CtranMapperBackend::NVL};
-    // If all ranks are local, uses only kernel staged copy
+    // If all ranks are local, there are no inter-node peers, so no IB iput.
     if (ctranComm->statex_->nLocalRanks() == ctranComm->statex_->nRanks()) {
       excludedBackends.push_back(CtranMapperBackend::IB);
     }
