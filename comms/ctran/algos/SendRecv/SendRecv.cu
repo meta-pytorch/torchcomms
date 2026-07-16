@@ -16,14 +16,15 @@ __shared__ UnpackBlockState sendRecvUnpack;
 #endif
 
 __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
@@ -46,14 +47,15 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
 // it can potentially require unpack with TCP DM backend.
 template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelRecvArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
@@ -86,14 +88,15 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
 
 template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendRecvArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
@@ -133,12 +136,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
 
 #define DECL_SENDRECV_KERN(UNPACK)                     \
   template __global__ void ncclKernelRecv<UNPACK>(     \
-      int* flag,                                       \
-      CtranAlgoDeviceState* devState,                  \
+      ctran::gpe::KernelFlagDev * flag,                \
+      CtranAlgoDeviceState * devState,                 \
       ctran::sendrecv::KernelRecvArgs args);           \
   template __global__ void ncclKernelSendRecv<UNPACK>( \
-      int* flag,                                       \
-      CtranAlgoDeviceState* devState,                  \
+      ctran::gpe::KernelFlagDev * flag,                \
+      CtranAlgoDeviceState * devState,                 \
       ctran::sendrecv::KernelSendRecvArgs args)
 
 DECL_SENDRECV_KERN(/*UNPACK=*/false);

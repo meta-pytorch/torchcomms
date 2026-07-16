@@ -220,11 +220,6 @@ void CtranComm::destroy() {
   // their de-initialization here.
 #if defined(ENABLE_PRIMS)
   pipesTrace_.reset();
-  if (hierarchicalAgReadyCounters_ != nullptr) {
-    cudaFree(hierarchicalAgReadyCounters_);
-    hierarchicalAgReadyCounters_ = nullptr;
-    hierarchicalAgReadyCounterCount_ = 0;
-  }
   // Must be destroyed before ctran_ (which owns SharedResource staging
   // buffers used as external data buffers) and before bootstrap_ (since
   // multiPeerTransport_ holds a non-owning reference to it).

@@ -52,7 +52,7 @@ jobs:
           set -eux
 
           conda install -y git
-          conda install -y -c conda-forge glog==0.4.0 gflags fmt
+          conda install -y -c conda-forge glog==0.4.0 gflags==2.2.2 fmt==12.2.0
           pip install cmake==3.31.6
           export USE_NCCL=0
           export USE_NCCLX=0

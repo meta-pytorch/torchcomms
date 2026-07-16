@@ -34,7 +34,7 @@ class KernelFlagPoolTest : public ::testing::Test {
 
       flag->numGroups_ = numGroups;
       for (int j = 0; j < flag->numGroups_; ++j) {
-        flag->flag_[j] = KERNEL_SCHEDULED;
+        flag->dev.flag_[j] = KERNEL_SCHEDULED;
       }
       allocated_flags.push_back(flag);
     }
@@ -58,7 +58,7 @@ class KernelFlagPoolTest : public ::testing::Test {
           for (int i = 0; i < reclaimSize; ++i) {
             auto* allocated_flag = allocated_flags[i];
             for (int j = 0; j < allocated_flag->numGroups_; ++j) {
-              allocated_flag->flag_[j] = KERNEL_UNSET;
+              allocated_flag->dev.flag_[j] = KERNEL_UNSET;
             }
           }
         },
@@ -116,7 +116,7 @@ TEST_F(KernelFlagPoolTest, ReclaimTestHostAndDevice) {
           auto* allocated_flag = allocated_flags[i];
           allocated_flag->reset();
           for (int j = 0; j < allocated_flag->numGroups_; ++j) {
-            allocated_flag->flag_[j] = KERNEL_UNSET;
+            allocated_flag->dev.flag_[j] = KERNEL_UNSET;
           }
         }
       },
@@ -150,7 +150,7 @@ TEST_F(KernelFlagPoolTest, SetAndTestFlags) {
   allocated_flag->setFlagPerGroup(KERNEL_TERMINATE);
 
   for (int i = 0; i < numGroups; ++i) {
-    EXPECT_EQ(allocated_flag->flag_[i], KERNEL_TERMINATE)
+    EXPECT_EQ(allocated_flag->dev.flag_[i], KERNEL_TERMINATE)
         << "allocated_flag[" << i << "] not properly set";
   }
 

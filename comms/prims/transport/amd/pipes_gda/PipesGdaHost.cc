@@ -44,10 +44,14 @@
 #ifdef NIC_BNXT
 // BNXT direct-verbs typedefs (struct definitions and function pointer types).
 // The actual symbols are loaded lazily from libbnxt_re via dlopen.
-#include "nic/BnxtReDv.h" // @manual
-#else
+#include "nic/bnxt/BnxtReDv.h" // @manual
+#elif defined(NIC_MLX5)
 // mlx5 direct verbs — implementation detail of the mlx5 backend.
 #include <infiniband/mlx5dv.h>
+#elif defined(NIC_IONIC)
+// ionic direct-verbs typedefs + function table; symbols loaded lazily from
+// libionic.so via dlopen.
+#include "nic/ionic/IonicReDv.h" // @manual
 #endif
 
 #include <dlfcn.h>
@@ -59,6 +63,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <new>
 #include <vector>
@@ -129,15 +134,10 @@ static bool ensureHsaInitialized() {
   return g_hsaInitSuccess;
 }
 
-// hsa_amd_memory_lock_to_pool gives a GPU-accessible alias for a host
-// pointer. Required for both:
-//   - mlx5: BlueFlame UAR doorbell page (was already using this).
-//   - bnxt: alloc_db_region's MMIO doorbell page. The hipHostRegister
-//     path that BNXT previously used produces a GPU-side mapping that
-//     is READ-ONLY on this ROCm release; the kernel's atomic store to
-//     `qp->nic.bnxt.dbr` then faults with `(nil)` / `Write access to
-//     a read-only page`. hsa_amd_memory_lock_to_pool produces a
-//     writable GPU alias, matching how mlx5's BlueFlame UAR is mapped.
+#if defined(NIC_MLX5) || defined(NIC_IONIC)
+// mlx5 + ionic: map an MMIO doorbell/UAR page (mlx5 BlueFlame UAR, ionic
+// doorbell page) into the GPU address space. The BNXT path doesn't need this
+// (it uses alloc_db_region's host-mapped DBR + hipHostRegister instead).
 static bool
 hsaMemoryLockToGpu(void* hostPtr, size_t size, void** gpuPtr, int gpuId) {
   if (!ensureHsaInitialized()) {
@@ -159,18 +159,23 @@ hsaMemoryLockToGpu(void* hostPtr, size_t size, void** gpuPtr, int gpuId) {
       gpuPtr);
   return st == HSA_STATUS_SUCCESS;
 }
+#endif // NIC_MLX5 || NIC_IONIC
 
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
 // ===========================================================================
-// SysIbv — dlopen wrapper for system libibverbs.so.1 (PABI 34)
+// SysIbv — dlopen wrapper for the system libibverbs.so.1
 // ===========================================================================
 //
-// A statically-linked rdma-core (PABI 59) bundles a BNXT provider that only
-// supports kernel uverbs ABI 1. The kernel bnxt_re module
-// on AMD/BNXT hosts reports uverbs ABI 8, so the static provider rejects every
-// device. The system /lib64/libibverbs.so.1 (PABI 34) +
-// /lib64/libbnxt_re-rdmav34.so DO support ABI 8 — we dlopen them at runtime
-// and route ALL ibverbs calls in the BNXT path through these.
+// fbcode's statically-linked libibverbs (platform010, IBVERBS_1.1) is too old
+// for both the BNXT and ionic paths:
+//   - BNXT: the static stablev60 provider only supports kernel uverbs ABI 1,
+//     but the bnxt_re kernel module reports ABI 8, so it rejects every device.
+//   - ionic: the static libibverbs lacks ibv_alloc_parent_domain (added in a
+//     later IBVERBS version), which the ionic GDA path needs for GPU-resident
+//     rings — calling it resolves to garbage and crashes ibv_create_qp_ex.
+// The system /lib64/libibverbs.so.1 is recent enough for both and loads the
+// matching system provider (libbnxt_re / libionic), so we dlopen it at runtime
+// and route ALL ibverbs calls in those paths through it.
 
 struct SysIbv {
   void* handle{nullptr};
@@ -188,6 +193,22 @@ struct SysIbv {
   struct ibv_mr* (*reg_mr)(struct ibv_pd*, void*, size_t, int){nullptr};
   int (*dereg_mr)(struct ibv_mr*){nullptr};
   int (*modify_qp)(struct ibv_qp*, struct ibv_qp_attr*, int){nullptr};
+  // ionic GDA path: basic create/destroy (real IBVERBS_1.1 symbols). The
+  // parent-domain and *_ex creates are static inlines in verbs.h that dispatch
+  // through the context op table, so they are NOT dlsym'd — they are called
+  // directly (as inlines) on the SysIbv-created context. ibv_create_qp_ex with
+  // comp_mask=PD is equivalent to ibv_create_qp on the (parent-domain) pd, so
+  // we use the basic create_qp symbol here.
+  struct ibv_cq* (*create_cq)(
+      struct ibv_context*,
+      int,
+      void*,
+      struct ibv_comp_channel*,
+      int){nullptr};
+  struct ibv_qp* (*create_qp)(struct ibv_pd*, struct ibv_qp_init_attr*){
+      nullptr};
+  int (*destroy_qp)(struct ibv_qp*){nullptr};
+  int (*destroy_cq)(struct ibv_cq*){nullptr};
 };
 
 static SysIbv* getSysIbv() {
@@ -231,17 +252,32 @@ static SysIbv* getSysIbv() {
     LOAD(reg_mr);
     LOAD(dereg_mr);
     LOAD(modify_qp);
+    // ionic-only extras (basic create/destroy; real IBVERBS_1.1 symbols).
+    LOAD(create_cq);
+    LOAD(create_qp);
+    LOAD(destroy_qp);
+    LOAD(destroy_cq);
 #undef LOAD
     if (!s_ibv.get_device_list || !s_ibv.open_device || !s_ibv.alloc_pd ||
         !s_ibv.query_port || !s_ibv.query_gid || !s_ibv.reg_mr ||
         !s_ibv.modify_qp) {
       return;
     }
+#if defined(NIC_IONIC)
+    // The ionic path creates/destroys the CQ/QP through SysIbv, so fail at load
+    // time (rather than later at QP creation) if libibverbs lacks these.
+    if (!s_ibv.create_cq || !s_ibv.create_qp || !s_ibv.destroy_qp ||
+        !s_ibv.destroy_cq) {
+      return;
+    }
+#endif
     s_loaded = true;
   });
   return s_loaded ? &s_ibv : nullptr;
 }
+#endif // NIC_BNXT || NIC_IONIC  (SysIbv)
 
+#ifdef NIC_BNXT
 // ===========================================================================
 // BNXT direct-verbs lazy loader
 // ===========================================================================
@@ -332,6 +368,169 @@ exportGpuBufferDmabuf(void* ptr, size_t size, int* outFd, uint64_t* outOffset) {
 }
 #endif // NIC_BNXT
 
+#ifdef NIC_IONIC
+// ===========================================================================
+// IONIC direct-verbs lazy loader (libionic.so) — provides the ionic_dv_* GDA
+// helpers (get_ctx/get_qp/get_cq/pd_set_*). Standard QP/CQ creation goes
+// through libibverbs; only these vendor extensions are dlopen'd.
+// ===========================================================================
+
+struct ionic_dv_funcs* getIonicDv() {
+  static ionic_dv_funcs s_funcs{};
+  static std::once_flag s_dlOnce;
+  static bool s_loaded = false;
+  std::call_once(s_dlOnce, []() {
+    void* lib = dlopen("libionic.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!lib) {
+      lib = dlopen("/usr/local/lib/libionic.so", RTLD_LAZY | RTLD_GLOBAL);
+    }
+    if (!lib) {
+      fprintf(
+          stderr,
+          "PipesGdaHost(IONIC): failed to dlopen libionic.so: %s\n",
+          dlerror());
+      return;
+    }
+    s_funcs.dl_handle = lib;
+    s_funcs.get_ctx =
+        reinterpret_cast<ionic_dv_get_ctx_fn>(dlsym(lib, "ionic_dv_get_ctx"));
+    s_funcs.qp_get_udma_idx = reinterpret_cast<ionic_dv_qp_get_udma_idx_fn>(
+        dlsym(lib, "ionic_dv_qp_get_udma_idx"));
+    s_funcs.get_cq =
+        reinterpret_cast<ionic_dv_get_cq_fn>(dlsym(lib, "ionic_dv_get_cq"));
+    s_funcs.get_qp =
+        reinterpret_cast<ionic_dv_get_qp_fn>(dlsym(lib, "ionic_dv_get_qp"));
+    s_funcs.pd_set_sqcmb = reinterpret_cast<ionic_dv_pd_set_sqcmb_fn>(
+        dlsym(lib, "ionic_dv_pd_set_sqcmb"));
+    s_funcs.pd_set_rqcmb = reinterpret_cast<ionic_dv_pd_set_rqcmb_fn>(
+        dlsym(lib, "ionic_dv_pd_set_rqcmb"));
+    s_funcs.pd_set_udma_mask = reinterpret_cast<ionic_dv_pd_set_udma_mask_fn>(
+        dlsym(lib, "ionic_dv_pd_set_udma_mask"));
+    // Optional: enables the compressed (CCQE) single-slot completion queue.
+    s_funcs.create_cq_ex = reinterpret_cast<ionic_dv_create_cq_ex_fn>(
+        dlsym(lib, "ionic_dv_create_cq_ex"));
+    if (!s_funcs.get_ctx || !s_funcs.qp_get_udma_idx || !s_funcs.get_cq ||
+        !s_funcs.get_qp || !s_funcs.pd_set_sqcmb || !s_funcs.pd_set_rqcmb ||
+        !s_funcs.pd_set_udma_mask) {
+      fprintf(
+          stderr,
+          "PipesGdaHost(IONIC): libionic missing required ionic_dv_* "
+          "symbols\n");
+      dlclose(lib);
+      s_funcs = ionic_dv_funcs{};
+      return;
+    }
+    s_loaded = true;
+  });
+  return s_loaded ? &s_funcs : nullptr;
+}
+
+// Parent-domain allocator: ionic SQ/CQ rings must live in GPU-uncached memory
+// so the GPU can build WQEs and poll CQEs in local HBM. ibverbs invokes these
+// callbacks when creating the CQ/QP on the parent domain. On allocation
+// failure we return IBV_ALLOCATOR_USE_DEFAULT so ibverbs falls back to its own
+// (host) allocator rather than crashing.
+static void* ionicPdAllocDeviceUncached(
+    struct ibv_pd* /*pd*/,
+    void* /*pd_context*/,
+    size_t size,
+    size_t /*alignment*/,
+    uint64_t /*resource_type*/) {
+  void* p = nullptr;
+  if (hipExtMallocWithFlags(&p, size, hipDeviceMallocUncached) != hipSuccess ||
+      !p) {
+    return IBV_ALLOCATOR_USE_DEFAULT;
+  }
+  // Zero the ring so ionic's CCQE color/valid bit starts clean: a stale slot
+  // would be misread as a completed CQE on the first poll. Fall back to the
+  // default (host) allocator if the zero-init fails rather than hand back a
+  // dirty buffer.
+  if (hipMemset(p, 0, size) != hipSuccess) {
+    hipFree(p);
+    return IBV_ALLOCATOR_USE_DEFAULT;
+  }
+  return p;
+}
+
+static void ionicPdReleaseMem(
+    struct ibv_pd* /*pd*/,
+    void* /*pd_context*/,
+    void* ptr,
+    uint64_t /*resource_type*/) {
+  if (ptr && ptr != IBV_ALLOCATOR_USE_DEFAULT) {
+    hipFree(ptr);
+  }
+}
+
+// Cached per-base-PD parent domains with the GPU-uncached ring allocator.
+// Two domains are created, one pinned to each udma pipeline (mask 1 and 2), and
+// QPs/CQs are round-robined across them (ionic exposes two uDMA pipelines).
+// This matters because ionic CCQE completion queues consume a scarce per-udma
+// resource: pinning all CQs to one udma exhausts it after ~3 (ENODEV on
+// create); spreading across both udma pipelines doubles the budget. Creating a
+// fresh parent domain per QP also exhausts resources, so the domains are cached
+// per base PD and reused (the per-QP SQ/CQ rings are still allocated via the
+// allocator callback, and freed when each QP/CQ is destroyed). The domains are
+// never freed (process-lifetime).
+struct IonicParentDomains {
+  struct ibv_pd* udma[2]{nullptr, nullptr};
+  int count{0};
+  unsigned next{0};
+};
+static std::mutex g_ionicParentDomainMutex;
+static std::map<struct ibv_pd*, IonicParentDomains> g_ionicParentDomains;
+
+static struct ibv_pd* getIonicParentDomain(
+    struct ibv_pd* basePd,
+    struct ionic_dv_funcs* dv) {
+  std::lock_guard<std::mutex> lk(g_ionicParentDomainMutex);
+  IonicParentDomains& e = g_ionicParentDomains[basePd];
+  if (e.count == 0) {
+    for (int i = 0; i < 2; ++i) {
+      ibv_parent_domain_init_attr pattr{};
+      pattr.pd = basePd;
+      pattr.comp_mask = IBV_PARENT_DOMAIN_INIT_ATTR_ALLOCATORS;
+      pattr.alloc = ionicPdAllocDeviceUncached;
+      pattr.free = ionicPdReleaseMem;
+      // ibv_alloc_parent_domain is a verbs.h static inline that dispatches via
+      // the base PD's context op table (the system libibverbs).
+      struct ibv_pd* pd = ibv_alloc_parent_domain(basePd->context, &pattr);
+      if (!pd) {
+        break; // single-udma device (or out of resources): use what we have
+      }
+      // Pin this domain to one udma pipeline (mask 1<<i) with CMB off. A silent
+      // pd_set_udma_mask failure would leave the domain on the wrong udma and
+      // re-introduce the CCQE per-udma ENODEV exhaustion this alternation
+      // exists to avoid, so drop the domain instead of caching it mis-pinned.
+      const int rcSqcmb = dv->pd_set_sqcmb(pd, false, false, false);
+      const int rcRqcmb = dv->pd_set_rqcmb(pd, false, false, false);
+      const int rcUdma =
+          dv->pd_set_udma_mask(pd, static_cast<uint8_t>(1u << i));
+      if (rcSqcmb != 0 || rcRqcmb != 0 || rcUdma != 0) {
+        fprintf(
+            stderr,
+            "[IONIC] pd_set_* failed for udma%d (sqcmb=%d rqcmb=%d "
+            "udma_mask=%d)\n",
+            i,
+            rcSqcmb,
+            rcRqcmb,
+            rcUdma);
+        ibv_dealloc_pd(pd);
+        break;
+      }
+      e.udma[i] = pd;
+      e.count++;
+    }
+    if (e.count == 0) {
+      return nullptr;
+    }
+  }
+  struct ibv_pd* pd = e.udma[e.next % e.count];
+  e.next++;
+  return pd;
+}
+#endif // NIC_IONIC
+
 // ===========================================================================
 // AMD-internal QP control block — tracks per-QP resources we registered so
 // destroy_qp_hl can undo them. The mlx5 path registers SQ/CQ/DBREC pages via
@@ -360,6 +559,13 @@ struct AmdBnxtQpInternal {
   // `freeQpResources`. Pointer is `dbRegion->dbr`, which is stored
   // independently in the `bnxt_re_dv_db_region_attr*` referenced by the QP.
   bool dbr_host_registered{false};
+};
+#elif defined(NIC_IONIC)
+struct AmdIonicQpInternal {
+  // The parent domain is shared/cached (see getIonicParentDomain), so it is not
+  // tracked or freed per-QP.
+  // Host doorbell page passed to hsa_amd_memory_lock_to_pool (for unlock).
+  void* db_page_host{nullptr};
 };
 #else
 struct AmdQpInternal {
@@ -476,7 +682,7 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
     int* num_devices,
     ibv_device*** out_list) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -490,7 +696,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
 
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_free_device_list(
     ibv_device** list) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->free_device_list) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -505,7 +711,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_free_device_list(
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_name(
     ibv_device* dev,
     const char** out_name) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->get_device_name) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -520,7 +726,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_name(
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_open_device(
     ibv_device* dev,
     ibv_context** out_ctx) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -533,7 +739,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_open_device(
 }
 
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_close_device(ibv_context* ctx) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->close_device) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -549,7 +755,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_close_device(ibv_context* ctx) {
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_alloc_pd(
     ibv_context* ctx,
     ibv_pd** out_pd) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -562,7 +768,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_alloc_pd(
 }
 
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->dealloc_pd) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -576,7 +782,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd) {
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_device(
     ibv_context* ctx,
     ibv_device_attr* attr) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->query_device) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -593,7 +799,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_port(
     ibv_context* ctx,
     uint8_t port,
     ibv_port_attr* attr) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -611,7 +817,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_gid(
     uint8_t port,
     int index,
     union ibv_gid* gid) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -630,7 +836,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
     std::size_t length,
     int access,
     ibv_mr** out_mr) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -643,7 +849,7 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
 }
 
 pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr) {
-#ifdef NIC_BNXT
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->dereg_mr) {
     return PIPES_GDA_ERROR_DRIVER;
@@ -967,16 +1173,21 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
     mask |= IBV_QP_AV;
   }
 
-  // RC QP responder/initiator depths are required by the kernel for the
-  // INIT->RTR and RTR->RTS transitions, but NVIDIA DOCA's public API does
-  // not expose setters for `max_dest_rd_atomic` / `max_rd_atomic`. We set
-  // both to 16.
+  // RC responder/initiator depths (max_dest_rd_atomic on INIT->RTR,
+  // max_rd_atomic on RTR->RTS) are required by the kernel, but DOCA's public
+  // API exposes no setters, so hardcode them. The ionic Pensando driver caps
+  // these at 15 and rejects 16 with EINVAL; mlx5/bnxt accept 16.
+#ifdef NIC_IONIC
+  constexpr uint8_t kMaxRdAtomic = 15;
+#else
+  constexpr uint8_t kMaxRdAtomic = 16;
+#endif
   if ((mask & IBV_QP_STATE) != 0) {
     if (ibvAttr.qp_state == IBV_QPS_RTR) {
-      ibvAttr.max_dest_rd_atomic = 16;
+      ibvAttr.max_dest_rd_atomic = kMaxRdAtomic;
       mask |= IBV_QP_MAX_DEST_RD_ATOMIC;
     } else if (ibvAttr.qp_state == IBV_QPS_RTS) {
-      ibvAttr.max_rd_atomic = 16;
+      ibvAttr.max_rd_atomic = kMaxRdAtomic;
       mask |= IBV_QP_MAX_QP_RD_ATOMIC;
     }
   }
@@ -989,6 +1200,14 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
     return PIPES_GDA_ERROR_DRIVER;
   }
   int rc = dv->modify_qp(qp, &ibvAttr, mask, 0, 0);
+#elif defined(NIC_IONIC)
+  // ionic: the QP was created via the system libibverbs (SysIbv), so modify it
+  // through the same library (the static libibverbs is the wrong instance).
+  auto* iv = getSysIbv();
+  if (!iv || !iv->modify_qp) {
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  int rc = iv->modify_qp(qp, &ibvAttr, mask);
 #else
   int rc = ibv_modify_qp(qp, &ibvAttr, mask);
 #endif
@@ -1546,7 +1765,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   return PIPES_GDA_SUCCESS;
 }
 
-#else // !NIC_BNXT (mlx5)
+#elif defined(NIC_MLX5) // mlx5
 
 // One QP = ibv_create_cq + ibv_create_qp (basic libibverbs setup) + raw
 // mlx5dv inspection to grab the SQ/CQ buffers and BlueFlame UAR + HSA
@@ -1797,7 +2016,301 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   return PIPES_GDA_SUCCESS;
 }
 
-#endif // NIC_BNXT (mlx5)
+#else // NIC_IONIC
+
+// One QP = a cached, udma-pinned parent domain with a GPU-uncached ring
+// allocator + ionic_dv_create_cq_ex (CCQE) + basic create_qp (RC), then
+// ionic_dv_get_{ctx,qp,cq} to recover the raw SQ/CQ rings and doorbell page,
+// the doorbell page HSA-mapped to the GPU, and construction of the device-side
+// `pipes_gda_gpu_dev_verbs_qp` descriptor.
+pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
+    const pipes_gda_gpu_verbs_qp_init_attr_hl* attr,
+    pipes_gda_gpu_verbs_qp_hl** out_qp) {
+  if (!attr || !out_qp || !attr->ibpd) {
+    return PIPES_GDA_ERROR_INVALID_VALUE;
+  }
+  // sq_nwqe feeds both the CQ depth (cqAttr.cqe) and the SQ depth
+  // (cap.max_send_wr); a zero depth yields empty rings whose device-side
+  // sq_mask/cqe_mask (depth-1) then drive out-of-bounds ring indices.
+  if (attr->sq_nwqe == 0) {
+    fprintf(stderr, "[IONIC] create_qp_hl: sq_nwqe must be > 0\n");
+    return PIPES_GDA_ERROR_INVALID_VALUE;
+  }
+  if (!ensureHsaInitialized()) {
+    return PIPES_GDA_ERROR_INITIALIZATION;
+  }
+  auto* dv = getIonicDv();
+  if (!dv) {
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  // QP/CQ/PD are created through the system libibverbs (SysIbv): fbcode's
+  // static libibverbs is the wrong instance for the ctx the transport opened
+  // via the SysIbv-routed wrappers, and is too old for parent domains. The
+  // parent-domain / create_cq_ex calls below are verbs.h static inlines that
+  // dispatch through the (system) ctx op table; only the basic create/destroy
+  // (real symbols) come from the SysIbv table.
+  auto* iv = getSysIbv();
+  if (!iv || !iv->create_cq || !iv->create_qp || !iv->destroy_qp ||
+      !iv->destroy_cq || !iv->dealloc_pd) {
+    fprintf(
+        stderr,
+        "PipesGdaHost(IONIC): system libibverbs missing required symbols "
+        "(create_qp/create_cq/...)\n");
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+
+  ibv_pd* pd = attr->ibpd;
+  ibv_context* ctx = pd->context;
+  int hipDevId = -1;
+  if (hipGetDevice(&hipDevId) != hipSuccess) {
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+
+  ibv_cq* cq = nullptr;
+  ibv_qp* qp = nullptr;
+  void* gpuDbPage = nullptr;
+  void* dbHostPtr = nullptr; // host doorbell page passed to the HSA lock
+  bool dbLocked = false;
+
+  // The QP/CQ are created on a shared, cached parent domain (see
+  // getIonicParentDomain) — it is NOT deallocated here.
+  auto unwind = [&]() {
+    if (qp) {
+      iv->destroy_qp(qp);
+    }
+    if (cq) {
+      iv->destroy_cq(cq);
+    }
+    if (dbLocked && dbHostPtr) {
+      hsa_amd_memory_unlock(dbHostPtr);
+    }
+  };
+
+  // ---- Step 1: shared parent domain with the GPU-uncached ring allocator ----
+  // Cached per base PD — creating one per QP exhausts NIC resources (ENODEV).
+  ibv_pd* pdUdma = getIonicParentDomain(pd, dv);
+  if (!pdUdma) {
+    fprintf(
+        stderr,
+        "[IONIC] getIonicParentDomain failed errno=%d (%s)\n",
+        errno,
+        std::strerror(errno));
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  // NOTE: do NOT call pd_set_sqcmb/rqcmb/udma_mask here. getIonicParentDomain
+  // already pins each cached domain to one udma pipeline (mask 1<<i) and turns
+  // CMB off at creation, and round-robins QPs across the two pinned domains.
+  // Re-setting udma_mask=1 on the shared/cached domain would force every CQ/QP
+  // back onto udma0 (and corrupt the udma1 domain's mask), re-introducing the
+  // CCQE per-udma ENODEV-after-~3 exhaustion the alternation was added to
+  // avoid. The mask is honored at queue-creation time, so selecting the
+  // pre-pinned domain is sufficient (the two uDMA pipelines alternate).
+
+  // ---- Step 2: CQ (compressed CCQE single-slot completion if available) ----
+  ibv_cq_init_attr_ex cqAttr{};
+  cqAttr.cqe = attr->sq_nwqe;
+  cqAttr.comp_mask = IBV_CQ_INIT_ATTR_MASK_PD;
+  cqAttr.parent_domain = pdUdma;
+  ibv_cq_ex* cqEx = nullptr;
+  if (dv->create_cq_ex) {
+    // ionic_dv_create_cq_ex: real libionic symbol; requests the compressed
+    // CCQE single-slot completion queue.
+    ionic_cq_init_attr_ex ionicCq{};
+    ionicCq.comp_mask = IONIC_CQ_INIT_ATTR_MASK_FLAGS;
+    ionicCq.flags = IONIC_CQ_INIT_ATTR_CCQE;
+    cqEx = dv->create_cq_ex(ctx, &cqAttr, &ionicCq);
+  }
+  if (!cqEx) {
+    // The device backend (IonicNicBackend::pollOneCqAt) implements ONLY the
+    // compressed CCQE completion model (single CQE slot, 24-bit MSN). A plain
+    // color-bit CQ (cq_mask != 0) would be silently mis-polled (it always reads
+    // slot 0), so require CCQE here rather than fall back to ibv_create_cq_ex /
+    // iv->create_cq, which both produce a full ring the backend cannot read.
+    fprintf(
+        stderr,
+        "[IONIC] CCQE CQ unavailable (ionic_dv_create_cq_ex %s); the device "
+        "backend requires CCQE — aborting QP setup. errno=%d (%s)\n",
+        dv->create_cq_ex ? "returned null" : "not loaded",
+        errno,
+        std::strerror(errno));
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  // ibv_cq_ex_to_cq is a header-only downcast (ibv_cq is the common prefix of
+  // ibv_cq_ex); no library symbol needed.
+  cq = reinterpret_cast<ibv_cq*>(cqEx);
+  fprintf(stderr, "[IONIC] CQ OK (ccqe=1)\n");
+
+  // ---- Step 3: QP (RC) on the udma parent domain ----
+  // ibv_create_qp_ex with comp_mask=PD is equivalent to ibv_create_qp on the
+  // parent-domain pd, so use the basic (real-symbol) create_qp directly.
+  ibv_qp_init_attr qpAttr{};
+  qpAttr.qp_type = IBV_QPT_RC;
+  qpAttr.send_cq = cq;
+  qpAttr.recv_cq = cq;
+  qpAttr.cap.max_send_wr = attr->sq_nwqe;
+  qpAttr.cap.max_recv_wr = 1;
+  qpAttr.cap.max_send_sge = 1;
+  qpAttr.cap.max_recv_sge = 1;
+  qpAttr.cap.max_inline_data = 32;
+  qpAttr.sq_sig_all = 0;
+  qp = iv->create_qp(pdUdma, &qpAttr);
+  if (!qp) {
+    fprintf(
+        stderr,
+        "[IONIC] create_qp failed errno=%d (%s)\n",
+        errno,
+        std::strerror(errno));
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  fprintf(stderr, "[IONIC] QP OK qp_num=%u\n", qp->qp_num);
+
+  // ---- Step 4: recover GDA context + map the doorbell page to the GPU ----
+  ionic_dv_ctx dvctx{};
+  if (dv->get_ctx(&dvctx, ctx) != 0) {
+    fprintf(
+        stderr,
+        "[IONIC] ionic_dv_get_ctx failed errno=%d (%s)\n",
+        errno,
+        std::strerror(errno));
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  size_t pageSize = sysconf(_SC_PAGESIZE);
+  if (!hsaMemoryLockToGpu(dvctx.db_page, pageSize, &gpuDbPage, hipDevId)) {
+    fprintf(stderr, "[IONIC] hsaMemoryLockToGpu(db_page) failed\n");
+    unwind();
+    return PIPES_GDA_ERROR_INITIALIZATION;
+  }
+  dbLocked = true;
+  dbHostPtr = dvctx.db_page;
+  uint64_t* dbPageHost = reinterpret_cast<uint64_t*>(dvctx.db_page);
+  uint64_t* gpuDbPageU64 = reinterpret_cast<uint64_t*>(gpuDbPage);
+  uint64_t* gpuDbPtr = &gpuDbPageU64[dvctx.db_ptr - dbPageHost];
+  uint64_t* gpuDbSq = &gpuDbPtr[dvctx.sq_qtype];
+  uint64_t* gpuDbCq = &gpuDbPtr[dvctx.cq_qtype];
+
+  // ---- Step 5: recover the raw SQ/CQ rings ----
+  uint8_t udmaIdx = dv->qp_get_udma_idx(qp);
+  ionic_dv_cq dvcq{};
+  if (dv->get_cq(&dvcq, cq, udmaIdx) != 0) {
+    fprintf(
+        stderr,
+        "[IONIC] ionic_dv_get_cq failed (udma=%u) errno=%d (%s)\n",
+        udmaIdx,
+        errno,
+        std::strerror(errno));
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  ionic_dv_qp dvqp{};
+  if (dv->get_qp(&dvqp, qp) != 0) {
+    fprintf(
+        stderr,
+        "[IONIC] ionic_dv_get_qp failed errno=%d (%s)\n",
+        errno,
+        std::strerror(errno));
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+  fprintf(
+      stderr,
+      "[IONIC] get_ctx/cq/qp OK: sq.ptr=%p sq.mask=%u sq.stride_log2=%u "
+      "cq.ptr=%p cq.mask=%u cq.stride_log2=%u db_page=%p\n",
+      dvqp.sq.ptr,
+      dvqp.sq.mask,
+      dvqp.sq.stride_log2,
+      dvcq.q.ptr,
+      dvcq.q.mask,
+      dvcq.q.stride_log2,
+      dvctx.db_page);
+
+  // The device backend addresses the SQ as an array of ionic_v1_wqe (64-byte
+  // stride); require the provider's reported stride to match.
+  if (dvqp.sq.stride_log2 != 6) {
+    fprintf(
+        stderr,
+        "[IONIC] unexpected SQ stride_log2=%u (expected 6 / 64B)\n",
+        dvqp.sq.stride_log2);
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+
+  // ---- Step 6: build the device-side QP descriptor ----
+  pipes_gda_gpu_dev_verbs_qp hostQp{};
+  hostQp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(dvqp.sq.ptr);
+  hostQp.sq_wqe_num = static_cast<uint32_t>(1u) << dvqp.sq.depth_log2;
+  hostQp.sq_wqe_mask = dvqp.sq.mask;
+  hostQp.sq_num = qp->qp_num;
+  hostQp.sq_rsvd_index = 0;
+  hostQp.sq_ready_index = 0;
+  hostQp.nic_handler = PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
+  hostQp.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+
+  hostQp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(dvcq.q.ptr);
+  hostQp.cq_sq.cq_num =
+      qp->qp_num; // cqn not exposed by ionic_dv; unused on dev
+  hostQp.cq_sq.cqe_num = static_cast<uint32_t>(1u) << dvcq.q.depth_log2;
+  hostQp.cq_sq.cqe_ci = 0;
+  hostQp.cq_sq.cqe_mask = dvcq.q.mask;
+  hostQp.cq_sq.cqe_size = static_cast<uint8_t>(1u << dvcq.q.stride_log2);
+  hostQp.cq_sq.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+
+  hostQp.nic.ionic.sq_dbreg = gpuDbSq;
+  hostQp.nic.ionic.sq_dbval = dvqp.sq.db_val;
+  hostQp.nic.ionic.sq_mask = dvqp.sq.mask;
+  hostQp.nic.ionic.sq_buf = dvqp.sq.ptr;
+  hostQp.nic.ionic.sq_dbprod = 0;
+  hostQp.nic.ionic.cq_dbreg = gpuDbCq;
+  hostQp.nic.ionic.cq_dbval = dvcq.q.db_val;
+  hostQp.nic.ionic.cq_mask = dvcq.q.mask;
+  hostQp.nic.ionic.cq_buf = dvcq.q.ptr;
+  hostQp.nic.ionic.cq_pos = 0;
+  hostQp.nic.ionic.cq_dbpos = 0;
+  hostQp.nic.ionic.sq_msn = 0;
+
+  pipes_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
+  if (hipMalloc(&gpuQp, sizeof(pipes_gda_gpu_dev_verbs_qp)) != hipSuccess) {
+    unwind();
+    return PIPES_GDA_ERROR_NO_MEMORY;
+  }
+  if (hipMemcpy(
+          gpuQp,
+          &hostQp,
+          sizeof(pipes_gda_gpu_dev_verbs_qp),
+          hipMemcpyHostToDevice) != hipSuccess) {
+    hipFree(gpuQp);
+    unwind();
+    return PIPES_GDA_ERROR_DRIVER;
+  }
+
+  // ---- Step 7: assemble the public handle ----
+  auto* internal = new (std::nothrow) AmdIonicQpInternal();
+  if (!internal) {
+    hipFree(gpuQp);
+    unwind();
+    return PIPES_GDA_ERROR_NO_MEMORY;
+  }
+  internal->db_page_host = dvctx.db_page;
+
+  auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
+  if (!out) {
+    delete internal;
+    hipFree(gpuQp);
+    unwind();
+    return PIPES_GDA_ERROR_NO_MEMORY;
+  }
+  out->qp = qp;
+  out->cq = cq;
+  out->gpu_qp = gpuQp;
+  out->amd_internal = internal;
+  out->qp_gverbs = reinterpret_cast<pipes_gda_gpu_verbs_qp*>(out);
+  *out_qp = out;
+  return PIPES_GDA_SUCCESS;
+}
+
+#endif // NIC_BNXT / NIC_MLX5 / NIC_IONIC
 
 pipes_gda_error_t pipes_gda_gpu_verbs_get_qp_dev(
     pipes_gda_gpu_verbs_qp* qp_gverbs,
@@ -1864,6 +2377,24 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
     if (internal->rq_buf) {
       hipFree(internal->rq_buf);
     }
+    delete internal;
+  }
+#elif defined(NIC_IONIC)
+  // ionic QP/CQ were created via the system libibverbs (SysIbv); tear them
+  // down through the same library.
+  auto* iv = getSysIbv();
+  auto* internal = static_cast<AmdIonicQpInternal*>(qp->amd_internal);
+  if (iv && qp->qp) {
+    iv->destroy_qp(qp->qp);
+  }
+  if (iv && qp->cq) {
+    iv->destroy_cq(qp->cq);
+  }
+  if (internal) {
+    if (internal->db_page_host) {
+      hsa_amd_memory_unlock(internal->db_page_host);
+    }
+    // The parent domain is shared/cached and intentionally not freed here.
     delete internal;
   }
 #else
@@ -1968,78 +2499,5 @@ pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_group_hl(
 }
 
 } // namespace pipes_gda
-
-// ===========================================================================
-// DMA-BUF export — NIC-agnostic.
-// ===========================================================================
-//
-// HSA equivalent of NVIDIA's `cuMemGetAddressRange + doca_gpu_dmabuf_fd`
-// pipeline. Loads `hsa_amd_portable_export_dmabuf` lazily via dlsym since
-// it isn't always exposed by older HSA headers.
-
-namespace comms::prims {
-
-std::optional<DmaBufExport>
-export_gpu_dmabuf_aligned(void* ptr, std::size_t size, DmaBufExportKind kind) {
-  // mlx5 Data-Direct (BAR1 PCIe mapping) is NVIDIA-only; the AMD HSA export has
-  // no equivalent, so report Pcie as unavailable. (Data-Direct is also disabled
-  // in AMD NIC discovery, so this is never requested at runtime.)
-  if (kind == DmaBufExportKind::Pcie) {
-    return std::nullopt;
-  }
-  // Skip dmabuf for non-GPU pointers. HSA's
-  // `hsa_amd_portable_export_dmabuf` will export host-pinned
-  // (`hipHostMalloc`) memory as a dmabuf, but the resulting fd
-  // represents host pages — passing it to `ibv_reg_dmabuf_mr` causes
-  // silent RDMA corruption AND can SIGSEGV inside libmlx5/kernel
-  // mlx5_ib.
-  hipPointerAttribute_t attrs{};
-  if (hipPointerGetAttributes(&attrs, ptr) != hipSuccess ||
-      attrs.type != hipMemoryTypeDevice) {
-    return std::nullopt;
-  }
-
-  using ExportDmabufFn = int (*)(const void*, size_t, int*, uint64_t*);
-  static ExportDmabufFn exportDmabuf = nullptr;
-  static std::once_flag dlOpenOnce;
-  std::call_once(dlOpenOnce, []() {
-    void* lib = dlopen("libhsa-runtime64.so", RTLD_LAZY | RTLD_NOLOAD);
-    if (!lib) {
-      lib = dlopen("libhsa-runtime64.so.1", RTLD_LAZY | RTLD_NOLOAD);
-    }
-    if (lib) {
-      exportDmabuf = reinterpret_cast<ExportDmabufFn>(
-          dlsym(lib, "hsa_amd_portable_export_dmabuf"));
-    }
-  });
-
-  if (!exportDmabuf) {
-    return std::nullopt;
-  }
-
-  int fd = -1;
-  uint64_t dmabufOffset = 0;
-  int hsaStatus = exportDmabuf(ptr, size, &fd, &dmabufOffset);
-  if (hsaStatus != 0 || fd < 0) {
-    return std::nullopt;
-  }
-
-  // Skip dmabuf if HSA returned a non-page-aligned offset — `ibv_reg_dmabuf_mr`
-  // would SIGSEGV inside libmlx5 on AMD MI300X.
-  if (dmabufOffset % static_cast<uint64_t>(sysconf(_SC_PAGESIZE)) != 0) {
-    close(fd);
-    return std::nullopt;
-  }
-
-  uintptr_t alignedBase = reinterpret_cast<uintptr_t>(ptr) - dmabufOffset;
-  DmaBufExport ex;
-  ex.fd = fd;
-  ex.alignment.alignedBase = reinterpret_cast<void*>(alignedBase);
-  ex.alignment.alignedSize = size + dmabufOffset;
-  ex.alignment.dmabufOffset = dmabufOffset;
-  return ex;
-}
-
-} // namespace comms::prims
 
 #endif // __HIP_PLATFORM_AMD__

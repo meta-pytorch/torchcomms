@@ -31,6 +31,10 @@
 #include "comms/prims/transport/amd/DocaCompat.h"
 // meta::comms::DeviceBuffer (HIP shim) for the send/recv staging bulks.
 #include "comms/prims/transport/amd/HipHostCompat.h"
+#if defined(NIC_IONIC)
+// ionic (AMD Pensando) routable RoCEv2 GID discovery — see call site below.
+#include "comms/prims/transport/amd/nic/ionic/IonicGidDiscovery.h"
+#endif
 #else
 #include <cuda_runtime.h>
 
@@ -233,6 +237,18 @@ void* checkedSlotAlloc(
   }
   return ptr;
 }
+
+std::size_t alignUp(std::size_t x, std::size_t a) {
+  return ((x + a - 1) / a) * a;
+}
+
+void checkSendRecvSignalAlignment(const void* ptr, const char* label) {
+  if (ptr != nullptr &&
+      reinterpret_cast<std::uintptr_t>(ptr) % alignof(SignalState) != 0) {
+    throw std::runtime_error(
+        fmt::format("{} must be {}-byte aligned", label, alignof(SignalState)));
+  }
+}
 } // namespace
 
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
@@ -367,12 +383,15 @@ std::size_t MultiPeerIbTransportBase::sendRecvStagingBytesPerPeer() const {
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
+  // Slots are cacheline-strided (kSendRecvSignalSlotStride), not packed, to
+  // avoid cross-group false sharing of the send/recv sync flags.
   return 2 * static_cast<std::size_t>(config_.max_num_channels) *
-      sizeof(uint64_t);
+      kSendRecvSignalSlotStride;
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvCounterBytesPerPeer() const {
-  return static_cast<std::size_t>(config_.max_num_channels) * sizeof(uint64_t);
+  return static_cast<std::size_t>(config_.max_num_channels) *
+      kSendRecvSignalSlotStride;
 }
 
 IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
@@ -465,16 +484,13 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   // buffers; pack them into ONE granularity-aligned allocation so they cost a
   // single granularity unit and share one aligned Data-Direct MR (offset 0),
   // instead of one aligned unit each. Region layout: [signal | (device
-  // counter)], each 16B-aligned; the whole allocation rounded to the VMM
-  // granularity so the DD export offset is 0.
+  // counter)], each SignalState-aligned; the whole allocation rounded to the
+  // VMM granularity so the DD export offset is 0.
   const std::size_t signalTotal = signalPerPeer * numPeers;
   const bool deviceCounter = (counterStorage == IbCounterStorage::Device);
   const std::size_t counterTotal =
       deviceCounter ? counterPerPeer * numPeers : 0;
-  auto alignUp = [](std::size_t x, std::size_t a) {
-    return ((x + a - 1) / a) * a;
-  };
-  const std::size_t counterOff = alignUp(signalTotal, std::size_t{16});
+  const std::size_t counterOff = alignUp(signalTotal, alignof(SignalState));
   const std::size_t controlBytes = alignUp(counterOff + counterTotal, ddAlign);
   sendRecvControlBulk_ =
       std::make_unique<meta::comms::DeviceBuffer>(controlBytes);
@@ -482,6 +498,8 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
       "MultiPeerIbTransport: zero send/recv control bulk");
   char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
+  checkSendRecvSignalAlignment(
+      controlBase, "MultiPeerIbTransport: send/recv signal base");
 
   // Staging is bulk data: opt into Relaxed Ordering. Signal/counter stay strict
   // so a flag write can't be reordered ahead of the data on the shared route.
@@ -506,6 +524,9 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   if (deviceCounter) {
     // Device counter is a view into the control MR (same lkey). The NIC bumps
     // it via a loopback RDMA atomic (IBGDA).
+    checkSendRecvSignalAlignment(
+        controlBase + counterOff,
+        "MultiPeerIbTransport: send/recv counter base");
     sendRecvCounterBulkReg_ = sendRecvSignalBulkReg_.subBuffer(counterOff);
     counterBulkBuf = sendRecvCounterBulkReg_;
     counterCompletionBulkBuf = sendRecvCounterBulkReg_;
@@ -518,6 +539,12 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
         IbCounterStorage::HostPinned,
         counterPerPeer * numPeers,
         "send/recv host counter");
+    checkSendRecvSignalAlignment(
+        sendRecvHostCounterAllocation_.devicePtr,
+        "MultiPeerIbTransport: send/recv host counter device base");
+    checkSendRecvSignalAlignment(
+        sendRecvHostCounterAllocation_.hostPtr,
+        "MultiPeerIbTransport: send/recv host counter host base");
     counterBulkBuf = IbgdaLocalBuffer(
         sendRecvHostCounterAllocation_.devicePtr, NetworkLKeys{});
     counterCompletionBulkBuf = IbgdaLocalBuffer(
@@ -636,12 +663,25 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
   const bool deviceCounter = (counterStorage == IbCounterStorage::Device);
 
   // One contiguous device buffer: sendStaging | recvStaging | signal,
-  // plus the counter when it is device-resident. A HostPinned counter is
-  // allocated separately (host-mapped, never RDMA-registered).
-  std::size_t total = 2 * stagingPerPeer + signalPerPeer;
+  // plus the counter when it is device-resident. SignalState-backed regions are
+  // padded before their starts so the first slot and every strided slot are
+  // aligned. A HostPinned counter is allocated separately (host-mapped, never
+  // RDMA-registered).
+  std::size_t off = 0;
+  const std::size_t sendStagingOff = off;
+  off += stagingPerPeer;
+  const std::size_t recvStagingOff = off;
+  off += stagingPerPeer;
+  off = alignUp(off, alignof(SignalState));
+  const std::size_t signalOff = off;
+  off += signalPerPeer;
+  std::size_t counterOff = 0;
   if (deviceCounter) {
-    total += counterPerPeer;
+    off = alignUp(off, alignof(SignalState));
+    counterOff = off;
+    off += counterPerPeer;
   }
+  const std::size_t total = off;
   auto buf = std::make_unique<meta::comms::DeviceBuffer>(total);
   checkSlotGpu(
       slotGpuMemset(buf->get(), 0, total),
@@ -649,24 +689,30 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
   auto reg = registerBuffer(buf->get(), total);
 
   char* p = static_cast<char*>(buf->get());
-  std::size_t off = 0;
   auto& pb = sendRecvPeerBuffers_[peerIndex];
-  pb.sendStaging = IbgdaLocalBuffer(p + off, reg.lkey_per_device);
-  off += stagingPerPeer;
-  void* recvStagingPtr = p + off;
+  pb.sendStaging = IbgdaLocalBuffer(p + sendStagingOff, reg.lkey_per_device);
+  void* recvStagingPtr = p + recvStagingOff;
   pb.recvStaging = IbgdaLocalBuffer(recvStagingPtr, reg.lkey_per_device);
-  off += stagingPerPeer;
-  void* signalPtr = p + off;
+  void* signalPtr = p + signalOff;
+  checkSendRecvSignalAlignment(
+      signalPtr, "MultiPeerIbTransport: lazy send/recv signal base");
   pb.signal = IbgdaLocalBuffer(signalPtr, reg.lkey_per_device);
-  off += signalPerPeer;
   if (deviceCounter) {
-    pb.counter = IbgdaLocalBuffer(p + off, reg.lkey_per_device);
+    checkSendRecvSignalAlignment(
+        p + counterOff, "MultiPeerIbTransport: lazy send/recv counter base");
+    pb.counter = IbgdaLocalBuffer(p + counterOff, reg.lkey_per_device);
     pb.counterCompletion = pb.counter;
   } else {
     auto alloc = allocateCounterSlotAllocation(
         IbCounterStorage::HostPinned,
         counterPerPeer,
         "lazy send/recv host counter");
+    checkSendRecvSignalAlignment(
+        alloc.devicePtr,
+        "MultiPeerIbTransport: lazy send/recv host counter device base");
+    checkSendRecvSignalAlignment(
+        alloc.hostPtr,
+        "MultiPeerIbTransport: lazy send/recv host counter host base");
     pb.counter = IbgdaLocalBuffer(alloc.devicePtr, NetworkLKeys{});
     pb.counterCompletion = IbgdaLocalBuffer(alloc.hostPtr, NetworkLKeys{});
     lazySendRecvHostCounters_[peerIndex] = std::move(alloc);
@@ -843,6 +889,10 @@ void MultiPeerIbTransportBase::openNics() {
   relaxedOrderingCapable_ = numNics_ > 0;
 
   // Open + setup each NIC: find by name, open ctx, alloc PD, query GID + port.
+  // Each NIC resolves its GID starting from the caller-configured default, not
+  // a previous NIC's discovered index; captured once so per-NIC discovery below
+  // cannot leak across iterations.
+  const int callerGidIndex = gidIndex_;
   for (int n = 0; n < numNics_; ++n) {
     int nicIdx = -1;
     for (int i = 0; i < numDevices; i++) {
@@ -888,12 +938,29 @@ void MultiPeerIbTransportBase::openNics() {
           deviceList[nicIdx], nics_[n].ibvCtx, nics_[n].ibvPd);
     }
 
+    int nicGidIndex = callerGidIndex;
     if (symbols.ibv_internal_query_gid(
-            nics_[n].ibvCtx, 1, gidIndex_, &nics_[n].localGid) != 0) {
+            nics_[n].ibvCtx, 1, nicGidIndex, &nics_[n].localGid) != 0) {
       throw std::runtime_error(
-          "Failed to query GID at index " + std::to_string(gidIndex_) +
+          "Failed to query GID at index " + std::to_string(nicGidIndex) +
           " on NIC " + nics_[n].deviceName);
     }
+
+#if defined(NIC_IONIC)
+    // ionic's routable RoCEv2 GID is not at the shared default index 3 (that
+    // slot is empty), so auto-discover it; see IonicGidDiscovery.h.
+    resolveRoceGidIndex(
+        symbols,
+        nics_[n].ibvCtx,
+        nics_[n].deviceName,
+        /*port=*/1,
+        /*callerPinnedIndex=*/config_.gidIndex.has_value(),
+        nicGidIndex,
+        nics_[n].localGid);
+#endif
+    // The transport uses one shared sgid_index for all NICs' address handles;
+    // ionic deployments are homogeneous, so each NIC resolves the same index.
+    gidIndex_ = nicGidIndex;
 
     auto gidStr = fmt::format(
         "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:"

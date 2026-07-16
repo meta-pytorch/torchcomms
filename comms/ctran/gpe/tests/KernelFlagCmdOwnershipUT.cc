@@ -104,7 +104,7 @@ TEST_F(KernelFlagCmdOwnershipTest, UnprotectedFlagIsReclaimed) {
   // Simulate kernel writing KERNEL_UNSET after replay (the bug scenario:
   // setPersistent() not called, so the flag becomes reclaimable).
   for (int i = 0; i < flag->numGroups_; ++i) {
-    flag->flag_[i] = KERNEL_UNSET;
+    flag->dev.flag_[i] = KERNEL_UNSET;
   }
   EXPECT_FALSE(flag->inUse());
 

@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/algos/AllGatherP/CommUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/checks.h"
@@ -159,7 +160,7 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
 namespace ctran::allgatherp {
 extern __global__ void ncclKernelAllGatherPDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 
 commResult_t AlgoImpl::execDirect(

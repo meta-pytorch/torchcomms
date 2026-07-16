@@ -15,14 +15,15 @@
 
 template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterRing(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   devStateLoadToShm(devState);
@@ -45,8 +46,8 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterRing(
 #define DECL_CTRAN_REDUCESCATTERRING_KERN(T, RedOp)   \
   template __global__ void __launch_bounds__(1024, 1) \
       ncclKernelReduceScatterRing<T, RedOp>(          \
-          int* flag,                                  \
-          CtranAlgoDeviceState* devState,             \
+          ctran::gpe::KernelFlagDev * flag,           \
+          CtranAlgoDeviceState * devState,            \
           ctran::reducescatter::KernelArgs args)
 
 #endif

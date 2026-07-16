@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -15,8 +17,10 @@
 #include <folly/Synchronized.h>
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/gpe/GpeDeviceRing.h"
 #include "comms/ctran/profiler/GpeProfiler.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
@@ -26,7 +30,7 @@
 
 struct CommLogData;
 
-struct KernelFlagItem {
+struct alignas(128) KernelFlagItem {
   using Self = KernelFlagItem;
 
   static const char* name() {
@@ -35,8 +39,11 @@ struct KernelFlagItem {
 
   void reset() {
     for (int i = 0; i < numGroups_; i++) {
-      flag_[i] = KERNEL_UNSET;
+      dev.flag_[i] = KERNEL_UNSET;
     }
+    // Clear the full ring header so enabled==1 always implies ring/cmdId are
+    // current; submit() re-arms it per-cmd on the ring path.
+    dev.gpeHdr = {};
   }
 
   bool inUse() {
@@ -44,7 +51,7 @@ struct KernelFlagItem {
       return true;
     }
     for (int i = 0; i < numGroups_; i++) {
-      if (flag_[i] != KERNEL_UNSET) {
+      if (dev.flag_[i] != KERNEL_UNSET) {
         return true;
       }
     }
@@ -53,14 +60,17 @@ struct KernelFlagItem {
 
   void onPop() {
     for (int i = 0; i < CTRAN_ALGO_MAX_THREAD_BLOCKS; ++i) {
-      flag_[i] = KERNEL_SCHEDULED;
+      dev.flag_[i] = KERNEL_SCHEDULED;
     }
     numGroups_ = 1;
+    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
+    // never be published; submit() re-arms it per-cmd on the ring path.
+    dev.gpeHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
     for (int i = 0; i < numGroups_; ++i) {
-      if (flag_[i] != flag) {
+      if (dev.flag_[i] != flag) {
         return false;
       }
     }
@@ -69,7 +79,7 @@ struct KernelFlagItem {
 
   void setFlagPerGroup(int flag) {
     for (int i = 0; i < numGroups_; ++i) {
-      flag_[i] = flag;
+      dev.flag_[i] = flag;
     }
   }
 
@@ -84,36 +94,19 @@ struct KernelFlagItem {
     persistent_ = false;
   }
 
-  volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
+  // Device-facing flag object (per-block flags + ring header). Passed to the
+  // kernel as &dev (a ctran::gpe::KernelFlagDev*); MUST be the first member so
+  // that pointer is at offset 0 of the KernelFlagItem.
+  ctran::gpe::KernelFlagDev dev;
   int numGroups_{1};
   // If true, inUse() always returns true — prevents reclaim() from stealing
   // the flag while a persistent cmd (graph capture) still owns it.
   // Not cleared by reset() — only cleared by clearPersistent().
   bool persistent_{false};
-  // padding for different KernelFlagItems to be on different cache lines.
-  static constexpr int kCacheLineSizeBytes = 128;
-  // -2 ints: one for numGroups_, one for persistent_ (padded to int)
-  int unused[(kCacheLineSizeBytes - 2 * sizeof(int)) / sizeof(int)];
 
   void _() {
     // Make sure KernelFlagItem satisfies the PinnedHostItem concept
     static_assert(PinnedHostItem<Self>);
-
-    // The following compile-time check is a hint of the memory usage
-    // KernelFlag uses 384 bytes of pinned memory
-    static_assert(
-        sizeof(Self) == 4 * CTRAN_ALGO_MAX_THREAD_BLOCKS + kCacheLineSizeBytes);
-
-    // Ensure two KernelFlagItems are on different cache lines.
-    //
-    // TODO(T238727523): evaluate the impact of multiple flags in the same
-    // KernelFlagItem on the same cache line. Each flag here is consumed by a
-    // separate block for Ctran device code.
-    //
-    // Note that the device side CancellableWaits feature is disabled by default
-    // for the device kernels, so these flags are used only for GPE <-> Kernel
-    // start and stop-syncs in such cases.
-    static_assert(sizeof(Self) % kCacheLineSizeBytes == 0);
   }
 };
 
@@ -155,6 +148,12 @@ class CtranGpeCmd {
   // deleting the cmd.
   std::atomic_uint32_t inFlight{0};
   CtranGpe* gpe{nullptr};
+
+  // Device-ring dispatch (NCCL_CTRAN_GPE_DEVICE_RING). cmdId is the comm-local
+  // id the kernel publishes to the ring; inDeviceRingRegistry marks that this
+  // cmd owns a registry entry cmdDestroy must erase. Set only on the ring path.
+  ctran::gpe::GpeCmdId cmdId{0};
+  bool inDeviceRingRegistry{false};
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
 
@@ -305,6 +304,30 @@ class CtranGpe::Impl {
   // terminate the GPE thread.
   void terminate();
 
+  // Allocate the per-comm device dispatch ring + reader when
+  // NCCL_CTRAN_GPE_DEVICE_RING is set (and supported). Called from the
+  // CtranGpe constructor once comm/cudaDev are wired. No-op (leaves the ring
+  // disabled) on HIP/pre-Hopper or if allocation fails, so callers silently
+  // fall back to the host-node path.
+  void initDeviceRing();
+
+  // True when the device-ring dispatch path is active for this comm.
+  bool deviceRingEnabled() const {
+    return deviceRing_ != nullptr;
+  }
+
+  // A lightweight device handle to the ring, stored in a cmd's KernelFlagItem
+  // header (GpeKernelFlagHeader) at submit. Only valid when
+  // deviceRingEnabled().
+  ctran::gpe::GpeRingHandle deviceRingHandle() const {
+    return deviceRing_->deviceHandle();
+  }
+
+  // Registry accessor used by submit() and the cmdDestroy callback.
+  GpeDeviceRingCmdRegistry& deviceRingCmdRegistry() {
+    return deviceRingCmdRegistry_;
+  }
+
   // Before enqueueing a command to the GPE, update the command if needed.
   // Currently, this is used for enabling cudagraph-aware AllToAll.
   inline commResult_t preLaunchGraphPrepare(
@@ -341,9 +364,35 @@ class CtranGpe::Impl {
   std::condition_variable cmdQueueCv_;
   std::thread thread_;
   OrderedWorkStreamGuard ws_;
+
+  // Device-ring dispatch state (NCCL_CTRAN_GPE_DEVICE_RING). Ring + reader are
+  // null unless the ring path is enabled. The reader and ringPending_ are
+  // owned exclusively by the GPE worker thread (single consumer).
+  std::unique_ptr<ctran::gpe::GpeRing> deviceRing_;
+  std::unique_ptr<ctran::gpe::GpeRingReader> deviceRingReader_;
+  std::queue<CtranGpeCmd*> ringPending_;
+  GpeDeviceRingCmdRegistry deviceRingCmdRegistry_;
+
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.
   void gpeThreadFn();
+
+  // Return the next command for the GPE worker to process. Without the device
+  // ring this is exactly cmdDequeue() (blocking on the CPU FIFO). With the ring
+  // enabled it polls the CPU FIFO (for TERMINATE, eager, and non-ring cmds)
+  // and the device ring (for captured ring cmds, in GPU execution order),
+  // preferring the FIFO so TERMINATE/abort is never starved by ring traffic.
+  CtranGpeCmd* acquireNextCmd();
+
+  // Publish a captured (graph) cmd for replay: arm the device ring (no host
+  // node) when it is enabled, otherwise add an in-graph host node. Both retain
+  // the cmd on the graph so it is freed at cudaGraphDestroy. Extracted from
+  // submit() to keep that function short.
+  commResult_t publishCapturedCmd(
+      CtranGpeCmd* cmd,
+      KernelFlagItem* kernelFlag,
+      cudaStream_t stream,
+      ctran::utils::cudagraph::StreamCaptureInfo& streamCaptureInfo);
 
   // Enqueue a command and notify the GPE thread to wake up.
   inline void cmdEnqueue(CtranGpeCmd* cmd) {

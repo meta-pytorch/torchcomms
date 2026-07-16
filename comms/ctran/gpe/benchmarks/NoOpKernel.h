@@ -4,9 +4,10 @@
 
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 __global__ void NoOpKernel(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);

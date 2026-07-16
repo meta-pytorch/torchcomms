@@ -106,14 +106,15 @@ enum { GROUP_SEND, GROUP_RECV };
 
 template <typename T>
 __global__ void ncclKernelAllToAll(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::alltoall::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   // count==0 means no work for the kernel (e.g. pure-IB path where the
@@ -161,6 +162,6 @@ __global__ void ncclKernelAllToAll(
 
 #define DECL_CTRAN_ALLTOALL_KERN(T)               \
   template __global__ void ncclKernelAllToAll<T>( \
-      int* flag,                                  \
-      CtranAlgoDeviceState* devState,             \
+      ctran::gpe::KernelFlagDev * flag,           \
+      CtranAlgoDeviceState * devState,            \
       ctran::alltoall::KernelArgs args)

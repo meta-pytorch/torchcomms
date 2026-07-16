@@ -183,63 +183,35 @@ INCLUDES += -I$(BASE_DIR)
 INCLUDES += -I$(CONDA_INCLUDE_DIR)
 
 ifeq ($(ENABLE_TCPDM),1)
-## Thrift buffer manager client
+## TCP DevMem transport
+## Kept in sync with comms/tcp_devmem/CMakeLists.txt (and BUCK).
+## The device-manager client uses a header-only "nanothrift" backend
+## (comms/tcp_devmem/devmgr/nanothrift/gen/*.h), so no thrift codegen step is
+## needed here. FBThrift (gen-cpp2) is only pulled in when -DUSE_FBTHRIFT is set.
 CXXFLAGS    += -DTCP_DEVMEM_AGENT
-THRIFT      ?= thrift1
 DEVMEM_DIR  := $(BASE_DIR)/comms/tcp_devmem
-THRIFT_FILE := $(DEVMEM_DIR)/devmgr/if/devmgr.thrift
-THRIFT_H    := $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_client.h
 
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgrAsyncClient.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_binary.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_compact.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_constants.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_data.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_metadata.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_binary.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_compact.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_serialization.cpp
-
-$(THRIFT_H): $(THRIFT_FILE)
-	@printf "Generating  %-35s > %s\n" $(THRIFT_FILE) $(DEVMEM_DIR)/devmgr
-	$(THRIFT) --gen mstch_cpp2:include_prefix=$(DEVMEM_DIR)/devmgr/if -o $(DEVMEM_DIR)/devmgr/if $(THRIFT_FILE)
-
-$(DEVMEM_DIR)/devmgr/devmgr_client.cc: $(THRIFT_H)
-$(DEVMEM_DIR)/transport.cc: $(THRIFT_H)
-
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgrAsyncClient.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_binary.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_compact.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_constants.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_data.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_metadata.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_binary.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_compact.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_serialization.cpp: $(THRIFT_H)
-
-## Include TCP Devmem transport files and dependencies
+## ctran <-> tcp_devmem backend glue
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/backends/tcpdevmem/*.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/affinity_mgr.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/bond_transport.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/communicator.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmem.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/request_pool.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/transport.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/worker.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/bufmgr.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/devmgr/devmgr_client.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/common/*.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/logger/LogInit.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/external_unpack.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/internal_unpack.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/batch_unpack_state.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/batch_unpack_producer.cc)
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/tcp_devmem/unpack/batch_unpack_consumer.cc)
+## Top-level transport sources: affinity_mgr, bond_transport, communicator,
+## devmem, request_pool, transport, unpack_manager, worker
+LIBSRCFILES += $(wildcard $(DEVMEM_DIR)/*.cc)
+## Device manager, buffer manager, (nanothrift) client and NIC affinity
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/devmgr.cc
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/bufmgr.cc
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/devmgr_client.cc
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/affinity_inventory.cc
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/affinity_planner.cc
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/affinity_probe.cc
+## Shared utilities and logging
+LIBSRCFILES += $(wildcard $(DEVMEM_DIR)/common/*.cc)
+LIBSRCFILES += $(wildcard $(DEVMEM_DIR)/logger/*.cc)
+## Unpack pipeline (host sources + CUDA kernel); tests excluded
+LIBSRCFILES += $(DEVMEM_DIR)/unpack/gpu_backend.cc
+LIBSRCFILES += $(DEVMEM_DIR)/unpack/batch_unpack_state.cc
+LIBSRCFILES += $(DEVMEM_DIR)/unpack/batch_unpack_producer.cc
+LIBSRCFILES += $(DEVMEM_DIR)/unpack/batch_unpack_consumer.cc
+LIBSRCFILES += $(DEVMEM_DIR)/unpack/batch_unpack_kernel.cu
 ## YNL is a library that wraps Linux Netlink API and needed for TCPDM:
 ## https://docs.kernel.org/userspace-api/netlink/intro-specs.html
 LIBSRCFILES += $(wildcard ${BASE_DIR}/ynl/generated/ethtool-user.cpp)

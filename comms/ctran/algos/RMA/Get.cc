@@ -5,6 +5,7 @@
 #include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -14,7 +15,9 @@
 using namespace ctran;
 using ::meta::comms::colltrace::CollTraceHandleTriggerState;
 
-extern __global__ void ncclKernelGet(int* flag, CtranAlgoDeviceState* devState);
+extern __global__ void ncclKernelGet(
+    ctran::gpe::KernelFlagDev* flag,
+    CtranAlgoDeviceState* devState);
 
 static commResult_t getImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {

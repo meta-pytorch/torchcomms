@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/algos/RMA/WaitSignalImpl.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -18,29 +19,31 @@ using namespace ctran;
 using meta::comms::colltrace::CollTraceHandleTriggerState;
 
 extern __global__ void ncclKernelPutNotify(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::rma::KernelPutNotifyArgs args);
 
 extern __global__ void ncclKernelWaitNotify(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::rma::KernelWaitNotifyArgs args);
 
 extern __global__ void ncclKernelPutSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelPutSignalArgs args);
 
-extern __global__ void ncclKernelPut(int* flag, CtranAlgoDeviceState* devState);
+extern __global__ void ncclKernelPut(
+    ctran::gpe::KernelFlagDev* flag,
+    CtranAlgoDeviceState* devState);
 
 extern __global__ void ncclKernelWaitSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelWaitSignalArgs args);
 
 extern __global__ void ncclKernelSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSignalArgs args);
 

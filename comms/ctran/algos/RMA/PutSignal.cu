@@ -14,13 +14,14 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 __global__ void ncclKernelPutNotify(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::rma::KernelPutNotifyArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   // Avoid copy
@@ -45,13 +46,14 @@ __global__ void ncclKernelPutNotify(
 }
 
 __global__ void ncclKernelWaitNotify(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::rma::KernelWaitNotifyArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   const auto& statex_ = devState->statex;
@@ -75,13 +77,14 @@ __global__ void ncclKernelWaitNotify(
 }
 
 __global__ void ncclKernelPutSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     CtranKernelPutSignalArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
   // just atomic store
   if (gtIdx == 0 && args.signalAddr != nullptr) {
@@ -100,23 +103,27 @@ __global__ void ncclKernelPutSignal(
   }
 }
 
-__global__ void ncclKernelPut(int* flag, CtranAlgoDeviceState* devState) {
+__global__ void ncclKernelPut(
+    ctran::gpe::KernelFlagDev* f,
+    CtranAlgoDeviceState* devState) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
     ctran::device::KernelWaitGpeTerminate(flag);
   }
 }
 
 __global__ void ncclKernelWaitSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     CtranKernelWaitSignalArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   if (args.signalAddr != nullptr && gtIdx == 0) {
@@ -137,13 +144,14 @@ __global__ void ncclKernelWaitSignal(
 }
 
 __global__ void ncclKernelSignal(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     CtranKernelSignalArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
   if (gtIdx == 0 && args.signalAddr != nullptr) {
 #if defined(__HIP_PLATFORM_AMD__)

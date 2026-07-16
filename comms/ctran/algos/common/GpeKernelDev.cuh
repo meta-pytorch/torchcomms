@@ -3,8 +3,10 @@
 #pragma once
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevShmState.cuh"
 #include "comms/ctran/algos/common/GpeKernel.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 // This file includes only functions to manage Gpe and device kernel lifecycles.
@@ -24,12 +26,33 @@ static inline __device__ void devLoadAbortFlags(
   kernelFlag = flag;
   kernelDoAbort = false;
 }
-static inline __device__ void KernelStartGpe(volatile int* flag) {
-  comms::device::st_volatile_global(flag, KERNEL_STARTED);
+
+// Publish this launch's cmd id to the device ring in GPU execution order.
+// Single-writer election (block 0, thread 0); no-op when not armed
+// (hdr.enabled == 0). The GPE worker consumes the ring to order started cmds.
+// The ring write is the HRDWRingBuffer System-scope 128b atomic path.
+static __forceinline__ __device__ void KernelPublishGpeRing(
+    ctran::gpe::GpeKernelFlagHeader hdr) {
+  if (blockIdx.x == 0 && threadIdx.x == 0 && hdr.enabled) {
+    hdr.ring.write(hdr.cmdId);
+  }
 }
 
-static inline __device__ void KernelStartGpeAndExit(volatile int* flag) {
-  comms::device::st_volatile_global(flag, KERNEL_STARTED_AND_EXIT);
+// Kernel start prologue: publish this cmd's id to the ring (block 0 only, no-op
+// when not armed), then signal the GPE worker that block `bId` has started. The
+// ring header is read directly from f->gpeHdr — no pointer-offset recovery.
+static inline __device__ void KernelStartGpe(
+    ctran::gpe::KernelFlagDev* f,
+    int bId = 0) {
+  KernelPublishGpeRing(f->gpeHdr);
+  comms::device::st_volatile_global(&f->flag_[bId], KERNEL_STARTED);
+}
+
+static inline __device__ void KernelStartGpeAndExit(
+    ctran::gpe::KernelFlagDev* f,
+    int bId = 0) {
+  KernelPublishGpeRing(f->gpeHdr);
+  comms::device::st_volatile_global(&f->flag_[bId], KERNEL_STARTED_AND_EXIT);
 }
 
 static inline __device__ bool KernelTestHostAbort(volatile int* flag) {

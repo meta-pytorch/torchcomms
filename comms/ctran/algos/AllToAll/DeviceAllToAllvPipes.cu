@@ -5,6 +5,7 @@
 #include <cstddef>
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
@@ -97,7 +98,7 @@ __device__ __forceinline__ void recv_peer(
 
 template <PipeProtocol Proto>
 __global__ void ncclKernelDeviceAllToAllvPipes(
-    int* /* flag */,
+    ctran::gpe::KernelFlagDev* /* flag */,
     CtranAlgoDeviceState* /* devState */,
     ctran::device_alltoallv_pipes::KernArgs args) {
   const int nLocalRanks = args.nLocalRanks;
@@ -187,12 +188,12 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
 
 // Explicit template instantiations for both protocols.
 template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::Simple>(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
 
 template __global__ void ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::device_alltoallv_pipes::KernArgs args);
 

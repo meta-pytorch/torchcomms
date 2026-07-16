@@ -7,6 +7,9 @@
 
 // Implementation of the NVLink SHARP (NVLS) transport
 
+#include <chrono>
+#include <thread>
+
 #include "comm.h"
 #include "graph.h"
 #include "utils.h"
@@ -158,6 +161,24 @@ ncclResult_t nvlsGroupUnmapMem(struct ncclComm *comm, size_t ucsize, void* ucptr
 
 NCCL_PARAM(NvlsEnable, "NVLS_ENABLE", 2);
 NCCL_PARAM(NvlsChunkSize, "NVLS_CHUNKSIZE", 128*1024);
+// Retry the collective NVLS multicast-team formation to survive a short,
+// transient internal Fabric Manager stall. When FM stalls while forming the
+// NVSwitch multicast team, cuMulticastBindMem returns CUDA error 802 "system
+// not yet initialized" on some/all local ranks even though FM completes the
+// team a few seconds later. On such a failure all local ranks jointly tear the
+// (partial) group down and rebuild it from scratch, giving both the driver and
+// FM a clean slate. Set NVLS_BIND_RETRY_COUNT=0 to restore the previous
+// fail-fast behavior.
+NCCL_PARAM(NvlsBindRetryCount, "NVLS_BIND_RETRY_COUNT", 10);
+NCCL_PARAM(NvlsBindRetryBackoffMs, "NVLS_BIND_RETRY_BACKOFF_MS", 1000);
+
+// Returns true for cuMulticastBindMem errors that are typically transient and
+// caused by the fabric/multicast team not being ready yet (e.g. an in-progress
+// Fabric Manager stall), so tearing down and retrying may succeed.
+static bool nvlsBindErrorIsRetryable(CUresult err) {
+  // CUDA error 802: the NVSwitch/Fabric Manager fabric is not yet ready.
+  return err == CUDA_ERROR_SYSTEM_NOT_READY;
+}
 
 ncclResult_t ncclNvlsInit(struct ncclComm* comm) {
   comm->nvlsSupport = 0;
@@ -237,6 +258,8 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   size_t ucsize;
   size_t ucgran, mcgran;
   int allocMcHandle = 0;
+  const int64_t bindRetryCount = ncclParamNvlsBindRetryCount();
+  const int64_t bindRetryBackoffMs = ncclParamNvlsBindRetryBackoffMs();
 
   mcsize = ucsize = size;
   *ucptr = *mcptr = NULL;
@@ -250,18 +273,8 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   ALIGN_SIZE(mcsize, mcgran);
   mcprop.size = mcsize;
 
-  if (comm->localRank == 0) {
-    NCCLCHECKGOTO(ncclNvlsGroupCreate(comm, &mcprop, comm->localRank, comm->localRanks, mcHandle, shareableHandle), ret, fail);
-    allocMcHandle = 1;
-    NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE), ret, fail);
-  } else {
-    NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE), ret, fail);
-    NCCLCHECKGOTO(ncclNvlsGroupConnect(comm, shareableHandle, comm->localRankToRank[0], mcHandle), ret, fail);
-    allocMcHandle = 1;
-  }
-
-  CUCHECKGOTO(cuMulticastAddDevice(*mcHandle, comm->cudaDev), ret, fail);
-
+  // UC (backing) memory granularity/size is deterministic and side-effect free,
+  // so compute it once outside the retry loop.
   memset(&ucprop, 0, sizeof(CUmemAllocationProp));
   ucprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
   ucprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
@@ -269,36 +282,115 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   ucprop.requestedHandleTypes = ncclCuMemHandleType;
   CUCHECKGOTO(cuMemGetAllocationGranularity(&ucgran, &ucprop, CU_MEM_ALLOC_GRANULARITY_RECOMMENDED), ret, fail);
   ALIGN_SIZE(ucsize, ucgran);
-  // Map a VA for UC memory with MC alignment and size
-  CUCHECKGOTO(cuMemAddressReserve((CUdeviceptr*)ucptr, ucsize, ucgran, 0U, 0), ret, fail);
 
-  // Alloc local physical mem for this NVLS group
-  CUCHECKGOTO(cuMemCreate(ucHandle, ucsize, &ucprop, 0), ret, fail1);
-  CUCHECKGOTO(cuMemMap((CUdeviceptr)*ucptr, ucsize, 0, *ucHandle, 0), ret, fail2);
-  CUCHECKGOTO(cuMemSetAccess((CUdeviceptr)*ucptr, ucsize, desc, 1), ret, fail3);
-  CUDACHECKGOTO(cudaMemset(*ucptr, 0, ucsize), ret, fail3);
-  // Track NVLS buffer as persistent memory
-  NCCLCHECKGOTO(ncclMemTrack(comm->memManager, *ucptr, ucsize, *ucHandle, ncclCuMemHandleType, ncclMemPersist), ret, fail3);
-  meta::comms::memtrace::recordAlloc(
-      comm->logMetaData,
-      "nvlsAllocateMem",
-      "cuMemCreate",
-      reinterpret_cast<uintptr_t>(*ucptr),
-      size);
+  // Collective, retryable multicast-team formation. cuMulticastBindMem is a
+  // collective across local ranks and depends on the Fabric Manager forming the
+  // NVSwitch multicast team; a transient internal FM stall can make it return
+  // CUDA 802 on some/all ranks even though FM completes the team moments later.
+  // All local ranks agree (via an intra-node allgather) on whether the bind
+  // succeeded everywhere; if not, they jointly tear the (partial) group down and
+  // rebuild it from scratch so both the driver and FM restart from a clean,
+  // consistent state. Retrying on only a subset of ranks would deadlock the next
+  // (collective) bind, hence the lockstep agreement.
+  for (int64_t bindAttempt = 0; ; ++bindAttempt) {
+    if (comm->localRank == 0) {
+      NCCLCHECKGOTO(ncclNvlsGroupCreate(comm, &mcprop, comm->localRank, comm->localRanks, mcHandle, shareableHandle), ret, fail);
+      allocMcHandle = 1;
+      NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE), ret, fail);
+    } else {
+      NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE), ret, fail);
+      NCCLCHECKGOTO(ncclNvlsGroupConnect(comm, shareableHandle, comm->localRankToRank[0], mcHandle), ret, fail);
+      allocMcHandle = 1;
+    }
 
-  // intra-node barrier to mitigate the possible hang in cuMulticastBindMem during abort
-  NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, comm->localRankToRank[0]), ret, fail3);
-  // Bind physical memory to the Multicast group
-  // NB: It will block until all ranks have been added to the Group
-  // This is where we normally see issues if the system NVLS/Multicast support is broken
-  err = ncclx::nvls::multicastBindMemWithWatchdog(comm, size, ucsize, mcsize, *mcHandle, *ucHandle);
-  if (err != CUDA_SUCCESS) {
-    const char *errStr;                                                 \
-    (void) pfn_cuGetErrorString(err, &errStr);                          \
-    // Fail the job as NVLS support is not functional
-    WARN("Failed to bind NVLink SHARP (NVLS) Multicast memory of size %ld : CUDA error %d '%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\nDisable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.", ucsize, err, errStr );
-    ret = ncclUnhandledCudaError;
-    goto fail3;
+    CUCHECKGOTO(cuMulticastAddDevice(*mcHandle, comm->cudaDev), ret, fail);
+
+    // Map a VA for UC memory with MC alignment and size
+    CUCHECKGOTO(cuMemAddressReserve((CUdeviceptr*)ucptr, ucsize, ucgran, 0U, 0), ret, fail);
+
+    // Alloc local physical mem for this NVLS group
+    CUCHECKGOTO(cuMemCreate(ucHandle, ucsize, &ucprop, 0), ret, fail1);
+    CUCHECKGOTO(cuMemMap((CUdeviceptr)*ucptr, ucsize, 0, *ucHandle, 0), ret, fail2);
+    CUCHECKGOTO(cuMemSetAccess((CUdeviceptr)*ucptr, ucsize, desc, 1), ret, fail3);
+    CUDACHECKGOTO(cudaMemset(*ucptr, 0, ucsize), ret, fail3);
+    // Track NVLS buffer as persistent memory
+    NCCLCHECKGOTO(ncclMemTrack(comm->memManager, *ucptr, ucsize, *ucHandle, ncclCuMemHandleType, ncclMemPersist), ret, fail3);
+    meta::comms::memtrace::recordAlloc(
+        comm->logMetaData,
+        "nvlsAllocateMem",
+        "cuMemCreate",
+        reinterpret_cast<uintptr_t>(*ucptr),
+        size);
+
+    // intra-node barrier to mitigate the possible hang in cuMulticastBindMem during abort
+    NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, comm->localRankToRank[0]), ret, fail3);
+    // Bind physical memory to the Multicast group
+    // NB: It will block until all ranks have been added to the Group
+    // This is where we normally see issues if the system NVLS/Multicast support is broken
+    err = ncclx::nvls::multicastBindMemWithWatchdog(comm, size, ucsize, mcsize, *mcHandle, *ucHandle);
+
+    // cuMulticastBindMem is collective, so the retry/abort decision must also be
+    // collective and identical on every rank -- otherwise ranks would diverge
+    // (some retrying, some aborting) and deadlock the next attempt. Classify this
+    // rank's result, allgather it, and let every rank reach the same verdict:
+    //   0 = success, 1 = retryable (transient) failure, 2 = fatal failure
+    int bindStatus[NCCL_MAX_LOCAL_RANKS] = {0};
+    bindStatus[comm->localRank] =
+        (err == CUDA_SUCCESS) ? 0 : (nvlsBindErrorIsRetryable(err) ? 1 : 2);
+    NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, bindStatus, sizeof(int)), ret, fail3);
+    int worstStatus = 0;
+    for (int i = 0; i < comm->localRanks; i++) {
+      if (bindStatus[i] > worstStatus) {
+        worstStatus = bindStatus[i];
+      }
+    }
+    if (worstStatus == 0) {
+      break; // bound successfully on all local ranks
+    }
+
+    // At least one local rank failed. Retry (on all ranks) only while attempts
+    // remain and every failure is transient/retryable; if any rank hit a fatal
+    // error, all ranks abort together.
+    const char* errStr = "success (a peer rank failed the multicast bind)";
+    if (err != CUDA_SUCCESS) { (void)pfn_cuGetErrorString(err, &errStr); }
+    const bool canRetry = (bindAttempt < bindRetryCount) && (worstStatus == 1);
+    if (!canRetry) {
+      // Fail the job as NVLS support is not functional
+      WARN("Failed to bind NVLink SHARP (NVLS) Multicast memory of size %ld : CUDA error %d '%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\nDisable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.", ucsize, err, errStr);
+      ret = ncclUnhandledCudaError;
+      goto fail3;
+    }
+    WARN("NVLS multicast bind of size %ld did not succeed on all local ranks (this rank CUDA error %d '%s'); tearing down and retrying (attempt %lld/%lld) after %lldms. This is usually a transient Fabric Manager stall forming the NVSwitch multicast team.",
+        ucsize, err, errStr, (long long)(bindAttempt + 1), (long long)bindRetryCount, (long long)bindRetryBackoffMs);
+
+    // Tear down everything allocated this attempt, on ALL ranks, so the retry
+    // rebuilds a fresh group. Releasing *mcHandle triggers FM's Multicast Team
+    // Release, giving FM a clean slate too. Use CUCHECK/NCCLCHECK (not the fail
+    // labels) so a cleanup error aborts directly rather than double-freeing.
+    NCCLCHECK(ncclMemUntrack(comm->memManager, *ucptr, ucsize));
+    meta::comms::memtrace::recordFree(
+        comm->logMetaData,
+        "nvlsAllocateMem",
+        "cuMemRelease",
+        reinterpret_cast<uintptr_t>(*ucptr),
+        ucsize);
+    CUCHECK(cuMemUnmap((CUdeviceptr)*ucptr, ucsize));
+    CUCHECK(cuMemRelease(*ucHandle));
+    CUCHECK(cuMemAddressFree((CUdeviceptr)*ucptr, ucsize));
+    CUCHECK(cuMemRelease(*mcHandle));
+    *ucptr = nullptr;
+    allocMcHandle = 0;
+
+    // Barrier so no rank recreates the group before all peers have released the
+    // previous one (and FM has processed the releases), then back off.
+    NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, comm->localRankToRank[0]), ret, fail);
+    if (bindRetryBackoffMs > 0) {
+      // Backoff waits for an external Fabric Manager to recover its internal
+      // state before the next collective bind attempt; there is nothing to
+      // signal via a condition variable, so a plain sleep is appropriate here.
+      // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+      std::this_thread::sleep_for(std::chrono::milliseconds(bindRetryBackoffMs));
+    }
   }
 
   // Map mc virtual address

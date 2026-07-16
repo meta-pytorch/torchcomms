@@ -49,7 +49,7 @@
 #include <cstdint>
 
 #include "HipDeviceCompat.h" // @manual
-#include "nic/Mlx5Hsi.h" // @manual
+#include "nic/mlx5/Mlx5Hsi.h" // @manual
 #include "pipes_gda/PipesGdaDev.h" // @manual
 
 namespace pipes_gda {
