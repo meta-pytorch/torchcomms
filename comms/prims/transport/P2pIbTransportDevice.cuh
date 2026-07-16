@@ -554,6 +554,14 @@ __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window()
   return ibgda->pipeline_window();
 }
 
+__device__ __forceinline__ std::size_t
+P2pIbTransportDevice::blocking_payload_window() const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->blocking_payload_window();
+  }
+  return ibgda->blocking_payload_window();
+}
+
 __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
     ThreadGroup& group,
     std::size_t nbytes,

@@ -252,6 +252,112 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::ValuesIn(all_test_params()),
     param_name);
 
+/*
+ * Regression for the blocking-payload-window padding deadlock.
+ *
+ * The blocking, in-order ring must chunk sends by blocking_payload_window()
+ * (perBlockSlot * (pipelineDepth - 1)), NOT the raw pipeline_window()
+ * (perBlockSlot * pipelineDepth). After a short launch whose per-block payload
+ * is not slot-aligned, the persistent channel cursor is left mid-slot; a second
+ * full-window launch then inserts leading protocol padding to realign. Pre-fix,
+ * a full raw-pipeline_window send atop that padding waits SLOT_FREE credit that
+ * only the not-yet-run matching recv can post -> single-lane deadlock. The fix
+ * reserves one slot of headroom so the padded send always fits available
+ * credit.
+ *
+ * Two back-to-back launches on the SAME transport reproduce the mid-slot
+ * cursor: a short launch (per-block payload < perBlockSlot) followed by a full
+ * launch (per-block payload >= perBlockSlot * pipelineDepth, so the window
+ * clamps to the raw pipeline_window that deadlocks pre-fix). Both must complete
+ * without hanging. num_blocks == num_rings == 1 makes the per-block payload
+ * equal chunk_bytes exactly (no TiledBuffer rounding), giving deterministic
+ * cursor placement.
+ */
+class RingReduceScatterDeadlockRegressionTest : public ReduceScatterTestBase {
+ protected:
+  void runTwoLaunchNoDeadlock(bool useIbrc) {
+    if (worldSize < 2) {
+      GTEST_SKIP() << "Ring reduce-scatter requires at least 2 ranks";
+    }
+
+    constexpr int kNumBlocks = 1;
+    constexpr int kNumRings = 1;
+    constexpr int kPipelineDepth = 2;
+    constexpr std::size_t kDataBufferSize = 1024 * 1024;
+
+    const int maxChannels = kNumBlocks * kNumRings;
+    const std::size_t perChannelSize =
+        kDataBufferSize / static_cast<std::size_t>(maxChannels);
+    const std::size_t perBlockSlot = perChannelSize & ~std::size_t{15};
+    ASSERT_GT(perBlockSlot, 0u);
+
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = maxChannels,
+        .pipelineDepth = kPipelineDepth,
+    };
+    auto transport = std::make_unique<RingReduceScatterIbTransport>(
+        useIbrc, globalRank, worldSize, bootstrap, transportConfig);
+    transport->exchange();
+
+    auto rings_opt = make_standard_rings(worldSize, globalRank, kNumRings);
+    ASSERT_TRUE(rings_opt.has_value());
+    auto& rings = *rings_opt;
+    transport->queuePeerForMaterialization(rings[0].prev_rank);
+    transport->queuePeerForMaterialization(rings[0].next_rank);
+    transport->connectPeers();
+
+    // Short leaves the cursor mid-slot; full clamps to the raw pipeline_window.
+    const std::size_t shortBytes = perBlockSlot / 2;
+    const std::size_t fullBytes = perBlockSlot * kPipelineDepth * 2;
+
+    auto doLaunch = [&](std::size_t chunkBytes) {
+      const std::size_t chunkElements = chunkBytes / sizeof(float);
+      const std::size_t totalElements = chunkElements * worldSize;
+      DeviceBuffer inputBuf(totalElements * sizeof(float));
+      DeviceBuffer outputBuf(chunkElements * sizeof(float));
+      CUDACHECK_TEST(
+          cudaMemset(outputBuf.get(), 0, chunkElements * sizeof(float)));
+      fill_input(static_cast<float*>(inputBuf.get()), totalElements);
+
+      RingReduceScatterLaunchParams launchParams{};
+      launchParams.my_rank = globalRank;
+      launchParams.num_ranks = worldSize;
+      launchParams.chunk_elements = chunkElements;
+      launchParams.signaling_data_size = 0;
+      launchParams.input = static_cast<const float*>(inputBuf.get());
+      launchParams.output = static_cast<float*>(outputBuf.get());
+      launchParams.num_blocks = kNumBlocks * kNumRings;
+      launchParams.num_rings = kNumRings;
+      launchParams.timeout_ms = 30000.0f;
+      auto& ringParams = launchParams.rings[0];
+      ringParams.prev_rank = rings[0].prev_rank;
+      ringParams.next_rank = rings[0].next_rank;
+      ringParams.prev = transport->getP2pTransportDevice(ringParams.prev_rank);
+      ringParams.next = transport->getP2pTransportDevice(ringParams.next_rank);
+
+      bootstrap->barrierAll();
+      launch_ring_reduce_scatter(launchParams);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      bootstrap->barrierAll();
+      verify_reduce_scatter(
+          static_cast<const float*>(outputBuf.get()), chunkElements);
+    };
+
+    doLaunch(shortBytes);
+    doLaunch(fullBytes);
+  }
+};
+
+TEST_F(RingReduceScatterDeadlockRegressionTest, PaddingWindowNoDeadlockIbgda) {
+  runTwoLaunchNoDeadlock(/*useIbrc=*/false);
+}
+
+TEST_F(RingReduceScatterDeadlockRegressionTest, PaddingWindowNoDeadlockIbrc) {
+  runTwoLaunchNoDeadlock(/*useIbrc=*/true);
+}
+
 } // namespace
 
 } // namespace comms::prims::test

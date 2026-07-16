@@ -2400,18 +2400,21 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Maximum bytes a block can send without blocking on pipeline backpressure.
+   * Raw pipeline capacity (perChannelSize * pipelineDepth).
    *
-   * The staging buffer is split into pipelineDepth slots, each with a fixed
-   * per-channel partition. A block can fill all its slots before the NIC must
-   * drain any of them, so the non-blocking window is:
-   *   perChannelSize * pipelineDepth
-   *
-   * Callers should loop over their data in pipeline_window-sized chunks so
-   * that send()/forward() never stall waiting for a free slot.
+   * Raw capacity only; blocking, in-order callers must chunk by
+   * blocking_payload_window() -- leading protocol padding breaks the
+   * never-stall guarantee. Resumable/multi-lane callers may use this directly.
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
     return detail::pipeline_window(channelLayout_);
+  }
+
+  // Padding-safe chunk size for the blocking send()/recv()/forward() API.
+  // Blocking, in-order callers (rings) must chunk by this, not
+  // pipeline_window().
+  __device__ __forceinline__ std::size_t blocking_payload_window() const {
+    return detail::blocking_payload_window(channelLayout_);
   }
 
  private:

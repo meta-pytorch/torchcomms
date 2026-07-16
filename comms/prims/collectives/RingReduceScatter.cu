@@ -3,6 +3,7 @@
 #include "comms/prims/collectives/RingReduceScatter.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
 
@@ -43,7 +44,15 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
       ring_group.group_id * ring_tile.tile_elements;
   const std::size_t io_tile_bytes = ring_tile.bytes();
 
-  const std::size_t pipeline_window = next.pipeline_window();
+  // Blocking, in-order ring must chunk by the padding-safe window, NOT the raw
+  // pipeline_window(): leading protocol padding otherwise lets a full-window
+  // send block on SLOT_FREE credit only the not-yet-run matching recv posts
+  // (deadlock). Window is comm-uniform across ring peers, so a single next.*
+  // lookup is valid for all peers.
+  const std::size_t blockingWindow = next.blocking_payload_window();
+  PIPES_DEVICE_CHECK_MSG(
+      blockingWindow != 0,
+      "ring_reduce_scatter: blocking payload window is zero (pipelineDepth < 2)");
 
   const int my_rank = args.my_rank;
   const int stride = (my_rank - topo.prev_rank + W) % W;
@@ -51,10 +60,10 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
 
   using ReduceOp = TileReduceStaged<T, AccumOp, kTileElems, kBlockSize>;
 
-  for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
+  for (std::size_t off = 0; off < io_tile_bytes; off += blockingWindow) {
     const std::size_t remaining = io_tile_bytes - off;
     const std::size_t window =
-        (remaining < pipeline_window) ? remaining : pipeline_window;
+        (remaining < blockingWindow) ? remaining : blockingWindow;
 
     int current_rank = (my_rank + W - stride) % W;
 

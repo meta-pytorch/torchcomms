@@ -487,6 +487,13 @@ class P2pIbrcTransportDevice {
     return detail::pipeline_window(channelLayout_);
   }
 
+  // Padding-safe chunk size for the blocking send()/recv()/forward() API.
+  // Blocking, in-order callers must chunk by this, not pipeline_window() --
+  // leading protocol padding otherwise breaks the never-stall guarantee.
+  __device__ __forceinline__ std::size_t blocking_payload_window() const {
+    return detail::blocking_payload_window(channelLayout_);
+  }
+
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,

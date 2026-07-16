@@ -116,17 +116,20 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
   const auto& topo = args.ib_ring;
   auto& prev = *topo.prev;
   auto& next = *topo.next;
-  const std::size_t pipeline_window = next.pipeline_window();
+  // Blocking, in-order IB ring must chunk by the padding-safe window, not the
+  // raw pipeline_window(): leading protocol padding can otherwise deadlock the
+  // blocking send. Comm-uniform across peers, so a single next.* lookup holds.
+  const std::size_t blockingWindow = next.blocking_payload_window();
   PIPES_DEVICE_CHECK_MSG(
-      pipeline_window != 0,
-      "hierarchical allgather IB pipeline window is zero");
+      blockingWindow != 0,
+      "hierarchical allgather IB blocking payload window is zero (pipelineDepth < 2)");
 
   const int stride = (args.ib_rank - topo.prev_rank + W) % W;
 
-  for (std::size_t off = 0; off < io_tile_bytes; off += pipeline_window) {
+  for (std::size_t off = 0; off < io_tile_bytes; off += blockingWindow) {
     const std::size_t remaining = io_tile_bytes - off;
     const std::size_t window =
-        (remaining < pipeline_window) ? remaining : pipeline_window;
+        (remaining < blockingWindow) ? remaining : blockingWindow;
 
     const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
@@ -298,10 +301,13 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
       auto& prev = *topo.prev;
       auto& next = *topo.next;
       const int stride = (args.ib_rank - topo.prev_rank + W) % W;
-      const std::size_t ib_window = next.pipeline_window();
+      // Blocking, in-order IB ring must chunk by the padding-safe window, not
+      // raw pipeline_window(): leading protocol padding can otherwise deadlock
+      // the blocking send. Comm-uniform across peers.
+      const std::size_t ib_window = next.blocking_payload_window();
       PIPES_DEVICE_CHECK_MSG(
           ib_window != 0,
-          "hierarchical allgather overlap IB pipeline window is zero");
+          "hierarchical allgather overlap IB blocking payload window is zero (pipelineDepth < 2)");
 
       for (std::size_t chunk_off = 0; chunk_off < bytes;
            chunk_off += ib_window) {

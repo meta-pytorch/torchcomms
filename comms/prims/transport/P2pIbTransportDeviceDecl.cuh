@@ -1283,20 +1283,51 @@ __device__ __forceinline__ void forward(
 }
 
 /**
- * Maximum bytes a block can send without blocking on pipeline backpressure.
+ * Raw pipeline depth in bytes: perChannelSize * pipelineDepth.
  *
  * The staging buffer is split into pipelineDepth slots, each with a fixed
  * per-channel partition. A block can fill all its slots before the NIC must
- * drain any of them, so the non-blocking window is:
- *   perChannelSize * pipelineDepth
+ * drain any of them.
  *
- * Callers should loop over their data in pipeline_window-sized chunks so
- * that send()/forward() never stall waiting for a free slot.
+ * NOTE: this is NOT a safe chunk size for the *blocking*
+ * send()/recv()/forward() API. send() may insert up to one slot of leading
+ * protocol padding (padding_for_signal_granularity) when the persistent cursor
+ * is mid-slot, so a blocking payload of exactly pipeline_window() bytes can
+ * require SLOT_FREE credit only the current op's recv posts -- which deadlocks
+ * an in-order, single-lane collective. Blocking callers must chunk by
+ * blocking_payload_window() instead; resumable/multi-lane callers (which poll a
+ * sibling lane while one waits) may use this directly.
  */
 __device__ __forceinline__ std::size_t pipeline_window(
     const IbChannelLayout& channelLayout) {
   return channelLayout.perChannelSize *
       static_cast<std::size_t>(channelLayout.pipelineDepth);
+}
+
+/**
+ * Largest payload a *blocking* send()/forward() can issue without stalling on
+ * pipeline backpressure, accounting for worst-case leading protocol padding.
+ *
+ * send() uses perBlockSlot = (perChannelSize & ~15) and may prepend up to one
+ * perBlockSlot of padding before the payload (padding_for_signal_granularity;
+ * worst case is max_signal_bytes == 0, whose alignment is a full slot --
+ * smaller max_signal_bytes yields less padding, so one slot of slack is always
+ * safe). Reserving one slot guarantees, for any cursor position:
+ *   protocolPadding + align_protocol_bytes(payloadBytes) <= perBlockSlot *
+ * pipelineDepth so a blocking send's SLOT_FREE wait never exceeds credit the
+ * *previous* op already posted -- no cross-op dependency, no deadlock in an
+ * in-order lane.
+ *
+ * Returns 0 when pipelineDepth < 2 (no slack for both padding and a payload);
+ * callers must guard against a zero window.
+ */
+__device__ __forceinline__ std::size_t blocking_payload_window(
+    const IbChannelLayout& channelLayout) {
+  const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
+  const int pipelineDepth = channelLayout.pipelineDepth;
+  return pipelineDepth > 1
+      ? perBlockSlot * static_cast<std::size_t>(pipelineDepth - 1)
+      : 0;
 }
 
 /**
@@ -1943,6 +1974,10 @@ struct P2pIbTransportDevice {
 
   // Per-block pipelined staging window — forwarded to the active backend.
   __device__ __forceinline__ std::size_t pipeline_window() const;
+
+  // Padding-safe blocking chunk window — forwarded to the active backend.
+  // Blocking, in-order callers must use this instead of pipeline_window().
+  __device__ __forceinline__ std::size_t blocking_payload_window() const;
 
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
