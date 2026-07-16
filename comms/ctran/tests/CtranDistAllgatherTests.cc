@@ -156,27 +156,6 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
   std::unique_ptr<CtranComm> ctranComm{nullptr};
 };
 
-namespace {
-
-const ctran::CtranEnvs kHierarchicalRingEnvs = {
-    {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
-    {"NCCL_CTRAN_USE_PIPES", "1"},
-    {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
-    {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
-};
-
-const ctran::CtranEnvs kHierarchicalRingOverlapEnvs = {
-    {"NCCL_CTRAN_USE_PIPES", "1"},
-    {"NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1"},
-    {"NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "33554432"},
-    {"NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE", "1"},
-    {"NCCL_CTRAN_PIPES_TRACE_ENABLE", "1"},
-    {"NCCL_CTRAN_PIPES_TRACE_RING_SIZE", "65536"},
-    {"NCCL_MNNVL_ENABLE", "0"},
-};
-
-} // namespace
-
 // Param: (CtranEnvs, (algo, offset, count, inplace, memType, iter, pairColl))
 using CtranAllgatherParams = std::tuple<
     enum NCCL_ALLGATHER_ALGO,
@@ -272,9 +251,6 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   }
 
   std::vector<CtranMapperBackend> excludedBackends{CtranMapperBackend::NVL};
-  if (algo == NCCL_ALLGATHER_ALGO::cthierarchical_ring) {
-    excludedBackends.push_back(CtranMapperBackend::IB);
-  }
   verifyBackendsUsed(
       ctranComm->ctran_.get(),
       ctranComm->statex_.get(),
@@ -459,36 +435,6 @@ INSTANTIATE_TEST_SUITE_P(
             testing::Values(kTestInPlace, kTestOutOfPlace),
             testing::Values(kCuMemAllocDisjoint),
             testing::Values(5),
-            testing::Values(kTestPairNone))),
-    getTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranTestHierarchicalRing,
-    CtranAllgatherTestParam,
-    ::testing::Combine(
-        ::testing::Values(kHierarchicalRingEnvs),
-        ::testing::Combine(
-            testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
-            testing::Values(0),
-            testing::Values(8192, 1),
-            testing::Values(kTestInPlace, kTestOutOfPlace),
-            testing::Values(kMemNcclMemAlloc),
-            testing::Values(1),
-            testing::Values(kTestPairNone))),
-    getTestName);
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranTestHierarchicalRingOverlap,
-    CtranAllgatherTestParam,
-    ::testing::Combine(
-        ::testing::Values(kHierarchicalRingOverlapEnvs),
-        ::testing::Combine(
-            testing::Values(NCCL_ALLGATHER_ALGO::cthierarchical_ring),
-            testing::Values(0),
-            testing::Values(8192, 1),
-            testing::Values(kTestInPlace, kTestOutOfPlace),
-            testing::Values(kMemNcclMemAlloc),
-            testing::Values(1),
             testing::Values(kTestPairNone))),
     getTestName);
 

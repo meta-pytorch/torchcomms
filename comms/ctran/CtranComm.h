@@ -226,8 +226,6 @@ class CtranComm {
   std::unique_ptr<ncclx::CommStateX> statex_;
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
-  uint64_t* hierarchicalAgReadyCounters_{nullptr};
-  size_t hierarchicalAgReadyCounterCount_{0};
   std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
 #endif // defined(ENABLE_PRIMS)
 
