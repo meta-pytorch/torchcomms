@@ -13,8 +13,15 @@ namespace comms::prims {
 
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduce {
+  // Fixed-size CopyOp policy (see AnsCompress for the variable-size one).
+  static constexpr bool kVariableSize = false;
+  static constexpr std::size_t kActivationThreshold = 0;
+  __host__ __device__ __forceinline__ static constexpr std::size_t
+  worst_case_chunk_stride(std::size_t chunkSize) {
+    return chunkSize;
+  }
   template <typename... Args>
-  __device__ __forceinline__ static void send(
+  __device__ __forceinline__ static std::size_t send(
       char* staging,
       const char* src,
       std::size_t nbytes,
@@ -22,10 +29,11 @@ struct TileReduce {
       std::size_t /*byte_offset*/,
       Args...) {
     memcpy_vectorized(staging, src, nbytes, group);
+    return nbytes;
   }
 
   template <typename... Args>
-  __device__ __forceinline__ static void recv(
+  __device__ __forceinline__ static std::size_t recv(
       char* dst,
       const char* staging,
       std::size_t nbytes,
@@ -51,6 +59,7 @@ struct TileReduce {
       tile_store<T, kTileElems, kBlockSize>(dst_t, t, acc, group, valid);
     }
 #endif
+    return nbytes;
   }
 
   template <typename... Args>
@@ -91,8 +100,15 @@ struct TileReduceStaged {
     return 0;
   }
 
+  // Fixed-size CopyOp policy (see AnsCompress for the variable-size one).
+  static constexpr bool kVariableSize = false;
+  static constexpr std::size_t kActivationThreshold = 0;
+  __host__ __device__ __forceinline__ static constexpr std::size_t
+  worst_case_chunk_stride(std::size_t chunkSize) {
+    return chunkSize;
+  }
   template <typename... Args>
-  __device__ __forceinline__ static void send(
+  __device__ __forceinline__ static std::size_t send(
       char* staging,
       const char* src,
       std::size_t nbytes,
@@ -100,10 +116,11 @@ struct TileReduceStaged {
       std::size_t /*byte_offset*/,
       Args...) {
     memcpy_vectorized(staging, src, nbytes, group);
+    return nbytes;
   }
 
   template <typename... Args>
-  __device__ __forceinline__ static void recv(
+  __device__ __forceinline__ static std::size_t recv(
       char* dst,
       const char* staging,
       std::size_t nbytes,
@@ -130,6 +147,7 @@ struct TileReduceStaged {
       tile_store<T, kTileElems, kBlockSize>(dst_t, t, acc, group, valid);
     }
 #endif
+    return nbytes;
   }
 
   template <typename... Args>
