@@ -105,7 +105,8 @@ void CtranDistTestFixture::TearDown() {
   distTearDown();
 }
 
-std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
+std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
+    bool ibLazyConnect) {
   const std::string uuid{"0"};
   uint64_t commHash =
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
@@ -149,6 +150,11 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
       std::move(commBootstrap));
 
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
+  // Set lazy IB connect on the per-comm config BEFORE ctranInit, which builds
+  // the Pipes transport from pipesConfig. The NCCL_CTRAN_IBGDA_LAZY_CONNECT env
+  // only feeds lazy via NcclxConfig, which this default-ctranConfig path does
+  // not go through, so tests must set it here explicitly.
+  comm->config_.pipesConfig.ibLazyConnect = ibLazyConnect;
 
   COMMCHECK_TEST(ctranInit(comm.get()));
   CHECK(ctranInitialized(comm.get())) << "Ctran not initialized";
