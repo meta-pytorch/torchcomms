@@ -2316,8 +2316,8 @@ class P2pIbgdaTransportDevice {
    *     - Uses the forward channel's send progress cursor.
    *     - Waits NIC_DONE on the forward channel's local completion counter.
    *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
-   *     - RDMA puts with DATA_READY on the forward remote channel and may
-   *       batch NIC_DONE credit to the local completion counter.
+   *     - RDMA puts with DATA_READY on the forward remote channel and
+   *       posts NIC_DONE credit per chunk to the local completion counter.
    *
    * Any chain of send → forward* → recv is therefore valid: each
    * forward consumes exactly the signals its predecessor produces

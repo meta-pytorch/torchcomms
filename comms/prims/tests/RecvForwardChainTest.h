@@ -50,21 +50,4 @@ void launch_recv_forward_chain_no_dst(
     int num_blocks,
     cudaStream_t stream);
 
-/**
- * Forward-only chain launch that records each intermediate rank's
- * post-forward() reuse-credit cursors. The group leader writes four int64_t
- * values into out: recv-slot reuseCreditStep, recv-slot nextStep, fwd-slot
- * reuseCreditStep, fwd-slot nextStep.
- */
-void launch_recv_forward_reuse_credit_step(
-    P2pIbgdaTransportDevice** transports,
-    const char* send_buf,
-    char* recv_buf,
-    std::size_t nbytes,
-    int my_rank,
-    int world_size,
-    int num_blocks,
-    int64_t* out,
-    cudaStream_t stream);
-
 } // namespace comms::prims::test
