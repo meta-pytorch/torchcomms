@@ -442,7 +442,6 @@ enum class IbSendRecvProgressStage : uint8_t {
 
 struct IbChannelProgress {
   int64_t nextStep{0};
-  int64_t reuseCreditStep{0};
   std::size_t activeNextByte{0};
   std::size_t activeProtocolPadding{0};
   int64_t activeBaseStep{0};
