@@ -35,7 +35,6 @@ std::string kernelTypeToOpName(KernelConfig::KernelType type) {
     case KernelConfig::SENDRECV_UNPACK:
       return "SendRecv";
     case KernelConfig::ALLTOALL:
-    case KernelConfig::ALLTOALL_DEDUP:
     case KernelConfig::DEVICE_ALLTOALLV:
     case KernelConfig::ALLTOALLV:
     case KernelConfig::ALLTOALLV_DEDUP:
@@ -75,46 +74,6 @@ OpElem::OpElem(
     uint64_t opCount)
     : OpElem(type, stream, comm, nullptr, opCount) {};
 
-OpElem::OpElem(OpElem* op) {
-  this->type = op->type;
-  this->stream = op->stream;
-  this->comm_ = op->comm_;
-  this->opCount = op->opCount;
-
-  if (op->type == ALLTOALL_DEDUP) {
-    new (&this->alltoall_dedup.remoteRecvBuffs) std::vector<void*>;
-    this->alltoall_dedup.remoteRecvBuffs.resize(comm_->statex_->nRanks());
-    for (int i = 0; i < comm_->statex_->nRanks(); i++) {
-      this->alltoall_dedup.remoteRecvBuffs[i] =
-          op->alltoall_dedup.remoteRecvBuffs[i];
-    }
-    new (&this->alltoall_dedup.remoteAccessKeys)
-        std::vector<struct CtranMapperRemoteAccessKey>;
-    this->alltoall_dedup.remoteAccessKeys.resize(comm_->statex_->nRanks());
-    for (int i = 0; i < comm_->statex_->nRanks(); i++) {
-      this->alltoall_dedup.remoteAccessKeys[i].backend =
-          op->alltoall_dedup.remoteAccessKeys[i].backend;
-      this->alltoall_dedup.remoteAccessKeys[i].ibKey =
-          op->alltoall_dedup.remoteAccessKeys[i].ibKey;
-    }
-    new (&this->alltoall_dedup.bcastElemMap)
-        std::unordered_map<int, KernelElem*>;
-    this->alltoall_dedup.bcastElemMap = op->alltoall_dedup.bcastElemMap;
-    this->alltoall_dedup.datatype = op->alltoall_dedup.datatype;
-    this->alltoall_dedup.sendbuff = op->alltoall_dedup.sendbuff;
-    this->alltoall_dedup.recvbuff = op->alltoall_dedup.recvbuff;
-    this->alltoall_dedup.sendHdl = op->alltoall_dedup.sendHdl;
-    this->alltoall_dedup.recvHdl = op->alltoall_dedup.recvHdl;
-    this->alltoall_dedup.sendcounts = op->alltoall_dedup.sendcounts;
-    this->alltoall_dedup.sdispls = op->alltoall_dedup.sdispls;
-    this->alltoall_dedup.recvcounts = op->alltoall_dedup.recvcounts;
-    this->alltoall_dedup.rdispls = op->alltoall_dedup.rdispls;
-  } else {
-    FB_CHECKABORT(
-        false, "This function currently only supports ALLTOALL_DEDUP");
-  }
-}
-
 OpElem::OpElem(
     enum opType type,
     cudaStream_t stream,
@@ -138,15 +97,6 @@ OpElem::OpElem(
       this->alltoallv.recvcounts.resize(comm_->statex_->nRanks());
       new (&this->alltoallv.rdispls) std::vector<size_t>;
       this->alltoallv.rdispls.resize(comm_->statex_->nRanks());
-      break;
-    case ALLTOALL_DEDUP:
-      new (&this->alltoall_dedup.remoteRecvBuffs) std::vector<void*>;
-      this->alltoall_dedup.remoteRecvBuffs.resize(comm_->statex_->nRanks());
-      new (&this->alltoall_dedup.remoteAccessKeys)
-          std::vector<struct CtranMapperRemoteAccessKey>;
-      this->alltoall_dedup.remoteAccessKeys.resize(comm_->statex_->nRanks());
-      new (&this->alltoall_dedup.bcastElemMap)
-          std::unordered_map<int, KernelElem*>;
       break;
     case ALLGATHER:
       this->allgather.bcastElem = nullptr;
@@ -190,14 +140,6 @@ OpElem::~OpElem() {
       this->alltoallv.sdispls.~vector();
       this->alltoallv.recvcounts.~vector();
       this->alltoallv.rdispls.~vector();
-      break;
-    case ALLTOALL_DEDUP:
-      for (auto& pair : this->alltoall_dedup.bcastElemMap) {
-        if (pair.second != nullptr) {
-          pair.second->free();
-        }
-      }
-      this->alltoall_dedup.bcastElemMap.~unordered_map();
       break;
     case ALLGATHER:
       if (this->allgather.bcastElem) {
@@ -306,14 +248,6 @@ void OpElem::setStatus(KernelElem::ElemStatus status) {
       }
       break;
     }
-    case ALLTOALL_DEDUP: {
-      for (auto& pair : this->alltoall_dedup.bcastElemMap) {
-        if (pair.second != nullptr) {
-          pair.second->setStatus(status);
-        }
-      }
-      break;
-    }
     default:
       // FIXME: add a WARN log here
       break;
@@ -327,7 +261,6 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::ALLTOALL, "ALLTOALL"},
         {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DEVICE_ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALLV, "ALLTOALLV"},
-        {KernelConfig::KernelType::ALLTOALL_DEDUP, "ALLTOALL_DEDUP"},
         {KernelConfig::KernelType::SENDRECV, "SENDRECV"},
         {KernelConfig::KernelType::SEND, "SEND"},
         {KernelConfig::KernelType::RECV, "RECV"},

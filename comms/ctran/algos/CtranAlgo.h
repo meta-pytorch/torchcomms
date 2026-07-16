@@ -244,7 +244,6 @@ class CtranPersistentRequest {
  public:
   enum Type {
     ALLGATHER_P,
-    ALLTOALL_DEDUP,
     ALLTOALL_P,
     ALLTOALLV_DEDUP,
   };

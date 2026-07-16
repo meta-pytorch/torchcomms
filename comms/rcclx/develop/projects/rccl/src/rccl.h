@@ -1111,7 +1111,7 @@ ncclResult_t allGatherExec(
 
 /*
  * Trigger the execution of a request of persistent collective operation
- * created by ncclAllGatherInit or ncclAllToAllDedupInit
+ * created by ncclAllGatherInit
  */
 ncclResult_t pExec(void* request);
 

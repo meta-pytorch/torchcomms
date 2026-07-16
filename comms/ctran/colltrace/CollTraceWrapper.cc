@@ -219,14 +219,6 @@ CollectiveMetadata getCollectiveMetadata(
           .count = std::nullopt, // AllToAllv uses variable counts
       };
     }
-    case KernelConfig::KernelType::ALLTOALL_DEDUP: {
-      // TODO: Add more info for dedup alltoall
-      return CollectiveMetadata{
-          .opName = "AllToAll_Dedup",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
     case KernelConfig::KernelType::ALLTOALLV_DEDUP: {
       // TODO: Add more info for dedup alltoall
       return CollectiveMetadata{

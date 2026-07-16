@@ -95,15 +95,6 @@ struct KernelArgs {
 
 } // namespace alltoallv
 
-namespace alltoalldedup {
-
-struct KernelArgs {
-  KernelElem* bcastElemList;
-  int numIbPeers;
-};
-
-} // namespace alltoalldedup
-
 namespace alltoallp {
 class AlgoImpl;
 } // namespace alltoallp
