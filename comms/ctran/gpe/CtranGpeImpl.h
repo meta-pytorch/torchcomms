@@ -131,10 +131,6 @@ class CtranGpeCmd {
     opFunc func;
     std::shared_ptr<meta::comms::colltrace::ICollTraceHandle> collHandle;
     CtranComm* comm;
-    // If persistent is true for the cmd, storing unique_ptr to persistent
-    // object (AlgoImpl) used by persistent / cudagraph-aware colls; otherwise
-    // nothing.
-    ctran::PersistentObj pObj;
   } coll;
 
   // kernelFlag to assist device mem communication
@@ -288,8 +284,7 @@ class CtranGpe::Impl {
       opFunc func,
       KernelConfig& kernelConfig,
       const void* ncclKernel,
-      std::optional<std::chrono::milliseconds> timeout = std::nullopt,
-      ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr);
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   // submit host mem communication
   commResult_t submitHost(
@@ -326,21 +321,6 @@ class CtranGpe::Impl {
   // Registry accessor used by submit() and the cmdDestroy callback.
   GpeDeviceRingCmdRegistry& deviceRingCmdRegistry() {
     return deviceRingCmdRegistry_;
-  }
-
-  // Before enqueueing a command to the GPE, update the command if needed.
-  // Currently, this is used for enabling cudagraph-aware AllToAll.
-  inline commResult_t preLaunchGraphPrepare(
-      CtranGpeCmd* cmd,
-      ctran::PreLaunchGraphPrepareFn graphPrepareFn) {
-    if (graphPrepareFn == nullptr) {
-      return commSuccess;
-    }
-    auto op = cmd->coll.opGroup.front().get();
-    // This is cudagraph-aware collective prepare function: transfer collective
-    // to Persistent collective for perf optimization
-    graphPrepareFn(cmd->coll.func, op, cmd->coll.pObj);
-    return commSuccess;
   }
 
   CtranComm* comm{nullptr};

@@ -17,7 +17,12 @@
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/utils/CtranPerf.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+
+static bool isGraphAwareAlgo(enum NCCL_ALLTOALL_ALGO algo) {
+  return algo == NCCL_ALLTOALL_ALGO::ctgraph;
+}
 
 #if defined(ENABLE_PRIMS)
 template <PipeProtocol Proto>
@@ -128,6 +133,23 @@ commResult_t ctranAllToAll(
     return commSuccess;
   }
 
+  // Cudagraph-aware optimization: when capturing, transparently convert to the
+  // persistent window-based AllToAllP algorithm.
+  if (isGraphAwareAlgo(algo)) {
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    FB_CUDACHECK(
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+    if (captureInfo.status == cudaStreamCaptureStatusActive) {
+      return ctranAllToAllCudagraphAware(
+          sendbuff, recvbuff, count, datatype, comm, stream, algo);
+    }
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "AllToAll {} called outside CUDA graph capture. "
+        "ctranAllToAllSupport should have returned false.",
+        allToAllAlgoName(algo));
+  }
+
   // TODO: alltoallKerns perform poorly on HCM due to lack of NVL connection
   // between some GPUs We need detect topology and switch to use IB transport in
   // such a case
@@ -146,17 +168,11 @@ commResult_t ctranAllToAll(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   FB_COMMCHECK(setupGpeOp(
       sendbuff, recvbuff, count, datatype, comm, stream, opCount, opGroup));
-  ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr;
-  if (NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE) {
-    graphPrepareFn = ctran::alltoallp::prepareCudagraphAwareAllToAll;
-  }
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       opIbImpl,
       config,
-      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype]),
-      std::nullopt, /* timeout */
-      graphPrepareFn));
+      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype])));
 
   return commSuccess;
 }
@@ -165,7 +181,8 @@ bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    enum NCCL_ALLTOALL_ALGO algo) {
+    enum NCCL_ALLTOALL_ALGO algo,
+    cudaStream_t stream) {
   // Currently there is only one ctran algo for alltoall, but we pass algo as a
   // parameter for future extension and consistency across collectives.
   // Currently just return false if algo is set to orig
@@ -174,6 +191,33 @@ bool ctranAllToAllSupport(
   }
 
   const auto statex = comm->statex_.get();
+
+  // Cudagraph-aware algo requires an active CUDA graph capture on the stream.
+  if (isGraphAwareAlgo(algo)) {
+    if (stream == nullptr) {
+      return false;
+    }
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    auto err =
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
+    if (err != cudaSuccess ||
+        captureInfo.status != cudaStreamCaptureStatusActive) {
+      CLOGF_SUBSYS(
+          INFO,
+          COLL,
+          "AllToAll {}: not in capture mode. "
+          "Falling back to baseline. "
+          "commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
+          allToAllAlgoName(algo),
+          statex->commHash(),
+          statex->commDesc(),
+          statex->nRanks(),
+          statex->nLocalRanks(),
+          statex->nNodes());
+      return false;
+    }
+  }
+
   // Check if all remote peers are supported by ctran
   // For intra-node peers, ctranAlgo supports copy based path;
   // for inter-node peers, we need a mapper backend to support.
