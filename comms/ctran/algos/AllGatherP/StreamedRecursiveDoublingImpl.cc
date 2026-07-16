@@ -13,6 +13,7 @@
 #include "comms/ctran/algos/AllGatherP/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/IPersistPlan.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
@@ -166,18 +167,18 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
 namespace ctran::allgatherp {
 extern __global__ void ncclKernelAllGatherPPipeStart(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 extern __global__ void ncclKernelAllGatherPPipeSync(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeSyncKernArgs args);
 extern __global__ void ncclKernelAllGatherPPipeEnd(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args);
 extern __global__ void ncclKernelAllGatherPPipe(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 
 commResult_t AlgoImpl::execStreamedRecursiveDoubling(

@@ -19,6 +19,7 @@
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
@@ -464,82 +465,82 @@ ncclKernelNvlBarrier(int rank, int nLocalRanks, CtranAlgoDeviceState* devState);
 
 template <typename T>
 extern __global__ void ncclKernelAllGatherCtranDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRing(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allreduce::KernelArgs args);
 
 extern __global__ void ncclKernelSend(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelRecv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelRecvArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelSendRecv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendRecvArgs args);
 
 extern __global__ void ncclKernelSendRecvP2p(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernArgs args);
 
 template <bool UNPACK>
 __global__ void ncclKernelBroadcast(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::broadcast::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAll(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoall::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllDedup(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoalldedup::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterRing(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterRHD(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args);
 

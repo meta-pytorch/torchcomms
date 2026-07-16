@@ -65,9 +65,9 @@ void GpeDeviceRingCmdRegistry::recordRingReplay(CtranGpeCmd* cmd) {
 
 void CtranGpe::Impl::initDeviceRing() {
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
-  // System-scope 128b atomic exchange (the ring's device write) requires sm_90+
-  // NVIDIA hardware; on HIP the write traps. Keep the ring disabled so the
-  // host-node path is used, matching NVIDIA pre-Hopper behavior.
+  // System-scope 128b atomic exchange (the ring's device write) requires
+  // sm_90+ NVIDIA hardware; on HIP the write traps. Keep the ring disabled so
+  // the host-node path is used, matching NVIDIA pre-Hopper behavior.
   return;
 #else
   if (!NCCL_CTRAN_GPE_DEVICE_RING) {

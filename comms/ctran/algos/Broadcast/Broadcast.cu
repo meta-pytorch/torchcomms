@@ -17,22 +17,23 @@ __shared__ UnpackBlockState broadcastUnpack;
 
 template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::broadcast::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (UNPACK) {
     // Per-block flag management (matches SendRecv pattern) to avoid race
     // where block 0 clears the shared flag before other blocks exit waitUnpack.
     if (flag && threadIdx.x == 0) {
-      ctran::device::KernelStartGpe(&flag[blockIdx.x]);
+      ctran::device::KernelStartGpe(f, blockIdx.x);
     }
     devStateLoadToShm(&flag[blockIdx.x], devState);
   } else {
     if (flag && gtIdx == 0) {
       ctran::device::devLoadAbortFlags(flag, devState);
-      ctran::device::KernelStartGpe(flag);
+      ctran::device::KernelStartGpe(f);
     }
     devStateLoadToShm(devState);
   }
@@ -76,8 +77,8 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
 
 #define DECL_BROADCAST_KERN(UNPACK)                     \
   template __global__ void ncclKernelBroadcast<UNPACK>( \
-      int* flag,                                        \
-      CtranAlgoDeviceState* devState,                   \
+      ctran::gpe::KernelFlagDev * flag,                 \
+      CtranAlgoDeviceState * devState,                  \
       ctran::broadcast::KernelArgs args)
 
 DECL_BROADCAST_KERN(/*UNPACK=*/false);

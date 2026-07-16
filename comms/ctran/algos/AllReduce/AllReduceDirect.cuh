@@ -156,16 +156,17 @@ __device__ void algoFn(
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::allreduce::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
   devStateLoadToShm(&flag[bId], devState);
 
   if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
+    ctran::device::KernelStartGpe(f, bId);
   }
 
   // Run algorithm main body
@@ -181,8 +182,8 @@ __global__ void ncclKernelAllReduceCtranDirect(
 
 #define DECL_CTRAN_ALLREDUCEDIRECT_KERN(T, RedOp)                    \
   template __global__ void ncclKernelAllReduceCtranDirect<T, RedOp>( \
-      int* flag,                                                     \
-      CtranAlgoDeviceState* devState,                                \
+      ctran::gpe::KernelFlagDev * flag,                              \
+      CtranAlgoDeviceState * devState,                               \
       ctran::allreduce::KernelArgs args);
 
 #endif

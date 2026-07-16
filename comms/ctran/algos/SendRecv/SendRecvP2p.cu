@@ -74,15 +74,16 @@ __device__ __forceinline__ void recvImpl(
 }
 
 __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState, // TODO: this is not needed for now, but
                                     // maybe needed for fault-tolerance
     ctran::sendrecv::KernArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   auto group = args.useBlockGroup ? comms::prims::make_block_group()

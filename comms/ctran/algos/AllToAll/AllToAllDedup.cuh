@@ -50,14 +50,15 @@ static __device__ __forceinline__ void bcastOnPost(
 
 template <typename T>
 __global__ void ncclKernelAllToAllDedup(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::alltoalldedup::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   devStateLoadToShm(devState);
@@ -83,6 +84,6 @@ __global__ void ncclKernelAllToAllDedup(
 
 #define DECL_CTRAN_ALLTOALLDEDUP_KERN(T)               \
   template __global__ void ncclKernelAllToAllDedup<T>( \
-      int* flag,                                       \
-      CtranAlgoDeviceState* devState,                  \
+      ctran::gpe::KernelFlagDev * flag,                \
+      CtranAlgoDeviceState * devState,                 \
       ctran::alltoalldedup::KernelArgs args)

@@ -3,6 +3,6 @@
 #include "comms/ctran/gpe/benchmarks/NoOpKernel.h"
 
 __global__ void NoOpKernel(
-    int* /*flag*/,
+    ctran::gpe::KernelFlagDev* /*flag*/,
     CtranAlgoDeviceState* /*devState*/,
     ctran::allgather::KernelArgs /*args*/) {}

@@ -314,7 +314,7 @@ commResult_t CtranGpe::Impl::submit(
       (kernelConfig.postKernelCleanup && !isCapturing);
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
-  volatile int* flag = nullptr;
+  ctran::gpe::KernelFlagDev* flagDev = nullptr;
   if (kernelFlag != nullptr) {
     // TODO: remove this allowlist once the per-block flag is enabled in all
     // kernels. This helps to reduce blast radius of the larger fix.
@@ -333,16 +333,15 @@ commResult_t CtranGpe::Impl::submit(
     } else {
       kernelFlag->numGroups_ = 1;
     }
-    flag = kernelFlag->flag_;
+    flagDev = &kernelFlag->dev;
   }
 
-  // Set first kernel argument as kernelFlag if GPE op is not empty.
-  // Check it before passing opGroup to cmd. Device-ring dispatch needs no
-  // kernel argument: the ring header is armed on the kernel's flag object
-  // (KernelFlagItem::gpeHdr) and the kernel recovers it in its KernelStartGpe
-  // prologue, so the arg list is just (flag, devState, algoArgs).
+  // First kernel argument is the KernelFlagDev* (per-block flags + ring
+  // header). The kernel reads flagDev->gpeHdr directly for ring dispatch;
+  // submit() arms it below on the ring path. Remaining args are (devState,
+  // algoArgs).
   std::array<void*, 3> kernelArgs;
-  kernelArgs.at(0) = (void*)&flag;
+  kernelArgs.at(0) = (void*)&flagDev;
   kernelArgs.at(1) = (void*)&kernelConfig.args.devState_d;
   if (kernelConfig.algoArgs) {
     // Use pointer to algoArgs if specified; otherwise, pass default
@@ -670,9 +669,9 @@ commResult_t CtranGpe::Impl::publishCapturedCmd(
             /*destroyCallback=*/cmdDestroy,
             streamCaptureInfo));
     ctran::gpe::GpeCmdId id = deviceRingCmdRegistry_.registerCmd(cmd);
-    kernelFlag->gpeHdr.ring = deviceRingHandle();
-    kernelFlag->gpeHdr.cmdId = id;
-    kernelFlag->gpeHdr.enabled = 1;
+    kernelFlag->dev.gpeHdr.ring = deviceRingHandle();
+    kernelFlag->dev.gpeHdr.cmdId = id;
+    kernelFlag->dev.gpeHdr.enabled = 1;
   } else {
     FB_COMMCHECK(
         utils::cudagraph::addHostNode(
@@ -890,7 +889,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       // thus, wait for the kernel to launch
       KernelFlagItem* kernelFlag = cmd->kernelFlag;
       if (kernelFlag) {
-        volatile int* flag_d = kernelFlag->flag_;
+        volatile int* flag_d = kernelFlag->dev.flag_;
         // Here we check just flag_d[0]. This is ok because Kernel Start signal
         // is only used for tracing purposes. Before the flags are freed below
         // with reset, all block flags are checked.
@@ -994,7 +993,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       gpeProfiler_->mark(ctran::GpeTracePoint::HOST_ALGO);
 
       if (kernelFlag) {
-        volatile int* flag_d = kernelFlag->flag_;
+        volatile int* flag_d = kernelFlag->dev.flag_;
         if (flag_d[0] == KERNEL_STARTED_AND_EXIT) {
           // Indicate kernel would exit without the terminate signal, thus free
           // the flag now

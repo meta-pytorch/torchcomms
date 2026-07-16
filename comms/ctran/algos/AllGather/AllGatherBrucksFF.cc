@@ -2,11 +2,12 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
+#include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 __global__ void ncclKernelAllGatherCtranBrucks(
-    int* flag,
+    ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::allgather::KernelArgs args);
 

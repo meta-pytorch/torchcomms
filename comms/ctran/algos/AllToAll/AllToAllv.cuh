@@ -136,14 +136,15 @@ enum { GROUP_SEND, GROUP_RECV };
 
 template <typename T>
 __global__ void ncclKernelAllToAllv(
-    int* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
+    ctran::device::KernelStartGpe(f);
   }
 
   // No work for the kernel when all three are true: no NVL sends, no NVL
@@ -200,6 +201,6 @@ __global__ void ncclKernelAllToAllv(
 
 #define DECL_CTRAN_ALLTOALLV_KERN(T)               \
   template __global__ void ncclKernelAllToAllv<T>( \
-      int* flag,                                   \
-      CtranAlgoDeviceState* devState,              \
+      ctran::gpe::KernelFlagDev * flag,            \
+      CtranAlgoDeviceState * devState,             \
       ctran::alltoallv::KernelArgs args)

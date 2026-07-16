@@ -18,8 +18,10 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   void SetUp() override {
     CtranStandaloneFixture::SetUp();
 
-    FB_CUDACHECKTHROW_EX_NOCOMM(
-        cudaHostAlloc(&flag_, kNBlocks * sizeof(int), cudaHostAllocDefault));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
+        &kfd_, sizeof(ctran::gpe::KernelFlagDev), cudaHostAllocDefault));
+    *kfd_ = {};
+    flag_ = const_cast<int*>(kfd_->flag_);
     for (int i = 0; i < kNBlocks; i++) {
       *flag_ = KERNEL_STARTED;
     }
@@ -62,7 +64,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         /*rank=*/0,
         /*commHash=*/0,
         /*commDesc=*/std::string(""));
-    FB_CUDACHECKTHROW_EX_NOCOMM(cudaFreeHost(flag_));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaFreeHost(kfd_));
   }
 
   void waitStreamFor(bool expectFinish, std::chrono::seconds secs) {
@@ -90,7 +92,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         cudaMemcpyHostToDevice));
 
     std::array<void*, 3> kernelArgs;
-    kernelArgs.at(0) = (void*)&flag_;
+    kernelArgs.at(0) = (void*)&kfd_;
     kernelArgs.at(1) = (void*)&devState_;
     kernelArgs.at(2) = (void*)&args_;
     dim3 grid = {kNBlocks, 1, 1};
@@ -154,6 +156,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   }
 
   int* flag_;
+  ctran::gpe::KernelFlagDev* kfd_{nullptr};
   CtranAlgoDeviceState* devState_;
   CtranTestDeviceWaitArgs args_;
 
