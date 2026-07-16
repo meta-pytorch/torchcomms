@@ -677,7 +677,7 @@ TEST_F(MetaTunerTest, MissingFileIsNoOp) {
   EXPECT_EQ(table.at(NCCL_ALGO_RING, NCCL_PROTO_LL128), 1.0F);
   EXPECT_EQ(nChannels, 5);
 
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   size_t chunkSize = 16384;
   kMetaTuner.getChunkSize(
       context,
@@ -693,7 +693,7 @@ TEST_F(MetaTunerTest, MissingFileIsNoOp) {
   kMetaTuner.finalize(context);
 }
 
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
 // Case 9: getChunkSize override -- chunkSize != 0 sets it; 0/omitted leaves it.
 TEST_F(MetaTunerTest, ChunkSizeOverride) {
   const TunerConfigFile config(
@@ -771,7 +771,7 @@ TEST_F(MetaTunerTest, ChunkSizeAlgoProtoKey) {
 
   kMetaTuner.finalize(context);
 }
-#endif // NCCLX_TUNER_HAS_GETCHUNKSIZE
+#endif // META_TUNER_UT_HAS_GETCHUNKSIZE
 
 // Case 1: CSV parsing with comments, blank lines and omitted optional columns.
 TEST_F(MetaTunerTest, CsvParsingWithCommentsAndOmittedColumns) {
@@ -824,13 +824,13 @@ TEST_F(MetaTunerTest, CsvParsingWithCommentsAndOmittedColumns) {
 struct RuleProbe {
   float matchedCost;
   int channels;
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   size_t chunkSize;
 #endif
 
   bool operator==(const RuleProbe& other) const {
     return matchedCost == other.matchedCost && channels == other.channels
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
         && chunkSize == other.chunkSize
 #endif
         ;
@@ -858,7 +858,7 @@ RuleProbe probeRule(
       /* regBuff */ 0,
       &channels);
 
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   size_t chunkSize = 0;
   kMetaTuner.getChunkSize(
       context, collType, nBytes, algo, proto, /* nChannels */ 1, &chunkSize);
@@ -914,7 +914,7 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
   const RuleProbe jsonRow0 = probeRule(
       jsonContext, ncclFuncAllReduce, 1024, NCCL_ALGO_RING, NCCL_PROTO_LL128);
   EXPECT_EQ(csvRow0, jsonRow0);
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   EXPECT_EQ(csvRow0, (RuleProbe{0.0F, 4, 65536}));
 #else
   EXPECT_EQ(csvRow0, (RuleProbe{0.0F, 4}));
@@ -925,7 +925,7 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
   const RuleProbe jsonRow1 = probeRule(
       jsonContext, ncclFuncAllGather, 1024, NCCL_ALGO_TREE, NCCL_PROTO_SIMPLE);
   EXPECT_EQ(csvRow1, jsonRow1);
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   EXPECT_EQ(csvRow1, (RuleProbe{0.0F, -1, 0}));
 #else
   EXPECT_EQ(csvRow1, (RuleProbe{0.0F, -1}));
@@ -946,7 +946,7 @@ TEST_F(MetaTunerTest, JsonParsingEquivalentToCsv) {
       NCCL_ALGO_RING,
       NCCL_PROTO_LL128);
   EXPECT_EQ(csvRow2, jsonRow2);
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   EXPECT_EQ(csvRow2, (RuleProbe{0.0F, -1, 0}));
 #else
   EXPECT_EQ(csvRow2, (RuleProbe{0.0F, -1}));
@@ -1038,7 +1038,7 @@ TEST_F(MetaTunerTest, ExampleCsvConfigLoads) {
       &channels);
   EXPECT_EQ(smallTable.at(NCCL_ALGO_RING, NCCL_PROTO_LL128), 0.0F);
 
-#ifdef NCCLX_TUNER_HAS_GETCHUNKSIZE
+#ifdef META_TUNER_UT_HAS_GETCHUNKSIZE
   // Large allreduce: per-rank shard above 1 MiB (16 MiB total / 8 ranks =
   // 2 MiB/rank) -> ring/simple carries a 524288-byte chunkSize override.
   size_t chunkSize = 16384;
