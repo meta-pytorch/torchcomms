@@ -252,7 +252,8 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
     const IbgdaRemoteBuffer& signalBuf,
     uint64_t signalVal,
     const IbgdaLocalBuffer& counterBuf,
-    uint64_t counterVal) {
+    uint64_t counterVal,
+    bool signalPerLane) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->put(
         group,
@@ -262,7 +263,8 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        signalPerLane);
   } else {
     ibgda->put(
         group,
@@ -272,7 +274,8 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         signalBuf,
         signalVal,
         counterBuf,
-        counterVal);
+        counterVal,
+        signalPerLane);
   }
 }
 
