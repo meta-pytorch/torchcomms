@@ -18,8 +18,7 @@ __global__ void recv_forward_chain_kernel(
     std::size_t nbytes,
     int my_rank,
     int world_size,
-    bool use_dst,
-    int64_t* out) {
+    bool use_dst) {
   auto group = make_block_group();
   const auto num_blocks = gridDim.x;
 
@@ -44,14 +43,6 @@ __global__ void recv_forward_chain_kernel(
     P2pIbgdaTransportDevice& next = *transports[next_rank];
     char* dst = use_dst ? (recv_buf + my_off) : nullptr;
     prev.forward(group, dst, next, my_bytes);
-    if (out != nullptr && group.is_leader()) {
-      const auto& prevChannel = prev.local_channel(group.group_id);
-      const auto& nextChannel = next.local_channel(group.group_id);
-      out[0] = prevChannel.recvProgress.reuseCreditStep;
-      out[1] = prevChannel.recvProgress.nextStep;
-      out[2] = nextChannel.sendProgress.reuseCreditStep;
-      out[3] = nextChannel.sendProgress.nextStep;
-    }
   }
 }
 
@@ -71,8 +62,7 @@ void launch_recv_forward_chain(
       nbytes,
       my_rank,
       world_size,
-      /*use_dst=*/true,
-      /*out=*/nullptr);
+      /*use_dst=*/true);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
@@ -97,39 +87,11 @@ void launch_recv_forward_chain_no_dst(
       nbytes,
       my_rank,
       world_size,
-      /*use_dst=*/false,
-      /*out=*/nullptr);
+      /*use_dst=*/false);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
         "recv_forward_chain_no_dst kernel launch failed: %s\n",
-        cudaGetErrorString(err));
-  }
-}
-
-void launch_recv_forward_reuse_credit_step(
-    P2pIbgdaTransportDevice** transports,
-    const char* send_buf,
-    char* recv_buf,
-    std::size_t nbytes,
-    int my_rank,
-    int world_size,
-    int num_blocks,
-    int64_t* out,
-    cudaStream_t stream) {
-  recv_forward_chain_kernel<<<num_blocks, 128, 0, stream>>>(
-      transports,
-      send_buf,
-      recv_buf,
-      nbytes,
-      my_rank,
-      world_size,
-      /*use_dst=*/false,
-      out);
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf(
-        "recv_forward_reuse_credit_step kernel launch failed: %s\n",
         cudaGetErrorString(err));
   }
 }
