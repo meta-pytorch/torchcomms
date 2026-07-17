@@ -33,6 +33,10 @@ class Config {
   bool usePatAvg = false;
   bool noLocal = false;
 
+  // When true, windows registered on this comm exchange only intra-node NVL/IPC
+  // handles and defer the IB rkey exchange. Mutable via commSetConfig.
+  bool winRegisterIpcOnly = false;
+
   enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
@@ -82,6 +86,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
       "ibLazyConnect",
+      "win_register_ipc_only",
   };
   return keys;
 }
@@ -94,6 +99,7 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "allreduceAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
+      "win_register_ipc_only",
   };
   return keys;
 }

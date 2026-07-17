@@ -10,6 +10,7 @@ namespace meta::comms::hints {
 namespace {
 const std::string kWindowBufferLocation = "window_buffer_location";
 const std::string kWindowSignalBufSize = "window_signal_bufsize";
+const std::string kWinRegisterIpcOnly = "win_register_ipc_only";
 } // namespace
 
 void WinHintUtils::init(kvType& kv) {
@@ -25,6 +26,14 @@ WinHintUtils::set(const std::string& key, const std::string& val, kvType& kv) {
     kv[key] = b;
   } else if (key == kWindowSignalBufSize) {
     kv[key] = val;
+  } else if (key == kWinRegisterIpcOnly) {
+    if (val == "1" || val == "true") {
+      kv[key] = "1";
+    } else if (val == "0" || val == "false") {
+      kv[key] = "0";
+    } else {
+      return commInvalidArgument;
+    }
   } else {
     return commInvalidArgument;
   }
@@ -37,6 +46,10 @@ const std::vector<std::string>& WinHintUtils::keys() {
       kWindowBufferLocation,
   };
   return kKeys;
+}
+
+bool WinHintUtils::parseBool(const std::string& val) {
+  return val == "1" || val == "true";
 }
 
 } // namespace meta::comms::hints
