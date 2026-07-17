@@ -123,7 +123,8 @@ bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    enum NCCL_ALLTOALL_ALGO algo);
+    enum NCCL_ALLTOALL_ALGO algo,
+    cudaStream_t stream = nullptr);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,
@@ -160,26 +161,6 @@ commResult_t ctranAllToAllv(
     commDataType_t datatype,
     CtranComm* comm,
     cudaStream_t stream);
-
-bool ctranAllToAllDedupSupport(CtranComm* comm);
-
-commResult_t ctranAllToAllDedupInit(
-    const void* sendbuff,
-    const size_t sendcounts[],
-    const size_t sdispls[],
-    const size_t maxSendCount,
-    void*& recvbuff,
-    const size_t recvcounts[],
-    const size_t rdispls[],
-    const size_t maxRecvCount,
-    commDataType_t datatype,
-    CtranComm* comm,
-    cudaStream_t stream,
-    CtranPersistentRequest*& request);
-
-commResult_t ctranAllToAllDedupExec(CtranPersistentRequest* request);
-
-commResult_t ctranAllToAllDedupDestroy(CtranPersistentRequest* request);
 
 bool ctranBroadcastSupport(
     CtranComm* comm,

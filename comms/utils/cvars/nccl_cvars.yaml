@@ -1346,18 +1346,6 @@ cvars:
      Number of threads in each thread block used for intra-node
      AllToAllv kernel.
 
- - name        : NCCL_CTRAN_ALLTOALL_DEDUP_NUM_THREAD_BLOCKS_PER_RAIL_P2P
-   type        : int
-   default     : 16
-   description : |-
-     Number of thread blocks used for each rail peer AllToAllDedup kernel.
-
- - name        : NCCL_CTRAN_ALLTOALL_DEDUP_THREAD_BLOCK_SIZE
-   type        : int
-   default     : 256
-   description : |-
-     Number of threads in each thread block used for AllToAllDedup kernel.
-
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS
    type        : int
    default     : 1
@@ -2308,11 +2296,12 @@ cvars:
  - name        : NCCL_ALLTOALL_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran
+   choices     : orig, ctran, ctgraph
    description : |-
      The algorithm to use for alltoall communication
      orig - Copy-based communication
      ctran - Ctran-based communication
+     ctgraph - Cudagraph-aware Ctran-based communication (captured into a CUDA graph)
 
  - name        : NCCL_ALLTOALLV_ALGO
    type        : enum
@@ -2333,12 +2322,6 @@ cvars:
      The algorithm to use for NCCL RMA communication
      orig - nccl rma communication
      ctran - Ctran-based rma communication
-
- - name        : NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     If enable cudagraph-aware optimization for ctran alltoall.
 
  - name        : NCCL_CTRAN_ENABLE
    type        : bool

@@ -247,7 +247,12 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
 
   // The streamed GPE path sources every outgoing chunk from recvbuff, including
   // the local rank's own chunk. Keep the copy stream-ordered before PipeStart.
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs, stream_));
+  FB_COMMCHECK(copyToSelf(
+      comm_,
+      sendbuff,
+      getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
+      sendSize,
+      stream_));
 
   if (nNodes > 1) {
     auto op = std::make_unique<OpElem>(
@@ -278,7 +283,13 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
 
   if (nLocalRanks > 1) {
     FB_COMMCHECK(nvlCeBcast(
-        comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+        comm_,
+        sendbuff,
+        sendSize,
+        myRank * sendSize,
+        pArgs.remoteRecvBuffs,
+        pArgs.remoteAccessKeys,
+        stream_));
 
     for (int step = 0; step < recvPlan.nSteps(); step++) {
       PipeSyncKernArgs syncArgs = {
@@ -302,7 +313,8 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
             srcPtr,
             sendSize,
             offset,
-            pArgs,
+            pArgs.remoteRecvBuffs,
+            pArgs.remoteAccessKeys,
             stream_,
             chunkIndex++ == 0));
       }

@@ -442,7 +442,6 @@ enum class IbSendRecvProgressStage : uint8_t {
 
 struct IbChannelProgress {
   int64_t nextStep{0};
-  int64_t reuseCreditStep{0};
   std::size_t activeNextByte{0};
   std::size_t activeProtocolPadding{0};
   int64_t activeBaseStep{0};
@@ -470,6 +469,8 @@ struct IbChannelLayout {
   IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
   IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
   int maxChannels{0}; ///< Layout size for channel-indexed resources
+  int numLanes{1}; ///< QP lanes = numNics * qpsPerConnection; each lane owns a
+                   ///< single-writer DATA_READY slot per channel
   int pipelineDepth{0}; ///< Number of pipeline slots in the ring
   std::size_t perChannelSize{0}; ///< Bytes per channel in one pipeline slot
 
@@ -478,11 +479,11 @@ struct IbChannelLayout {
   }
 
   IBGDA_HOST_DEVICE int dataReadySignalSlot(int channelId) const {
-    return channelId;
+    return channelId * numLanes;
   }
 
   IBGDA_HOST_DEVICE int slotFreeSignalSlot(int channelId) const {
-    return maxChannels + channelId;
+    return numLanes * maxChannels + channelId;
   }
 
   IBGDA_HOST_DEVICE int counterSlot(int channelId) const {
@@ -557,6 +558,28 @@ struct IbQpState {
 struct IbLocalChannel {
   IbChannelProgress sendProgress;
   IbChannelProgress recvProgress;
+
+  // Per-lane receiver DATA_READY bookkeeping for the round-robin send/recv
+  // protocol. On per-lane backends (IBGDA) the sender round-robins each chunk's
+  // RDMA_WRITE + DATA_READY atomic-FA across `numLanes` single-writer slots:
+  // chunk i rides lane `i % numLanes`, driven by the sender's free-running
+  // `IbQpState::cursor`. The receiver reconstructs chunk i's lane by mirroring
+  // that cursor in `recvDataReadyLaneCursor` (incremented once per received
+  // chunk) and waits on that lane's own slot rather than the summed cumulative,
+  // so a fast lane's later chunk cannot mask a slow lane's not-yet-landed data.
+  // `recvLaneExpected` holds each lane's running cumulative byte target
+  // (mirrors its DATA_READY slot); a running sum is required because chunks
+  // clamp at slot / stream boundaries and are not all `chunkSize`.
+  //
+  // Reset semantics (must stay aligned with the sender across peers):
+  //  - `recvDataReadyLaneCursor` mirrors the sender's `IbQpState::cursor`.
+  //    It is free-running and only zeroed at channel (re)construction — never
+  //    by the device reset kernel. Reset it only in lock-step with that cursor;
+  //    zeroing it on a partial reset would desync the round-robin lane mapping.
+  //  - `recvLaneExpected` mirrors the DATA_READY slots; zero it whenever those
+  //    slots are zeroed (channel construction AND the device reset kernel).
+  uint64_t recvDataReadyLaneCursor{0};
+  uint64_t recvLaneExpected[kIbMaxQpLanesPerChannelDirection]{};
 
   IbgdaLocalBuffer dataReady;
   IbgdaLocalBuffer slotFree;

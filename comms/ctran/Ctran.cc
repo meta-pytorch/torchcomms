@@ -118,8 +118,19 @@ comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
   }
   return multiPeerTransport_->get_device_handle().transports.data();
 }
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
+    const std::vector<int>& peers) {
+  if (!multiPeerTransport_) {
+    return nullptr;
+  }
+  return multiPeerTransport_->get_device_handle(peers).transports.data();
+}
 #else
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
+  return nullptr;
+}
+comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
+    const std::vector<int>& /*peers*/) {
   return nullptr;
 }
 #endif // defined(ENABLE_PRIMS)

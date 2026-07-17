@@ -44,36 +44,6 @@ enum class IbgdaSendRecvProgressStatus : uint8_t {
   Done,
 };
 
-namespace detail {
-__host__ __device__ constexpr std::size_t ib_send_recv_credit_quantum(
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  const std::size_t pipelineBytes =
-      perBlockSlot * static_cast<std::size_t>(pipelineDepth);
-  std::size_t quantum = pipelineBytes / 4;
-  if (quantum < 16ULL) {
-    quantum = 16ULL;
-  }
-  if (quantum > perBlockSlot) {
-    quantum = perBlockSlot;
-  }
-  quantum &= ~15ULL;
-  return quantum == 0 ? 16ULL : quantum;
-}
-
-__host__ __device__ constexpr std::size_t ib_send_recv_nic_done_credit_quantum(
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return ib_send_recv_credit_quantum(perBlockSlot, pipelineDepth);
-}
-
-__host__ __device__ constexpr std::size_t ib_send_recv_slot_free_credit_quantum(
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return ib_send_recv_credit_quantum(perBlockSlot, pipelineDepth);
-}
-} // namespace detail
-
 #if PIPES_IS_DEVICE_COMPILE
 __device__ __forceinline__ uint32_t trace_ibgda_step(std::size_t value) {
   constexpr std::size_t kMaxTraceStep = static_cast<std::size_t>(UINT32_MAX);
@@ -175,31 +145,6 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
     std::size_t max_signal_bytes,
     const char* opName);
 
-__device__ __forceinline__ bool should_post_nic_done_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    const ProgressGeometry& geometry);
-
-__device__ __forceinline__ bool should_post_nic_done_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    std::size_t perBlockSlot,
-    int pipelineDepth);
-
-__device__ __forceinline__ bool should_post_slot_free_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    const ProgressGeometry& geometry);
-
-__device__ __forceinline__ bool should_post_slot_free_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    std::size_t perBlockSlot,
-    int pipelineDepth);
-
-__device__ __forceinline__ uint64_t
-reuse_credit_value(uint64_t streamEnd, int64_t reuseCreditStep);
-
 __device__ __forceinline__ std::size_t active_payload_offset(
     const IbChannelProgress& state);
 
@@ -279,7 +224,6 @@ __device__ __forceinline__ void init_send_progress(
   auto& slot = progress_send_slot(transport, group);
   assert_progress_slot_idle(group, slot, "send");
   IbChannelProgress state{};
-  state.reuseCreditStep = slot.reuseCreditStep;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitNicDone;
@@ -335,7 +279,6 @@ __device__ __forceinline__ void init_recv_progress(
   auto& slot = progress_recv_slot(transport, group);
   assert_progress_slot_idle(group, slot, "recv");
   IbChannelProgress state{};
-  state.reuseCreditStep = slot.reuseCreditStep;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitDataReady;
@@ -369,9 +312,9 @@ __device__ __forceinline__ void init_recv_progress(
  * The send path first waits for NIC_DONE before reusing the local
  * send-staging range, then copies user data into send-staging through
  * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
- * range, and finally issues an RDMA put that piggybacks DATA_READY and may
- * batch NIC_DONE into the local counter. Returning `Done` means the reserved
- * byte range has completed.
+ * range, and finally issues an RDMA put that piggybacks DATA_READY and posts
+ * NIC_DONE per chunk into the local counter. Returning `Done` means the
+ * reserved byte range has completed.
  *
  * `CopyOp` must expose `send(dst, src, bytes, group, dataOffset, args...)`.
  * The default `Memcpy` copies bytes cooperatively across the supplied
@@ -509,18 +452,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
 
     __threadfence_system();
     group.sync();
-    IbgdaLocalBuffer counterBuf{};
-    uint64_t counterVal = 0;
     if (group.is_leader()) {
-      const bool isFinalChunk = active_payload_offset(state) + chunk.bytes >=
-          progress_params.protocolBytes;
-      if (isFinalChunk ||
-          should_post_nic_done_credit(
-              chunk.streamEnd, state.reuseCreditStep, progress_params)) {
-        counterVal = reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
-        counterBuf = localNicDoneCompletion;
-        state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
-      }
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       transport.put(
@@ -530,8 +462,9 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           chunk.bytes,
           remoteChannel.dataReady,
           chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
-          counterBuf,
-          counterVal);
+          localNicDoneCompletion,
+          chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
+          /*signalPerLane=*/true);
     }
     group.sync();
 
@@ -567,6 +500,109 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
 }
 
 /**
+ * Blocking wait for one receive chunk's DATA_READY on its round-robin lane.
+ *
+ * Both IB backends round-robin each chunk's RDMA_WRITE + DATA_READY fetch-add
+ * across `numLanes` single-writer slots. Chunk i rides lane `i % numLanes`,
+ * driven by the sender's free-running per-(channel, Send) cursor, which the
+ * receiver mirrors in `localChannel.recvDataReadyLaneCursor`. Waiting on that
+ * lane's own slot (not the summed cumulative) guarantees chunk i's RDMA_WRITE
+ * has landed, because the lane's single RC QP delivers the DATA_READY fetch-add
+ * only after its data write. This removes the cross-lane out-of-order hazard
+ * where a fast lane's later chunk pushes the summed DATA_READY past chunk i's
+ * threshold while chunk i's data (on a slow lane) is still in flight. When
+ * `numLanes` is 1, this degenerates to exactly the single-slot cumulative wait
+ * on lane 0. On success the leader advances `recvDataReadyLaneCursor` and this
+ * lane's `recvLaneExpected` by exactly one chunk.
+ */
+template <typename Transport>
+__device__ __forceinline__ void wait_recv_data_ready(
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    std::size_t chunkBytes,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint32_t numLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  if (group.is_leader()) {
+    // Truncate recvDataReadyLaneCursor to 32 bits BEFORE the modulo so the lane
+    // matches the sender's uint32 Send cursor once it wraps at 2^32; otherwise
+    // a non-power-of-two numLanes would desync the lane after wrap.
+    const uint32_t lane =
+        static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
+    const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+    const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
+        sendRecvSignalSlotOffset(static_cast<int>(lane)));
+    ThreadGroup solo{
+        0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+    transport.wait_signal(solo, laneBuf, expected, timeout);
+    localChannel.recvLaneExpected[lane] = expected;
+    ++localChannel.recvDataReadyLaneCursor;
+  }
+  group.sync();
+#else
+  (void)transport;
+  (void)group;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)chunkBytes;
+  (void)timeout;
+#endif
+}
+
+/**
+ * Non-blocking poll for one receive chunk's DATA_READY on its round-robin lane.
+ *
+ * Leader-only. Mirrors wait_recv_data_ready's readiness test without spinning:
+ * returns true when the chunk's DATA_READY has landed on its lane, advancing
+ * `recvDataReadyLaneCursor`/`recvLaneExpected` by exactly one chunk on that
+ * (and only that) return. A false return leaves all receiver state untouched so
+ * the caller can retry the same chunk on a later progress attempt.
+ * `currentOut`/`expectedOut` are set for the caller's timeout diagnostic.
+ */
+template <typename Transport>
+__device__ __forceinline__ bool poll_recv_data_ready(
+    Transport& transport,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    std::size_t chunkBytes,
+    unsigned long long& currentOut,
+    unsigned long long& expectedOut) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint32_t numLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  // Truncate to 32 bits before the modulo to match the sender's uint32 cursor
+  // wrap (see wait_recv_data_ready).
+  const uint32_t lane =
+      static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
+  const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+  const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
+      sendRecvSignalSlotOffset(static_cast<int>(lane)));
+  const uint64_t current = transport.read_signal(laneBuf);
+  currentOut = static_cast<unsigned long long>(current);
+  expectedOut = static_cast<unsigned long long>(expected);
+  if (current < expected) {
+    return false;
+  }
+  localChannel.recvLaneExpected[lane] = expected;
+  ++localChannel.recvDataReadyLaneCursor;
+  return true;
+#else
+  (void)transport;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)chunkBytes;
+  currentOut = 0;
+  expectedOut = 0;
+  return false;
+#endif
+}
+
+/**
  * Attempt bounded progress on one initialized recv.
  *
  * This method advances at most one recv-staging copy for the current chunk.
@@ -577,7 +613,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
  *
  * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
  * transport-owned recv-staging into the caller's destination through
- * `CopyOp::recv`, then may signal batched SLOT_FREE credit back to the
+ * `CopyOp::recv`, then signals SLOT_FREE per chunk back to the
  * sender. Returning `Done` means the reserved byte range has completed.
  *
  * `CopyOp` must expose `recv(dst, src, bytes, group, dataOffset, args...)`.
@@ -634,19 +670,28 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, progress_params.groupId);
-  const uint64_t expected = chunk.streamEnd;
   uint32_t ready = 1;
-  unsigned long long current = 0;
   if (group.is_leader()) {
-    current =
-        static_cast<unsigned long long>(transport.read_signal(localDataReady));
-    ready = current >= expected ? 1U : 0U;
+    // Poll the specific round-robin lane that carried this chunk and commit
+    // recvDataReadyLaneCursor/recvLaneExpected only on a ready result.
+    unsigned long long current = 0;
+    unsigned long long expected = 0;
+    ready = poll_recv_data_ready(
+                transport,
+                localChannel,
+                localDataReady,
+                chunk.bytes +
+                    (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
+                current,
+                expected)
+        ? 1U
+        : 0U;
     if (!ready) {
       TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
-          static_cast<unsigned long long>(expected),
+          expected,
           current);
     }
   }
@@ -668,22 +713,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   }
   group.sync();
 
-  uint64_t slotFreeVal = 0;
-  if (group.is_leader()) {
-    const bool isFinalChunk = active_payload_offset(state) + chunk.bytes >=
-        progress_params.protocolBytes;
-    if (isFinalChunk ||
-        should_post_slot_free_credit(
-            chunk.streamEnd, state.reuseCreditStep, progress_params)) {
-      slotFreeVal = reuse_credit_value(chunk.streamEnd, state.reuseCreditStep);
-      state.reuseCreditStep = static_cast<int64_t>(chunk.streamEnd);
-    }
-  }
-  slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
-  if (slotFreeVal != 0) {
-    transport.signal(
-        group, remoteChannel.slotFree, slotFreeVal, IbDirection::Recv);
-  }
+  // SLOT_FREE, posted unbatched every chunk back to the sender.
+  transport.signal(
+      group,
+      remoteChannel.slotFree,
+      chunk.bytes + (chunk.dataOff == 0 ? state.activeProtocolPadding : 0),
+      IbDirection::Recv);
 
   state.activeNextByte += chunk.bytes;
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -874,16 +909,6 @@ __device__ __forceinline__ void send(
     __threadfence_system();
     group.sync();
     if (group.is_leader()) {
-      IbgdaLocalBuffer counterBuf{};
-      uint64_t counterVal = 0;
-      const bool isFinalChunk = dataOff + bytesThis >= payloadProtocolBytes;
-      if (isFinalChunk ||
-          should_post_nic_done_credit(
-              streamEnd, state.reuseCreditStep, perBlockSlot, pipelineDepth)) {
-        counterVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
-        counterBuf = localNicDoneCompletion;
-        state.reuseCreditStep = static_cast<int64_t>(streamEnd);
-      }
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       transport.put(
@@ -893,8 +918,9 @@ __device__ __forceinline__ void send(
           bytesThis,
           remoteChannel.dataReady,
           protocolBytesThis,
-          counterBuf,
-          counterVal);
+          localNicDoneCompletion,
+          protocolBytesThis,
+          /*signalPerLane=*/true);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1028,10 +1054,16 @@ __device__ __forceinline__ void recv(
         chunkSize < dataRemaining ? chunkSize : dataRemaining;
     bytesThis = bytesThis < slotRemaining ? bytesThis : slotRemaining;
     const std::size_t stagingOff = slotOff + groupId * perBlockSlot + chunkOff;
-    const uint64_t streamEnd = streamStart + bytesThis;
 
-    // (1) Wait for sender's DATA_READY signal.
-    transport.wait_signal(group, localDataReady, streamEnd, timeout);
+    // (1) Wait for sender's DATA_READY on the specific round-robin lane that
+    //     carried this chunk (mirrors the sender's per-channel Send cursor).
+    wait_recv_data_ready(
+        transport,
+        group,
+        localChannel,
+        localDataReady,
+        bytesThis + (dataOff == 0 ? protocolPadding : 0),
+        timeout);
 
     // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
     const std::size_t validBytes =
@@ -1047,23 +1079,14 @@ __device__ __forceinline__ void recv(
     }
     group.sync();
 
-    // (3) Signal SLOT_FREE to sender. Sender waits on the cumulative byte
-    //     threshold before reusing remote recvStaging at the same offset.
-    uint64_t slotFreeVal = 0;
-    if (group.is_leader()) {
-      const bool isFinalChunk = dataOff + bytesThis >= payloadProtocolBytes;
-      if (isFinalChunk ||
-          should_post_slot_free_credit(
-              streamEnd, state.reuseCreditStep, perBlockSlot, pipelineDepth)) {
-        slotFreeVal = reuse_credit_value(streamEnd, state.reuseCreditStep);
-        state.reuseCreditStep = static_cast<int64_t>(streamEnd);
-      }
-    }
-    slotFreeVal = group.broadcast<uint64_t>(slotFreeVal);
-    if (slotFreeVal != 0) {
-      transport.signal(
-          group, remoteChannel.slotFree, slotFreeVal, IbDirection::Recv);
-    }
+    // (3) Signal SLOT_FREE to sender, posted unbatched every chunk. Sender
+    //     waits on the cumulative byte threshold before reusing remote
+    //     recvStaging at the same offset.
+    transport.signal(
+        group,
+        remoteChannel.slotFree,
+        bytesThis + (dataOff == 0 ? protocolPadding : 0),
+        IbDirection::Recv);
     dataOff += bytesThis;
   }
 
@@ -1112,8 +1135,8 @@ __device__ __forceinline__ void recv(
  *     - Uses the forward channel's send progress cursor.
  *     - Waits NIC_DONE on the forward channel's local completion counter.
  *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
- *     - RDMA puts with DATA_READY on the forward remote channel and may
- *       batch NIC_DONE credit to the local completion counter.
+ *     - RDMA puts with DATA_READY on the forward remote channel and
+ *       posts NIC_DONE credit per chunk to the local completion counter.
  *
  * Any chain of send → forward* → recv is therefore valid: each
  * forward consumes exactly the signals its predecessor produces
@@ -1290,11 +1313,18 @@ __device__ __forceinline__ void forward(
         bytesThis + (dataOff == 0 ? recvProtocolPadding : 0);
     const std::size_t fwdProtocolBytesThis =
         bytesThis + (dataOff == 0 ? fwdProtocolPadding : 0);
-    const uint64_t recvStreamEnd = recvStreamStart + bytesThis;
     const uint64_t fwdStreamEnd = fwdStreamStart + bytesThis;
 
-    // (1) Wait for sender's DATA_READY.
-    transport.wait_signal(group, recvDataReady, recvStreamEnd, timeout);
+    // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
+    //     lane that carried this chunk (mirrors the upstream sender's Send
+    //     cursor via recvLocalChannel.recvDataReadyLaneCursor).
+    wait_recv_data_ready(
+        transport,
+        group,
+        recvLocalChannel,
+        recvDataReady,
+        recvProtocolBytesThis,
+        timeout);
 
     // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
     if (fwdStreamEnd > fwdPipelineBytes) {
@@ -1324,9 +1354,6 @@ __device__ __forceinline__ void forward(
         recvRemoteChannel.slotFree,
         recvProtocolBytesThis,
         IbDirection::Recv);
-    if (group.is_leader()) {
-      recvSlotState.reuseCreditStep = static_cast<int64_t>(recvStreamEnd);
-    }
 
     // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
     //     recvStaging).
@@ -1339,20 +1366,6 @@ __device__ __forceinline__ void forward(
     __threadfence_system();
     group.sync();
     if (group.is_leader()) {
-      IbgdaLocalBuffer counterBuf{};
-      uint64_t counterVal = 0;
-      const bool isFinalChunk = dataOff + bytesThis >= payloadProtocolBytes;
-      if (isFinalChunk ||
-          should_post_nic_done_credit(
-              fwdStreamEnd,
-              fwdSlotState.reuseCreditStep,
-              fwdPerBlockSlot,
-              fwdPipelineDepth)) {
-        counterVal =
-            reuse_credit_value(fwdStreamEnd, fwdSlotState.reuseCreditStep);
-        counterBuf = fwdNicDoneCompletion;
-        fwdSlotState.reuseCreditStep = static_cast<int64_t>(fwdStreamEnd);
-      }
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       fwdTransport.put(
@@ -1362,8 +1375,9 @@ __device__ __forceinline__ void forward(
           bytesThis,
           fwdRemoteChannel.dataReady,
           fwdProtocolBytesThis,
-          counterBuf,
-          counterVal);
+          fwdNicDoneCompletion,
+          fwdProtocolBytesThis,
+          /*signalPerLane=*/true);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1557,7 +1571,6 @@ __device__ __forceinline__ void store_progress_state(
     const IbChannelProgress& state) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (group.is_leader()) {
-    slot.reuseCreditStep = state.reuseCreditStep;
     slot.activeNextByte = state.activeNextByte;
     slot.activeProtocolPadding = state.activeProtocolPadding;
     slot.activeBaseStep = state.activeBaseStep;
@@ -1656,82 +1669,6 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
   (void)opName;
   return {};
 #endif
-}
-
-__device__ __forceinline__ std::size_t nic_done_credit_quantum(
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return detail::ib_send_recv_nic_done_credit_quantum(
-      perBlockSlot, pipelineDepth);
-}
-
-__device__ __forceinline__ std::size_t slot_free_credit_quantum(
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return detail::ib_send_recv_slot_free_credit_quantum(
-      perBlockSlot, pipelineDepth);
-}
-
-__device__ __forceinline__ static uint64_t reuse_credit_posted_step(
-    int64_t reuseCreditStep) {
-  return reuseCreditStep > 0 ? static_cast<uint64_t>(reuseCreditStep) : 0ULL;
-}
-
-__device__ __forceinline__ bool should_post_credit_at_quantum(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    std::size_t creditQuantum) {
-  const uint64_t posted = reuse_credit_posted_step(reuseCreditStep);
-  return streamEnd > posted && streamEnd - posted >= creditQuantum;
-}
-
-__device__ __forceinline__ bool should_post_nic_done_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return should_post_credit_at_quantum(
-      streamEnd,
-      reuseCreditStep,
-      nic_done_credit_quantum(perBlockSlot, pipelineDepth));
-}
-
-__device__ __forceinline__ bool should_post_nic_done_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    const ProgressGeometry& geometry) {
-  return should_post_nic_done_credit(
-      streamEnd,
-      reuseCreditStep,
-      geometry.perBlockSlot,
-      geometry.pipelineDepth);
-}
-
-__device__ __forceinline__ bool should_post_slot_free_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    std::size_t perBlockSlot,
-    int pipelineDepth) {
-  return should_post_credit_at_quantum(
-      streamEnd,
-      reuseCreditStep,
-      slot_free_credit_quantum(perBlockSlot, pipelineDepth));
-}
-
-__device__ __forceinline__ bool should_post_slot_free_credit(
-    uint64_t streamEnd,
-    int64_t reuseCreditStep,
-    const ProgressGeometry& geometry) {
-  return should_post_slot_free_credit(
-      streamEnd,
-      reuseCreditStep,
-      geometry.perBlockSlot,
-      geometry.pipelineDepth);
-}
-
-__device__ __forceinline__ uint64_t
-reuse_credit_value(uint64_t streamEnd, int64_t reuseCreditStep) {
-  return streamEnd - reuse_credit_posted_step(reuseCreditStep);
 }
 
 __device__ __forceinline__ std::size_t active_payload_offset(
@@ -2027,7 +1964,8 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1);
+      uint64_t counterVal = 1,
+      bool signalPerLane = false);
 
   __device__ void put(
       const IbgdaLocalBuffer& localBuf,

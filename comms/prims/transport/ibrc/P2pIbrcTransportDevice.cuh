@@ -94,6 +94,18 @@ class P2pIbrcTransportDevice {
         numCounterSlots_(numCounterSlots),
         channelLayout_(channelLayout) {}
 
+  // IBRC round-robins each send/recv chunk's RDMA_WRITE + DATA_READY fetch-add
+  // across per-lane command queues / QPs when numLanes > 1 (select_put_queue_id
+  // -> seq % num_qp_lanes()), and, with signalPerLane set on the send/recv
+  // path, posts each chunk's DATA_READY fetch-add into that lane's own
+  // single-writer slot (see put()). The CPU proxy drains each command queue in
+  // FIFO order and posts the data write before the signal fetch-add on the same
+  // QP, so lane L's slot advances monotonically in lane-L chunk order. The
+  // receiver therefore waits on the specific lane that carried each chunk
+  // (mirroring the sender's round-robin cursor via recvDataReadyLaneCursor; see
+  // detail::wait_recv_data_ready), which removes the cross-lane hazard where a
+  // fast lane's later chunk masks a slow lane's not-yet-landed data.
+
   __device__ void put(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -266,7 +278,8 @@ class P2pIbrcTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
-      uint64_t counterVal = 1) {
+      uint64_t counterVal = 1,
+      bool signalPerLane = false) {
     const bool hasData = nbytes > 0;
     const bool hasSignal = signalBuf.ptr != nullptr;
     const bool hasCounter = counterBuf.ptr != nullptr;
@@ -281,6 +294,8 @@ class P2pIbrcTransportDevice {
     if (group.is_leader()) {
       validate_group_scope(group);
       const uint32_t queueId = select_put_queue_id(group, IbDirection::Send);
+      // queue_for_lane encodes the lane ordinal modulo the total lane count.
+      const uint32_t laneOrdinal = queueId % num_qp_lanes();
       const uint32_t nicId = nic_for_queue(queueId);
       IbrcDesc desc{};
       desc.op = static_cast<uint16_t>(hasData ? IbrcOp::PUT : IbrcOp::SIGNAL);
@@ -295,9 +310,22 @@ class P2pIbrcTransportDevice {
       }
 
       if (hasSignal) {
-        desc.signal_addr = reinterpret_cast<uint64_t>(signalBuf.ptr);
+        // Per-lane DATA_READY: when signalPerLane is set (the send/recv path),
+        // offset the signal target by this put's lane ordinal so each QP lane
+        // fetch-adds its own single-writer slot. The receiver mirrors the same
+        // round-robin cursor and waits on that lane's slot
+        // (detail::wait_recv_data_ready). Mirrors IBGDA put_impl's per-lane
+        // effectiveSignalBuf offset. laneOrdinal == 0 (including numLanes == 1)
+        // leaves the per-channel base slot, so raw put callers
+        // (signalPerLane == false) are unchanged.
+        const IbgdaRemoteBuffer effectiveSignalBuf = signalPerLane
+            ? signalBuf.subBuffer(
+                  sendRecvSignalSlotOffset(static_cast<int>(laneOrdinal)))
+            : signalBuf;
+        desc.signal_addr = reinterpret_cast<uint64_t>(effectiveSignalBuf.ptr);
         desc.signal_value = signalVal;
-        desc.signal_rkey_device_order = signalBuf.rkey_per_device[nicId].value;
+        desc.signal_rkey_device_order =
+            effectiveSignalBuf.rkey_per_device[nicId].value;
         desc.flags |= IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD;
       }
 
@@ -652,6 +680,11 @@ class P2pIbrcTransportDevice {
     return queue_for_lane(group.group_id, direction, 0);
   }
 
+  // Selects the command queue for one data put. The Send cursor is advanced
+  // exactly once per data put here; control ops (signal / SLOT_FREE) use
+  // control_queue_id (lane 0) and never advance it, keeping the receiver's
+  // recvDataReadyLaneCursor mirror in lock-step. `numLanes == 1` stays on lane
+  // 0.
   __device__ __forceinline__ uint32_t
   select_put_queue_id(const ThreadGroup& group, IbDirection direction) {
     const uint32_t channelId = group.group_id;

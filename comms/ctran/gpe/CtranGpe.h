@@ -34,13 +34,6 @@ typedef commResult_t (*opFunc)(
 // CtranGpeImpl.h:209 — both must alias the same instantiation.
 using GpeKernelSyncPool = PinnedHostPool<ctran::algos::GpeKernelSync>;
 
-namespace ctran {
-using PersistentObj =
-    std::variant<std::monostate, std::unique_ptr<alltoallp::AlgoImpl>>;
-using PreLaunchGraphPrepareFn =
-    commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
-} // namespace ctran
-
 struct OpElem {
   enum opType {
     ALLGATHER,
@@ -53,7 +46,6 @@ struct OpElem {
     ALLTOALLP,
     ALLTOALLV,
     DEVICE_ALLTOALLV,
-    ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
     REDUCESCATTER,
@@ -172,20 +164,6 @@ struct OpElem {
       commDataType_t datatype;
     } device_alltoallv;
     struct {
-      const void* sendbuff;
-      const size_t* sendcounts;
-      const size_t* sdispls;
-      void* recvbuff;
-      const size_t* recvcounts;
-      const size_t* rdispls;
-      commDataType_t datatype;
-      std::unordered_map<int, KernelElem*> bcastElemMap;
-      void* sendHdl;
-      void* recvHdl;
-      std::vector<void*> remoteRecvBuffs;
-      std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
-    } alltoall_dedup;
-    struct {
       // Reference to persistent algo fields
       void* pArgs;
       void* algoResource;
@@ -259,8 +237,6 @@ struct OpElem {
 
   OpElem(enum opType type, CtranComm* comm, ICtran* ctran, uint64_t opCount);
 
-  OpElem(OpElem* op);
-
   OpElem(
       enum opType type,
       cudaStream_t stream,
@@ -293,7 +269,6 @@ struct KernelConfig {
     ALLTOALL,
     DEVICE_ALLTOALLV,
     ALLTOALLV,
-    ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
     BROADCAST,
     BROADCAST_UNPACK,
@@ -392,8 +367,7 @@ class CtranGpe {
       opFunc func,
       KernelConfig& kernelConfig,
       const void* ncclKernel,
-      std::optional<std::chrono::milliseconds> timeout = std::nullopt,
-      ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr);
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   // Submit host mem communication. No kernel is launched, and only the host
   // side func will be submitted to the GPE thread. Also the op won't be
@@ -519,12 +493,6 @@ extern __global__ void ncclKernelAllToAllv(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::alltoallv::KernelArgs args);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllDedup(
-    ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoalldedup::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterDirect(

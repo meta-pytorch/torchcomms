@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/ScopeGuard.h>
+
 #include "comm.h"
 #include "nccl.h"
 
@@ -192,12 +194,16 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
   CtranPersistentRequest* pReq = nullptr;
   GET_VALID_PREQ_OR_ERRRETURN(request, &pReq);
 
+  // Ensure pReq is freed no matter destroy fails or not.
+  auto reqGuard = folly::makeGuard([pReq] { delete pReq; });
+
   switch (pReq->type) {
     case CtranPersistentRequest::Type::ALLGATHER_P:
       NCCLCHECK(metaCommToNccl(ctran::allGatherPDestroy(pReq)));
       break;
     case CtranPersistentRequest::Type::ALLTOALL_P:
-      return metaCommToNccl(ctran::AllToAllPDestroy(pReq));
+      NCCLCHECK(metaCommToNccl(ctran::AllToAllPDestroy(pReq)));
+      break;
     case CtranPersistentRequest::Type::ALLTOALLV_DEDUP:
       WARN(
           "allToAllvDedupDestroy: experimental API moved to comms/experiments/algos");
@@ -209,7 +215,6 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
           (void*)pReq,
           pReq->type);
   }
-  delete pReq;
 
   return ncclSuccess;
 }

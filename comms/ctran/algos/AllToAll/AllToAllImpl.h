@@ -4,6 +4,17 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 
+// Cudagraph-aware path: transparently converts a regular alltoall to the
+// persistent window-based AllToAllP algorithm during CUDA graph capture.
+commResult_t ctranAllToAllCudagraphAware(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    enum NCCL_ALLTOALL_ALGO algo = NCCL_ALLTOALL_ALGO::ctgraph);
+
 namespace ctran::alltoall {
 extern void* alltoallKerns[commNumTypes];
 

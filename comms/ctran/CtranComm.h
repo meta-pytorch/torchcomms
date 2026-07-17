@@ -174,6 +174,14 @@ class CtranComm {
   // initialized.
   comms::prims::Transport* getMultiPeerTransportsPtr() const;
 
+  // Lazy-safe overload: materializes `peers` (via get_device_handle(peers))
+  // and returns the Transport array pointer. Required in lazy-connect mode,
+  // where the no-arg overload throws. Non-const because materialization
+  // mutates transport state. An empty `peers` list materializes nothing and
+  // still returns a valid pointer (for ranks that use no IB slots).
+  comms::prims::Transport* getMultiPeerTransportsPtr(
+      const std::vector<int>& peers);
+
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
@@ -224,6 +232,10 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+  // AMD carve-out only: ENABLE_PRIMS is on for every non-AMD build (see
+  // comms/ctran/def_build.bzl), so these members exist everywhere except AMD.
+  // The guard changes CtranComm's layout, so consumers must compile with a
+  // consistent macro (the OSS build propagates it via MCCL_ENABLE_PRIMS).
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
