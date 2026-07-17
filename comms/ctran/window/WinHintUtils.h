@@ -19,6 +19,10 @@ class WinHintUtils {
   set(const std::string& key, const std::string& val, kvType& kv);
 
   static const std::vector<std::string>& keys();
+
+  // Parse a window hint value as a boolean. "1"/"true" map to true; any other
+  // value (including "0"/"false") maps to false.
+  static bool parseBool(const std::string& val);
 };
 
 } // namespace meta::comms::hints

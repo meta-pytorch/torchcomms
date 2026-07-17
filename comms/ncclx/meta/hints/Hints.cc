@@ -45,7 +45,7 @@ Hints::set(const std::string& key, const std::string& val) {
   if (bareKey.starts_with("ncclx_alltoallp")) {
     NCCLCHECK(metaCommToNccl(AllToAllPHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
-  } else if (bareKey.starts_with(("window"))) {
+  } else if (bareKey.starts_with(("win"))) {
     NCCLCHECK(metaCommToNccl(WinHintUtils::set(bareKey, val, this->kv)));
     return ncclSuccess;
   } else {
