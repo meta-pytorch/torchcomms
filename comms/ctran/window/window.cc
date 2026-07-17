@@ -703,6 +703,12 @@ commResult_t ctranWinRegister(
         meta::comms::hints::WinHintUtils::parseBool(enableSignalVal));
   }
 
+  std::string symmetricVal;
+  if (hints.get("win_register_symmetric", symmetricVal) == commSuccess) {
+    newWin->setSymmetric(
+        meta::comms::hints::WinHintUtils::parseBool(symmetricVal));
+  }
+
   FB_COMMCHECK(newWin->allocate((void*)databuf));
 
   FB_COMMCHECK(newWin->exchange()); // register and exchange both signal
