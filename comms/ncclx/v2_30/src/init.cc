@@ -3642,7 +3642,13 @@ const char* ncclGetErrorString(ncclResult_t code) {
  */
 NCCL_API(const char*, ncclGetLastError, const ncclComm_t comm);
 const char* ncclGetLastError(ncclComm_t comm) {
-  return meta::comms::logger::getLastCommsError();
+  thread_local static std::string lastErrorStorage;
+  try {
+    lastErrorStorage = meta::comms::logger::getLastCommsError();
+  } catch (...) {
+    lastErrorStorage.clear();
+  }
+  return lastErrorStorage.c_str();
 }
 
 NCCL_API(ncclResult_t, ncclCommGetAsyncError, ncclComm_t comm, ncclResult_t *asyncError);
