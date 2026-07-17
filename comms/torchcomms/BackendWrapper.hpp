@@ -11,6 +11,7 @@
 #include "comms/torchcomms/TorchCommTypes.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
+#include <atomic>
 #include <optional>
 
 namespace torch::comms {
@@ -119,6 +120,12 @@ class BackendWrapper : public c10d::Backend {
       const c10d::AllToAllOptions& opts = c10d::AllToAllOptions()) override;
   c10::intrusive_ptr<c10d::Work> barrier(
       const c10d::BarrierOptions& opts = c10d::BarrierOptions()) override;
+  // Health-checking barrier used by torch.distributed.monitored_barrier. Only
+  // meaningful on the gloo (CPU) backend; reimplements
+  // c10d::ProcessGroupGloo::monitoredBarrier on top of TorchComms P2P.
+  void monitoredBarrier(
+      const c10d::BarrierOptions& opts = c10d::BarrierOptions(),
+      bool waitAllRanks = false) override;
   c10::intrusive_ptr<c10d::Work>
   send(std::vector<at::Tensor>& tensors, int dstRank, int tag) override;
   c10::intrusive_ptr<c10d::Work>
@@ -189,6 +196,15 @@ class BackendWrapper : public c10d::Backend {
   // immediately. c10d's coalescing manager serializes per-PG, so a single
   // slot suffices.
   std::optional<BatchSendRecv> coalescing_batch_;
+
+  // Per-call tag sequence for monitoredBarrier's check-in/ack P2P. Kept
+  // per-BackendWrapper (not process-global) so each ProcessGroup owns its own
+  // counter: monitoredBarrier is collective per PG, so every rank advances
+  // this instance's counter in lockstep and derives identical tags. A shared
+  // process-global counter could instead be advanced a different number of
+  // times per rank when unrelated PGs run concurrent barriers, yielding
+  // mismatched send/recv tags across ranks.
+  std::atomic<uint32_t> monitoredBarrierTagCounter_{0};
 };
 
 } // namespace torch::comms
