@@ -28,7 +28,7 @@ INCFLAGS += -I${SHAREDDIR}/
 INCFLAGS  += -I$(BASE_DIR)
 INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
-CXXFLAGS  += $(INCFLAGS)
+CXXFLAGS  := $(INCFLAGS) $(CXXFLAGS)
 
 NVCUFLAGS_SYM += -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=128 -Xfatbin -compress-all
 NVCUFLAGS_SYM += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
