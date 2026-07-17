@@ -189,14 +189,23 @@ commResult_t CtranWin::exchange() {
   CtranMapper* mapper = nullptr;
   FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
+
+  // The base buffer holds the signal buffer (register path) or the combined
+  // data+signal buffer (allocate path). On the register path with signals
+  // disabled there is no base buffer, so its registration and control exchange
+  // are skipped entirely.
+  const bool exchangeBaseBuffer = allocDataBuf_ || enableSignal_;
+
   // Registration via ctran mapper.
-  FB_COMMCHECK(mapper->regMem(
-      winBasePtr,
-      range_,
-      &(baseSegHdl),
-      true,
-      true, /* NCCL managed buffer */
-      &baseRegHdl));
+  if (exchangeBaseBuffer) {
+    FB_COMMCHECK(mapper->regMem(
+        winBasePtr,
+        range_,
+        &(baseSegHdl),
+        true,
+        true, /* NCCL managed buffer */
+        &baseRegHdl));
+  }
 
   if (allocDataBuf_) {
     dataSegHdl = baseSegHdl;
@@ -277,12 +286,14 @@ commResult_t CtranWin::exchange() {
         outIpcHdls);
   };
 
-  FB_COMMCHECK(exchangeBuffer(
-      winBasePtr,
-      baseRegHdl,
-      remoteBaseBufs,
-      remoteBaseBufAccessKeys,
-      /*outIpcHdls=*/nullptr));
+  if (exchangeBaseBuffer) {
+    FB_COMMCHECK(exchangeBuffer(
+        winBasePtr,
+        baseRegHdl,
+        remoteBaseBufs,
+        remoteBaseBufAccessKeys,
+        /*outIpcHdls=*/nullptr));
+  }
 
   if (!allocDataBuf_) {
     // User-provided data buffer needs its own handle exchange round.
@@ -300,15 +311,21 @@ commResult_t CtranWin::exchange() {
     if (allocDataBuf_) {
       remWinInfo[r].dataAddr = remoteBaseBufs[exchangeRank];
       remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[exchangeRank];
-      remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
-          reinterpret_cast<size_t>(remoteBaseBufs[exchangeRank]) +
-          allRankSizes[r]);
-      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     } else {
       remWinInfo[r].dataAddr = remoteUserBufs[exchangeRank];
       remWinInfo[r].dataRkey = remoteUserBufAccessKeys[exchangeRank];
-      remWinInfo[r].signalAddr =
-          reinterpret_cast<uint64_t*>(remoteBaseBufs[exchangeRank]);
+    }
+    // With signals disabled there is no signal buffer, so leave signalAddr /
+    // signalRkey at their default (nullptr / UNSET).
+    if (enableSignal_) {
+      if (allocDataBuf_) {
+        remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
+            reinterpret_cast<size_t>(remoteBaseBufs[exchangeRank]) +
+            allRankSizes[r]);
+      } else {
+        remWinInfo[r].signalAddr =
+            reinterpret_cast<uint64_t*>(remoteBaseBufs[exchangeRank]);
+      }
       remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     }
   }
@@ -366,37 +383,51 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   // allocating a new buffer internally.
   allocDataBuf_ = userBufPtr == nullptr ? true : false;
 
+  // When signals are disabled the window carries no signal buffer.
+  if (!enableSignal_) {
+    signalSize = 0;
+  }
+
   void* addr = nullptr;
   CUmemGenericAllocationHandle allocHandle;
   auto signalBytes = signalSize * sizeof(uint64_t);
   size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes : signalBytes;
-  if (isGpuMem()) {
-    FB_COMMCHECK(
-        utils::commCuMemAlloc(
-            &addr,
-            &allocHandle,
-            utils::getCuMemAllocHandleType(),
-            allocSize,
-            &comm->logMetaData_,
-            "allocate"));
+  // On the register path the base buffer holds only the signal buffer; with
+  // signals disabled there is nothing to allocate (allocSize == 0), so the base
+  // buffer stays null and no registration/exchange is done for it.
+  if (allocSize > 0) {
+    if (isGpuMem()) {
+      FB_COMMCHECK(
+          utils::commCuMemAlloc(
+              &addr,
+              &allocHandle,
+              utils::getCuMemAllocHandleType(),
+              allocSize,
+              &comm->logMetaData_,
+              "allocate"));
 
-    // query the actually allocated range of the memory
-    CUdeviceptr pbase = 0;
-    FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
-  } else {
-    FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
-    range_ = allocSize;
+      // query the actually allocated range of the memory
+      CUdeviceptr pbase = 0;
+      FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
+    } else {
+      FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
+      range_ = allocSize;
+    }
   }
 
   winBasePtr = addr;
 
   if (allocDataBuf_) {
     winDataPtr = addr;
-    winSignalPtr =
-        reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr) + dataBytes);
+    winSignalPtr = enableSignal_
+        ? reinterpret_cast<uint64_t*>(
+              reinterpret_cast<size_t>(addr) + dataBytes)
+        : nullptr;
   } else {
     winDataPtr = userBufPtr;
-    winSignalPtr = reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr));
+    winSignalPtr = enableSignal_
+        ? reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr))
+        : nullptr;
   }
 
   CLOGF_SUBSYS(
@@ -469,10 +500,17 @@ commResult_t CtranWin::free(bool skipBarrier) {
 
   // deregistr buffer
   deregMemIfNotNull(baseSegHdl);
-  // deregister remote buf
+  // deregister remote buf. The base buffer's remote import is tracked via
+  // signalRkey when signals are enabled (shared with dataRkey on the allocate
+  // path). With signals disabled the allocate path tracks it via dataRkey, and
+  // the register path has no base buffer to release.
   for (auto i = 0; i < nRanks; ++i) {
     if (i != statex->rank()) {
-      FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
+      if (enableSignal_) {
+        FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
+      } else if (allocDataBuf_) {
+        FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].dataRkey));
+      }
     }
   }
 
@@ -496,7 +534,11 @@ commResult_t CtranWin::free(bool skipBarrier) {
   hostWindow_.reset();
 #endif
 
-  freeMem(winBasePtr);
+  // winBasePtr is null on the register path with signals disabled (nothing was
+  // allocated), so only free a real allocation.
+  if (winBasePtr != nullptr) {
+    freeMem(winBasePtr);
+  }
 
   return commSuccess;
 }
@@ -653,6 +695,12 @@ commResult_t ctranWinRegister(
   std::string ipcOnlyVal;
   if (hints.get("win_register_ipc_only", ipcOnlyVal) == commSuccess) {
     newWin->setIpcOnly(meta::comms::hints::WinHintUtils::parseBool(ipcOnlyVal));
+  }
+
+  std::string enableSignalVal;
+  if (hints.get("win_register_enable_signal", enableSignalVal) == commSuccess) {
+    newWin->setEnableSignal(
+        meta::comms::hints::WinHintUtils::parseBool(enableSignalVal));
   }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));

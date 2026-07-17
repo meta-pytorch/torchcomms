@@ -1254,6 +1254,10 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
       NCCLCHECK(metaCommToNccl(winHints.set(
           "win_register_ipc_only",
           NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly) ? "1" : "0")));
+      NCCLCHECK(metaCommToNccl(winHints.set(
+          "win_register_enable_signal",
+          NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal) ? "1"
+                                                                    : "0")));
       NCCLCHECK(metaCommToNccl(
           ctran::ctranWinRegister(
               buff,

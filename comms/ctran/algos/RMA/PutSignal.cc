@@ -231,6 +231,11 @@ commResult_t ctranPutSignal(
     cudaStream_t stream,
     bool signal) {
   CtranComm* comm = win->comm;
+  if (signal && !win->isSignalEnabled()) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "ctranPutSignal: signal requested but signals are disabled for this window (win_register_enable_signal=0)");
+  }
   const auto winOpCount = win->updateOpCount(peer);
   const auto putOpCount = win->updateOpCount(peer, window::OpCountType::kPut);
   auto statex = comm->statex_.get();
@@ -467,6 +472,11 @@ commResult_t waitSignalSpinningKernel(
 
 commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
   CtranComm* comm = win->comm;
+  if (!win->isSignalEnabled()) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "ctranSignal: signals are disabled for this window (win_register_enable_signal=0)");
+  }
   const auto winOpCount = win->updateOpCount(peer);
   const auto sigOpCount =
       win->updateOpCount(peer, window::OpCountType::kSignal);
@@ -526,6 +536,11 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
 // Tries hardware wait first (CUDA 11.7+), falls back to spinning kernel
 commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
   CtranComm* comm = win->comm;
+  if (!win->isSignalEnabled()) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "ctranWaitSignal: signals are disabled for this window (win_register_enable_signal=0)");
+  }
   auto statex = comm->statex_.get();
 
   // Track op counts for BOTH implementations
