@@ -37,6 +37,11 @@ class Config {
   // handles and defer the IB rkey exchange. Mutable via commSetConfig.
   bool winRegisterIpcOnly = false;
 
+  // When false, windows registered on this comm skip signal-buffer allocation
+  // and the signal control exchange; signal RMA ops are then rejected. Mutable
+  // via commSetConfig.
+  bool winRegisterEnableSignal = true;
+
   enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
@@ -87,6 +92,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ibQpsPerConnection",
       "ibLazyConnect",
       "win_register_ipc_only",
+      "win_register_enable_signal",
   };
   return keys;
 }
@@ -100,6 +106,7 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "alltoallvAlgo",
       "rmaAlgo",
       "win_register_ipc_only",
+      "win_register_enable_signal",
   };
   return keys;
 }
