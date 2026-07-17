@@ -78,6 +78,14 @@ __global__ void sendRecvKernel(
     std::size_t maxSignalBytes,
     bool send);
 
+__global__ void twoCallSendThenRecvKernel(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes);
+
 #ifndef __HIP_PLATFORM_AMD__
 __global__ void progressSendRecvKernel(
     P2pIbgdaTransportDevice* transport,

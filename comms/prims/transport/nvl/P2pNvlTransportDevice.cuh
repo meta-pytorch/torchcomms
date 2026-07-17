@@ -511,21 +511,31 @@ class P2pNvlTransportDevice {
 
     const uint64_t baseByte = static_cast<uint64_t>(local_ch.send_cursor);
 
-    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
-    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
+    const std::size_t payloadProtocolBytes = align_tile_protocol_bytes(nbytes);
+    const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
+        baseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+    const std::size_t protocolBytes =
+        payloadProtocolBytes + protocolTailPadding;
+    for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const NvlPipelinePosition position = layout.position(streamStart);
-      const std::size_t dataRemaining = protocolBytes - dataOff;
+      const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
       std::size_t copyBytes = layout.effectiveChunk < dataRemaining
           ? layout.effectiveChunk
           : dataRemaining;
       copyBytes = copyBytes < position.slotRemaining ? copyBytes
                                                      : position.slotRemaining;
+      const bool isFinalChunk = dataOff + copyBytes >= payloadProtocolBytes;
       const uint64_t streamEnd = streamStart + copyBytes;
+      const uint64_t protocolStreamEnd =
+          streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
-      if (streamEnd > layout.pipelineBytes) {
+      if (protocolStreamEnd > layout.pipelineBytes) {
         local_ch.slot_free.wait_until(
-            group, CmpOp::CMP_GE, streamEnd - layout.pipelineBytes, timeout);
+            group,
+            CmpOp::CMP_GE,
+            protocolStreamEnd - layout.pipelineBytes,
+            timeout);
       }
 
       const std::size_t validBytes =
@@ -540,7 +550,7 @@ class P2pNvlTransportDevice {
 
       group.sync();
       if (group.is_leader()) {
-        remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, streamEnd);
+        remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
       }
       dataOff += copyBytes;
     }
@@ -577,17 +587,24 @@ class P2pNvlTransportDevice {
 
     const uint64_t baseByte = static_cast<uint64_t>(local_ch.recv_cursor);
 
-    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
-    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
+    const std::size_t payloadProtocolBytes = align_tile_protocol_bytes(nbytes);
+    const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
+        baseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+    const std::size_t protocolBytes =
+        payloadProtocolBytes + protocolTailPadding;
+    for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
       const uint64_t streamStart = baseByte + dataOff;
       const NvlPipelinePosition position = layout.position(streamStart);
-      const std::size_t dataRemaining = protocolBytes - dataOff;
+      const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
       std::size_t copyBytes = layout.effectiveChunk < dataRemaining
           ? layout.effectiveChunk
           : dataRemaining;
       copyBytes = copyBytes < position.slotRemaining ? copyBytes
                                                      : position.slotRemaining;
+      const bool isFinalChunk = dataOff + copyBytes >= payloadProtocolBytes;
       const uint64_t streamEnd = streamStart + copyBytes;
+      const uint64_t protocolStreamEnd =
+          streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
       local_ch.data_ready.wait_until(group, CmpOp::CMP_GE, streamEnd, timeout);
 
@@ -606,8 +623,8 @@ class P2pNvlTransportDevice {
       group.sync();
       if (group.is_leader()) {
         if (position.chunkOff + copyBytes == layout.perChannelSlot ||
-            dataOff + copyBytes == protocolBytes) {
-          remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, streamEnd);
+            isFinalChunk) {
+          remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
         }
       }
       dataOff += copyBytes;
@@ -679,13 +696,23 @@ class P2pNvlTransportDevice {
     const uint64_t sendBaseByte =
         static_cast<uint64_t>(send_local_ch.send_cursor);
 
-    const std::size_t protocolBytes = align_tile_protocol_bytes(nbytes);
-    for (std::size_t dataOff = 0; dataOff < protocolBytes;) {
+    const std::size_t payloadProtocolBytes = align_tile_protocol_bytes(nbytes);
+    const std::size_t recvProtocolTailPadding =
+        tail_padding_for_signal_granularity(
+            recvBaseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+    const std::size_t sendProtocolTailPadding =
+        tail_padding_for_signal_granularity(
+            sendBaseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+    const std::size_t recvProtocolBytes =
+        payloadProtocolBytes + recvProtocolTailPadding;
+    const std::size_t sendProtocolBytes =
+        payloadProtocolBytes + sendProtocolTailPadding;
+    for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
       const uint64_t recvStreamStart = recvBaseByte + dataOff;
       const NvlPipelinePosition recvPosition = layout.position(recvStreamStart);
       const uint64_t sendStreamStart = sendBaseByte + dataOff;
       const NvlPipelinePosition sendPosition = layout.position(sendStreamStart);
-      const std::size_t dataRemaining = protocolBytes - dataOff;
+      const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
       std::size_t copyBytes = layout.effectiveChunk < dataRemaining
           ? layout.effectiveChunk
           : dataRemaining;
@@ -695,8 +722,13 @@ class P2pNvlTransportDevice {
       copyBytes = copyBytes < sendPosition.slotRemaining
           ? copyBytes
           : sendPosition.slotRemaining;
+      const bool isFinalChunk = dataOff + copyBytes >= payloadProtocolBytes;
       const uint64_t recvStreamEnd = recvStreamStart + copyBytes;
       const uint64_t sendStreamEnd = sendStreamStart + copyBytes;
+      const uint64_t recvProtocolStreamEnd =
+          recvStreamEnd + (isFinalChunk ? recvProtocolTailPadding : 0);
+      const uint64_t sendProtocolStreamEnd =
+          sendStreamEnd + (isFinalChunk ? sendProtocolTailPadding : 0);
 
       // 1. Wait for predecessor data to be ready (recv side, every step).
       recv_local_ch.data_ready.wait_until(
@@ -704,11 +736,11 @@ class P2pNvlTransportDevice {
 
       // 2. Wait for successor's staging slot to be free once we have wrapped
       //    around the pipeline.
-      if (sendStreamEnd > layout.pipelineBytes) {
+      if (sendProtocolStreamEnd > layout.pipelineBytes) {
         send_local_ch.slot_free.wait_until(
             group,
             CmpOp::CMP_GE,
-            sendStreamEnd - layout.pipelineBytes,
+            sendProtocolStreamEnd - layout.pipelineBytes,
             timeout);
       }
 
@@ -730,13 +762,15 @@ class P2pNvlTransportDevice {
       group.sync();
       if (group.is_leader()) {
         // 4. Signal successor that data is ready (send semantic: every step).
-        send_remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, sendStreamEnd);
+        send_remote_ch.data_ready.signal(
+            SignalOp::SIGNAL_SET, sendProtocolStreamEnd);
 
         // 5. ACK predecessor that buffer is free (recv semantic: only at
         //    slot boundaries).
         if (recvPosition.chunkOff + copyBytes == layout.perChannelSlot ||
-            dataOff + copyBytes == protocolBytes) {
-          recv_remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, recvStreamEnd);
+            isFinalChunk) {
+          recv_remote_ch.slot_free.signal(
+              SignalOp::SIGNAL_SET, recvProtocolStreamEnd);
         }
       }
       dataOff += copyBytes;
@@ -744,9 +778,9 @@ class P2pNvlTransportDevice {
 
     if (group.is_leader()) {
       recv_local_ch.recv_cursor =
-          static_cast<int64_t>(recvBaseByte + protocolBytes);
+          static_cast<int64_t>(recvBaseByte + recvProtocolBytes);
       send_local_ch.send_cursor =
-          static_cast<int64_t>(sendBaseByte + protocolBytes);
+          static_cast<int64_t>(sendBaseByte + sendProtocolBytes);
     }
     group.sync();
 #endif
@@ -1065,6 +1099,43 @@ class P2pNvlTransportDevice {
   __device__ __forceinline__ static std::size_t align_tile_protocol_bytes(
       std::size_t nbytes) {
     return (nbytes + 15ULL) & ~15ULL;
+  }
+
+  __device__ __forceinline__ static uint64_t round_up_to_multiple(
+      uint64_t value,
+      std::size_t alignment) {
+    if (alignment == 0) {
+      return value;
+    }
+    const uint64_t alignment64 = static_cast<uint64_t>(alignment);
+    return ((value + alignment64 - 1) / alignment64) * alignment64;
+  }
+
+  __device__ __forceinline__ static std::size_t signal_alignment(
+      std::size_t maxSignalBytes,
+      std::size_t perChannelSlot) {
+    const bool usesPartialSlot =
+        maxSignalBytes > 0 && maxSignalBytes < perChannelSlot;
+    std::size_t alignment =
+        usesPartialSlot ? (maxSignalBytes & ~15ULL) : perChannelSlot;
+    return alignment == 0 ? perChannelSlot : alignment;
+  }
+
+  __device__ __forceinline__ static std::size_t
+  tail_padding_for_signal_granularity(
+      uint64_t baseByte,
+      std::size_t maxSignalBytes,
+      std::size_t perChannelSlot,
+      std::size_t payloadBytes) {
+    const std::size_t alignment =
+        signal_alignment(maxSignalBytes, perChannelSlot);
+    if (alignment == 0) {
+      return 0;
+    }
+    const uint64_t payloadEnd =
+        baseByte + align_tile_protocol_bytes(payloadBytes);
+    return static_cast<std::size_t>(
+        round_up_to_multiple(payloadEnd, alignment) - payloadEnd);
   }
 
   __device__ __forceinline__ static std::size_t valid_payload_bytes(

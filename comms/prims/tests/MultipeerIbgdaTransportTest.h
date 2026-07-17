@@ -135,6 +135,19 @@ void testSendRecv(
     int blockSize);
 
 /**
+ * Test kernel: two sequential bidirectional blocking send/recv calls.
+ */
+void testTwoCallSendThenRecv(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Resumable pipelined send or recv progress loop.
  */
 void testProgressSendRecv(
