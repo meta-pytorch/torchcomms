@@ -1872,18 +1872,19 @@ class P2pIbgdaTransportDevice {
   //        ▲                                           │
   //        └───────────── SLOT_FREE signal ────────────┘
   //
-  // Signal protocol (per block, 3 primitives):
+  // Signal protocol (per channel/group, 3 primitives):
   //   DATA_READY  — piggybacked on put (sender → receiver's signalBuf)
   //   SLOT_FREE   — explicit signal    (receiver → sender's signalBuf)
   //   NIC_DONE    — loopback counter   (NIC → sender's counterBuf)
   //
   // Terminology used below:
-  //   slot             = one logical staging-ring entry of dataBufferSize
-  //                      bytes. There are pipelineDepth slots in the ring.
-  //   maxChannels      = fixed number of channel/group slots allocated for
-  //                      this peer at transport construction.
-  //   perBlockSlot     = one block-group's partition within a slot:
-  //                      channelLayout.perChannelSize & ~15ULL
+  //   channel window   = one channel's contiguous staging region. There are
+  //                      maxGroups channel windows in each per-peer staging
+  //                      buffer.
+  //   maxGroups        = configured logical channel count; group_id must be
+  //                      less than maxGroups.
+  //   perBlockSlot     = one pipeline slot within a channel window:
+  //                      perChannelBufferSize / pipelineDepth.
   //   sub-chunk        = one signaled byte range within a perBlockSlot. When
   //                      max_signal_bytes == 0, a sub-chunk is the whole
   //                      perBlockSlot. Otherwise:
@@ -1896,9 +1897,8 @@ class P2pIbgdaTransportDevice {
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
-  //   std::size_t sectionBytes =
-  //   transport->channel_layout().data_buffer_size(); for (std::size_t s = 0; s
-  //   < totalBytes / sectionBytes; ++s) {
+  //   std::size_t sectionBytes = transport->pipeline_window();
+  //   for (std::size_t s = 0; s < totalBytes / sectionBytes; ++s) {
   //     TiledBuffer<char> tiles(data + s * sectionBytes, sectionBytes, sub);
   //     if (role == 0)
   //       transport->send(sub, tiles.data(), tiles.bytes());
@@ -1913,10 +1913,10 @@ class P2pIbgdaTransportDevice {
    * send()/recv(). For a chunk with logical byte range [streamStart,
    * streamEnd), both APIs derive the same ring slot and staging offset from:
    *
-   *   pipelineBytes = perBlockSlot * pipelineDepth
+   *   pipelineBytes = perChannelBufferSize
    *   pipelineOff   = streamStart % pipelineBytes
    *   slot          = pipelineOff / perBlockSlot
-   *   stagingOff    = slot * dataBufferSize + groupId * perBlockSlot +
+   *   stagingOff    = groupId * pipelineBytes + slot * perBlockSlot +
    *                   (pipelineOff - slot * perBlockSlot)
    *
    * Sender chunk state machine:
@@ -1989,10 +1989,9 @@ class P2pIbgdaTransportDevice {
    * group while a previous send is outstanding traps with a diagnostic instead
    * of silently overwriting the in-flight byte range.
    *
-   * Channel count and per-channel staging geometry are fixed in the transport
-   * layout. `max_signal_bytes == 0` sends one signal per per-channel staging
-   * partition; smaller non-zero values split that partition into multiple
-   * signaled sub-chunks for finer overlap with the receiver.
+   * `max_signal_bytes == 0` sends one signal per per-channel staging slice;
+   * smaller non-zero values split that slice into multiple signaled sub-chunks
+   * for finer overlap with the receiver.
    *
    * Zero-byte sends mark the internal state `Done` without reading or
    * validating staging geometry. This matches the blocking `send()` no-op
@@ -2131,11 +2130,11 @@ class P2pIbgdaTransportDevice {
    * send — send one block's tile via pipelined RDMA.
    *
    * Copies src → sendStaging, then RDMA puts sendStaging → peer's recvStaging.
-   * For this call, each logical slot contributes one perBlockSlot-sized region
-   * for this group. If nbytes > perBlockSlot, send() advances through multiple
-   * ring positions. max_signal_bytes can further subdivide each perBlockSlot
-   * into multiple signaled sub-chunks, enabling finer-grained overlap at the
-   * receiver.
+   * For this call, each logical slot contributes one perBlockSlot-sized
+   * region for this group. If nbytes > perBlockSlot, send() advances through
+   * multiple ring positions. max_signal_bytes can further subdivide each
+   * perBlockSlot into multiple signaled sub-chunks, enabling finer-grained
+   * overlap at the receiver.
    *
    * Signaling protocol (per group):
    *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
@@ -2150,9 +2149,9 @@ class P2pIbgdaTransportDevice {
    * allows callers to pipeline across repeated send() calls without a separate
    * drain.
    *
-   * The caller must keep the transport layout stable while a sequence is in
-   * flight. `max_signal_bytes` may vary across calls because it changes only
-   * sub-chunk signaling, not the fixed channel staging layout.
+   * The caller must keep the staging layout stable while a sequence is in
+   * flight. `max_signal_bytes` may vary across calls because it only changes
+   * the signal cadence within the fixed per-channel staging slice.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).
@@ -2162,7 +2161,8 @@ class P2pIbgdaTransportDevice {
    *                        consumed in perBlockSlot-sized pieces, or smaller
    *                        sub-chunks when max_signal_bytes is set.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
-   *                        perBlockSlot. 0 means one signal per perBlockSlot.
+   *                        perBlockSlot. 0 means one signal per
+   * perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    */
   template <typename CopyOp = Memcpy, typename... Args>
@@ -2224,10 +2224,10 @@ class P2pIbgdaTransportDevice {
    * recv — receive one block's tile from pipelined RDMA.
    *
    * Waits for data to arrive in recvStaging, then copies recvStaging → dst.
-   * For this call, each logical slot contributes one perBlockSlot-sized region
-   * for this group. If nbytes > perBlockSlot, recv() advances through multiple
-   * ring positions. max_signal_bytes controls sub-chunk granularity and must
-   * match the sender.
+   * For this call, each logical slot contributes one perBlockSlot-sized
+   * region for this group. If nbytes > perBlockSlot, recv() advances through
+   * multiple ring positions. max_signal_bytes controls sub-chunk granularity
+   * and must match the sender.
    *
    * Signaling protocol (per group, symmetric with send):
    *   DATA_READY — sender increments by bytesThis after RDMA put completes.
@@ -2240,11 +2240,11 @@ class P2pIbgdaTransportDevice {
    * @param dst             Destination for this block's tile.
    * @param nbytes          Payload bytes to receive for this group. The
    *                        internal protocol byte count is rounded up to 16
-   *                        bytes and consumed in perBlockSlot-sized pieces, or
-   *                        smaller sub-chunks when max_signal_bytes is set.
+   *                        bytes and consumed in perBlockSlot-sized pieces,
+   * or smaller sub-chunks when max_signal_bytes is set.
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
-   *                        perBlockSlot. 0 means one signal per perBlockSlot.
-   *                        Must match the sender's value.
+   *                        perBlockSlot. 0 means one signal per
+   * perBlockSlot. Must match the sender's value.
    * @param timeout         Optional timeout for wait operations.
    */
   template <typename CopyOp = Memcpy, typename... Args>
@@ -2349,7 +2349,8 @@ class P2pIbgdaTransportDevice {
    * @param fwd             Forward transport (sends to next peer in ring).
    * @param nbytes          Payload bytes to receive and forward. The internal
    *                        protocol byte count is rounded up to 16 bytes.
-   * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
+   * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 =
+   * perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    * @param args            Extra args forwarded to CopyOp::forward.
    */
@@ -2420,18 +2421,34 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Maximum bytes a block can send without blocking on pipeline backpressure.
+   * Total send/recv staging buffer bytes for one channel.
    *
-   * The staging buffer is split into pipelineDepth slots, each with a fixed
-   * per-channel partition. A block can fill all its slots before the NIC must
-   * drain any of them, so the non-blocking window is:
-   *   perChannelSize * pipelineDepth
-   *
-   * Callers should loop over their data in pipeline_window-sized chunks so
-   * that send()/forward() never stall waiting for a free slot.
+   * The channel window is split into pipelineDepth fixed chunks. Public
+   * geometry follows:
+   *   pipeline_chunk() = pipeline_window() / pipeline_depth()
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return detail::pipeline_window(channelLayout_);
+    return channelLayout_.perChannelBufferSize != 0
+        ? channelLayout_.perChannelBufferSize
+        : channelLayout_.perChannelSize;
+  }
+
+  __device__ __forceinline__ std::size_t pipeline_window(
+      int active_blocks) const {
+    (void)active_blocks;
+    return pipeline_window();
+  }
+
+  __device__ __forceinline__ int pipeline_depth() const {
+    return channelLayout_.pipelineDepth;
+  }
+
+  __device__ __forceinline__ std::size_t pipeline_chunk() const {
+    if (channelLayout_.pipelineDepth <= 0) {
+      return 0;
+    }
+    return pipeline_window() /
+        static_cast<std::size_t>(channelLayout_.pipelineDepth);
   }
 
  private:

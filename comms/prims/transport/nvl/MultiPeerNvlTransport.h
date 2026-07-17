@@ -37,13 +37,13 @@ struct Transport;
  * IMPORTANT: All ranks must use identical configuration values.
  *
  * For the fixed-channel tile protocol:
- *   one pipeline slot = maxNumChannels * perChannelSize
+ *   one channel window = perChannelSize
+ *   one channel chunk = perChannelSize / pipelineDepth
  *
- * Memory per rank = (nRanks - 1) * pipelineDepth * maxNumChannels *
- * perChannelSize
+ * Memory per rank = (nRanks - 1) * maxNumChannels * perChannelSize
  */
 struct MultiPeerNvlTransportConfig {
-  // Number of pipeline slots for overlapping communication.
+  // Number of slots/chunks within one channel.
   // Higher = better latency hiding but more memory.
   // Typical: 2-4 for most workloads.
   std::size_t pipelineDepth{0};
@@ -64,7 +64,7 @@ struct MultiPeerNvlTransportConfig {
   // send/recv use these without user-managed state.
   int maxNumChannels{64};
 
-  // Size of each channel's staging slice per pipeline slot (bytes).
+  // Total staging window size for one channel (bytes).
   // Must be 16-byte aligned when maxNumChannels > 0.
   std::size_t perChannelSize{kDefaultNvlPerChannelSize};
 
@@ -109,8 +109,8 @@ struct MultiPeerNvlTransportConfig {
  *
  * SIZE REQUIREMENTS:
  *   Each per-peer buffer must be at least
- *   (pipelineDepth * maxNumChannels * perChannelSize) bytes, matching the
- *   config passed to MultiPeerNvlTransport.
+ *   (maxNumChannels * perChannelSize) bytes, matching the config passed to
+ *   MultiPeerNvlTransport.
  *   setExternalDataBuffers() validates this and throws on mismatch.
  *
  * OWNERSHIP:

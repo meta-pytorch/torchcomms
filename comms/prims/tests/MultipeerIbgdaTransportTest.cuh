@@ -71,6 +71,10 @@ __global__ void putOnlyKernel(
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes);
 
+__global__ void pipelineGeometryKernel(
+    P2pIbTransportDevice transport,
+    uint64_t* output);
+
 __global__ void sendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,

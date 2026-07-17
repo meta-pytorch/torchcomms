@@ -278,6 +278,60 @@ TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
   XLOGF(INFO, "Rank {}: ConstructAndExchange test completed", globalRank);
 }
 
+TEST_P(MultipeerIbTransportTestFixture, PipelineGeometry) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+
+  constexpr std::size_t perChannelBufferSize = 64 * 1024;
+  constexpr int maxGroups = 4;
+  constexpr int pipelineDepth = 4;
+  constexpr int numBlocks = 1;
+  constexpr int blockSize = 32;
+  constexpr std::size_t pipelineChunk =
+      perChannelBufferSize / static_cast<std::size_t>(pipelineDepth);
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  try {
+    MultipeerIbTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = perChannelBufferSize,
+        .max_num_channels = maxGroups,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    TestIbTransport transport(
+        backend(), globalRank, numRanks, std::move(bootstrap), config);
+    DeviceBuffer outputBuffer(3 * sizeof(uint64_t));
+    auto* dOutput = static_cast<uint64_t*>(outputBuffer.get());
+    CUDACHECK_TEST(cudaMemset(dOutput, 0, 3 * sizeof(uint64_t)));
+
+    test::testPipelineGeometry(
+        transport.getP2pTransportDevice(peerRank),
+        dOutput,
+        numBlocks,
+        blockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::array<uint64_t, 3> output{};
+    CUDACHECK_TEST(cudaMemcpy(
+        output.data(),
+        dOutput,
+        output.size() * sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(output[0], static_cast<uint64_t>(pipelineDepth));
+    EXPECT_EQ(output[1], static_cast<uint64_t>(perChannelBufferSize));
+    EXPECT_EQ(output[2], static_cast<uint64_t>(pipelineChunk));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(backend())
+                 << " transport not available: " << e.what();
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
 // =============================================================================
 // Put/Signal Basic Test - Verifies RDMA data transfer correctness
 // =============================================================================
@@ -1437,9 +1491,9 @@ TEST_F(
     GTEST_SKIP() << "progress send/recv is not supported for this build";
   }
 
-  constexpr std::size_t dataBufferSize = 64 * 1024;
+  constexpr std::size_t perChannelBufferSize = 64 * 1024;
   constexpr int pipelineDepth = 2;
-  constexpr std::size_t nbytes = 4 * pipelineDepth * dataBufferSize;
+  constexpr std::size_t nbytes = 8 * perChannelBufferSize;
   constexpr std::size_t maxSignalBytes = 0;
   constexpr int numBlocks = 1;
   constexpr int blockSize = 128;
@@ -1450,7 +1504,7 @@ TEST_F(
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .perChannelSize = dataBufferSize / numBlocks,
+        .perChannelSize = perChannelBufferSize / numBlocks,
         .max_num_channels = numBlocks,
         .pipelineDepth = pipelineDepth,
     };

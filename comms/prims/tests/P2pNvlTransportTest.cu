@@ -276,13 +276,13 @@ __device__ void check_wrapped_substep_with_existing_signals(
     unsigned char sentinel,
     int* observedEarlyOverwrite,
     const Timeout& timeout) {
-  const size_t slotSize = p2p.options().dataBufferSize;
+  const size_t perChannelBuffer = p2p.options().per_channel_buffer;
   const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t effectiveChunk =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
       : perBlockSlotSize;
-  const size_t pipelineBytes = perBlockSlotSize * p2p.options().pipelineDepth;
+  const size_t pipelineBytes = perChannelBuffer;
   // blockId 0 by construction in this test (kernel launched with 2 blocks,
   // block 0 is sender/forwarder, block 1 is this checker).
   const uint64_t streamStart =
@@ -295,7 +295,7 @@ __device__ void check_wrapped_substep_with_existing_signals(
   const size_t targetSlot = targetPipelineOff / perBlockSlotSize;
   const size_t targetChunkOff =
       targetPipelineOff - targetSlot * perBlockSlotSize;
-  const size_t targetOffset = targetSlot * slotSize + targetChunkOff;
+  const size_t targetOffset = targetSlot * perBlockSlotSize + targetChunkOff;
   const uint64_t targetStreamEnd = targetStreamStart + effectiveChunk;
   const uint64_t targetAckValue = targetStreamEnd - pipelineBytes;
 
@@ -369,15 +369,15 @@ __global__ void testPrepareTileStagingKernel(
   const int blockId = group.group_id;
   char* staging = p2p.local_state().dataBuffer;
 
-  const size_t slotSize = p2p.options().dataBufferSize;
+  const size_t perChannelBuffer = p2p.options().per_channel_buffer;
   const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t chunkSize =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
       : perBlockSlotSize;
   const size_t effectiveChunk = chunkSize > 0 ? chunkSize : perBlockSlotSize;
-  const size_t pipelineBytes = perBlockSlotSize * p2p.options().pipelineDepth;
-  const size_t stagingOff = blockId * perBlockSlotSize;
+  const size_t pipelineBytes = perChannelBuffer;
+  const size_t stagingOff = blockId * perChannelBuffer;
 
   uint64_t baseByte = 0;
   for (int call = 0; call < numCalls; ++call) {
@@ -399,7 +399,7 @@ __global__ void testPrepareTileStagingKernel(
         const size_t remaining = bytesPerCall - dataOff;
         validBytes = copyBytes < remaining ? copyBytes : remaining;
       }
-      const size_t bufferOff = slot * slotSize + stagingOff + chunkOff;
+      const size_t bufferOff = stagingOff + slot * perBlockSlotSize + chunkOff;
       for (size_t idx = group.thread_id_in_group; idx < validBytes;
            idx += group.group_size) {
         staging[bufferOff + idx] = pattern;
@@ -430,14 +430,14 @@ __global__ void testPrepareTileTwoCallStagingKernel(
   const int blockId = group.group_id;
   char* staging = p2p.local_state().dataBuffer;
 
-  const size_t slotSize = p2p.options().dataBufferSize;
+  const size_t perChannelBuffer = p2p.options().per_channel_buffer;
   const size_t perBlockSlotSize = p2p.options().per_channel_slot;
   const size_t effectiveChunk =
       maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize
       ? (maxSignalBytes & ~15ULL)
       : perBlockSlotSize;
-  const size_t pipelineBytes = perBlockSlotSize * p2p.options().pipelineDepth;
-  const size_t stagingOff = blockId * perBlockSlotSize;
+  const size_t pipelineBytes = perChannelBuffer;
+  const size_t stagingOff = blockId * perChannelBuffer;
 
   uint64_t baseByte = 0;
   for (int call = 0; call < 2; ++call) {
@@ -460,7 +460,7 @@ __global__ void testPrepareTileTwoCallStagingKernel(
         const size_t remaining = callBytes - dataOff;
         validBytes = copyBytes < remaining ? copyBytes : remaining;
       }
-      const size_t bufferOff = slot * slotSize + stagingOff + chunkOff;
+      const size_t bufferOff = stagingOff + slot * perBlockSlotSize + chunkOff;
       for (size_t idx = group.thread_id_in_group; idx < validBytes;
            idx += group.group_size) {
         staging[bufferOff + idx] = pattern;

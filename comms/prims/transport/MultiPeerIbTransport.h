@@ -64,14 +64,14 @@ struct MultipeerIbTransportConfig {
   std::string ibHca;
 
   // Per-peer data buffer size in bytes for raw put()/signal() users. When
-  // perChannelSize is set for send()/recv(), the transport derives this as
-  // perChannelSize * max_num_channels.
+  // perChannelSize is set for send()/recv(), the transport derives this as the
+  // total fixed-channel staging size:
+  //   perChannelSize * max_num_channels
   std::size_t dataBufferSize{0};
 
-  // Fixed-channel send/recv staging slice size in bytes. When this is nonzero,
-  // send/recv staging geometry is:
-  //   dataBufferSize = perChannelSize * max_num_channels
-  // where dataBufferSize is the derived size of one pipeline slot across all
+  // Fixed-channel send/recv staging window size in bytes for one channel. When
+  // this is nonzero, pipelineDepth is the number of chunks within this channel
+  // window and dataBufferSize is derived as the total staging size across all
   // channels.
   std::size_t perChannelSize{0};
 
@@ -80,7 +80,7 @@ struct MultipeerIbTransportConfig {
   // scoped by (channel, direction, NIC).
   int max_num_channels{64};
 
-  // Fixed-channel send/recv pipeline depth.
+  // Fixed-channel send/recv slots/chunks per channel.
   int pipelineDepth{2};
 
   // Number of signal slots managed by the transport (per peer), for the
@@ -517,8 +517,8 @@ class MultiPeerIbTransportBase {
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
   // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
-  // = pipelineDepth * dataBufferSize per direction; signal is sized off
-  // max_num_channels. Per-peer staging + signal are device-registered;
+  // = max_num_channels * perChannelSize per direction; signal is sized
+  // off max_num_channels. Per-peer staging + signal are device-registered;
   // recvStaging + signal are collectively exchanged so peers can RDMA into our
   // ring.
   bool sendRecvBuffersEnabled() const {

@@ -55,6 +55,9 @@ IB staging:
 - `pipelineDepth = 4`
 - `qpsPerConnection = 1`
 
+Here `perChannelSize` is the total staging window for one channel, so the
+transport chunk size is `perChannelSize / pipelineDepth = 128KB`.
+
 Each rank exchanges transport metadata, materializes every non-self peer, and
 passes the peer device handles to the launch params. The future CTran/MCCL hook
 should move that transport ownership to communicator lifetime so standard

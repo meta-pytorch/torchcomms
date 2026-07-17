@@ -96,6 +96,7 @@ struct ProgressGeometry {
   std::size_t payloadBytes;
   std::size_t protocolBytes;
   std::size_t perBlockSlot;
+  std::size_t perChannelBufferSize;
   std::size_t chunkSize;
   int pipelineDepth;
 };
@@ -132,6 +133,12 @@ tail_padding_for_signal_granularity(
     std::size_t maxSignalBytes,
     std::size_t perBlockSlot,
     std::size_t payloadBytes);
+
+__device__ __forceinline__ std::size_t pipeline_window(
+    const IbChannelLayout& channelLayout);
+
+__device__ __forceinline__ std::size_t pipeline_chunk(
+    const IbChannelLayout& channelLayout);
 
 __device__ __forceinline__ void assert_progress_slot_idle(
     ThreadGroup& group,
@@ -191,7 +198,6 @@ __device__ __forceinline__ ProgressChunk next_chunk(
  * `P2pIbrcTransportDevice` own the channel layout/state and use these helpers
  * only for the shared send/recv algorithm.
  */
-
 /**
  * Initialize transport-owned state for one pipelined send operation.
  *
@@ -731,7 +737,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   }
   group.sync();
 
-  // SLOT_FREE, posted unbatched every chunk back to the sender.
   transport.signal(
       group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
 
@@ -829,14 +834,14 @@ __device__ __forceinline__ void send(
     PIPES_DEVICE_TRAP();
   }
 
-  const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
+  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
   if (perBlockSlot == 0) {
     if (group.is_leader()) {
       printf(
           "[PIPES] FATAL: send perBlockSlot=0 "
-          "(dataBufferSize=%llu, maxGroups=%d)\n",
-          (unsigned long long)channelLayout.data_buffer_size(),
-          maxGroups);
+          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          (unsigned long long)pipeline_window(channelLayout),
+          channelLayout.pipelineDepth);
     }
     PIPES_DEVICE_TRAP();
   }
@@ -849,8 +854,6 @@ __device__ __forceinline__ void send(
     chunkSize = perBlockSlot;
   }
 
-  const int pipelineDepth = channelLayout.pipelineDepth;
-  const std::size_t dataBufferSize = channelLayout.data_buffer_size();
   auto& state = progress_send_slot(transport, group);
   IbLocalChannel& localChannel =
       transport.local_channel(static_cast<uint32_t>(groupId));
@@ -866,7 +869,7 @@ __device__ __forceinline__ void send(
       baseByte, max_signal_bytes, perBlockSlot, nbytes);
   const uint64_t payloadBaseByte = baseByte;
   const std::size_t protocolBytes = payloadProtocolBytes + protocolTailPadding;
-  const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
+  const std::size_t pipelineBytes = pipeline_window(channelLayout);
   if (group.is_leader()) {
     state.activeStage = detail::IbSendRecvProgressStage::Busy;
     state.activeBaseStep = static_cast<int64_t>(baseByte);
@@ -879,7 +882,7 @@ __device__ __forceinline__ void send(
     const std::size_t pipelineOff =
         static_cast<std::size_t>(streamStart % pipelineBytes);
     const int slot = static_cast<int>(pipelineOff / perBlockSlot);
-    const std::size_t slotOff = slot * dataBufferSize;
+    const std::size_t slotOff = static_cast<std::size_t>(slot) * perBlockSlot;
     const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
     const std::size_t slotRemaining = perBlockSlot - chunkOff;
     const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
@@ -889,7 +892,8 @@ __device__ __forceinline__ void send(
     const bool isFinalChunk = dataOff + bytesThis >= payloadProtocolBytes;
     const std::size_t protocolBytesThis =
         bytesThis + (isFinalChunk ? protocolTailPadding : 0);
-    const std::size_t stagingOff = slotOff + groupId * perBlockSlot + chunkOff;
+    const std::size_t stagingOff =
+        static_cast<std::size_t>(groupId) * pipelineBytes + slotOff + chunkOff;
     const uint64_t protocolStreamEnd = streamStart + protocolBytesThis;
 
     // (1) Wait for NIC to finish with this slot's local sendStaging.
@@ -1015,14 +1019,14 @@ __device__ __forceinline__ void recv(
     PIPES_DEVICE_TRAP();
   }
 
-  const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
+  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
   if (perBlockSlot == 0) {
     if (group.is_leader()) {
       printf(
           "[PIPES] FATAL: recv perBlockSlot=0 "
-          "(dataBufferSize=%llu, maxGroups=%d)\n",
-          (unsigned long long)channelLayout.data_buffer_size(),
-          maxGroups);
+          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          (unsigned long long)pipeline_window(channelLayout),
+          channelLayout.pipelineDepth);
     }
     PIPES_DEVICE_TRAP();
   }
@@ -1035,8 +1039,6 @@ __device__ __forceinline__ void recv(
     chunkSize = perBlockSlot;
   }
 
-  const int pipelineDepth = channelLayout.pipelineDepth;
-  const std::size_t dataBufferSize = channelLayout.data_buffer_size();
   auto& state = progress_recv_slot(transport, group);
   IbLocalChannel& localChannel =
       transport.local_channel(static_cast<uint32_t>(groupId));
@@ -1049,7 +1051,7 @@ __device__ __forceinline__ void recv(
       baseByte, max_signal_bytes, perBlockSlot, nbytes);
   const uint64_t payloadBaseByte = baseByte;
   const std::size_t protocolBytes = payloadProtocolBytes + protocolTailPadding;
-  const std::size_t pipelineBytes = perBlockSlot * pipelineDepth;
+  const std::size_t pipelineBytes = pipeline_window(channelLayout);
   if (group.is_leader()) {
     state.activeStage = detail::IbSendRecvProgressStage::Busy;
     state.activeBaseStep = static_cast<int64_t>(baseByte);
@@ -1062,7 +1064,7 @@ __device__ __forceinline__ void recv(
     const std::size_t pipelineOff =
         static_cast<std::size_t>(streamStart % pipelineBytes);
     const int slot = static_cast<int>(pipelineOff / perBlockSlot);
-    const std::size_t slotOff = slot * dataBufferSize;
+    const std::size_t slotOff = static_cast<std::size_t>(slot) * perBlockSlot;
     const std::size_t chunkOff = pipelineOff - slot * perBlockSlot;
     const std::size_t slotRemaining = perBlockSlot - chunkOff;
     const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
@@ -1072,7 +1074,8 @@ __device__ __forceinline__ void recv(
     const bool isFinalChunk = dataOff + bytesThis >= payloadProtocolBytes;
     const std::size_t protocolBytesThis =
         bytesThis + (isFinalChunk ? protocolTailPadding : 0);
-    const std::size_t stagingOff = slotOff + groupId * perBlockSlot + chunkOff;
+    const std::size_t stagingOff =
+        static_cast<std::size_t>(groupId) * pipelineBytes + slotOff + chunkOff;
 
     // (1) Wait for sender's DATA_READY on the specific round-robin lane that
     //     carried this chunk (mirrors the sender's per-channel Send cursor).
@@ -1098,9 +1101,6 @@ __device__ __forceinline__ void recv(
     }
     group.sync();
 
-    // (3) Signal SLOT_FREE to sender, posted unbatched every chunk. Sender
-    //     waits on the cumulative byte threshold before reusing remote
-    //     recvStaging at the same offset.
     transport.signal(
         group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
     dataOff += bytesThis;
@@ -1164,7 +1164,8 @@ __device__ __forceinline__ void recv(
  *                        CopyOp handles it, e.g. reduce-scatter).
  * @param fwdTransport    Forward transport (sends to next peer in ring).
  * @param nbytes          Bytes to receive and forward.
- * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 = perBlockSlot.
+ * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 =
+ * perBlockSlot.
  * @param timeout         Optional timeout for wait operations.
  * @param args            Extra args forwarded to CopyOp::forward.
  */
@@ -1205,7 +1206,7 @@ __device__ __forceinline__ void forward(
     PIPES_DEVICE_TRAP();
   }
 
-  const std::size_t recvPerBlockSlot = channelLayout.perChannelSize & ~15ULL;
+  const std::size_t recvPerBlockSlot = pipeline_chunk(channelLayout);
   if (recvPerBlockSlot == 0) {
     if (group.is_leader()) {
       printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
@@ -1225,7 +1226,7 @@ __device__ __forceinline__ void forward(
     PIPES_DEVICE_TRAP();
   }
 
-  const std::size_t fwdPerBlockSlot = fwdChannelLayout.perChannelSize & ~15ULL;
+  const std::size_t fwdPerBlockSlot = pipeline_chunk(fwdChannelLayout);
   if (fwdPerBlockSlot == 0) {
     if (group.is_leader()) {
       printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
@@ -1249,8 +1250,6 @@ __device__ __forceinline__ void forward(
     fwdChunkSize = fwdPerBlockSlot;
   }
 
-  const int recvPipelineDepth = channelLayout.pipelineDepth;
-  const std::size_t recvDataBufSize = channelLayout.data_buffer_size();
   auto& recvSlotState = progress_recv_slot(transport, group);
   IbLocalChannel& recvLocalChannel =
       transport.local_channel(static_cast<uint32_t>(groupId));
@@ -1265,10 +1264,8 @@ __device__ __forceinline__ void forward(
   const uint64_t recvPayloadBaseByte = recvBaseByte;
   const std::size_t recvProtocolBytes =
       payloadProtocolBytes + recvProtocolTailPadding;
-  const std::size_t recvPipelineBytes = recvPerBlockSlot * recvPipelineDepth;
+  const std::size_t recvPipelineBytes = pipeline_window(channelLayout);
 
-  const int fwdPipelineDepth = fwdChannelLayout.pipelineDepth;
-  const std::size_t fwdDataBufSize = fwdChannelLayout.data_buffer_size();
   auto& fwdSlotState = progress_send_slot(fwdTransport, group);
   IbLocalChannel& fwdLocalChannel =
       fwdTransport.local_channel(static_cast<uint32_t>(groupId));
@@ -1286,7 +1283,7 @@ __device__ __forceinline__ void forward(
   const uint64_t fwdPayloadBaseByte = fwdBaseByte;
   const std::size_t fwdProtocolBytes =
       payloadProtocolBytes + fwdProtocolTailPadding;
-  const std::size_t fwdPipelineBytes = fwdPerBlockSlot * fwdPipelineDepth;
+  const std::size_t fwdPipelineBytes = pipeline_window(fwdChannelLayout);
   if (group.is_leader()) {
     recvSlotState.activeStage = detail::IbSendRecvProgressStage::Busy;
     recvSlotState.activeBaseStep = static_cast<int64_t>(recvBaseByte);
@@ -1304,21 +1301,25 @@ __device__ __forceinline__ void forward(
     const std::size_t recvPipelineOff =
         static_cast<std::size_t>(recvStreamStart % recvPipelineBytes);
     const int recvSlot = static_cast<int>(recvPipelineOff / recvPerBlockSlot);
-    const std::size_t recvSlotOff = recvSlot * recvDataBufSize;
+    const std::size_t recvSlotOff =
+        static_cast<std::size_t>(recvSlot) * recvPerBlockSlot;
     const std::size_t recvChunkOff =
         recvPipelineOff - recvSlot * recvPerBlockSlot;
     const std::size_t recvStagingOff =
-        recvSlotOff + groupId * recvPerBlockSlot + recvChunkOff;
+        static_cast<std::size_t>(groupId) * recvPipelineBytes + recvSlotOff +
+        recvChunkOff;
 
     // --- Fwd side offsets ---
     const uint64_t fwdStreamStart = fwdPayloadBaseByte + dataOff;
     const std::size_t fwdPipelineOff =
         static_cast<std::size_t>(fwdStreamStart % fwdPipelineBytes);
     const int fwdSlot = static_cast<int>(fwdPipelineOff / fwdPerBlockSlot);
-    const std::size_t fwdSlotOff = fwdSlot * fwdDataBufSize;
+    const std::size_t fwdSlotOff =
+        static_cast<std::size_t>(fwdSlot) * fwdPerBlockSlot;
     const std::size_t fwdChunkOff = fwdPipelineOff - fwdSlot * fwdPerBlockSlot;
     const std::size_t fwdStagingOff =
-        fwdSlotOff + groupId * fwdPerBlockSlot + fwdChunkOff;
+        static_cast<std::size_t>(groupId) * fwdPipelineBytes + fwdSlotOff +
+        fwdChunkOff;
     const std::size_t recvSlotRemaining = recvPerBlockSlot - recvChunkOff;
     const std::size_t fwdSlotRemaining = fwdPerBlockSlot - fwdChunkOff;
     const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
@@ -1369,8 +1370,6 @@ __device__ __forceinline__ void forward(
     }
     group.sync();
 
-    // (4) SLOT_FREE, posted unbatched every chunk. This must happen before
-    //     the step-5 wait to break circular ring dependency.
     transport.signal(
         group,
         recvRemoteChannel.slotFree,
@@ -1433,19 +1432,21 @@ __device__ __forceinline__ void forward(
 }
 
 /**
- * Maximum bytes a block can send without blocking on pipeline backpressure.
- *
- * The staging buffer is split into pipelineDepth slots, each with a fixed
- * per-channel partition. A block can fill all its slots before the NIC must
- * drain any of them, so the non-blocking window is:
- *   perChannelSize * pipelineDepth
- *
- * Callers should loop over their data in pipeline_window-sized chunks so
- * that send()/forward() never stall waiting for a free slot.
+ * Maximum bytes one channel can send without blocking on pipeline backpressure.
  */
 __device__ __forceinline__ std::size_t pipeline_window(
     const IbChannelLayout& channelLayout) {
-  return channelLayout.perChannelSize *
+  return channelLayout.perChannelBufferSize != 0
+      ? channelLayout.perChannelBufferSize
+      : channelLayout.perChannelSize;
+}
+
+__device__ __forceinline__ std::size_t pipeline_chunk(
+    const IbChannelLayout& channelLayout) {
+  if (channelLayout.pipelineDepth <= 0) {
+    return 0;
+  }
+  return pipeline_window(channelLayout) /
       static_cast<std::size_t>(channelLayout.pipelineDepth);
 }
 
@@ -1666,18 +1667,19 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
     PIPES_DEVICE_TRAP();
   }
 
-  const std::size_t perBlockSlot = channelLayout.perChannelSize & ~15ULL;
+  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
   if (perBlockSlot == 0) {
     if (group.is_leader()) {
       printf(
           "[PIPES] FATAL: %s perBlockSlot=0 "
-          "(dataBufferSize=%llu, maxGroups=%d)\n",
+          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
           opName,
-          (unsigned long long)channelLayout.data_buffer_size(),
-          maxGroups);
+          (unsigned long long)pipeline_window(channelLayout),
+          channelLayout.pipelineDepth);
     }
     PIPES_DEVICE_TRAP();
   }
+  const std::size_t perChannelBufferSize = pipeline_window(channelLayout);
 
   const std::size_t protocolBytes = align_protocol_bytes(nbytes);
   std::size_t chunkSize =
@@ -1692,10 +1694,12 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
       .payloadBytes = nbytes,
       .protocolBytes = protocolBytes,
       .perBlockSlot = perBlockSlot,
+      .perChannelBufferSize = perChannelBufferSize,
       .chunkSize = chunkSize,
       .pipelineDepth = channelLayout.pipelineDepth,
   };
 #else
+  (void)channelLayout;
   (void)group;
   (void)nbytes;
   (void)max_signal_bytes;
@@ -1847,14 +1851,14 @@ __device__ __forceinline__ void transition_progress_stage(
  * Map the state's logical protocol byte cursor to the next staging-ring
  * chunk.
  *
- * The transport stores each logical slot as `dataBufferSize` bytes, split
- * into geometry-specific per-group partitions. The protocol cursor advances
- * in bytes, not slots, so `baseStep + nextByte` is reduced modulo
- * `perBlockSlot * pipelineDepth` to pick the ring slot and per-group offset.
+ * The transport stores each channel as one contiguous pipeline window split
+ * into `pipelineDepth` slots. The protocol cursor advances in bytes, not
+ * slots, so `baseStep + nextByte` is reduced modulo the per-channel window
+ * to pick the slot and offset.
  *
  * The returned chunk is clipped by three boundaries: the configured
  * sub-chunk size, remaining protocol bytes, and remaining bytes in the
- * current per-block staging partition. This keeps every progress call
+ * current per-channel staging slice. This keeps every progress call
  * bounded and prevents a single RDMA put or recv copy from spanning two
  * staging slots.
  */
@@ -1864,13 +1868,13 @@ __device__ __forceinline__ ProgressChunk next_chunk(
     const ProgressGeometry& geometry) {
   const uint64_t streamStart =
       static_cast<uint64_t>(state.activeBaseStep) + state.activeNextByte;
-  const std::size_t pipelineBytes = geometry.perBlockSlot *
-      static_cast<std::size_t>(channelLayout.pipelineDepth);
+  (void)channelLayout;
+  const std::size_t pipelineBytes = geometry.perChannelBufferSize;
   const std::size_t pipelineOff =
       static_cast<std::size_t>(streamStart % pipelineBytes);
   const int slot = static_cast<int>(pipelineOff / geometry.perBlockSlot);
   const std::size_t slotOff =
-      static_cast<std::size_t>(slot) * channelLayout.data_buffer_size();
+      static_cast<std::size_t>(slot) * geometry.perBlockSlot;
   const std::size_t chunkOff =
       pipelineOff - static_cast<std::size_t>(slot) * geometry.perBlockSlot;
   const std::size_t slotRemaining = geometry.perBlockSlot - chunkOff;
@@ -1880,9 +1884,8 @@ __device__ __forceinline__ ProgressChunk next_chunk(
       geometry.chunkSize < dataRemaining ? geometry.chunkSize : dataRemaining;
   bytes = bytes < slotRemaining ? bytes : slotRemaining;
   return ProgressChunk{
-      .stagingOff = slotOff +
-          static_cast<std::size_t>(geometry.groupId) * geometry.perBlockSlot +
-          chunkOff,
+      .stagingOff = static_cast<std::size_t>(geometry.groupId) * pipelineBytes +
+          slotOff + chunkOff,
       .dataOff = payloadNextByte,
       .bytes = bytes,
       .streamEnd = streamStart + bytes,
@@ -2100,8 +2103,14 @@ struct P2pIbTransportDevice {
       const Timeout& timeout = Timeout(),
       Args... args);
 
-  // Per-block pipelined staging window — forwarded to the active backend.
+  // Total staging bytes for one channel, forwarded to the active backend.
   __device__ __forceinline__ std::size_t pipeline_window() const;
+
+  // Slots per channel, forwarded to the active backend.
+  __device__ __forceinline__ int pipeline_depth() const;
+
+  // Slot/chunk bytes, forwarded to the active backend.
+  __device__ __forceinline__ std::size_t pipeline_chunk() const;
 
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
