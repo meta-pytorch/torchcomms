@@ -65,6 +65,18 @@ void testTileTwoCallVariableSignalSendRecv(
     Timeout timeout = Timeout(),
     cudaStream_t stream = nullptr);
 
+void testTileTwoCallSendThenRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    int activeBlocks,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    size_t maxSignalBytes,
+    int blockSize,
+    Timeout timeout = Timeout(),
+    cudaStream_t stream = nullptr);
+
 void testTileMultiCallSendOnly(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,

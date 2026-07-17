@@ -338,6 +338,27 @@ __global__ void sendRecvKernel(
   }
 }
 
+__global__ void twoCallSendThenRecvKernel(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+  auto* sendBytes = static_cast<const char*>(sendBuffer);
+  auto* recvBytes = static_cast<char*>(recvBuffer);
+
+  transport.send(group, sendBytes, firstBytes, maxSignalBytes, timeout);
+  transport.recv(group, recvBytes, firstBytes, maxSignalBytes, timeout);
+  transport.send(
+      group, sendBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+  transport.recv(
+      group, recvBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+}
+
 void testSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
@@ -348,6 +369,29 @@ void testSendRecv(
     int blockSize) {
   sendRecvKernel<<<numBlocks, blockSize>>>(
       transport, buffer, nbytes, maxSignalBytes, send);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testTwoCallSendThenRecv(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    int numBlocks,
+    int blockSize) {
+  twoCallSendThenRecvKernel<<<numBlocks, blockSize>>>(
+      transport,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

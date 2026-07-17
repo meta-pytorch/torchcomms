@@ -48,6 +48,20 @@ MultiPeerNvlTransportConfig makeNvlConfig(
   };
 }
 
+static std::vector<char> makeTwoCallPatternBuffer(
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    int numBlocks,
+    int rank);
+
+static void expectTwoCallPattern(
+    const std::vector<char>& data,
+    size_t firstCallBytes,
+    size_t secondCallBytes,
+    int numBlocks,
+    int sourceRank,
+    const std::string& label);
+
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
   if (numRanks != 2) {
@@ -262,6 +276,74 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
   }
 }
 
+TEST_F(
+    P2pNvlTransportTestFixture,
+    TileTwoCallSendThenRecvPaddingCreditNoDeadlock) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const int numBlocks = 1;
+  const int threadCount = 256;
+  const size_t perChannelSize = 1024 * 1024;
+  const size_t pipelineDepth = 1;
+  const size_t maxSignalBytes = 0;
+
+  auto config = makeNvlConfig(perChannelSize, pipelineDepth, numBlocks);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  const size_t firstCallBytes = p2pHost.pipeline_window() / 2;
+  const size_t secondCallBytes = p2pHost.pipeline_window();
+  const size_t tileBytes = firstCallBytes + secondCallBytes;
+  const size_t totalBytes = tileBytes * numBlocks;
+  const std::vector<char> hostSend = makeTwoCallPatternBuffer(
+      firstCallBytes, secondCallBytes, numBlocks, globalRank);
+
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), hostSend.data(), totalBytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+
+  TiledBuffer<char> sendTiles(
+      static_cast<char*>(sendBuf.get()), totalBytes, numBlocks);
+  TiledBuffer<char> recvTiles(
+      static_cast<char*>(recvBuf.get()), totalBytes, numBlocks);
+
+  int device = 0;
+  CUDACHECK_TEST(cudaGetDevice(&device));
+  Timeout timeout = makeTimeout(5000, device);
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  test::testTileTwoCallSendThenRecv(
+      p2pHost,
+      sendTiles,
+      recvTiles,
+      numBlocks,
+      firstCallBytes,
+      secondCallBytes,
+      maxSignalBytes,
+      threadCount,
+      timeout);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  std::vector<char> hostRecv(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostRecv.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  expectTwoCallPattern(
+      hostRecv,
+      firstCallBytes,
+      secondCallBytes,
+      numBlocks,
+      peerRank,
+      "tile send-then-recv padding credit");
+}
+
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
@@ -426,6 +508,35 @@ static size_t alignTileProtocolBytes(size_t nbytes) {
   return (nbytes + 15ULL) & ~15ULL;
 }
 
+static uint64_t roundUpToMultiple(uint64_t value, size_t alignment) {
+  if (alignment == 0) {
+    return value;
+  }
+  const uint64_t alignment64 = static_cast<uint64_t>(alignment);
+  return ((value + alignment64 - 1) / alignment64) * alignment64;
+}
+
+static size_t signalAlignment(size_t maxSignalBytes, size_t perBlockSlotSize) {
+  const bool usesPartialSlot =
+      maxSignalBytes > 0 && maxSignalBytes < perBlockSlotSize;
+  size_t alignment =
+      usesPartialSlot ? (maxSignalBytes & ~15ULL) : perBlockSlotSize;
+  return alignment == 0 ? perBlockSlotSize : alignment;
+}
+
+static size_t protocolStepBytes(
+    uint64_t baseByte,
+    size_t payloadBytes,
+    size_t maxSignalBytes,
+    size_t perBlockSlotSize) {
+  const size_t protocolBytes = alignTileProtocolBytes(payloadBytes);
+  const size_t alignment = signalAlignment(maxSignalBytes, perBlockSlotSize);
+  const uint64_t payloadEnd = baseByte + protocolBytes;
+  return protocolBytes +
+      static_cast<size_t>(
+             roundUpToMultiple(payloadEnd, alignment) - payloadEnd);
+}
+
 static size_t
 validPayloadBytes(size_t byteOffset, size_t chunkBytes, size_t payloadBytes) {
   if (byteOffset >= payloadBytes) {
@@ -535,7 +646,8 @@ static void expectPersistentTwoCallStagingPattern(
         }
         dataOff += chunkBytes;
       }
-      baseByte += protocolBytes;
+      baseByte += protocolStepBytes(
+          baseByte, callBytes[call], maxSignalBytes, perBlockSlotSize);
     }
   }
 }
@@ -981,8 +1093,13 @@ TEST_F(
   const size_t maxSignalBytes = 64;
   const size_t tileBytes = firstCallBytes + secondCallBytes;
   const size_t totalBytes = tileBytes * numBlocks;
-  const size_t expectedStep = alignTileProtocolBytes(firstCallBytes) +
-      alignTileProtocolBytes(secondCallBytes);
+  const size_t firstCallStepBytes =
+      protocolStepBytes(0, firstCallBytes, maxSignalBytes, perBlockSlotSize);
+  const size_t expectedStep = firstCallStepBytes +
+      protocolStepBytes(firstCallStepBytes,
+                        secondCallBytes,
+                        maxSignalBytes,
+                        perBlockSlotSize);
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
@@ -1028,8 +1145,7 @@ TEST_F(
       numBlocks,
       0,
       "tile send unaligned protocol staging");
-  for (size_t i = firstCallBytes; i < alignTileProtocolBytes(firstCallBytes);
-       ++i) {
+  for (size_t i = firstCallBytes; i < firstCallStepBytes; ++i) {
     EXPECT_EQ(static_cast<unsigned char>(hostStaging[i]), 0)
         << "padding byte " << i
         << " between unaligned calls should stay transport-private";
@@ -1097,8 +1213,13 @@ TEST_F(
   const size_t maxSignalBytes = 64;
   const size_t tileBytes = firstCallBytes + secondCallBytes;
   const size_t totalBytes = tileBytes * numBlocks;
-  const size_t expectedStep = alignTileProtocolBytes(firstCallBytes) +
-      alignTileProtocolBytes(secondCallBytes);
+  const size_t firstCallStepBytes =
+      protocolStepBytes(0, firstCallBytes, maxSignalBytes, perBlockSlotSize);
+  const size_t expectedStep = firstCallStepBytes +
+      protocolStepBytes(firstCallStepBytes,
+                        secondCallBytes,
+                        maxSignalBytes,
+                        perBlockSlotSize);
 
   P2pNvlTransportOptions options{
       .dataBufferSize = perBlockSlotSize * numBlocks,
@@ -1165,8 +1286,7 @@ TEST_F(
       numBlocks,
       0,
       "tile forward unaligned protocol successor staging");
-  for (size_t i = firstCallBytes; i < alignTileProtocolBytes(firstCallBytes);
-       ++i) {
+  for (size_t i = firstCallBytes; i < firstCallStepBytes; ++i) {
     EXPECT_EQ(static_cast<unsigned char>(hostSuccStaging[i]), 0)
         << "forward padding byte " << i
         << " between unaligned calls should stay transport-private";
