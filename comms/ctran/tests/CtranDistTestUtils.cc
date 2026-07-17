@@ -106,6 +106,7 @@ void CtranDistTestFixture::TearDown() {
 }
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
+    bool noLocal,
     bool ibLazyConnect) {
   const std::string uuid{"0"};
   uint64_t commHash =
@@ -136,7 +137,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
       commHash,
       rankTopologies,
       commRanksToWorldRanks,
-      commDesc);
+      commDesc,
+      noLocal);
 
   // Create global bootstrap (MPI or TcpStore depending on env)
   std::unique_ptr<meta::comms::IBootstrap> commBootstrap(
