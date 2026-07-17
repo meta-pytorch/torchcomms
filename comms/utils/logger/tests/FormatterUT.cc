@@ -198,9 +198,9 @@ TEST(LoggingFormat, getLastCommsErrorBasic) {
 
   formatter.formatMessage(errorMsg, category);
 
-  const char* lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_NE(lastError, nullptr);
-  std::string errorStr(lastError);
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_FALSE(lastError.empty());
+  const auto& errorStr = lastError;
   EXPECT_TRUE(errorStr.find("Test error message") != std::string::npos);
   EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
 }
@@ -228,9 +228,9 @@ TEST(LoggingFormat, getLastCommsErrorWithStack) {
   meta::comms::logger::appendErrorToStack("Stack frame 2");
   meta::comms::logger::appendErrorToStack("Stack frame 3");
 
-  const char* lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_NE(lastError, nullptr);
-  std::string errorStr(lastError);
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_FALSE(lastError.empty());
+  const auto& errorStr = lastError;
   EXPECT_TRUE(errorStr.find("Error with stack") != std::string::npos);
   EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
   EXPECT_TRUE(errorStr.find("Stack frame 1") != std::string::npos);
@@ -261,9 +261,9 @@ TEST(LoggingFormat, appendErrorToStackOrder) {
   meta::comms::logger::appendErrorToStack("Second");
   meta::comms::logger::appendErrorToStack("Third");
 
-  const char* lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_NE(lastError, nullptr);
-  std::string errorStr(lastError);
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_FALSE(lastError.empty());
+  const auto& errorStr = lastError;
 
   size_t firstPos = errorStr.find("First");
   size_t secondPos = errorStr.find("Second");
@@ -295,9 +295,9 @@ TEST(LoggingFormat, getLastCommsErrorEmptyStack) {
 
   formatter.formatMessage(errorMsg, category);
 
-  const char* lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_NE(lastError, nullptr);
-  std::string errorStr(lastError);
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_FALSE(lastError.empty());
+  const auto& errorStr = lastError;
   EXPECT_TRUE(errorStr.find("Error without stack") != std::string::npos);
   EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
 }
@@ -331,9 +331,9 @@ TEST(LoggingFormat, nonErrorMessageDoesNotUpdateLastError) {
       "This is just info"};
   formatter.formatMessage(infoMsg, category);
 
-  const char* lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_NE(lastError, nullptr);
-  std::string errorStr(lastError);
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_FALSE(lastError.empty());
+  const auto& errorStr = lastError;
   EXPECT_TRUE(errorStr.find("Initial error") != std::string::npos);
   EXPECT_FALSE(errorStr.find("This is just info") != std::string::npos);
 }
