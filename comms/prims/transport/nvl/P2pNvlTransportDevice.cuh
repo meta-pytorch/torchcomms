@@ -62,10 +62,10 @@ struct RemoteState {
  * P2pNvlTransportOptions - Configuration for P2P NVLink transport
  *
  * Defines the derived buffer sizes for staged transfers.
- * - dataBufferSize: Size of ONE pipeline slot across all fixed channels
- * - pipelineDepth: Number of buffer slots for pipelining (typically 2-8)
+ * - dataBufferSize: Total fixed-channel staging bytes across all channels
+ * - pipelineDepth: Number of slots/chunks inside one channel
  *
- * Total memory allocated = pipelineDepth × dataBufferSize
+ * Total memory allocated = dataBufferSize
  */
 struct P2pNvlTransportOptions {
   std::size_t dataBufferSize{0};
@@ -77,17 +77,19 @@ struct P2pNvlTransportOptions {
   // from MultiPeerNvlTransportConfig. Used by send/recv/forward (the tile
   // path).
   //
-  // Slot-major staging layout: within each pipeline slot (size =
-  // dataBufferSize) each channel owns a fixed slice of size per_channel_slot.
-  // Channel c at pipeline slot s reads/writes
-  //   staging_base + s * dataBufferSize + c * per_channel_slot
+  // Channel-major staging layout: each channel owns a contiguous
+  // per_channel_buffer window split into pipelineDepth chunks of size
+  // per_channel_slot. Channel c at pipeline slot s reads/writes
+  //   staging_base + c * per_channel_buffer + s * per_channel_slot
   //
-  //   per_channel_slot = MultiPeerNvlTransportConfig.perChannelSize
-  //   dataBufferSize >= maxNumChannels * per_channel_slot
+  //   per_channel_buffer = MultiPeerNvlTransportConfig.perChannelSize
+  //   per_channel_slot = per_channel_buffer / pipelineDepth
+  //   dataBufferSize = maxNumChannels * per_channel_buffer
   //   max_num_channels = MultiPeerNvlTransportConfig.maxNumChannels
   //
   // max_num_channels must equal the array length of the per-peer
   // NvlChannelState arrays passed into the device transport.
+  std::size_t per_channel_buffer{0};
   std::size_t per_channel_slot{0};
   int max_num_channels{0};
 };
@@ -122,18 +124,17 @@ class P2pNvlTransportDevice {
 
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
-  // Largest single call that can be pipelined within the staging ring without a
-  // send()/recv() wrapping the ring and blocking on backpressure mid-call. In
-  // the fixed-channel (tile) model each channel pipelines through its own
-  // per_channel_slot ring (independent of the active block count), so the
-  // window must be bounded by that ring's capacity (per_channel_slot *
-  // safeDepth). A larger window lets a single call wrap the ring and wait for a
-  // slot_free the peer only produces after its own recv() — deadlocking the
-  // send-before-recv AllReduce pattern.
+  // Total staging bytes for one channel.
   __host__ __device__ std::size_t pipeline_window() const {
-    const std::size_t safeDepth =
-        options_.pipelineDepth > 1 ? options_.pipelineDepth - 1 : 1;
-    return options_.per_channel_slot * safeDepth;
+    return options_.per_channel_buffer;
+  }
+
+  __host__ __device__ std::size_t pipeline_depth() const {
+    return options_.pipelineDepth;
+  }
+
+  __host__ __device__ std::size_t pipeline_chunk() const {
+    return options_.per_channel_slot;
   }
 
   // Getters for testing
@@ -1070,15 +1071,15 @@ class P2pNvlTransportDevice {
       PIPES_DEVICE_TRAP();
     }
 
-    const std::size_t slotSize = options_.dataBufferSize;
+    const std::size_t perChannelBuffer = options_.per_channel_buffer;
     const std::size_t perChannelSlot = options_.per_channel_slot;
-    if (perChannelSlot == 0) {
+    if (perChannelBuffer == 0 || perChannelSlot == 0) {
       printf(
-          "%s: per_channel_slot is 0 (dataBufferSize=%llu, "
-          "max_num_channels=%d). Set perChannelSize when channels are "
-          "enabled.\n",
+          "%s: invalid channel geometry (per_channel_buffer=%llu, "
+          "per_channel_slot=%llu, max_num_channels=%d).\n",
           op,
-          (unsigned long long)slotSize,
+          (unsigned long long)perChannelBuffer,
+          (unsigned long long)perChannelSlot,
           maxChannels);
       PIPES_DEVICE_TRAP();
     }
@@ -1088,10 +1089,10 @@ class P2pNvlTransportDevice {
         ? (maxSignalBytes & ~15ULL)
         : perChannelSlot;
     return {
-        slotSize,
         perChannelSlot,
-        group.group_id * perChannelSlot,
-        perChannelSlot * options_.pipelineDepth,
+        perChannelSlot,
+        group.group_id * perChannelBuffer,
+        perChannelBuffer,
         chunkSize > 0 ? chunkSize : perChannelSlot,
     };
   }

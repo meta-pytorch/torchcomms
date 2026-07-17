@@ -38,13 +38,18 @@ class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
 };
 
 MultiPeerNvlTransportConfig makeNvlConfig(
-    std::size_t perChannelSize,
+    std::size_t dataBufferSize,
     std::size_t pipelineDepth,
     int maxNumChannels = 1) {
+  const auto channels = static_cast<std::size_t>(maxNumChannels);
+  const std::size_t chunkAlign = 16 * std::max<std::size_t>(pipelineDepth, 1);
+  const std::size_t perChannelSize =
+      std::max<std::size_t>(16, ((dataBufferSize + channels - 1) / channels));
   return MultiPeerNvlTransportConfig{
       .pipelineDepth = pipelineDepth,
       .maxNumChannels = maxNumChannels,
-      .perChannelSize = (perChannelSize + 15) & ~15ULL,
+      .perChannelSize =
+          ((perChannelSize + chunkAlign - 1) / chunkAlign) * chunkAlign,
   };
 }
 
@@ -61,6 +66,33 @@ static void expectTwoCallPattern(
     int numBlocks,
     int sourceRank,
     const std::string& label);
+
+TEST_F(P2pNvlTransportTestFixture, PipelineGeometry) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  constexpr std::size_t perChannelBufferSize = 64 * 1024;
+  constexpr std::size_t pipelineDepth = 4;
+  constexpr int maxNumChannels = 8;
+  constexpr std::size_t pipelineChunk = perChannelBufferSize / pipelineDepth;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = pipelineDepth,
+      .maxNumChannels = maxNumChannels,
+      .perChannelSize = perChannelBufferSize,
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2p = transport.buildP2pTransportDevice(peerRank);
+
+  EXPECT_EQ(p2p.pipeline_depth(), pipelineDepth);
+  EXPECT_EQ(p2p.pipeline_window(), perChannelBufferSize);
+  EXPECT_EQ(p2p.pipeline_chunk(), pipelineChunk);
+}
 
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
@@ -653,7 +685,7 @@ static void expectPersistentTwoCallStagingPattern(
 }
 
 // Build a P2pNvlTransportDevice for tile tests that bypass
-// MultiPeerNvlTransport. The options must already have per_channel_slot and
+// MultiPeerNvlTransport. The options must already have channel geometry and
 // max_num_channels populated.
 static P2pNvlTransportDevice makeLocalTileDevice(
     const P2pNvlTransportOptions& options,
@@ -689,7 +721,7 @@ class LocalTileHarness {
   LocalTileHarness(const P2pNvlTransportOptions& options, int numBlocks)
       : options_(options),
         numBlocks_(numBlocks),
-        stagingBytes_(options.dataBufferSize * options.pipelineDepth),
+        stagingBytes_(options.dataBufferSize),
         channelBytes_(sizeof(NvlChannelState) * numBlocks),
         stagingBuf_(stagingBytes_),
         channelBuf_(channelBytes_) {
@@ -992,8 +1024,9 @@ TEST_F(
   const size_t totalBytes = tileBytes * numBlocks;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = tileBytes * numBlocks,
+      .dataBufferSize = tileBytes * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = tileBytes * 2,
       .per_channel_slot = tileBytes,
       .max_num_channels = numBlocks,
   };
@@ -1102,8 +1135,9 @@ TEST_F(
                         perBlockSlotSize);
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .dataBufferSize = perBlockSlotSize * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = perBlockSlotSize * 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
   };
@@ -1222,8 +1256,9 @@ TEST_F(
                         perBlockSlotSize);
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .dataBufferSize = perBlockSlotSize * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = perBlockSlotSize * 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
   };
@@ -1325,8 +1360,9 @@ TEST_F(
   const size_t totalBytes = tileBytes * numBlocks;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .dataBufferSize = perBlockSlotSize * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = perBlockSlotSize * 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
   };
@@ -1392,8 +1428,9 @@ TEST_F(
   const size_t totalBytes = tileBytes * numBlocks;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .dataBufferSize = perBlockSlotSize * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = perBlockSlotSize * 2,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
   };
@@ -1554,8 +1591,9 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
   const unsigned char forwardPattern = 0x55;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = perBlockSlotSize * numBlocks,
+      .dataBufferSize = perBlockSlotSize * pipelineDepth * numBlocks,
       .pipelineDepth = pipelineDepth,
+      .per_channel_buffer = perBlockSlotSize * pipelineDepth,
       .per_channel_slot = perBlockSlotSize,
       .max_num_channels = numBlocks,
   };
@@ -2840,7 +2878,8 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
     CUDACHECK_TEST(cudaMemset(
         p2pHost.getLocalState().dataBuffer,
         0,
-        config.pipelineDepth * kDataBufferSize));
+        static_cast<std::size_t>(config.maxNumChannels) *
+            config.perChannelSize));
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
@@ -2976,12 +3015,13 @@ TEST_F(
   const size_t totalBytes = tileBytes * numBlocks;
 
   P2pNvlTransportOptions options{
-      .dataBufferSize = tileBytes * numBlocks,
+      .dataBufferSize = tileBytes * 2 * numBlocks,
       .pipelineDepth = 2,
+      .per_channel_buffer = tileBytes * 2,
       .per_channel_slot = tileBytes,
       .max_num_channels = numBlocks,
   };
-  const size_t stagingBytes = options.dataBufferSize * options.pipelineDepth;
+  const size_t stagingBytes = options.dataBufferSize;
 
   DeviceBuffer sourceStagingBuf(stagingBytes);
   DeviceBuffer forwardedStagingBuf(stagingBytes);

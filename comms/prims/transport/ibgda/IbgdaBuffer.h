@@ -471,11 +471,14 @@ struct IbChannelLayout {
   int maxChannels{0}; ///< Layout size for channel-indexed resources
   int numLanes{1}; ///< QP lanes = numNics * qpsPerConnection; each lane owns a
                    ///< single-writer DATA_READY slot per channel
-  int pipelineDepth{0}; ///< Number of pipeline slots in the ring
-  std::size_t perChannelSize{0}; ///< Bytes per channel in one pipeline slot
+  int pipelineDepth{0}; ///< Number of slots/chunks in one channel
+  std::size_t perChannelSize{0}; ///< Backward-compatible channel window alias
+  std::size_t perChannelBufferSize{0}; ///< Total staging bytes for one channel
 
   __host__ __device__ std::size_t data_buffer_size() const {
-    return perChannelSize * static_cast<std::size_t>(maxChannels);
+    const std::size_t perChannel =
+        perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
+    return perChannel * static_cast<std::size_t>(maxChannels);
   }
 
   IBGDA_HOST_DEVICE int dataReadySignalSlot(int channelId) const {

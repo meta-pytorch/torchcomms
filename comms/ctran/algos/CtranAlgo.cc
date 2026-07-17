@@ -322,14 +322,32 @@ commResult_t CtranAlgo::initKernelResources() {
           &this->comm_->logMetaData_,
           "initKernelResources-nvlTransports"));
 
-  const size_t nvlPipelineSlotSize =
-      nvlSharedDevbufSize / NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH;
+  const size_t nvlPipelineDepth =
+      static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
+  const size_t nvlMaxNumChannels =
+      static_cast<size_t>(std::max(1, CTRAN_ALGO_MAX_THREAD_BLOCKS));
+  if (nvlPipelineDepth == 0) {
+    CLOGF(ERR, "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
+    return commInvalidArgument;
+  }
+  const size_t nvlChannelAlign = 16ULL * nvlPipelineDepth;
+  const size_t nvlPerChannelBuffer =
+      alignDown(nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
+  if (nvlPerChannelBuffer == 0) {
+    CLOGF(
+        ERR,
+        "CTRAN-ALGO: invalid NVL P2P config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned per-channel buffer",
+        nvlSharedDevbufSize,
+        nvlMaxNumChannels,
+        nvlPipelineDepth);
+    return commInvalidArgument;
+  }
   comms::prims::P2pNvlTransportOptions options{
-      .dataBufferSize = nvlPipelineSlotSize,
-      .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
-      .per_channel_slot =
-          alignDown(nvlPipelineSlotSize / CTRAN_ALGO_MAX_THREAD_BLOCKS, 16),
-      .max_num_channels = CTRAN_ALGO_MAX_THREAD_BLOCKS};
+      .dataBufferSize = nvlMaxNumChannels * nvlPerChannelBuffer,
+      .pipelineDepth = nvlPipelineDepth,
+      .per_channel_buffer = nvlPerChannelBuffer,
+      .per_channel_slot = nvlPerChannelBuffer / nvlPipelineDepth,
+      .max_num_channels = static_cast<int>(nvlMaxNumChannels)};
 
   for (int peer = 0; peer < nLocalRanks; peer++) {
     // Skip self - slot remains default-constructed (unused)

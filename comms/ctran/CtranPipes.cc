@@ -31,8 +31,8 @@ int ctranPipesNvlMaxNumChannels() {
   return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
 }
 
-size_t alignDown(size_t value, size_t alignment) {
-  return (value / alignment) * alignment;
+size_t roundDownToMultiple(size_t value, size_t multiple) {
+  return multiple == 0 ? 0 : (value / multiple) * multiple;
 }
 
 } // namespace
@@ -90,14 +90,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && comm->statex_->nLocalRanks() > 1;
     const size_t nvlSharedDevbufSize =
         ctranEffectiveP2pNvlSharedDevbufSize(comm->statex_->nLocalRanks());
-    const size_t nvlDataBufferSize = static_cast<size_t>(
-        nvlSharedDevbufSize / config.nvlConfig.pipelineDepth);
-
     config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
-    config.nvlConfig.perChannelSize = alignDown(
-        nvlDataBufferSize /
-            static_cast<size_t>(config.nvlConfig.maxNumChannels),
-        16);
+    const size_t nvlMaxNumChannels =
+        static_cast<size_t>(config.nvlConfig.maxNumChannels);
+    const size_t nvlChannelAlign = 16ULL * config.nvlConfig.pipelineDepth;
+    config.nvlConfig.perChannelSize = roundDownToMultiple(
+        nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
+    if (config.nvlConfig.perChannelSize == 0) {
+      CLOGF(
+          ERR,
+          "CTRAN-PRIMS: invalid NVL config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned perChannelSize",
+          nvlSharedDevbufSize,
+          config.nvlConfig.maxNumChannels,
+          config.nvlConfig.pipelineDepth);
+      return commInvalidArgument;
+    }
+    const size_t nvlDataBufferSize =
+        nvlMaxNumChannels * config.nvlConfig.perChannelSize;
 
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {

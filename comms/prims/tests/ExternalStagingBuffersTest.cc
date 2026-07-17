@@ -117,8 +117,7 @@ TEST_F(ExternalStagingBuffersTestFixture, TransportUsesExternalBuffers) {
   }
 
   auto config = defaultConfig();
-  const std::size_t perPeerDataSize =
-      config.pipelineDepth * dataBufferSize(config);
+  const std::size_t perPeerDataSize = dataBufferSize(config);
   auto bootstrap = std::make_shared<MpiBootstrap>();
 
   // Allocate external buffers via IPC
@@ -174,8 +173,7 @@ TEST_F(ExternalStagingBuffersTestFixture, IpcMemAccessThroughExternalBuffers) {
   auto config = defaultConfig();
   config.maxNumChannels = 1;
   config.perChannelSize = sizeof(int) * kNumElements;
-  const std::size_t perPeerDataSize =
-      config.pipelineDepth * dataBufferSize(config);
+  const std::size_t perPeerDataSize = dataBufferSize(config);
   auto bootstrap = std::make_shared<MpiBootstrap>();
 
   // Allocate external buffers via IPC
@@ -287,8 +285,7 @@ TEST_F(ExternalStagingBuffersTestFixture, StateAndSignalBuffersStillAllocated) {
   }
 
   auto config = defaultConfig();
-  const std::size_t perPeerDataSize =
-      config.pipelineDepth * dataBufferSize(config);
+  const std::size_t perPeerDataSize = dataBufferSize(config);
   auto bootstrap = std::make_shared<MpiBootstrap>();
 
   auto extBuf = allocateExternalBuffers(bootstrap, perPeerDataSize);

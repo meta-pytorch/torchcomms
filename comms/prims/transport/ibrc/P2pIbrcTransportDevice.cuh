@@ -512,7 +512,27 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return detail::pipeline_window(channelLayout_);
+    return channelLayout_.perChannelBufferSize != 0
+        ? channelLayout_.perChannelBufferSize
+        : channelLayout_.perChannelSize;
+  }
+
+  __device__ __forceinline__ std::size_t pipeline_window(
+      int active_blocks) const {
+    (void)active_blocks;
+    return pipeline_window();
+  }
+
+  __device__ __forceinline__ int pipeline_depth() const {
+    return channelLayout_.pipelineDepth;
+  }
+
+  __device__ __forceinline__ std::size_t pipeline_chunk() const {
+    if (channelLayout_.pipelineDepth <= 0) {
+      return 0;
+    }
+    return pipeline_window() /
+        static_cast<std::size_t>(channelLayout_.pipelineDepth);
   }
 
   __device__ __forceinline__ void init_send_progress(

@@ -40,6 +40,19 @@ MultiPeerNvlTransportConfig normalizeChannelConfig(
     throw std::runtime_error(
         "tile send/recv requires perChannelSize to be 16-byte aligned");
   }
+  if (config.pipelineDepth < 1) {
+    throw std::runtime_error("tile send/recv requires pipelineDepth >= 1");
+  }
+  if (config.perChannelSize % config.pipelineDepth != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize divisible by pipelineDepth");
+  }
+  const std::size_t pipelineChunk =
+      config.perChannelSize / config.pipelineDepth;
+  if (pipelineChunk < 16 || pipelineChunk % 16 != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize / pipelineDepth to be a 16-byte aligned chunk >= 16");
+  }
   // Cap per-channel staging at 128MB (matches NCCL's max channel buffer). This
   // also keeps the derived per-slot staging size bounded for any sane channel
   // count.
@@ -81,9 +94,9 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // Allocation order: signal -> state
   // Each handler's destructor will free its GPU memory if constructed.
 
-  // Calculate per-peer buffer sizes with pipelining
+  // Calculate per-peer fixed-channel buffer sizes.
   dataBufferSize_ = dataBufferSize(config_);
-  perPeerDataBufferSize_ = config_.pipelineDepth * dataBufferSize_;
+  perPeerDataBufferSize_ = dataBufferSize_;
 
   perPeerSignalBufferSize_ = getSignalBufferSize(config_.p2pSignalCount);
 
@@ -191,14 +204,14 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
           "setExternalDataBuffers: local buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(localSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * maxNumChannels * perChannelSize)");
+          " (maxNumChannels * perChannelSize)");
     }
     if (remoteSize < perPeerDataBufferSize_) {
       throw std::runtime_error(
           "setExternalDataBuffers: remote buffer for peer " +
           std::to_string(peer) + " has size " + std::to_string(remoteSize) +
           " but requires at least " + std::to_string(perPeerDataBufferSize_) +
-          " (pipelineDepth * maxNumChannels * perChannelSize)");
+          " (maxNumChannels * perChannelSize)");
     }
   }
   externalStagingBuffers_ = std::move(externalStagingBuffers);
@@ -275,13 +288,16 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       remotePeerIndex * perPeerSignalBufferSize_;
 
   const int maxChannels = config_.maxNumChannels;
-  const std::size_t perChannelSlot =
+  const std::size_t perChannelBuffer =
       maxChannels > 0 ? config_.perChannelSize : 0;
+  const std::size_t perChannelSlot =
+      maxChannels > 0 ? config_.perChannelSize / config_.pipelineDepth : 0;
   P2pNvlTransportOptions options{
       .dataBufferSize = dataBufferSize_,
       .pipelineDepth = config_.pipelineDepth,
       .ll128BufferNumPackets = perPeerLl128BufferSize_ / kLl128PacketSize,
       .llBufferNumLines = perPeerLlBufferSize_ / kLlLineSize,
+      .per_channel_buffer = perChannelBuffer,
       .per_channel_slot = perChannelSlot,
       .max_num_channels = maxChannels,
   };

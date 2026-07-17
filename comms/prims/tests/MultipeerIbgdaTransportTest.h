@@ -123,6 +123,16 @@ void testPutOnly(
 bool supportsProgressSendRecv();
 
 /**
+ * Test kernel: snapshot send/recv pipeline geometry through the unified IB
+ * transport wrapper. Output: pipelineDepth, pipelineWindow, pipelineChunk.
+ */
+void testPipelineGeometry(
+    P2pIbTransportDevice transport,
+    uint64_t* output,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Blocking pipelined send or recv.
  */
 void testSendRecv(

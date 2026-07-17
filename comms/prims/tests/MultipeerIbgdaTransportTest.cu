@@ -311,6 +311,33 @@ void testPutOnly(
 }
 
 // =============================================================================
+// Kernel: Pipeline geometry snapshot
+// =============================================================================
+
+__global__ void pipelineGeometryKernel(
+    P2pIbTransportDevice transport,
+    uint64_t* output) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    output[0] = static_cast<uint64_t>(transport.pipeline_depth());
+    output[1] = static_cast<uint64_t>(transport.pipeline_window());
+    output[2] = static_cast<uint64_t>(transport.pipeline_chunk());
+  }
+}
+
+void testPipelineGeometry(
+    P2pIbTransportDevice transport,
+    uint64_t* output,
+    int numBlocks,
+    int blockSize) {
+  pipelineGeometryKernel<<<numBlocks, blockSize>>>(transport, output);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
 // Kernel: Blocking send/recv and resumable progress send/recv
 // =============================================================================
 

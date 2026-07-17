@@ -98,10 +98,18 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   const size_t sendcount = numIntsPerRank * sizeof(int32_t);
   const size_t recvBufferSize = worldSize * sendcount;
 
+  constexpr std::size_t pipelineDepth = 4;
+  constexpr int maxNumChannels = 64;
+  const std::size_t requestedPerChannelSize =
+      (std::max(size_t(2048), recvBufferSize) + maxNumChannels - 1) /
+      maxNumChannels;
+  const std::size_t chunkAlign = 16 * pipelineDepth;
   MultiPeerNvlTransportConfig config{
-      .pipelineDepth = 4,
-      .maxNumChannels = 64,
-      .perChannelSize = (std::max(size_t(2048), recvBufferSize)) / 64,
+      .pipelineDepth = pipelineDepth,
+      .maxNumChannels = maxNumChannels,
+      .perChannelSize =
+          ((requestedPerChannelSize + chunkAlign - 1) / chunkAlign) *
+          chunkAlign,
   };
 
   // Create transport and exchange IPC handles
