@@ -19,7 +19,8 @@ class WorkWrapper : public c10d::Work {
  public:
   explicit WorkWrapper(
       c10::intrusive_ptr<TorchWork> work,
-      std::vector<at::Tensor> outputTensors = {});
+      std::vector<at::Tensor> outputTensors = {},
+      bool hostBlocking = false);
   ~WorkWrapper() override = default;
 
   void synchronize() override;
@@ -32,6 +33,9 @@ class WorkWrapper : public c10d::Work {
   c10::intrusive_ptr<TorchWork> work_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   std::vector<at::Tensor> outputTensors_;
+  // When set (synchronous barrier), wait()/synchronize() also host-block via
+  // work_->hostSynchronize() after the stream-ordered wait().
+  bool hostBlocking_;
 };
 
 using c10d::kUnsetTimeout;

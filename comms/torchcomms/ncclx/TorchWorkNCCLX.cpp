@@ -306,4 +306,8 @@ void TorchWorkNCCLX::wait() {
 
   runWaitPostHooks();
 }
+
+void TorchWorkNCCLX::hostSynchronize() {
+  syncCurrentStreamIfNotCapturing(comm_->getCudaApi(), comm_->device_.index());
+}
 } // namespace torch::comms
