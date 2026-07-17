@@ -123,7 +123,8 @@ bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    enum NCCL_ALLTOALL_ALGO algo);
+    enum NCCL_ALLTOALL_ALGO algo,
+    cudaStream_t stream = nullptr);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,

@@ -347,8 +347,7 @@ commResult_t CtranGpe::submit(
     opFunc func,
     KernelConfig& kernelConfig,
     const void* ncclKernel,
-    std::optional<std::chrono::milliseconds> timeout,
-    PreLaunchGraphPrepareFn graphPrepareFn) {
+    std::optional<std::chrono::milliseconds> timeout) {
   this->pimpl->comm->recordAlgoStat(
       kernelTypeToOpName(kernelConfig.type),
       kernelConfig.algoName,
@@ -359,8 +358,7 @@ commResult_t CtranGpe::submit(
       func,
       kernelConfig,
       ncclKernel,
-      timeout,
-      graphPrepareFn);
+      timeout);
 }
 
 commResult_t CtranGpe::submitHost(

@@ -2,7 +2,10 @@
 
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/utils/logger/LogUtils.h"
+
+#include <folly/ScopeGuard.h>
 
 using ctran::alltoallp::AlgoImpl;
 
@@ -30,27 +33,34 @@ commResult_t AllToAllPInit(
   const auto nRanks = statex->nRanks();
 
   SetCudaDevRAII setCudaDev(statex->cudaDev());
-  AlgoImpl* algo = new AlgoImpl(comm, stream);
-  if (!algo) {
-    return commSystemError;
-  }
 
-  auto guard = folly::makeGuard([algo] {
-    if (algo) {
-      delete algo;
-    }
-  });
   std::string skip_ctrl_msg;
   hints.get("ncclx_alltoallp_skip_ctrl_msg_exchange", skip_ctrl_msg);
-  FB_COMMCHECK(algo->setPArgs(
-      recvbuff, maxRecvCount, skip_ctrl_msg == "true", datatype));
-  FB_COMMCHECK(algo->init());
-  request = new CtranPersistentRequest(
-      CtranPersistentRequest::Type::ALLTOALL_P, comm, stream);
-  if (!request) {
-    return commSystemError;
-  }
-  request->algo = algo;
+  // createPersistentRequest owns the scoped local recv registration, the
+  // read-only pArgs fields (shared with the graph path), and the async IPC
+  // handle exchange submitted on the GPE thread; it fails cleanly with
+  // commInvalidUsage if recvbuff is not allocator-cached. waitForInit=false:
+  // eager init returns without waiting; the first exec waits via waitInit().
+  FB_COMMCHECK(
+      ctran::alltoallp::createPersistentRequest(
+          comm,
+          stream,
+          recvbuff,
+          maxRecvCount,
+          datatype,
+          &request,
+          /*waitForInit=*/false,
+          /*skipCtrlMsg=*/skip_ctrl_msg == "true"));
+  auto requestGuard = folly::makeGuard([&request, comm] {
+    // Unregister the cleanup token before deleting the request: the token's
+    // closure captures the raw request pointer, so leaving it in the comm
+    // registry would let a later drainPersistentCleanups() run it on freed
+    // memory (use-after-free).
+    comm->unregisterPersistentCleanup(request->cleanup_);
+    FB_COMMCHECKIGNORE(ctran::alltoallp::destroyPersistentRequest(request));
+    delete request;
+    request = nullptr;
+  });
 
   CLOGF_SUBSYS(
       INFO,
@@ -66,7 +76,7 @@ commResult_t AllToAllPInit(
       statex->nLocalRanks(),
       (void*)stream);
 
-  guard.dismiss();
+  requestGuard.dismiss();
   return commSuccess;
 }
 
@@ -91,11 +101,25 @@ commResult_t AllToAllPExec(
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request) {
   CHECK_VALID_PREQ(request);
 
-  // No need to dereg handles now since user should call explicit commDeregister
-  // before buffer is freed
-  auto algo = reinterpret_cast<AlgoImpl*>(request->algo);
-  delete algo;
-  request->algo = nullptr;
+  // Route the resource release through the shared cleanup token so it runs at
+  // most once across {eager free, graph-destroy callback, comm drain before
+  // terminate()}. The request object itself is still owned/deleted by the
+  // caller (unchanged contract); the token releases only the scoped
+  // registration.
+  // A request reaching AllToAllPDestroy is always Type::ALLTOALL_P, created by
+  // createPersistentRequest, which always sets cleanup_ (other request types,
+  // e.g. dedup, have their own destroy path and never reach here).
+  auto token = request->cleanup_;
+  auto* comm = request->comm_;
+  DCHECK(token != nullptr);
+  token->run();
+  comm->unregisterPersistentCleanup(token);
+
+  // The cleanup token released this request's remote NVL IPC imports deferred
+  // (SW-only). This is a user thread, so drain the parked cuMemUnmaps now.
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  ipcRegCache->cleanupInvalidImports();
 
   CLOGF_SUBSYS(
       INFO,

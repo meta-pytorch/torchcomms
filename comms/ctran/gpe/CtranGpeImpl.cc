@@ -283,8 +283,7 @@ commResult_t CtranGpe::Impl::submit(
     opFunc func,
     KernelConfig& kernelConfig,
     const void* ncclKernel,
-    std::optional<std::chrono::milliseconds> timeout,
-    PreLaunchGraphPrepareFn graphPrepareFn) {
+    std::optional<std::chrono::milliseconds> timeout) {
   commResult_t res = commSuccess;
 
   // Error checking before GPE cmd and kernel submission
@@ -401,7 +400,6 @@ commResult_t CtranGpe::Impl::submit(
     maybeAcquireWorkStreamScope();
 
     if (isCapturing) {
-      FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       cmd->persistent = true;
       if (cmd->unpackPool != nullptr) {
         auto existingCleanup = std::move(cmd->postKernelCleanup);

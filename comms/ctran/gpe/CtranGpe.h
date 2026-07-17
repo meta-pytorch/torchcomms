@@ -34,13 +34,6 @@ typedef commResult_t (*opFunc)(
 // CtranGpeImpl.h:209 — both must alias the same instantiation.
 using GpeKernelSyncPool = PinnedHostPool<ctran::algos::GpeKernelSync>;
 
-namespace ctran {
-using PersistentObj =
-    std::variant<std::monostate, std::unique_ptr<alltoallp::AlgoImpl>>;
-using PreLaunchGraphPrepareFn =
-    commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
-} // namespace ctran
-
 struct OpElem {
   enum opType {
     ALLGATHER,
@@ -374,8 +367,7 @@ class CtranGpe {
       opFunc func,
       KernelConfig& kernelConfig,
       const void* ncclKernel,
-      std::optional<std::chrono::milliseconds> timeout = std::nullopt,
-      ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr);
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   // Submit host mem communication. No kernel is launched, and only the host
   // side func will be submitted to the GPE thread. Also the op won't be
