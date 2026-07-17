@@ -6,16 +6,20 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
+#include "comms/ctran/algos/common/NvlUtils.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/CtranPerf.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include <folly/ScopeGuard.h>
 
 #include <memory>
 
+using ctran::algos::copyToSelf;
+using ctran::algos::nvlCeAllToAll;
 using ctran::alltoallp::AlgoImpl;
 using ctran::alltoallp::createPersistentRequest;
 using ctran::alltoallp::destroyPersistentRequest;
@@ -329,6 +333,10 @@ commResult_t exchangeMemHdl(
 
 namespace ctran::alltoallp {
 
+extern __global__ void ncclKernelAllToAllPDirect(
+    ctran::gpe::KernelFlagDev* f,
+    CtranAlgoDeviceState* devState);
+
 AlgoImpl::~AlgoImpl() = default;
 
 commResult_t AlgoImpl::destroy() {
@@ -509,11 +517,49 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
     FB_COMMCHECK(waitInit());
   }
 
+  const size_t chunkSize = count * commTypeSize(datatype);
+
+  // Intra-node data moves entirely via host-issued NVL copy-engine copies here,
+  // mirroring AGP's DirectImpl: the self chunk plus a distinct src slice per
+  // local peer, issued on the stream BEFORE gpe->submit and with no host sync,
+  // so they overlap the inter-node IB puts run on the GPE thread.
+  FB_COMMCHECK(copyToSelf(
+      comm_,
+      static_cast<const char*>(sendbuff) + comm_->statex_->rank() * chunkSize,
+      static_cast<char*>(recvbuff) + comm_->statex_->rank() * chunkSize,
+      chunkSize,
+      stream_));
+  if (comm_->statex_->nLocalRanks() > 1) {
+    FB_COMMCHECK(nvlCeAllToAll(
+        comm_,
+        sendbuff,
+        chunkSize,
+        pArgs.remoteRecvBuffs,
+        pArgs.remoteAccessKeys,
+        stream_));
+  }
+
+  // Submit the dedicated sync-only ncclKernelAllToAllPDirect (NOT the shared
+  // staged-copy ncclKernelAllToAll, and NOT a count==0 stub): the data movement
+  // is done by the host CE copies above, but the kernel is still required for
+  // the cross-rank NVL barrier + system fence (so peer CE writes are globally
+  // visible before any rank returns) and the GPE-thread handshake the
+  // inter-node IB path depends on. Enqueued on the same stream as the CE
+  // copies, so stream ordering guarantees the copies complete before the
+  // barrier runs. Mirrors AGP's execDirect launching
+  // ncclKernelAllGatherPDirect.
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLTOALL, stream_, algoName(myAlgo), opCount);
-  FB_COMMCHECK(
-      ctran::alltoall::setupKernelConfig(
-          sendbuff, recvbuff, count, datatype, comm_, stream_, config));
+  config.numBlocks = 1;
+  config.numThreads = 1;
+  config.args.devState_d = comm_->ctran_->algo->getDevState();
+  // Populate the alltoall collective args so colltrace records the real count;
+  // the sync-only kernel ignores them (data moves via host CE copies / IB
+  // puts).
+  config.args.collective.alltoall.sendbuff = sendbuff;
+  config.args.collective.alltoall.recvbuff = recvbuff;
+  config.args.collective.alltoall.count = count;
+  config.args.collective.alltoall.datatype = datatype;
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   // Passing op only when remote peers are present
@@ -536,7 +582,7 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
       std::move(opGroup),
       gpeFn,
       config,
-      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype])));
+      reinterpret_cast<void*>(ncclKernelAllToAllPDirect)));
   return commSuccess;
 }
 } // namespace ctran::alltoallp

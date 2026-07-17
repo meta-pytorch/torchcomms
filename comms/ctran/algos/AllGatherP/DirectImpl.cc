@@ -186,7 +186,12 @@ commResult_t AlgoImpl::execDirect(
   const auto sendSize = count * commTypeSize(datatype);
 
   // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(comm_, sendbuff, sendSize, pArgs, stream_));
+  FB_COMMCHECK(copyToSelf(
+      comm_,
+      sendbuff,
+      getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
+      sendSize,
+      stream_));
 
   // Wait till async init is done, so that we can schedule copy operations with
   // the remote address
@@ -202,7 +207,13 @@ commResult_t AlgoImpl::execDirect(
         statex->localRankToRank((statex->localRank() + 1) % actualNLocalRanks);
     if (pArgs.remoteAccessKeys[localPeer].backend == CtranMapperBackend::NVL) {
       FB_COMMCHECK(nvlCeBcast(
-          comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+          comm_,
+          sendbuff,
+          sendSize,
+          myRank * sendSize,
+          pArgs.remoteRecvBuffs,
+          pArgs.remoteAccessKeys,
+          stream_));
     }
   }
 
