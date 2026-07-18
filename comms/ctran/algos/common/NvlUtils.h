@@ -66,19 +66,18 @@ inline commResult_t nvlCeMemcpyBatch(
     cudaMemcpyAttributes attr = {};
     attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
     attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
+    // cudaMemcpyBatchAsync takes non-const dst/src/size arrays but treats them
+    // as inputs, so casting away const on our const inputs is safe.
+    void** dstsPtr = const_cast<void**>(dsts.data());
+    void** srcsPtr = const_cast<void**>(srcs.data());
+    size_t* sizesPtr = const_cast<size_t*>(sizes.data());
 #if CUDART_VERSION < 13000
     size_t failIdx = 0;
     FB_CUDACHECK(cudaMemcpyBatchAsync(
-        dsts.data(),
-        srcs.data(),
-        sizes.data(),
-        numOps,
-        attr,
-        &failIdx,
-        stream));
+        dstsPtr, srcsPtr, sizesPtr, numOps, attr, &failIdx, stream));
 #else
-    FB_CUDACHECK(cudaMemcpyBatchAsync(
-        dsts.data(), srcs.data(), sizes.data(), numOps, attr, stream));
+    FB_CUDACHECK(
+        cudaMemcpyBatchAsync(dstsPtr, srcsPtr, sizesPtr, numOps, attr, stream));
 #endif
     batchCopied = true;
   }
