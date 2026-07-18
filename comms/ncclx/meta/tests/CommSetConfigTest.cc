@@ -309,6 +309,52 @@ TEST_F(CommSetConfigTest, WinRegisterIpcOnlyNotResetByUnrelatedUpdate) {
   }
 }
 
+TEST_F(CommSetConfigTest, SetWinRegisterEnableSignal) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_enable_signal", "0"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal));
+  }
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_enable_signal", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal));
+  }
+}
+
+TEST_F(CommSetConfigTest, WinRegisterEnableSignalNotResetByUnrelatedUpdate) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  // Disable signals first.
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_enable_signal", "0"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal));
+  }
+
+  // An unrelated update must not reset it (key absent and not pre-seeded).
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"allgatherAlgo", "ctdirect"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal));
+  }
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
