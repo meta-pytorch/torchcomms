@@ -176,6 +176,14 @@ struct CtranWin {
     return enableSignal_;
   }
 
+  inline void setSymmetric(bool val) {
+    symmetric_ = val;
+  }
+
+  inline bool isSymmetric() const {
+    return symmetric_;
+  }
+
   // Check whether persistent allgather (allgatherP) is supported.
   // Returns true if ctran is initialized and all peers have configured
   // backends. Static variant allows checking before a window is created.
@@ -199,6 +207,11 @@ struct CtranWin {
   // rejected. Used by data-only collective windows (e.g. window-based
   // allgather) that never issue signals.
   bool enableSignal_{true};
+  // When true, every rank registers a buffer of identical size at an identical
+  // offset from the window base, so a peer address can be computed as
+  // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
+  // hint; consumed by a later window-based allgather. Cached only for now.
+  bool symmetric_{false};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>

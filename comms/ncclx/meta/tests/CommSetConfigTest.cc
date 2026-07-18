@@ -355,6 +355,52 @@ TEST_F(CommSetConfigTest, WinRegisterEnableSignalNotResetByUnrelatedUpdate) {
   }
 }
 
+TEST_F(CommSetConfigTest, SetWinRegisterSymmetric) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "0"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+}
+
+TEST_F(CommSetConfigTest, WinRegisterSymmetricNotResetByUnrelatedUpdate) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  // Enable symmetric first.
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+
+  // An unrelated update must not reset it (key absent and not pre-seeded).
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"allgatherAlgo", "ctdirect"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);

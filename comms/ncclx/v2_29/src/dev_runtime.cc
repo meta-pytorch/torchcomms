@@ -1258,6 +1258,9 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
           "win_register_enable_signal",
           NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal) ? "1"
                                                                     : "0")));
+      NCCLCHECK(metaCommToNccl(winHints.set(
+          "win_register_symmetric",
+          NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric) ? "1" : "0")));
       NCCLCHECK(metaCommToNccl(
           ctran::ctranWinRegister(
               buff,
