@@ -30,11 +30,10 @@ namespace comms::prims {
  * Each channel's state is a single struct with named fields; the transport
  * indexes the channels array by group_id directly.
  *
- * Slot-major staging layout: channel c's slice at slot s lives at
- *   staging_base + s * (max_num_channels * per_channel_slot) + c *
- * per_channel_slot (Do not switch to channel-major without re-running the
- * slot-vs-channel-major NVL bandwidth benchmark — slot-major was measured ~5%
- * faster on H100.)
+ * Channel-major staging layout: channel c's slot s lives at
+ *   staging_base + c * per_channel_buffer + s * per_channel_slot.
+ * This keeps one channel's full pipeline window contiguous; benchmark the
+ * before/after bandwidth when changing this layout.
  */
 struct alignas(128) NvlChannelState {
   int64_t send_cursor{0};

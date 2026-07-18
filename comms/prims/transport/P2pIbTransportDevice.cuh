@@ -557,6 +557,21 @@ __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_window()
   return ibgda->pipeline_window();
 }
 
+__device__ __forceinline__ int P2pIbTransportDevice::pipeline_depth() const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->pipeline_depth();
+  }
+  return ibgda->pipeline_depth();
+}
+
+__device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_chunk()
+    const {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->pipeline_chunk();
+  }
+  return ibgda->pipeline_chunk();
+}
+
 __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
     ThreadGroup& group,
     std::size_t nbytes,

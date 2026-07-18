@@ -1248,12 +1248,23 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
       win_->comm = comm;
 
       auto guard = folly::makeGuard([win_] { delete win_; });
+      // Bridge the comm-level ncclx::win_register_ipc_only hint into the ctran
+      // window hints, as there is no per-window config path from Python today.
+      meta::comms::Hints winHints;
+      NCCLCHECK(metaCommToNccl(winHints.set(
+          "win_register_ipc_only",
+          NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly) ? "1" : "0")));
+      NCCLCHECK(metaCommToNccl(winHints.set(
+          "win_register_enable_signal",
+          NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal) ? "1"
+                                                                    : "0")));
       NCCLCHECK(metaCommToNccl(
           ctran::ctranWinRegister(
               buff,
               size,
               comm->ctranComm_.get(),
-              &win_->ctranWindow)));
+              &win_->ctranWindow,
+              winHints)));
 
       // Create empty ncclWindow as handle and register mapping
       ncclWindow_t handle = new ncclWindow_vidmem();

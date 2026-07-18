@@ -270,6 +270,8 @@ Config::Config(const ncclConfig_t* config) {
   useCtran = parseHintBool("useCtran", NCCL_CTRAN_ENABLE);
   usePatAvg = parseHintBool("usePatAvg", NCCL_REDUCESCATTER_PAT_AVG_ENABLE);
   noLocal = parseHintBool("noLocal", false);
+  winRegisterIpcOnly = parseHintBool("win_register_ipc_only", false);
+  winRegisterEnableSignal = parseHintBool("win_register_enable_signal", true);
 
   auto parseAlgoHint = [&](const char* key, auto& field) {
     auto val = getHintStr(key);
@@ -316,6 +318,17 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
   parseAlgoHint("rmaAlgo", rmaAlgo);
+
+  // Mutable bool window hints: applied only when the key is present, so an
+  // unrelated commSetConfig does not reset them (win hints are not pre-seeded).
+  auto parseBoolHint = [&](const char* key, bool& field) {
+    std::string val;
+    if (hints->get(key, val) == ncclSuccess) {
+      field = (val == "1" || val == "true");
+    }
+  };
+  parseBoolHint("win_register_ipc_only", winRegisterIpcOnly);
+  parseBoolHint("win_register_enable_signal", winRegisterEnableSignal);
 
   return ncclSuccess;
 }
@@ -377,6 +390,10 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     append(fmt::format("useCtran={}", xCfg->useCtran));
     append(fmt::format("usePatAvg={}", xCfg->usePatAvg));
     append(fmt::format("noLocal={}", xCfg->noLocal));
+    append(fmt::format("winRegisterIpcOnly={}", xCfg->winRegisterIpcOnly));
+    append(
+        fmt::format(
+            "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
     append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);

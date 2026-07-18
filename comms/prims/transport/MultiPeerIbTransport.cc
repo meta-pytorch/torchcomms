@@ -365,21 +365,29 @@ void MultiPeerIbTransportBase::validateSendRecvConfig() const {
         "MultiPeerIbTransport: dataBufferSize must be > 0 when send/recv is "
         "enabled");
   }
-  if ((config_.dataBufferSize /
-       static_cast<std::size_t>(config_.max_num_channels)) < 16) {
+  if (config_.perChannelSize %
+          static_cast<std::size_t>(config_.pipelineDepth) !=
+      0) {
     throw std::invalid_argument(
         fmt::format(
-            "MultiPeerIbTransport: dataBufferSize / max_num_channels must be >= 16, "
-            "got {} / {} = {}",
-            config_.dataBufferSize,
-            config_.max_num_channels,
-            config_.dataBufferSize / config_.max_num_channels));
+            "MultiPeerIbTransport: perChannelSize must be divisible by pipelineDepth, got {} / {}",
+            config_.perChannelSize,
+            config_.pipelineDepth));
+  }
+  const std::size_t pipelineChunk =
+      config_.perChannelSize / static_cast<std::size_t>(config_.pipelineDepth);
+  if (pipelineChunk < 16 || pipelineChunk % 16 != 0) {
+    throw std::invalid_argument(
+        fmt::format(
+            "MultiPeerIbTransport: perChannelSize / pipelineDepth must be a 16-byte aligned chunk >= 16, got {} / {} = {}",
+            config_.perChannelSize,
+            config_.pipelineDepth,
+            pipelineChunk));
   }
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvStagingBytesPerPeer() const {
-  return static_cast<std::size_t>(config_.pipelineDepth) *
-      config_.dataBufferSize;
+  return config_.dataBufferSize;
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
@@ -424,6 +432,7 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
       .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,
       .perChannelSize = config_.perChannelSize,
+      .perChannelBufferSize = config_.perChannelSize,
   };
 }
 

@@ -72,7 +72,9 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
   // pipesConfig.ibLazyConnect set so IBGDA peers are materialized on-demand
   // (the NCCL_CTRAN_IBGDA_LAZY_CONNECT env does NOT reach this default-config
   // path -- see comment in makeCtranComm).
-  std::unique_ptr<CtranComm> makeCtranComm(bool ibLazyConnect = false);
+  std::unique_ptr<CtranComm> makeCtranComm(
+      bool noLocal = false,
+      bool ibLazyConnect = false);
 
   // Intra-node (NVL domain) barrier using CtranComm's bootstrap
   void barrierNvlDomain(CtranComm* comm);

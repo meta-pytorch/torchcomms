@@ -22,7 +22,7 @@ commResult_t Hints::set(const std::string& key, const std::string& val) {
   if (key.starts_with("ncclx_alltoallp")) {
     FB_COMMCHECK(AllToAllPHintUtils::set(key, val, this->kv));
     return commSuccess;
-  } else if (key.starts_with(("window"))) {
+  } else if (key.starts_with(("win"))) {
     FB_COMMCHECK(WinHintUtils::set(key, val, this->kv));
     return commSuccess;
   } else {

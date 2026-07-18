@@ -43,12 +43,6 @@ struct LastErrorInfo {
 
 static folly::Synchronized<LastErrorInfo> lastCommsError{};
 
-// Using char array to ensure compatibility with NCCL GetLastError API. Note
-// that since we will return the pointer to the array, reading the array while
-// another thread is writing to it is not safe.
-static folly::Synchronized<std::array<char, 4096>> lastCommsErrorStr{
-    std::array<char, 4096>{'\0'}};
-
 void logLastError(std::string_view message) {
   lastCommsError.wlock()->lastErrorMessage = message;
 }
@@ -334,8 +328,7 @@ std::string NcclLogFormatter::formatMessage(
   return buffer;
 }
 
-const char* getLastCommsError() {
-  // Only write the error message to the buffer once requested
+std::string getLastCommsError() {
   std::ostringstream ss;
   {
     auto lastCommsErrorRLocked = lastCommsError.rlock();
@@ -344,17 +337,7 @@ const char* getLastCommsError() {
       ss << '\n' << stack;
     }
   }
-
-  auto fullError = std::move(ss).str();
-
-  // Write the error message to the buffer
-  auto lastCommsErrorStrWLocked = lastCommsErrorStr.wlock();
-  std::snprintf(
-      lastCommsErrorStrWLocked->data(),
-      lastCommsErrorStrWLocked->size(),
-      "%s",
-      fullError.c_str());
-  return lastCommsErrorStrWLocked->data();
+  return ss.str();
 }
 
 void appendErrorToStack(std::string error) {

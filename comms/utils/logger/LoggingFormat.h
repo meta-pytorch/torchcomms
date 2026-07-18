@@ -69,7 +69,7 @@ void initThreadMetaData(std::string_view threadName);
 
 fmt::memory_buffer getLogPrefix(LogLevel level);
 
-const char* getLastCommsError();
+std::string getLastCommsError();
 
 void appendErrorToStack(std::string error);
 

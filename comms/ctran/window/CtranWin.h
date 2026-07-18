@@ -164,6 +164,18 @@ struct CtranWin {
     atomicCapable_ = val;
   }
 
+  inline void setIpcOnly(bool val) {
+    ipcOnly_ = val;
+  }
+
+  inline void setEnableSignal(bool val) {
+    enableSignal_ = val;
+  }
+
+  inline bool isSignalEnabled() const {
+    return enableSignal_;
+  }
+
   // Check whether persistent allgather (allgatherP) is supported.
   // Returns true if ctran is initialized and all peers have configured
   // backends. Static variant allows checking before a window is created.
@@ -179,6 +191,14 @@ struct CtranWin {
   // Whether this window's data buffer meets the alignment requirements
   // for IB/NVLink atomic operations (8-byte aligned address and size).
   bool atomicCapable_{false};
+  // When true, registration exchanges only intra-node NVL/CUDA-IPC handles
+  // and skips the IB rkey exchange.
+  bool ipcOnly_{false};
+  // When false, the window carries no signal buffer: signal-buffer allocation
+  // and the signal-related control exchange are skipped, and signal RMA ops are
+  // rejected. Used by data-only collective windows (e.g. window-based
+  // allgather) that never issue signals.
+  bool enableSignal_{true};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>

@@ -87,8 +87,10 @@ The same channel id exists on both ranks. Each rank owns its own
 
 NVLink uses fixed channel geometry. `maxNumChannels` and `perChannelSize` are
 selected at host transport construction and remain stable across kernel
-launches. This keeps the staging-buffer slice for channel `c` stable even when
-a later kernel uses fewer active groups.
+launches. Each channel owns one contiguous `perChannelSize` staging window,
+split into `pipelineDepth` slots of size `perChannelSize / pipelineDepth`.
+This keeps the staging-buffer window for channel `c` stable even when a later
+kernel uses fewer active groups.
 
 ## IB
 
