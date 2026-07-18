@@ -1086,6 +1086,124 @@ TEST_F(CtranWinTest, symmetricUserBufferRegister) {
       segments.end());
 }
 
+// Window range cache: a symmetric window's range is resolvable by
+// findWindowForBuffer, including a sub-range within it, and stops resolving
+// once the window is freed.
+TEST_F(CtranWinTest, windowRangeLookup) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip window range lookup test";
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
+  ASSERT_NE(userBuf, nullptr);
+
+  // Simulate the CCA memory hook so acquireScopedRegister finds the segment.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalRegister(userBuf, sizeBytes));
+
+  // Register the user buffer with the symmetric window hint enabled.
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  ASSERT_EQ(hints.set("win_register_symmetric", "1"), commSuccess);
+  auto res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(win, nullptr);
+
+  // The full data buffer resolves to this window.
+  EXPECT_EQ(comm->findWindowForBuffer(userBuf, sizeBytes), win);
+  // A sub-range within the window also resolves to it.
+  auto* mid = static_cast<char*>(userBuf) + 128;
+  EXPECT_EQ(comm->findWindowForBuffer(mid, 256), win);
+  // A range extending one byte past the end resolves to nullptr.
+  EXPECT_EQ(comm->findWindowForBuffer(userBuf, sizeBytes + 1), nullptr);
+
+  oobBarrier();
+
+  ASSERT_EQ(ctranWinFree(win), commSuccess);
+
+  // After free the buffer no longer resolves to a window.
+  EXPECT_EQ(comm->findWindowForBuffer(userBuf, sizeBytes), nullptr);
+
+  freeWinBuf(true, userBuf, sizeBytes, bufType);
+}
+
+// Window range cache: overlapping symmetric windows registered over the same
+// buffer are all cached, and every rank resolves a given buffer to the SAME
+// window (verified via the per-comm window id), which is required for
+// consistent symmetric-offset math.
+TEST_F(CtranWinDistTest, windowRangeOverlapDeterministic) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip window range overlap test";
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP() << "need >=2 local ranks";
+  }
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  std::vector<TestMemSegment> distSegments;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, distSegments);
+  ASSERT_NE(userBuf, nullptr);
+
+  // Simulate the CCA memory hook so acquireScopedRegister finds the segment.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalRegister(userBuf, sizeBytes));
+
+  meta::comms::Hints hints;
+  ASSERT_EQ(hints.set("win_register_symmetric", "1"), commSuccess);
+
+  // Register two overlapping symmetric windows over the same buffer: one
+  // spanning the whole buffer, and one spanning only its prefix.
+  CtranWin* winWhole = nullptr;
+  auto res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &winWhole, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(winWhole, nullptr);
+
+  CtranWin* winPrefix = nullptr;
+  res = ctranWinRegister(userBuf, sizeBytes / 2, comm.get(), &winPrefix, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(winPrefix, nullptr);
+
+  EXPECT_NE(winWhole->id(), winPrefix->id())
+      << "distinct windows must get distinct ids";
+
+  // A sub-range inside the overlap is contained by both windows; the cache
+  // must deterministically pick one.
+  auto* win = comm->findWindowForBuffer(userBuf, sizeBytes / 4);
+  ASSERT_NE(win, nullptr);
+
+  // Verify all ranks picked the same window via id.
+  std::vector<uint64_t> ids(statex->nLocalRanks(), 0);
+  ids[statex->localRank()] = win->id();
+  allGatherNvlDomain(comm.get(), ids);
+  for (int r = 0; r < statex->nLocalRanks(); ++r) {
+    EXPECT_EQ(ids[r], win->id())
+        << "rank " << r << " resolved the buffer to a different window";
+  }
+
+  oobBarrier();
+
+  ASSERT_EQ(ctranWinFree(winPrefix), commSuccess);
+  ASSERT_EQ(ctranWinFree(winWhole), commSuccess);
+
+  // Release the CCA-hook simulation registration and free the buffer.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalDeregister(userBuf, sizeBytes));
+  commMemFree(userBuf, sizeBytes, bufType);
+}
+
 TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
   // Reproduces a leak in ctranWinRegister: it constructs the CtranWin with a
   // raw `new`, then FB_COMMCHECK(exchange()). If exchange() fails, the early
@@ -1182,6 +1300,32 @@ TEST_F(CtranWinTest, RegisterUncachedUserBufferReturnsInvalidUsageNoLeak) {
           segments.end(),
           [userBuf](const TestMemSegment& seg) { return seg.ptr == userBuf; }),
       segments.end());
+}
+
+// A non-symmetric window is not cached (window-based collectives only use
+// symmetric windows), so findWindowForBuffer never resolves to it.
+TEST_F(CtranWinTest, findWindowForBufferNonSymmetric) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  CtranWin* win = nullptr;
+  const size_t sizeBytes = 8192 * sizeof(int);
+  void* winBase = nullptr;
+  // Allocate a default (non-symmetric) window.
+  auto res = ctranWinAllocate(sizeBytes, comm.get(), &winBase, &win);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(winBase, nullptr);
+  ASSERT_FALSE(win->isSymmetric());
+
+  // Not cached: neither the whole buffer nor a sub-range resolves.
+  EXPECT_EQ(comm->findWindowForBuffer(winBase, sizeBytes), nullptr);
+  auto* subRange = static_cast<char*>(winBase) + 128;
+  EXPECT_EQ(comm->findWindowForBuffer(subRange, 256), nullptr);
+
+  oobBarrier();
+
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
 }
 
 INSTANTIATE_TEST_SUITE_P(
