@@ -993,6 +993,74 @@ TEST_F(RdmaTransportTest, DestructorCancelsPendingWorks) {
   EXPECT_EQ(cudaFree(buffer), cudaSuccess);
 }
 
+TEST_F(RdmaTransportTest, ReadMockTypeTimeoutWithDuration) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  transport->setMockForTest(
+      {.type = torch::comms::RdmaTransport::MockType::Timeout});
+
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  auto startTime = std::chrono::steady_clock::now();
+  auto readView = rdmaMemory.createMutableView();
+  auto readFuture =
+      transport->read(readView, remoteBuffer, std::chrono::milliseconds(100));
+
+  auto result = std::move(readFuture).get();
+  auto endTime = std::chrono::steady_clock::now();
+
+  EXPECT_EQ(result, commTimeout);
+
+  auto elapsed =
+      std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime)
+          .count();
+  EXPECT_GE(elapsed, 75);
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+TEST_F(RdmaTransportTest, WaitForWriteMockTypeTimeoutWithDuration) {
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  transport->setMockForTest(
+      {.type = torch::comms::RdmaTransport::MockType::Timeout});
+
+  auto startTime = std::chrono::steady_clock::now();
+  auto waitFuture = transport->waitForWrite(std::chrono::milliseconds(100));
+
+  auto result = std::move(waitFuture).get();
+  auto endTime = std::chrono::steady_clock::now();
+
+  EXPECT_EQ(result, commTimeout);
+
+  auto elapsed =
+      std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime)
+          .count();
+  EXPECT_GE(elapsed, 75);
+}
+
 // Test that a production write with a timeout returns commTimeout when IB
 // cannot complete the operation (peer has disconnected).
 TEST_F(RdmaTransportTest, WriteTimeoutProductionDisconnectedPeer) {
