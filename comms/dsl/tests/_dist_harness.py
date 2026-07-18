@@ -26,6 +26,20 @@ def _make_input(rank: int, numel: int, device: torch.device) -> torch.Tensor:
     return ((rank + 1) * 1_000_000 + idx).to(torch.float32)
 
 
+def _golden(group: dist.ProcessGroup, inp: torch.Tensor) -> torch.Tensor:
+    """Reference equal-split all_to_all via ``dist.all_to_all_single``."""
+    out = torch.empty_like(inp)
+    dist.all_to_all_single(out, inp, group=group)
+    return out
+
+
+def _rendezvous(group: dist.ProcessGroup, device: torch.device, chunk: int):
+    """Rendezvous a transport sized for a per-peer fp32 chunk (the a2a test contract)."""
+    from comms.dsl import nvl_rendezvous
+
+    return nvl_rendezvous(group, device, per_peer_bytes=chunk * 4)
+
+
 def _all_ok(local_ok: bool, device: torch.device, group: dist.ProcessGroup) -> bool:
     status = torch.tensor([1 if local_ok else 0], dtype=torch.int32, device=device)
     dist.all_reduce(status, op=dist.ReduceOp.MIN, group=group)
