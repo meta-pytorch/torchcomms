@@ -1020,6 +1020,72 @@ TEST_F(CtranWinTest, enableSignalDisabledUserBufferRegister) {
       segments.end());
 }
 
+// win_register_symmetric hint: the flag is cached on the window (no exchange or
+// behavior change yet). Verifies that a window registered with the hint reports
+// isSymmetric()==true, a window registered without it reports false, and that
+// registration/free complete without leaking imports.
+TEST_F(CtranWinTest, symmetricUserBufferRegister) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip symmetric window test";
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
+  ASSERT_NE(userBuf, nullptr);
+
+  // Simulate the CCA memory hook so acquireScopedRegister finds the segment.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalRegister(userBuf, sizeBytes));
+
+  // Register the user buffer with the symmetric window hint enabled.
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  ASSERT_EQ(hints.set("win_register_symmetric", "1"), commSuccess);
+  auto res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(win, nullptr);
+  EXPECT_TRUE(win->isSymmetric());
+
+  oobBarrier();
+
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+
+  // A window registered without the hint defaults to non-symmetric.
+  CtranWin* winDefault = nullptr;
+  res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &winDefault);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(winDefault, nullptr);
+  EXPECT_FALSE(winDefault->isSymmetric());
+
+  oobBarrier();
+
+  res = ctranWinFree(winDefault);
+  EXPECT_EQ(res, commSuccess);
+
+  const auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  EXPECT_EQ(ipcRegCache->maxRemRegRefCount(), 0)
+      << "IpcRegCache still holds live NVL IPC imports after symmetric free";
+
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalDeregister(userBuf, sizeBytes));
+  commMemFree(userBuf, sizeBytes, bufType);
+  segments.erase(
+      std::remove_if(
+          segments.begin(),
+          segments.end(),
+          [userBuf](const TestMemSegment& seg) { return seg.ptr == userBuf; }),
+      segments.end());
+}
+
 TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
   // Reproduces a leak in ctranWinRegister: it constructs the CtranWin with a
   // raw `new`, then FB_COMMCHECK(exchange()). If exchange() fails, the early
