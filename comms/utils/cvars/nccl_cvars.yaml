@@ -2236,7 +2236,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctsrd, ctbrucks, cthierarchical_ring, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd
+   choices     : orig, ctran, ctdirect, ctring, ctsrd, ctbrucks, cthierarchical_ring, ctgraph, ctgraph_pipeline, ctgraph_rdpipeline, ctgraph_ring, ctgraph_rd, ctwin, ctwin_ring, ctwin_srd, ctwin_pipeline, ctwin_rdpipeline
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -2250,6 +2250,13 @@ cvars:
      ctgraph_rdpipeline - Cudagraph-aware: forces persistent recursive-doubling pipeline algorithm (nLocalRanks>1, nNodes power of 2)
      ctgraph_ring - Cudagraph-aware: forces ring algorithm (nLocalRanks==1, large messages)
      ctgraph_rd - Cudagraph-aware: forces recursive doubling algorithm (nLocalRanks==1, small messages)
+     ctwin - Ctran window-aware: detects whether the recvbuf is in a registered symmetric window and
+             dispatches to the persistent AllGatherP algorithm, similar to ctgraph. It auto-selects the AGP
+             variant (pipeline / streamed-recursive-doubling) based on topology at dispatch.
+     ctwin_ring - Ctran window-aware: forces dedicated ring algorithm (nLocalRanks==1), for benchmarking
+     ctwin_srd - Ctran window-aware: forces dedicated streamed-recursive-doubling algorithm (nLocalRanks==1), for benchmarking
+     ctwin_pipeline - Ctran window-aware: forces persistent AllGatherP pipeline algorithm, for benchmarking
+     ctwin_rdpipeline - Ctran window-aware: forces persistent AllGatherP streamed-recursive-doubling pipeline algorithm, for benchmarking
 
  - name        : NCCL_CTGRAPH_ALLGATHER_RING_THRESHOLD
    type        : uint64_t

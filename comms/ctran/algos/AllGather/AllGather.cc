@@ -23,6 +23,11 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctbrucks:
     case NCCL_ALLGATHER_ALGO::cthierarchical_ring:
     case NCCL_ALLGATHER_ALGO::ctran:
+    case NCCL_ALLGATHER_ALGO::ctwin:
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
     case NCCL_ALLGATHER_ALGO::orig:
       return false;
   }
@@ -137,6 +142,14 @@ bool ctranAllGatherSupport(
       }
       break;
     }
+    case NCCL_ALLGATHER_ALGO::ctwin:
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      // TODO(ctwin): implemented in a later commit
+      supported = false;
+      break;
     case NCCL_ALLGATHER_ALGO::orig: // invalid query
       supported = false;
       break;

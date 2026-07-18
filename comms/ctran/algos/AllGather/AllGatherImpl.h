@@ -65,6 +65,16 @@ static inline const std::string allGatherAlgoName(
       return "CtranCudagraphRing";
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       return "CtranCudagraphRd";
+    case NCCL_ALLGATHER_ALGO::ctwin:
+      return "CtranAllGatherWin";
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+      return "CtranAllGatherWinRing";
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+      return "CtranAllGatherWinSrd";
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+      return "CtranAllGatherWinPipeline";
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      return "CtranAllGatherWinRdPipeline";
     case NCCL_ALLGATHER_ALGO::orig:
       return "Baseline";
     default:

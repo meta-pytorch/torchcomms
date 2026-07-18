@@ -47,6 +47,16 @@ inline void algoStrToVal(
     val = NCCL_ALLGATHER_ALGO::ctgraph_ring;
   } else if (str == "ctgraph_rd") {
     val = NCCL_ALLGATHER_ALGO::ctgraph_rd;
+  } else if (str == "ctwin") {
+    val = NCCL_ALLGATHER_ALGO::ctwin;
+  } else if (str == "ctwin_ring") {
+    val = NCCL_ALLGATHER_ALGO::ctwin_ring;
+  } else if (str == "ctwin_srd") {
+    val = NCCL_ALLGATHER_ALGO::ctwin_srd;
+  } else if (str == "ctwin_pipeline") {
+    val = NCCL_ALLGATHER_ALGO::ctwin_pipeline;
+  } else if (str == "ctwin_rdpipeline") {
+    val = NCCL_ALLGATHER_ALGO::ctwin_rdpipeline;
   } else {
     val = NCCL_ALLGATHER_ALGO::orig;
   }
@@ -134,6 +144,16 @@ inline std::string algoValToStr(enum NCCL_ALLGATHER_ALGO val) {
       return "ctgraph_ring";
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       return "ctgraph_rd";
+    case NCCL_ALLGATHER_ALGO::ctwin:
+      return "ctwin";
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+      return "ctwin_ring";
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+      return "ctwin_srd";
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+      return "ctwin_pipeline";
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      return "ctwin_rdpipeline";
   }
   return "unknown";
 }
