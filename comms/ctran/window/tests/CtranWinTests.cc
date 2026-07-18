@@ -806,6 +806,112 @@ TEST_F(CtranWinTest, multiSegmentWindowRegister) {
   COMMCHECK_TEST(commMemFreeDisjoint(disjointBuf, segSizes));
 }
 
+// ipc_only window registration: exchanges CUDA-IPC handles for the data buffer
+// only among intra-node NVL peers and defers inter-node IB rkeys. Verifies that
+// NVL/local peers get a valid remWinInfo dataAddr + NVL key while self keeps
+// the local ptr (UNSET key) and non-NVL/remote peers stay empty (nullptr /
+// UNSET), and that a basic NVL read-back plus free() complete without error. On
+// configs where all peers are non-local (e.g. *_nolocal), every non-self peer
+// is empty.
+TEST_F(CtranWinTest, ipcOnlyUserBufferRegister) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skip ipc_only window test";
+  }
+
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->statex_.get();
+  ASSERT_NE(statex, nullptr);
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
+  ASSERT_NE(userBuf, nullptr);
+
+  // Fill the local buffer with a rank-specific pattern for the read-back below.
+  const size_t count = sizeBytes / sizeof(int);
+  std::vector<int> fillVals(count);
+  for (size_t i = 0; i < count; ++i) {
+    fillVals[i] = this->globalRank * 10000 + static_cast<int>(i);
+  }
+  CUDACHECK_TEST(
+      cudaMemcpy(userBuf, fillVals.data(), sizeBytes, cudaMemcpyHostToDevice));
+
+  // Simulate the CCA memory hook so acquireScopedRegister finds the segment.
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalRegister(userBuf, sizeBytes));
+
+  // Register the user buffer with the ipc_only window hint enabled.
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  ASSERT_EQ(hints.set("win_register_ipc_only", "1"), commSuccess);
+  auto res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(win, nullptr);
+  ASSERT_EQ(win->remWinInfo.size(), static_cast<size_t>(this->numRanks));
+
+  for (int peer = 0; peer < this->numRanks; ++peer) {
+    const auto& info = win->remWinInfo[peer];
+    if (peer == statex->rank()) {
+      EXPECT_EQ(info.dataAddr, userBuf);
+      // Self's local base/signal addr is still set under ipc_only.
+      EXPECT_THAT(info.signalAddr, ::testing::NotNull());
+    } else if (win->nvlEnabled(peer)) {
+      EXPECT_THAT(info.dataAddr, ::testing::NotNull());
+      EXPECT_EQ(info.dataRkey.backend, CtranMapperBackend::NVL);
+      // The base buffer is also NVL-only exchanged under ipc_only.
+      EXPECT_THAT(info.signalAddr, ::testing::NotNull());
+      EXPECT_EQ(info.signalRkey.backend, CtranMapperBackend::NVL);
+    } else {
+      EXPECT_THAT(info.dataAddr, ::testing::IsNull());
+      EXPECT_EQ(info.dataRkey.backend, CtranMapperBackend::UNSET);
+      // Non-NVL peers: base/signal IB rkey deferred, not exchanged.
+      EXPECT_THAT(info.signalAddr, ::testing::IsNull());
+      EXPECT_EQ(info.signalRkey.backend, CtranMapperBackend::UNSET);
+    }
+  }
+
+  oobBarrier();
+
+  // Basic access: read back an NVL peer's window over the IPC mapping.
+  for (int peer = 0; peer < this->numRanks; ++peer) {
+    if (peer == this->globalRank || !win->nvlEnabled(peer)) {
+      continue;
+    }
+    void* remoteAddr = win->remWinInfo[peer].dataAddr;
+    ASSERT_NE(remoteAddr, nullptr);
+    std::vector<int> readBack(count);
+    CUDACHECK_TEST(cudaMemcpy(
+        readBack.data(), remoteAddr, sizeBytes, cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < count; ++i) {
+      const int expected = peer * 10000 + static_cast<int>(i);
+      EXPECT_EQ(readBack[i], expected) << "ipc_only NVL read-back mismatch at "
+                                       << i << " from peer " << peer;
+    }
+  }
+
+  oobBarrier();
+
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+
+  const auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  EXPECT_EQ(ipcRegCache->maxRemRegRefCount(), 0)
+      << "IpcRegCache still holds live NVL IPC imports after ipc_only free";
+
+  COMMCHECK_TEST(
+      ctran::RegCache::getInstance()->globalDeregister(userBuf, sizeBytes));
+  commMemFree(userBuf, sizeBytes, bufType);
+  segments.erase(
+      std::remove_if(
+          segments.begin(),
+          segments.end(),
+          [userBuf](const TestMemSegment& seg) { return seg.ptr == userBuf; }),
+      segments.end());
+}
+
 TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
   // Reproduces a leak in ctranWinRegister: it constructs the CtranWin with a
   // raw `new`, then FB_COMMCHECK(exchange()). If exchange() fails, the early

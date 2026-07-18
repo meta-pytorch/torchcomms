@@ -263,6 +263,52 @@ TEST_F(CommSetConfigTest, SetConfigAfterCollective) {
   cudaFree(buf);
 }
 
+TEST_F(CommSetConfigTest, SetWinRegisterIpcOnly) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_ipc_only", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly));
+  }
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_ipc_only", "0"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly));
+  }
+}
+
+TEST_F(CommSetConfigTest, WinRegisterIpcOnlyNotResetByUnrelatedUpdate) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  // Enable win_register_ipc_only.
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_ipc_only", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly));
+  }
+
+  // An unrelated update must not reset it (key absent and not pre-seeded).
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"allgatherAlgo", "ctdirect"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly));
+  }
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);

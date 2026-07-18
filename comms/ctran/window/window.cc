@@ -14,6 +14,7 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
+#include "comms/ctran/window/WinHintUtils.h"
 #if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/DeviceWindow.cuh"
@@ -173,6 +174,16 @@ commResult_t CtranWin::exchange() {
   const auto nRanks = statex->nRanks();
   const auto myRank = statex->rank();
 
+  // ipc_only reuses AGP's intraAllGatherCtrl, which is hard-scoped to the
+  // resource comm's node-local ranks; on a splitShare comm those include
+  // non-window ranks, so the intra exchange would hang. Reject up front.
+  // FIXME(ctwin): a rank-subset-scoped ctrl-exchange API would lift this.
+  if (ipcOnly_ && comm->isSplitShare()) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "win_register_ipc_only is not supported on splitShare comms (intra exchange would deadlock over non-window resource-local ranks)");
+  }
+
   remWinInfo.resize(nRanks);
 
   CtranMapper* mapper = nullptr;
@@ -234,26 +245,52 @@ commResult_t CtranWin::exchange() {
     remoteUserBufAccessKeys.resize(resourceNRanks);
   }
 
-  FB_COMMCHECK(mapper->allGatherCtrl(
-      winBasePtr,
-      baseRegHdl,
-      exchangeRanks,
-      remoteBaseBufs,
-      remoteBaseBufAccessKeys,
-      CtranMapperBackend::UNSET,
-      /*recordExport=*/false));
-
-  if (!allocDataBuf_) {
-    // if data buffer is provided by user, extra round of handler exchange is
-    // needed
-    FB_COMMCHECK(mapper->allGatherCtrl(
-        winDataPtr,
-        dataRegHdl,
+  // Exchange a window buffer's registration handle with peers. When ipc_only,
+  // exchange CUDA-IPC handles only among intra-node NVL peers (inter-node peers
+  // left UNSET, their IB rkeys deferred to collective exec time); otherwise do
+  // the full per-peer (NVL + IB) exchange. Both paths fill the self slot with
+  // the local buffer address.
+  auto exchangeBuffer =
+      [&](const void* buf,
+          void* hdl,
+          std::vector<void*>& remoteBufs,
+          std::vector<struct CtranMapperRemoteAccessKey>& remoteKeys,
+          std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls) -> commResult_t {
+    if (ipcOnly_) {
+      return mapper->intraAllGatherCtrl(
+          buf,
+          hdl,
+          remoteBufs,
+          remoteKeys,
+          CtranMapperBackend::NVL,
+          /*recordExport=*/false,
+          outIpcHdls);
+    }
+    return mapper->allGatherCtrl(
+        buf,
+        hdl,
         exchangeRanks,
-        remoteUserBufs,
-        remoteUserBufAccessKeys,
+        remoteBufs,
+        remoteKeys,
         CtranMapperBackend::UNSET,
         /*recordExport=*/false,
+        outIpcHdls);
+  };
+
+  FB_COMMCHECK(exchangeBuffer(
+      winBasePtr,
+      baseRegHdl,
+      remoteBaseBufs,
+      remoteBaseBufAccessKeys,
+      /*outIpcHdls=*/nullptr));
+
+  if (!allocDataBuf_) {
+    // User-provided data buffer needs its own handle exchange round.
+    FB_COMMCHECK(exchangeBuffer(
+        winDataPtr,
+        dataRegHdl,
+        remoteUserBufs,
+        remoteUserBufAccessKeys,
         &dataScopedIpcRegHdls));
   }
 
@@ -612,6 +649,11 @@ commResult_t ctranWinRegister(
   newWin->setAtomicCapable(
       reinterpret_cast<uintptr_t>(databuf) % sizeof(uint64_t) == 0 &&
       size % sizeof(uint64_t) == 0);
+
+  std::string ipcOnlyVal;
+  if (hints.get("win_register_ipc_only", ipcOnlyVal) == commSuccess) {
+    newWin->setIpcOnly(meta::comms::hints::WinHintUtils::parseBool(ipcOnlyVal));
+  }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
 
