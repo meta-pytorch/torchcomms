@@ -271,6 +271,7 @@ Config::Config(const ncclConfig_t* config) {
   usePatAvg = parseHintBool("usePatAvg", NCCL_REDUCESCATTER_PAT_AVG_ENABLE);
   noLocal = parseHintBool("noLocal", false);
   winRegisterIpcOnly = parseHintBool("win_register_ipc_only", false);
+  winRegisterEnableSignal = parseHintBool("win_register_enable_signal", true);
 
   auto parseAlgoHint = [&](const char* key, auto& field) {
     auto val = getHintStr(key);
@@ -327,6 +328,7 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
     }
   };
   parseBoolHint("win_register_ipc_only", winRegisterIpcOnly);
+  parseBoolHint("win_register_enable_signal", winRegisterEnableSignal);
 
   return ncclSuccess;
 }
@@ -389,6 +391,9 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     append(fmt::format("usePatAvg={}", xCfg->usePatAvg));
     append(fmt::format("noLocal={}", xCfg->noLocal));
     append(fmt::format("winRegisterIpcOnly={}", xCfg->winRegisterIpcOnly));
+    append(
+        fmt::format(
+            "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
     append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
