@@ -24,24 +24,37 @@ from ...tuning_base import BaseTunableConfig as _BaseConfig
 class CuteA2AConfig(_BaseConfig):
     """Launch tunables for the copy schedule (perf axis only).
 
-    ``num_blocks`` is the block count per peer (device grid = ``world_size *
-    num_blocks``; one CTA per ``(peer, block)`` streams its sub-chunk). The remaining
-    knobs default to ``0`` = "use the analytic adaptive pick", so the default config
-    reproduces the size-aware analytic defaults exactly:
+    ``num_blocks`` sets the device grid to ``world_size * num_blocks`` CTAs. The classic
+    schedule interprets it as the block count per peer; channel schedules reinterpret the
+    same strictly measured grid as logical channels. The remaining knobs default to ``0``
+    = "use the analytic adaptive pick", so the default config reproduces the size-aware
+    analytic defaults exactly:
 
     * ``num_threads`` -- threads/CTA (``0`` -> ``_pick_tile``); the per-thread vector
       width is always the widest the chunk allows and is not independently tuned.
-    * ``num_slots`` -- send/drain pipeline slots (``0`` -> ``_pick_slots``);
-      ``tiles_per_slot`` is derived from it.
+    * ``num_slots`` -- classic send/drain pipeline slots (``0`` -> ``_pick_slots``), or
+      bounded-FIFO slots for ``copy_channel_ring``. The full-staging channel schedules
+      reject a nonzero value.
     * ``unroll`` -- register-blocking unroll of the NVLink store loop (``0`` ->
       size-aware default, 8 once the per-peer chunk is large enough else 1).
     * ``cluster`` -- CGA thread-block cluster size along the block axis (``0`` ->
-      size-aware default; ``-1`` = max = ``num_blocks``; ``>0`` = explicit).
+      size-aware default; ``-1`` = max = ``num_blocks``; ``>0`` = explicit) for the
+      classic schedule. Channel schedules resolve ``0`` and ``1`` to a non-clustered
+      launch and reject other values.
     * ``cluster_y`` -- CGA cluster size along the peer (grid-y) axis; ``1`` = off
       (the default). Collapsed to 1 unless it divides ``world_size``.
+    * ``send_threads`` -- threads in the send warp group for warp-specialized schedules
+      (``0`` -> half of ``num_threads``); both groups must contain whole warps. The
+      full-staging schedule requires an even 512/512 direction split when
+      ``peer_fanout`` is greater than 1.
+    * ``peer_fanout`` -- concurrent remote-peer groups per direction for
+      ``copy_channel_full`` (``0`` -> 1); supported values are 1, 2, and 4. Values above
+      1 use the fixed 8-rank, 32-CTA, 1024-thread launch. Other primitives reject it.
 
-    ``primitive`` selects the transfer schedule; this revision supports only ``"copy"``
-    (the slot-pipelined per-thread staging copy).
+    ``primitive`` selects the transfer schedule. ``"copy"`` is the slot-pipelined
+    per-peer staging copy; ``"copy_channel_full"`` is the full-staging peer-packed
+    warp-specialized schedule and ``"copy_channel_ring"`` is its bounded-FIFO counterpart.
+    No other primitives are supported by this config.
     """
 
     num_blocks: int = 8
@@ -51,12 +64,13 @@ class CuteA2AConfig(_BaseConfig):
     primitive: str = "copy"
     cluster: int = 0
     cluster_y: int = 1
+    send_threads: int = 0
+    peer_fanout: int = 0
 
 
-# Fields whose value changes the physical staging geometry (grid partition / output
-# semantics) rather than launch-only packing; switching one on a reused transport is the
-# documented hazard the runtime geometry guard catches. The tile/slot/unroll/cluster knobs
-# are launch-only and free to sweep.
+# Config fields that always change physical staging ownership. The host augments these with
+# schedule-specific resolved fields (shape, dtype/vector width, and slot layout) before
+# checking a reused transport.
 CUTE_A2A_GEOMETRY_FIELDS: frozenset[str] = frozenset({"num_blocks", "primitive"})
 
 # Safe analytic default (every adaptive knob at its 0 sentinel).

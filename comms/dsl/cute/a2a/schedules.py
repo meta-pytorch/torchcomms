@@ -22,9 +22,11 @@ peer table, so a single fused launch selects the peer on device via ``block_idx`
 instead of one launch per peer.
 
 Graph-safe: signalling uses the transport's persistent monotonic per-(peer, block) step
-counters, so a transport is reusable across calls / CUDA-graph replays (with a cross-rank
-sync between reused calls; see :func:`comms.dsl.cute.a2a.host.all_to_all`). The slot
-pipeline overlaps send/drain on top of a single-shot stage-then-drain.
+counters plus HEAD/TAIL credits, so a transport is reusable across back-to-back calls and
+CUDA-graph replays without a host barrier. The host rejects resolved staging-geometry
+changes on a reused transport. The slot pipeline overlaps send/drain on top of a
+single-shot stage-then-drain. Shipped channel schedules split send/receive work between
+warp groups inside every CTA.
 
 Scope: equal-split ``all_to_all_single``, identity copy (bf16/fp32), ``numel`` divisible
 by ``world_size`` and the per-(peer, block) tile by the thread count.
@@ -80,7 +82,13 @@ from .. import nvl_ops  # noqa: E402
 # The shared CuTe send/recv substrate (copy leaves, per-slot credit primitives, and
 # tile/slot sizing) lives in ``cute/send_recv.py``. This schedule composes those helpers
 # and owns the collective-specific peer mapping, barriers, and counter progression.
-from ..send_recv import _copy_atom, _copy_u, _recv_slot, _send_slot  # noqa: E402
+from ..send_recv import (  # noqa: E402
+    _copy_atom,
+    _copy_u,
+    _copy_u2,
+    _recv_slot,
+    _send_slot,
+)
 
 
 @cute.jit
@@ -242,6 +250,8 @@ def _a2a_kernel(  # noqa: C901
         head_remote = peer_sig_addr + (head_off + local_rank * mbp + b) * 8
         head_local = my_sig_addr + (head_off + peer * mbp + b) * 8
 
+        # The full staging region is one reusable FIFO slot. Do not overwrite the
+        # peer's prior payload until that peer has drained it and returned HEAD.
         if tidx == 0:
             nvl_ops.wait_free(head_local, start_send)
         cute.arch.barrier()
@@ -303,3 +313,916 @@ def _a2a_kernel(  # noqa: C901
             nvl_ops.signal_free(head_remote, start_recv + num_slots)
             send_ctr[step_idx] = start_send + num_slots
             recv_ctr[step_idx] = start_recv + num_slots
+
+
+@cute.jit
+def _copy_unit_range(
+    thr_copy,
+    copy_atom,
+    g_src,
+    g_dst,
+    lo,
+    hi,
+    worker_tid,
+    nworkers: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+) -> None:
+    t = lo + worker_tid
+    while t + (unroll - 1) * nworkers < hi:
+        _copy_u(thr_copy, copy_atom, g_src, g_dst, t, unroll, nworkers)
+        t += unroll * nworkers
+    while t < hi:
+        _copy_u(thr_copy, copy_atom, g_src, g_dst, t, 1, nworkers)
+        t += nworkers
+
+
+@cute.jit
+def _copy_unit_range_outer(
+    thr_copy,
+    copy_atom,
+    g_src,
+    g_dst,
+    lo,
+    hi,
+    worker_tid,
+    nworkers: cutlass.Constexpr,
+    data_unroll: cutlass.Constexpr,
+    loop_unroll: cutlass.Constexpr,
+) -> None:
+    """Unroll loop control without increasing the live-fragment data unroll."""
+    t = lo + worker_tid
+    while t + (data_unroll * loop_unroll - 1) * nworkers < hi:
+        for outer in range(loop_unroll):
+            _copy_u(
+                thr_copy,
+                copy_atom,
+                g_src,
+                g_dst,
+                t + outer * data_unroll * nworkers,
+                data_unroll,
+                nworkers,
+            )
+        t += data_unroll * loop_unroll * nworkers
+    while t + (data_unroll - 1) * nworkers < hi:
+        _copy_u(
+            thr_copy,
+            copy_atom,
+            g_src,
+            g_dst,
+            t,
+            data_unroll,
+            nworkers,
+        )
+        t += data_unroll * nworkers
+    while t < hi:
+        _copy_u(thr_copy, copy_atom, g_src, g_dst, t, 1, nworkers)
+        t += nworkers
+
+
+@cute.jit
+def _launch_a2a_channel_full(
+    in2d,
+    out2d,
+    buf_ptrs,
+    sig_ptrs,
+    send_ctr,
+    recv_ctr,
+    grid_ctas: cutlass.Constexpr,
+    num_threads: cutlass.Constexpr,
+    send_threads: cutlass.Constexpr,
+    vec: cutlass.Constexpr,
+    dtype: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    fanout: cutlass.Constexpr,
+    stream,
+) -> None:
+    _a2a_channel_full_kernel(
+        in2d,
+        out2d,
+        buf_ptrs,
+        sig_ptrs,
+        send_ctr,
+        recv_ctr,
+        dtype,
+        vec,
+        dbits,
+        grid_ctas,
+        num_threads,
+        send_threads,
+        world_size,
+        local_rank,
+        chunk,
+        cap_elems,
+        mbp,
+        unroll,
+        fanout,
+    ).launch(
+        grid=(grid_ctas, 1, 1),
+        block=(num_threads, 1, 1),
+        stream=stream,
+    )
+
+
+@cute.kernel
+def _a2a_channel_full_kernel(  # noqa: C901
+    in2d,
+    out2d,
+    buf_ptrs,
+    sig_ptrs,
+    send_ctr,
+    recv_ctr,
+    dtype: cutlass.Constexpr,
+    vec: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    grid_ctas: cutlass.Constexpr,
+    num_threads: cutlass.Constexpr,
+    send_threads: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    fanout: cutlass.Constexpr,
+) -> None:
+    """Peer-packed channels with one, two, or four groups per direction."""
+    tidx = cute.arch.thread_idx()[0]
+    channel = cute.arch.block_idx()[0]
+
+    copy_atom = _copy_atom(dtype, vec, dbits)
+    tiled_copy = cute.make_tiled_copy_tv(
+        copy_atom, cute.make_layout(1), cute.make_layout(vec)
+    )
+    thr_copy = tiled_copy.get_slice(0)
+    tiler = cute.make_layout(vec)
+    local_in = cute.zipped_divide(in2d[(local_rank, None)], tiler)
+    local_out = cute.zipped_divide(out2d[(local_rank, None)], tiler)
+    num_units = cute.size(local_in, mode=[1])
+    lo = num_units * channel // grid_ctas
+    hi = num_units * (channel + 1) // grid_ctas
+    recv_threads = num_threads - send_threads
+
+    if cutlass.const_expr(fanout == 1):
+        elem_bytes = dbits // 8
+        cap_bytes = cap_elems * elem_bytes
+        my_buf_addr = buf_ptrs[local_rank]
+        my_sig_addr = sig_ptrs[local_rank]
+        head_off = world_size * mbp
+        control_unroll = 2 if cutlass.const_expr(num_threads == 1024) else 1
+
+        if tidx < send_threads:
+            send_tid = tidx
+            iteration = 0
+            while iteration < world_size - 1:
+                delta = 1 + ((iteration + channel) % (world_size - 1))
+                peer = (local_rank + delta) % world_size
+                send_in = cute.zipped_divide(in2d[(peer, None)], tiler)
+                send_addr = buf_ptrs[peer] + local_rank * cap_bytes
+                send_ptr = cute.make_ptr(
+                    dtype, send_addr, cute.AddressSpace.gmem, assumed_align=16
+                )
+                send_region = cute.make_tensor(send_ptr, cute.make_layout(chunk))
+                send_stage = cute.zipped_divide(send_region, tiler)
+
+                step_idx = peer * mbp + channel
+                start = send_ctr[step_idx]
+                tail_remote = sig_ptrs[peer] + (local_rank * mbp + channel) * 8
+                head_local = my_sig_addr + (head_off + step_idx) * 8
+
+                if send_tid == 0:
+                    nvl_ops.wait_free(head_local, start)
+                cute.arch.barrier(barrier_id=1, number_of_threads=send_threads)
+                _copy_unit_range_outer(
+                    thr_copy,
+                    copy_atom,
+                    send_in,
+                    send_stage,
+                    lo,
+                    hi,
+                    send_tid,
+                    send_threads,
+                    unroll,
+                    control_unroll,
+                )
+                cute.arch.barrier(barrier_id=1, number_of_threads=send_threads)
+                if send_tid == 0:
+                    nvl_ops.signal(tail_remote, start + 1)
+                    send_ctr[step_idx] = start + 1
+                iteration += 1
+        else:
+            recv_tid = tidx - send_threads
+            _copy_unit_range_outer(
+                thr_copy,
+                copy_atom,
+                local_in,
+                local_out,
+                lo,
+                hi,
+                recv_tid,
+                recv_threads,
+                unroll,
+                control_unroll,
+            )
+            iteration = 0
+            while iteration < world_size - 1:
+                delta = 1 + ((iteration + channel) % (world_size - 1))
+                peer = (local_rank + world_size - delta) % world_size
+                recv_out = cute.zipped_divide(out2d[(peer, None)], tiler)
+                recv_addr = my_buf_addr + peer * cap_bytes
+                recv_ptr = cute.make_ptr(
+                    dtype, recv_addr, cute.AddressSpace.gmem, assumed_align=16
+                )
+                recv_region = cute.make_tensor(recv_ptr, cute.make_layout(chunk))
+                recv_stage = cute.zipped_divide(recv_region, tiler)
+
+                step_idx = peer * mbp + channel
+                start = recv_ctr[step_idx]
+                tail_local = my_sig_addr + step_idx * 8
+                head_remote = (
+                    sig_ptrs[peer] + (head_off + local_rank * mbp + channel) * 8
+                )
+
+                if recv_tid == 0:
+                    nvl_ops.wait(tail_local, start + 1)
+                cute.arch.barrier(barrier_id=2, number_of_threads=recv_threads)
+                _copy_unit_range_outer(
+                    thr_copy,
+                    copy_atom,
+                    recv_stage,
+                    recv_out,
+                    lo,
+                    hi,
+                    recv_tid,
+                    recv_threads,
+                    unroll,
+                    control_unroll,
+                )
+                cute.arch.barrier(barrier_id=2, number_of_threads=recv_threads)
+                if recv_tid == 0:
+                    nvl_ops.signal_free(head_remote, start + 1)
+                    recv_ctr[step_idx] = start + 1
+                iteration += 1
+    else:
+        if tidx < send_threads:
+            _dispatch_full_stage_groups(
+                in2d,
+                buf_ptrs,
+                sig_ptrs,
+                send_ctr,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                tidx,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                True,
+                fanout,
+            )
+        else:
+            recv_tid = tidx - send_threads
+            _copy_unit_range(
+                thr_copy,
+                copy_atom,
+                local_in,
+                local_out,
+                lo,
+                hi,
+                recv_tid,
+                recv_threads,
+                unroll,
+            )
+            _dispatch_full_stage_groups(
+                out2d,
+                buf_ptrs,
+                sig_ptrs,
+                recv_ctr,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                recv_tid,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                False,
+                fanout,
+            )
+
+
+@cute.jit
+def _copy_full_stage_group(
+    tensor2d,
+    buf_ptrs,
+    sig_ptrs,
+    counter,
+    thr_copy,
+    copy_atom,
+    tiler,
+    channel,
+    lo,
+    hi,
+    group_tid,
+    dtype: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    is_send: cutlass.Constexpr,
+    delta,
+    barrier_id: cutlass.Constexpr,
+    group_threads: cutlass.Constexpr,
+) -> None:
+    cap_bytes = cap_elems * (dbits // 8)
+    head_off = world_size * mbp
+    if cutlass.const_expr(is_send):
+        peer = (local_rank + delta) % world_size
+        payload = cute.zipped_divide(tensor2d[(peer, None)], tiler)
+        stage_addr = buf_ptrs[peer] + local_rank * cap_bytes
+    else:
+        peer = (local_rank + world_size - delta) % world_size
+        payload = cute.zipped_divide(tensor2d[(peer, None)], tiler)
+        stage_addr = buf_ptrs[local_rank] + peer * cap_bytes
+
+    stage_ptr = cute.make_ptr(
+        dtype, stage_addr, cute.AddressSpace.gmem, assumed_align=16
+    )
+    stage_region = cute.make_tensor(stage_ptr, cute.make_layout(chunk))
+    stage = cute.zipped_divide(stage_region, tiler)
+    step_idx = peer * mbp + channel
+    start = counter[step_idx]
+    if cutlass.const_expr(is_send):
+        wait_addr = sig_ptrs[local_rank] + (head_off + step_idx) * 8
+        wait_value = start
+        signal_addr = sig_ptrs[peer] + (local_rank * mbp + channel) * 8
+        source = payload
+        destination = stage
+    else:
+        wait_addr = sig_ptrs[local_rank] + step_idx * 8
+        wait_value = start + 1
+        signal_addr = sig_ptrs[peer] + (head_off + local_rank * mbp + channel) * 8
+        source = stage
+        destination = payload
+
+    if group_tid == 0:
+        if cutlass.const_expr(is_send):
+            nvl_ops.wait_free(wait_addr, wait_value)
+        else:
+            nvl_ops.wait(wait_addr, wait_value)
+    cute.arch.barrier(barrier_id=barrier_id, number_of_threads=group_threads)
+    _copy_unit_range(
+        thr_copy,
+        copy_atom,
+        source,
+        destination,
+        lo,
+        hi,
+        group_tid,
+        group_threads,
+        unroll,
+    )
+    cute.arch.barrier(barrier_id=barrier_id, number_of_threads=group_threads)
+    if group_tid == 0:
+        if cutlass.const_expr(is_send):
+            nvl_ops.signal(signal_addr, start + 1)
+        else:
+            nvl_ops.signal_free(signal_addr, start + 1)
+        counter[step_idx] = start + 1
+
+
+@cute.jit
+def _copy_full_stage_partition(
+    tensor2d,
+    buf_ptrs,
+    sig_ptrs,
+    counter,
+    thr_copy,
+    copy_atom,
+    tiler,
+    channel,
+    lo,
+    hi,
+    group_tid,
+    dtype: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    is_send: cutlass.Constexpr,
+    first_peer: cutlass.Constexpr,
+    peer_stride: cutlass.Constexpr,
+    peer_count: cutlass.Constexpr,
+    barrier_id: cutlass.Constexpr,
+    group_threads: cutlass.Constexpr,
+) -> None:
+    iteration = 0
+    while iteration < peer_count:
+        delta = 1 + (
+            (channel + first_peer + iteration * peer_stride) % (world_size - 1)
+        )
+        _copy_full_stage_group(
+            tensor2d,
+            buf_ptrs,
+            sig_ptrs,
+            counter,
+            thr_copy,
+            copy_atom,
+            tiler,
+            channel,
+            lo,
+            hi,
+            group_tid,
+            dtype,
+            dbits,
+            world_size,
+            local_rank,
+            chunk,
+            cap_elems,
+            mbp,
+            unroll,
+            is_send,
+            delta,
+            barrier_id,
+            group_threads,
+        )
+        iteration += 1
+
+
+@cute.jit
+def _dispatch_full_stage_groups(  # noqa: C901
+    tensor2d,
+    buf_ptrs,
+    sig_ptrs,
+    counter,
+    thr_copy,
+    copy_atom,
+    tiler,
+    channel,
+    lo,
+    hi,
+    group_tid,
+    dtype: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    is_send: cutlass.Constexpr,
+    fanout: cutlass.Constexpr,
+) -> None:
+    barrier_offset = 0 if cutlass.const_expr(is_send) else fanout
+    # Each direction owns 512 threads. All subgroup sizes are warp-aligned and sum to
+    # 512: fanout 2 uses 288+224 (9+7 warps); fanout 4 uses 160+160+128+64.
+    if cutlass.const_expr(fanout == 2):
+        group0_threads = 288
+        boundary0 = group0_threads
+        if group_tid < boundary0:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                0,
+                2,
+                4,
+                barrier_offset + 1,
+                group0_threads,
+            )
+        else:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid - boundary0,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                1,
+                2,
+                3,
+                barrier_offset + 2,
+                224,
+            )
+    else:
+        group0_threads = 160
+        group1_threads = 160
+        group2_threads = 128
+        boundary0 = group0_threads
+        boundary1 = boundary0 + group1_threads
+        boundary2 = boundary1 + group2_threads
+        if group_tid < boundary0:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                0,
+                4,
+                2,
+                barrier_offset + 1,
+                group0_threads,
+            )
+        elif group_tid < boundary1:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid - boundary0,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                1,
+                4,
+                2,
+                barrier_offset + 2,
+                group1_threads,
+            )
+        elif group_tid < boundary2:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid - boundary1,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                2,
+                4,
+                2,
+                barrier_offset + 3,
+                group2_threads,
+            )
+        else:
+            _copy_full_stage_partition(
+                tensor2d,
+                buf_ptrs,
+                sig_ptrs,
+                counter,
+                thr_copy,
+                copy_atom,
+                tiler,
+                channel,
+                lo,
+                hi,
+                group_tid - boundary2,
+                dtype,
+                dbits,
+                world_size,
+                local_rank,
+                chunk,
+                cap_elems,
+                mbp,
+                unroll,
+                is_send,
+                3,
+                4,
+                1,
+                barrier_offset + 4,
+                64,
+            )
+
+
+@cute.jit
+def _copy_unit_range2(
+    thr_copy,
+    copy_atom,
+    g_src,
+    src_base,
+    g_dst,
+    dst_base,
+    count,
+    worker_tid,
+    nworkers: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+) -> None:
+    t = worker_tid
+    while t + (unroll - 1) * nworkers < count:
+        _copy_u2(
+            thr_copy,
+            copy_atom,
+            g_src,
+            src_base + t,
+            g_dst,
+            dst_base + t,
+            unroll,
+            nworkers,
+        )
+        t += unroll * nworkers
+    while t < count:
+        _copy_u2(
+            thr_copy,
+            copy_atom,
+            g_src,
+            src_base + t,
+            g_dst,
+            dst_base + t,
+            1,
+            nworkers,
+        )
+        t += nworkers
+
+
+@cute.jit
+def _launch_a2a_channel_ring(
+    in2d,
+    out2d,
+    buf_ptrs,
+    sig_ptrs,
+    send_ctr,
+    recv_ctr,
+    grid_ctas: cutlass.Constexpr,
+    num_threads: cutlass.Constexpr,
+    send_threads: cutlass.Constexpr,
+    vec: cutlass.Constexpr,
+    dtype: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    ring_slots: cutlass.Constexpr,
+    stream,
+) -> None:
+    _a2a_channel_ring_kernel(
+        in2d,
+        out2d,
+        buf_ptrs,
+        sig_ptrs,
+        send_ctr,
+        recv_ctr,
+        dtype,
+        vec,
+        dbits,
+        grid_ctas,
+        num_threads,
+        send_threads,
+        world_size,
+        local_rank,
+        chunk,
+        cap_elems,
+        mbp,
+        unroll,
+        ring_slots,
+    ).launch(
+        grid=(grid_ctas, 1, 1),
+        block=(num_threads, 1, 1),
+        stream=stream,
+    )
+
+
+@cute.kernel
+def _a2a_channel_ring_kernel(  # noqa: C901
+    in2d,
+    out2d,
+    buf_ptrs,
+    sig_ptrs,
+    send_ctr,
+    recv_ctr,
+    dtype: cutlass.Constexpr,
+    vec: cutlass.Constexpr,
+    dbits: cutlass.Constexpr,
+    grid_ctas: cutlass.Constexpr,
+    num_threads: cutlass.Constexpr,
+    send_threads: cutlass.Constexpr,
+    world_size: cutlass.Constexpr,
+    local_rank: cutlass.Constexpr,
+    chunk: cutlass.Constexpr,
+    cap_elems: cutlass.Constexpr,
+    mbp: cutlass.Constexpr,
+    unroll: cutlass.Constexpr,
+    ring_slots: cutlass.Constexpr,
+) -> None:
+    """Warp-specialized peer rotation over a bounded per-channel staging FIFO."""
+    tidx = cute.arch.thread_idx()[0]
+    channel = cute.arch.block_idx()[0]
+    recv_threads = num_threads - send_threads
+
+    copy_atom = _copy_atom(dtype, vec, dbits)
+    tiled_copy = cute.make_tiled_copy_tv(
+        copy_atom, cute.make_layout(1), cute.make_layout(vec)
+    )
+    thr_copy = tiled_copy.get_slice(0)
+    tiler = cute.make_layout(vec)
+    local_in = cute.zipped_divide(in2d[(local_rank, None)], tiler)
+    local_out = cute.zipped_divide(out2d[(local_rank, None)], tiler)
+    num_units = cute.size(local_in, mode=[1])
+    lo = num_units * channel // grid_ctas
+    hi = num_units * (channel + 1) // grid_ctas
+
+    cap_units = cap_elems // vec
+    channel_units = cap_units // grid_ctas
+    slot_units = channel_units // ring_slots
+    channel_base = channel * channel_units
+    step_count = (hi - lo + slot_units - 1) // slot_units
+    elem_bytes = dbits // 8
+    cap_bytes = cap_elems * elem_bytes
+    my_buf_addr = buf_ptrs[local_rank]
+    my_sig_addr = sig_ptrs[local_rank]
+    head_off = world_size * mbp
+
+    if tidx < send_threads:
+        send_tid = tidx
+        iteration = 0
+        while iteration < world_size - 1:
+            delta = 1 + ((iteration + channel) % (world_size - 1))
+            peer = (local_rank + delta) % world_size
+            send_in = cute.zipped_divide(in2d[(peer, None)], tiler)
+            send_addr = buf_ptrs[peer] + local_rank * cap_bytes
+            send_ptr = cute.make_ptr(
+                dtype, send_addr, cute.AddressSpace.gmem, assumed_align=16
+            )
+            send_region = cute.make_tensor(send_ptr, cute.make_layout(cap_elems))
+            send_stage = cute.zipped_divide(send_region, tiler)
+            step_idx = peer * mbp + channel
+            start = send_ctr[step_idx]
+            tail_remote = sig_ptrs[peer] + (local_rank * mbp + channel) * 8
+            head_local = my_sig_addr + (head_off + step_idx) * 8
+
+            k = 0
+            while k < step_count:
+                seq = start + k
+                if seq >= ring_slots:
+                    if send_tid == 0:
+                        nvl_ops.wait_free(head_local, seq - ring_slots + 1)
+                cute.arch.barrier(barrier_id=1, number_of_threads=send_threads)
+                offset = k * slot_units
+                count = min(slot_units, hi - lo - offset)
+                ring_base = channel_base + (seq % ring_slots) * slot_units
+                _copy_unit_range2(
+                    thr_copy,
+                    copy_atom,
+                    send_in,
+                    lo + offset,
+                    send_stage,
+                    ring_base,
+                    count,
+                    send_tid,
+                    send_threads,
+                    unroll,
+                )
+                cute.arch.barrier(barrier_id=1, number_of_threads=send_threads)
+                if send_tid == 0:
+                    nvl_ops.signal(tail_remote, seq + 1)
+                k += 1
+            if send_tid == 0:
+                send_ctr[step_idx] = start + step_count
+            iteration += 1
+    else:
+        recv_tid = tidx - send_threads
+        _copy_unit_range(
+            thr_copy,
+            copy_atom,
+            local_in,
+            local_out,
+            lo,
+            hi,
+            recv_tid,
+            recv_threads,
+            unroll,
+        )
+        iteration = 0
+        while iteration < world_size - 1:
+            delta = 1 + ((iteration + channel) % (world_size - 1))
+            peer = (local_rank + world_size - delta) % world_size
+            recv_out = cute.zipped_divide(out2d[(peer, None)], tiler)
+            recv_addr = my_buf_addr + peer * cap_bytes
+            recv_ptr = cute.make_ptr(
+                dtype, recv_addr, cute.AddressSpace.gmem, assumed_align=16
+            )
+            recv_region = cute.make_tensor(recv_ptr, cute.make_layout(cap_elems))
+            recv_stage = cute.zipped_divide(recv_region, tiler)
+            step_idx = peer * mbp + channel
+            start = recv_ctr[step_idx]
+            tail_local = my_sig_addr + step_idx * 8
+            head_remote = sig_ptrs[peer] + (head_off + local_rank * mbp + channel) * 8
+
+            k = 0
+            while k < step_count:
+                seq = start + k
+                if recv_tid == 0:
+                    nvl_ops.wait(tail_local, seq + 1)
+                cute.arch.barrier(barrier_id=2, number_of_threads=recv_threads)
+                offset = k * slot_units
+                count = min(slot_units, hi - lo - offset)
+                ring_base = channel_base + (seq % ring_slots) * slot_units
+                _copy_unit_range2(
+                    thr_copy,
+                    copy_atom,
+                    recv_stage,
+                    ring_base,
+                    recv_out,
+                    lo + offset,
+                    count,
+                    recv_tid,
+                    recv_threads,
+                    unroll,
+                )
+                cute.arch.barrier(barrier_id=2, number_of_threads=recv_threads)
+                if recv_tid == 0:
+                    nvl_ops.signal_free(head_remote, seq + 1)
+                k += 1
+            if recv_tid == 0:
+                recv_ctr[step_idx] = start + step_count
+            iteration += 1
