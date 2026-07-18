@@ -7,7 +7,12 @@
 import argparse
 import unittest
 
-from comms.dsl.tests.mast_launch import _parse_envs, launch
+from comms.dsl.tests.mast_launch import (
+    _ncu_bench_args,
+    _parse_envs,
+    build_app_and_cfg,
+    launch,
+)
 
 
 class ParseEnvsTest(unittest.TestCase):
@@ -31,3 +36,43 @@ class SubmitAccessKnobGuardTest(unittest.TestCase):
         args = argparse.Namespace(submit=True, entitlement=None, dp=None, oncall=None)
         with self.assertRaises(SystemExit):
             launch(args)
+
+
+class NcuBenchArgsTest(unittest.TestCase):
+    def test_empty_when_ncu_off(self) -> None:
+        self.assertEqual(_ncu_bench_args(argparse.Namespace(ncu=False)), [])
+
+    def test_injects_flags(self) -> None:
+        out = _ncu_bench_args(
+            argparse.Namespace(
+                ncu=True,
+                ncu_metrics="launch__x",
+                ncu_launch_count=2,
+                ncu_kernel_regex="",
+            )
+        )
+        adjacent = set(zip(out, out[1:]))
+        self.assertIn("--ncu", out)
+        self.assertIn("--ncu-driver-shim", out)
+        self.assertIn(("--ncu-metrics", "launch__x"), adjacent)
+        self.assertIn(("--ncu-launch-count", "2"), adjacent)
+        self.assertNotIn("--ncu-kernel-regex", out)  # omitted when empty
+
+    def test_kernel_regex_forwarded(self) -> None:
+        out = _ncu_bench_args(
+            argparse.Namespace(
+                ncu=True,
+                ncu_metrics="m",
+                ncu_launch_count=1,
+                ncu_kernel_regex="_a2a_kernel",
+            )
+        )
+        self.assertIn(("--ncu-kernel-regex", "_a2a_kernel"), set(zip(out, out[1:])))
+
+
+class NcuDeliveryGuardTest(unittest.TestCase):
+    def test_fbpkg_plus_ncu_fails_loud(self) -> None:
+        # --ncu needs the conda base-image swap; combining it with --delivery fbpkg must raise
+        # rather than silently run an un-profiled job.
+        with self.assertRaises(SystemExit):
+            build_app_and_cfg(argparse.Namespace(ncu=True, delivery="fbpkg"))

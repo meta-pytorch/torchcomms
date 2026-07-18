@@ -54,6 +54,12 @@ from ._bench_common import (
     _time_replays,
     emit_result_rows,
 )
+from .ncu_common import (
+    build_driver_shim,
+    NCU_DEFAULT_METRICS,
+    ncu_wrap_argv,
+    resolve_ncu_bin,
+)
 
 # 32 B -> 2 GB per rank, 2x stepping (27 sizes) plus 48 MB / 96 MB for mid-band resolution
 # = 29 sizes.
@@ -342,13 +348,81 @@ def _torchrun_main() -> None:
         sys.exit(1)
 
 
-def main() -> None:
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        _torchrun_main()
+def _maybe_reexec_under_ncu(args: argparse.Namespace, is_torchrun: bool) -> None:
+    """Re-exec this benchmark once under NCU when requested."""
+    if not args.ncu or os.environ.get("A2A_UNDER_NCU") == "1":
         return
+    os.makedirs(os.path.dirname(args.ncu_out) or ".", exist_ok=True)
+    if (
+        any(
+            not metric.strip().startswith("launch__")
+            for metric in args.ncu_metrics.split(",")
+            if metric.strip()
+        )
+        and not args.ncu_kernel_regex
+    ):
+        print(
+            "[ncu] WARNING: non-launch__ metrics need kernel replay, which can DEADLOCK "
+            "the a2a comm kernel (no lockstep until NCU 2026.1.1+). Target a non-comm "
+            "kernel with --ncu-kernel-regex, or expect a hang.",
+            flush=True,
+        )
+    env = {**os.environ, "A2A_UNDER_NCU": "1"}
+    if args.ncu_driver_shim:
+        env.update(build_driver_shim(args.ncu_driver_shim))
+    program = (
+        [sys.executable, "-m", "comms.dsl.tests.benchmark_a2a_cute"]
+        if sys.argv[0].endswith(".py")
+        else [sys.argv[0]]
+    )
+    # world-size is currently the only non-NCU benchmark option that the child needs.
+    inner = program if is_torchrun else program + ["--world-size", str(args.world_size)]
+    argv = ncu_wrap_argv(
+        inner,
+        ncu_bin=resolve_ncu_bin(args.ncu_path),
+        out_prefix=args.ncu_out,
+        metrics=args.ncu_metrics,
+        launch_count=args.ncu_launch_count,
+        kernel_regex=args.ncu_kernel_regex,
+    )
+    print(f"[ncu] re-exec: {' '.join(argv)}", flush=True)
+    os.execvpe(argv[0], argv, env)
+
+
+def main() -> None:
+    is_torchrun = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     p = argparse.ArgumentParser()
     p.add_argument("--world-size", type=int, default=min(torch.cuda.device_count(), 8))
-    args = p.parse_args()
+    p.add_argument(
+        "--ncu",
+        action="store_true",
+        help="re-exec under Nsight Compute. Local: ncu --target-processes all covers every "
+        "mp.spawn rank. torchrun/MAST: each rank re-execs itself under ncu. Single-pass "
+        "launch metrics only -- multi-pass replay deadlocks the comm kernel (need 2026.1.1+).",
+    )
+    p.add_argument("--ncu-metrics", default=NCU_DEFAULT_METRICS)
+    p.add_argument("--ncu-launch-count", type=int, default=1)
+    p.add_argument("--ncu-out", default="/tmp/ncu_a2a")
+    p.add_argument("--ncu-kernel-regex", default="")
+    p.add_argument("--ncu-path", default="")
+    p.add_argument(
+        "--ncu-driver-shim",
+        default="",
+        help="platform driver lib dir to build a narrow NCU driver shim from (needed in "
+        "MAST containers, e.g. /usr/local/fbcode/platform010-aarch64/lib); empty skips it "
+        "(local dev, driver already resolvable).",
+    )
+    # Strict locally (catch typo'd flags); tolerant only under torchrun, which may append
+    # its own launcher args to the program argv.
+    if is_torchrun:
+        args, _ = p.parse_known_args()
+    else:
+        args = p.parse_args()
+    _maybe_reexec_under_ncu(args, is_torchrun)
+
+    if is_torchrun:
+        _torchrun_main()
+        return
     if args.world_size < 2:
         print("needs >=2 GPUs")
         return
