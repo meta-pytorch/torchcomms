@@ -79,10 +79,9 @@ commResult_t CtranAvlTree::remove(void* hdl) {
   return commSuccess;
 }
 
-void* CtranAvlTree::search(const void* addr_, std::size_t len) const {
-  uintptr_t addr = reinterpret_cast<uintptr_t>(const_cast<void*>(addr_));
-  std::lock_guard<std::mutex> lock(this->mutex_);
-
+CtranAvlTree::TreeElem* CtranAvlTree::searchElemLocked(
+    uintptr_t addr,
+    std::size_t len) const {
   // First try to search in AVL tree
   CtranAvlTree::TreeElem* r = this->root_;
   while (r) {
@@ -108,6 +107,19 @@ void* CtranAvlTree::search(const void* addr_, std::size_t len) const {
     }
   }
   return r;
+}
+
+void* CtranAvlTree::search(const void* addr_, std::size_t len) const {
+  uintptr_t addr = reinterpret_cast<uintptr_t>(const_cast<void*>(addr_));
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  return this->searchElemLocked(addr, len);
+}
+
+void* CtranAvlTree::searchVal(const void* addr_, std::size_t len) const {
+  uintptr_t addr = reinterpret_cast<uintptr_t>(const_cast<void*>(addr_));
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  CtranAvlTree::TreeElem* r = this->searchElemLocked(addr, len);
+  return r != nullptr ? r->val : nullptr;
 }
 
 void* CtranAvlTree::lookup(void* hdl) const {
