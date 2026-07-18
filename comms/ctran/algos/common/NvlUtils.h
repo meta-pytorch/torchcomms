@@ -68,10 +68,16 @@ inline commResult_t nvlCeMemcpyBatch(
     attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
 #if CUDART_VERSION < 13000
     size_t failIdx = 0;
+    // The CUDA 12.x attr-by-value overload takes non-const ``void**`` /
+    // ``void**`` / ``size_t*``, but ``dsts``/``srcs``/``sizes`` are const& here
+    // so their
+    // ``.data()`` is const-qualified (``void* const*`` / ``const size_t*``) and
+    // the template deduction/const-drop rejects the call. The API only reads
+    // these arrays, so the casts are safe.
     FB_CUDACHECK(cudaMemcpyBatchAsync(
-        dsts.data(),
-        srcs.data(),
-        sizes.data(),
+        const_cast<void**>(dsts.data()),
+        const_cast<void**>(srcs.data()),
+        const_cast<size_t*>(sizes.data()),
         numOps,
         attr,
         &failIdx,
