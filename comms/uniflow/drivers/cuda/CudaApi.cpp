@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 
+#include <algorithm>
 #include <string>
 
 // Checks a CUDA runtime call and returns Err on failure, recording the
@@ -68,6 +69,22 @@ Status CudaApi::getDevicePCIBusId(char* pciBusId, int len, int device) {
   CUDA_CHECK(
       cudaDeviceGetPCIBusId(pciBusId, len, device), ErrCode::DriverError);
   return Ok();
+}
+
+Result<std::string> CudaApi::getDeviceArch(int device) {
+  cudaDeviceProp prop{};
+  CUDA_CHECK(cudaGetDeviceProperties(&prop, device), ErrCode::DriverError);
+#if defined(__HIP_PLATFORM_AMD__)
+  // AMD: gfx arch, e.g. "gfx942" (may carry feature flags like
+  // "gfx942:sramecc+:xnack-"); callers prefix-match the gfxNNNN base.
+  return std::string(prop.gcnArchName);
+#else
+  // NVIDIA: cudaDeviceProp has no gcnArchName; report the SM version. NVIDIA
+  // compute capabilities use a single-digit minor by convention, so the
+  // canonical "sm_<major><minor>" form (e.g. sm_90, sm_120) is unambiguous; if
+  // a multi-digit minor ever ships this concatenation would need a separator.
+  return "sm_" + std::to_string(prop.major) + std::to_string(prop.minor);
+#endif
 }
 
 // --- Host memory ---
@@ -191,6 +208,65 @@ Result<bool> CudaApi::eventQuery(cudaEvent_t event) {
 Status CudaApi::eventDestroy(cudaEvent_t event) {
   CUDA_CHECK(cudaEventDestroy(event), ErrCode::DriverError);
   return Ok();
+}
+
+// --- IPC (cross-process device memory sharing) ---
+
+static_assert(
+    sizeof(cudaIpcMemHandle_t) == CudaApi::kIpcMemHandleSize,
+    "IpcMemHandle byte size must match cudaIpcMemHandle_t/hipIpcMemHandle_t");
+
+Result<CudaApi::IpcMemHandle> CudaApi::ipcGetMemHandle(void* devPtr) {
+  cudaIpcMemHandle_t handle{};
+  CUDA_CHECK(cudaIpcGetMemHandle(&handle, devPtr), ErrCode::DriverError);
+  IpcMemHandle out{};
+  const auto* bytes = reinterpret_cast<const uint8_t*>(&handle);
+  std::copy_n(bytes, kIpcMemHandleSize, out.begin());
+  return out;
+}
+
+Result<void*> CudaApi::ipcOpenMemHandle(const IpcMemHandle& handle) {
+  cudaIpcMemHandle_t raw{};
+  std::copy_n(
+      handle.begin(), kIpcMemHandleSize, reinterpret_cast<uint8_t*>(&raw));
+  void* ptr = nullptr;
+  CUDA_CHECK(
+      cudaIpcOpenMemHandle(&ptr, raw, cudaIpcMemLazyEnablePeerAccess),
+      ErrCode::DriverError);
+  return ptr;
+}
+
+Status CudaApi::ipcCloseMemHandle(void* devPtr) {
+  CUDA_CHECK(cudaIpcCloseMemHandle(devPtr), ErrCode::DriverError);
+  return Ok();
+}
+
+Result<CudaApi::MemRange> CudaApi::getMemAddressRange(void* devPtr) {
+#if defined(__HIP_PLATFORM_AMD__)
+  // AMD: HIP runtime address-range API (libamdhip64; no driver lib). Lets a
+  // sub-allocation segment be IPC-exported at its allocation base with the
+  // right offset. cuMemGetAddressRange hipifies to hipMemGetAddressRange; this
+  // branch compiles only on AMD.
+  CUdeviceptr base = 0;
+  size_t size = 0;
+  auto err =
+      cuMemGetAddressRange(&base, &size, reinterpret_cast<CUdeviceptr>(devPtr));
+  // Driver-API success sentinel (CUDA_SUCCESS, not the runtime cudaSuccess) to
+  // match cuMemGetAddressRange; both hipify to hipSuccess on AMD. The manual
+  // check is intentional: on failure we gracefully fall back to
+  // whole-allocation rather than propagating an error (do not switch to
+  // CUDA_CHECK).
+  if (err != CUDA_SUCCESS) {
+    // Range unavailable (e.g. non-VMM / host memory): fall back to
+    // whole-allocation (base == ptr, offset 0), preserving prior behavior.
+    return MemRange{devPtr, 0};
+  }
+  return MemRange{reinterpret_cast<void*>(base), size};
+#else
+  // NVIDIA: runtime-only, no driver dependency. Report the pointer as its own
+  // base -> whole-allocation / offset 0, identical to the pre-existing path.
+  return MemRange{devPtr, 0};
+#endif
 }
 
 // --- CudaDeviceGuard ---
