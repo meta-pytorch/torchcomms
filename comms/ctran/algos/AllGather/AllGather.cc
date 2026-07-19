@@ -40,7 +40,9 @@ static bool isGraphAwareAlgo(enum NCCL_ALLGATHER_ALGO algo) {
 bool ctranAllGatherSupport(
     CtranComm* comm,
     enum NCCL_ALLGATHER_ALGO algo,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    const void* recvbuff,
+    size_t recvBytes) {
   if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
     return false;
   }
@@ -147,8 +149,10 @@ bool ctranAllGatherSupport(
     case NCCL_ALLGATHER_ALGO::ctwin_srd:
     case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
     case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
-      // TODO(ctwin): implemented in a later commit
-      supported = false;
+      // recvbuff must sit in a symmetric AllGatherP window; forced variants add
+      // topology constraints. Dormant (false) until a caller passes recvbuff.
+      supported =
+          checkCtranAllGatherCtwinSupport(comm, recvbuff, recvBytes, algo);
       break;
     case NCCL_ALLGATHER_ALGO::orig: // invalid query
       supported = false;
@@ -212,6 +216,14 @@ commResult_t ctranAllGather(
     case NCCL_ALLGATHER_ALGO::ctsrd:
       return ctranAllGatherStreamedRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::ctwin:
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      return ctranAllGatherCtwin(
+          sendbuff, recvbuff, sendcount, datatype, comm, stream, algo);
 
     case NCCL_ALLGATHER_ALGO::ctdirect:
     default:

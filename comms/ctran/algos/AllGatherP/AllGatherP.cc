@@ -327,7 +327,9 @@ commResult_t allGatherPExec(
         algo->pArgs.datatype);
   }
 
-  switch (NCCL_ALLGATHER_P_ALGO) {
+  const enum NCCL_ALLGATHER_P_ALGO variant =
+      algo->pArgs.algo.value_or(NCCL_ALLGATHER_P_ALGO);
+  switch (variant) {
     case NCCL_ALLGATHER_P_ALGO::ctdirect:
       return algo->execDirect(sendbuff, count, datatype);
     case NCCL_ALLGATHER_P_ALGO::ctpipeline:
