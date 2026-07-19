@@ -152,6 +152,8 @@ commResult_t windowBarrier(CtranComm* comm, CtranMapper* mapper) {
 
 // Defined here (not in header) so that unique_ptr<HostWindow> destructor
 // sees the complete HostWindow type.
+// Invariant: free() must run before a CtranWin is deleted, so the comm's window
+// range cache never retains a dangling pointer to a destroyed window.
 CtranWin::~CtranWin() = default;
 
 CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
@@ -160,6 +162,9 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
     FB_CHECKABORT(
         commInternalError, "CtranWin: comm is nullptr when creating window.");
   }
+  // Per-comm unique id, assigned at construction (registration order is the
+  // same on all ranks, so a window gets the same id everywhere).
+  id_ = comm->assignWindowId();
   signalSize = comm->statex_.get()->nRanks();
   signalVal.resize(signalSize);
   waitSignalVal.resize(signalSize);
@@ -352,6 +357,14 @@ commResult_t CtranWin::exchange() {
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
   FB_COMMCHECK(windowBarrier(comm, mapper));
+
+  // Cache only symmetric windows: ctwin collective algos needs all ranks
+  // locally compute peerAddr = peerBase + offset, meaning same offset from base
+  // on all ranks.
+  if (isSymmetric() && winDataPtr != nullptr) {
+    FB_COMMCHECK(
+        comm->winCache_.insert(winDataPtr, dataBytes, this, &winCacheHdl));
+  }
   return commSuccess;
 }
 
@@ -467,6 +480,14 @@ commResult_t CtranWin::free(bool skipBarrier) {
       (void*)this,
       (void*)comm,
       statex->commHash());
+
+  // Drop this window's entry from the comm cache before tearing down buffers so
+  // a later lookup cannot resolve to a freed window. The handle is non-null
+  // only when this window was actually cached (i.e. symmetric).
+  if (winCacheHdl != nullptr) {
+    comm->winCache_.erase(winCacheHdl);
+    winCacheHdl = nullptr;
+  }
 
   // A barrier among ranks before freeing window to prevent peer ranks accessing
   // the window after it is freed. Skipped when called from deferred cleanup at
@@ -701,6 +722,12 @@ commResult_t ctranWinRegister(
   if (hints.get("win_register_enable_signal", enableSignalVal) == commSuccess) {
     newWin->setEnableSignal(
         meta::comms::hints::WinHintUtils::parseBool(enableSignalVal));
+  }
+
+  std::string symmetricVal;
+  if (hints.get("win_register_symmetric", symmetricVal) == commSuccess) {
+    newWin->setSymmetric(
+        meta::comms::hints::WinHintUtils::parseBool(symmetricVal));
   }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));

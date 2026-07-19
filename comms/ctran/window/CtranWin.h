@@ -53,6 +53,10 @@ struct CtranWin {
   void* dataSegHdl{nullptr};
   // The ctran mapper handles for caching the data registration
   void* dataRegHdl{nullptr};
+  // WinCache/AVL handle for this window's cached data range; used to erase the
+  // entry directly at free (avoids range lookup resolving to a different
+  // overlapping window).
+  void* winCacheHdl{nullptr};
   // Scoped registration owning the user-provided data buffer's local
   // registration ref (SW refcnt only). dataRegHdl aliases its borrowed
   // RegElem* for the export ctrl path.
@@ -176,6 +180,18 @@ struct CtranWin {
     return enableSignal_;
   }
 
+  inline void setSymmetric(bool val) {
+    symmetric_ = val;
+  }
+
+  inline bool isSymmetric() const {
+    return symmetric_;
+  }
+
+  inline uint64_t id() const {
+    return id_;
+  }
+
   // Check whether persistent allgather (allgatherP) is supported.
   // Returns true if ctran is initialized and all peers have configured
   // backends. Static variant allows checking before a window is created.
@@ -199,6 +215,13 @@ struct CtranWin {
   // rejected. Used by data-only collective windows (e.g. window-based
   // allgather) that never issue signals.
   bool enableSignal_{true};
+  // When true, every rank registers a buffer of identical size at an identical
+  // offset from the window base, so a peer address can be computed as
+  // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
+  // hint; consumed by a later window-based allgather. Cached only for now.
+  bool symmetric_{false};
+  // Per-comm unique id assigned at exchange() (see CtranComm::assignWindowId).
+  uint64_t id_{0};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>

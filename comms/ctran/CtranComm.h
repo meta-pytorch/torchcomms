@@ -20,6 +20,7 @@
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/ctran/window/WinCache.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
@@ -69,6 +70,9 @@ class memCacheAllocator;
 }
 namespace comms::prims {
 class MultiPeerTransport;
+}
+namespace ctran {
+struct CtranWin;
 }
 
 using ctran::utils::Abort;
@@ -150,6 +154,13 @@ class CtranComm {
 
   inline uint64_t getCtranOpCount() const {
     return ctranOpCount_;
+  }
+
+  // Monotonic per-comm window id. Windows are registered collectively in the
+  // same order on every rank, so a given window gets the same id on all ranks
+  // -- used to check/log that all ranks pick the same window.
+  inline uint64_t assignWindowId() {
+    return nextWinId_++;
   }
 
   inline bool isSplitShare() const {
@@ -274,8 +285,18 @@ class CtranComm {
       const std::shared_ptr<PersistentCleanup>& cleanup);
   void drainPersistentCleanups();
 
+  // Returns a cached window fully containing [addr, addr+bytes), or nullptr.
+  // Only symmetric windows are cached and they are registered collectively in
+  // the same order, so every rank resolves a buffer to the same window (needed
+  // for symmetric-offset math). Non-owning: do not free a window that a
+  // collective may still use.
+  ctran::CtranWin* findWindowForBuffer(const void* addr, size_t bytes) const {
+    return winCache_.find(addr, bytes);
+  }
+
  private:
   friend class CtranGpe;
+  friend struct ctran::CtranWin;
   friend commResult_t ctranInit(
       CtranComm* comm,
       std::unique_ptr<ctran::IProfilerReporter> reporter,
@@ -297,7 +318,11 @@ class CtranComm {
   std::shared_ptr<AsyncError> asyncErr_;
   std::shared_ptr<Abort> abort_;
   uint64_t ctranOpCount_{0};
+  uint64_t nextWinId_{0};
 
   folly::Synchronized<folly::F14FastSet<std::shared_ptr<PersistentCleanup>>>
       persistentCleanups_;
+
+  // Per-comm window range cache backing findWindowForBuffer() above.
+  ctran::WinCache winCache_;
 };

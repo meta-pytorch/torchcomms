@@ -72,6 +72,21 @@ void checkAlgoStrToVal(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       str = "ctgraph_rd";
       break;
+    case NCCL_ALLGATHER_ALGO::ctwin:
+      str = "ctwin";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+      str = "ctwin_ring";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+      str = "ctwin_srd";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+      str = "ctwin_pipeline";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      str = "ctwin_rdpipeline";
+      break;
   }
   enum NCCL_ALLGATHER_ALGO result;
   algoStrToVal(str, result);
@@ -170,6 +185,11 @@ TEST(AlgoStrConvTest, AllGatherCompleteness) {
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_ring);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_rd);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_ring);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_srd);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_pipeline);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_rdpipeline);
 }
 
 TEST(AlgoStrConvTest, AllReduceCompleteness) {

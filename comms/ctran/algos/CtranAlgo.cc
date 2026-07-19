@@ -609,6 +609,11 @@ CtranAlgoRMALogger::~CtranAlgoRMALogger() {
       (void*)comm_->ctran_.get());
 }
 
+// Defaulted, but defined out-of-line so the ~unique_ptr<OpElem> -> ~OpElem
+// instantiation happens here inside libctran rather than at every caller. See
+// the note at the declaration in CtranAlgo.h.
+CtranPersistentRequest::~CtranPersistentRequest() = default;
+
 const ctran::algos::IPersistPlan* CtranAlgo::getOrCreatePersistPlan(
     ctran::algos::PersistPlanKey key,
     std::function<std::unique_ptr<ctran::algos::IPersistPlan>()> createFn) {

@@ -14,7 +14,9 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/LogInit.h"
+#include "comms/ctran/window/CtranWin.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
