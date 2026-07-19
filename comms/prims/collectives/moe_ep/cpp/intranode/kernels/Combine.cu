@@ -145,7 +145,7 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
             shifted_x_buffers,
             shifted_x,
             ld_nc_global,
-            st_na_global);
+            st_nt_global);
 
         if (lane_id == 0) {
           channel_src_idx_buffers[dst_slot_idx] =

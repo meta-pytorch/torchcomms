@@ -40,6 +40,7 @@ void intranode_dispatch(
     int hidden_int4,
     int num_topk,
     int num_experts,
+    int num_scales,
     int scale_token_stride,
     int scale_hidden_stride,
     void** buffer_ptrs,
