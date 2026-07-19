@@ -214,7 +214,7 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
               shifted_dst,
               shifted_src,
               ld_cached_global,
-              st_na_global);
+              st_nt_global);
 
           if (send_lane_id == 0) {
             channel_src_idx_buffers[dst_slot_idx] = static_cast<int>(token_idx);
@@ -256,21 +256,17 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
 
       // All sender warps for this dst_rank converge before publishing tail.
       __syncthreads();
-      // AMD/xGMI: the payload `st_na_global` writes (UNROLLED_WARP_COPY above)
-      // are non-temporal and not ordered against the tail publish below, so an
-      // explicit system fence flushes them to HBM before the tail becomes
-      // visible. The tail itself is then RELEASE-stored to pair with the
-      // receiver's acquire-load.
-#ifdef __HIP_PLATFORM_AMD__
-      memory_fence();
-#endif
+      // Payload is written with nontemporal stores (st_nt_global) that stream
+      // past L2 toward the peer, so no separate per-chunk system fence is
+      // issued on the dispatch path; the release-store tail publish below
+      // orders those writes ahead of the tail becoming visible.
       if (send_warp_id_in_rank == 0 && send_lane_id == 0) {
         // Release/acquire on both platforms. A relaxed tail store/load
         // handshake races on AMD: a relaxed read establishes no ordering, so
         // the receiver can observe the advanced tail but read stale/unwritten
-        // payload across xGMI → illegal access under async execution. The
-        // release store (plus the fence above for the non-temporal payload)
-        // carries the happens-before to the receiver's ld_acquire_sys_global.
+        // payload → illegal access under async execution. The release store
+        // orders the nontemporal payload writes ahead of it and carries the
+        // happens-before to the receiver's ld_acquire_sys_global.
         st_release_sys_global(
             channel_tail_idx.buffer(), cached_channel_tail_idx);
       }
