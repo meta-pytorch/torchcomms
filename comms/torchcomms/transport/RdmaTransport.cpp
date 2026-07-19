@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,12 +30,24 @@ constexpr int kDummyDevice = 0;
 
 // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 folly::once_flag initOnceFlag;
-void initEnvironment() {
-  folly::call_once(initOnceFlag, [] {
-    ncclCvarInit();
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+folly::once_flag runtimeInitOnceFlag;
+void initRuntimeEnvironment() {
+  folly::call_once(runtimeInitOnceFlag, [] {
     ctran::logging::initCtranLogging();
     ctran::utils::commCudaLibraryInit();
   });
+}
+void initEnvironment() {
+  folly::call_once(initOnceFlag, [] {
+    ncclCvarInit();
+    initRuntimeEnvironment();
+  });
+}
+void initSupportEnvironment() {
+  // re-read cvars so failed first probe does not poison later probes
+  ncclCvarInit();
+  initRuntimeEnvironment();
 }
 
 // Gates verbose RDMA registration logs via env var
@@ -56,7 +69,6 @@ bool rdmaRegVerboseLogEnabled() {
   }();
   return enabled;
 }
-
 } // namespace
 
 // Logs a verbose RDMA registration message (prefixed with [RDMA]) only when
@@ -238,37 +250,29 @@ RdmaTransport::~RdmaTransport() {
 }
 
 namespace {
-// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
-folly::once_flag queryRdmaSupportOnceFlag;
-// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
-bool rdmaSupport = false;
 bool queryRdmaSupport() {
-  folly::call_once(queryRdmaSupportOnceFlag, [] {
-    XLOG(INFO) << "Querying RdmaTransport support";
-    try {
-      auto ib = std::make_unique<CtranIb>(
-          kDummyRank,
-          kDummyDevice,
-          -1 /* commHash */,
-          "Query-RDMA-Support",
-          true /* enableLocalFlush */,
-          CtranIb::BootstrapMode::kExternal);
-    } catch (const std::exception& e) {
-      XLOG(WARN)
-          << "RdmaTransport is not supported. Failed to create CtranIb instance: "
-          << e.what();
-      rdmaSupport = false;
-      return;
-    }
-    XLOG(INFO) << "RdmaTransport is supported";
-    rdmaSupport = true;
-  });
-  return rdmaSupport;
+  XLOG(INFO) << "Querying RdmaTransport support";
+  try {
+    auto ib = std::make_unique<CtranIb>(
+        kDummyRank,
+        kDummyDevice,
+        -1 /* commHash */,
+        "Query-RDMA-Support",
+        true /* enableLocalFlush */,
+        CtranIb::BootstrapMode::kExternal);
+  } catch (const std::exception& e) {
+    XLOG(WARN)
+        << "RdmaTransport is not supported. Failed to create CtranIb instance: "
+        << e.what();
+    return false;
+  }
+  XLOG(INFO) << "RdmaTransport is supported";
+  return true;
 }
 } // namespace
 
 bool RdmaTransport::supported() {
-  initEnvironment();
+  initSupportEnvironment();
   return queryRdmaSupport();
 }
 
