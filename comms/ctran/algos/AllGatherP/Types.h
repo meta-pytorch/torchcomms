@@ -3,10 +3,12 @@
 #pragma once
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 using ctran::algos::GpeKernelSync;
 
@@ -45,6 +47,12 @@ struct PersistArgs {
   // graph defer the rkey exchange to first exec -- so later execs only re-sync.
   // GPE-thread-only, so not atomic.
   bool ibKeysExchanged{false};
+
+  // Per-request AGP variant override. nullopt means "use the
+  // NCCL_ALLGATHER_P_ALGO cvar" (preserves behavior for all existing callers);
+  // ctwin sets it per-comm by topology since a single cvar cannot express
+  // multiple comms with different topologies.
+  std::optional<enum NCCL_ALLGATHER_P_ALGO> algo;
 };
 
 struct Resource {
