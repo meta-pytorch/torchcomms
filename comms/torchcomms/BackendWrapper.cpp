@@ -6,6 +6,10 @@
 
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+
 namespace torch::comms {
 
 namespace {
@@ -588,6 +592,188 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
       std::move(work),
       std::vector<at::Tensor>{},
       /*hostBlocking=*/!opts.asyncOp);
+}
+
+void BackendWrapper::monitoredBarrier(
+    const c10d::BarrierOptions& opts,
+    bool waitAllRanks) {
+  // Reimplements c10d::ProcessGroupGloo::monitoredBarrier on TorchComms.
+  //
+  // The native gloo version posts async send/recv and then wait(timeout)s on
+  // each work to find stragglers. That form is unavailable here: WorkWrapper::
+  // wait() rejects any finite timeout ("wait timeout not supported"). Instead
+  // we run the same coordinator protocol with SYNCHRONOUS, per-op-timeout P2P
+  // on the underlying comm: a synchronous gloo recv with a finite timeout
+  // throws a catchable exception on timeout (TorchCommGloo::recv ->
+  // gloo UnboundBuffer::waitRecv(timeout)) and does NOT poison the comm
+  // (TorchCommGloo::checkAndAbortIfTimedOutOrError is a no-op), so rank 0 can
+  // keep probing the remaining ranks after one times out.
+  //
+  // Only meaningful for the gloo (CPU) backend; the dist.monitored_barrier
+  // entry point already restricts callers to gloo groups.
+  const int rank = getRank();
+  const int worldSize = getSize();
+
+  const std::chrono::milliseconds timeout =
+      (opts.timeout != kUnsetTimeout) ? opts.timeout : options_->timeout;
+
+  // Phase-1 (worker -> rank 0) and phase-2 (rank 0 -> worker) tags, generated
+  // per call. Identical on every rank because monitoredBarrier is collective
+  // and all ranks advance this PG's counter in lockstep (the counter is a
+  // per-BackendWrapper member, so concurrent barriers on other PGs cannot
+  // desync it across ranks).
+  const uint32_t tagBase = monitoredBarrierTagCounter_.fetch_add(2);
+  // Mask into the non-negative int range: c10d/gloo tags are ints, and the
+  // counter would otherwise wrap past INT_MAX in a long-lived process and
+  // produce negative tags. The mask is deterministic, so every rank still
+  // derives identical tags; fetch_add(2) keeps the two tags distinct
+  // (even/odd) and the low-30-bit mask never merges them.
+  constexpr uint32_t kTagMask = 0x3FFFFFFFu;
+  const int tagToZero = static_cast<int>(tagBase & kTagMask);
+  const int tagFromZero = static_cast<int>((tagBase + 1) & kTagMask);
+
+  auto makeCommTensor = [&]() {
+    auto t =
+        at::empty({1}, at::TensorOptions().dtype(at::kLong).device(at::kCPU));
+    t.fill_(rank);
+    return t;
+  };
+
+  // Workers report in to rank 0, then block until rank 0 acks. Only rank 0
+  // enforces the timeout, so a dead/slow rank is named by rank 0 instead of
+  // every worker timing out and hiding the culprit.
+  if (rank != 0) {
+    try {
+      auto outTensor = makeCommTensor();
+      SendOptions sopts;
+      sopts.tag = tagToZero; // blocking: timeout stays kNoTimeout
+      comm_->send(outTensor, 0, /*async_op=*/false, sopts);
+
+      auto inTensor = makeCommTensor();
+      RecvOptions ropts;
+      ropts.tag = tagFromZero; // blocking
+      comm_->recv(inTensor, 0, /*async_op=*/false, ropts);
+    } catch (const std::exception& e) {
+      TORCH_CHECK(
+          false,
+          "Rank ",
+          rank,
+          " successfully reached monitoredBarrier, but received errors while "
+          "waiting for send/recv from rank 0. Please check rank 0 logs for the "
+          "faulty rank.\n Original exception: \n",
+          e.what());
+    }
+    return;
+  }
+
+  // Rank 0 is the coordinator.
+  //
+  // Fast-fail (waitAllRanks == false) matches native
+  // ProcessGroupGloo::monitoredBarrier: on the first straggler rank 0 raises
+  // immediately (below) and never reaches the ack loop, so workers that already
+  // checked in stay blocked in their ack recv (kNoTimeout) until the process is
+  // torn down. This is intentional -- a failed monitoredBarrier is not a clean
+  // barrier exit. waitAllRanks == true instead probes every worker and reports
+  // all stragglers before raising.
+  const auto startTime = std::chrono::steady_clock::now();
+  auto remainingTime = [&]() -> std::chrono::milliseconds {
+    if (waitAllRanks) {
+      // Give every worker the full timeout: spending it all on worker n must
+      // not starve probing of workers n+1.. (see the native gloo impl).
+      return timeout;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startTime);
+    return timeout - elapsed;
+  };
+
+  auto joinInts = [](const std::vector<int>& v) {
+    std::string s;
+    for (size_t i = 0; i < v.size(); ++i) {
+      if (i > 0) {
+        s += ", ";
+      }
+      s += std::to_string(v[i]);
+    }
+    return s;
+  };
+
+  std::vector<int> processedRanks;
+  processedRanks.reserve(static_cast<size_t>(worldSize - 1));
+  for (int srcRank = 1; srcRank < worldSize; ++srcRank) {
+    const auto remaining = remainingTime();
+    if (!waitAllRanks && remaining.count() <= 0) {
+      TORCH_CHECK(
+          false,
+          "Rank 0 timed out in monitoredBarrier after ",
+          timeout.count(),
+          " ms. Successfully processed ranks: ",
+          joinInts(processedRanks));
+    }
+    try {
+      // Fresh buffer per rank: a timed-out recv leaves a pending registration
+      // on the gloo transport, so reusing the tensor could race a late message
+      // into memory in use by the next probe.
+      auto inTensor = makeCommTensor();
+      RecvOptions ropts;
+      ropts.tag = tagToZero;
+      ropts.timeout = (remaining.count() > 0) ? remaining : timeout;
+      comm_->recv(inTensor, srcRank, /*async_op=*/false, ropts);
+      processedRanks.push_back(srcRank);
+    } catch (const std::exception& e) {
+      if (!waitAllRanks) {
+        TORCH_CHECK(
+            false,
+            "[Rank 0]: Rank ",
+            srcRank,
+            " failed to pass monitoredBarrier in ",
+            timeout.count(),
+            " ms\n Original exception: \n",
+            e.what());
+      }
+      // waitAllRanks: keep going and collect every failure below.
+    }
+  }
+
+  if (waitAllRanks &&
+      processedRanks.size() != static_cast<size_t>(worldSize - 1)) {
+    std::vector<int> failedRanks;
+    for (int i = 1; i < worldSize; ++i) {
+      if (std::find(processedRanks.begin(), processedRanks.end(), i) ==
+          processedRanks.end()) {
+        failedRanks.push_back(i);
+      }
+    }
+    TORCH_CHECK(
+        false,
+        "[Rank 0]: Ranks ",
+        joinInts(failedRanks),
+        " failed to pass monitoredBarrier in ",
+        timeout.count(),
+        " ms");
+  }
+
+  // Every worker checked in: ack each so all ranks leave the barrier together
+  // (a true barrier -- all exit or none do). Ack every remaining worker even if
+  // one send throws: a worker that died between check-in and ack must not leave
+  // the healthy workers blocked forever in their ack recv. Collect failures and
+  // raise only after every other worker has been acked.
+  std::vector<int> ackFailedRanks;
+  for (int dstRank = 1; dstRank < worldSize; ++dstRank) {
+    try {
+      auto outTensor = makeCommTensor();
+      SendOptions sopts;
+      sopts.tag = tagFromZero;
+      comm_->send(outTensor, dstRank, /*async_op=*/false, sopts);
+    } catch (const std::exception&) {
+      ackFailedRanks.push_back(dstRank);
+    }
+  }
+  TORCH_CHECK(
+      ackFailedRanks.empty(),
+      "[Rank 0]: failed to ack ranks ",
+      joinInts(ackFailedRanks),
+      " in monitoredBarrier; these ranks may remain blocked");
 }
 
 c10::intrusive_ptr<c10d::Work>
