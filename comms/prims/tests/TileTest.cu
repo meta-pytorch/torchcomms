@@ -4,6 +4,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cstddef>
+#include <cstdint>
 
 #include "comms/prims/core/Tile.cuh"
 #include "comms/prims/tests/Checks.h"
@@ -27,6 +28,7 @@ using comms::prims::tile_zero;
 
 constexpr int kBS = kTileTestBlockSize;
 constexpr int kTE = kTileTestTileElems;
+constexpr int kByteTE = kTileTestByteTileElems;
 
 // ============================================================================
 // Load/Store roundtrip kernels
@@ -88,7 +90,7 @@ void test_tile_zero_float(float* output, std::size_t ntiles) {
 // Accumulate kernels
 // ============================================================================
 
-template <typename T, typename Op>
+template <typename T, typename Op, int TileElems = kTE>
 __global__ void tile_accumulate_kernel(
     const T* a_input,
     const T* b_input,
@@ -96,10 +98,10 @@ __global__ void tile_accumulate_kernel(
     std::size_t ntiles) {
   auto group = make_block_group();
   for (std::size_t t = 0; t < ntiles; t++) {
-    auto a = tile_load<T, kTE, kBS>(a_input, t, group);
-    auto b = tile_load<T, kTE, kBS>(b_input, t, group);
-    tile_accumulate<T, Op, kTE, kBS>(a, b);
-    tile_store<T, kTE, kBS>(output, t, a, group);
+    auto a = tile_load<T, TileElems, kBS>(a_input, t, group);
+    auto b = tile_load<T, TileElems, kBS>(b_input, t, group);
+    tile_accumulate<T, Op, TileElems, kBS>(a, b);
+    tile_store<T, TileElems, kBS>(output, t, a, group);
   }
 }
 
@@ -138,6 +140,68 @@ void test_tile_accumulate_min_float(
     std::size_t ntiles) {
   tile_accumulate_kernel<float, MinOp><<<1, kBS>>>(a, b, output, ntiles);
   PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
+void launch_tile_accumulate_dtype(
+    TileTestReduceOp op,
+    const void* a,
+    const void* b,
+    void* output,
+    std::size_t ntiles) {
+  const auto* a_t = static_cast<const T*>(a);
+  const auto* b_t = static_cast<const T*>(b);
+  auto* output_t = static_cast<T*>(output);
+  constexpr int kTileElems = sizeof(T) == 1 ? kByteTE : kTE;
+  switch (op) {
+    case TileTestReduceOp::kSum:
+      tile_accumulate_kernel<T, SumOp, kTileElems>
+          <<<1, kBS>>>(a_t, b_t, output_t, ntiles);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+    case TileTestReduceOp::kMax:
+      tile_accumulate_kernel<T, MaxOp, kTileElems>
+          <<<1, kBS>>>(a_t, b_t, output_t, ntiles);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+    case TileTestReduceOp::kMin:
+      tile_accumulate_kernel<T, MinOp, kTileElems>
+          <<<1, kBS>>>(a_t, b_t, output_t, ntiles);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+  }
+}
+
+void test_tile_accumulate_dtype(
+    TileTestDataType dtype,
+    TileTestReduceOp op,
+    const void* a,
+    const void* b,
+    void* output,
+    std::size_t ntiles) {
+  switch (dtype) {
+    case TileTestDataType::kInt8:
+      launch_tile_accumulate_dtype<std::int8_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kUint8:
+      launch_tile_accumulate_dtype<std::uint8_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kInt32:
+      launch_tile_accumulate_dtype<std::int32_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kUint32:
+      launch_tile_accumulate_dtype<std::uint32_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kInt64:
+      launch_tile_accumulate_dtype<std::int64_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kUint64:
+      launch_tile_accumulate_dtype<std::uint64_t>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kFloat64:
+      launch_tile_accumulate_dtype<double>(op, a, b, output, ntiles);
+      break;
+  }
 }
 
 // ============================================================================

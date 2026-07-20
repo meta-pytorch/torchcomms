@@ -1,5 +1,18 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+// Definition of ring_reduce_scatter_kernel, factored out of a single .cu so the
+// explicit template instantiations can be split across one translation unit per
+// datatype (RingReduceScatterInst_*.cu). This keeps each nvcc compile action
+// small and parallel; compiling all datatype x op x ring-count instantiations
+// in one TU is a major build-speed regression. Include this ONLY from the
+// per-datatype instantiation .cu files -- not from the launcher, which needs
+// only the declaration in RingReduceScatter.cuh.
+
+#pragma once
+
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+
 #include "comms/prims/collectives/RingReduceScatter.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
@@ -83,18 +96,24 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_reduce_scatter_kernel(
 #endif
 }
 
-// Template instantiations
-template __global__ void
-ring_reduce_scatter_kernel<1, float, SumOp, 16384, 512>(
-    const __grid_constant__ RingReduceScatterArgs<1, float>,
-    Timeout);
-template __global__ void
-ring_reduce_scatter_kernel<2, float, SumOp, 16384, 512>(
-    const __grid_constant__ RingReduceScatterArgs<2, float>,
-    Timeout);
-template __global__ void
-ring_reduce_scatter_kernel<4, float, SumOp, 16384, 512>(
-    const __grid_constant__ RingReduceScatterArgs<4, float>,
-    Timeout);
-
 } // namespace comms::prims
+
+// Explicit-instantiation macros. Invoke
+// INSTANTIATE_RING_REDUCE_SCATTER_FOR_TYPE inside `namespace comms::prims { ...
+// }` from a per-datatype .cu. The instantiated set (NumRings in {1,2,4} x
+// {SumOp,MaxOp,MinOp}, tile 16384, block 512) is identical to the previous
+// single-file instantiation block.
+#define INSTANTIATE_RING_REDUCE_SCATTER(num_rings, type, op)   \
+  template __global__ void                                     \
+  ring_reduce_scatter_kernel<num_rings, type, op, 16384, 512>( \
+      const __grid_constant__ RingReduceScatterArgs<num_rings, type>, Timeout)
+
+#define INSTANTIATE_RING_REDUCE_SCATTER_OPS(num_rings, type) \
+  INSTANTIATE_RING_REDUCE_SCATTER(num_rings, type, SumOp);   \
+  INSTANTIATE_RING_REDUCE_SCATTER(num_rings, type, MaxOp);   \
+  INSTANTIATE_RING_REDUCE_SCATTER(num_rings, type, MinOp)
+
+#define INSTANTIATE_RING_REDUCE_SCATTER_FOR_TYPE(type) \
+  INSTANTIATE_RING_REDUCE_SCATTER_OPS(1, type);        \
+  INSTANTIATE_RING_REDUCE_SCATTER_OPS(2, type);        \
+  INSTANTIATE_RING_REDUCE_SCATTER_OPS(4, type)
