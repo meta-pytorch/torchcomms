@@ -31,8 +31,9 @@ PYBIND11_MODULE(_store_manager, m) {
         return dupPrefixStore(prefix, bootstrapStore, timeout);
       },
       R"(
-      Return a new PrefixStore wrapping an independent TCPStore,
-      using bootstrapStore only to exchange connection info.
+      Return a new PrefixStore over an independent client connection to the
+      same store server as bootstrap_store (its own socket/lock, for rendezvous
+      isolation).
       )",
       py::arg("prefix"),
       py::arg("bootstrap_store"),

@@ -1682,7 +1682,14 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
 
   CommOptions new_options = options;
   new_options.store = new_store;
-  new_options.hints["persistent_store"] = "true";
+  // Do NOT force persistent_store: reusing the shared parent store for the
+  // split's connectFullMesh rendezvous deadlocks when that store is
+  // concurrently used by other backends' comms (e.g. NCCL bootstrap/watchdog
+  // threads) created with asymmetric membership. Leaving it unset routes
+  // through dupPrefixStore, which stands up a dedicated TCPStore (server =
+  // this split's rank 0) exactly like the eager new_comm path, avoiding the
+  // shared-store contention. new_store is still passed as the bootstrap to
+  // exchange the dedicated store's address.
 
   new_torchcomm->init(device_, new_name, new_options);
 

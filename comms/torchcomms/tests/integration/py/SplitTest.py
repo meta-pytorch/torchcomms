@@ -7,6 +7,7 @@ import unittest
 import torch
 from torchcomms import ReduceOp
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
+    skip_backend,
     TorchCommTestWrapper,
 )
 
@@ -307,6 +308,210 @@ class SplitTest(unittest.TestCase):
             new_torchcomm.finalize()
         else:
             # Current rank should not be in the group and get None
+            self.assertIsNone(
+                new_torchcomm, f"Rank {self.rank} should not have a child communicator"
+            )
+
+    @skip_backend(
+        "hccl",
+        "Dedicated-store server-election regression is gloo/nccl-specific; HCCL "
+        "requires >=2 ranks and uses its own subgroup bootstrap: ",
+    )
+    def test_group_excludes_global_rank_0(self):
+        """Test a contiguous members-only subgroup whose rank 0 is not global rank 0.
+
+        Regression test for dedicated-store server election: the store server
+        must be the communicator-local rank 0, not the global job's rank 0.
+        A subgroup over the upper half of ranks contains no global rank 0, so
+        electing global rank 0 as the server would leave no member serving and
+        every member would hang waiting for the server address.
+        """
+        if self.num_ranks < 2:
+            self.skipTest("Need at least 2 ranks to exclude global rank 0")
+
+        # Upper half of ranks; for num_ranks >= 2 this never contains rank 0.
+        group_start = self.num_ranks // 2
+        rank_in_group = self.rank >= group_start
+        ranks = list(range(group_start, self.num_ranks)) if rank_in_group else []
+
+        new_torchcomm = self.torchcomm.split(ranks, name="excludes_rank0_comm")
+
+        if rank_in_group:
+            self.assertIsNotNone(
+                new_torchcomm,
+                f"Expected communicator but got None for rank {self.rank}",
+            )
+            self.assertEqual(
+                new_torchcomm.get_rank(),
+                self.rank - group_start,
+                "New rank should match position in the upper-half group",
+            )
+            self.assertEqual(
+                new_torchcomm.get_size(),
+                self.num_ranks - group_start,
+                "Size should match the upper-half group size",
+            )
+            self._verify_communication(new_torchcomm)
+            new_torchcomm.finalize()
+        else:
+            self.assertIsNone(
+                new_torchcomm, f"Rank {self.rank} should not have a child communicator"
+            )
+
+    @skip_backend(
+        "hccl",
+        "Dedicated-store server-election regression is gloo/nccl-specific; HCCL "
+        "requires >=2 ranks and uses its own subgroup bootstrap: ",
+    )
+    def test_non_contiguous_group_excludes_global_rank_0(self):
+        """Test a non-contiguous members-only subgroup that excludes global rank 0.
+
+        Odd ranks only: global rank 0 is not a member and the subgroup's rank 0
+        is global rank 1, so the dedicated store server must be elected from the
+        subgroup rather than from the global job's rank 0.
+        """
+        if self.num_ranks < 2:
+            self.skipTest("Need at least 2 ranks for an odd-rank subgroup")
+
+        rank_in_group = self.rank % 2 == 1  # Odd ranks exclude global rank 0
+        ranks = list(range(1, self.num_ranks, 2)) if rank_in_group else []
+
+        new_torchcomm = self.torchcomm.split(ranks, name="odd_ranks_comm")
+
+        if rank_in_group:
+            self.assertIsNotNone(
+                new_torchcomm,
+                f"Expected communicator but got None for rank {self.rank}",
+            )
+            self.assertEqual(
+                new_torchcomm.get_rank(),
+                self.rank // 2,
+                "New rank should match position among odd ranks",
+            )
+            self.assertEqual(
+                new_torchcomm.get_size(),
+                self.num_ranks // 2,
+                "Size should match the number of odd ranks",
+            )
+            self._verify_communication(new_torchcomm)
+            new_torchcomm.finalize()
+        else:
+            self.assertIsNone(
+                new_torchcomm, f"Rank {self.rank} should not have a child communicator"
+            )
+
+    @skip_backend(
+        "hccl",
+        "Dedicated-store server-election regression is gloo/nccl-specific; HCCL "
+        "requires >=2 ranks and uses its own subgroup bootstrap: ",
+    )
+    def test_full_world_split(self):
+        """Test a split in which every rank is a member.
+
+        Exercises routing the split's rendezvous through a dedicated bootstrap
+        store (rather than forcing reuse of the shared parent store), so a
+        full-world gloo split does not contend with other backends' comms on
+        the shared c10d store.
+        """
+        ranks = list(range(self.num_ranks))
+
+        new_torchcomm = self.torchcomm.split(ranks, name="full_world_split_comm")
+
+        self.assertIsNotNone(
+            new_torchcomm, f"Expected communicator but got None for rank {self.rank}"
+        )
+        self.assertEqual(
+            new_torchcomm.get_rank(),
+            self.rank,
+            "New rank should match the parent rank for a full-world split",
+        )
+        self.assertEqual(
+            new_torchcomm.get_size(),
+            self.num_ranks,
+            "Size should match the parent size for a full-world split",
+        )
+        self._verify_communication(new_torchcomm)
+        new_torchcomm.finalize()
+
+    @skip_backend(
+        "hccl",
+        "Dedicated-store server-election regression is gloo/nccl-specific; HCCL "
+        "requires >=2 ranks and uses its own subgroup bootstrap: ",
+    )
+    def test_concurrent_two_way_partition(self):
+        """Split the world into two contiguous halves created concurrently.
+
+        Unlike test_group_excludes_global_rank_0 (which forms only the upper half
+        and leaves the lower half as non-members), here every rank is a member of
+        one of two subgroups at the same time, so BOTH subgroups stand up a
+        dedicated store server simultaneously. The upper half's server is a
+        non-zero global rank -- this mirrors the megatron/split_scale two-way
+        partition that regressed when the server was elected from the global job's
+        rank 0 (leaving the upper half with no server).
+        """
+        if self.num_ranks < 2:
+            self.skipTest("Need at least 2 ranks for a two-way partition")
+
+        half = self.num_ranks // 2
+        in_lower = self.rank < half
+        ranks = list(range(half)) if in_lower else list(range(half, self.num_ranks))
+
+        new_torchcomm = self.torchcomm.split(ranks, name="two_way_partition_comm")
+
+        self.assertIsNotNone(
+            new_torchcomm, f"Expected communicator but got None for rank {self.rank}"
+        )
+        self.assertEqual(
+            new_torchcomm.get_rank(),
+            ranks.index(self.rank),
+            "New rank should match this rank's position within its half",
+        )
+        self.assertEqual(
+            new_torchcomm.get_size(),
+            len(ranks),
+            "Size should match this rank's half",
+        )
+        self._verify_communication(new_torchcomm)
+        new_torchcomm.finalize()
+
+    @skip_backend(
+        "hccl",
+        "Dedicated-store server-election regression is gloo/nccl-specific; HCCL "
+        "requires >=2 ranks and uses its own subgroup bootstrap: ",
+    )
+    def test_single_member_group_excludes_global_rank_0(self):
+        """Split off a size-1 subgroup consisting solely of the last rank.
+
+        The lone member is a non-zero global rank, so it must elect ITSELF as the
+        dedicated store server and self-connect to its own advertised host:port.
+        This is the minimal server-election / self-reachability case for a
+        subgroup whose rank 0 is not global rank 0.
+        """
+        if self.num_ranks < 2:
+            self.skipTest(
+                "Need at least 2 ranks so the lone member is not global rank 0"
+            )
+
+        last_rank = self.num_ranks - 1
+        rank_in_group = self.rank == last_rank
+        ranks = [last_rank] if rank_in_group else []
+
+        new_torchcomm = self.torchcomm.split(ranks, name="single_member_comm")
+
+        if rank_in_group:
+            self.assertIsNotNone(
+                new_torchcomm,
+                f"Expected communicator but got None for rank {self.rank}",
+            )
+            self.assertEqual(
+                new_torchcomm.get_rank(), 0, "Lone member should be rank 0"
+            )
+            self.assertEqual(
+                new_torchcomm.get_size(), 1, "Subgroup should have a single member"
+            )
+            self._verify_communication(new_torchcomm)
+            new_torchcomm.finalize()
+        else:
             self.assertIsNone(
                 new_torchcomm, f"Rank {self.rank} should not have a child communicator"
             )

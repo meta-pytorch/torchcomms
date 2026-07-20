@@ -14,11 +14,14 @@ c10::intrusive_ptr<c10d::Store> createPrefixStore(
     const std::string& prefix,
     std::chrono::milliseconds timeout);
 
-// Create an independent TCPStore on an OS-assigned port, using
-// `bootstrapStore` only to exchange the chosen port.  The result
-// is wrapped in a PrefixStore with `prefix`.  The caller must
-// keep `bootstrapStore` alive until all ranks have returned from
-// this call.
+// Open an independent client connection to the same store server that
+// `bootstrapStore` talks to, wrapped in a PrefixStore with `prefix`.
+// The connection is a distinct TCPStore object (its own socket and lock),
+// so a blocking rendezvous over the result never head-of-line-blocks (or is
+// blocked by) other communicators/backends sharing the parent store.  No
+// per-comm server is created, so this works for subgroups whose rank 0 is not
+// global rank 0: the job's existing (rank 0) server serves every comm.  The
+// caller must keep `bootstrapStore` alive until all ranks have returned.
 c10::intrusive_ptr<c10d::Store> dupPrefixStore(
     const std::string& prefix,
     const c10::intrusive_ptr<c10d::Store>& bootstrapStore,

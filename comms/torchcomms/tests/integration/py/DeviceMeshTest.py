@@ -380,6 +380,61 @@ class DeviceMeshTest(unittest.TestCase):
 
         comm.finalize()
 
+    def test_backend_wrapper_split_group_excludes_global_rank_0(self) -> None:
+        """Split a wrapped c10d process group into a members-only subgroup whose
+        rank 0 is not global rank 0, via the user-facing
+        pg.split_group -> BackendWrapper::split -> TorchComm.split path.
+
+        Regression test for the gloo dedicated bootstrap store: the store server
+        for the upper-half subgroup must be that subgroup's own rank 0 (a
+        non-zero global rank), not global rank 0. This is gloo-specific because
+        gloo's split routes through the dedicated TCPStore (dupPrefixStore); the
+        existing GPU-gated test_backend_wrapper_split_group never covers it.
+        """
+        if os.environ["TEST_BACKEND"] != "gloo":
+            self.skipTest("Dedicated-store split path is gloo-specific")
+
+        device = torch.device(os.environ.get("TEST_DEVICE", "cpu"))
+        comm = torchcomms.new_comm("gloo", device, name="comms_test_split_excl_rank0")
+
+        world_size = comm.get_size()
+        cur_rank = comm.get_rank()
+        if world_size < 2:
+            comm.finalize()
+            self.skipTest("Need at least 2 ranks to exclude global rank 0")
+
+        pg = _create_torchcomm_process_group(comm, "comms_test_split_excl_rank0")
+
+        # Two-way partition of the world; the upper half never contains global
+        # rank 0, so its subgroup-local rank 0 is a non-zero global rank.
+        half = world_size // 2
+        if cur_rank < half:
+            group_ranks = list(range(half))
+        else:
+            group_ranks = list(range(half, world_size))
+
+        split_pg = pg.split_group(
+            group_ranks,
+            # pyre-ignore Incompatible parameter type [6]
+            group_name="split_excl_rank0_group",
+            opts=pg._get_backend(device).options,
+        )
+
+        self.assertIsNotNone(split_pg, "Split process group should not be None")
+        self.assertEqual(split_pg.size(), len(group_ranks))
+        self.assertEqual(split_pg.rank(), group_ranks.index(cur_rank))
+
+        # all_reduce over the c10d split pg using the subgroup-local rank as the
+        # contribution, so the expected sum depends only on the subgroup size.
+        t = torch.ones(10, device=device, dtype=torch.int32) * (split_pg.rank() + 1)
+        dist.all_reduce(t, group=split_pg)
+        expected = len(group_ranks) * (len(group_ranks) + 1) // 2
+        self.assertEqual(t[0].item(), expected)
+
+        # pyre-ignore Undefined attribute [16]
+        split_pg._get_backend(device).get_comm().finalize()
+        comm.finalize()
+
 
 if __name__ == "__main__":
     unittest.main()
