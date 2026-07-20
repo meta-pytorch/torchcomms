@@ -23,6 +23,7 @@
 #include "comms/utils/logger/EventMgr.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
+#include "comms/utils/trainer/TrainerContext.h"
 
 static constexpr std::string_view kHpcJobName = "jobUnitTest";
 static constexpr std::string_view kHpcJobVersion = "13";
@@ -239,6 +240,37 @@ TEST_F(NcclLoggerTest, CommEventScuba) {
 
   EXPECT_TRUE(getWriteCount(LoggerEventType::CommEventType) == 4);
   CommEventReadJson(getMessages(LoggerEventType::CommEventType));
+}
+
+TEST_F(NcclLoggerTest, CommEventIteration) {
+  folly::test::TemporaryDirectory tmpDir;
+  auto scubaLogDirGuard =
+      EnvRAII(NCCL_SCUBA_LOG_FILE_PREFIX, tmpDir.path().string());
+  auto eventGuard = EnvRAII(
+      NCCL_COMM_EVENT_LOGGING, std::string("pipe:nccl_structured_logging"));
+
+  // iteration is captured at CommEvent construction time from
+  // ncclxGetIteration(), so set the trainer step before emitting the event.
+  constexpr int64_t kIteration = 42;
+  ncclxSetIteration(kIteration);
+
+  initLogging();
+  NcclScubaEvent event(
+      std::make_unique<CommEvent>(
+          &kcommLogMetadata, keventStage[0], keventStage[0]));
+  event.record();
+  finishLogging();
+
+  // Reset the global step before asserting so a failed assertion cannot leak
+  // state into other tests.
+  ncclxSetIteration(-1);
+
+  const auto output = getMessages(LoggerEventType::CommEventType);
+  std::istringstream iss(output);
+  std::string line;
+  ASSERT_TRUE(std::getline(iss, line));
+  const auto jsonLog = folly::parseJson(line);
+  EXPECT_EQ(jsonLog["int"]["iteration"].asInt(), kIteration);
 }
 
 TEST_F(NcclLoggerTest, WarnLogTest) {
