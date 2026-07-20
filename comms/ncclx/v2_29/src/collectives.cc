@@ -102,7 +102,8 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
 
-  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
+  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream,
+                                                  recvbuff, sendcount * comm->nRanks * ncclTypeSize(datatype))) {
     return metaCommToNccl(ctranAllGather(
         sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
   }
