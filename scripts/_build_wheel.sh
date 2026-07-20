@@ -40,6 +40,7 @@ if [[ "${CU_VERSION:-}" == rocm* ]]; then
   export USE_RCCLX=0
   export USE_TRANSPORT=OFF
   export ROCM_HOME=/opt/rocm
+  export RCCL_INCLUDE=/opt/rocm/include/rccl
 fi
 
 python setup.py bdist_wheel
