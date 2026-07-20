@@ -1340,6 +1340,7 @@ commResult_t ctran::RegCache::acquireScopedRegister(
     size_t len,
     int cudaDev,
     const std::vector<bool>& backends,
+    const CommLogData& logMetaData,
     ctran::ScopedRegHdl& scopedRegHdl) {
   if (buf == nullptr || len == 0) {
     CLOGF(ERR, "acquireScopedRegister: invalid buf {} len {}", (void*)buf, len);
@@ -1350,14 +1351,12 @@ commResult_t ctran::RegCache::acquireScopedRegister(
   // allocator; regRangeCachedImpl returns nullptr otherwise.
   bool didRegister = false;
   ctran::regcache::RegElem* regHdl = nullptr;
-  CommLogData scopedLogData{};
-  scopedLogData.commDesc = "scopedRegister";
   const auto regResult = regRangeCachedImpl(
       buf,
       len,
       cudaDev,
       "scopedRegister",
-      scopedLogData,
+      logMetaData,
       backends,
       didRegister,
       &regHdl,

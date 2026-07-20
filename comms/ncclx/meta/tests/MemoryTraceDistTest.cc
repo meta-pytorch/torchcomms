@@ -236,9 +236,36 @@ class MemoryTraceTestFixture : public NcclxBaseTestFixture,
                        << this->globalRank;
   }
 
+  void verifyScopedRegisterEvent(
+      const std::string& output,
+      uint64_t expectedCommHash,
+      const std::string& expectedCommDesc,
+      int expectedRank) {
+    bool found = false;
+    std::istringstream iss(output);
+    std::string line;
+    while (std::getline(iss, line)) {
+      folly::dynamic jsonLog = folly::parseJson(line);
+      if (jsonLog["normal"]["use"].asString() != "scopedRegister") {
+        continue;
+      }
+      found = true;
+      // Attribution must reflect the owning comm, not the old placeholder
+      // (commDesc "scopedRegister" / commHash sentinel 0xfaceb00c12345678).
+      EXPECT_EQ(
+          jsonLog["int"]["commHash"].asInt(),
+          static_cast<int64_t>(expectedCommHash));
+      EXPECT_EQ(jsonLog["normal"]["commDesc"].asString(), expectedCommDesc);
+      EXPECT_EQ(jsonLog["int"]["rank"].asInt(), expectedRank);
+    }
+    EXPECT_TRUE(found) << "no scopedRegister memory event logged on globalRank "
+                       << this->globalRank << std::endl;
+  }
+
  protected:
   void runNcclInternalBufferLogTest();
   void runUserBufferLoggingTest();
+  void runScopedRegisterLoggingTest();
 
   cudaStream_t stream;
   void* sendBuf{nullptr};
@@ -261,6 +288,10 @@ TEST_P(MemoryTraceTestFixture, ncclInternalBufferLogTest) {
 
 TEST_P(MemoryTraceTestFixture, userBufferLoggingTest) {
   runUserBufferLoggingTest();
+}
+
+TEST_P(MemoryTraceTestFixture, scopedRegisterLoggingTest) {
+  runScopedRegisterLoggingTest();
 }
 
 TEST_P(MemoryTraceNolocalTestFixture, ncclInternalBufferLogTest) {
@@ -446,6 +477,51 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
     // Expect other ranks to have no events logged
     EXPECT_EQ(output, "");
   }
+
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
+}
+
+void MemoryTraceTestFixture::runScopedRegisterLoggingTest() {
+  folly::test::TemporaryDirectory tmpDir;
+  auto scubaLogDirGuard =
+      EnvRAII(NCCL_SCUBA_LOG_FILE_PREFIX, tmpDir.path().string());
+  // scopedRegister is a registration event; empty filter logs on all ranks.
+  auto memoryRegEventFilterGuard =
+      EnvRAII(NCCL_FILTER_MEM_REG_LOGGING_BY_RANKS, {});
+  auto logFileName = initLogger();
+
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  if (noLocal_) {
+    hints.set("noLocal", "1");
+  }
+  config.hints = &hints;
+  comm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+
+  // Cache the buffer's segment (CCA-hook simulation) so the window's scoped
+  // register is the first real registration of the range and emits a record.
+  void* buf = nullptr;
+  constexpr size_t kBufferSize = 1024 * 1024;
+  NCCLCHECK_TEST(ncclMemAlloc(&buf, kBufferSize));
+  NCCLCHECK_TEST(ncclGlobalRegisterWithPtr(buf, kBufferSize));
+
+  // Register the user buffer as a window; this drives CtranWin::exchange()
+  // through acquireScopedRegister with the owning comm's logMetaData_.
+  ncclWindow_t win = nullptr;
+  NCCLCHECK_TEST(
+      ncclCommWindowRegister(comm, buf, kBufferSize, &win, NCCL_WIN_DEFAULT));
+  NCCLCHECK_TEST(ncclCommWindowDeregister(comm, win));
+  NCCLCHECK_TEST(ncclGlobalDeregisterWithPtr(buf, kBufferSize));
+  NCCLCHECK_TEST(ncclMemFree(buf));
+
+  // wait until memory logging completes
+  NcclLogger::close();
+  auto output = readFromFile(logFileName);
+  EXPECT_NE(output, "");
+
+  verifyScopedRegisterEvent(
+      output, comm->commHash, comm->logMetaData.commDesc, comm->rank);
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
