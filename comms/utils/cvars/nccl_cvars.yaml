@@ -2039,6 +2039,18 @@ cvars:
      Pipeline depth (number of staging ring slots) for IBGDA send/recv.
      Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
 
+ - name        : NCCL_MCCL_HIERRING_PHASE2_CHUNKS_PER_OP
+   type        : int
+   default     : 0
+   description : |-
+     Per-op granularity for the MCCL cthierarchical_ring AllReduce Phase-2 IB
+     ring. <= 0 means the full channel window (baseline / current behavior). A
+     positive value is the number of transport chunks per send/recv/forward op;
+     it is clamped device-side to [1, pipeline_depth] against the communicator's
+     frozen transport depth, so an out-of-range value simply saturates to the
+     full window (never errors). MUST be set identically on every rank -- a
+     heterogeneous value desynchronizes the ring send/recv pairing and hangs.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
