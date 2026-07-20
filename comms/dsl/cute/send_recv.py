@@ -100,14 +100,9 @@ def _ensure_cuda_rt_compat() -> None:
 
 
 def _copy_atom(dtype: Any, vec: int, dbits: int):
-    """The vectorized gmem copy atom every schedule shares: VEC contiguous elems per
-    thread per copy, so the NVLink store is a vectorized st.global (up to 128-bit)
-    instead of a scalar store -- the single biggest copy-bandwidth lever (mirrors the
-    Triton 128-bit-store fix). The TV-tiled copy is built per schedule on top of it."""
+    """Build the vectorized gmem copy atom shared by every schedule."""
     return cute.make_copy_atom(
-        cute.nvgpu.CopyUniversalOp(),
-        dtype,
-        num_bits_per_copy=vec * dbits,
+        cute.nvgpu.CopyUniversalOp(), dtype, num_bits_per_copy=vec * dbits
     )
 
 
@@ -129,6 +124,23 @@ def _copy_u(thr_copy, copy_atom, g_src, g_dst, t, n, num_blocks):
     for i in range(n):
         nvl_ops.put(
             copy_atom, frags[i], thr_copy.partition_D(g_dst[(None, t + i * nb)])
+        )
+
+
+def _copy_u2(thr_copy, copy_atom, g_src, s0, g_dst, d0, n, num_blocks):
+    """Like :func:`_copy_u` but with INDEPENDENT src/dst tile bases: copy ``n``
+    stride-``num_blocks`` tiles from ``g_src[s0 + i*nb]`` to ``g_dst[d0 + i*nb]``.
+    Used by the bounded-ring schedule, where the source tile index (global chunk
+    offset) and the destination tile index (ring-slot-local offset) differ. All
+    ``n`` loads then all ``n`` stores, so ``n`` NVLink stores are in flight."""
+    nb = num_blocks
+    frags = [
+        nvl_ops.get(copy_atom, thr_copy.partition_S(g_src[(None, s0 + i * nb)]))
+        for i in range(n)
+    ]
+    for i in range(n):
+        nvl_ops.put(
+            copy_atom, frags[i], thr_copy.partition_D(g_dst[(None, d0 + i * nb)])
         )
 
 
