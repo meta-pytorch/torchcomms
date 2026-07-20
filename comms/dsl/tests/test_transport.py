@@ -17,6 +17,7 @@ from typing import cast
 
 import torch
 from comms.dsl import check_transfer, NvlTransport
+from comms.dsl.cute.a2a.tuning import _max_coresident_ctas
 from comms.dsl.transport import _require_signal_pad
 
 
@@ -106,3 +107,17 @@ class RequireSignalPadTest(unittest.TestCase):
         need = 2 * ws * mbp
         self.assertIsNone(_require_signal_pad(need, ws, mbp))
         self.assertIsNone(_require_signal_pad(need + 1, ws, mbp))
+
+
+class MaxCoresidentCtasTest(unittest.TestCase):
+    def test_thread_limited(self) -> None:
+        # 2048 threads/SM, 1024 threads/CTA -> 2 blocks/SM; 132 SMs -> 264.
+        self.assertEqual(_max_coresident_ctas(132, 2048, 1024), 264)
+
+    def test_block_cap_limited(self) -> None:
+        # 2048 // 32 = 64 blocks/SM but the hardware cap is 32; 100 SMs -> 3200.
+        self.assertEqual(_max_coresident_ctas(100, 2048, 32), 100 * 32)
+
+    def test_floors_at_one_block_per_sm(self) -> None:
+        # num_threads > threads/SM -> still at least 1 block/SM (never 0).
+        self.assertEqual(_max_coresident_ctas(10, 2048, 4096), 10)
