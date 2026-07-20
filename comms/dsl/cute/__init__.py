@@ -11,12 +11,13 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "all_to_all",
     "nvl_ops",
 ]
 
-# Exported name -> (submodule, attribute). ``attr is None`` exports the submodule
-# itself (e.g. ``nvl_ops``).
+# Exported name -> (submodule, attribute). ``attr is None`` exports the submodule.
 _LAZY: dict[str, tuple[str, str | None]] = {
+    "all_to_all": ("a2a.host", "all_to_all"),
     "nvl_ops": ("nvl_ops", None),
 }
 
