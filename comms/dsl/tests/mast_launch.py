@@ -53,6 +53,7 @@ import uuid
 from typing import Any
 
 import torchx.components.fb.conda as conda
+from comms.dsl.tests.ncu_common import NCU_DEFAULT_METRICS
 from torchx.components.fb.dist import hpc as fb_dist_hpc
 from torchx.runner import get_runner
 from torchx.specs import AppDef, CfgVal, named_resources, Workspace
@@ -76,6 +77,11 @@ _DEFAULT_MODULE = "comms.dsl.tests.benchmark_a2a_cute"
 # fbcode). The benchmark only needs comms/dsl. `comms` is a PEP-420 namespace package, so
 # mapping to "comms/dsl" keeps ``import comms.dsl.*`` working.
 _DEFAULT_OVERLAYS = ["comms/dsl:comms/dsl"]
+
+# NCU: the MAST base image that ships Nsight Compute (the default image has only cuda-gdb);
+# and the GB300 (aarch64) platform driver lib dir the per-rank NCU driver shim is built from.
+_NCU_BASE_IMAGE_FBPKG = "tupperware.image.sendstream.mast_environments:stable"
+_NCU_GB300_DRIVER_LIB_DIR = "/usr/local/fbcode/platform010-aarch64/lib"
 
 
 def _parse_envs(env_str: str | None) -> dict[str, str]:
@@ -209,6 +215,28 @@ def _build_fbpkg(args: argparse.Namespace) -> tuple[AppDef, dict[str, CfgVal]]:
     return app, cfg
 
 
+def _ncu_bench_args(args: argparse.Namespace) -> list[str]:
+    """The ``--ncu`` flags forwarded to the per-rank benchmark ([] if --ncu is not set).
+
+    Pure (host-testable). The benchmark's own --ncu re-exec builds the driver shim + wraps
+    itself in ncu; here we only pass the knobs through.
+    """
+    if not args.ncu:
+        return []
+    out = [
+        "--ncu",
+        "--ncu-driver-shim",
+        _NCU_GB300_DRIVER_LIB_DIR,
+        "--ncu-metrics",
+        args.ncu_metrics,
+        "--ncu-launch-count",
+        str(args.ncu_launch_count),
+    ]
+    if args.ncu_kernel_regex:
+        out += ["--ncu-kernel-regex", args.ncu_kernel_regex]
+    return out
+
+
 def _build_conda(
     args: argparse.Namespace,
 ) -> tuple[AppDef, dict[str, CfgVal]]:
@@ -228,6 +256,11 @@ def _build_conda(
     env["PPN"] = str(args.ppn)
 
     bench_args = args.bench_args.split() if args.bench_args else []
+    # --ncu: run each rank's benchmark under Nsight Compute. The benchmark's own --ncu
+    # re-exec builds the driver shim + wraps itself in ncu (see benchmark_a2a_cute /
+    # ncu_common); here we only pass the flags through and (below) swap to the NCU-capable
+    # base image so the `ncu` binary is present in the container.
+    bench_args += _ncu_bench_args(args)
     job_name = _job_name(args)
     module = args.module
 
@@ -299,6 +332,10 @@ def _build_conda(
     }
     if args.flex_pool_id:
         cfg["forceSingleRegion"] = False
+    # --ncu: swap to the MAST base image that ships Nsight Compute (default image lacks it).
+    # The mast_conda scheduler reads cfg["hpcBaseImagePackage"] (mast_scheduler_common).
+    if args.ncu:
+        cfg["hpcBaseImagePackage"] = _NCU_BASE_IMAGE_FBPKG
     return job_spec, cfg
 
 
@@ -306,6 +343,13 @@ def build_app_and_cfg(
     args: argparse.Namespace,
 ) -> tuple[AppDef, dict[str, CfgVal], str, str]:
     """Dispatch on ``--delivery``; return (app, cfg, scheduler, resolved_module)."""
+    # --ncu needs the mast_environments base-image swap, which only the conda path wires up.
+    # Fail loud rather than silently run an un-profiled fbpkg job.
+    if args.ncu and args.delivery != "conda":
+        raise SystemExit(
+            f"--ncu is only supported with --delivery conda (needs the NCU-capable "
+            f"base-image swap); got --delivery {args.delivery}."
+        )
     if args.delivery == "fbpkg":
         app, cfg = _build_fbpkg(args)
         return app, cfg, "mast", args.module
@@ -505,6 +549,18 @@ def _init_argparse() -> argparse.ArgumentParser:
         default=None,
         help="args forwarded to the module (space-separated)",
     )
+    # --- NCU profiling (conda delivery) ---
+    p.add_argument(
+        "--ncu",
+        action="store_true",
+        default=False,
+        help="profile each rank under Nsight Compute (swaps to the NCU-capable MAST base "
+        "image + builds a per-rank driver shim). Single-pass launch metrics only -- "
+        "multi-pass replay deadlocks the comm kernel until the image has NCU 2026.1.1+.",
+    )
+    p.add_argument("--ncu-metrics", default=NCU_DEFAULT_METRICS)
+    p.add_argument("--ncu-launch-count", type=int, default=1)
+    p.add_argument("--ncu-kernel-regex", default="")
     p.add_argument(
         "--submit",
         action="store_true",
