@@ -125,11 +125,7 @@ TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
 
   EXPECT_NO_THROW(comm->init(*device_, "test_name", default_options_));
 
-  auto bootstrap = new TorchCommNCCLXBootstrap(
-      store_, *device_, nccl_mock_, cuda_mock_, std::chrono::seconds(60));
-  auto store_key = bootstrap->getNCCLXStoreKeyPrefix() +
-      std::to_string(bootstrap->getNCCLXStoreKeyCounter() - 1);
-  delete bootstrap;
+  auto store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_name");
 
   // Verify the unique ID was stored in the store
   auto stored_vec = store_->get(store_key);
@@ -145,11 +141,7 @@ TEST_F(TorchCommNCCLXTest, InitializationNonRank0ReadUniqueId) {
   // get it from store
   setupRankAndSize(1, 2); // rank 1, size 2
 
-  auto bootstrap = new TorchCommNCCLXBootstrap(
-      store_, *device_, nccl_mock_, cuda_mock_, std::chrono::seconds(60));
-  auto store_key = bootstrap->getNCCLXStoreKeyPrefix() +
-      std::to_string(bootstrap->getNCCLXStoreKeyCounter());
-  delete bootstrap;
+  auto store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_name");
 
   // Pre-populate store with unique ID (as if rank 0 already stored it)
   ncclUniqueId expected_id{};
