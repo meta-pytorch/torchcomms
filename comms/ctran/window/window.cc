@@ -230,6 +230,7 @@ commResult_t CtranWin::exchange() {
         dataBytes,
         comm->statex_->cudaDev(),
         mapper->getBackends(),
+        comm->logMetaData_,
         dataScopedReg));
     dataRegHdl = dataScopedReg.get();
   }

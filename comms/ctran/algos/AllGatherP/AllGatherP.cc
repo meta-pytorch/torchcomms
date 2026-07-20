@@ -112,6 +112,7 @@ commResult_t createPersistentRequest(
       recvBytes,
       comm->statex_->cudaDev(),
       comm->ctran_->mapper->getBackends(),
+      comm->logMetaData_,
       localRecvReg));
   const double scopedRegisterUs = scopedRegisterTimer.durationUs();
 
