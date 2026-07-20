@@ -4,6 +4,8 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <glog/logging.h>
+#include <sstream>
+#include <stdexcept>
 
 namespace torch::comms {
 
@@ -236,5 +238,28 @@ class DefaultCudaApi : public CudaApi {
 };
 
 bool deviceSupportsMulticast(int device_idx);
+
+// Block the host until all work on the device's current stream has completed.
+// Skips the sync while the stream is capturing a CUDA graph:
+// cudaStreamSynchronize is illegal during capture, and the captured work is
+// replayed on-device where a host sync is meaningless. Shared by the NCCL/NCCLX
+// synchronous-barrier host block that WorkWrapper::wait() invokes via
+// TorchWork::hostSynchronize().
+inline void syncCurrentStreamIfNotCapturing(
+    CudaApi* cuda_api,
+    int device_index) {
+  cudaStream_t current_stream = cuda_api->getCurrentCUDAStream(device_index);
+  cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+  CUDA_CHECK(
+      cuda_api,
+      cuda_api->streamIsCapturing(current_stream, &capture_status),
+      "Failed to query stream capture status in host-blocking wait");
+  if (capture_status == cudaStreamCaptureStatusNone) {
+    CUDA_CHECK(
+        cuda_api,
+        cuda_api->streamSynchronize(current_stream),
+        "CUDA stream synchronize in host-blocking wait failed");
+  }
+}
 
 } // namespace torch::comms

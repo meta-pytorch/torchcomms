@@ -68,8 +68,11 @@ std::vector<uint64_t> toVecUint64(const std::vector<int64_t>& vec) {
 
 WorkWrapper::WorkWrapper(
     c10::intrusive_ptr<TorchWork> work,
-    std::vector<at::Tensor> outputTensors)
-    : work_(std::move(work)), outputTensors_(std::move(outputTensors)) {
+    std::vector<at::Tensor> outputTensors,
+    bool hostBlocking)
+    : work_(std::move(work)),
+      outputTensors_(std::move(outputTensors)),
+      hostBlocking_(hostBlocking) {
   std::vector<c10::Device> devices;
   // CPU needs to wait for the TorchWork to complete before marking Future
   // as completed
@@ -111,6 +114,9 @@ bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
   }
   try {
     work_->wait();
+    if (hostBlocking_) {
+      work_->hostSynchronize();
+    }
   } catch (...) {
     finish(std::current_exception());
     throw;
@@ -124,6 +130,9 @@ bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
 void WorkWrapper::synchronize() {
   try {
     work_->wait();
+    if (hostBlocking_) {
+      work_->hostSynchronize();
+    }
   } catch (...) {
     finish(std::current_exception());
     throw;
@@ -565,7 +574,20 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(comm_->barrier(opts.asyncOp, bopts));
+  // Mirror stock ProcessGroupNCCL: a synchronous barrier host-blocks the CPU
+  // thread until the collective (and prior stream work) completes, so callers
+  // relying on the barrier to flush async device work -- e.g. clearing IPC
+  // buffers on the stream before the first all_reduce -- do not race it and
+  // deadlock. The host block lives entirely at this c10d layer: WorkWrapper
+  // calls work_->hostSynchronize() after wait(), so the native TorchComm
+  // barrier and TorchWork::wait() keep uniform semantics with every other
+  // collective. Async barriers keep the non-blocking, stream-ordered behavior
+  // via the work.
+  auto work = comm_->barrier(opts.asyncOp, bopts);
+  return c10::make_intrusive<WorkWrapper>(
+      std::move(work),
+      std::vector<at::Tensor>{},
+      /*hostBlocking=*/!opts.asyncOp);
 }
 
 c10::intrusive_ptr<c10d::Work>
