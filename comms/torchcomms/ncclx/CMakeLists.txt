@@ -193,6 +193,12 @@ if(CUDA_FOUND)
     target_link_libraries(torchcomms_comms_ncclx PRIVATE CUDA::cudart)
 endif()
 
+# NCCLX (whether linked as libnccl.so or the static archive) references 16-byte
+# atomics that lower to libatomic __atomic_*_16 libcalls. Link libatomic on the
+# extension too so those transitive references resolve at the final OSS wheel
+# link (covers both the USE_SYSTEM_LIBS and static NCCLX paths above).
+target_link_libraries(torchcomms_comms_ncclx PRIVATE atomic)
+
 # Link absl LAST — after the ncclx archive (NCCLX_STATIC_LIB) and the folly
 # archives above. The static absl_log_internal_* members that satisfy
 # ncclx's LOG / CHECK references (e.g. absl::log_internal::kCharNull) are only
