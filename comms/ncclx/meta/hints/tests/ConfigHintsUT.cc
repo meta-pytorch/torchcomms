@@ -29,6 +29,7 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->sendrecvAlgo, NCCL_SENDRECV_ALGO::orig);
   EXPECT_EQ(ncclxCfg->allgatherAlgo, NCCL_ALLGATHER_ALGO::orig);
   EXPECT_EQ(ncclxCfg->allreduceAlgo, NCCL_ALLREDUCE_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->alltoallAlgo, NCCL_ALLTOALL_ALGO::orig);
   EXPECT_EQ(ncclxCfg->alltoallvAlgo, NCCL_ALLTOALLV_ALGO::orig);
   EXPECT_EQ(ncclxCfg->rmaAlgo, NCCL_RMA_ALGO::ctran);
 
@@ -443,6 +444,18 @@ TEST(ConfigHintsUT, AlltoallvAlgoHint) {
   ASSERT_NE(config.ncclxConfig, nullptr);
   EXPECT_EQ(
       NCCLX_CONFIG_FIELD(config, alltoallvAlgo), NCCL_ALLTOALLV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AlltoallAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("alltoallAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, alltoallAlgo), NCCL_ALLTOALL_ALGO::ctran);
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 

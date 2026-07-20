@@ -94,6 +94,16 @@ inline void algoStrToVal(
   }
 }
 
+inline void algoStrToVal(const std::string& str, enum NCCL_ALLTOALL_ALGO& val) {
+  if (str == "ctran") {
+    val = NCCL_ALLTOALL_ALGO::ctran;
+  } else if (str == "ctgraph") {
+    val = NCCL_ALLTOALL_ALGO::ctgraph;
+  } else {
+    val = NCCL_ALLTOALL_ALGO::orig;
+  }
+}
+
 inline void algoStrToVal(const std::string& str, enum NCCL_RMA_ALGO& val) {
   if (str == "ctran") {
     val = NCCL_RMA_ALGO::ctran;
@@ -186,6 +196,18 @@ inline std::string algoValToStr(enum NCCL_ALLTOALLV_ALGO val) {
       return "compCtran";
     case NCCL_ALLTOALLV_ALGO::bsCompCtran:
       return "bsCompCtran";
+  }
+  return "unknown";
+}
+
+inline std::string algoValToStr(enum NCCL_ALLTOALL_ALGO val) {
+  switch (val) {
+    case NCCL_ALLTOALL_ALGO::orig:
+      return "orig";
+    case NCCL_ALLTOALL_ALGO::ctran:
+      return "ctran";
+    case NCCL_ALLTOALL_ALGO::ctgraph:
+      return "ctgraph";
   }
   return "unknown";
 }
