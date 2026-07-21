@@ -382,6 +382,7 @@ commResult_t createPersistentRequest(
       recvBytes,
       comm->statex_->cudaDev(),
       comm->ctran_->mapper->getBackends(),
+      comm->logMetaData_,
       localRecvReg));
 
   auto algo = std::make_unique<AlgoImpl>(comm, stream);

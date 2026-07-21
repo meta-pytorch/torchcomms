@@ -6,6 +6,10 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+namespace ctran {
+struct CtranWin;
+} // namespace ctran
+
 commResult_t ctranAllGatherPDirect(CtranPersistentRequest* req);
 
 commResult_t ctranAllGatherDirect(
@@ -39,6 +43,35 @@ commResult_t ctranAllGatherBrucksFF(
     commDataType_t datatype,
     CtranComm* comm,
     cudaStream_t stream);
+
+// Window-based persistent allgather (ctwin): converts an allgather whose
+// recvbuff lives inside a registered symmetric CtranWin into a persistent
+// AllGatherP request that reuses the window's already-exchanged NVL/IPC state,
+// caching the request on the window for reuse across calls. Supports CUDA graph
+// capture inline: the window-owned request is built once and reused across
+// replays (the window must outlive any graph that captured over it).
+commResult_t ctranAllGatherCtwin(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo);
+
+// True if a ctwin-family allgather for `algo` over [recvbuff, recvBytes) is
+// supported: recvbuff sits in a registered symmetric window that supports
+// AllGatherP, and the topology satisfies the forced variant's constraints
+// (ctwin_ring/ctwin_srd need nLocalRanks==1; ctwin_srd needs power-of-2 nRanks;
+// ctwin_rdpipeline needs power-of-2 nNodes). On success sets *winOut (if
+// non-null) to the resolving window. A null recvbuff returns false (ctwin is
+// dormant until a caller opts in).
+bool checkCtranAllGatherCtwinSupport(
+    CtranComm* comm,
+    const void* recvbuff,
+    size_t recvBytes,
+    enum NCCL_ALLGATHER_ALGO algo,
+    ctran::CtranWin** winOut = nullptr);
 
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {

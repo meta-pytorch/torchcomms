@@ -2,10 +2,16 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <cuda_runtime.h>
 #include <folly/Synchronized.h>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
@@ -27,6 +33,8 @@ class HostWindow;
 struct WindowConfig;
 } // namespace comms::prims
 #endif
+
+class CtranPersistentRequest;
 
 namespace ctran {
 struct CtranWin {
@@ -172,6 +180,10 @@ struct CtranWin {
     ipcOnly_ = val;
   }
 
+  inline bool isIpcOnly() const {
+    return ipcOnly_;
+  }
+
   inline void setEnableSignal(bool val) {
     enableSignal_ = val;
   }
@@ -199,6 +211,26 @@ struct CtranWin {
   bool allGatherPSupported() const {
     return allGatherPSupported(comm);
   }
+
+  // Window-based persistent-request cache, keyed by <byteOffset, byteLen,
+  // stream> of the recvbuf sub-range. Creates the request via `factory` on a
+  // miss, otherwise reuses the cached one; returns nullptr if the factory
+  // fails. The request is per-stream, so two collectives sharing the same key
+  // are always serialized.
+  //
+  // LIFETIME CONTRACT: the returned request is WINDOW-owned and freed by the
+  // window's free(). The caller must ensure every collective that uses a
+  // returned request has completed (e.g. cudaStreamSynchronize) before freeing
+  // the window -- freeing while a ctwin collective is still in flight is
+  // undefined behavior.
+  CtranPersistentRequest* getOrCreatePersistentRequest(
+      size_t offset,
+      size_t len,
+      cudaStream_t stream,
+      const std::function<CtranPersistentRequest*()>& factory);
+
+  // Number of cached ctwin persistent requests (test/introspection helper).
+  size_t numPersistentRequests() const;
 
  private:
   DevMemType bufType_{DevMemType::kCumem};
@@ -228,6 +260,12 @@ struct CtranWin {
       opCountMap_;
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
+  // Window-based persistent-request cache; see getOrCreatePersistentRequest.
+  // Key is <byteOffset, byteLen, stream> of the recvbuf sub-range.
+  folly::Synchronized<std::map<
+      std::tuple<size_t, size_t, cudaStream_t>,
+      CtranPersistentRequest*>>
+      persistentReqs_;
 
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::HostWindow> hostWindow_;

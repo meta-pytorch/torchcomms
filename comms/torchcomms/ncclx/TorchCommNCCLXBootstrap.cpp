@@ -16,9 +16,6 @@
 
 namespace torch::comms {
 
-// Initialize the static counter
-int TorchCommNCCLXBootstrap::counter_ = 0;
-
 namespace {
 
 const std::string kUniqueidXchgMethodAuto = "auto";
@@ -115,19 +112,20 @@ TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() noexcept {
   }
 }
 
-std::string TorchCommNCCLXBootstrap::getNCCLXStoreKey() {
-  std::string key = fmt::format("{}{}", getNCCLXStoreKeyPrefix(), counter_);
-  counter_++;
-  return key;
+std::string TorchCommNCCLXBootstrap::getNCCLXStoreKey(std::string_view name) {
+  // Key the bootstrap on the comm's name, which is identical across all ranks
+  // that participate in the comm and unique per comm (store_ is also uniquely
+  // prefixed per comm). A previous implementation used a process-wide counter
+  // incremented once per bootstrap; that counter diverges across ranks when
+  // comms have asymmetric membership (members-only or subset groups skip
+  // non-member ranks), so a later comm spanning diverged ranks would have rank
+  // 0 set one key while other ranks wait on a different key -> bootstrap hang.
+  return fmt::format("{}{}", getNCCLXStoreKeyPrefix(), name);
 }
 
 std::string TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() {
   return "ncclx_storekey_";
 };
-
-int TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter() {
-  return counter_;
-}
 
 void TorchCommNCCLXBootstrap::createStore(std::string_view name) {
   if (store_ == nullptr) {
@@ -146,10 +144,10 @@ void TorchCommNCCLXBootstrap::createStore(std::string_view name) {
   }
 }
 
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId() {
+ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId(std::string_view name) {
   ncclUniqueId uniqueId;
 
-  auto key = getNCCLXStoreKey();
+  auto key = getNCCLXStoreKey(name);
   if (rank_ == 0) {
     // Generate unique ID on rank 0
     ncclResult_t ncclErr = nccl_api_->getUniqueId(&uniqueId);
@@ -372,10 +370,10 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   if (useFastInit(hints)) {
     uniqueId = ncclUniqueId{};
   } else {
-    uniqueId = exchangeUniqueId();
+    uniqueId = exchangeUniqueId(name);
   }
 #else
-  uniqueId = exchangeUniqueId();
+  uniqueId = exchangeUniqueId(name);
 #endif
 
   ncclResult_t ncclErr = nccl_api_->commInitRankConfig(

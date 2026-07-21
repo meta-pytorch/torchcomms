@@ -28,13 +28,14 @@ constexpr std::array<std::string_view, 3> kHintKeysArray = {
 // {deprecated GlobalHint key, replacement per-comm ncclx::Hints key}
 using DeprecatedHintKey = std::pair<std::string_view, std::string_view>;
 
-constexpr std::array<DeprecatedHintKey, 9> kDeprecatedCommHintKeys = {{
+constexpr std::array<DeprecatedHintKey, 10> kDeprecatedCommHintKeys = {{
     {"ncclx.comm.useCtran", "useCtran"},
     {"ncclx.comm.algo_reducescatter", "usePatAvg"},
     {"ncclx.comm.nolocal", "noLocal"},
     {"ncclx.comm.vCliqueSize", "vCliqueSize"},
     {"algo_allgather", "allgatherAlgo"},
     {"algo_allreduce", "allreduceAlgo"},
+    {"algo_alltoall", "alltoallAlgo"},
     {"algo_alltoallv", "alltoallvAlgo"},
     {"algo_rma", "rmaAlgo"},
     {"algo_sendrecv", "sendrecvAlgo"},

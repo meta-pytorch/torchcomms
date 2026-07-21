@@ -39,9 +39,23 @@ __global__ void ncclKernelAllGatherPPipeSync(
   GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.stepId);
 }
 
-// Stub kernel to hold stream while GPE thread does inter-node transfer.
-// Used when nLocalRanks == 1 in allgatherP pipeline algorithm
-__global__ void ncclKernelAllGatherPPipe(
+// Stream-holder stub for the ctpipeline (ring) variant at nLocalRanks==1: holds
+// the stream while the GPE thread runs the inter-node ring transfer.
+// Ring = ctpipeline nLocalRanks==1.
+__global__ void ncclKernelAllGatherPRing(
+    ctran::gpe::KernelFlagDev* f,
+    CtranAlgoDeviceState* devState) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  if (flag) {
+    ctran::device::devLoadAbortFlags(flag, devState);
+    ctran::device::KernelStartGpe(f);
+    ctran::device::KernelWaitGpeTerminate(flag);
+  }
+}
+
+// Stream-holder stub for the ctsrdpipeline (streamed recursive-doubling)
+// variant at nLocalRanks==1. StreamedRd = ctsrdpipeline nLocalRanks==1.
+__global__ void ncclKernelAllGatherPStreamedRd(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
@@ -56,6 +70,42 @@ __global__ void ncclKernelAllGatherPPipe(
 // broadcast. Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is
 // called once at the end.
 __global__ void ncclKernelAllGatherPPipeEnd(
+    ctran::gpe::KernelFlagDev* flag,
+    CtranAlgoDeviceState* devState,
+    PipeEndKernArgs args) {
+  // Reset sync flag for next GPE->kernel pipeline sync to use
+  GpeKernelSyncDev::reset(args.pipeSync, 0);
+
+  // Ensure nvl intra-node comm finishes
+  devStateLoadToShm(devState);
+  const auto localRank = statex->localRank();
+  const auto nLocalRanks = statex->nLocalRanks();
+  barrier(localRank, nLocalRanks);
+}
+
+// The ctsrdpipeline (streamed recursive-doubling) variant's nLocalRanks > 1
+// pipeline kernels. Bodies are identical to the ctpipeline PPipe* kernels
+// above; they exist as separate symbols so each variant owns its own kernels.
+__global__ void ncclKernelAllGatherPSrdPipeStart(
+    ctran::gpe::KernelFlagDev* f,
+    CtranAlgoDeviceState* devState) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  if (flag) {
+    ctran::device::KernelStartGpeAndExit(f);
+  }
+}
+
+__global__ void ncclKernelAllGatherPSrdPipeSync(
+    ctran::gpe::KernelFlagDev* f,
+    CtranAlgoDeviceState* devState,
+    PipeSyncKernArgs args) {
+  int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::devLoadAbortFlags(flag, devState);
+  // wait till GPE thread post the current stepId
+  GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.stepId);
+}
+
+__global__ void ncclKernelAllGatherPSrdPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args) {

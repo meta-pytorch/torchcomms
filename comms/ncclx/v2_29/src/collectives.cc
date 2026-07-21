@@ -102,7 +102,8 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
 
-  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
+  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream,
+                                                  recvbuff, sendcount * comm->nRanks * ncclTypeSize(datatype))) {
     return metaCommToNccl(ctranAllGather(
         sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
   }
@@ -374,9 +375,10 @@ ncclResult_t ncclAllToAll(
         recvbuff);
   }
 
-  if ((NCCL_ALLTOALL_ALGO != NCCL_ALLTOALL_ALGO::orig) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO, stream)) {
-    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, NCCL_ALLTOALL_ALGO));
+  auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
+  if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream)) {
+    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
   }
 
   // fallback to baseline send/recv based alltoall

@@ -6,6 +6,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -229,6 +230,7 @@ commResult_t CtranWin::exchange() {
         dataBytes,
         comm->statex_->cudaDev(),
         mapper->getBackends(),
+        comm->logMetaData_,
         dataScopedReg));
     dataRegHdl = dataScopedReg.get();
   }
@@ -481,9 +483,28 @@ commResult_t CtranWin::free(bool skipBarrier) {
       (void*)comm,
       statex->commHash());
 
+  // Tear down cached window persistent requests before releasing the data
+  // registration / NVL IPC imports they borrow. LIFETIME CONTRACT: the caller
+  // must ensure all ctwin collectives over this window have completed before
+  // free() -- these requests are deleted here regardless of any in-flight use.
+  {
+    auto reqs = persistentReqs_.wlock();
+    for (auto& entry : *reqs) {
+      auto* req = entry.second;
+      if (req == nullptr) {
+        continue;
+      }
+      if (req->cleanup_ != nullptr) {
+        req->cleanup_->run();
+        comm->unregisterPersistentCleanup(req->cleanup_);
+      }
+      delete req;
+    }
+    reqs->clear();
+  }
+
   // Drop this window's entry from the comm cache before tearing down buffers so
-  // a later lookup cannot resolve to a freed window. The handle is non-null
-  // only when this window was actually cached (i.e. symmetric).
+  // a later lookup cannot resolve to a freed window.
   if (winCacheHdl != nullptr) {
     comm->winCache_.erase(winCacheHdl);
     winCacheHdl = nullptr;
@@ -562,6 +583,28 @@ commResult_t CtranWin::free(bool skipBarrier) {
   }
 
   return commSuccess;
+}
+
+CtranPersistentRequest* CtranWin::getOrCreatePersistentRequest(
+    size_t offset,
+    size_t len,
+    cudaStream_t stream,
+    const std::function<CtranPersistentRequest*()>& factory) {
+  auto reqs = persistentReqs_.wlock();
+  const auto key = std::make_tuple(offset, len, stream);
+  auto it = reqs->find(key);
+  if (it != reqs->end()) {
+    return it->second;
+  }
+  auto* req = factory();
+  if (req != nullptr) {
+    (*reqs)[key] = req;
+  }
+  return req;
+}
+
+size_t CtranWin::numPersistentRequests() const {
+  return persistentReqs_.rlock()->size();
 }
 
 bool CtranWin::nvlEnabled(int rank) const {

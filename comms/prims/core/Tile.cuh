@@ -91,6 +91,7 @@
 #include <cuda_fp16.h>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "comms/prims/core/ThreadGroup.cuh"
 
@@ -122,6 +123,59 @@ struct MinOp {};
 
 template <typename T>
 struct VecOps;
+
+template <typename T>
+struct IntegralVecOps {
+  static_assert(std::is_integral_v<T>);
+  static constexpr int kElemsPerVec = sizeof(uint4) / sizeof(T);
+  using UnsignedT = std::make_unsigned_t<T>;
+
+  __device__ __forceinline__ static void
+  reduce(SumOp, uint4& a, const uint4& b) {
+    T* va = reinterpret_cast<T*>(&a);
+    const T* vb = reinterpret_cast<const T*>(&b);
+#pragma unroll
+    for (int i = 0; i < kElemsPerVec; i++) {
+      va[i] = static_cast<T>(
+          static_cast<UnsignedT>(va[i]) + static_cast<UnsignedT>(vb[i]));
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MaxOp, uint4& a, const uint4& b) {
+    T* va = reinterpret_cast<T*>(&a);
+    const T* vb = reinterpret_cast<const T*>(&b);
+#pragma unroll
+    for (int i = 0; i < kElemsPerVec; i++) {
+      va[i] = va[i] > vb[i] ? va[i] : vb[i];
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MinOp, uint4& a, const uint4& b) {
+    T* va = reinterpret_cast<T*>(&a);
+    const T* vb = reinterpret_cast<const T*>(&b);
+#pragma unroll
+    for (int i = 0; i < kElemsPerVec; i++) {
+      va[i] = va[i] < vb[i] ? va[i] : vb[i];
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(SumOp, T& a, const T& b) {
+    a = static_cast<T>(static_cast<UnsignedT>(a) + static_cast<UnsignedT>(b));
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MaxOp, T& a, const T& b) {
+    a = a > b ? a : b;
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MinOp, T& a, const T& b) {
+    a = a < b ? a : b;
+  }
+};
 
 template <>
 struct VecOps<float> {
@@ -172,6 +226,63 @@ struct VecOps<float> {
     a = fminf(a, b);
   }
 };
+
+template <>
+struct VecOps<double> {
+  static constexpr int kElemsPerVec = sizeof(uint4) / sizeof(double); // 2
+
+  __device__ __forceinline__ static void
+  reduce(SumOp, uint4& a, const uint4& b) {
+    double2& va = reinterpret_cast<double2&>(a);
+    const double2& vb = reinterpret_cast<const double2&>(b);
+    va.x += vb.x;
+    va.y += vb.y;
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MaxOp, uint4& a, const uint4& b) {
+    double2& va = reinterpret_cast<double2&>(a);
+    const double2& vb = reinterpret_cast<const double2&>(b);
+    va.x = fmax(va.x, vb.x);
+    va.y = fmax(va.y, vb.y);
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MinOp, uint4& a, const uint4& b) {
+    double2& va = reinterpret_cast<double2&>(a);
+    const double2& vb = reinterpret_cast<const double2&>(b);
+    va.x = fmin(va.x, vb.x);
+    va.y = fmin(va.y, vb.y);
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(SumOp, double& a, const double& b) {
+    a += b;
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MaxOp, double& a, const double& b) {
+    a = fmax(a, b);
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MinOp, double& a, const double& b) {
+    a = fmin(a, b);
+  }
+};
+
+template <>
+struct VecOps<int8_t> : IntegralVecOps<int8_t> {};
+template <>
+struct VecOps<uint8_t> : IntegralVecOps<uint8_t> {};
+template <>
+struct VecOps<int32_t> : IntegralVecOps<int32_t> {};
+template <>
+struct VecOps<uint32_t> : IntegralVecOps<uint32_t> {};
+template <>
+struct VecOps<int64_t> : IntegralVecOps<int64_t> {};
+template <>
+struct VecOps<uint64_t> : IntegralVecOps<uint64_t> {};
 
 template <typename ScalarT, typename PackedT>
 struct HalfPrecisionVecOps {

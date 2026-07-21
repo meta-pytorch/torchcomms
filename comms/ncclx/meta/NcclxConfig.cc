@@ -31,6 +31,7 @@ Config::Config(const ncclConfig_t* config) {
   sendrecvAlgo = NCCL_SENDRECV_ALGO;
   allgatherAlgo = NCCL_ALLGATHER_ALGO;
   allreduceAlgo = NCCL_ALLREDUCE_ALGO;
+  alltoallAlgo = NCCL_ALLTOALL_ALGO;
   alltoallvAlgo = NCCL_ALLTOALLV_ALGO;
   rmaAlgo = NCCL_RMA_ALGO;
 
@@ -283,6 +284,7 @@ Config::Config(const ncclConfig_t* config) {
   parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallAlgo", alltoallAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
   parseAlgoHint("rmaAlgo", rmaAlgo);
 }
@@ -317,6 +319,7 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallAlgo", alltoallAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
   parseAlgoHint("rmaAlgo", rmaAlgo);
 
@@ -401,6 +404,7 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
     appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);
+    appendAlgo("alltoallAlgo", xCfg->alltoallAlgo);
     appendAlgo("alltoallvAlgo", xCfg->alltoallvAlgo);
     appendAlgo("rmaAlgo", xCfg->rmaAlgo);
     auto appendIfSet = [&](const char* name, const auto& opt) {
@@ -520,6 +524,7 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
   appendIfSet("sendrecvAlgo", cfg->sendrecvAlgo);
   appendIfSet("allgatherAlgo", cfg->allgatherAlgo);
   appendIfSet("allreduceAlgo", cfg->allreduceAlgo);
+  appendIfSet("alltoallAlgo", cfg->alltoallAlgo);
   appendIfSet("alltoallvAlgo", cfg->alltoallvAlgo);
   appendIfSet("rmaAlgo", cfg->rmaAlgo);
 
