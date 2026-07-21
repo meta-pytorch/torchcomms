@@ -79,6 +79,7 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
                                     // maybe needed for fault-tolerance
     ctran::sendrecv::KernArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {

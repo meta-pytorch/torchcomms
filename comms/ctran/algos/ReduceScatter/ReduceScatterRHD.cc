@@ -381,6 +381,9 @@ commResult_t ctranReduceScatterRHD(
       opCount);
   FB_COMMCHECK(setupPlan(comm, opGroup, config));
   const void* func = reduceScatterKerns.at(std::make_pair(datatype, redOp));
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(
       comm->ctran_->gpe->submit(std::move(opGroup), impl, config, func));
 

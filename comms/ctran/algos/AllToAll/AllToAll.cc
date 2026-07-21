@@ -168,6 +168,9 @@ commResult_t ctranAllToAll(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   FB_COMMCHECK(setupGpeOp(
       sendbuff, recvbuff, count, datatype, comm, stream, opCount, opGroup));
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       opIbImpl,

@@ -18,6 +18,7 @@ __global__ void ncclKernelAllToAllPDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(f);

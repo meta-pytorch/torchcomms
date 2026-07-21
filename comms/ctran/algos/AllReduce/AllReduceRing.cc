@@ -1515,6 +1515,10 @@ commResult_t ctranAllReduceRing(
   config.args.collective.allreduce.count = kernArgs.count;
   config.args.collective.allreduce.datatype = kernArgs.datatype;
 
+  // Single-kernel collective: arm the kernel to emit both colltrace boundaries.
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), ctran::allreduce::ring::impl, config, func, timeout));
 

@@ -327,6 +327,9 @@ commResult_t ctranAllGatherBrucksFF(
       datatype,
       comm,
       stream));
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       impl,

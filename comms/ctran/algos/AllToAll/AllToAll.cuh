@@ -110,6 +110,7 @@ __global__ void ncclKernelAllToAll(
     CtranAlgoDeviceState* devState,
     ctran::alltoall::KernelArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {

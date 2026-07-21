@@ -21,6 +21,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
     CtranAlgoDeviceState* devState,
     ctran::broadcast::KernelArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (UNPACK) {

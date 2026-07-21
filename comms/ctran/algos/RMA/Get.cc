@@ -165,6 +165,9 @@ commResult_t ctranGet(
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       getImpl,
