@@ -2,6 +2,7 @@
 
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/algos/localReduce.cuh"
 #include "comms/ctran/algos/tests/CtranDistAlgoDevUTKernels.h"
 
@@ -146,6 +147,80 @@ __global__ void __launch_bounds__(512, 1) testNaiveKernCopy(
       recvbuff[j] = sendbuff[j];
     }
   }
+}
+
+__global__ void __launch_bounds__(1024, 1) testKernNvlBarrierLoop(
+    int rank,
+    int nLocalRanks,
+    int nIters,
+    int* selfSlot,
+    int** peerSlots,
+    int* errCount,
+    CtranAlgoDeviceState* devState) {
+  devStateLoadToShm(devState);
+
+  for (int iter = 1; iter <= nIters; iter++) {
+    // Rotate the delayed ("laggard") rank across all ranks over iterations so
+    // every rank's incoming barrier edges are exercised as the last arrival.
+    const int laggard = iter % nLocalRanks;
+
+    if (threadIdx.x == 0) {
+      // The laggard busy-waits before publishing so it reliably enters the
+      // barrier LAST. A correct barrier forces every other rank to wait for
+      // it, so all read the fresh token; a barrier that drops an edge to the
+      // laggard lets some rank proceed and read the STALE token (iter-1, or the
+      // init value on the first iteration) -> a deterministic mismatch.
+      if (rank == laggard) {
+        __nanosleep(200000);
+      }
+      // Publish this iteration's token into this rank's NVL-visible slot. The
+      // token is always nonzero, so the zero-initialized buffer cannot
+      // masquerade as a valid token.
+      comms::device::st_release_sys_global(selfSlot, iter);
+    }
+
+    // Every rank must observe all tokens before any rank reads them.
+    barrier(rank, nLocalRanks);
+
+    // Verify every peer published exactly this iteration's token.
+    if (threadIdx.x == 0) {
+      for (int peer = 0; peer < nLocalRanks; peer++) {
+        const int val = comms::device::ld_acquire_sys_global(peerSlots[peer]);
+        if (val != iter) {
+          atomicAdd(errCount, 1);
+        }
+      }
+    }
+
+    // Prevent any rank from overwriting its slot for iter+1 before all peers
+    // have finished reading the current iteration's tokens.
+    barrier(rank, nLocalRanks);
+  }
+}
+
+cudaError_t testKernNvlBarrierLoopWrapper(
+    dim3 grid,
+    dim3 blocks,
+    cudaStream_t stream,
+    int rank,
+    int nLocalRanks,
+    int nIters,
+    int* selfSlot,
+    int** peerSlots,
+    int* errCount,
+    CtranAlgoDeviceState* devState) {
+  void* args[] = {
+      &rank,
+      &nLocalRanks,
+      &nIters,
+      &selfSlot,
+      &peerSlots,
+      &errCount,
+      &devState};
+  void* fn = reinterpret_cast<void*>(testKernNvlBarrierLoop);
+
+  return CUDA_LAUNCH_KERNEL_WITH_DYNAMIC_SHM_RETURN(
+      fn, grid, blocks, args, sizeof(CtranAlgoDeviceState), stream);
 }
 
 cudaError_t testKernMultiPutNotifyWrapper(
