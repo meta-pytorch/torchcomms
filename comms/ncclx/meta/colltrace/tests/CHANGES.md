@@ -18,7 +18,6 @@ v2_27 copies were deleted.
 - `DumpNewColltraceUT.cc`
 - `NewCollTraceUT.cc`
 - `ProxyMockUT.cc`
-- `ProxyTraceDistTest.cc`
 - `SlowCollReporterUT.cc`
 
 ### `AlgoStatsTest.cpp`

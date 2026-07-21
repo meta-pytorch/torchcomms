@@ -3,7 +3,7 @@
 ## Context
 
 `ncclCommDumpAll` and `ncclCommDump` dump everything for every communicator —
-comm info, colltrace, proxy trace, process global errors, memory,
+comm info, colltrace, process global errors, memory,
 and global info. This is expensive when callers only need a subset (e.g., just
 the aggregated iteration time). We add a `requestFields` hint that specifies
 which individual output keys to include. Each dump function checks which of its
@@ -40,7 +40,6 @@ skipped entirely if none of its keys are requested (`anyKeyRequested` check).
 |----------------|------------|
 | `dumpCommInfo()` | commHash, rank, localRank, node, nRanks, localRanks, nNodes, commDesc |
 | `dumpNewCollTrace()` → `commDumpToMap()` | CT_pastColls, CT_currentColls, CT_pendingColls, CT_currentIteration, CT_currentIterationCommTimeUs |
-| `dumpProxyTrace()` | PT_pastColls, PT_activeOps, PT_activeColls |
 | `dumpProcessGlobalErrors()` | processGlobalErrors |
 | `dumpMemoryTrace()` | memory |
 
@@ -68,7 +67,6 @@ ncclCommDumpAll(map, requestFields)
             │      ├─ anyKeyRequested({commHash,rank,...})?  → dumpCommInfo(requestFields)
             │      ├─ anyKeyRequested({CT_*})?               → dumpNewCollTrace(requestFields)
             │      │                                           → commDumpToMap(requestFields)
-            │      ├─ anyKeyRequested({PT_*})?               → dumpProxyTrace(requestFields)
             │      ├─ isKeyRequested(processGlobalErrors)?   → dumpProcessGlobalErrors(requestFields)
             │      └─ isKeyRequested(memory)?                → dumpMemoryTrace(requestFields)
             │

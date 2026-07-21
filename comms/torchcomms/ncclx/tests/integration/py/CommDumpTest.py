@@ -149,7 +149,6 @@ class CommDumpTest(unittest.TestCase):
             self.assertNotIn("commHash", dump)
             self.assertNotIn("localRank", dump)
             self.assertNotIn("CT_pastColls", dump)
-            self.assertNotIn("PT_pastColls", dump)
 
     def test_comm_dump_all_with_request_fields_global_info(self):
         """Test that requesting only GlobalInfo keys skips per-comm dumps."""
@@ -185,7 +184,7 @@ class CommDumpTest(unittest.TestCase):
             self.assertIn("rank", dump)
             self.assertIn("nRanks", dump)
             self.assertIn("commHash", dump)
-            # CollTrace/ProxyTrace keys require them to be manually enabled
+            # CollTrace keys require them to be manually enabled
 
     def test_comm_dump_all_mixed_per_comm_and_global_info(self):
         """Test request_fields with both per-comm and GlobalInfo keys."""
