@@ -162,8 +162,8 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         shuts down both sub-backends, which share one ``TorchComm``.
         Without idempotent ``shutdown``, the second call raises
         ``TorchCommNCCL already finalized``."""
-        if os.environ["TEST_BACKEND"] != "nccl":
-            self.skipTest("mixed backend test is nccl-specific")
+        if os.environ["TEST_BACKEND"] not in ["nccl", "xccl"]:
+            self.skipTest("mixed backend test is nccl/xccl-specific")
         if _torch_predates_pr_182057():
             self.skipTest(
                 f"torch {torch.__version__} predates pytorch/pytorch#182057 "
@@ -174,26 +174,27 @@ class TestBackendWrapperShutdown(unittest.TestCase):
 
         rank, world_size = get_rank_and_size()
         local_rank = _local_rank()
-        torch.cuda.set_device(local_rank)
+        torch.accelerator.set_device_index(local_rank)
         dist.config.use_torchcomms = True
         store_name = "mixed_backend_destroy_idempotent"
+        backend_str = os.environ["TEST_BACKEND"]
+        device_str = "cuda" if backend_str == "nccl" else "xpu"
+        local_device_str = f"{device_str}:{local_rank}"
         dist.init_process_group(
-            backend="cpu:gloo,cuda:nccl",
+            backend=f"cpu:gloo,{device_str}:{backend_str}",
             store=_create_store_on_free_port(store_name),
             rank=rank,
             world_size=world_size,
-            device_id=torch.device(f"cuda:{local_rank}"),
+            device_id=torch.device(local_device_str),
         )
         try:
-            torch.set_default_device(f"cuda:{local_rank}")
+            torch.set_default_device(local_device_str)
             cpu_tensor = torch.ones(4, dtype=torch.float32, device="cpu")
-            cuda_tensor = torch.ones(
-                4, dtype=torch.float32, device=f"cuda:{local_rank}"
-            )
+            gpu_tensor = torch.ones(4, dtype=torch.float32, device=local_device_str)
             dist.all_reduce(cpu_tensor)
-            dist.all_reduce(cuda_tensor)
+            dist.all_reduce(gpu_tensor)
             self.assertEqual(cpu_tensor[0].item(), float(world_size))
-            self.assertEqual(cuda_tensor[0].item(), float(world_size))
+            self.assertEqual(gpu_tensor[0].item(), float(world_size))
         finally:
             # Must not raise even though both sub-backends share the comm.
             dist.destroy_process_group()
