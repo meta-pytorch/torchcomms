@@ -17,7 +17,6 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
@@ -106,50 +105,6 @@ bool waitForCollTraceDrain(
 
 using meta::comms::ncclx::dumpNewCollTrace;
 using meta::comms::ncclx::isKeyRequested;
-
-namespace {
-// NOTE: Keep in sync with scripts/lobanova/nccl/nccl_dump.thrift
-void dumpProcessGlobalErrors(
-    std::unordered_map<std::string, std::string>& map,
-    const DumpFieldSet& requestFields = {}) {
-  if (!isKeyRequested(requestFields, "processGlobalErrors")) {
-    return;
-  }
-  if (!NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS) {
-    return;
-  }
-
-  auto state = ProcessGlobalErrorsUtil::getAllState();
-
-  folly::dynamic obj = folly::dynamic::object();
-  obj["badNics"] = folly::dynamic::object();
-  for (const auto& [device, portMap] : state.badNics) {
-    obj["badNics"][device] = folly::dynamic::object();
-    for (const auto& [port, nicError] : portMap) {
-      auto portStr = fmt::format("{}", port);
-      obj["badNics"][device][portStr] = folly::dynamic::object();
-      obj["badNics"][device][portStr]["timestampMs"] =
-          nicError.timestampMs.count();
-      obj["badNics"][device][portStr]["errorMessage"] = nicError.errorMessage;
-    }
-  }
-
-  obj["errorAndStackTraces"] = folly::dynamic::array();
-  for (const auto& errorAndStackTrace : state.errorAndStackTraces) {
-    folly::dynamic errorAndStackTraceObj = folly::dynamic::object();
-    errorAndStackTraceObj["timestampMs"] =
-        errorAndStackTrace.timestampMs.count();
-    errorAndStackTraceObj["errorMessage"] = errorAndStackTrace.errorMessage;
-    errorAndStackTraceObj["stackTrace"] = folly::dynamic::array(
-        errorAndStackTrace.stackTrace.begin(),
-        errorAndStackTrace.stackTrace.end());
-
-    obj["errorAndStackTraces"].push_back(std::move(errorAndStackTraceObj));
-  }
-
-  map["processGlobalErrors"] = folly::toJson(obj);
-}
-} // namespace
 
 static void dumpCommInfo(
     const ncclComm_t comm,
@@ -273,7 +228,6 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   }
 
   dumpAlgoStatToMap(info.algoStats, map, requestFields);
-  dumpProcessGlobalErrors(map, requestFields);
   dumpMemoryTrace(info.memTracer, map, requestFields);
 
   return map;
@@ -308,7 +262,6 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
       XLOGF(DBG2, "CommDump: Dumped from colltrace");
     }
   }
-  dumpProcessGlobalErrors(map);
 
   return ncclSuccess;
 }
