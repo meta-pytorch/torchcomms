@@ -172,7 +172,6 @@ Args:
 
         Expensive — requires dumping + JSON serialization of collections:
             CT_pastColls, CT_currentColls, CT_pendingColls,
-            PT_pastColls, PT_activeOps, PT_activeColls,
             processGlobalErrors, GlobalInfo::NetworkPerfInfo
 
 Returns:
