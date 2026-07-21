@@ -20,10 +20,10 @@ const auto myAlgo = NCCL_ALLGATHER_P_ALGO::ctpipeline;
 
 // Get the index of the chunk in recvBuff to receive from the internode Ring
 // neighbor in the rail. E.g., for nRanks = 8, nLocalRanks = 2, rank = 2, it
-// would receive chunkIdx 0, 6, 4 of the recvBuff in a 3-step Ring.
+// would receive chunkIdx 2, 0, 6 of the recvBuff in a 3-step Ring.
 inline size_t
 getRecvChunkIdxInRail(int rank, int step, int nLocalRanks, int nRanks) {
-  return (rank - step * nLocalRanks + nRanks) & (nRanks - 1);
+  return (rank - step * nLocalRanks + nRanks) % nRanks;
 }
 
 commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
@@ -303,7 +303,7 @@ commResult_t AlgoImpl::execPipeline(
         pArgs.remoteAccessKeys,
         stream_));
 
-    const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
+    const int upPeer = (nRanks + myRank - nLocalRanks) % nRanks;
 
     // -  Remaining steps: broadcast received chunk from internode upPeer
     for (int step = 0; step < nNodes - 1; step++) {
