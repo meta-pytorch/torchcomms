@@ -47,6 +47,12 @@ void GraphCudaWaitEvent::attachRingBuffer(
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
+  // The collective kernel publishes its own start timestamp into the ring, so
+  // skip the host-launched timestamp kernel (and its stream fork) entirely.
+  if (intraKernelEmitActive_) {
+    return folly::unit;
+  }
+
   // Fork: collective stream -> timestamp stream so the start kernel is
   // captured into the graph. We use cudaStreamWaitEvent to bring the
   // timestamp stream into the capture with a dependency on the main
@@ -63,6 +69,12 @@ CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::afterCollKernelScheduled() noexcept {
+  // The collective kernel publishes its own end timestamp into the ring, so
+  // skip the host-launched timestamp kernel and the rejoin/dependency dance.
+  if (intraKernelEmitActive_) {
+    return folly::unit;
+  }
+
   // Fork: collective stream -> timestamp stream. This DAG edge ensures the
   // end timestamp kernel fires only after the collective completes.
   CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, stream_));

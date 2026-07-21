@@ -244,8 +244,7 @@ commResult_t AlgoImpl::execPipeline(
   config.numThreads = 1;
   config.args.devState_d = ctran->algo->getDevState();
 
-  // TODO: ensure colltrace can capture the group of operations as single
-  // allgather
+  bool colltraceGroupOpen = false;
 
   if (nNodes > 1) {
     // Submit inter-node Ring pipeline for GPE thread to execute. Skip if single
@@ -266,6 +265,9 @@ commResult_t AlgoImpl::execPipeline(
       //   GPE thread till allgather starts. ncclKernelAllGatherPPipeStart
       //   returns immediately after started GPE, thus the inter-node pipeline
       //   can be overlapped with the following intra-node copies.
+      config.colltraceInlineWrites = true;
+      config.colltraceEmitStart = true;
+      colltraceGroupOpen = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
@@ -274,6 +276,9 @@ commResult_t AlgoImpl::execPipeline(
     } else {
       // - For nLocalRanks == 1 case, ncclKernelAllGatherPRing holds the stream
       //   till GPE thread finishes entire transfer.
+      config.colltraceInlineWrites = true;
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
@@ -314,6 +319,7 @@ commResult_t AlgoImpl::execPipeline(
           .pipeSync = resource_.pipeSync,
       };
       config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+      config.colltraceInlineWrites = true;
       FB_COMMCHECK(ctran->gpe->submit(
           {},
           nullptr,
@@ -340,6 +346,10 @@ commResult_t AlgoImpl::execPipeline(
         .pipeSync = resource_.pipeSync,
     };
     config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+    if (colltraceGroupOpen) {
+      config.colltraceInlineWrites = true;
+      config.colltraceEmitEnd = true;
+    }
     FB_COMMCHECK(ctran->gpe->submit(
         {},
         nullptr,

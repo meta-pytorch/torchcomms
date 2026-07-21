@@ -44,6 +44,9 @@ struct alignas(128) KernelFlagItem {
     // Clear the full ring header so enabled==1 always implies ring/cmdId are
     // current; submit() re-arms it per-cmd on the ring path.
     dev.gpeHdr = {};
+    // Same invariant for the colltrace header: enabled==1 must always imply a
+    // current ring/collId; submit() re-arms it per-cmd for grouped kernels.
+    dev.colltraceHdr = {};
   }
 
   bool inUse() {
@@ -66,6 +69,9 @@ struct alignas(128) KernelFlagItem {
     // Clear the full ring header (not just enabled) so a stale ring/cmdId can
     // never be published; submit() re-arms it per-cmd on the ring path.
     dev.gpeHdr = {};
+    // Same for the colltrace header: a stale ring/collId must never be
+    // published; submit() re-arms it per-cmd for grouped kernels.
+    dev.colltraceHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
@@ -352,6 +358,16 @@ class CtranGpe::Impl {
   std::unique_ptr<ctran::gpe::GpeRingReader> deviceRingReader_;
   std::queue<CtranGpeCmd*> ringPending_;
   GpeDeviceRingCmdRegistry deviceRingCmdRegistry_;
+
+  // In-kernel colltrace grouping: a multi-submit collective (e.g. AllGatherP's
+  // PipeStart..PipeSync..PipeEnd) records one CollTrace event whose start is
+  // written by the group's Begin kernel and end by its End kernel. Begin
+  // stashes the device handle (ring + collId) here so the following End submit
+  // arms its kernel with the same collId. A default (null-ring, !valid())
+  // handle means no group is open. Written and read only on the submit
+  // (capture) thread, and a group's submits are always contiguous, so a single
+  // pending slot suffices.
+  meta::comms::colltrace::ColltraceDeviceHandle pendingColltraceGroup_{};
 
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.
