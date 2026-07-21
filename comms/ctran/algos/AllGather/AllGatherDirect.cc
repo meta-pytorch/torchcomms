@@ -306,6 +306,9 @@ commResult_t ctranAllGatherDirect(
   FB_COMMCHECK(setupPlan(comm, opGroup, config));
   XCHECK(kernFnMap.contains(datatype))
       << "kernFnMap does not contain datatype " << datatype;
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), impl, config, kernFnMap.at(datatype)));
   if (extraCopyBuff != nullptr) {

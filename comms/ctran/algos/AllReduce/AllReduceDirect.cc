@@ -739,6 +739,10 @@ commResult_t ctranAllReduceDirect(
 
   opGroup.push_back(std::move(op));
 
+  // Single-kernel collective: arm the kernel to emit both colltrace boundaries.
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), impl, config, func, timeout));
 
