@@ -13,6 +13,9 @@
 #endif
 
 #include <nccl.h>
+#include <filesystem>
+#include <set>
+#include <sstream>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
 #include "comms/ctran/profiler/Profiler.h"
@@ -22,6 +25,16 @@
 #include "comms/ctran/utils/MathUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
+
+#include <folly/Singleton.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
+#include <folly/testing/TestUtil.h>
+
+#include "comms/utils/StrUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/tests/MockScubaTable.h"
 // Test sources uses ncclMemAlloc API from nccl.h/rccl.h, so adding this check
 // macro here so to avoid including TestUtils.h which doesn't support
 // cross-platform
@@ -37,6 +50,21 @@
       exit(EXIT_FAILURE);                    \
     }                                        \
   } while (0)
+
+namespace {
+// The nccl_structured_logging pipe filename embeds an unpredictable timestamp
+// suffix, so locate this rank's file by its stable name prefix.
+std::string findStructuredLoggingFile(const std::string& dir) {
+  const std::string namePrefix =
+      "dedicated_log_structured_json.perfpipe_nccl_structured_logging";
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    if (entry.path().filename().string().rfind(namePrefix, 0) == 0) {
+      return entry.path().string();
+    }
+  }
+  return "";
+}
+} // namespace
 
 class CtranAllgatherPTestEnv : public ctran::CtranEnvironmentBase {
  public:
@@ -615,6 +643,89 @@ TEST_F(CtranAllgatherPTest, InternalRegisteredMemory) {
 
   ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
   delete request;
+}
+
+// Verifies createPersistentRequest (AllGatherP.cc) and exchangeIpcReg
+// (CommUtils.h) record the AgpCreate IPC-exchange latency rows to the
+// nccl_structured_logging scuba table with the expected stage names and
+// comm-identity fields when NCCL_COMM_EVENT_LOGGING is enabled.
+TEST_F(CtranAllgatherPTest, StructuredLoggingRecordsAgpCreateFields) {
+  // Stop the logger started during comm creation, then route the CommEvents
+  // emitted by the AGP create path to a per-rank pipe file we read back below.
+  NcclLogger::close();
+
+  folly::test::TemporaryDirectory tmpDir;
+  // Both cvars are read from the C++ globals at record time; the cudaMalloc
+  // path below never triggers a ncclCvarInit, so EnvRAII (not SysEnvRAII) is
+  // required for the values to reach the logger.
+  EnvRAII fileEnv(NCCL_SCUBA_LOG_FILE_PREFIX, tmpDir.path().string());
+  EnvRAII eventEnv(
+      NCCL_COMM_EVENT_LOGGING, std::string("pipe:nccl_structured_logging"));
+
+  // make_mock is the only way to force the DataTableAllTables singleton to be
+  // rebuilt after the per-test cvars are set (comm creation may have baked in
+  // an empty prefix). callParent=true makes the mock delegate to the real
+  // DataTable so records are written to the pipe file.
+  folly::Singleton<const DataTableAllTables, DataTableAllTablesTag>::make_mock(
+      []() { return new DataTableAllTables(createAllMockTables(true)); });
+  folly::Singleton<const DataTableAllTables, DataTableAllTablesTag>::try_get();
+
+  // Re-init the logger so a fresh nccl_structured_logging DataTableWrapper
+  // resolves against the mock singleton on the first recorded event.
+  NcclLogger::init();
+
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
+
+  // cudaMalloc (not ncclMemAlloc) keeps the logging cvars intact by avoiding
+  // ncclMemAlloc's ncclCvarInit.
+  run(1024, 1024, kTestOutOfPlace, kMemCudaMalloc, ctranComm.get());
+
+  // Flush the background logging thread and close the pipe file before reading.
+  NcclLogger::close();
+
+  const std::string logFile = findStructuredLoggingFile(tmpDir.path().string());
+  ASSERT_FALSE(logFile.empty()) << "no nccl_structured_logging pipe file under "
+                                << tmpDir.path().string();
+  const auto output = readFromFile(logFile);
+  ASSERT_NE(output, "");
+
+  std::set<std::string> stages;
+  std::string regCommDesc;
+  int64_t regCommHash = 0;
+  bool sawReg = false;
+  std::istringstream iss(output);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    const auto jsonLog = folly::parseJson(line);
+    const auto stage = jsonLog["normal"]["stage"].asString();
+    stages.insert(stage);
+    if (stage == "AgpCreate/Reg" && !sawReg) {
+      sawReg = true;
+      regCommDesc = jsonLog["normal"]["commDesc"].asString();
+      regCommHash = jsonLog["int"]["commHash"].asInt();
+      EXPECT_GE(jsonLog["double"]["timerDeltaMs"].asDouble(), 0.0);
+    }
+  }
+
+  const std::vector<std::string> expectedStages = {
+      "AgpCreate/Reg",
+      "AgpCreate/IpcExchange",
+      "AgpCreate/IpcExchange/IntraAllGatherCtrl",
+      "AgpCreate/IpcExchange/IntraBarrier"};
+  for (const auto& expected : expectedStages) {
+    EXPECT_TRUE(stages.count(expected) > 0)
+        << "missing AgpCreate stage: " << expected;
+  }
+
+  // The AgpCreate/Reg row must carry the owning comm's identity.
+  ASSERT_TRUE(sawReg);
+  EXPECT_FALSE(regCommDesc.empty());
+  EXPECT_EQ(regCommDesc, ctranComm->logMetaData_.commDesc);
+  EXPECT_EQ(
+      regCommHash, static_cast<int64_t>(ctranComm->logMetaData_.commHash));
 }
 
 TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {

@@ -194,6 +194,26 @@ commResult_t createPersistentRequest(
       scopedRegisterUs,
       ipcExchangeUs);
 
+  // AgpCreate/IpcExchange is the createPersistentRequest-side wall time of the
+  // IPC exchange phase: for graph (waitForInit) it is the real blocking
+  // exchange, but for eager it is only the async submitHost latency -- the
+  // actual exchange runs later on the GPE thread and is captured by the
+  // AgpCreate/IpcExchange/Intra* child rows.
+  NcclScubaEvent(
+      std::make_unique<CommEvent>(
+          &comm->logMetaData_,
+          "AgpCreate/Reg",
+          std::string(),
+          scopedRegisterUs / 1000.0))
+      .record();
+  NcclScubaEvent(
+      std::make_unique<CommEvent>(
+          &comm->logMetaData_,
+          "AgpCreate/IpcExchange",
+          std::string(),
+          ipcExchangeUs / 1000.0))
+      .record();
+
   reqGuard.dismiss();
   *out = request.release();
 
