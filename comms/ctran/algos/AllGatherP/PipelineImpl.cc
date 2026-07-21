@@ -172,7 +172,7 @@ extern __global__ void ncclKernelAllGatherPPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args);
-extern __global__ void ncclKernelAllGatherPPipe(
+extern __global__ void ncclKernelAllGatherPRing(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 
@@ -263,22 +263,22 @@ commResult_t AlgoImpl::execPipeline(
 
     if (nLocalRanks > 1) {
       // - For nLocalRanks > 1 case, use ncclKernelAllGatherPPipeStart to hold
-      //   GPE thread till allgather starts. ncclKernelAllGatherPStart returns
-      //   immediately after started GPE, thus the inter-node pipeline can be
-      //   overlapped with the following intra-node copies.
+      //   GPE thread till allgather starts. ncclKernelAllGatherPPipeStart
+      //   returns immediately after started GPE, thus the inter-node pipeline
+      //   can be overlapped with the following intra-node copies.
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
           reinterpret_cast<void*>(ncclKernelAllGatherPPipeStart)));
     } else {
-      // - For nLocalRanks == 1 case, ncclKernelAllGatherPPipe holds the stream
+      // - For nLocalRanks == 1 case, ncclKernelAllGatherPRing holds the stream
       //   till GPE thread finishes entire transfer.
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
-          reinterpret_cast<void*>(ncclKernelAllGatherPPipe)));
+          reinterpret_cast<void*>(ncclKernelAllGatherPRing)));
     }
   }
 
