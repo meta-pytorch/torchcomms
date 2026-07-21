@@ -2674,29 +2674,6 @@ cvars:
      when the env var is unset, so the code default tracks the yaml default
      without manual sync.
 
- - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
-   type        : uint64_t
-   default     : 20
-   description : |-
-     Maximum amount of past collectives MapperTrace will record.
-     If the amount of collective exceeds this value, the oldest one will be
-     dropped. Set the value to 0 will make MapperTrace record all collectives.
-
- - name        : NCCL_MAPPERTRACE_ENABLE
-   type        : bool
-   default     : true
-   description : |-
-     Whether to enable MapperTrace.
-
- - name        : NCCL_MAPPERTRACE_EVENT_RECORD_MAX
-   type        : uint64_t
-   default     : 100000
-   description : |-
-     How many events to keep in the event history. If the number of events
-     exceeds this value, the new events will be silently dropped.
-     We are targeting 8000 ranks most, so leaving room for 100K events should
-     be sufficient.
-
  - name        : NCCL_GIN_TYPE
    type        : int64_t
    default     : 0
