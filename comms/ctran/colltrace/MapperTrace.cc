@@ -305,11 +305,7 @@ void MapperTrace::registerBeforeCollEndCallback(
   callback_ = std::move(callback);
 }
 
-MapperTrace* getMapperTrace(CtranComm* comm) {
-  if (comm == nullptr || comm->ctran_ == nullptr ||
-      comm->ctran_->mapper == nullptr) {
-    return nullptr;
-  }
-  return comm->ctran_->mapper->mapperTrace.get();
+MapperTrace* getMapperTrace(CtranComm* /*comm*/) {
+  return nullptr;
 }
 } // namespace ncclx::colltrace
