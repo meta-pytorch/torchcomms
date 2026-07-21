@@ -9,7 +9,6 @@
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
-#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
@@ -26,7 +25,6 @@
 #include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
-using namespace ncclx::colltrace;
 using meta::comms::colltrace::CollTraceHandleTriggerState;
 
 static std::unordered_map<KernelConfig::KernelType, const std::string>
@@ -904,17 +902,6 @@ void CtranGpe::Impl::gpeThreadFn() {
       }
 
       auto comm = cmd->coll.comm;
-      if (comm != nullptr) {
-        ncclx::colltrace::recordMapperEvent(
-            comm,
-            ncclx::colltrace::CollStart{
-                .coll = cmd->coll.collHandle != nullptr
-                    ? cmd->coll.collHandle->getCollRecord().value_or(
-                          std::make_unique<meta::comms::colltrace::CollRecord>(
-                              -1, nullptr))
-                    : nullptr,
-            });
-      }
 
       {
         // comm may be dummy in GPE UT, although never happens in real.
@@ -1027,11 +1014,6 @@ void CtranGpe::Impl::gpeThreadFn() {
       if (cmd->coll.collHandle != nullptr) {
         cmd->coll.collHandle->trigger(
             CollTraceHandleTriggerState::KernelFinished);
-      }
-
-      if (cmd->coll.comm != nullptr) {
-        ncclx::colltrace::recordMapperEvent(
-            cmd->coll.comm, ncclx::colltrace::CollEnd{});
       }
 
       if (cmd->persistent) {

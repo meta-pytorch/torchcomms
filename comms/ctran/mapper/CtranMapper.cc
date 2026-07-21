@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -95,9 +94,6 @@ void computePacketSlice(
 
 CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
   const auto statex = comm->statex_.get();
-  if (NCCL_MAPPERTRACE_ENABLE) {
-    this->mapperTrace = std::make_unique<ncclx::colltrace::MapperTrace>();
-  }
   this->logMetaData_ = CommLogData{
       0,
       statex->commHash(),
@@ -863,25 +859,13 @@ commResult_t CtranMapper::icopy(
     std::size_t len,
     cudaStream_t stream,
     CtranMapperRequest** req) {
-  CtranMapperRequest* traceReq = nullptr;
   if (req) {
     *req = new CtranMapperRequest(CtranMapperRequest::ReqType::COPY, rank);
     (*req)->workStream = stream;
-    traceReq = *req;
   }
   FB_CUDACHECK(cudaMemcpyAsync(dbuf, sbuf, len, cudaMemcpyDefault, stream));
 
   iCopyCount++;
-
-  if (this->mapperTrace) {
-    this->mapperTrace->recordMapperEvent(
-        ncclx::colltrace::CopyStart{
-            .sourceBuffer = const_cast<void*>(sbuf),
-            .destBuffer = dbuf,
-            .length = len,
-            .stream = stream,
-            .req = traceReq});
-  }
 
   return commSuccess;
 }

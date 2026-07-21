@@ -12,7 +12,6 @@
 #include "meta/NcclxConfig.h" // @manual
 #include "nccl.h"
 
-#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
@@ -20,7 +19,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
-#include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 
@@ -208,65 +206,6 @@ static void dumpCommInfo(
   }
 }
 
-static void dumpMapperTrace(
-    ncclx::colltrace::MapperTrace& mapperTrace,
-    std::unordered_map<std::string, std::string>& map,
-    const DumpFieldSet& requestFields = {}) {
-  auto dump = mapperTrace.dump();
-
-  XLOGF(
-      DBG2,
-      "CommDump: MAPPERTRACE dump: {} unfinished req, {} current collective records",
-      dump.unfinishedRequests.size(),
-      dump.currentColl != nullptr ? 1 : 0);
-
-  if (isKeyRequested(requestFields, "MT_currentColl")) {
-    if (dump.currentColl != nullptr) {
-      map["MT_currentColl"] = folly::toJson(dump.currentColl->toDynamic());
-    } else {
-      map["MT_currentColl"] = "null";
-    }
-  }
-
-  if (isKeyRequested(requestFields, "MT_unfinishedRequests")) {
-    map["MT_unfinishedRequests"] = serializeObjects(dump.unfinishedRequests);
-  }
-  if (isKeyRequested(requestFields, "MT_recvNotifiedByPeer")) {
-    map["MT_recvNotifiedByPeer"] = mapToJson(dump.recvNotifiedByPeer);
-  }
-  if (isKeyRequested(requestFields, "MT_putFinishedByPeer")) {
-    map["MT_putFinishedByPeer"] = mapToJson(dump.putFinishedByPeer);
-  }
-}
-
-static void dumpProxyTrace(
-    const ProxyTrace* ProxyTrace,
-    uint64_t commHash,
-    std::unordered_map<std::string, std::string>& map,
-    const DumpFieldSet& requestFields = {}) {
-  if (ProxyTrace) {
-    auto dump = ProxyTrace->dump(commHash);
-
-    XLOGF(
-        DBG2,
-        "CommDump: PROXYTRACE dump: {} past collectives, {} active network operations",
-        dump.pastColls.size(),
-        dump.activeOps.size());
-
-    if (isKeyRequested(requestFields, "PT_pastColls")) {
-      map["PT_pastColls"] = serializeObjects(dump.pastColls);
-    }
-    if (isKeyRequested(requestFields, "PT_activeOps")) {
-      map["PT_activeOps"] = serializeObjects(dump.activeOps);
-    }
-    if (isKeyRequested(requestFields, "PT_activeColls")) {
-      map["PT_activeColls"] = serializeObjects(dump.activeColls);
-    }
-  } else {
-    XLOGF(DBG2, "CommDump: PROXYTRACE is disabled. No trace to dump");
-  }
-}
-
 static void dumpMemoryTrace(
     const std::shared_ptr<meta::comms::memtrace::MemoryTrace>& memTracer,
     std::unordered_map<std::string, std::string>& map,
@@ -333,25 +272,6 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from colltrace");
   }
 
-  if (anyKeyRequested(
-          requestFields, {"PT_pastColls", "PT_activeOps", "PT_activeColls"})) {
-    dumpProxyTrace(
-        info.proxyTrace.get(), info.logMetaData.commHash, map, requestFields);
-  }
-
-  if (anyKeyRequested(
-          requestFields,
-          {"MT_currentColl",
-           "MT_unfinishedRequests",
-           "MT_recvNotifiedByPeer",
-           "MT_putFinishedByPeer"})) {
-    if (info.mapperTrace != nullptr) {
-      dumpMapperTrace(*info.mapperTrace, map, requestFields);
-    } else {
-      XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
-    }
-  }
-
   dumpAlgoStatToMap(info.algoStats, map, requestFields);
   dumpProcessGlobalErrors(map, requestFields);
   dumpMemoryTrace(info.memTracer, map, requestFields);
@@ -386,16 +306,6 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
     if (comm->newCollTrace != nullptr) {
       map.merge(dumpNewCollTrace(*comm->newCollTrace));
       XLOGF(DBG2, "CommDump: Dumped from colltrace");
-    }
-    if (comm->proxyState != nullptr) {
-      dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);
-    }
-
-    auto mapperTrace = ncclx::colltrace::getMapperTrace(comm->ctranComm_.get());
-    if (mapperTrace != nullptr) {
-      dumpMapperTrace(*mapperTrace, map);
-    } else {
-      XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
     }
   }
   dumpProcessGlobalErrors(map);
