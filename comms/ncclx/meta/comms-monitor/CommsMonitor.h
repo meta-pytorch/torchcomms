@@ -10,7 +10,6 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
-#include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
 struct CommStateInfo {
@@ -24,7 +23,6 @@ struct CommStateInfo {
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
   CommStateInfo stateInfo;
-  std::shared_ptr<ProxyTrace> proxyTrace;
   // ptr for the new colltrace interface.
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
 
