@@ -183,7 +183,7 @@ StagedBuffer::StagedBuffer(
 
     dmabufFd_ = ctran::utils::getCuMemDmaBufFd(buf_, size);
     if (dmabufFd_ < 0) {
-      cudaFree(buf_);
+      (void)cudaFree(buf_);
       throw std::runtime_error("Failed to get dmabuf fd for GPU buffer");
     }
 
@@ -197,7 +197,7 @@ StagedBuffer::StagedBuffer(
             IBV_ACCESS_REMOTE_READ));
     if (!maybeMr) {
       close(dmabufFd_);
-      cudaFree(buf_);
+      (void)cudaFree(buf_);
       throw std::runtime_error(
           "Failed to register dmabuf MR: " + maybeMr.error().errStr);
     }
@@ -231,7 +231,7 @@ StagedBuffer::~StagedBuffer() {
   }
   if (buf_) {
     if (isGpu_) {
-      cudaFree(buf_);
+      (void)cudaFree(buf_);
     } else {
       free(buf_);
     }
@@ -257,7 +257,7 @@ StagedBuffer& StagedBuffer::operator=(StagedBuffer&& other) noexcept {
     }
     if (buf_) {
       if (isGpu_) {
-        cudaFree(buf_);
+        (void)cudaFree(buf_);
       } else {
         free(buf_);
       }
@@ -312,7 +312,7 @@ StagedRdmaTransportBase::~StagedRdmaTransportBase() {
   if (stream_) {
     // Sync to ensure pending cudaMemcpyAsync completes before staging
     // buffer is freed. Don't destroy — stream is shared (process lifetime).
-    cudaStreamSynchronize(stream_);
+    (void)cudaStreamSynchronize(stream_);
   }
 }
 

@@ -44,7 +44,7 @@ class RdmaTransportTest : public ::testing::Test {
   void TearDown() override {
     // Reset CUDA device
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaDeviceReset();
+    (void)cudaDeviceReset();
   }
 
   // Structure to hold synchronization objects for thread communication
@@ -284,7 +284,7 @@ class RdmaMemoryTest : public ::testing::Test {
       EXPECT_EQ(cudaFree(buffer_), cudaSuccess);
     }
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaDeviceReset();
+    (void)cudaDeviceReset();
   }
 
   void* buffer_{nullptr};
