@@ -375,9 +375,10 @@ ncclResult_t ncclAllToAll(
         recvbuff);
   }
 
-  if ((NCCL_ALLTOALL_ALGO != NCCL_ALLTOALL_ALGO::orig) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO, stream)) {
-    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, NCCL_ALLTOALL_ALGO));
+  auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
+  if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream)) {
+    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
   }
 
   // fallback to baseline send/recv based alltoall

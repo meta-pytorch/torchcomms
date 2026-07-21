@@ -147,6 +147,26 @@ void checkAlgoStrToVal(enum NCCL_ALLTOALLV_ALGO algo) {
   EXPECT_EQ(algoValToStr(algo), str) << "algoValToStr round-trip failed";
 }
 
+void checkAlgoStrToVal(enum NCCL_ALLTOALL_ALGO algo) {
+  std::string str = "UNHANDLED_ENUM_VALUE";
+  switch (algo) {
+    case NCCL_ALLTOALL_ALGO::orig:
+      str = "orig";
+      break;
+    case NCCL_ALLTOALL_ALGO::ctran:
+      str = "ctran";
+      break;
+    case NCCL_ALLTOALL_ALGO::ctgraph:
+      str = "ctgraph";
+      break;
+  }
+  enum NCCL_ALLTOALL_ALGO result;
+  algoStrToVal(str, result);
+  EXPECT_EQ(result, algo) << "algoStrToVal(\"" << str
+                          << "\") returned wrong value";
+  EXPECT_EQ(algoValToStr(algo), str) << "algoValToStr round-trip failed";
+}
+
 void checkAlgoStrToVal(enum NCCL_RMA_ALGO algo) {
   std::string str = "UNHANDLED_ENUM_VALUE";
   switch (algo) {
@@ -208,6 +228,12 @@ TEST(AlgoStrConvTest, AllToAllVCompleteness) {
   checkAlgoStrToVal(NCCL_ALLTOALLV_ALGO::bsCompCtran);
 }
 
+TEST(AlgoStrConvTest, AllToAllCompleteness) {
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::orig);
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::ctran);
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::ctgraph);
+}
+
 TEST(AlgoStrConvTest, RmaCompleteness) {
   checkAlgoStrToVal(NCCL_RMA_ALGO::orig);
   checkAlgoStrToVal(NCCL_RMA_ALGO::ctran);
@@ -229,6 +255,10 @@ TEST(AlgoStrConvTest, UnknownStringFallback) {
   enum NCCL_ALLTOALLV_ALGO alltoallv;
   algoStrToVal("nonexistent", alltoallv);
   EXPECT_EQ(alltoallv, NCCL_ALLTOALLV_ALGO::orig);
+
+  enum NCCL_ALLTOALL_ALGO alltoall;
+  algoStrToVal("nonexistent", alltoall);
+  EXPECT_EQ(alltoall, NCCL_ALLTOALL_ALGO::orig);
 
   enum NCCL_RMA_ALGO rma;
   algoStrToVal("nonexistent", rma);
