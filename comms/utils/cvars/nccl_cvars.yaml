@@ -2681,40 +2681,6 @@ cvars:
      GPU-Initiated Network (GIN) type configuration. This controls the type
      of GIN implementation to use for network operations.
 
- - name        : NCCL_PROXYMOCK_NET_SEND_FAILURE
-   type        : stringlist
-   default     :
-   description : |-
-     Backdoor to mock a send failure in proxy thread following the format of
-     "<opCount>,<rank>,<remoteRank>,<step>,<num_match>,<delay_sec>".
-     Set any of <opCount>,<rank>,<remoteRank>,<step> to -1 to match any.
-     Set <delay_sec> to 0 to always skip this send as a network failure,
-     otherwise delay it in seconds to mock slow network.
-     Set <num_match> to control how many times to match the send failure.
-     Example 1: "10,1,0,5,1,30" - mock a slow send by delaying 30 seconds
-     for the send operation matching [opCount 10, channel 1, rank 0, remote
-     rank 1, starting from step 5].
-     Example 2: "10,1,-1,-1,2,0" - mock 2 send failures matching [opCount 10,
-     channel 1, rank 0, *any* remote rank, any step].
-
- - name        : NCCL_PROXYTRACE
-   type        : stringlist
-   default     :
-   description : |-
-     Enable proxy operation trace collection on the proxy thread. Valid options
-     are comma separated list of the following features. Leave empty to disable
-     all features.
-     trace - enable trace only.
-     verbose - print every proxy operation step as NCCL INFO log.
-
- - name        : NCCL_PROXYTRACE_RECORD_MAX
-   type        : int
-   default     : 20
-   description : |-
-     Maximum amount of past collectives ProxyTrace will record per communicator.
-     If the amount of collective exceeds this value, the oldest one will be
-     dropped. Set the value to -1 will make ProxyTrace record all collectives.
-
  - name        : NCCL_IB_ASYNC_EVENT_LOOP
    type        : enum
    default     : baseline

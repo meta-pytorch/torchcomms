@@ -19,7 +19,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "meta/NcclxConfig.h"
-#include "meta/colltrace/ProxyMock.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 static bool VERBOSE = true;
@@ -538,115 +537,6 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
     // Check if checksum is dumped
     EXPECT_TRUE(ctPastCollsObjs[0].count("checksum"));
   }
-
-  if (comm->rank == 0 && VERBOSE) {
-    for (auto& it : dump) {
-      printf("%s: %s\n", it.first.c_str(), it.second.c_str());
-    }
-  }
-}
-
-TEST_F(CommDumpTest, DumpDuringColl) {
-  auto res = ncclSuccess;
-  std::unordered_map<std::string, std::string> dump;
-  constexpr int numColls = 10;
-
-  if (comm->nNodes < 2) {
-    GTEST_SKIP() << "Skipping test since nNodes < 2";
-  }
-
-  // commHash is intentially stored as hex string for readability
-  std::stringstream commHashSs;
-  commHashSs << std::hex << comm->commHash;
-  std::string commHashStr = commHashSs.str();
-
-  // Manually set the hanging point at opCount 5
-  constexpr int hangOpCount = 5;
-  constexpr int hangRank = 0;
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.clear();
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.push_back(std::to_string(hangOpCount));
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.push_back(std::to_string(hangRank));
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("-1");
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("-1");
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("1"); // match only once
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("30"); // delay 30 seconds
-
-  // Manually re-initialze state of the mock instance
-  auto& instance = ProxyMockNetSendFailure::getInstance();
-  instance.initialize();
-
-  this->initData(this->globalRank);
-  for (int i = 0; i < numColls; i++) {
-    NCCLCHECK_TEST(ncclAllReduce(
-        this->dataBuf,
-        this->dataBuf,
-        this->dataCount,
-        ncclInt,
-        ncclSum,
-        this->comm,
-        this->stream));
-  }
-
-  // Wait till the hanging point is reached
-  sleep(10);
-
-  res = ncclCommDump(this->comm, dump);
-
-  ASSERT_EQ(res, ncclSuccess);
-
-  // Check if all the values can be parsed as json entries
-  for (const auto& [_, val] : dump) {
-    EXPECT_NO_THROW(folly::parseJson(val));
-  }
-
-  EXPECT_EQ(dump.count("CT_pastColls"), 1);
-  EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColls"), 1);
-
-  // Check records are dumped correctly and simply check if can be
-  // parsed as json entries.
-
-  // PastColl: Except some ranks may stuck at the hanging opCount but some
-  // others may have finished and stuck at the next.
-  if (dump.count("CT_pastColls")) {
-    auto ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
-    size_t numPasts = ctPastCollsObjs.size();
-    // For CollTrace, we know rank 0 must be hanging at hangOpCount
-    if (comm->rank == hangRank) {
-      EXPECT_EQ(numPasts, hangOpCount);
-    } else {
-      EXPECT_TRUE(numPasts == hangOpCount || numPasts == hangOpCount + 1);
-    }
-  }
-
-  // Pending collectives
-  if (dump.count("CT_pendingColls")) {
-    auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
-    size_t numPending = ctPendingCollsObjs.size();
-    if (comm->rank == hangRank) {
-      // should hang exactly at hangOpCount, and 1 current
-      EXPECT_EQ(numPending, numColls - hangOpCount - 1);
-    } else {
-      // may hang at hangOpCount or next
-      EXPECT_TRUE(
-          numPending == numColls - hangOpCount - 1 ||
-          numPending == numColls - hangOpCount - 2);
-    }
-  }
-
-  if (dump.count("CT_currentColls")) {
-    EXPECT_NE(dump["CT_currentColls"], "[]");
-    auto ctCurrentCollsArr = folly::parseJson(dump["CT_currentColls"]);
-    ASSERT_GT(ctCurrentCollsArr.size(), 0);
-    if (comm->rank == hangRank) {
-      EXPECT_EQ(ctCurrentCollsArr[0]["collId"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsArr[0]["opCount"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsArr[0]["opName"], "AllReduce");
-    }
-  }
-
-  // Now let's wait for all communication to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
 
   if (comm->rank == 0 && VERBOSE) {
     for (auto& it : dump) {
