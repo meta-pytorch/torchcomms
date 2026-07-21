@@ -4,8 +4,7 @@
 
 #include <folly/Singleton.h>
 
-#include "comms/ctran/Ctran.h" // access to incomplete type
-
+#include "comms/utils/StrUtils.h"
 #include "comms/utils/colltrace/NetworkPerfMonitor.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -24,12 +23,6 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
 
 /*static*/ NcclCommMonitorInfo NcclCommMonitorInfo::fromNcclComm(
     ncclComm_t comm) {
-  std::shared_ptr<colltrace::MapperTrace> mapperTrace;
-  if (comm->ctranComm_ && comm->ctranComm_->ctran_ &&
-      comm->ctranComm_->ctran_->isInitialized()) {
-    mapperTrace = comm->ctranComm_->ctran_->mapper->mapperTrace;
-  }
-
   std::shared_ptr<ProxyTrace> proxyTrace;
   if (comm->proxyState != nullptr) {
     proxyTrace = comm->proxyState->trace;
@@ -43,7 +36,6 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .nLocalRanks = comm->localRanks,
               .nNodes = comm->nNodes,
               .cliqueSize = comm->clique.size},
-      .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace,
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
