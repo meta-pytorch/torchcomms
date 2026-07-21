@@ -119,6 +119,12 @@ ctypedef struct ncclConfig_t 'ncclConfig_t':
     int graphUsageMode
     int numRmaCtx
     int maxP2pPeers
+    char* commDesc
+    int* splitGroupRanks
+    int splitGroupSize
+    int fastInitMode
+    void* hints
+    void* ncclxConfig
 
 ctypedef struct ncclSimInfo_t 'ncclSimInfo_t':
     size_t size
