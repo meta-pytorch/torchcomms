@@ -40,7 +40,6 @@ skipped entirely if none of its keys are requested (`anyKeyRequested` check).
 |----------------|------------|
 | `dumpCommInfo()` | commHash, rank, localRank, node, nRanks, localRanks, nNodes, commDesc |
 | `dumpNewCollTrace()` → `commDumpToMap()` | CT_pastColls, CT_currentColls, CT_pendingColls, CT_currentIteration, CT_currentIterationCommTimeUs |
-| `dumpProcessGlobalErrors()` | processGlobalErrors |
 | `dumpMemoryTrace()` | memory |
 
 ### GlobalInfo Keys (in outer map under "GlobalInfo")
@@ -67,7 +66,6 @@ ncclCommDumpAll(map, requestFields)
             │      ├─ anyKeyRequested({commHash,rank,...})?  → dumpCommInfo(requestFields)
             │      ├─ anyKeyRequested({CT_*})?               → dumpNewCollTrace(requestFields)
             │      │                                           → commDumpToMap(requestFields)
-            │      ├─ isKeyRequested(processGlobalErrors)?   → dumpProcessGlobalErrors(requestFields)
             │      └─ isKeyRequested(memory)?                → dumpMemoryTrace(requestFields)
             │
             ├─ isKeyRequested(GlobalInfo::NetworkPerfInfo)?
