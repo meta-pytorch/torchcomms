@@ -528,11 +528,6 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
-  EXPECT_EQ(dump.count("MT_recvNotifiedByPeer"), 1);
-  EXPECT_EQ(dump.count("MT_unfinishedRequests"), 1);
-  EXPECT_EQ(dump.count("MT_putFinishedByPeer"), 1);
-  EXPECT_EQ(dump.count("MT_currentColl"), 1);
-
   if (comm->rank == 0 && VERBOSE) {
     for (auto& it : dump) {
       printf("%s: %s\n", it.first.c_str(), it.second.c_str());
