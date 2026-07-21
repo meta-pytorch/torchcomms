@@ -23,10 +23,6 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
 
 /*static*/ NcclCommMonitorInfo NcclCommMonitorInfo::fromNcclComm(
     ncclComm_t comm) {
-  std::shared_ptr<ProxyTrace> proxyTrace;
-  if (comm->proxyState != nullptr) {
-    proxyTrace = comm->proxyState->trace;
-  }
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
       .stateInfo =
@@ -36,7 +32,6 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .nLocalRanks = comm->localRanks,
               .nNodes = comm->nNodes,
               .cliqueSize = comm->clique.size},
-      .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace,
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
           comm->logMetaData.commHash),

@@ -19,7 +19,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
-#include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 
@@ -207,34 +206,6 @@ static void dumpCommInfo(
   }
 }
 
-static void dumpProxyTrace(
-    const ProxyTrace* ProxyTrace,
-    uint64_t commHash,
-    std::unordered_map<std::string, std::string>& map,
-    const DumpFieldSet& requestFields = {}) {
-  if (ProxyTrace) {
-    auto dump = ProxyTrace->dump(commHash);
-
-    XLOGF(
-        DBG2,
-        "CommDump: PROXYTRACE dump: {} past collectives, {} active network operations",
-        dump.pastColls.size(),
-        dump.activeOps.size());
-
-    if (isKeyRequested(requestFields, "PT_pastColls")) {
-      map["PT_pastColls"] = serializeObjects(dump.pastColls);
-    }
-    if (isKeyRequested(requestFields, "PT_activeOps")) {
-      map["PT_activeOps"] = serializeObjects(dump.activeOps);
-    }
-    if (isKeyRequested(requestFields, "PT_activeColls")) {
-      map["PT_activeColls"] = serializeObjects(dump.activeColls);
-    }
-  } else {
-    XLOGF(DBG2, "CommDump: PROXYTRACE is disabled. No trace to dump");
-  }
-}
-
 static void dumpMemoryTrace(
     const std::shared_ptr<meta::comms::memtrace::MemoryTrace>& memTracer,
     std::unordered_map<std::string, std::string>& map,
@@ -301,12 +272,6 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
     XLOGF(DBG2, "commDumpByMonitorInfo: Dumped from colltrace");
   }
 
-  if (anyKeyRequested(
-          requestFields, {"PT_pastColls", "PT_activeOps", "PT_activeColls"})) {
-    dumpProxyTrace(
-        info.proxyTrace.get(), info.logMetaData.commHash, map, requestFields);
-  }
-
   dumpAlgoStatToMap(info.algoStats, map, requestFields);
   dumpProcessGlobalErrors(map, requestFields);
   dumpMemoryTrace(info.memTracer, map, requestFields);
@@ -341,9 +306,6 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
     if (comm->newCollTrace != nullptr) {
       map.merge(dumpNewCollTrace(*comm->newCollTrace));
       XLOGF(DBG2, "CommDump: Dumped from colltrace");
-    }
-    if (comm->proxyState != nullptr) {
-      dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);
     }
   }
   dumpProcessGlobalErrors(map);
