@@ -15,7 +15,6 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 using namespace ctran::ibvwrap;
 
@@ -114,7 +113,6 @@ void IbUtils::timeoutHandler(
     std::string errorMessage = fmt::format(
         "Link down timeout reached for {} ({} ms).", devName, duration.count());
     addToStackTrace(errorMessage);
-    ProcessGlobalErrorsUtil::setNic(devName, port, errorMessage);
     XLOGF(
         WARN,
         "ctranCommSetAsyncError: error comm NULL sets state %d",
@@ -178,13 +176,6 @@ commResult_t IbUtils::triageIbAsyncEvents(
     ibverbx::ibv_event_type eventType,
     const std::string& devName,
     const int port) {
-  // TODO: Rebase functionality for this cvar and remove this local variable
-  bool NCCL_IB_ENABLE_REPORT_TO_PROCESS_GLOBAL_ERRORS = true;
-  if (!NCCL_IB_ENABLE_REPORT_TO_PROCESS_GLOBAL_ERRORS) {
-    CLOGF_SUBSYS(INFO, NET, "IB report to process global errors is disabled");
-    return commSuccess;
-  }
-
   char* asyncErrorMsg = nullptr;
   if (commSuccess != wrap_ibv_event_type_str(&asyncErrorMsg, eventType)) {
     CLOGF(WARN, "ibv_event_type_str not parsable - eventType={}", eventType);
@@ -243,7 +234,6 @@ commResult_t IbUtils::triageIbAsyncEvents(
     case ibverbx::IBV_EVENT_DEVICE_FATAL:
       ret = commSystemError;
       addToStackTrace(msg);
-      ProcessGlobalErrorsUtil::setNic(devName, port, msg);
       // preserve baseline functionality by not sending async error
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
         XLOGF(
