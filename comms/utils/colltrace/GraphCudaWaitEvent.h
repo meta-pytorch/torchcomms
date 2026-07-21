@@ -69,6 +69,24 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
     collId_ = collId;
   }
 
+  bool hasRingBuffer() const noexcept {
+    return ringBuffer_ != nullptr;
+  }
+
+  // Device-side write handle for the shared ring, handed to a collective kernel
+  // so it can publish its own start/end timestamps from inside the kernel.
+  ::hrdw_ring_buffer::HRDWRingBufferDeviceHandle<GraphCollTraceEvent>
+  deviceHandle() const noexcept {
+    return ringBuffer_->deviceHandle();
+  }
+
+  // Once the GPE has armed the collective kernel to write its own timestamps,
+  // this suppresses the host-launched timestamp kernels so start/end aren't
+  // recorded twice into the ring.
+  void setIntraKernelEmitActive() noexcept {
+    intraKernelEmitActive_ = true;
+  }
+
  private:
   cudaStream_t stream_;
   uint32_t collId_;
@@ -83,6 +101,11 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
 
   // owned by CollTrace, shared across ALL graphs. set via attachRingBuffer().
   ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};
+
+  // When set, the collective kernel writes its own start/end timestamps into
+  // the ring, so beforeCollKernelScheduled()/afterCollKernelScheduled() skip
+  // the host-launched timestamp kernels. Set via setIntraKernelEmitActive().
+  bool intraKernelEmitActive_{false};
 };
 
 } // namespace meta::comms::colltrace

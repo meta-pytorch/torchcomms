@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 
@@ -12,6 +14,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/gpe/CtranGpeColltrace.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -22,6 +25,7 @@
 #include "comms/ctran/utils/ExtUtils.h"
 
 #include "comms/utils/colltrace/CollRecord.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -303,6 +307,29 @@ commResult_t CtranGpe::Impl::submit(
           kernelConfig.stream, streamCaptureInfo));
   bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
 
+  // In-kernel colltrace gate (see inKernelColltraceSupported): decides whether
+  // this submit's kernel is armed to emit its own start/end timestamps.
+  // Independent of the GPE device ring. When off, in-kernel emit is disabled
+  // and every submit owns a record, keeping the host-launched timestamp path
+  // (today's behavior) regardless of the per-submit colltrace bools.
+  const bool useInKernelColltrace =
+      ctran::gpe::inKernelColltraceSupported() && isCapturing;
+  const bool colltraceInlineWrites =
+      useInKernelColltrace && kernelConfig.colltraceInlineWrites;
+  const bool colltraceEmitStart =
+      useInKernelColltrace && kernelConfig.colltraceEmitStart;
+  const bool colltraceEmitEnd =
+      useInKernelColltrace && kernelConfig.colltraceEmitEnd;
+  // A kernel owns a CollTrace record unless it's an interior/end kernel of an
+  // in-kernel-traced group (those reuse the begin kernel's record). Host-
+  // launched submits (inlineWrites == false) always own their record.
+  const bool colltraceCreatesRecord =
+      !colltraceInlineWrites || colltraceEmitStart;
+  // Arming writes colltraceHdr onto the kernel flag, so a kernel that emits
+  // either boundary needs a flag even with an empty opGroup (e.g. AllGatherP's
+  // PipeEnd) — otherwise it would run with a null flag and never emit.
+  const bool colltraceNeedsFlag = colltraceEmitStart || colltraceEmitEnd;
+
   // For eager (non-capture) submits with empty opGroup but a
   // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
   // can synchronize with the kernel before running cleanup. During graph
@@ -310,7 +337,7 @@ commResult_t CtranGpe::Impl::submit(
   // retainUserObject, avoiding host-node overhead.
   bool needsKernelFlag = !opGroup.empty() ||
       kernelConfig.unpackPool != nullptr ||
-      (kernelConfig.postKernelCleanup && !isCapturing);
+      (kernelConfig.postKernelCleanup && !isCapturing) || colltraceNeedsFlag;
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   ctran::gpe::KernelFlagDev* flagDev = nullptr;
@@ -353,8 +380,51 @@ commResult_t CtranGpe::Impl::submit(
   }
 
   // Record CollTrace event. Must be called before moving opGroup to cmd
-  auto colltraceHandle = meta::comms::colltrace::getCollTraceHandle(
-      comm, opGroup, kernelConfig, ifchecksum);
+  std::shared_ptr<meta::comms::colltrace::ICollTraceHandle> colltraceHandle =
+      colltraceCreatesRecord ? meta::comms::colltrace::getCollTraceHandle(
+                                   comm, opGroup, kernelConfig, ifchecksum)
+                             : nullptr;
+
+  // Arm the collective kernel to publish its own start/end timestamps into the
+  // colltrace ring, replacing the host-launched timestamp kernels for the
+  // grouped/self-timing pipeline collective. The header defaults to disabled
+  // (cleared on flag recycle), so kernels that emit nothing fall through.
+  if (useInKernelColltrace && kernelFlag != nullptr) {
+    if (colltraceEmitStart) {
+      // Begin (or single-kernel) collective: this kernel opens the record and
+      // writes the start. Drop any pending group left behind by a Begin whose
+      // End was never submitted (early-return, exception, or a future non-
+      // contiguous algo path), so a stale collId can never be consumed by a
+      // later unrelated End.
+      pendingColltraceGroup_ = {};
+      auto devHandle = colltraceHandle
+          ? colltraceHandle->getColltraceDeviceHandle()
+          : meta::comms::colltrace::ColltraceDeviceHandle{};
+      if (devHandle.valid()) {
+        // A single-kernel collective also emits the end here (emitEnd == true);
+        // a multi-kernel begin hands the end to the group's End kernel below.
+        devHandle.emitStart = true;
+        devHandle.emitEnd = colltraceEmitEnd;
+        kernelFlag->dev.colltraceHdr = devHandle;
+        // The kernel now writes the timestamps; drop the host-launched ones.
+        colltraceHandle->suppressInterKernelTimestamps();
+        if (!colltraceEmitEnd) {
+          // Multi-kernel begin: the End kernel reuses the same ring/collId.
+          pendingColltraceGroup_ = devHandle;
+          pendingColltraceGroup_.emitStart = false;
+          pendingColltraceGroup_.emitEnd = true;
+        }
+      }
+    } else if (colltraceEmitEnd) {
+      // End kernel of a multi-kernel collective: reuse the ring/collId stashed
+      // by the Begin and emit only the end.
+      if (pendingColltraceGroup_.valid()) {
+        kernelFlag->dev.colltraceHdr = pendingColltraceGroup_;
+      }
+      pendingColltraceGroup_ = {};
+    }
+    // Otherwise (interior kernel: no emit) there is nothing to arm.
+  }
 
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<OrderedWorkStreamGuard::Scope> wsScope;
