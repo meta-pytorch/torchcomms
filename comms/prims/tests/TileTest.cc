@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 #include "comms/prims/tests/TileTest.cuh"
@@ -20,7 +21,9 @@ namespace comms::prims {
 using comms::prims::test::kTileTest2DCols;
 using comms::prims::test::kTileTest2DRows;
 using comms::prims::test::kTileTestBlockSize;
+using comms::prims::test::kTileTestByteTileElems;
 using comms::prims::test::kTileTestTileElems;
+using comms::prims::test::test_tile_accumulate_dtype;
 using comms::prims::test::test_tile_accumulate_max_float;
 using comms::prims::test::test_tile_accumulate_max_half;
 using comms::prims::test::test_tile_accumulate_min_bf16;
@@ -40,6 +43,8 @@ using comms::prims::test::test_tile_partial_load_store_float;
 using comms::prims::test::test_tile_partial_load_tile_idx1_float;
 using comms::prims::test::test_tile_partial_store_float;
 using comms::prims::test::test_tile_zero_float;
+using comms::prims::test::TileTestDataType;
+using comms::prims::test::TileTestReduceOp;
 
 constexpr int kTileElems = kTileTestTileElems;
 constexpr int kNumTiles = 4;
@@ -301,6 +306,113 @@ TEST_F(TileTestFixture, AccumulateMin) {
       [](float a, float b) { return std::min(a, b); },
       a_h,
       b_h);
+}
+
+template <typename T>
+T make_accumulate_input_a(int index) {
+  if constexpr (std::is_floating_point_v<T>) {
+    return static_cast<T>((index % 101 - 50) * 0.25);
+  } else if constexpr (std::is_signed_v<T>) {
+    return static_cast<T>(index % 101 - 50);
+  } else {
+    return static_cast<T>(index % 101);
+  }
+}
+
+template <typename T>
+T make_accumulate_input_b(int index) {
+  if constexpr (std::is_floating_point_v<T>) {
+    return static_cast<T>(((index * 3 + 7) % 53 - 26) * 0.5);
+  } else if constexpr (std::is_signed_v<T>) {
+    return static_cast<T>((index * 3 + 7) % 37 - 18);
+  } else {
+    return static_cast<T>((index * 3 + 7) % 37);
+  }
+}
+
+template <typename T>
+T expected_accumulate(T a, T b, TileTestReduceOp op) {
+  switch (op) {
+    case TileTestReduceOp::kSum:
+      return static_cast<T>(a + b);
+    case TileTestReduceOp::kMax:
+      return std::max(a, b);
+    case TileTestReduceOp::kMin:
+      return std::min(a, b);
+  }
+  return a;
+}
+
+template <typename T>
+void run_accumulate_dtype_test(TileTestDataType dtype) {
+  constexpr int kDtypeTileElems =
+      sizeof(T) == 1 ? kTileTestByteTileElems : kTileElems;
+  constexpr int kDtypeNumTiles = kNumElems / kDtypeTileElems;
+  static_assert(kNumElems % kDtypeTileElems == 0);
+
+  std::vector<T> a_h(kNumElems), b_h(kNumElems);
+  for (int i = 0; i < kNumElems; i++) {
+    a_h[i] = make_accumulate_input_a<T>(i);
+    b_h[i] = make_accumulate_input_b<T>(i);
+  }
+
+  DeviceBuffer aBuf(kNumElems * sizeof(T));
+  DeviceBuffer bBuf(kNumElems * sizeof(T));
+  DeviceBuffer outBuf(kNumElems * sizeof(T));
+  auto* a_d = static_cast<T*>(aBuf.get());
+  auto* b_d = static_cast<T*>(bBuf.get());
+  auto* out_d = static_cast<T*>(outBuf.get());
+
+  CUDACHECK_TEST(cudaMemcpy(
+      a_d, a_h.data(), kNumElems * sizeof(T), cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      b_d, b_h.data(), kNumElems * sizeof(T), cudaMemcpyHostToDevice));
+
+  for (TileTestReduceOp op :
+       {TileTestReduceOp::kSum,
+        TileTestReduceOp::kMax,
+        TileTestReduceOp::kMin}) {
+    CUDACHECK_TEST(cudaMemset(out_d, 0, kNumElems * sizeof(T)));
+    test_tile_accumulate_dtype(dtype, op, a_d, b_d, out_d, kDtypeNumTiles);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<T> output_h(kNumElems);
+    CUDACHECK_TEST(cudaMemcpy(
+        output_h.data(), out_d, kNumElems * sizeof(T), cudaMemcpyDeviceToHost));
+
+    for (int i = 0; i < kNumElems; i++) {
+      EXPECT_EQ(output_h[i], expected_accumulate(a_h[i], b_h[i], op))
+          << "mismatch at index " << i;
+    }
+  }
+}
+
+TEST_F(TileTestFixture, AccumulateInt8) {
+  run_accumulate_dtype_test<std::int8_t>(TileTestDataType::kInt8);
+}
+
+TEST_F(TileTestFixture, AccumulateUint8) {
+  run_accumulate_dtype_test<std::uint8_t>(TileTestDataType::kUint8);
+}
+
+TEST_F(TileTestFixture, AccumulateInt32) {
+  run_accumulate_dtype_test<std::int32_t>(TileTestDataType::kInt32);
+}
+
+TEST_F(TileTestFixture, AccumulateUint32) {
+  run_accumulate_dtype_test<std::uint32_t>(TileTestDataType::kUint32);
+}
+
+TEST_F(TileTestFixture, AccumulateInt64) {
+  run_accumulate_dtype_test<std::int64_t>(TileTestDataType::kInt64);
+}
+
+TEST_F(TileTestFixture, AccumulateUint64) {
+  run_accumulate_dtype_test<std::uint64_t>(TileTestDataType::kUint64);
+}
+
+TEST_F(TileTestFixture, AccumulateFloat64) {
+  run_accumulate_dtype_test<double>(TileTestDataType::kFloat64);
 }
 
 // =============================================================================

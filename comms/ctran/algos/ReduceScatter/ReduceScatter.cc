@@ -83,6 +83,10 @@ bool ctranReduceScatterSupport(
       break;
     case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
       return true;
+    case NCCL_REDUCESCATTER_ALGO::ctring_ib:
+      // Hosted by MCCL; CTRAN reports unsupported so non-MCCL callers fall
+      // back.
+      return false;
     case NCCL_REDUCESCATTER_ALGO::orig: // invalid query
       return false;
   }
