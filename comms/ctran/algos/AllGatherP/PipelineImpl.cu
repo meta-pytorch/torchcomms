@@ -19,6 +19,7 @@ namespace ctran::allgatherp {
 __global__ void ncclKernelAllGatherPPipeStart(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::KernelStartGpeAndExit(f);
@@ -33,6 +34,7 @@ __global__ void ncclKernelAllGatherPPipeSync(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     PipeSyncKernArgs args) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   ctran::device::devLoadAbortFlags(flag, devState);
   // wait till GPE thread post the current stepId
@@ -45,6 +47,7 @@ __global__ void ncclKernelAllGatherPPipeSync(
 __global__ void ncclKernelAllGatherPRing(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
@@ -58,6 +61,7 @@ __global__ void ncclKernelAllGatherPRing(
 __global__ void ncclKernelAllGatherPStreamedRd(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
@@ -70,9 +74,11 @@ __global__ void ncclKernelAllGatherPStreamedRd(
 // broadcast. Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is
 // called once at the end.
 __global__ void ncclKernelAllGatherPPipeEnd(
-    ctran::gpe::KernelFlagDev* flag,
+    ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
+
   // Reset sync flag for next GPE->kernel pipeline sync to use
   GpeKernelSyncDev::reset(args.pipeSync, 0);
 

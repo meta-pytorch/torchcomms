@@ -423,6 +423,9 @@ commResult_t ctranBroadcastBinomialTree(
   if (config.type == KernelConfig::BROADCAST_UNPACK) {
     fn = reinterpret_cast<void*>(ncclKernelBroadcast</*UNPACK=*/true>);
   }
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(std::move(opGroup), impl, config, fn));
 
   if (count * typeSize < CTRAN_MIN_REGISTRATION_SIZE &&

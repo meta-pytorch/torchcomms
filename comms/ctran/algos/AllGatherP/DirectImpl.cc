@@ -238,6 +238,9 @@ commResult_t AlgoImpl::execDirect(
   config.algoArgs = reinterpret_cast<void*>(&pArgs);
   config.args.devState_d = ctran->algo->getDevState();
 
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(ctran->gpe->submit(
       std::move(opGroup),
       gpnFn,

@@ -291,6 +291,9 @@ commResult_t ctranGroupEndHookImpl(
           ctran::sendrecv::setupKernelConfig(
               comm, allOps, nvlOps, config, kernArgs));
 
+      config.colltraceInlineWrites = true;
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
       FB_COMMCHECK(comm->ctran_->gpe->submit(
           std::move(gpeOpGroup),
           sendRecvImpl,

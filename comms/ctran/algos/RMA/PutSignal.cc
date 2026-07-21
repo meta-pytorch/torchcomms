@@ -327,6 +327,9 @@ commResult_t ctranPutSignal(
     func = reinterpret_cast<void*>(ncclKernelPut);
     config.algoArgs = nullptr;
   }
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), putSignalImpl, config, func));
 
@@ -462,6 +465,9 @@ commResult_t waitSignalSpinningKernel(
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       waitSignalSpinningKernelImpl,
@@ -523,6 +529,9 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       signalImpl,

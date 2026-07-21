@@ -315,6 +315,29 @@ struct KernelConfig {
   // launched on a single GPE thread.
   bool canConcurrent{false};
 
+  // In-kernel colltrace: a collective whose kernels write their own start/end
+  // timestamps into the colltrace ring set these per submit so one logical
+  // collective maps to one CollTrace record. Only honored on the graph-capture
+  // path on sm_90+; otherwise the GPE forces the host-launched behavior. The
+  // defaults (no inline writes) preserve the host-launched timestamp path for
+  // every un-migrated collective.
+  //
+  //   - colltraceInlineWrites: this kernel belongs to a collective that writes
+  //     its colltrace timestamps in-kernel (rather than via the host-launched
+  //     timestamp kernels). Interior/end kernels set this too, so they reuse
+  //     the begin kernel's record instead of creating their own; whether a
+  //     kernel owns a record is derived (!inlineWrites || emitStart).
+  //   - colltraceEmitStart / colltraceEmitEnd: this kernel writes the start /
+  //     end timestamp in-kernel (and its host-launched writer is suppressed).
+  // Common shapes:
+  //   single-kernel collective: inlineWrites = emitStart = emitEnd = true;
+  //   multi-kernel begin:       inlineWrites = emitStart = true;
+  //   multi-kernel interior:    inlineWrites = true;
+  //   multi-kernel end:         inlineWrites = emitEnd = true;
+  bool colltraceInlineWrites{false};
+  bool colltraceEmitStart{false};
+  bool colltraceEmitEnd{false};
+
  public:
   KernelConfig(
       enum KernelType type,

@@ -579,6 +579,9 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
         opGroup.front().get()->alltoallP.count);
   }
 
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm_->ctran_->gpe->submit(
       std::move(opGroup),
       gpeFn,

@@ -2522,6 +2522,19 @@ cvars:
      still haven't fully tested the performance impact of this feature. So
      it is disabled by default. In the future, we will enable it by default.
 
+ - name        : NCCL_COLLTRACE_IN_KERNEL
+   type        : bool
+   default     : true
+   description : |-
+     For graph-captured collectives on sm_90+, have the collective kernel
+     publish its own start/end timestamps into the colltrace ring from inside
+     the kernel, instead of the host-launched inter-kernel timestamp kernels.
+     Only takes effect when NCCL_COLLTRACE_TRACE_CUDA_GRAPH is also enabled
+     (that is what allocates the ring this writes into); setting it in
+     isolation is a no-op. Independent of the GPE device ring
+     (NCCL_CTRAN_GPE_DEVICE_RING). Enabled by default; set to false to fall
+     back to the host-launched timestamp kernels if issues arise.
+
  - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
    type        : bool
    default     : true

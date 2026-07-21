@@ -9,6 +9,7 @@ __global__ void ncclKernelGet(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);

@@ -5,6 +5,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevShmState.cuh"
+#include "comms/ctran/algos/common/ColltraceEventScope.cuh"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevUtils.cuh"
@@ -37,6 +38,10 @@ static __forceinline__ __device__ void KernelPublishGpeRing(
     hdr.ring.write(hdr.cmdId);
   }
 }
+
+// ColltraceEmitEvent / ColltraceEventScope moved to ColltraceEventScope.cuh
+// (included above); kept accessible here since kernels include
+// GpeKernelDev.cuh.
 
 // Kernel start prologue: publish this cmd's id to the ring (block 0 only, no-op
 // when not armed), then signal the GPE worker that block `bId` has started. The

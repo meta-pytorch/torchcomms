@@ -20,6 +20,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -51,6 +52,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelRecvArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -92,6 +94,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendRecvArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  ctran::device::ColltraceEventScope colltraceScope(f);
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 

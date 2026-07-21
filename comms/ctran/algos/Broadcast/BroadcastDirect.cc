@@ -321,6 +321,9 @@ commResult_t ctranBroadcastDirect(
   config.args.collective.broadcast.count = count;
 
   FB_COMMCHECK(setupPlan(comm, opGroup, config));
+  config.colltraceInlineWrites = true;
+  config.colltraceEmitStart = true;
+  config.colltraceEmitEnd = true;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       impl,
