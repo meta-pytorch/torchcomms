@@ -185,13 +185,18 @@ commResult_t AlgoImpl::execDirect(
 
   const auto sendSize = count * commTypeSize(datatype);
 
-  // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(
-      comm_,
-      sendbuff,
-      getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
-      sendSize,
-      stream_));
+  // Copy data to self for out-of-place allgather. Skipped when multicast is
+  // engaged: the step-0 CE-multicast broadcast fans out to self too, so
+  // recvbuff[myRank] is already written (the GPE inter-node send sources its
+  // step-0 chunk from sendbuff, not recvbuff, so there is no early reader).
+  if (!pArgs.mcWrite) {
+    FB_COMMCHECK(copyToSelf(
+        comm_,
+        sendbuff,
+        getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
+        sendSize,
+        stream_));
+  }
 
   // Wait till async init is done, so that we can schedule copy operations with
   // the remote address
@@ -213,7 +218,9 @@ commResult_t AlgoImpl::execDirect(
           myRank * sendSize,
           pArgs.remoteRecvBuffs,
           pArgs.remoteAccessKeys,
-          stream_));
+          stream_,
+          /*barrier=*/true,
+          pArgs.mcWrite));
     }
   }
 

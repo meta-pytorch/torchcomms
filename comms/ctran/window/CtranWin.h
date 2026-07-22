@@ -200,6 +200,18 @@ struct CtranWin {
     return symmetric_;
   }
 
+  // Opt-in (win_register_multicast): set up an NVL CE-multicast overlay over
+  // the window's data registration during exchange(), so ctwin AllGather fans
+  // out via a single NVSwitch write. Only takes effect on a symmetric,
+  // cuMem-backed window on multicast-capable HW; unicast fallback otherwise.
+  inline void setMulticast(bool val) {
+    multicast_ = val;
+  }
+
+  inline bool isMulticast() const {
+    return multicast_;
+  }
+
   inline uint64_t id() const {
     return id_;
   }
@@ -252,6 +264,9 @@ struct CtranWin {
   // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
   // hint; consumed by a later window-based allgather. Cached only for now.
   bool symmetric_{false};
+  // Records the win_register_multicast hint; see setMulticast(). Consumed in
+  // exchange() to set up the NVL CE-multicast overlay.
+  bool multicast_{false};
   // Per-comm unique id assigned at exchange() (see CtranComm::assignWindowId).
   uint64_t id_{0};
   // rank: window::OpCountType as key

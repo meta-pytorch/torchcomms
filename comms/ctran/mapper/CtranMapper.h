@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -562,6 +563,28 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET,
       bool recordExport = true,
       std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
+
+  // Set up a CUDA NVSwitch multicast overlay over the NVL subset of `ranks` for
+  // the buffer registered under `hdl` (a RegElem*), storing it on that
+  // registration's CtranIpcMem. Runs an NVL-team rendezvous over the ctrl
+  // channel (support vote -> root createRoot+export -> broadcast -> peers
+  // adoptImported -> all import+bind+map). No-op / unicast-fallback if the
+  // group declines, multicast is unsupported, or the buffer is not
+  // cuMem-backed. Called from the window/ctwin registration path
+  // (CtranWin::exchange). `engaged` (optional out) is set true iff an overlay
+  // was actually bound (false on unicast-fallback / decline / non-cuMem), so
+  // the caller can log the outcome.
+  commResult_t setupMulticastOverlay(
+      void* hdl,
+      const std::vector<int>& ranks,
+      bool* engaged = nullptr);
+
+  // Return the multicast write base for a buffer whose registration carries a
+  // multicast overlay (set up by a prior setupMulticastOverlay):
+  // getMulticastPtr() + (userPtr - allocBase). Returns std::nullopt when the
+  // buffer has no overlay (multicast disabled/unsupported / not a cuMem
+  // buffer). userPtr must lie within the registered buffer.
+  std::optional<void*> multicastWriteBase(void* hdl, const void* userPtr);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
