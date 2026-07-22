@@ -111,3 +111,31 @@ commResult_t getCudaDevFromPtr(const void* addr, int& cudaDev) {
 
   return commSuccess;
 }
+
+commResult_t enumerateCuMemSegments(
+    const void* addr,
+    size_t len,
+    std::vector<CuMemSegment>& segments) {
+  if (addr == nullptr) {
+    return commInvalidUsage;
+  }
+
+  // temp linear loop through physical allocations, could be faster to get
+  // from pytorch level
+  size_t cur_offset = 0;
+  while (cur_offset < len) {
+    const void* cur_ptr = (const char*)addr + cur_offset;
+    CuMemSegment seg;
+    FB_CUCHECK(
+        cuMemRetainAllocationHandle(&seg.handle, const_cast<void*>(cur_ptr)));
+    // Record even if the range query below fails so the caller can release it.
+    segments.push_back(seg);
+    FB_CUCHECK(cuMemGetAddressRange(
+        &segments.back().base, &segments.back().size, (CUdeviceptr)cur_ptr));
+
+    CUdeviceptr cur_end =
+        ctran::utils::addDevicePtr(segments.back().base, segments.back().size);
+    cur_offset = (size_t)ctran::utils::subDevicePtr(cur_end, addr);
+  }
+  return commSuccess;
+}
