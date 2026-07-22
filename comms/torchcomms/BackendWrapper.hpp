@@ -187,6 +187,13 @@ class BackendWrapper : public c10d::Backend {
   // reconfigurable mode and destructive abort otherwise.
   void abort() override;
 
+  // Monotonic count of collectives issued through this backend, exposed to
+  // Python via ProcessGroup._get_sequence_number_for_group(). Mirrors
+  // c10d::ProcessGroupNCCL::seqCollective_ semantics: counts collectives only
+  // (not P2P send/recv), starts at 0, and is a purely local per-PG counter
+  // (never synchronized across ranks).
+  uint64_t getSequenceNumberForGroup() override;
+
  private:
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
@@ -205,6 +212,14 @@ class BackendWrapper : public c10d::Backend {
   // times per rank when unrelated PGs run concurrent barriers, yielding
   // mismatched send/recv tags across ranks.
   std::atomic<uint32_t> monitoredBarrierTagCounter_{0};
+
+  // Backs getSequenceNumberForGroup(). Bumped once per collective (see the
+  // getter's doc comment). Plain uint64_t, mirroring
+  // c10d::ProcessGroupNCCL::seqCollective_: per-PG collective launch is
+  // program-ordered (single writer), and an aligned 64-bit load/store is
+  // single-copy atomic on x86-64 and aarch64, so a concurrent getter never
+  // sees a torn value.
+  uint64_t seqCollective_{0};
 };
 
 } // namespace torch::comms
