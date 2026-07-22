@@ -30,9 +30,6 @@ class CtranBroadcastTest : public ctran::CtranDistTestFixture,
     srand(time(NULL));
     ctranComm = makeCtranComm();
     segments.clear();
-    if (!ctranBroadcastSupport(ctranComm.get(), NCCL_BROADCAST_ALGO)) {
-      GTEST_SKIP() << "ctranBroadcastSupport returns false, skip test";
-    }
   }
 
   void TearDown() override {
@@ -98,6 +95,13 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
     GTEST_SKIP() << "Socket backend does not support cudaMalloc";
   }
 #endif
+
+  const auto concreteAlgo = binomialTreeAlgo ? NCCL_BROADCAST_ALGO::ctbtree
+                                             : NCCL_BROADCAST_ALGO::ctdirect;
+  if (!ctranBroadcastSupport(ctranComm.get(), concreteAlgo)) {
+    GTEST_SKIP() << "ctranBroadcastSupport returns false for "
+                 << broadcastAlgoName(concreteAlgo) << ", skip test";
+  }
 
   // always allocate buffer in page size
   size_t bufSize =
