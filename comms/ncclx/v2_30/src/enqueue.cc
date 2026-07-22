@@ -32,7 +32,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/InfoExtOverride.h"
 #include "meta/colltrace/CollTraceWrapper.h"
-#include "meta/colltrace/ProxyTraceFunc.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
@@ -118,7 +117,6 @@ ncclResult_t ncclAddProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelPlan
   if (needed) {
     struct ncclProxyOp* q = ncclMemoryPoolAlloc<struct ncclProxyOp>(&comm->memPool_ncclProxyOp, &comm->memPermanent);
     *q = *op; // C++ struct assignment
-    ncclx::colltrace::proxyTraceInfoCopy(*q, comm);
     ncclIntruQueueEnqueue(&comm->planner.wipPlan.channels[op->channelId].proxyOpQueue, q);
   }
   return ncclSuccess;
@@ -665,7 +663,6 @@ static ncclResult_t scheduleCollTasksToPlan(
       uint32_t chunkSize, directFlags=0;
       NCCLCHECK(calcCollChunking(comm, task, nChannels, globalBytesPerElement*task->count, &chunkSize, &directFlags, &proxyOp));
       devWork->channelLo = 0;
-        ncclx::colltrace::proxyTraceAddBasicInfo(proxyOp, nChannels, proxyOp.task.coll->func);
       devWork->channelHi = nChannels-1;
       devWork->collnet.count = task->count;
       devWork->collnet.chunkCount = chunkSize/ncclTypeSize(task->datatype);
@@ -795,7 +792,6 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->task.coll = task;
         proxyOp->rank = comm->rank;
         proxyOp->ringAlgo = NULL;
-        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], task->func);
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
             proxyOp->ringAlgo = new RingAGAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.userRanks, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->count * elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
@@ -810,7 +806,6 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->incWorkCounter = true;
         proxyOp->nChannels = nChannels;
         ncclAddWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
-        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
         // Coverity reports "proxyOp->connection" as being possibly uninitialized.  It's hard to
         // determine if that's actually true but it's also not clear if that would be an issue.
         // coverity[uninit_use_in_call:FALSE]
@@ -1049,7 +1044,6 @@ static ncclResult_t addP2pToPlan(
     op->rank = comm->rank;
     op->eActivationMask = p2pTasks[dir] ? p2pTasks[dir]->eActivationMask : 0;
 
-    ncclx::colltrace::proxyTraceAddBasicInfo(*op, nChannels[dir], static_cast<ncclFunc_t>(op->coll));
     // The following are modified per channel part in addWorkToChannels():
     // op->buffer, op->nbytes, op->nsteps = ...;
   }
@@ -1566,7 +1560,7 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       planner->nTasksRma != 0) {
     do {
       // Bump opCount before creating proxy ops for this plan, so that
-      // ProxyTrace and CollTrace both capture the same opCount value.
+      // CollTrace captures the opCount value.
       // Previously opCount was incremented in doLaunches (group.cc) after
       // each kernel launch, but proxy ops are created here in Prepare
       // before any launches, causing PT to capture a stale value.
