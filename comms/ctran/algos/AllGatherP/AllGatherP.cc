@@ -11,10 +11,15 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/DevMemType.h"
 
 #include <folly/ScopeGuard.h>
 
+#include <algorithm>
+#include <exception>
 #include <memory>
+#include <vector>
 
 using ctran::algos::GpeKernelSync;
 using ctran::allgatherp::AlgoImpl;
@@ -245,6 +250,10 @@ commResult_t AlgoImpl::destroy() {
     resource_.pipeSync->reset();
     resource_.pipeSync = nullptr;
   }
+  // No multicast teardown here: the overlay is owned by the recvbuff's
+  // registration (CtranIpcMem), not the request, and is released with that
+  // registration on the user thread (via recvRegHdl_ / cleanupInvalidImports).
+  // pArgs.mcWrite is just a cached pointer, so it needs no teardown.
   // Release the scoped NVL IPC imports and the scoped local recv registration.
   // Both are deferred/SW-only (no CUDA), so safe from the graph-destroy
   // callback. Later explicit cleanupInvalidImports() or access to regCache

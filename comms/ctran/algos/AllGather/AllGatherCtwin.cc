@@ -92,6 +92,14 @@ commResult_t createPersistentRequestFromWindow(
 
   pArgs.algo = agpVariant;
 
+  // NVL CE-multicast: if the window's data registration carries a multicast
+  // overlay (set up in CtranWin::exchange when win_register_multicast is on and
+  // the NVL group supports it), cache recvbuff's multicast write base so
+  // nvlCeBcast fans out via a single NVSwitch write instead of N-1 per-peer
+  // unicast copies. std::nullopt (unicast) when there is no overlay.
+  pArgs.mcWrite =
+      comm->ctran_->mapper->multicastWriteBase(win->dataRegHdl, recvbuff);
+
   auto request = std::make_unique<CtranPersistentRequest>(
       CtranPersistentRequest::Type::ALLGATHER_P, comm, stream);
   request->algo = algo.release();

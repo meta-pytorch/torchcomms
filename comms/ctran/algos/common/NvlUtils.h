@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <optional>
 #include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -133,7 +134,15 @@ inline commResult_t nvlCeBcast(
     const std::vector<void*>& remoteRecvBuffs,
     const std::vector<CtranMapperRemoteAccessKey>& remoteAccessKeys,
     cudaStream_t stream,
-    bool barrier = true) {
+    bool barrier = true,
+    // When mcWrite is engaged, broadcast via a single CE-multicast write to
+    // *mcWrite + recvOffset (NVSwitch fans it out to every NVL-domain peer,
+    // including self) instead of the N-1 per-peer unicast copies -- collapsing
+    // the per-peer Memcpy nodes into one CE node. *mcWrite already accounts for
+    // the recv buffer's offset within its multicast-bound allocation. Set up on
+    // the buffer's registration during the NVL rendezvous; std::nullopt on the
+    // unicast path (which makes the enabled-but-null state unrepresentable).
+    std::optional<void*> mcWrite = std::nullopt) {
   const auto statex = comm->statex_.get();
   const auto rank = statex->rank();
   const auto localRank = statex->localRank();
@@ -143,6 +152,24 @@ inline commResult_t nvlCeBcast(
   // avoid unwanted incast traffic congestion
   if (barrier) {
     nvlBarrier(comm, stream);
+  }
+
+  // CE-multicast fast path: one write fanned out by NVSwitch to all peers,
+  // captured as exactly one Memcpy node (vs numOps per-peer nodes below).
+  if (mcWrite) {
+    void* recvPtr = static_cast<char*>(*mcWrite) + recvOffset;
+    CLOGF_TRACE(
+        COLL,
+        "Rank {} CE multicast bcast, sendBuff {} -> mcRecvBuff {} (mcWrite {} + recvOffset {}), sendSize {}",
+        rank,
+        sendBuff,
+        recvPtr,
+        *mcWrite,
+        recvOffset,
+        sendSize);
+    FB_CUDACHECK(cudaMemcpyAsync(
+        recvPtr, sendBuff, sendSize, cudaMemcpyDeviceToDevice, stream));
+    return commSuccess;
   }
 
   const size_t numOps = nLocalRanks - 1;

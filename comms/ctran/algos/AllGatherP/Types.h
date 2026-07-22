@@ -53,6 +53,19 @@ struct PersistArgs {
   // ctwin sets it per-comm by topology since a single cvar cannot express
   // multiple comms with different topologies.
   std::optional<enum NCCL_ALLGATHER_P_ALGO> algo;
+
+  // NVL CE-multicast broadcast state. Cache of the multicast write base: when
+  // engaged, mcWrite holds the multicast VA offset corresponding to recvbuff,
+  // and nvlCeBcast issues a single cudaMemcpyAsync to it instead of the N-1
+  // per-peer unicast fan-out. std::nullopt (unicast fallback) when multicast is
+  // disabled, unsupported, or the recvbuff is not a cuMem (VMM) allocation. Set
+  // on the GPE thread during init (published via the initState fence alongside
+  // remoteRecvBuffs) and read on the user thread at exec. Collapsing the enabled
+  // bit + pointer into one optional makes the (enabled, nullptr) state
+  // unrepresentable.
+  // TODO(ctwin rework): the setup source moves from the mapper NVL rendezvous
+  // to the window/ctwin registration path.
+  std::optional<void*> mcWrite;
 };
 
 struct Resource {

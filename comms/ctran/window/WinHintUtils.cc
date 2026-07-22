@@ -13,6 +13,7 @@ const std::string kWindowSignalBufSize = "window_signal_bufsize";
 const std::string kWinRegisterIpcOnly = "win_register_ipc_only";
 const std::string kWinRegisterEnableSignal = "win_register_enable_signal";
 const std::string kWinRegisterSymmetric = "win_register_symmetric";
+const std::string kWinRegisterMulticast = "win_register_multicast";
 } // namespace
 
 void WinHintUtils::init(kvType& kv) {
@@ -45,6 +46,14 @@ WinHintUtils::set(const std::string& key, const std::string& val, kvType& kv) {
       return commInvalidArgument;
     }
   } else if (key == kWinRegisterSymmetric) {
+    if (val == "1" || val == "true") {
+      kv[key] = "1";
+    } else if (val == "0" || val == "false") {
+      kv[key] = "0";
+    } else {
+      return commInvalidArgument;
+    }
+  } else if (key == kWinRegisterMulticast) {
     if (val == "1" || val == "true") {
       kv[key] = "1";
     } else if (val == "0" || val == "false") {

@@ -274,6 +274,7 @@ Config::Config(const ncclConfig_t* config) {
   winRegisterIpcOnly = parseHintBool("win_register_ipc_only", false);
   winRegisterEnableSignal = parseHintBool("win_register_enable_signal", true);
   winRegisterSymmetric = parseHintBool("win_register_symmetric", false);
+  winRegisterMulticast = parseHintBool("win_register_multicast", false);
 
   auto parseAlgoHint = [&](const char* key, auto& field) {
     auto val = getHintStr(key);
@@ -334,6 +335,7 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   parseBoolHint("win_register_ipc_only", winRegisterIpcOnly);
   parseBoolHint("win_register_enable_signal", winRegisterEnableSignal);
   parseBoolHint("win_register_symmetric", winRegisterSymmetric);
+  parseBoolHint("win_register_multicast", winRegisterMulticast);
 
   return ncclSuccess;
 }
@@ -400,6 +402,7 @@ void ncclxLogCommConfig(ncclComm_t comm) {
         fmt::format(
             "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
     append(fmt::format("winRegisterSymmetric={}", xCfg->winRegisterSymmetric));
+    append(fmt::format("winRegisterMulticast={}", xCfg->winRegisterMulticast));
     append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);

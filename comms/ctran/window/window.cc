@@ -360,6 +360,41 @@ commResult_t CtranWin::exchange() {
   // memory space while other ranks are still importing.
   FB_COMMCHECK(windowBarrier(comm, mapper));
 
+  // NVL CE-multicast overlay (opt-in via win_register_multicast). Runs an
+  // NVL-team rendezvous over the same ctrl channel and stashes a self-owning
+  // multicast object on the data registration's CtranIpcMem; ctwin's AGP
+  // request reads its write base via multicastWriteBase, so nvlCeBcast fans out
+  // with a single NVSwitch write. The entry condition is a per-window setting
+  // all ranks pass identically (symmetric + multicast hint), so the group
+  // enters in lockstep; setupMulticastOverlay's support vote handles any
+  // per-rank divergence and leaves the overlay unset (unicast) on decline /
+  // non-cuMem. The trailing barrier ensures every rank has bound before the
+  // window is used.
+  if (isSymmetric() && winDataPtr != nullptr && isMulticast()) {
+    bool mcEngaged = false;
+    FB_COMMCHECK(
+        mapper->setupMulticastOverlay(dataRegHdl, exchangeRanks, &mcEngaged));
+    FB_COMMCHECK(windowBarrier(comm, mapper));
+    if (mcEngaged) {
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-WINDOW: Rank {} bound NVL CE-multicast overlay on win {} comm {} commHash {:x} ({} bytes)",
+          myRank,
+          (void*)this,
+          (void*)comm,
+          statex->commHash(),
+          dataBytes);
+    } else {
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-WINDOW: Rank {} requested NVL CE-multicast on win {} but it did not engage (unicast fallback)",
+          myRank,
+          (void*)this);
+    }
+  }
+
   // Cache only symmetric windows: ctwin collective algos needs all ranks
   // locally compute peerAddr = peerBase + offset, meaning same offset from base
   // on all ranks.
@@ -771,6 +806,12 @@ commResult_t ctranWinRegister(
   if (hints.get("win_register_symmetric", symmetricVal) == commSuccess) {
     newWin->setSymmetric(
         meta::comms::hints::WinHintUtils::parseBool(symmetricVal));
+  }
+
+  std::string multicastVal;
+  if (hints.get("win_register_multicast", multicastVal) == commSuccess) {
+    newWin->setMulticast(
+        meta::comms::hints::WinHintUtils::parseBool(multicastVal));
   }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
