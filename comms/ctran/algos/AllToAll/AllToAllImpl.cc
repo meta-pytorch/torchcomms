@@ -45,12 +45,13 @@ commResult_t setupKernelConfig(
   config.args.collective.alltoall.recvbuff = recvbuff;
   config.args.collective.alltoall.datatype = datatype;
   config.args.collective.alltoall.count = count;
+  config.args.collective.alltoall.nLocalRanks = comm->statex_->nLocalRanks();
 
   // When no local NVL peers (ppn=1, pure IB path), the alltoall kernel's
   // send/recv loops are empty — only self-copy and GPE sync remain. Issue
-  // the self D2D copy via cudaMemcpyAsync and signal the kernel to skip
-  // its body by zeroing count. The kernel then runs as a 1-block/1-thread
-  // stub for GPE sync, freeing SMs for overlapping compute.
+  // the self D2D copy via cudaMemcpyAsync; the kernel derives the skip from
+  // nLocalRanks == 1 and short-circuits its body. The kernel then runs as a
+  // 1-block/1-thread stub for GPE sync, freeing SMs for overlapping compute.
   if (comm->statex_->nLocalRanks() <= 1) {
     int myRank = comm->statex_->rank();
     size_t selfBytes = count * commTypeSize(datatype);
@@ -61,7 +62,6 @@ commResult_t setupKernelConfig(
           selfBytes,
           stream));
     }
-    config.args.collective.alltoall.count = 0;
     config.numBlocks = 1;
     config.numThreads = 1;
     return commSuccess;
