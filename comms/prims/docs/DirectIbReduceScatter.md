@@ -39,11 +39,14 @@ The current kernel uses:
 - 512 threads per CTA.
 - 128 send threads and 384 receive/reduce threads.
 - One CTA per IB channel.
-- `TileReduceStaged` for receive-side reduction.
+- `CpAsyncSmemReduce` for receive-side reduction.
 
-The receive group reduces incoming staged IB data into the output tile using a
-register/tile-staged reduce policy. Shared-memory async staging is a follow-up
-optimization layer on top of this baseline.
+The receive group stages incoming IB data and the local output tile through
+dynamic shared memory with `cp.async` before reducing. The parent diff keeps the
+register/tile-staged `TileReduceStaged` policy as the baseline; this layer
+reduces receive-side register pressure and improves the large-message path.
+For the current `float` kernel, the smem policy requests 128KB of dynamic shared
+memory per CTA.
 
 ## Transport Setup
 

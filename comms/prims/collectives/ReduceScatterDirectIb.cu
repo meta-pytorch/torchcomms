@@ -124,7 +124,7 @@ template __global__ void direct_reduce_scatter_ib_kernel<
     128,
     384,
     512,
-    TileReduceStaged<float, SumOp, 24576, 384>>(
+    CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>(
     const __grid_constant__ DirectReduceScatterIbArgs<float>,
     Timeout);
 
@@ -140,8 +140,8 @@ void launch_direct_reduce_scatter_ib_impl(
       128,
       384,
       512,
-      TileReduceStaged<float, SumOp, 24576, 384>>;
-  using ReduceOp = TileReduceStaged<float, SumOp, 24576, 384>;
+      CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>;
+  using ReduceOp = CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>;
   constexpr std::size_t dynamic_smem = ReduceOp::smem_bytes();
   if constexpr (dynamic_smem > 0) {
     PIPES_CUDA_CHECK(cudaFuncSetAttribute(
