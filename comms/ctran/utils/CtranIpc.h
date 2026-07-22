@@ -4,9 +4,12 @@
 #define CTRAN_IPC_H_
 
 #include <algorithm>
+#include <memory>
 #include <sstream>
+#include <utility>
 #include <vector>
 
+#include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/commSpecs.h"
@@ -210,6 +213,30 @@ class CtranIpcMem {
     return range_;
   }
 
+  // Whether this registration is backed by cuMem/VMM allocations -- a
+  // precondition for binding the buffer into a CUDA multicast object. False for
+  // cudaMalloc / not-yet-loaded.
+  inline bool isCuMemBacked() const {
+    return memType_ == DevMemType::kCumem;
+  }
+
+  // Optional standalone multicast object covering this buffer. Set up during
+  // the NVL registration rendezvous (CtranMapper::setupMulticastOverlay) when
+  // multicast is requested and the NVL group supports it; null otherwise. The
+  // CtranMulticast is fully self-owning -- it retains its own segment handles
+  // via import() -- so it is held here only to tie its lifetime to the
+  // registration's; teardown order relative to this CtranIpcMem's own segment
+  // handles does not matter.
+  inline bool hasMulticast() const {
+    return mcOverlay_ != nullptr;
+  }
+  inline void* getMulticastPtr() const {
+    return mcOverlay_ ? mcOverlay_->getMulticastPtr() : nullptr;
+  }
+  inline void setMulticastOverlay(std::shared_ptr<CtranMulticast> overlay) {
+    mcOverlay_ = std::move(overlay);
+  }
+
   inline const char* getDesc() {
     return desc_;
   }
@@ -268,6 +295,14 @@ class CtranIpcMem {
   // Type of the memory  to be used for importing and exporting.
   DevMemType memType_{DevMemType::kCudaMalloc};
   CUmemAllocationHandleType cuMemHandleType_{CU_MEM_HANDLE_TYPE_NONE};
+
+  // Optional standalone multicast object covering this buffer (see accessors
+  // above). shared_ptr (not unique_ptr) so CtranIpcMem stays movable/copyable
+  // for folly::Synchronized's construction (an empty temp is moved in at
+  // registration; the object is only ever attached later, in-place). Because
+  // the CtranMulticast retains its own segment handles (import()), its
+  // destruction order relative to allocHandles_ is irrelevant.
+  std::shared_ptr<CtranMulticast> mcOverlay_;
 };
 
 class CtranIpcRemMem {
@@ -359,6 +394,23 @@ class CtranIpcRemMem {
   const DevMemType memType_{DevMemType::kHostUnregistered};
   const CUmemAllocationHandleType cuMemHandleType_{CU_MEM_HANDLE_TYPE_NONE};
 };
+
+// Export/import a single cuMem (VMM) allocation handle to/from a shareable
+// handle: FABRIC (`isFabric=true` -- the multicast object, or MNNVL buffers) or
+// POSIX file descriptor (`isFabric=false`). Shared by the regular per-segment
+// buffer registration (CtranIpcMem) and the multicast rendezvous in
+// CtranMapper::allGatherCtrlImpl, which moves the object handle over the same
+// control channel as the buffer handles. For fabric, `out.handle` carries the
+// fabric bytes; for posix-fd, `out.fd`/`in.fd` carries the descriptor (the
+// caller owns the pidfd import/close dance around the fd itself).
+commResult_t exportShareableHandle(
+    CUmemGenericAllocationHandle handle,
+    CtranIpcHandle& out,
+    bool isFabric);
+commResult_t importShareableHandle(
+    const CtranIpcHandle& in,
+    CUmemGenericAllocationHandle& out,
+    bool isFabric);
 
 // Return the number of active IPC memory objects and IPC remote memory objects.
 // Used to check resource leak in UT.
