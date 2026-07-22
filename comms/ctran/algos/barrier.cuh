@@ -14,79 +14,59 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 
 /*
- * This is a multi-step logarithmic complexity barrier algorithm that
- * is safe for non-power-of-two processes.
+ * Dissemination barrier: a logarithmic-step barrier that is correct for ANY
+ * number of ranks, including non-powers-of-two.
  *
- * Step 1: We form groups of 2.  Each group synchronizes within it.
- * Step 2: We form groups of 4.  In each group, the lower half of the
- *   processes do a pair-wise synchronization with the higher half of
- *   the processes.  At this point, everyone in the group is
- *   synchronized.
- * Steps 3 onward: We continue the same model with doubling group
- *   sizes.  After each step, all processes in the group are
- *   synchronized.
+ * At step k (k = 0, 1, ..., nsteps-1, with distance d = 2^k) every rank r:
+ *   - signals rank up   = (r + d)          % nranks, and
+ *   - waits on rank down = (r - d + nranks) % nranks.
+ * After ceil(log2(nranks)) steps the arrival of every rank has propagated to
+ * every other rank, so no rank exits before all ranks have arrived. Unlike a
+ * pairwise/butterfly barrier, no peer is ever skipped -- that skip is exactly
+ * what dropped synchronization edges (and thus broke correctness) for
+ * non-power-of-two rank counts.
  *
- * If a process does not have a peer (because the number of ranks is
- * not a power of two), that process simply skips that step.
+ * Each directed edge r -> up uses the mailbox that lives in up's memory and is
+ * dedicated to the (r -> up) channel: r posts via devSyncGetLoc<REMOTE>(up) and
+ * up consumes the very same slot via devSyncGetLoc<LOCAL>(r) (its down at the
+ * same step is r). A given physical mailbox is therefore touched by exactly one
+ * (writer, reader) pair, at exactly one step, per barrier() call.
  *
- * For synchronization, the lower rank process sets a flag on the
- * higher rank process' mailbox.  The higher rank process on
- * receiving this flag, resets the flag and sets a flag on the lower
- * rank process' mailbox.  The lower rank flag then resets its local
- * flag.  This approach avoids race conditions where the flag could be
- * overwritten before it is read by the other process.
+ * Reuse safety across repeated barrier() calls relies on the two-phase
+ * step/RESET handshake: the writer waits for the slot to read RESET (left so by
+ * the reader of the previous call, or by initialization) before posting `step`,
+ * and the reader restores RESET after consuming. A stale value can never
+ * satisfy a later call's wait -- the reader always resets its own slot before
+ * its next call, and the writer is blocked from overwriting until the previous
+ * value has been consumed.
+ *
+ * Each rank posts its outgoing signal before blocking on its incoming one.
+ * Posting only requires the target slot to already be RESET (guaranteed by
+ * initialization or the previous call, never by the current step), so every
+ * rank can post before any rank blocks; this breaks the cyclic wait that would
+ * otherwise deadlock the ring of edges within a step.
  */
 __device__ __forceinline__ void barrier(int rank, int nranks) {
-  CtranAlgoDeviceSync* sync;
-
   int nsteps = 0;
   while ((1 << nsteps) < nranks) {
     nsteps++;
   }
 
   for (int step = 0; step < nsteps; step++) {
-    int groupSize = 1 << (step + 1);
-    int group = rank / groupSize;
-    int groupRank = rank - group * groupSize;
+    const int dist = 1 << step;
+    const int up = (rank + dist) % nranks;
+    const int down = (rank - dist + nranks) % nranks;
 
-    if (groupRank < groupSize / 2) {
-      int peer = group * groupSize + groupRank + groupSize / 2;
+    // Signal `up`: post `step` into the slot in up's memory that belongs to
+    // this rank, once the previous call's reader has left it at RESET.
+    CtranAlgoDeviceSync* upSync = devSyncGetLoc<REMOTE>(up);
+    devSyncWaitStep(upSync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
+    devSyncSetStep(upSync, blockIdx.x, step);
 
-      if (peer >= nranks) {
-        continue;
-      }
-
-      // Ping to remote peer
-      sync = devSyncGetLoc<REMOTE>(peer);
-      // First wait for CTRAN_ALGO_STEP_RESET ensures the completion of previous
-      // step or previous collective
-      devSyncWaitStep(sync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
-      devSyncSetStep(sync, blockIdx.x, step);
-
-      // Pong from remote peer to local
-      sync = devSyncGetLoc<LOCAL>(peer);
-      devSyncWaitStep(sync, blockIdx.x, step);
-      // Mark this step has been synced, thus peer can use for next step
-      devSyncSetStep(sync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
-    } else {
-      int peer = group * groupSize + groupRank - groupSize / 2;
-
-      if (peer >= nranks) {
-        continue;
-      }
-
-      // Pong from remote peer to local
-      sync = devSyncGetLoc<LOCAL>(peer);
-      devSyncWaitStep(sync, blockIdx.x, step);
-      // Mark this step has been synced, thus peer can use for next step
-      devSyncSetStep(sync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
-
-      // Ping to remote peer
-      sync = devSyncGetLoc<REMOTE>(peer);
-      // First wait for CTRAN_ALGO_STEP_RESET ensures the completion of previous
-      // step or previous collective
-      devSyncWaitStep(sync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
-      devSyncSetStep(sync, blockIdx.x, step);
-    }
+    // Wait on `down`: consume its signal from the slot in this rank's memory,
+    // then restore RESET so the next call's writer can reuse the slot.
+    CtranAlgoDeviceSync* downSync = devSyncGetLoc<LOCAL>(down);
+    devSyncWaitStep(downSync, blockIdx.x, step);
+    devSyncSetStep(downSync, blockIdx.x, CTRAN_ALGO_STEP_RESET);
   }
 }
