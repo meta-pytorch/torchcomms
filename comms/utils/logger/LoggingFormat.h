@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
 #include <folly/Range.h>
@@ -72,6 +73,21 @@ fmt::memory_buffer getLogPrefix(LogLevel level);
 std::string getLastCommsError();
 
 void appendErrorToStack(std::string error);
+
+// Record an ERROR-level log to the nccl_structured_logging Scuba table as a
+// single error record (top-level message in the exception_message column,
+// native stack in the stack_trace column). The caller is responsible for gating
+// this on NCCL_SCUBA_LOG_ERROR_ENABLED and for capturing the native `stack`
+// once (via captureNativeErrorStack()) so it can be shared across reporters.
+void logErrorToScuba(
+    const std::string& message,
+    int code,
+    const std::string& errorName,
+    const std::vector<std::string>& stack);
+
+// Update the ncclGetLastError() state with the latest error message and its
+// pre-captured native stack. Unconditional; independent of Scuba error logging.
+void setLastError(const std::string& message, std::vector<std::string> stack);
 
 class NcclLogFormatter : public folly::LogFormatter {
  public:
