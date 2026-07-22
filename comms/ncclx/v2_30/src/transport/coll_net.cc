@@ -337,7 +337,7 @@ static ncclResult_t sendProxySetup(struct ncclProxyConnection* connection, struc
   /* collective size limits*/
   resources->maxCollBytes = props.maxCollBytes;
   if((resources->maxCollBytes <= 0) || (resources->maxCollBytes > NCCL_MAX_NET_SIZE_BYTES)) {
-    WARN("sendProxySetup: collnet plugin returned invalid value for maxCollBytes %ld \
+    ERR(ncclInternalError, "sendProxySetup: collnet plugin returned invalid value for maxCollBytes %ld \
       [allowed range: %ld - %ld] \n", resources->maxCollBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
     return ncclInternalError;
   }
@@ -450,7 +450,7 @@ static ncclResult_t recvProxySetup(struct ncclProxyConnection* connection, struc
   resources->useDmaBuf = resources->useGdr && proxyState->dmaBufSupport && (props.ptrSupport & NCCL_PTR_DMABUF);
   resources->maxCollBytes = props.maxCollBytes;
   if((resources->maxCollBytes <= 0) || (resources->maxCollBytes > NCCL_MAX_NET_SIZE_BYTES)) {
-    WARN("sendProxySetup: collnet plugin returned invalid value for maxCollBytes %ld \
+    ERR(ncclInternalError, "sendProxySetup: collnet plugin returned invalid value for maxCollBytes %ld \
       [allowed range: %ld - %ld] \n", resources->maxCollBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
     return ncclInternalError;
   }
@@ -464,7 +464,7 @@ static ncclResult_t recvProxySetup(struct ncclProxyConnection* connection, struc
 
 static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState, void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   ncclResult_t ret = ncclSuccess;
-  if (reqSize != sizeof(struct collNetConnectArgs)) { WARN("sendProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs)); return ncclInternalError; }
+  if (reqSize != sizeof(struct collNetConnectArgs)) { ERR(ncclInternalError, "sendProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs)); return ncclInternalError; }
   struct collNetConnectArgs* args = (struct collNetConnectArgs*)reqBuff;
   static_assert(sizeof(collNetSendConnectInfo) <= sizeof(struct ncclConnect), "Collnet Send Connect info is too big");
   struct collNetSendConnectInfo* info = (struct collNetSendConnectInfo*)(args->connectInfos+args->rank);
@@ -481,7 +481,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   NCCLCHECK(sharedConnect(proxyState, resources->netDev, args->connectInfos, args->nranks, args->rank, connection->collNet, &resources->collNetComm));
 
   // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
-  if (respSize != sizeof(struct connectMap*)) { WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
+  if (respSize != sizeof(struct connectMap*)) { ERR(ncclInternalError, "sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
   if (resources->collNetComm == NULL) {
     *((struct connectMap**)respBuff) = NULL;
     return ncclSuccess;
@@ -550,7 +550,7 @@ fail:
 
 static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState, void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   ncclResult_t ret = ncclSuccess;
-  if (reqSize != sizeof(struct collNetConnectArgs)) { WARN("recvProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs)); return ncclInternalError; }
+  if (reqSize != sizeof(struct collNetConnectArgs)) { ERR(ncclInternalError, "recvProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs)); return ncclInternalError; }
   struct collNetConnectArgs* args = (struct collNetConnectArgs*)reqBuff;
 
   struct recvResources* resources = (struct recvResources*)(connection->transportResources);
@@ -560,7 +560,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   NCCLCHECK(sharedConnect(proxyState, resources->netDev, args->connectInfos, args->nranks, args->rank, connection->collNet, &resources->collNetComm));
 
   // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
-  if (respSize != sizeof(struct connectMap*)) { WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
+  if (respSize != sizeof(struct connectMap*)) { ERR(ncclInternalError, "sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
   if (resources->collNetComm == NULL) {
     *((struct connectMap**)respBuff) = NULL;
     return ncclSuccess;
@@ -625,7 +625,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   for (int p=0; p<NCCL_NUM_PROTOCOLS; p++)
     info->mhandles[p] = resources->mhandles[p];
 
-  if (respSize != sizeof(struct connectMap*)) { WARN("recvProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
+  if (respSize != sizeof(struct connectMap*)) { ERR(ncclInternalError, "recvProxyConnect: respSize is %d != %ld", respSize, sizeof(void*)); return ncclInternalError; }
   *((struct connectMap**)respBuff) = &resources->map;
 
 exit:
@@ -945,7 +945,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
             int sendBeg = calcRegionOffset(args, 0, s, sub->received, 0);
             int sendEnd = calcRegionOffset(args, 0, s, sub->received, 1);
             if (sendEnd-sendBeg != connFifo[buffSlot].size) {
-              WARN("CollNet sizes: want=%d got=%ld", sendEnd-sendBeg, connFifo[buffSlot].size);
+              ERR(ncclInternalError, "CollNet sizes: want=%d got=%ld", sendEnd-sendBeg, connFifo[buffSlot].size);
               return ncclInternalError;
             }
           }
@@ -1126,7 +1126,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               // Force a PCI-E read from GPU memory
               asm volatile ("mov (%0), %%eax" :: "l"(resources->gdcFlush) : "%eax", "memory");
 #else
-              WARN("NET: GDR Flush only supported on x86_64");
+              ERR(ncclInternalError, "NET: GDR Flush only supported on x86_64");
               return ncclInternalError;
 #endif
             } else {
