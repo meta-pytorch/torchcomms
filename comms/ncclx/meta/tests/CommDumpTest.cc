@@ -19,7 +19,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "meta/NcclxConfig.h"
-#include "meta/colltrace/ProxyMock.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
 static bool VERBOSE = true;
@@ -32,7 +31,6 @@ class CommDumpTest : public NcclxBaseTestFixture,
  public:
   void SetUp() override {
     setenv("NCCL_COLLTRACE", "trace", 0);
-    setenv("NCCL_PROXYTRACE", "trace", 0);
 
     NcclxBaseTestFixture::SetUp();
     this->comm = ncclx::test::createNcclComm(
@@ -158,9 +156,6 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
 
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
-
   if (comm->rank == 1 && VERBOSE) {
     for (auto& it : dump) {
       printf("%s: %s\n", it.first.c_str(), it.second.c_str());
@@ -214,8 +209,6 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
@@ -245,8 +238,6 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     }
   }
 
-  // Proxy trace might only exist for selected ranks. Skip checking it.
-
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
     auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
@@ -255,11 +246,6 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
 
   if (dump.count("CT_currentColls")) {
     EXPECT_EQ(dump["CT_currentColls"], "[]");
-  }
-
-  if (dump.count("PT_activeOps")) {
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 
   if (comm->rank == 0 && VERBOSE) {
@@ -318,8 +304,6 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
@@ -352,8 +336,6 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
     }
   }
 
-  // Proxy trace might only exist for selected ranks. Skip checking it.
-
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
     auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
@@ -362,11 +344,6 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
 
   if (dump.count("CT_currentColls")) {
     EXPECT_EQ(dump["CT_currentColls"], "[]");
-  }
-
-  if (dump.count("PT_activeOps")) {
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 
   if (comm->rank == 0 && VERBOSE) {
@@ -421,8 +398,6 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
@@ -435,16 +410,6 @@ TEST_F(CommDumpTest, DumpAfterColl) {
     }
   }
 
-  // Proxy trace would be empty if nNodes == 1
-  if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
-    EXPECT_EQ(ptPastCollsObjs.size(), numColls);
-    for (int i = 0; i < numColls; i++) {
-      EXPECT_EQ(ptPastCollsObjs[i]["commHash"].asString(), commHashStr);
-      EXPECT_EQ(ptPastCollsObjs[i]["opCount"].asInt(), i);
-    }
-  }
-
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
     auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
@@ -453,11 +418,6 @@ TEST_F(CommDumpTest, DumpAfterColl) {
 
   if (dump.count("CT_currentColls")) {
     EXPECT_EQ(dump["CT_currentColls"], "[]");
-  }
-
-  if (dump.count("PT_activeOps")) {
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 
   if (comm->rank == 0 && VERBOSE) {
@@ -525,13 +485,6 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
 
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
-
-  EXPECT_EQ(dump.count("MT_recvNotifiedByPeer"), 1);
-  EXPECT_EQ(dump.count("MT_unfinishedRequests"), 1);
-  EXPECT_EQ(dump.count("MT_putFinishedByPeer"), 1);
-  EXPECT_EQ(dump.count("MT_currentColl"), 1);
 
   if (comm->rank == 0 && VERBOSE) {
     for (auto& it : dump) {
@@ -592,169 +545,6 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
   }
 }
 
-TEST_F(CommDumpTest, DumpDuringColl) {
-  auto res = ncclSuccess;
-  std::unordered_map<std::string, std::string> dump;
-  constexpr int numColls = 10;
-
-  if (comm->nNodes < 2) {
-    GTEST_SKIP() << "Skipping test since nNodes < 2";
-  }
-
-  // commHash is intentially stored as hex string for readability
-  std::stringstream commHashSs;
-  commHashSs << std::hex << comm->commHash;
-  std::string commHashStr = commHashSs.str();
-
-  // Manually set the hanging point at opCount 5
-  constexpr int hangOpCount = 5;
-  constexpr int hangRank = 0;
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.clear();
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.push_back(std::to_string(hangOpCount));
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.push_back(std::to_string(hangRank));
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("-1");
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("-1");
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("1"); // match only once
-  NCCL_PROXYMOCK_NET_SEND_FAILURE.emplace_back("30"); // delay 30 seconds
-
-  // Manually re-initialze state of the mock instance
-  auto& instance = ProxyMockNetSendFailure::getInstance();
-  instance.initialize();
-
-  this->initData(this->globalRank);
-  for (int i = 0; i < numColls; i++) {
-    NCCLCHECK_TEST(ncclAllReduce(
-        this->dataBuf,
-        this->dataBuf,
-        this->dataCount,
-        ncclInt,
-        ncclSum,
-        this->comm,
-        this->stream));
-  }
-
-  // Wait till the hanging point is reached
-  sleep(10);
-
-  res = ncclCommDump(this->comm, dump);
-
-  ASSERT_EQ(res, ncclSuccess);
-
-  // Check if all the values can be parsed as json entries
-  for (const auto& [_, val] : dump) {
-    EXPECT_NO_THROW(folly::parseJson(val));
-  }
-
-  EXPECT_EQ(dump.count("CT_pastColls"), 1);
-  EXPECT_EQ(dump.count("CT_pendingColls"), 1);
-  EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
-  EXPECT_EQ(dump.count("PT_activeColls"), 1);
-
-  // Check records are dumped correctly and simply check if can be
-  // parsed as json entries.
-
-  // PastColl: Except some ranks may stuck at the hanging opCount but some
-  // others may have finished and stuck at the next.
-  if (dump.count("CT_pastColls")) {
-    auto ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
-    size_t numPasts = ctPastCollsObjs.size();
-    // For CollTrace, we know rank 0 must be hanging at hangOpCount
-    if (comm->rank == hangRank) {
-      EXPECT_EQ(numPasts, hangOpCount);
-    } else {
-      EXPECT_TRUE(numPasts == hangOpCount || numPasts == hangOpCount + 1);
-    }
-  }
-
-  if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
-    size_t numPasts = ptPastCollsObjs.size();
-    // For ProxyTrace, since rank A's proxy thread may serve rank B's network
-    // op, we cannot assume a exact hang point based on rank
-    EXPECT_TRUE(numPasts == hangOpCount || numPasts == hangOpCount + 1);
-  }
-
-  // Pending collectives
-  if (dump.count("CT_pendingColls")) {
-    auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
-    size_t numPending = ctPendingCollsObjs.size();
-    if (comm->rank == hangRank) {
-      // should hang exactly at hangOpCount, and 1 current
-      EXPECT_EQ(numPending, numColls - hangOpCount - 1);
-    } else {
-      // may hang at hangOpCount or next
-      EXPECT_TRUE(
-          numPending == numColls - hangOpCount - 1 ||
-          numPending == numColls - hangOpCount - 2);
-    }
-  }
-
-  if (dump.count("CT_currentColls")) {
-    EXPECT_NE(dump["CT_currentColls"], "[]");
-    auto ctCurrentCollsArr = folly::parseJson(dump["CT_currentColls"]);
-    ASSERT_GT(ctCurrentCollsArr.size(), 0);
-    if (comm->rank == hangRank) {
-      EXPECT_EQ(ctCurrentCollsArr[0]["collId"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsArr[0]["opCount"].asInt(), hangOpCount);
-      EXPECT_EQ(ctCurrentCollsArr[0]["opName"], "AllReduce");
-    }
-  }
-
-  if (dump.count("PT_activeOps")) {
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_GT(ptActiveOpsObjs.size(), 0);
-
-    for (auto& op : ptActiveOpsObjs) {
-      EXPECT_TRUE(op["rank"].asInt() >= 0 && op["rank"].asInt() < comm->nRanks);
-      EXPECT_TRUE(
-          op["remoteRank"].asInt() >= 0 &&
-          op["remoteRank"].asInt() < comm->nRanks);
-      EXPECT_TRUE(op["opCount"].asInt() >= 0);
-      EXPECT_TRUE(op["coll"].asString() == "AllReduce");
-      EXPECT_TRUE(
-          op["opType"].asString() == "SEND" ||
-          op["opType"].asString() == "RECV");
-      EXPECT_EQ(op["commHash"].asString(), commHashStr);
-
-      // Each rank may hang at hangOpCount and/or hangOpCount + 1 and may see
-      // active ops in both opCounts
-      EXPECT_TRUE(
-          op["opCount"].asInt() == hangOpCount ||
-          op["opCount"].asInt() == hangOpCount + 1);
-    }
-
-    // Skip cross-rank check as already covered in ProxyTraceDistTest
-  }
-
-  if (dump.count("PT_activeColls")) {
-    auto ptActiveCollsObjs = folly::parseJson(dump["PT_activeColls"]);
-    EXPECT_GT(ptActiveCollsObjs.size(), 0);
-
-    for (auto& coll : ptActiveCollsObjs) {
-      EXPECT_EQ(coll["commHash"].asString(), commHashStr);
-
-      // Each rank may hang at hangOpCount and/or hangOpCount + 1 and may see
-      // active ops in both opCounts
-      EXPECT_TRUE(
-          coll["opCount"].asInt() == hangOpCount ||
-          coll["opCount"].asInt() == hangOpCount + 1);
-      EXPECT_EQ(coll["coll"].asString(), "AllReduce");
-      EXPECT_GT(coll["channelIds"].size(), 0);
-    }
-  }
-
-  // Now let's wait for all communication to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-
-  if (comm->rank == 0 && VERBOSE) {
-    for (auto& it : dump) {
-      printf("%s: %s\n", it.first.c_str(), it.second.c_str());
-    }
-  }
-}
-
 TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   auto reduceGuard = EnvRAII{NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig};
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
@@ -804,8 +594,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
@@ -819,17 +607,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
     }
   }
 
-  // Proxy trace would be empty if nNodes == 1
-  if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    XLOG(DBG1) << "Entered PT_pastColls if statement";
-    auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
-    EXPECT_EQ(ptPastCollsObjs.size(), numColls);
-    for (int i = 0; i < numColls; i++) {
-      EXPECT_EQ(ptPastCollsObjs[i]["commHash"].asString(), commHashStr);
-      EXPECT_EQ(ptPastCollsObjs[i]["opCount"].asInt(), i);
-    }
-  }
-
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
     XLOG(DBG1) << "Entered CT_pendingColls if statement";
@@ -840,12 +617,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   if (dump.count("CT_currentColls")) {
     XLOG(DBG1) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
-  }
-
-  if (dump.count("PT_activeOps")) {
-    XLOG(DBG1) << "Entered PT_activeOps if statement";
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 }
 
@@ -899,8 +670,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   EXPECT_EQ(dump.count("CT_pastColls"), 1);
   EXPECT_EQ(dump.count("CT_pendingColls"), 1);
   EXPECT_EQ(dump.count("CT_currentColls"), 1);
-  EXPECT_EQ(dump.count("PT_pastColls"), 1);
-  EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
@@ -917,17 +686,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
     }
   }
 
-  // Proxy trace would be empty if nNodes == 1
-  if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    XLOG(DBG1) << "Entered PT_pastColls if statement";
-    auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
-    EXPECT_EQ(ptPastCollsObjs.size(), numColls);
-    for (int i = 0; i < numColls; i++) {
-      EXPECT_EQ(ptPastCollsObjs[i]["commHash"].asString(), commHashStr);
-      EXPECT_EQ(ptPastCollsObjs[i]["opCount"].asInt(), i);
-    }
-  }
-
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
     XLOG(DBG1) << "Entered CT_pendingColls if statement";
@@ -938,12 +696,6 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   if (dump.count("CT_currentColls")) {
     XLOG(DBG1) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
-  }
-
-  if (dump.count("PT_activeOps")) {
-    XLOG(DBG1) << "Entered PT_activeOps if statement";
-    auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
-    EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 }
 
@@ -988,27 +740,6 @@ TEST_F(CommDumpTest, AlgoStatInCommDump) {
     }
   }
   EXPECT_EQ(totalCalls, numColls);
-}
-
-TEST_F(CommDumpTest, DISABLED_DumpWhileCommsInDestruct) {
-  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto proxyGuard = EnvRAII{NCCL_PROXYTRACE, {"trace"}};
-  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
-
-  for (int i = 0; i < 100; i++) {
-    auto comm_ptr = std::make_unique<ncclx::test::NcclCommRAII>(
-        globalRank, numRanks, localRank, bootstrap_.get());
-    std::thread t(
-        [](ncclComm_t comm_t_ptr) {
-          for (int j = 0; j < 100; j++) {
-            std::unordered_map<std::string, std::string> dump;
-            ncclCommDump(comm_t_ptr, dump);
-          }
-        },
-        comm_ptr->get());
-    comm_ptr.reset();
-    t.join();
-  }
 }
 
 TEST_F(CommDumpTest, DumpAllWithRequestFieldsCommInfoOnly) {
@@ -1056,8 +787,6 @@ TEST_F(CommDumpTest, DumpAllWithRequestFieldsCommInfoOnly) {
   EXPECT_EQ(commDump.count("CT_pastColls"), 0);
   EXPECT_EQ(commDump.count("CT_pendingColls"), 0);
   EXPECT_EQ(commDump.count("CT_currentColls"), 0);
-  EXPECT_EQ(commDump.count("PT_pastColls"), 0);
-  EXPECT_EQ(commDump.count("PT_activeOps"), 0);
   EXPECT_EQ(commDump.count("memory"), 0);
 }
 
@@ -1145,8 +874,6 @@ TEST_F(CommDumpTest, DumpAllWithEmptyRequestFieldsDumpsEverything) {
   EXPECT_EQ(commDump.count("CT_pastColls"), 1);
   EXPECT_EQ(commDump.count("CT_pendingColls"), 1);
   EXPECT_EQ(commDump.count("CT_currentColls"), 1);
-  EXPECT_EQ(commDump.count("PT_pastColls"), 1);
-  EXPECT_EQ(commDump.count("PT_activeOps"), 1);
 }
 
 TEST_F(CommDumpTest, DumpAllGlobalInfoOnlySkipsPerCommDump) {
@@ -1233,7 +960,6 @@ TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
   EXPECT_EQ(commDump.count("CT_currentIteration"), 0);
   EXPECT_EQ(commDump.count("commHash"), 0);
   EXPECT_EQ(commDump.count("rank"), 0);
-  EXPECT_EQ(commDump.count("PT_pastColls"), 0);
   EXPECT_EQ(commDump.count("memory"), 0);
 }
 
@@ -1281,31 +1007,6 @@ TEST_F(CommDumpTest, DumpAllMixedPerCommAndGlobalInfoKeys) {
   // GlobalInfo should also be present
   ASSERT_TRUE(dumpAll.count("GlobalInfo"));
   EXPECT_EQ(dumpAll.at("GlobalInfo").count("totalCommDurPerIterationUs"), 1);
-}
-
-TEST_F(CommDumpTest, DumpAllProxyTraceKeyOnly) {
-  ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
-  auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
-  auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-
-  ncclx::test::NcclCommRAII comm{
-      globalRank, numRanks, localRank, bootstrap_.get()};
-
-  std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
-      dumpAll;
-  auto res =
-      ncclCommDumpAll(dumpAll, {{"comm_dump::requestFields", "PT_pastColls"}});
-  ASSERT_EQ(res, ncclSuccess);
-
-  auto commHash = hashToHexStr(comm->commHash);
-  ASSERT_TRUE(dumpAll.count(commHash));
-  const auto& commDump = dumpAll.at(commHash);
-
-  EXPECT_EQ(commDump.count("PT_pastColls"), 1);
-  EXPECT_EQ(commDump.count("PT_activeOps"), 0);
-  EXPECT_EQ(commDump.count("PT_activeColls"), 0);
-  EXPECT_EQ(commDump.count("commHash"), 0);
-  EXPECT_EQ(commDump.count("CT_pastColls"), 0);
 }
 
 int main(int argc, char* argv[]) {

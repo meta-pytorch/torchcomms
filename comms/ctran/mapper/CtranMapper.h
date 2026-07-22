@@ -16,7 +16,6 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
-#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
@@ -36,11 +35,6 @@
 #else
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #endif
-
-// Forward declaration for MapperTrace due to NVCC's lack of concepts support
-namespace ncclx::colltrace {
-class MapperTrace;
-}
 
 namespace ctran {
 class ScopedIpcRegHdl;
@@ -1079,8 +1073,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::vector<std::unique_ptr<CtranMapperTimestamp>> timestamps;
   CtranMapperContext context;
 
-  std::shared_ptr<ncclx::colltrace::MapperTrace> mapperTrace{nullptr};
-
   static std::string inline backendToStr(const CtranMapperBackend backend) {
     switch (backend) {
       case CtranMapperBackend::IB:
@@ -1225,10 +1217,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           (void*)this,
           getReqTypeStr(req->type),
           req->peer);
-      if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(
-            ncclx::colltrace::MapperRequestEnd{.req = req});
-      }
     }
     return commSuccess;
   }
@@ -1269,10 +1257,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     CLOGF_TRACE(
         COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::RecvNotified{.peerRank = notify->peer});
-    }
     return commSuccess;
   }
 
@@ -1514,14 +1498,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     FB_COMMCHECK(
         this->exportMem(peerRank, buf, hdl, req->sendCtrl.msg, backend));
     auto& msg = req->sendCtrl.msg;
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::SendCtrlStart{
-              .buffer = const_cast<void*>(buf),
-              .mapperHandle = hdl,
-              .peerRank = peerRank,
-              .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND ctrlmsg to rank {} with req {} {} {}: {}",
@@ -1554,14 +1530,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     req->recvCtrl.buf = buf;
     req->recvCtrl.key = key;
     auto& msg = req->recvCtrl.msg;
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::RecvCtrlStart{
-              .recvBufferPtr = buf,
-              .accessKeyPtr = key,
-              .peerRank = peerRank,
-              .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV ctrlmsg from rank {} with req {} {} {}: {}",
@@ -1592,13 +1560,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     req->peer = peerRank;
     req->backend =
         ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::SendCtrlStart{
-              .buffer = const_cast<void*>(payload),
-              .peerRank = peerRank,
-              .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND msg to rank {} with req {} {} {}: {}",
@@ -1627,13 +1588,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     req->peer = peerRank;
     req->backend =
         ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::RecvCtrlStart{
-              .recvBufferPtr = (void**)&payload,
-              .peerRank = peerRank,
-              .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV msg from rank {} with req {} {} {}: {}",
@@ -1679,14 +1633,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           (void*)&req,
           (void*)&req.ibReq,
           msg.toString());
-      if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(
-            ncclx::colltrace::SendCtrlStart{
-                .buffer = const_cast<void*>(bufs[req.peer]),
-                .mapperHandle = hdl,
-                .peerRank = req.peer,
-                .req = &req});
-      }
       this->ctranIb->isendCtrlMsg<PerfConfig>(
           msg.type, &msg, sizeof(ControlMsg), req.peer, req.ibReq);
     }
@@ -1703,11 +1649,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     auto& msg = req->sendSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
 
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::SendSyncCtrlStart{
-              .peerRank = peerRank, .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND(SYNC) ctrlmsg to rank {} with req {} {} {}: {}",
@@ -1737,11 +1678,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     auto& msg = req->recvSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
 
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::RecvSyncCtrlStart{
-              .peerRank = peerRank, .req = req});
-    }
     CLOGF_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV(SYNC) ctrlmsg from rank {} with req {} {} {}: {}",
@@ -1814,18 +1750,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           .req = put.req == nullptr ? nullptr : &(put.req->ibReq),
       };
       msgs.emplace_back(std::move(msg));
-
-      if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(
-            ncclx::colltrace::PutStart{
-                .sendBuffer = const_cast<void*>(put.sbuf),
-                .remoteBuffer = put.dbuf,
-                .length = put.len,
-                .peerRank = peerRank,
-                .sourceHandle = shdl,
-                .remoteAccessKey = remoteAccessKey,
-                .req = put.req});
-      }
     }
 
     FB_COMMCHECK(
@@ -1952,17 +1876,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return commInternalError;
     }
 
-    if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(
-          ncclx::colltrace::PutStart{
-              .sendBuffer = const_cast<void*>(sbuf),
-              .remoteBuffer = dbuf,
-              .length = len,
-              .peerRank = peerRank,
-              .sourceHandle = shdl,
-              .remoteAccessKey = remoteAccessKey,
-              .req = req});
-    }
     return commSuccess;
   }
 
@@ -2167,10 +2080,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     if (*done) {
       CLOGF_TRACE(
           COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
-      if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(
-            ncclx::colltrace::RecvNotified{.peerRank = notify->peer});
-      }
     }
     return commSuccess;
   }

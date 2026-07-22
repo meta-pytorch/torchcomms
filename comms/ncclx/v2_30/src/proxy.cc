@@ -25,7 +25,6 @@
 #include <cinttypes>
 #include <thread>
 
-#include "meta/colltrace/ProxyTraceFunc.h"
 
 #define NCCL_MAX_PROXY_CONNECTIONS (NCCL_MAX_LOCAL_RANKS+1)
 
@@ -367,7 +366,6 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
     WARN("Proxy append out of bounds");
     return ncclInternalError;
   }
-  PROXY_TRACE_OP_TO_SUBARGS(sub, op);
 
   //memset(sub, 0, sizeof(struct ncclProxySubArgs));
   sub->connection = op->connection;
@@ -1934,7 +1932,6 @@ ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union
   comm->proxyState->peerAddresses = peerAddresses;
   comm->proxyState->peerAddressesUDS = peerAddressesUDS;
   comm->proxyState->netAttr = NCCL_NET_ATTR_INIT;
-  NCCLCHECK(ncclx::colltrace::proxyTraceInit(comm->proxyState, comm));
 
   // UDS support
   NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
@@ -2028,7 +2025,6 @@ ncclResult_t ncclProxyStop(struct ncclComm* comm) {
 ncclResult_t ncclProxyDestroy(struct ncclComm* comm) {
   struct ncclProxyState* sharedProxyState = comm->sharedRes->proxyState;
 
-  NCCLCHECK(ncclx::colltrace::proxyTraceDestroy(sharedProxyState));
 
   if (sharedProxyState) {
     assert(sharedProxyState->refCount == 0);
