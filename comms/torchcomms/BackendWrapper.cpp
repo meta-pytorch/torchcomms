@@ -172,6 +172,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->broadcast(
           tensors.at(0), static_cast<int>(opts.rootRank), opts.asyncOp, bopts),
@@ -192,6 +193,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->all_reduce(
           tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts),
@@ -212,6 +214,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->all_reduce(
           tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts),
@@ -232,6 +235,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->reduce(
           tensors.at(0),
@@ -269,6 +273,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather(
   } else {
     bopts.timeout = options_->timeout;
   }
+
+  ++seqCollective_;
 
   // Fast path: when per-rank output tensors point to distinct memory,
   // delegate straight to the backend's list-based all_gather (no extra
@@ -318,6 +324,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->all_gather(
           outputTensorLists.at(0), inputTensors.at(0), opts.asyncOp, bopts),
@@ -345,6 +352,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->all_gather_single(
           output_tensors.at(0), inputTensors.at(0), opts.asyncOp, bopts),
@@ -361,6 +369,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_allgather_base(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->all_gather_single(outputTensor, inputTensor, opts.asyncOp, bopts),
       std::vector<at::Tensor>{outputTensor});
@@ -395,6 +404,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->gather(
           outputTensors.at(0),
@@ -430,6 +440,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
     inputTensors = {};
     inputTensors.emplace_back();
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->scatter(
           outputTensors.at(0),
@@ -458,6 +469,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->reduce_scatter(
           outputTensors.at(0),
@@ -489,6 +501,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->reduce_scatter_single(
           outputTensors.at(0),
@@ -509,6 +522,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_reduce_scatter_base(
   } else {
     bopts.timeout = options_->timeout;
   }
+  ++seqCollective_;
   return c10::make_intrusive<WorkWrapper>(
       comm_->reduce_scatter_single(
           outputTensor,
@@ -525,6 +539,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall_base(
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
     const c10d::AllToAllOptions& opts) {
+  ++seqCollective_;
   if (outputSplitSizes.empty() && inputSplitSizes.empty()) {
     AllToAllSingleOptions bopts;
     if (opts.timeout != kUnsetTimeout) {
@@ -559,6 +574,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::AllToAllOptions& opts) {
+  ++seqCollective_;
   AllToAllOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
@@ -587,6 +603,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   // barrier and TorchWork::wait() keep uniform semantics with every other
   // collective. Async barriers keep the non-blocking, stream-ordered behavior
   // via the work.
+  ++seqCollective_;
   auto work = comm_->barrier(opts.asyncOp, bopts);
   return c10::make_intrusive<WorkWrapper>(
       std::move(work),
@@ -850,6 +867,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::endCoalescing() {
 
 std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
   return comm_;
+}
+
+uint64_t BackendWrapper::getSequenceNumberForGroup() {
+  return seqCollective_;
 }
 
 std::shared_ptr<c10::Allocator> BackendWrapper::getMemAllocator() {
