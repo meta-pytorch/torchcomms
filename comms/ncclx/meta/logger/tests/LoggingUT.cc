@@ -1,9 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <algorithm>
 #include <string_view>
 
 #include <fmt/format.h>
 #include <folly/FileUtil.h>
+#include <folly/ScopeGuard.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/testing/TestUtil.h>
 #include <gmock/gmock.h>
@@ -13,6 +15,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
@@ -87,7 +90,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
 
   INFO(NCCL_ALL, "%s", TestStr.c_str());
   WARN("%s", TestStr.c_str());
-  ERR("%s", TestStr.c_str());
+  ERR(ncclInternalError, "%s", TestStr.c_str());
 
   finishLogging();
 }
@@ -119,7 +122,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
 
   // Log an error message - should update last error
   std::string errorMsg = "ERROR MESSAGE";
-  ERR("%s", errorMsg.c_str());
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
   lastError = meta::comms::logger::getLastCommsError();
   EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg));
@@ -127,7 +130,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
 
   // Log another error message - should update to the new error
   std::string errorMsg2 = "SECOND ERROR MESSAGE";
-  ERR("%s", errorMsg2.c_str());
+  ERR(ncclInternalError, "%s", errorMsg2.c_str());
   sleep(1);
   lastError = meta::comms::logger::getLastCommsError();
   EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg2));
@@ -152,7 +155,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorMultilineTest) {
 
   // Log a multiline error message
   std::string multilineError = "First line\nSecond line\nThird line";
-  ERR("%s", multilineError.c_str());
+  ERR(ncclInternalError, "%s", multilineError.c_str());
   sleep(1);
 
   auto lastError = meta::comms::logger::getLastCommsError();
@@ -170,7 +173,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTest) {
 
   // Create a long error message (but within the 1024 char buffer)
   std::string longError(500, 'X');
-  ERR("%s", longError.c_str());
+  ERR(ncclInternalError, "%s", longError.c_str());
   sleep(1);
 
   auto lastError = meta::comms::logger::getLastCommsError();
@@ -205,7 +208,7 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
-  ERR("%s", TestStr.c_str());
+  ERR(ncclInternalError, "%s", TestStr.c_str());
   sleep(1);
   std::string output = testing::internal::GetCapturedStdout();
   checkStringHasLogging(output, TestStr, "ERROR");
@@ -234,7 +237,7 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
-  ERR("%s", TestStr.c_str());
+  ERR(ncclInternalError, "%s", TestStr.c_str());
   sleep(1);
   std::string output = testing::internal::GetCapturedStdout();
   checkStringHasLogging(output, TestStr, "ERROR");
@@ -325,6 +328,13 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   setenv("NCCL_DEBUG", "INFO", 1);
   auto debugFileGuard = EnvRAII(NCCL_DEBUG_FILE, tempFile.string());
   setenv("NCCL_DEBUG_FILE", tempFile.c_str(), 1);
+  // EnvRAII only restores the NCCL_DEBUG_FILE cvar, not the raw OS env var. The
+  // tempFile lives in a TemporaryDirectory that is deleted at test end, so the
+  // OS env var must be unset on scope exit (even on the ASSERT_TRUE
+  // early-return below) or a later test's ncclCvarInit() would reload this
+  // stale path and NcclLogger would fail to open the deleted file.
+  auto debugFileEnvGuard =
+      folly::makeGuard([]() { unsetenv("NCCL_DEBUG_FILE"); });
   ncclResetDebugInit();
   initLogging();
 
@@ -341,7 +351,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
 
   INFO(NCCL_ALL, "%s", TestStr2.data());
   WARN("%s", TestStr2.data());
-  ERR("%s", TestStr2.data());
+  ERR(ncclInternalError, "%s", TestStr2.data());
 
   auto stderrOutput = testing::internal::GetCapturedStderr();
 
@@ -376,7 +386,7 @@ TEST_F(NcclLoggerTest, AppendErrorToStackTest) {
 
   // Log an error message first
   std::string errorMsg = "Base error message";
-  ERR("%s", errorMsg.c_str());
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
 
   // Append stack frames
@@ -403,7 +413,7 @@ TEST_F(NcclLoggerTest, AppendErrorToStackOrderTest) {
 
   // Log an error message first
   std::string errorMsg = "Error for stack order test";
-  ERR("%s", errorMsg.c_str());
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
 
   // Append stack frames in specific order
@@ -437,7 +447,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorWithMultipleStackFrames) {
 
   // Log an error
   std::string errorMsg = "Critical error occurred";
-  ERR("%s", errorMsg.c_str());
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
 
   // Add detailed stack trace
@@ -478,7 +488,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorEmptyStackTrace) {
 
   // Log an error without adding any stack frames
   std::string errorMsg = "Simple error without stack";
-  ERR("%s", errorMsg.c_str());
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
 
   auto lastError = meta::comms::logger::getLastCommsError();
@@ -490,176 +500,136 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorEmptyStackTrace) {
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, WarnWithScubaAppendsToStackTrace) {
+// The following tests assert v2_30-only error behavior: plain ERR routes to the
+// Scuba error record / ProcessGlobalErrors, and WARN no longer contributes to
+// the error stack. Older ncclx versions keep the legacy behavior, so gate these
+// tests to v2_30+.
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+
+TEST_F(NcclLoggerTest, WarnDoesNotContributeToErrorStack) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
 
-  // Log an error first to set the error message
-  std::string errorMsg = "Initial error";
-  ERR("%s", errorMsg.c_str());
+  // An ERR sets the last error message.
+  const std::string errorMsg = "Initial error";
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
   sleep(1);
 
-  // Use WARN_WITH_SCUBA to append to stack trace
-  WARN_WITH_SCUBA("Stack trace entry 1 from WARN_WITH_SCUBA");
-  WARN_WITH_SCUBA("Stack trace entry 2 from WARN_WITH_SCUBA");
+  // WARN is a propagator and must no longer append to the error stack.
+  const std::string warnMsg = "Propagator WARN should not be recorded";
+  WARN("%s", warnMsg.c_str());
+  sleep(1);
 
-  auto lastError = meta::comms::logger::getLastCommsError();
-  std::string errorStr(lastError);
-
+  const std::string errorStr(meta::comms::logger::getLastCommsError());
   EXPECT_THAT(errorStr, ::testing::HasSubstr(errorMsg));
   EXPECT_THAT(errorStr, ::testing::HasSubstr("NCCL Stack trace:"));
-  EXPECT_THAT(
-      errorStr,
-      ::testing::HasSubstr("Stack trace entry 1 from WARN_WITH_SCUBA"));
-  EXPECT_THAT(
-      errorStr,
-      ::testing::HasSubstr("Stack trace entry 2 from WARN_WITH_SCUBA"));
+  EXPECT_THAT(errorStr, ::testing::Not(::testing::HasSubstr(warnMsg)));
 
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, ErrWithScubaAppendsToStackTrace) {
+TEST_F(NcclLoggerTest, ErrorRecordsSingleScubaError) {
+  ncclCvarInit();
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
 
-  // Use ERR_WITH_SCUBA which should both log error and append to stack
-  ERR_WITH_SCUBA("Primary error from ERR_WITH_SCUBA");
-  sleep(1);
+  // A single ERR produces exactly one error record (not one per stack frame).
+  const std::string errorMsg = "Primary error from ERR";
+  ERR(ncclInternalError, "%s", errorMsg.c_str());
 
-  // Add more stack frames
-  WARN_WITH_SCUBA("Additional context from WARN_WITH_SCUBA");
-  WARN_WITH_SCUBA("More context details");
-
-  auto lastError = meta::comms::logger::getLastCommsError();
-  std::string errorStr(lastError);
-
-  EXPECT_THAT(
-      errorStr, ::testing::HasSubstr("Primary error from ERR_WITH_SCUBA"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("NCCL Stack trace:"));
-  EXPECT_THAT(
-      errorStr,
-      ::testing::HasSubstr("Additional context from WARN_WITH_SCUBA"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("More context details"));
+  const auto errors =
+      ProcessGlobalErrorsUtil::getAllState().errorAndStackTraces;
+  // One ERR must produce exactly one record carrying this message (the old
+  // per-propagator-frame behavior would produce several). Count by message so
+  // the check is robust to the process-global ring buffer's cap and to records
+  // left by earlier tests.
+  const size_t matchCount =
+      std::count_if(errors.begin(), errors.end(), [&](const auto& errorEntry) {
+        return errorEntry.errorMessage.find(errorMsg) != std::string::npos;
+      });
+  EXPECT_EQ(matchCount, 1u);
+  EXPECT_THAT(errors.back().errorMessage, ::testing::HasSubstr(errorMsg));
 
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, ScubaStackTraceOrder) {
+TEST_F(NcclLoggerTest, SecondErrorUpdatesLastError) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
 
-  // Log an error
-  ERR("Base error message");
+  ERR(ncclInternalError, "Base error message");
+  sleep(1);
+  ERR(ncclInternalError, "Newer error message");
   sleep(1);
 
-  // Use WARN_WITH_SCUBA in sequence
-  WARN_WITH_SCUBA("Frame A");
-  WARN_WITH_SCUBA("Frame B");
-  WARN_WITH_SCUBA("Frame C");
-
-  auto lastError = meta::comms::logger::getLastCommsError();
-  std::string errorStr(lastError);
-
-  // Verify the frames appear in order
-  size_t posA = errorStr.find("Frame A");
-  size_t posB = errorStr.find("Frame B");
-  size_t posC = errorStr.find("Frame C");
-
-  EXPECT_NE(posA, std::string::npos);
-  EXPECT_NE(posB, std::string::npos);
-  EXPECT_NE(posC, std::string::npos);
-  EXPECT_LT(posA, posB);
-  EXPECT_LT(posB, posC);
+  const std::string errorStr(meta::comms::logger::getLastCommsError());
+  EXPECT_THAT(errorStr, ::testing::HasSubstr("Newer error message"));
 
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, MixedScubaAndDirectStackAppend) {
+TEST_F(NcclLoggerTest, WarnNotAppendedButDirectAppendIs) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
 
-  // Log an error
-  ERR("Error occurred in operation");
+  ERR(ncclInternalError, "Error occurred in operation");
   sleep(1);
 
-  // Mix WARN_WITH_SCUBA and direct appendErrorToStack calls
-  WARN_WITH_SCUBA("From WARN_WITH_SCUBA 1");
-  meta::comms::logger::appendErrorToStack("From appendErrorToStack 1");
-  WARN_WITH_SCUBA("From WARN_WITH_SCUBA 2");
-  meta::comms::logger::appendErrorToStack("From appendErrorToStack 2");
+  // WARN must not appear in the error stack; direct appends still do.
+  WARN("This WARN must not appear in the error stack");
+  meta::comms::logger::appendErrorToStack("Direct append frame");
+  sleep(1);
 
-  auto lastError = meta::comms::logger::getLastCommsError();
-  std::string errorStr(lastError);
-
+  const std::string errorStr(meta::comms::logger::getLastCommsError());
   EXPECT_THAT(errorStr, ::testing::HasSubstr("Error occurred in operation"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("From WARN_WITH_SCUBA 1"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("From appendErrorToStack 1"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("From WARN_WITH_SCUBA 2"));
-  EXPECT_THAT(errorStr, ::testing::HasSubstr("From appendErrorToStack 2"));
-
-  // Verify order is maintained
-  size_t pos1 = errorStr.find("From WARN_WITH_SCUBA 1");
-  size_t pos2 = errorStr.find("From appendErrorToStack 1");
-  size_t pos3 = errorStr.find("From WARN_WITH_SCUBA 2");
-  size_t pos4 = errorStr.find("From appendErrorToStack 2");
-
-  EXPECT_LT(pos1, pos2);
-  EXPECT_LT(pos2, pos3);
-  EXPECT_LT(pos3, pos4);
+  EXPECT_THAT(errorStr, ::testing::HasSubstr("Direct append frame"));
+  EXPECT_THAT(
+      errorStr,
+      ::testing::Not(::testing::HasSubstr("This WARN must not appear")));
 
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, ScubaStackTraceWithMultipleErrors) {
+TEST_F(NcclLoggerTest, SecondErrorUpdatesMessageKeepsAppendedStack) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
 
-  // First error with stack
-  ERR("First error");
+  // First error with an appended stack frame.
+  ERR(ncclInternalError, "First error");
   sleep(1);
-  WARN_WITH_SCUBA("Stack for first error");
+  meta::comms::logger::appendErrorToStack("Stack for first error");
 
-  auto lastError1 = meta::comms::logger::getLastCommsError();
-  std::string errorStr1(lastError1);
+  const std::string errorStr1(meta::comms::logger::getLastCommsError());
   EXPECT_THAT(errorStr1, ::testing::HasSubstr("First error"));
   EXPECT_THAT(errorStr1, ::testing::HasSubstr("Stack for first error"));
 
-  // Second error should update the message but stack remains
-  ERR("Second error");
+  // A newer error updates the message; the appended stack remains.
+  ERR(ncclInternalError, "Second error");
   sleep(1);
 
-  auto lastError2 = meta::comms::logger::getLastCommsError();
-  std::string errorStr2(lastError2);
+  const std::string errorStr2(meta::comms::logger::getLastCommsError());
   EXPECT_THAT(errorStr2, ::testing::HasSubstr("Second error"));
-  // The old stack should still be there
   EXPECT_THAT(errorStr2, ::testing::HasSubstr("Stack for first error"));
-
-  // Add more stack for second error
-  WARN_WITH_SCUBA("Stack for second error");
-
-  auto lastError3 = meta::comms::logger::getLastCommsError();
-  std::string errorStr3(lastError3);
-  EXPECT_THAT(errorStr3, ::testing::HasSubstr("Second error"));
-  EXPECT_THAT(errorStr3, ::testing::HasSubstr("Stack for first error"));
-  EXPECT_THAT(errorStr3, ::testing::HasSubstr("Stack for second error"));
 
   finishLogging();
 }
+
+#endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
 
 TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
   ncclResetDebugInit();
@@ -710,7 +680,7 @@ TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
 
   INFO(NCCL_ALL, "%s", TestStr.c_str());
   WARN("%s", TestStr.c_str());
-  ERR("%s", TestStr.c_str());
+  ERR(ncclInternalError, "%s", TestStr.c_str());
 
   finishLogging();
 }
