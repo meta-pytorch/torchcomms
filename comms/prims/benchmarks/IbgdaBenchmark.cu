@@ -82,6 +82,34 @@ __global__ void ibgdaPutWaitCounterBatchKernel(
   }
 }
 
+__global__ void ibgdaPutWaitLocalBatchKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    auto solo = make_thread_solo();
+
+    for (int i = 0; i < 10; i++) {
+      const auto ticket =
+          transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
+      transport.wait_local(solo, ticket);
+    }
+
+    const unsigned long long startCycle = BENCHMARK_CLOCK64();
+    for (int i = 0; i < numIters; i++) {
+      const auto ticket =
+          transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
+      transport.wait_local(solo, ticket);
+    }
+    const unsigned long long endCycle = BENCHMARK_CLOCK64();
+    *totalCycles = endCycle - startCycle;
+  }
+}
+
 __global__ void ibgdaPutFlushBatchKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
@@ -378,6 +406,23 @@ void launchIbgdaPutWaitCounterBatch(
     cudaStream_t stream) {
   ibgdaPutWaitCounterBatchKernel<<<1, 32, 0, stream>>>(
       transport, localBuf, remoteBuf, nbytes, counterId, numIters, totalCycles);
+}
+
+void launchIbgdaPutWaitLocalBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream) {
+  ibgdaPutWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
+      transport, localBuf, remoteBuf, nbytes, numIters, totalCycles);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
 }
 
 void launchIbgdaPutFlushBatch(

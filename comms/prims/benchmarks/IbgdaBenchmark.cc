@@ -640,8 +640,9 @@ TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   printResultsTable("IBGDA ThreadScope MultiBlock Put+Flush", results);
 }
 
-TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
-  // Measures raw RDMA Write latency (put + transport counter-slot wait).
+TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
+  // Serialize every put with its completion wait to isolate the primitive
+  // completion cost. This does not model pipelined send/recv overlap.
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -656,7 +657,8 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     maxBufferSize = std::max(maxBufferSize, config.nBytes);
   }
 
-  std::vector<IbgdaBenchmarkResult> results;
+  std::vector<IbgdaBenchmarkResult> counterResults;
+  std::vector<IbgdaBenchmarkResult> localResults;
 
   try {
     MultipeerIbgdaTransportConfig transportConfig{
@@ -725,7 +727,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
         result.latency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
         result.bandwidth = (config.nBytes / 1e9f) / (result.latency / 1e6f);
 
-        results.push_back(result);
+        counterResults.push_back(result);
 
         XLOGF(
             INFO,
@@ -734,6 +736,37 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
             config.name,
             result.latency,
             result.bandwidth);
+
+        launchIbgdaPutWaitLocalBatch(
+            deviceTransport,
+            localDataBuf,
+            remoteDataBuf,
+            config.nBytes,
+            kIbgdaBatchIters,
+            d_totalCycles,
+            stream_);
+        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+        CUDA_CHECK_VOID(cudaMemcpy(
+            &totalCycles,
+            d_totalCycles,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost));
+
+        IbgdaBenchmarkResult localResult;
+        localResult.testName = config.name;
+        localResult.messageSize = config.nBytes;
+        localResult.latency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+        localResult.bandwidth =
+            (config.nBytes / 1e9f) / (localResult.latency / 1e6f);
+        localResults.push_back(localResult);
+
+        XLOGF(
+            INFO,
+            "Rank {}: {} wait_local - Latency: {:.2f} us, BW: {:.2f} GB/s",
+            globalRank,
+            config.name,
+            localResult.latency,
+            localResult.bandwidth);
       }
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -745,7 +778,9 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitCounter) {
     GTEST_SKIP() << "IB transport not available: " << e.what();
   }
 
-  printResultsTable(backendTitle("Put+WaitCounter (RDMA Write)"), results);
+  printResultsTable(
+      backendTitle("Put+WaitCounter (RDMA Write)"), counterResults);
+  printResultsTable(backendTitle("Put+WaitLocal (RDMA Write)"), localResults);
 }
 
 TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {

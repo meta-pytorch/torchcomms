@@ -6,10 +6,26 @@
 #include <glog/logging.h>
 
 #include <cstring>
+#include <limits>
 
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims {
+namespace {
+
+std::size_t checkedAdd(std::size_t lhs, std::size_t rhs, const char* label) {
+  CHECK_LE(lhs, std::numeric_limits<std::size_t>::max() - rhs)
+      << label << " size overflow";
+  return lhs + rhs;
+}
+
+std::size_t checkedMul(std::size_t lhs, std::size_t rhs, const char* label) {
+  CHECK(lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs)
+      << label << " size overflow";
+  return lhs * rhs;
+}
+
+} // namespace
 
 P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
     const std::vector<P2pIbgdaTransportBuildParams>& params,
@@ -137,14 +153,48 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   CHECK(err == cudaSuccess)
       << "Failed to allocate GPU IB channel state: " << cudaGetErrorString(err);
   outGpuAllocations.push_back(d_allLocalChannels);
+  std::size_t totalCompletionSlots = 0;
+  for (int i = 0; i < numPeers; ++i) {
+    const int pipelineDepth = params[i].channelLayout.pipelineDepth;
+    CHECK_GE(pipelineDepth, 0) << "pipelineDepth must not be negative";
+    const std::size_t peerCompletionSlots = checkedMul(
+        static_cast<std::size_t>(params[i].maxChannels),
+        static_cast<std::size_t>(pipelineDepth),
+        "send completion slots");
+    totalCompletionSlots = checkedAdd(
+        totalCompletionSlots, peerCompletionSlots, "send completion slots");
+  }
+  IbSendCompletionSlot* d_allCompletionSlots = nullptr;
+  const std::size_t completionSlotBytes = checkedMul(
+      totalCompletionSlots,
+      sizeof(IbSendCompletionSlot),
+      "send completion slots");
+  if (completionSlotBytes != 0) {
+    err = cudaMalloc(&d_allCompletionSlots, completionSlotBytes);
+    CHECK(err == cudaSuccess)
+        << "Failed to allocate GPU send completion slots: "
+        << cudaGetErrorString(err);
+    outGpuAllocations.push_back(d_allCompletionSlots);
+    err = cudaMemset(d_allCompletionSlots, 0, completionSlotBytes);
+    CHECK(err == cudaSuccess)
+        << "Failed to initialize GPU send completion slots: "
+        << cudaGetErrorString(err);
+  }
   std::vector<IbLocalChannel> h_localChannels(
       static_cast<std::size_t>(numPeers) * params[0].maxChannels);
+  std::size_t completionSlotOffset = 0;
   for (int i = 0; i < numPeers; ++i) {
     for (int channel = 0; channel < params[i].maxChannels; ++channel) {
       const auto channelIndex =
           static_cast<std::size_t>(i) * params[0].maxChannels + channel;
+      const std::size_t pipelineDepth =
+          static_cast<std::size_t>(params[i].channelLayout.pipelineDepth);
+      IbSendCompletionSlot* completionSlots = pipelineDepth == 0
+          ? nullptr
+          : d_allCompletionSlots + completionSlotOffset;
       h_localChannels[channelIndex] =
-          makeIbLocalChannel(params[i].channelLayout, channel);
+          makeIbLocalChannel(params[i].channelLayout, channel, completionSlots);
+      completionSlotOffset += pipelineDepth;
     }
   }
   err = cudaMemcpy(
@@ -271,10 +321,37 @@ void writeDeviceTransportSlot(
   CHECK(err == cudaSuccess) << "Failed to allocate per-peer IB channel state: "
                             << cudaGetErrorString(err);
   outGpuAllocations.push_back(d_localChannels);
+  CHECK_GE(params.channelLayout.pipelineDepth, 0)
+      << "pipelineDepth must not be negative";
+  const std::size_t pipelineDepth =
+      static_cast<std::size_t>(params.channelLayout.pipelineDepth);
+  const std::size_t completionSlotCount = checkedMul(
+      static_cast<std::size_t>(params.maxChannels),
+      pipelineDepth,
+      "send completion slots");
+  IbSendCompletionSlot* d_completionSlots = nullptr;
+  const std::size_t completionSlotBytes = checkedMul(
+      completionSlotCount,
+      sizeof(IbSendCompletionSlot),
+      "send completion slots");
+  if (completionSlotBytes != 0) {
+    err = cudaMalloc(&d_completionSlots, completionSlotBytes);
+    CHECK(err == cudaSuccess) << "Failed to allocate per-peer send completion "
+                                 "slots: "
+                              << cudaGetErrorString(err);
+    outGpuAllocations.push_back(d_completionSlots);
+    err = cudaMemset(d_completionSlots, 0, completionSlotBytes);
+    CHECK(err == cudaSuccess)
+        << "Failed to initialize per-peer send completion slots: "
+        << cudaGetErrorString(err);
+  }
   std::vector<IbLocalChannel> h_localChannels(params.maxChannels);
   for (int channel = 0; channel < params.maxChannels; ++channel) {
+    IbSendCompletionSlot* completionSlots = pipelineDepth == 0
+        ? nullptr
+        : d_completionSlots + static_cast<std::size_t>(channel) * pipelineDepth;
     h_localChannels[channel] =
-        makeIbLocalChannel(params.channelLayout, channel);
+        makeIbLocalChannel(params.channelLayout, channel, completionSlots);
   }
   err = cudaMemcpy(
       d_localChannels,
