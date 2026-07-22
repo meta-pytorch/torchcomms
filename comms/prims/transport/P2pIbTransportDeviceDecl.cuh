@@ -62,6 +62,12 @@ __device__ __forceinline__ void trace_ibgda_event(
 }
 #endif
 
+// Protocol-policy tags live in `protocol` to avoid collisions with the very
+// generic name `Simple` at comms::prims scope. LL is added alongside here.
+namespace protocol {
+struct Simple {};
+} // namespace protocol
+
 namespace detail {
 
 /**
@@ -799,7 +805,68 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
  *                        perBlockSlot. 0 means one signal per perBlockSlot.
  * @param timeout         Optional timeout for wait operations.
  */
-template <typename Transport, typename CopyOp = Memcpy, typename... Args>
+// Per-call geometry for the blocking send()/recv() loops. One definition serves
+// both directions -- send and recv share the same layout, so the caller
+// resolves its own progress slot separately. Tag-dispatched on the protocol
+// `P`, but `P` is an unused tag today (single-space, 16B); per-protocol packet
+// geometry is added in a later diff. Blocking-path analog of
+// make_progress_geometry().
+struct SendRecvGeometry {
+  int groupId;
+  std::size_t perBlockSlot; // physical bytes per (slot, group)
+  std::size_t chunkSize; // max bytes per signaled chunk
+  std::size_t payloadProtocolBytes; // nbytes rounded up to 16; loop bound
+};
+
+template <typename P>
+__device__ __forceinline__ SendRecvGeometry calcGeometry(
+    P,
+    const IbChannelLayout& channelLayout,
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes) {
+  const int groupId = group.group_id;
+  const int maxGroups = channelLayout.maxChannels;
+  if (groupId >= maxGroups) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: send/recv group_id=%u >= maxGroups=%d\n",
+          groupId,
+          maxGroups);
+    }
+    PIPES_DEVICE_TRAP();
+  }
+  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
+  if (perBlockSlot == 0) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: send/recv perBlockSlot=0 "
+          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          (unsigned long long)pipeline_window(channelLayout),
+          channelLayout.pipelineDepth);
+    }
+    PIPES_DEVICE_TRAP();
+  }
+  std::size_t chunkSize =
+      (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
+      ? (max_signal_bytes & ~15ULL)
+      : perBlockSlot;
+  if (chunkSize == 0) {
+    chunkSize = perBlockSlot;
+  }
+  return SendRecvGeometry{
+      .groupId = groupId,
+      .perBlockSlot = perBlockSlot,
+      .chunkSize = chunkSize,
+      .payloadProtocolBytes = align_protocol_bytes(nbytes),
+  };
+}
+
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
 __device__ __forceinline__ void send(
     Transport& transport,
     ThreadGroup& group,
@@ -820,39 +887,12 @@ __device__ __forceinline__ void send(
     return;
   }
   auto& channelLayout = transport.channel_layout();
-  const std::size_t payloadProtocolBytes = align_protocol_bytes(nbytes);
-
-  const int groupId = group.group_id;
-  const int maxGroups = channelLayout.maxChannels;
-  if (groupId >= maxGroups) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: send group_id=%u >= maxGroups=%d\n",
-          groupId,
-          maxGroups);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
-  if (perBlockSlot == 0) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: send perBlockSlot=0 "
-          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
-          (unsigned long long)pipeline_window(channelLayout),
-          channelLayout.pipelineDepth);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  std::size_t chunkSize =
-      (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
-      ? (max_signal_bytes & ~15ULL)
-      : perBlockSlot;
-  if (chunkSize == 0) {
-    chunkSize = perBlockSlot;
-  }
+  const SendRecvGeometry geometry =
+      calcGeometry(Proto{}, channelLayout, group, nbytes, max_signal_bytes);
+  const int groupId = geometry.groupId;
+  const std::size_t perBlockSlot = geometry.perBlockSlot;
+  const std::size_t chunkSize = geometry.chunkSize;
+  const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
 
   auto& state = progress_send_slot(transport, group);
   IbLocalChannel& localChannel =
@@ -984,7 +1024,11 @@ __device__ __forceinline__ void send(
  *                        Must match the sender's value.
  * @param timeout         Optional timeout for wait operations.
  */
-template <typename Transport, typename CopyOp = Memcpy, typename... Args>
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
 __device__ __forceinline__ void recv(
     Transport& transport,
     ThreadGroup& group,
@@ -1005,39 +1049,12 @@ __device__ __forceinline__ void recv(
     return;
   }
   auto& channelLayout = transport.channel_layout();
-  const std::size_t payloadProtocolBytes = align_protocol_bytes(nbytes);
-
-  const int groupId = group.group_id;
-  const int maxGroups = channelLayout.maxChannels;
-  if (groupId >= maxGroups) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: recv group_id=%u >= maxGroups=%d\n",
-          groupId,
-          maxGroups);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  const std::size_t perBlockSlot = pipeline_chunk(channelLayout);
-  if (perBlockSlot == 0) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: recv perBlockSlot=0 "
-          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
-          (unsigned long long)pipeline_window(channelLayout),
-          channelLayout.pipelineDepth);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  std::size_t chunkSize =
-      (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
-      ? (max_signal_bytes & ~15ULL)
-      : perBlockSlot;
-  if (chunkSize == 0) {
-    chunkSize = perBlockSlot;
-  }
+  const SendRecvGeometry geometry =
+      calcGeometry(Proto{}, channelLayout, group, nbytes, max_signal_bytes);
+  const int groupId = geometry.groupId;
+  const std::size_t perBlockSlot = geometry.perBlockSlot;
+  const std::size_t chunkSize = geometry.chunkSize;
+  const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
 
   auto& state = progress_recv_slot(transport, group);
   IbLocalChannel& localChannel =
@@ -1169,7 +1186,11 @@ __device__ __forceinline__ void recv(
  * @param timeout         Optional timeout for wait operations.
  * @param args            Extra args forwarded to CopyOp::forward.
  */
-template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+template <
+    typename CopyOp = Memcpy,
+    typename Transport,
+    typename Proto = protocol::Simple,
+    typename... Args>
 __device__ __forceinline__ void forward(
     Transport& transport,
     ThreadGroup& group,
@@ -1190,65 +1211,21 @@ __device__ __forceinline__ void forward(
   }
   auto& channelLayout = transport.channel_layout();
   auto& fwdChannelLayout = fwdTransport.channel_layout();
-  const std::size_t payloadProtocolBytes = align_protocol_bytes(nbytes);
-
   const int groupId = group.group_id;
 
-  // --- recv side (this transport) ---
-  const int recvMaxGroups = channelLayout.maxChannels;
-  if (groupId >= recvMaxGroups) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: forward recv maxGroups=%d groupId=%u\n",
-          recvMaxGroups,
-          groupId);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  const std::size_t recvPerBlockSlot = pipeline_chunk(channelLayout);
-  if (recvPerBlockSlot == 0) {
-    if (group.is_leader()) {
-      printf("[PIPES] FATAL: forward recvPerBlockSlot=0\n");
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  // --- fwd side (fwd transport) ---
-  const int fwdMaxGroups = fwdChannelLayout.maxChannels;
-  if (groupId >= fwdMaxGroups) {
-    if (group.is_leader()) {
-      printf(
-          "[PIPES] FATAL: forward fwd maxGroups=%d groupId=%u\n",
-          fwdMaxGroups,
-          groupId);
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  const std::size_t fwdPerBlockSlot = pipeline_chunk(fwdChannelLayout);
-  if (fwdPerBlockSlot == 0) {
-    if (group.is_leader()) {
-      printf("[PIPES] FATAL: forward fwdPerBlockSlot=0\n");
-    }
-    PIPES_DEVICE_TRAP();
-  }
-
-  // Chunk sizes for recv and fwd sides
-  std::size_t recvChunkSize =
-      (max_signal_bytes > 0 && max_signal_bytes < recvPerBlockSlot)
-      ? (max_signal_bytes & ~15ULL)
-      : recvPerBlockSlot;
-  if (recvChunkSize == 0) {
-    recvChunkSize = recvPerBlockSlot;
-  }
-  std::size_t fwdChunkSize =
-      (max_signal_bytes > 0 && max_signal_bytes < fwdPerBlockSlot)
-      ? (max_signal_bytes & ~15ULL)
-      : fwdPerBlockSlot;
-  if (fwdChunkSize == 0) {
-    fwdChunkSize = fwdPerBlockSlot;
-  }
+  // Per-side geometry via the shared calcGeometry() helper. Single-space today
+  // (perBlockSlot / chunkSize); the payload/wire split is added in a follow-up.
+  // calcGeometry validates groupId < maxChannels and perBlockSlot != 0 for each
+  // channel.
+  const SendRecvGeometry recvGeo =
+      calcGeometry(Proto{}, channelLayout, group, nbytes, max_signal_bytes);
+  const SendRecvGeometry fwdGeo =
+      calcGeometry(Proto{}, fwdChannelLayout, group, nbytes, max_signal_bytes);
+  const std::size_t payloadProtocolBytes = recvGeo.payloadProtocolBytes;
+  const std::size_t recvPerBlockSlot = recvGeo.perBlockSlot;
+  const std::size_t recvChunkSize = recvGeo.chunkSize;
+  const std::size_t fwdPerBlockSlot = fwdGeo.perBlockSlot;
+  const std::size_t fwdChunkSize = fwdGeo.chunkSize;
 
   auto& recvSlotState = progress_recv_slot(transport, group);
   IbLocalChannel& recvLocalChannel =
