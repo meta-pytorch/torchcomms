@@ -11,7 +11,6 @@
 #include "p2p_resiliency.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 NCCL_PARAM(IbArThreshold, "IB_AR_THRESHOLD", -2);
 int64_t ncclIbArThreshold = 8192;
@@ -652,24 +651,6 @@ static ncclResult_t ncclIbLogCompletionWithError(struct ncclIbNetCommBase* commB
       sockStr, ibvWcStatusStr(wc->status), wc->status,
       ibvWcOpcodeStr(wc->opcode), wc->opcode, wc->vendor_err,
       localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
-  if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES > 0) {
-    ProcessGlobalErrorsUtil::IbCompletionError ibErr{
-        .peer = std::string(sockStr),
-        .statusStr = std::string(ibvWcStatusStr(wc->status)),
-        .status = wc->status,
-        .opcodeStr = std::string(ibvWcOpcodeStr(wc->opcode)),
-        .opcode = wc->opcode,
-        .reqSize = static_cast<int>(wc->byte_len),
-        .vendorErr = wc->vendor_err,
-        .reqType = commBase->isSend ? "send" : "recv",
-        .localGid = localGidStr ? std::string(localGidString) : "",
-        .remoteGid = remoteGidStr ? std::string(remoteGidString) : "",
-        .hcaName = std::string(hcaName),
-        .scaleupDomain = ProcessGlobalErrorsUtil::getScaleupDomain(),
-        .localHostname = ProcessGlobalErrorsUtil::getHostname(),
-    };
-    ProcessGlobalErrorsUtil::addIbCompletionError(std::move(ibErr));
-  }
   return ncclSuccess;
 }
 

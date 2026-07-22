@@ -21,8 +21,6 @@
 #include <mutex>
 #include <condition_variable>
 
-#include "meta/colltrace/ProxyTrace.h"
-
 typedef enum : uint8_t {
   ncclPatternRing,
   ncclPatternRingTwice,
@@ -117,9 +115,6 @@ struct ncclProxyOp {
   uint64_t workCounter;
 
   struct ncclProxyOp *enqNext;
-
-  // NCCLX - ProxyTrace
-  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxySubArgs;
@@ -172,9 +167,6 @@ struct ncclProxySubArgs {
 
   void* recvRequestsCache[NCCL_STEPS];
   int recvRequestsSubCount;
-
-  // NCCLX - ProxyTrace
-  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxyArgs {
@@ -380,9 +372,6 @@ struct ncclProxyState {
 
   // reference back to communicator used for logging purpose
   ncclComm* owner{nullptr};
-
-  // NCCLX - ProxyTrace
-  std::shared_ptr<ProxyTrace> trace{nullptr};
 };
 
 enum proxyConnectState {
