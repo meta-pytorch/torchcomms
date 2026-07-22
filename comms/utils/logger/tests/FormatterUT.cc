@@ -302,6 +302,26 @@ TEST(LoggingFormat, getLastCommsErrorEmptyStack) {
   EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
 }
 
+TEST(LoggingFormat, setLastErrorPrefersNativeStack) {
+  meta::comms::logger::setLastError(
+      "net timeout", {"stackFrame1", "stackFrame2"});
+
+  auto lastError = meta::comms::logger::getLastCommsError();
+  const auto messagePos = lastError.find("net timeout");
+  const auto headerPos = lastError.find("NCCL Stack trace:");
+  const auto frame1Pos = lastError.find("stackFrame1");
+  const auto frame2Pos = lastError.find("stackFrame2");
+
+  EXPECT_NE(messagePos, std::string::npos);
+  EXPECT_NE(headerPos, std::string::npos);
+  EXPECT_NE(frame1Pos, std::string::npos);
+  EXPECT_NE(frame2Pos, std::string::npos);
+
+  // The native stack is recorded after the message, in order.
+  EXPECT_LT(messagePos, frame1Pos);
+  EXPECT_LT(frame1Pos, frame2Pos);
+}
+
 TEST(LoggingFormat, nonErrorMessageDoesNotUpdateLastError) {
   LoggerDB db{LoggerDB::TESTING};
   auto* category = db.getCategory("test.info");
