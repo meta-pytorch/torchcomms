@@ -2610,7 +2610,7 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
     // memset to 0 as it will be used to generate hostHash
     memset(&commId, 0, sizeof(commId));
   } else if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
-    ERR("No ncclUniqueId provided in nccl baseline init mode, please set TORCH_NCCL_BCAST_UNIQUEID=1 or set NCCL_COMM_ID env variable");
+    ERR(ncclInvalidUsage, "No ncclUniqueId provided in nccl baseline init mode, please set TORCH_NCCL_BCAST_UNIQUEID=1 or set NCCL_COMM_ID env variable");
     return ncclInvalidUsage;
   }
 

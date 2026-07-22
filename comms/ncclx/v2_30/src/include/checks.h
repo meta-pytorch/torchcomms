@@ -44,7 +44,7 @@ constexpr const char* ncclCodeToString(ncclResult_t code) {
   do {                                                                         \
     cudaError_t err = cmd;                                                     \
     if (err != cudaSuccess) {                                                  \
-      WARN_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err));                      \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err));                      \
       COMMDUMP_REPORT_CUDA_ERROR(err);                                         \
       (void)cudaGetLastError();                                                \
       return ncclUnhandledCudaError;                                           \
@@ -55,7 +55,7 @@ constexpr const char* ncclCodeToString(ncclResult_t code) {
   do {                                                                         \
     cudaError_t err = cmd;                                                     \
     if (err != cudaSuccess) {                                                  \
-      WARN_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err));                      \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err));                      \
       COMMDUMP_REPORT_CUDA_ERROR(err);                                         \
       (void)cudaGetLastError();                                                \
       RES = ncclUnhandledCudaError;                                            \
@@ -92,7 +92,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   int retval; \
   SYSCHECKSYNC((statement), name, retval); \
   if (retval == -1) { \
-    WARN_WITH_SCUBA("Call to " name " failed: %s", strerror(errno)); \
+    ERR(ncclSystemError, "Call to " name " failed: %s", strerror(errno)); \
     return ncclSystemError; \
   } \
 } while (false)
@@ -110,7 +110,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   int retval; \
   SYSCHECKSYNC((statement), name, retval); \
   if (retval == -1) { \
-    WARN_WITH_SCUBA("Call to " name " failed: %s", strerror(errno)); \
+    ERR(ncclSystemError, "Call to " name " failed: %s", strerror(errno)); \
     RES = ncclSystemError; \
     goto label; \
   } \
@@ -120,7 +120,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define PTHREADCHECK(statement, name) do { \
   int retval = (statement); \
   if (retval != 0) { \
-    WARN_WITH_SCUBA("Call to " name " failed: %s", strerror(retval)); \
+    ERR(ncclSystemError, "Call to " name " failed: %s", strerror(retval)); \
     return ncclSystemError; \
   } \
 } while (0)
@@ -128,7 +128,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define PTHREADCHECKGOTO(statement, name, RES, label) do { \
   int retval = (statement); \
   if (retval != 0) { \
-    WARN_WITH_SCUBA("Call to " name " failed: %s", strerror(retval)); \
+    ERR(ncclSystemError, "Call to " name " failed: %s", strerror(retval)); \
     RES = ncclSystemError; \
     goto label; \
   } \
@@ -137,7 +137,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define NEQCHECK(statement, value) do {   \
   if ((statement) != value) {             \
     /* Print the back trace*/             \
-    WARN_WITH_SCUBA("%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
+    ERR(ncclSystemError, "%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
     return ncclSystemError;     \
   }                             \
 } while (0)
@@ -146,7 +146,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   if ((statement) != value) { \
     /* Print the back trace*/ \
     RES = ncclSystemError;    \
-    WARN_WITH_SCUBA("%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
+    ERR(ncclSystemError, "%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
     goto label; \
   } \
 } while (0)
@@ -154,7 +154,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define EQCHECK(statement, value) do {    \
   if ((statement) == value) {             \
     /* Print the back trace*/             \
-    WARN_WITH_SCUBA("%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
+    ERR(ncclSystemError, "%s:%d -> %d (%s)", __FILE__, __LINE__, ncclSystemError, strerror(errno));    \
     return ncclSystemError;     \
   }                             \
 } while (0)
@@ -163,7 +163,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   if ((statement) == value) { \
     /* Print the back trace*/ \
     RES = ncclSystemError;    \
-    WARN_WITH_SCUBA("%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
+    ERR(ncclSystemError, "%s:%d -> %d (%s)", __FILE__, __LINE__, RES, strerror(errno));    \
     goto label; \
   } \
 } while (0)
@@ -173,7 +173,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   ncclResult_t RES = call; \
   if (RES != ncclSuccess && RES != ncclInProgress) { \
     /* Print the back trace*/ \
-    if (ncclDebugNoWarn == 0) WARN_WITH_SCUBA("%s:%d -> %d", __FILE__, __LINE__, RES);    \
+    if (ncclDebugNoWarn == 0) WARN("%s:%d -> %d", __FILE__, __LINE__, RES);    \
     return RES; \
   } \
 } while (0)
@@ -182,7 +182,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   RES = call; \
   if (RES != ncclSuccess && RES != ncclInProgress) { \
     /* Print the back trace*/ \
-    if (ncclDebugNoWarn == 0) WARN_WITH_SCUBA("%s:%d -> %d", __FILE__, __LINE__, RES);    \
+    if (ncclDebugNoWarn == 0) WARN("%s:%d -> %d", __FILE__, __LINE__, RES);    \
     goto label; \
   } \
 } while (0)
@@ -206,7 +206,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   uint32_t* tmpAbortFlag = (abortFlagPtr);     \
   ncclResult_t RES = call;                \
   if (RES != ncclSuccess && RES != ncclInProgress) {               \
-    if (ncclDebugNoWarn == 0) WARN_WITH_SCUBA(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
+    if (ncclDebugNoWarn == 0) WARN("%s:%d -> %d", __FILE__, __LINE__, RES);    \
     return ncclInternalError;             \
   }                                       \
   if (COMPILER_ATOMIC_LOAD(tmpAbortFlag, std::memory_order_acquire)) NEQCHECK(*tmpAbortFlag, 0); \
@@ -216,7 +216,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   uint32_t* tmpAbortFlag = (abortFlagPtr);             \
   RES = call;                             \
   if (RES != ncclSuccess && RES != ncclInProgress) {               \
-    if (ncclDebugNoWarn == 0) WARN_WITH_SCUBA(NCCL_ALL,"%s:%d -> %d", __FILE__, __LINE__, RES);    \
+    if (ncclDebugNoWarn == 0) WARN("%s:%d -> %d", __FILE__, __LINE__, RES);    \
     goto label;                           \
   }                                       \
   if (COMPILER_ATOMIC_LOAD(tmpAbortFlag, std::memory_order_acquire)) NEQCHECKGOTO(*tmpAbortFlag, 0, RES, label); \
@@ -224,7 +224,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 
 #define NCCLCHECKTHREAD(a, args) do { \
   if (((args)->ret = (a)) != ncclSuccess && (args)->ret != ncclInProgress) { \
-    WARN_WITH_SCUBA("%s:%d -> %d [Async thread]", __FILE__, __LINE__, (args)->ret); \
+    WARN("%s:%d -> %d [Async thread]", __FILE__, __LINE__, (args)->ret); \
     return args; \
   } \
 } while(0)
@@ -232,7 +232,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define CUDACHECKTHREAD(a) do { \
   cudaError_t err = (a);        \
   if (err != cudaSuccess) {     \
-    WARN_WITH_SCUBA("%s:%d -> %d [Async thread]", __FILE__, __LINE__, (int)err); \
+    ERR(ncclUnhandledCudaError, "%s:%d -> %d [Async thread]", __FILE__, __LINE__, (int)err); \
     COMMDUMP_REPORT_CUDA_ERROR(err); \
     args->ret = ncclUnhandledCudaError; \
     return args; \
@@ -254,7 +254,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do {                                                   \
     cudaError_t err = cmd;                               \
     if (err != cudaSuccess) {                            \
-      ERR_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err)); \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err)); \
       COMMDUMP_REPORT_CUDA_ERROR(err);                       \
       abort();                                           \
     }                                                    \
@@ -264,7 +264,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do {                                                      \
     SYSCHECKSYNC(call, name, retval);                       \
     if (retval == -1) {                                     \
-      ERR_WITH_SCUBA("Call to " name " failed : %s", strerror(errno)); \
+      ERR(ncclSystemError, "Call to " name " failed : %s", strerror(errno)); \
     return ncclSystemError; \
   } \
 } while (false)
@@ -274,7 +274,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define NCCLCHECKIGNORE(call, RES) do {                \
   ncclResult_t TMPRES = call;                          \
   if (TMPRES != ncclSuccess && TMPRES != ncclInProgress) { \
-    WARN_WITH_SCUBA(                                   \
+    WARN(                                              \
         "%s:%s:%d -> %d (%s)",                         \
         __FILE__,                                      \
         __func__,                                      \
