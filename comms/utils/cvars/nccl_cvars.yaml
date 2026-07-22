@@ -242,12 +242,6 @@ cvars:
       comm - proxy thread is created for each communicator.
       shared - proxy thread is shared with the parent communicator.
 
- - name        : NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES
-   type        : int
-   default     : 20
-   description : |-
-     Prefix for all scuba log files that will be piped to scuba.
-
 
  - name        : NCCL_SCUBA_LOG_FILE_PREFIX
    type        : string
@@ -2759,12 +2753,6 @@ cvars:
    description : |-
      Thread block size to use for ncclAllReduceSparse.  -1 means
      automatically pick the thread block size to use.
-
- - name        : NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS
-   type        : bool
-   default     : false
-   description : |-
-     If true, logs all process global errors in comm dumps
 
  - name        : NCCL_COMMSMONITOR_ENABLE
    type        : bool
