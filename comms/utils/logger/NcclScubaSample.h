@@ -45,6 +45,13 @@ class NcclScubaSample {
   // Helper to include a custom error and collect stack trace
   void setError(const std::string& error);
 
+  // Helper to include a custom error using a pre-captured native stack instead
+  // of capturing one, so an expensive stack capture can be shared across
+  // multiple error reporters.
+  void setError(
+      const std::string& error,
+      const std::vector<std::string>& stack);
+
   // Set custom data attribute
   void setData(std::string data);
 
