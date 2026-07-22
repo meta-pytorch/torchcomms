@@ -10,7 +10,6 @@
 
 #include "debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 constexpr const char* ncclCodeToString(ncclResult_t code) {
   switch (code) {
@@ -26,26 +25,12 @@ constexpr const char* ncclCodeToString(ncclResult_t code) {
   }
 }
 
-// Report a CUDA error to colltrace for analyzer consumption
-#define COMMDUMP_REPORT_CUDA_ERROR(err)                                    \
-  do {                                                                      \
-    if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES > 0) {                  \
-      ProcessGlobalErrorsUtil::CudaError cudaErr;                           \
-      cudaErr.errorString = cudaGetErrorString(err);                        \
-      cudaErr.errorCode = static_cast<int>(err);                            \
-      cudaErr.scaleupDomain = ProcessGlobalErrorsUtil::getScaleupDomain();  \
-      cudaErr.localHostname = ProcessGlobalErrorsUtil::getHostname();       \
-      ProcessGlobalErrorsUtil::addCudaError(std::move(cudaErr));            \
-    }                                                                       \
-  } while (false)
-
 // Check CUDA RT calls
 #define CUDACHECK(cmd)                                                         \
   do {                                                                         \
     cudaError_t err = cmd;                                                     \
     if (err != cudaSuccess) {                                                  \
       WARN_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err));                      \
-      COMMDUMP_REPORT_CUDA_ERROR(err);                                         \
       (void)cudaGetLastError();                                                \
       return ncclUnhandledCudaError;                                           \
     }                                                                          \
@@ -56,7 +41,6 @@ constexpr const char* ncclCodeToString(ncclResult_t code) {
     cudaError_t err = cmd;                                                     \
     if (err != cudaSuccess) {                                                  \
       WARN_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err));                      \
-      COMMDUMP_REPORT_CUDA_ERROR(err);                                         \
       (void)cudaGetLastError();                                                \
       RES = ncclUnhandledCudaError;                                            \
       goto label;                                                              \
@@ -233,7 +217,6 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   cudaError_t err = (a);        \
   if (err != cudaSuccess) {     \
     WARN_WITH_SCUBA("%s:%d -> %d [Async thread]", __FILE__, __LINE__, (int)err); \
-    COMMDUMP_REPORT_CUDA_ERROR(err); \
     args->ret = ncclUnhandledCudaError; \
     return args; \
   } \
@@ -255,7 +238,6 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     cudaError_t err = cmd;                               \
     if (err != cudaSuccess) {                            \
       ERR_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err)); \
-      COMMDUMP_REPORT_CUDA_ERROR(err);                       \
       abort();                                           \
     }                                                    \
   } while (false)
