@@ -197,8 +197,8 @@ void TorchCommNCCLX::checkGraphEvents() {
   }
 }
 
-// The timeout thread cannot make NCCL calls.  The only CUDA call it can make
-// it cudaEventQuery.
+// If the watchdog first observes a fatal state, clean up the communicator
+// immediately.
 void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
@@ -247,6 +247,8 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       timeout_remaining_ms -= elapsed_ms;
     }
 
+    CommState state_before = comm_state_.load(std::memory_order_relaxed);
+
     // Check work objects for completion or timeout
     // Thread-safety: checkWorkQueue() calls garbageCollect() which acquires
     // work_queues_mutex_ before accessing the work queue, ensuring safe
@@ -276,22 +278,9 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
           static_cast<long>(configs_.graph_timeout_check_interval_ms_);
     }
 
-    if (comm_state_ != CommState::NORMAL &&
-        options_.abort_process_on_timeout_or_error &&
-        !options_.enable_reconfigure) {
-      if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR, this)
-            << "Aborting process due to timeout on rank " << rank_
-            << " - timeout watchdog detected operation timeout";
-      } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
-                            << " - timeout watchdog detected operation error. ";
-      }
-
-      runAbortHooks();
-
-      std::abort();
-    }
+    CommState state_after = comm_state_.load(std::memory_order_relaxed);
+    state_after = handleFatalTransitionFromWatchdog(state_before, state_after);
+    maybeAbortProcessFromWatchdog(state_after);
 
     // Detect a communicator-level async error while the comm is still healthy.
     if (comm_state_ == CommState::NORMAL) {
@@ -342,6 +331,52 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
+TorchCommNCCLX::CommState TorchCommNCCLX::handleFatalTransitionFromWatchdog(
+    CommState state_before,
+    CommState state_after) {
+  if (state_before != CommState::NORMAL || state_after == CommState::NORMAL) {
+    return state_after;
+  }
+
+  switch (state_after) {
+    case CommState::TIMEOUT:
+      if (options_.enable_reconfigure) {
+        revokeNcclComm();
+      } else {
+        abortNcclComm();
+      }
+      return state_after;
+    case CommState::ERROR:
+      abort();
+      return comm_state_.load(std::memory_order_relaxed);
+    default:
+      return state_after;
+  }
+}
+
+void TorchCommNCCLX::maybeAbortProcessFromWatchdog(CommState state) {
+  if (state == CommState::NORMAL ||
+      !options_.abort_process_on_timeout_or_error ||
+      options_.enable_reconfigure) {
+    return;
+  }
+
+  switch (state) {
+    case CommState::TIMEOUT:
+      TC_LOG(ERROR, this) << "Aborting process due to timeout on rank " << rank_
+                          << " - timeout watchdog detected operation timeout";
+      break;
+    case CommState::ERROR:
+      TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
+                          << " - timeout watchdog detected operation error. ";
+      break;
+    default:
+      return;
+  }
+  runAbortHooks();
+  std::abort();
+}
+
 void TorchCommNCCLX::checkInitialized() const {
   if (init_state_ != InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommNCCLX not initialized");
@@ -349,18 +384,18 @@ void TorchCommNCCLX::checkInitialized() const {
 }
 
 void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
-  // Nothing to check in graph capture mode
+  CommState state = comm_state_.load(std::memory_order_relaxed);
   if (getGraphCaptureMode()) {
-    return;
+    if (state == CommState::NORMAL) {
+      return;
+    }
+  } else {
+    // First, check work queue status
+    checkWorkQueue();
+    state = comm_state_.load(std::memory_order_relaxed);
   }
 
-  // First, check work queue status
-  checkWorkQueue();
-
-  // Graph timeout detection is handled by the watchdog thread at
-  // graph_timeout_check_interval_ms, so no synchronous check is needed here.
-
-  if (comm_state_ == CommState::TIMEOUT) {
+  if (state == CommState::TIMEOUT) {
     if (options_.enable_reconfigure) {
       revokeNcclComm();
       throw std::runtime_error("NCCLX operation timed out");
@@ -374,7 +409,11 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
         throw std::runtime_error("NCCLX operation timed out");
       }
     }
-  } else if (comm_state_ == CommState::ERROR) {
+  } else if (state == CommState::ERROR) {
+    if (!nccl_comm_) {
+      throw std::runtime_error(
+          "NCCLX communicator was already aborted due to a previous error");
+    }
     ncclResult_t asyncErr;
     NCCLX_CHECK(
         nccl_api_,

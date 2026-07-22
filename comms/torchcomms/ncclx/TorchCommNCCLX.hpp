@@ -488,6 +488,10 @@ class TorchCommNCCLX : public TorchCommBackend,
       const ncclComm_t comm,
       const ncclDataType_t dataType);
   void timeoutWatchdog() noexcept;
+  CommState handleFatalTransitionFromWatchdog(
+      CommState state_before,
+      CommState state_after);
+  void maybeAbortProcessFromWatchdog(CommState state);
   void checkInitialized() const;
   void initNcclxResources();
   void checkAndAbortIfTimedOutOrError();
