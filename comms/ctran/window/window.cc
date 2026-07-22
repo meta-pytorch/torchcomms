@@ -22,6 +22,7 @@
 #include "comms/prims/window/HostWindow.h"
 #endif
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/ScubaLogger.h"
 
 using ctran::window::RemWinInfo;
 
@@ -176,6 +177,7 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
 }
 
 commResult_t CtranWin::exchange() {
+  CtranMapperTimer exchangeTotalTimer;
   auto statex = comm->statex_.get();
   const auto nRanks = statex->nRanks();
   const auto myRank = statex->rank();
@@ -196,6 +198,13 @@ commResult_t CtranWin::exchange() {
   FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
 
+  const auto recordWinStage = [&](const std::string& stage, double us) {
+    NcclScubaEvent(
+        std::make_unique<CommEvent>(
+            &comm->logMetaData_, stage, std::string(), us / 1000.0))
+        .record();
+  };
+
   // The base buffer holds the signal buffer (register path) or the combined
   // data+signal buffer (allocate path). On the register path with signals
   // disabled there is no base buffer, so its registration and control exchange
@@ -204,6 +213,7 @@ commResult_t CtranWin::exchange() {
 
   // Registration via ctran mapper.
   if (exchangeBaseBuffer) {
+    CtranMapperTimer baseRegTimer;
     FB_COMMCHECK(mapper->regMem(
         winBasePtr,
         range_,
@@ -211,6 +221,7 @@ commResult_t CtranWin::exchange() {
         true,
         true, /* NCCL managed buffer */
         &baseRegHdl));
+    recordWinStage("WinExchange/BaseReg", baseRegTimer.durationUs());
   }
 
   if (allocDataBuf_) {
@@ -225,6 +236,7 @@ commResult_t CtranWin::exchange() {
     // RegElem* for the allGatherCtrl handle exchange.
     auto regCache = ctran::RegCache::getInstance();
     ctran::CHECK_VALID_REGCACHE(regCache);
+    CtranMapperTimer userRegTimer;
     FB_COMMCHECK(regCache->acquireScopedRegister(
         winDataPtr,
         dataBytes,
@@ -233,15 +245,26 @@ commResult_t CtranWin::exchange() {
         comm->logMetaData_,
         dataScopedReg));
     dataRegHdl = dataScopedReg.get();
+    recordWinStage("WinExchange/UserReg", userRegTimer.durationUs());
   }
 
-  // Exchange each rank's data buffer size via bootstrap allGather
-  // This populates remWinInfo[r].dataBytes for all ranks
+  // Populate each rank's data buffer size. A symmetric window guarantees every
+  // rank registered the same size, so fill locally and skip the bootstrap
+  // allGather round-trip; otherwise gather each rank's size.
+  // FIXME(ctwin): confirm whether this size allGather is needed at all for the
+  // non-symmetric path (added in D87390033).
   std::vector<size_t> allRankSizes(nRanks);
-  allRankSizes[myRank] = dataBytes;
-  auto resFuture = comm->bootstrap_->allGather(
-      allRankSizes.data(), sizeof(size_t), myRank, nRanks);
-  FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+  if (isSymmetric()) {
+    allRankSizes.assign(nRanks, dataBytes);
+  } else {
+    CtranMapperTimer sizeAllGatherTimer;
+    allRankSizes[myRank] = dataBytes;
+    auto resFuture = comm->bootstrap_->allGather(
+        allRankSizes.data(), sizeof(size_t), myRank, nRanks);
+    FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+    recordWinStage(
+        "WinExchange/SizeAllGather", sizeAllGatherTimer.durationUs());
+  }
 
   // Handshake with other peers for registration exchange and network
   // connection setup
@@ -294,22 +317,26 @@ commResult_t CtranWin::exchange() {
   };
 
   if (exchangeBaseBuffer) {
+    CtranMapperTimer baseExchangeTimer;
     FB_COMMCHECK(exchangeBuffer(
         winBasePtr,
         baseRegHdl,
         remoteBaseBufs,
         remoteBaseBufAccessKeys,
         /*outIpcHdls=*/nullptr));
+    recordWinStage("WinExchange/BaseExchange", baseExchangeTimer.durationUs());
   }
 
   if (!allocDataBuf_) {
     // User-provided data buffer needs its own handle exchange round.
+    CtranMapperTimer userExchangeTimer;
     FB_COMMCHECK(exchangeBuffer(
         winDataPtr,
         dataRegHdl,
         remoteUserBufs,
         remoteUserBufAccessKeys,
         &dataScopedIpcRegHdls));
+    recordWinStage("WinExchange/UserExchange", userExchangeTimer.durationUs());
   }
 
   for (auto r = 0; r < nRanks; r++) {
@@ -358,7 +385,9 @@ commResult_t CtranWin::exchange() {
 
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
+  CtranMapperTimer barrierTimer;
   FB_COMMCHECK(windowBarrier(comm, mapper));
+  recordWinStage("WinExchange/Barrier", barrierTimer.durationUs());
 
   // Cache only symmetric windows: ctwin collective algos needs all ranks
   // locally compute peerAddr = peerBase + offset, meaning same offset from base
@@ -367,6 +396,7 @@ commResult_t CtranWin::exchange() {
     FB_COMMCHECK(
         comm->winCache_.insert(winDataPtr, dataBytes, this, &winCacheHdl));
   }
+  recordWinStage("WinExchange", exchangeTotalTimer.durationUs());
   return commSuccess;
 }
 

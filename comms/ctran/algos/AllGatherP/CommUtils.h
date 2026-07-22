@@ -3,6 +3,7 @@
 #pragma once
 
 #include <iostream>
+#include <memory>
 #include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGatherP/Types.h"
@@ -12,6 +13,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/utils/logger/ScubaLogger.h"
 
 namespace ctran::allgatherp {
 inline void* getPtr(void* base, size_t offset) {
@@ -58,6 +60,21 @@ inline commResult_t exchangeIpcReg(CtranComm* comm, PersistArgs& pArgs) {
       ctrlUs,
       barrierUs,
       statex->nLocalRanks());
+
+  NcclScubaEvent(
+      std::make_unique<CommEvent>(
+          &comm->logMetaData_,
+          "AgpCreate/IpcExchange/IntraAllGatherCtrl",
+          std::string(),
+          ctrlUs / 1000.0))
+      .record();
+  NcclScubaEvent(
+      std::make_unique<CommEvent>(
+          &comm->logMetaData_,
+          "AgpCreate/IpcExchange/IntraBarrier",
+          std::string(),
+          barrierUs / 1000.0))
+      .record();
 
   const int myRank = statex->rank();
   const int nLocalRanks = statex->nLocalRanks();

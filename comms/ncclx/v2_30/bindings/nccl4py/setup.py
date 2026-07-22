@@ -17,6 +17,13 @@ if not cuda_path.exists() or not cuda_path.is_dir():
     )
 CUDA_INC = str(cuda_path / "include")
 
+# NCCL include/lib paths for direct C++ linkage (NCCLx namespace bindings)
+_prefix = os.environ.get("PREFIX", "")
+NCCL_INC = os.environ.get(
+    "NCCL_INC", os.path.join(_prefix, "include") if _prefix else ""
+)
+NCCL_LIB = os.environ.get("NCCL_LIB", os.path.join(_prefix, "lib") if _prefix else "")
+
 ext_modules = ["nccl.bindings.nccl"]
 
 
@@ -86,6 +93,25 @@ def calculate_modules(module: str):
 
 # Note: the extension attributes are overwritten in build_extension()
 ext_modules = [e for ext in ext_modules for e in calculate_modules(ext)]
+
+# NCCLx C++ namespace bindings (direct linkage against libnccl)
+_ncclx_include_dirs = [CUDA_INC]
+_ncclx_library_dirs = []
+if NCCL_INC:
+    _ncclx_include_dirs.append(NCCL_INC)
+if NCCL_LIB:
+    _ncclx_library_dirs.append(NCCL_LIB)
+
+ncclx_ext = Extension(
+    "nccl.bindings.ncclx_internal",
+    sources=["nccl/bindings/ncclx_internal.pyx"],
+    include_dirs=_ncclx_include_dirs,
+    library_dirs=_ncclx_library_dirs,
+    language="c++",
+    extra_compile_args=["-std=c++17"],
+    libraries=["nccl"],
+)
+ext_modules.append(ncclx_ext)
 
 
 compiler_directives = {
