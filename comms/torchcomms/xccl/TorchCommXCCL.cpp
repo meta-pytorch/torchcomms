@@ -2025,16 +2025,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   // Record start event before XCCL operations
   work->recordStart("gather");
 
-  // No-op for empty input tensor
-  // TODO: Consider removing this check once oneCCL supports zero-sized tensors
-  // in send/recv operations.
-  if (input_tensor.numel() == 0) [[unlikely]] {
-    TC_LOG(WARNING, this) << "XCCL gather called with empty input tensor";
-    work->recordEnd();
-    enqueueWork(work, stream);
-    return work;
-  }
-
   // Unlike the NCCL implementation which groups only the send operations,
   // we group both send and receive operations to avoid a hang in oneCCL.
   // See https://github.com/uxlfoundation/oneCCL/issues/193 for details.
