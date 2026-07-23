@@ -569,8 +569,9 @@ __device__ inline PartitionResult ThreadGroup::partition(
           .block_id = block_id,
           .total_groups = partition_size,
           .scope = scope}};
-#endif
+#else
   return PartitionResult{};
+#endif
 }
 
 /**
@@ -762,8 +763,9 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
           .block_id = block_id,
           .total_groups = groups_in_partition,
           .scope = scope}};
-#endif
+#else
   return PartitionResult{};
+#endif
 }
 
 /**
