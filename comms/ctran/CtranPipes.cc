@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <set>
 
@@ -28,7 +29,7 @@ bool ctranPipesTraceEnabled() {
 }
 
 int ctranPipesNvlMaxNumChannels() {
-  return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
+  return std::max(1, MCCL_MAX_NBLOCKS);
 }
 
 size_t roundDownToMultiple(size_t value, size_t multiple) {
@@ -144,15 +145,31 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       }
       config.ibConfig.ibHca = std::move(hcaStr);
     }
-    uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
-        ? static_cast<size_t>(pc.ibgdaDataBufferSize)
-        : static_cast<size_t>(NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE);
-    if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
-      ibgdaDataBufferSize = std::max(
-          ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
+    if (MCCL_MAX_NCHANNELS <= 0) {
+      CLOGF(
+          ERR,
+          "MCCL_MAX_NCHANNELS must be positive, got {}",
+          MCCL_MAX_NCHANNELS);
+      return commInvalidArgument;
+    }
+    const auto numChannels = static_cast<size_t>(MCCL_MAX_NCHANNELS);
+    size_t ibgdaDataBufferSize = 0;
+    if (pc.ibgdaDataBufferSize > 0) {
+      ibgdaDataBufferSize = static_cast<size_t>(pc.ibgdaDataBufferSize);
+    } else {
+      const auto perChannelSize = static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
+      if (perChannelSize > std::numeric_limits<size_t>::max() / numChannels) {
+        CLOGF(
+            ERR,
+            "MCCL_CHANNEL_BUFFER_SIZE={} overflows total size for {} channels",
+            perChannelSize,
+            numChannels);
+        return commInvalidArgument;
+      }
+      ibgdaDataBufferSize = perChannelSize * numChannels;
     }
     config.ibConfig.dataBufferSize = static_cast<size_t>(ibgdaDataBufferSize);
-    config.ibConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
+    config.ibConfig.qpDepth = MCCL_IB_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
     }
@@ -178,13 +195,6 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.ibLazyConnect = pc.ibLazyConnect;
     config.ibConfig.materializePeerTimeoutMs =
         NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
-    if (NCCL_CTRAN_IB_MAX_GROUPS <= 0) {
-      CLOGF(
-          ERR,
-          "NCCL_CTRAN_IB_MAX_GROUPS must be positive, got {}",
-          NCCL_CTRAN_IB_MAX_GROUPS);
-      return commInvalidArgument;
-    }
     if (NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC <= 0) {
       CLOGF(
           ERR,
@@ -192,7 +202,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
       return commInvalidArgument;
     }
-    config.ibConfig.maxGroups = static_cast<int>(NCCL_CTRAN_IB_MAX_GROUPS);
+    config.ibConfig.maxGroups = static_cast<int>(MCCL_MAX_NCHANNELS);
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
@@ -222,40 +232,36 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           config.ibConfig.dataBufferSize);
     }
 
-    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE || directIbReduceScatter) {
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE && !directIbReduceScatter) {
       if (config.ibConfig.dataBufferSize == 0) {
         CLOGF(
             ERR,
-            "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 requires a positive "
-            "IBGDA data-buffer size via NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE "
-            "or the per-communicator IBGDA data-buffer override");
+            "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or pipesIbgdaDataBufferSize");
         return commInvalidArgument;
       }
-      if (!directIbReduceScatter &&
-          NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
+      if (config.ibConfig.dataBufferSize % numChannels != 0) {
         CLOGF(
             ERR,
-            "NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH must be positive, got {}",
-            NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
+            "IB data-buffer size {} must be divisible by channel count {}",
+            config.ibConfig.dataBufferSize,
+            numChannels);
         return commInvalidArgument;
       }
-      if (!directIbReduceScatter) {
-        if (config.ibConfig.dataBufferSize %
-                static_cast<std::size_t>(config.ibConfig.maxGroups) !=
-            0) {
-          CLOGF(
-              ERR,
-              "IBGDA data-buffer size {} must be divisible by maxGroups {}",
-              config.ibConfig.dataBufferSize,
-              config.ibConfig.maxGroups);
-          return commInvalidArgument;
-        }
-        config.ibConfig.perChannelSize = config.ibConfig.dataBufferSize /
-            static_cast<std::size_t>(config.ibConfig.maxGroups);
-        config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
-        config.ibConfig.pipelineDepth =
-            static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
+      const int pipelineDepth = static_cast<int>(MCCL_CHANNEL_PIPELINE_DEPTH);
+      if (pipelineDepth <= 0) {
+        CLOGF(
+            ERR,
+            "MCCL_CHANNEL_PIPELINE_DEPTH must be positive, got {}",
+            pipelineDepth);
+        return commInvalidArgument;
       }
+
+      config.ibConfig.perChannelSize =
+          config.ibConfig.dataBufferSize / numChannels;
+      config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
+      config.ibConfig.pipelineDepth = pipelineDepth;
+    }
+    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE || directIbReduceScatter) {
       CLOGF(
           INFO,
           "Prims IBGDA sendRecv configured: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
@@ -266,7 +272,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           directIbReduceScatter);
     }
 
-    if (NCCL_CTRAN_PIPES_IB_MODE == NCCL_CTRAN_PIPES_IB_MODE::ibrc) {
+    if (MCCL_IB_MODE == MCCL_IB_MODE::ibrc) {
       config.ibMode = comms::prims::IbBackendMode::kIbrc;
     }
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;

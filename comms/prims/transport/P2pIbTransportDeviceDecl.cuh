@@ -71,16 +71,19 @@ namespace detail {
  * buffers. `dataOff` is the matching protocol offset into the caller's user
  * buffer. `bytes` never crosses a per-block staging partition or the
  * reserved protocol byte count. `streamEnd` is the absolute protocol byte
- * value after this chunk and is used as the DATA_READY, SLOT_FREE, and
- * NIC_DONE readiness threshold. `dataOff` is a protocol offset; callers mask
- * it against the payload byte count before invoking user-buffer copy
- * callbacks.
+ * value after this chunk and is used as the DATA_READY and SLOT_FREE readiness
+ * threshold. `slotId` and `pipelineGeneration` identify the local completion
+ * frontier that protects this staging range. `dataOff` is a protocol offset;
+ * callers mask it against the payload byte count before invoking user-buffer
+ * copy callbacks.
  */
 struct ProgressChunk {
   std::size_t stagingOff;
   std::size_t dataOff;
   std::size_t bytes;
   uint64_t streamEnd;
+  uint32_t slotId;
+  uint64_t pipelineGeneration;
 };
 
 /**
@@ -184,19 +187,46 @@ __device__ __forceinline__ ProgressChunk next_chunk(
     const IbChannelProgress& state,
     const ProgressGeometry& geometry);
 
+template <typename Transport>
+__device__ __forceinline__ bool try_prepare_send_slot(
+    Transport& transport,
+    ThreadGroup& group,
+    uint32_t slotId,
+    uint64_t generation,
+    const Timeout& timeout = Timeout());
+
+template <typename Transport>
+__device__ __forceinline__ void prepare_send_slot(
+    Transport& transport,
+    ThreadGroup& group,
+    uint32_t slotId,
+    uint64_t generation,
+    const Timeout& timeout = Timeout());
+
+template <typename Transport>
+__device__ __forceinline__ void record_send_completion(
+    Transport& transport,
+    uint32_t channelId,
+    uint32_t slotId,
+    uint64_t generation,
+    const IbLocalCompletionTicket& ticket);
+
 /**
  * Transport-agnostic pipelined RDMA send/recv helpers.
  *
  * These helpers implement the blocking `send`/`recv`/`forward`, the resumable
  * `init_*_progress` / `progress_*_once` pair, and their private helpers. The
  * send/recv algorithm is independent of the underlying transport: it only
- * needs the common explicit-buffer IB device ops `put` (fused signal+counter),
+ * needs the common explicit-buffer IB device ops `put`, `wait_local`,
  * `signal`, `wait_signal`, `wait_counter`, `read_signal`, and `read_counter`.
  *
  * Every public entry point takes the owning transport and routes every
  * transport op through it. `P2pIbgdaTransportDevice` and
  * `P2pIbrcTransportDevice` own the channel layout/state and use these helpers
  * only for the shared send/recv algorithm.
+ *
+ * Blocking and resumable send/forward use the same put() completion-ticket
+ * stream for local staging reuse.
  */
 /**
  * Initialize transport-owned state for one pipelined send operation.
@@ -237,7 +267,7 @@ __device__ __forceinline__ void init_send_progress(
   IbChannelProgress state{};
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
-      : detail::IbSendRecvProgressStage::WaitNicDone;
+      : detail::IbSendRecvProgressStage::WaitLocalCompletion;
   if (nbytes == 0) {
     store_progress_state(group, slot, state);
     return;
@@ -314,18 +344,19 @@ __device__ __forceinline__ void init_recv_progress(
  * Attempt bounded progress on one initialized send.
  *
  * This method advances at most one staged copy plus one RDMA put for the
- * current chunk. It never spins on NIC_DONE or SLOT_FREE: if either
+ * current chunk. It never spins on local completion or SLOT_FREE: if either
  * dependency is not ready, it returns immediately so a higher-level scheduler
  * can try another independent lane. If a `Timeout` is enabled, it is checked
  * only at those readiness points and should already have been started by the
  * caller.
  *
- * The send path first waits for NIC_DONE before reusing the local
+ * The send path first checks local completion before reusing the local
  * send-staging range, then copies user data into send-staging through
  * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
- * range, and finally issues an RDMA put that piggybacks DATA_READY and posts
- * NIC_DONE per chunk into the local counter. Returning `Done` means the
- * reserved byte range has completed.
+ * range, and finally issues an RDMA put that piggybacks DATA_READY and records
+ * the returned completion ticket per chunk. Returning `Done` means
+ * the reserved byte range has been posted; later slot reuse waits for local
+ * completion.
  *
  * `CopyOp` must expose `send(dst, src, bytes, group, dataOffset, args...)`.
  * The default `Memcpy` copies bytes cooperatively across the supplied
@@ -382,40 +413,20 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   IbLocalChannel& localChannel =
       transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
   const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbgdaLocalBuffer localNicDoneWait = localChannel.nicDoneWait;
-  const IbgdaLocalBuffer localNicDoneCompletion =
-      localChannel.nicDoneCompletion;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, progress_params.groupId);
 
-  if (state.activeStage == detail::IbSendRecvProgressStage::WaitNicDone) {
+  if (state.activeStage ==
+      detail::IbSendRecvProgressStage::WaitLocalCompletion) {
     const ProgressChunk chunk =
         next_chunk(channelLayout, state, progress_params);
-    const bool isFinalChunk =
-        chunk.dataOff + chunk.bytes >= progress_params.protocolBytes;
-    const uint64_t protocolStreamEnd =
-        chunk.streamEnd + (isFinalChunk ? state.activeTailPadding : 0);
-    if (protocolStreamEnd > pipelineBytes) {
-      const uint64_t expected = protocolStreamEnd - pipelineBytes;
-      uint32_t ready = 1;
-      unsigned long long current = 0;
-      if (group.is_leader()) {
-        current = static_cast<unsigned long long>(
-            transport.read_counter(localNicDoneWait));
-        ready = current >= expected ? 1U : 0U;
-        if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "progress_send_once waiting for NIC_DONE expected>=%llu, "
-              "current=%llu",
-              static_cast<unsigned long long>(expected),
-              current);
-        }
-      }
-      ready = group.broadcast<uint32_t>(ready);
-      if (!ready) {
-        return IbgdaSendRecvProgressStatus::Waiting;
-      }
+    if (!try_prepare_send_slot(
+            transport,
+            group,
+            chunk.slotId,
+            chunk.pipelineGeneration,
+            timeout)) {
+      return IbgdaSendRecvProgressStatus::Waiting;
     }
 
     const std::size_t validBytes = valid_payload_bytes(
@@ -476,16 +487,22 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const std::size_t protocolBytesThis =
           chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
-      transport.put(
+      const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           chunk.bytes,
           remoteChannel.dataReady,
           protocolBytesThis,
-          localNicDoneCompletion,
-          protocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
           /*signalPerLane=*/true);
+      record_send_completion(
+          transport,
+          static_cast<uint32_t>(progress_params.groupId),
+          chunk.slotId,
+          chunk.pipelineGeneration,
+          completion);
     }
     group.sync();
 
@@ -497,11 +514,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       return IbgdaSendRecvProgressStatus::Done;
     }
     transition_progress_stage(
-        group, state, detail::IbSendRecvProgressStage::WaitNicDone);
+        group, state, detail::IbSendRecvProgressStage::WaitLocalCompletion);
   }
 
-  // A full non-final chunk can cycle WaitNicDone -> WaitSlotFree ->
-  // WaitNicDone in one call, leaving the stage unchanged while nextByte
+  // A full non-final chunk can cycle WaitLocalCompletion -> WaitSlotFree ->
+  // WaitLocalCompletion in one call, leaving the stage unchanged while nextByte
   // advances. Check both fields so that case reports Progressed.
   if (state.activeStage != initialStage ||
       state.activeNextByte != initialNextByte) {
@@ -772,8 +789,9 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
  * finer-grained overlap at the receiver.
  *
  * Signaling protocol (per group):
- *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
- *                send waits on this before overwriting local sendStaging.
+ *   LOCAL_DONE — completion ticket returned by each RDMA put. Blocking send
+ *                waits on the latest channel frontier before overwriting
+ *                local sendStaging.
  *   SLOT_FREE  — receiver increments by bytesThis for each signaled byte
  *                range. send waits before overwriting recvStaging.
  *   DATA_READY — sender increments by bytesThis, piggybacked on put.
@@ -858,9 +876,6 @@ __device__ __forceinline__ void send(
   IbLocalChannel& localChannel =
       transport.local_channel(static_cast<uint32_t>(groupId));
   const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbgdaLocalBuffer localNicDoneWait = localChannel.nicDoneWait;
-  const IbgdaLocalBuffer localNicDoneCompletion =
-      localChannel.nicDoneCompletion;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, groupId);
   assert_progress_slot_idle(group, state, "send");
@@ -895,12 +910,10 @@ __device__ __forceinline__ void send(
     const std::size_t stagingOff =
         static_cast<std::size_t>(groupId) * pipelineBytes + slotOff + chunkOff;
     const uint64_t protocolStreamEnd = streamStart + protocolBytesThis;
+    const uint64_t pipelineCycle = streamStart / pipelineBytes;
 
     // (1) Wait for NIC to finish with this slot's local sendStaging.
-    if (protocolStreamEnd > pipelineBytes) {
-      transport.wait_counter(
-          group, localNicDoneWait, protocolStreamEnd - pipelineBytes, timeout);
-    }
+    prepare_send_slot(transport, group, slot, pipelineCycle, timeout);
 
     // (2) Cooperative copy: src -> local sendStaging via CopyOp.
     const std::size_t validBytes =
@@ -923,24 +936,29 @@ __device__ __forceinline__ void send(
           group, localSlotFree, protocolStreamEnd - pipelineBytes, timeout);
     }
 
-    // (4) threadfence_system + leader-only single-WQE RDMA put with
-    //     fused signal+counter. All threads fence to ensure memcpy
+    // (4) threadfence_system + leader-only RDMA put with fused signal.
     //     stores are visible to the NIC before the leader posts the WQE.
     __threadfence_system();
     group.sync();
     if (group.is_leader()) {
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      transport.put(
+      const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(stagingOff),
           remoteChannel.recvStaging.subBuffer(stagingOff),
           bytesThis,
           remoteChannel.dataReady,
           protocolBytesThis,
-          localNicDoneCompletion,
-          protocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
           /*signalPerLane=*/true);
+      record_send_completion(
+          transport,
+          static_cast<uint32_t>(groupId),
+          slot,
+          pipelineCycle,
+          completion);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1128,7 +1146,7 @@ __device__ __forceinline__ void recv(
  *
  * Signal ordering invariant (critical for ring deadlock avoidance):
  *   1. Wait DATA_READY from sender (this transport)
- *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
+ *   2. Wait for local completion on fwd transport's sendStaging
  *   3. CopyOp::forward(dst, fwd_staging, staging, ...)
  *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
  *   5. Wait SLOT_FREE from fwd transport's receiver
@@ -1149,10 +1167,10 @@ __device__ __forceinline__ void recv(
  *
  *   Fwd side (fwd transport):
  *     - Uses the forward channel's send progress cursor.
- *     - Waits NIC_DONE on the forward channel's local completion counter.
+ *     - Waits on the forward channel's local-completion ticket.
  *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
  *     - RDMA puts with DATA_READY on the forward remote channel and
- *       posts NIC_DONE credit per chunk to the local completion counter.
+ *       returns a ticket covering local completion of the data put.
  *
  * Any chain of send → forward* → recv is therefore valid: each
  * forward consumes exactly the signals its predecessor produces
@@ -1270,9 +1288,6 @@ __device__ __forceinline__ void forward(
   IbLocalChannel& fwdLocalChannel =
       fwdTransport.local_channel(static_cast<uint32_t>(groupId));
   const IbgdaLocalBuffer fwdSlotFree = fwdLocalChannel.slotFree;
-  const IbgdaLocalBuffer fwdNicDoneWait = fwdLocalChannel.nicDoneWait;
-  const IbgdaLocalBuffer fwdNicDoneCompletion =
-      fwdLocalChannel.nicDoneCompletion;
   const IbRemoteChannel fwdRemoteChannel =
       makeIbRemoteChannel(fwdChannelLayout, groupId);
   assert_progress_slot_idle(group, fwdSlotState, "forward send");
@@ -1334,6 +1349,7 @@ __device__ __forceinline__ void forward(
     const std::size_t fwdProtocolBytesThis =
         bytesThis + (isFinalChunk ? fwdProtocolTailPadding : 0);
     const uint64_t fwdProtocolStreamEnd = fwdStreamStart + fwdProtocolBytesThis;
+    const uint64_t fwdPipelineCycle = fwdStreamStart / fwdPipelineBytes;
 
     // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
     //     lane that carried this chunk (mirrors the upstream sender's Send
@@ -1346,14 +1362,8 @@ __device__ __forceinline__ void forward(
         recvProtocolBytesThis,
         timeout);
 
-    // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
-    if (fwdProtocolStreamEnd > fwdPipelineBytes) {
-      fwdTransport.wait_counter(
-          group,
-          fwdNicDoneWait,
-          fwdProtocolStreamEnd - fwdPipelineBytes,
-          timeout);
-    }
+    // (2) Wait for local completion on fwd's sendStaging.
+    prepare_send_slot(fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
 
     // (3) CopyOp::forward — transform recv staging -> dst + fwd staging.
     const std::size_t validBytes =
@@ -1389,16 +1399,22 @@ __device__ __forceinline__ void forward(
     if (group.is_leader()) {
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      fwdTransport.put(
+      const auto completion = fwdTransport.put(
           solo,
           fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
           fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
           bytesThis,
           fwdRemoteChannel.dataReady,
           fwdProtocolBytesThis,
-          fwdNicDoneCompletion,
-          fwdProtocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
           /*signalPerLane=*/true);
+      record_send_completion(
+          fwdTransport,
+          static_cast<uint32_t>(groupId),
+          fwdSlot,
+          fwdPipelineCycle,
+          completion);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1485,9 +1501,9 @@ __device__ __forceinline__ static std::size_t signal_alignment(
  * Pad the current operation's protocol byte stream to the signaling boundary.
  *
  * Padding is credit-only: payload copies and RDMA writes still cover only
- * aligned payload protocol bytes. The final DATA_READY/NIC_DONE/SLOT_FREE
- * update carries this tail padding so the next operation starts on an aligned
- * protocol cursor without needing a future recv to publish padding credit.
+ * aligned payload protocol bytes. The final DATA_READY/SLOT_FREE update carries
+ * this tail padding so the next operation starts on an aligned protocol cursor
+ * without needing a future recv to publish padding credit.
  */
 __device__ __forceinline__ static std::size_t
 tail_padding_for_signal_granularity(
@@ -1764,7 +1780,8 @@ __device__ __forceinline__ void validate_send_progress_stage(
     ThreadGroup& group,
     const IbChannelProgress& state) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  if (state.activeStage != detail::IbSendRecvProgressStage::WaitNicDone &&
+  if (state.activeStage !=
+          detail::IbSendRecvProgressStage::WaitLocalCompletion &&
       state.activeStage != detail::IbSendRecvProgressStage::WaitSlotFree &&
       state.activeStage != detail::IbSendRecvProgressStage::Done) {
     if (group.is_leader()) {
@@ -1806,10 +1823,10 @@ __device__ __forceinline__ bool is_valid_progress_transition(
     detail::IbSendRecvProgressStage current,
     detail::IbSendRecvProgressStage next) {
   switch (current) {
-    case detail::IbSendRecvProgressStage::WaitNicDone:
+    case detail::IbSendRecvProgressStage::WaitLocalCompletion:
       return next == detail::IbSendRecvProgressStage::WaitSlotFree;
     case detail::IbSendRecvProgressStage::WaitSlotFree:
-      return next == detail::IbSendRecvProgressStage::WaitNicDone ||
+      return next == detail::IbSendRecvProgressStage::WaitLocalCompletion ||
           next == detail::IbSendRecvProgressStage::Done;
     case detail::IbSendRecvProgressStage::WaitDataReady:
       return next == detail::IbSendRecvProgressStage::Done;
@@ -1889,7 +1906,117 @@ __device__ __forceinline__ ProgressChunk next_chunk(
       .dataOff = payloadNextByte,
       .bytes = bytes,
       .streamEnd = streamStart + bytes,
+      .slotId = static_cast<uint32_t>(slot),
+      .pipelineGeneration = streamStart / pipelineBytes,
   };
+}
+
+template <typename Transport>
+__device__ __forceinline__ bool try_prepare_send_slot(
+    Transport& transport,
+    ThreadGroup& group,
+    uint32_t slotId,
+    uint64_t generation,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t ready = 1;
+  if (group.is_leader()) {
+    auto& slot =
+        transport.local_channel(group.group_id).sendCompletionSlots[slotId];
+    if (slot.generation != generation) {
+      uint64_t pending = slot.laneMask;
+      const uint32_t numLanes = transport.send_completion_lane_count();
+      for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+        const uint64_t laneBit = 1ULL << laneId;
+        if ((pending & laneBit) == 0) {
+          continue;
+        }
+        const IbLocalCompletionTicket ticket{
+            .completionId = laneId,
+            .value = slot.values[laneId],
+        };
+        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+          pending &= ~laneBit;
+        }
+      }
+      slot.laneMask = pending;
+      if (pending == 0) {
+        slot.generation = generation;
+      } else {
+        ready = 0;
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            timeout,
+            "send slot local completion timed out slot=%u generation=%llu "
+            "pending=0x%llx",
+            slotId,
+            static_cast<unsigned long long>(generation),
+            static_cast<unsigned long long>(pending));
+      }
+    }
+  }
+  ready = group.broadcast<uint32_t>(ready);
+  return ready != 0;
+#else
+  (void)transport;
+  (void)group;
+  (void)slotId;
+  (void)generation;
+  (void)timeout;
+  return true;
+#endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ void prepare_send_slot(
+    Transport& transport,
+    ThreadGroup& group,
+    uint32_t slotId,
+    uint64_t generation,
+    const Timeout& timeout) {
+  if (group.is_leader()) {
+    auto& slot =
+        transport.local_channel(group.group_id).sendCompletionSlots[slotId];
+    if (slot.generation != generation) {
+      const uint64_t pending = slot.laneMask;
+      const uint32_t numLanes = transport.send_completion_lane_count();
+      for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+        if ((pending & (1ULL << laneId)) == 0) {
+          continue;
+        }
+        transport.wait_local_completion(
+            group.group_id,
+            IbLocalCompletionTicket{
+                .completionId = laneId,
+                .value = slot.values[laneId],
+            },
+            timeout);
+      }
+      slot.laneMask = 0;
+      slot.generation = generation;
+    }
+  }
+  group.sync();
+}
+
+template <typename Transport>
+__device__ __forceinline__ void record_send_completion(
+    Transport& transport,
+    uint32_t channelId,
+    uint32_t slotId,
+    uint64_t generation,
+    const IbLocalCompletionTicket& ticket) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  auto& slot = transport.local_channel(channelId).sendCompletionSlots[slotId];
+  slot.generation = generation;
+  slot.values[ticket.completionId] = ticket.value;
+  slot.laneMask |= 1ULL << ticket.completionId;
+#else
+  (void)transport;
+  (void)channelId;
+  (void)slotId;
+  (void)generation;
+  (void)ticket;
+#endif
 }
 } // namespace detail
 
@@ -1916,8 +2043,8 @@ struct P2pIbTransportDevice {
   __device__ void
   signal(ThreadGroup& group, int signalId, uint64_t signalVal = 1);
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -1926,8 +2053,8 @@ struct P2pIbTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1);
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       int signalId = -1,
@@ -1989,8 +2116,8 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -2000,8 +2127,8 @@ struct P2pIbTransportDevice {
       uint64_t counterVal = 1,
       bool signalPerLane = false);
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
@@ -2048,6 +2175,11 @@ struct P2pIbTransportDevice {
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void wait_local(
+      ThreadGroup& group,
+      const IbLocalCompletionTicket& ticket,
       const Timeout& timeout = Timeout());
 
   __device__ void reset_signal(

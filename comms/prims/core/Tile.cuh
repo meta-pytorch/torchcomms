@@ -93,6 +93,10 @@
 #include <cstdint>
 #include <type_traits>
 
+#if defined(__CUDA_ARCH__)
+#include <cuda_pipeline.h>
+#endif
+
 #include "comms/prims/core/ThreadGroup.cuh"
 
 namespace comms::prims {

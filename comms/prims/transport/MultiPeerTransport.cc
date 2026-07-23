@@ -416,10 +416,10 @@ void MultiPeerTransport::freeIbCounterBuffer(
     ibgdaTransport_->deregisterBuffer(buffer.ptr);
   }
   if (hostPtr != nullptr) {
-    cudaFreeHost(hostPtr);
+    (void)cudaFreeHost(hostPtr);
     hostPtr = nullptr;
   } else {
-    cudaFree(buffer.ptr);
+    (void)cudaFree(buffer.ptr);
   }
   buffer = IbgdaLocalBuffer{};
 }
@@ -638,7 +638,7 @@ void MultiPeerTransport::build_device_handle() {
 
 void MultiPeerTransport::free_device_handle() {
   if (transportsGpu_) {
-    cudaFree(transportsGpu_);
+    (void)cudaFree(transportsGpu_);
     transportsGpu_ = nullptr;
   }
   deviceHandleBuilt_ = false;
