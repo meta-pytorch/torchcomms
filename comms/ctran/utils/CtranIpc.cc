@@ -85,6 +85,55 @@ static inline CUmemAllocationHandleType getCuMemExportHandleType(
   return exportHandleType;
 }
 
+// Export/import of a single VMM allocation handle -- FABRIC (the multicast
+// object, or MNNVL buffers) or POSIX-fd -- selected by isFabric. Shared by the
+// regular per-segment registration and the multicast rendezvous. Defined
+// unqualified inside the file's `namespace ctran::utils` (opened at the top).
+commResult_t exportShareableHandle(
+    CUmemGenericAllocationHandle handle,
+    CtranIpcHandle& out,
+    bool isFabric) {
+  if (isFabric) {
+#if CUDART_VERSION >= 12040
+    FB_CUCHECK(cuMemExportToShareableHandle(
+        &out.handle, handle, CU_MEM_HANDLE_TYPE_FABRIC, 0));
+    return commSuccess;
+#else
+    (void)handle;
+    (void)out;
+    FB_ERRORRETURN(
+        commInternalError, "CTRAN-IPC: fabric export requires CUDA 12.4+");
+#endif
+  }
+  FB_CUCHECK(cuMemExportToShareableHandle(
+      &out.fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  return commSuccess;
+}
+
+commResult_t importShareableHandle(
+    const CtranIpcHandle& in,
+    CUmemGenericAllocationHandle& out,
+    bool isFabric) {
+  CtranIpcHandle tmp = in;
+  if (isFabric) {
+#if CUDART_VERSION >= 12040
+    FB_CUCHECK(cuMemImportFromShareableHandle(
+        &out, (void*)&tmp.handle, CU_MEM_HANDLE_TYPE_FABRIC));
+    return commSuccess;
+#else
+    (void)in;
+    (void)out;
+    FB_ERRORRETURN(
+        commInternalError, "CTRAN-IPC: fabric import requires CUDA 12.4+");
+#endif
+  }
+  FB_CUCHECK(cuMemImportFromShareableHandle(
+      &out,
+      reinterpret_cast<void*>(tmp.fd),
+      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+  return commSuccess;
+}
+
 commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
   std::vector<CtranIpcSegDesc> extraSegments;
   FB_COMMCHECK(ipcExport(ipcDesc, extraSegments));
@@ -110,19 +159,8 @@ inline commResult_t ctran::utils::CtranIpcMem::exportSegmentSharedHandle(
 #if CUDART_VERSION >= 12040
     isCumemFabric = (exportHandleType == CU_MEM_HANDLE_TYPE_FABRIC);
 #endif
-    if (isCumemFabric) {
-      FB_CUCHECK(cuMemExportToShareableHandle(
-          &sharedHandles_[segIdx].handle,
-          allocHandles_[segIdx],
-          exportHandleType,
-          0));
-    } else {
-      FB_CUCHECK(cuMemExportToShareableHandle(
-          &sharedHandles_[segIdx].fd,
-          allocHandles_[segIdx],
-          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
-          0));
-    }
+    FB_COMMCHECK(exportShareableHandle(
+        allocHandles_[segIdx], sharedHandles_[segIdx], isCumemFabric));
   } else if (memType_ == DevMemType::kCudaMalloc) {
     void* p = (void*)pbase_;
     FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_[segIdx].cudaIpcHandle, p));
@@ -543,14 +581,12 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
           ipcDesc.pid,
           remHandles_[i].fd,
           reinterpret_cast<int*>(&importedHandle.fd)));
-      FB_CUCHECK(cuMemImportFromShareableHandle(
-          &allocHandles_[i],
-          reinterpret_cast<void*>(importedHandle.fd),
-          cuMemHandleType_));
+      FB_COMMCHECK(importShareableHandle(
+          importedHandle, allocHandles_[i], /*isFabric=*/false));
 #if CUDART_VERSION >= 12040
     } else if (cuMemHandleType_ == CU_MEM_HANDLE_TYPE_FABRIC) {
-      FB_CUCHECK(cuMemImportFromShareableHandle(
-          &allocHandles_[i], (void*)&importedHandle.handle, cuMemHandleType_));
+      FB_COMMCHECK(importShareableHandle(
+          importedHandle, allocHandles_[i], /*isFabric=*/true));
 #endif
     } else {
       FB_ERRORRETURN(
