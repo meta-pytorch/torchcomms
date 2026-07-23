@@ -266,6 +266,12 @@ cvars:
    default     : False
    description : |-
      Enable logging of backend topology information to scuba.
+ - name        : NCCL_SCUBA_LOG_ERROR_ENABLED
+   type        : bool
+   default     : True
+   description : |-
+     Enable recording ERROR-level logs to the nccl_structured_logging Scuba
+     table.
 
 
  - name        : NCCL_SET_THREAD_NAME

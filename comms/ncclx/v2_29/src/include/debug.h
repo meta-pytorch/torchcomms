@@ -33,7 +33,7 @@ extern char ncclLastError[];
 
 #define VERSION(...) ncclMetaDebugLog(NCCL_LOG_VERSION, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
 #define WARN(...) ncclMetaDebugLog(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
-#define ERR(...) ncclMetaDebugLog(NCCL_LOG_ERROR, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+#define ERR(code, ...) ncclMetaDebugLog(NCCL_LOG_ERROR, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
 
 #define WARN_WITH_SCUBA(...) ncclMetaDebugLogWithScuba(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
 #define ERR_WITH_SCUBA(...) ncclMetaDebugLogWithScuba(NCCL_LOG_ERROR, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
