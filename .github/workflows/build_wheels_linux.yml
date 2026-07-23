@@ -39,6 +39,7 @@ jobs:
           import json, os
           runners = {
               "cuda": "linux.g5.12xlarge.nvidia.gpu",
+              "rocm": "linux.2xlarge",
           }
           matrix = json.loads(os.environ["MATRIX"])
           for entry in matrix["include"]:
