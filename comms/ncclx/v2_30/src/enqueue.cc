@@ -33,7 +33,6 @@
 #include "meta/algoconf/InfoExtOverride.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/colltrace/ProxyTraceFunc.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
