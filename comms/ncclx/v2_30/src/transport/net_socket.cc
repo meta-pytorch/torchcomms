@@ -57,7 +57,7 @@ ncclResult_t ncclNetSocketInit(void** ctx, uint64_t commId, ncclNetCommConfig_t*
       union ncclSocketAddress addrs[MAX_IFS];
       NCCLCHECK(ncclFindInterfaces(names, addrs, MAX_IF_NAME_SIZE, MAX_IFS, &ncclNetIfs));
       if (ncclNetIfs <= 0) {
-        WARN("NET/Socket : no interface found");
+        ERR(ncclInternalError, "NET/Socket : no interface found");
         return ncclInternalError;
       } else {
         #define MAX_LINE_LEN (2047)
@@ -401,7 +401,7 @@ fail:
 
 ncclResult_t ncclNetSocketListen(void* ctx, int dev, void* opaqueHandle, void** listenComm) {
   if (dev < 0 || dev >= ncclNetIfs) { // data transfer socket is based on specified dev
-    WARN("NET/Socket : ncclNetSocketListen dev=%d ncclNetIfs=%d", dev, ncclNetIfs);
+    ERR(ncclInternalError, "NET/Socket : ncclNetSocketListen dev=%d ncclNetIfs=%d", dev, ncclNetIfs);
     return ncclInternalError;
   }
   ncclResult_t ret = ncclSuccess;
@@ -545,7 +545,7 @@ ncclResult_t ncclNetSocketGetRequest(struct ncclNetSocketComm* comm, int op, voi
       return ncclSuccess;
     }
   }
-  WARN("NET/Socket : unable to allocate requests");
+  ERR(ncclInternalError, "NET/Socket : unable to allocate requests");
   return ncclInternalError;
 }
 
@@ -584,7 +584,7 @@ ncclResult_t ncclNetSocketGetTask(struct ncclNetSocketComm* comm, struct ncclPro
     res->threadCond.notify_one();
     return ncclSuccess;
   }
-  WARN("NET/Socket : unable to allocate subtasks");
+  ERR(ncclInternalError, "NET/Socket : unable to allocate subtasks");
   return ncclInternalError;
 }
 
@@ -595,7 +595,7 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
   *done = 0;
   struct ncclNetSocketRequest *r = (struct ncclNetSocketRequest*)request;
   if (r == NULL) {
-    WARN("NET/Socket : test called with NULL request");
+    ERR(ncclInternalError, "NET/Socket : test called with NULL request");
     return ncclInternalError;
   }
   if (r->used == 1) { /* try to send/recv size (+ inline data if any) */
@@ -619,7 +619,7 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
         char line[SOCKET_NAME_MAXLEN + 1];
         union ncclSocketAddress addr;
         NCCLCHECK(ncclSocketGetAddr(r->ctrlSock, &addr));
-        WARN("NET/Socket : peer %s message truncated : receiving %d bytes instead of %d. If you believe your socket network is in a healthy state, "
+        ERR(ncclInvalidUsage, "NET/Socket : peer %s message truncated : receiving %d bytes instead of %d. If you believe your socket network is in a healthy state, "
              "there may be a mismatch in collective sizes or environment settings (e.g. NCCL_PROTO, NCCL_ALGO) between ranks",
              ncclSocketToString(&addr, line), senderSize, r->size);
         return ncclInvalidUsage;

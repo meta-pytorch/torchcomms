@@ -43,7 +43,7 @@ static ncclResult_t ncclIbResiliencyCheckErrorNotFatal(struct ncclIbResiliency* 
   }
 
   if (nFailedDevices > 1) {
-    WARN("NET/IB: %s: Fatal error. Detected %d failed devices out of %d devices on the %s communicator (comm=%p). No support for more than a single failed device.", __func__, nFailedDevices, resCtx->ndevs, resCtx->baseComm->isSend ? "send" : "recv", resCtx->baseComm);
+    ERR(ncclRemoteError, "NET/IB: %s: Fatal error. Detected %d failed devices out of %d devices on the %s communicator (comm=%p). No support for more than a single failed device.", __func__, nFailedDevices, resCtx->ndevs, resCtx->baseComm->isSend ? "send" : "recv", resCtx->baseComm);
     return ncclRemoteError;
   }
 
@@ -58,7 +58,7 @@ static ncclResult_t ncclIbResiliencyCheckErrorNotFatal(struct ncclIbResiliency* 
     failureReason = "Fatal error status in work completion";
   }
 
-  WARN("NET/IB: %s: The error is fatal (%s). Cannot continue.", __func__, failureReason);
+  ERR(ncclRemoteError, "NET/IB: %s: The error is fatal (%s). Cannot continue.", __func__, failureReason);
   return ncclRemoteError;
 }
 
@@ -103,7 +103,7 @@ static ncclResult_t ncclIbResiliencyReplaceQps(struct ncclIbResiliency* resCtx, 
     } while (replaced == false && newQpIndex != failedQpIndex);
 
     if (!replaced) {
-      WARN("NET/IB: %s: Could not find a replacement QP for the failed QP with qpIndex=%d (devIndex=%d)", __func__, failedQpIndex, failedQp->devIndex);
+      ERR(ncclInternalError, "NET/IB: %s: Could not find a replacement QP for the failed QP with qpIndex=%d (devIndex=%d)", __func__, failedQpIndex, failedQp->devIndex);
       return ncclInternalError;
     }
 
@@ -131,12 +131,12 @@ static ncclResult_t ncclIbResiliencySendRequestInit(struct ncclIbResiliencySend*
   }
 
   if (request->id + 1 <= failedSendRequest->id) {
-    WARN("NET/IB: %s: Attempting to initiate a replay using an old request (req=%p, comm=%p, id=%ld, slot=%d, failedSendRequest.id=%ld).", __func__, request, request->base, request->id, slot, failedSendRequest->id);
+    ERR(ncclInternalError, "NET/IB: %s: Attempting to initiate a replay using an old request (req=%p, comm=%p, id=%ld, slot=%d, failedSendRequest.id=%ld).", __func__, request, request->base, request->id, slot, failedSendRequest->id);
     return ncclInternalError;
   }
 
   if (request->type != NCCL_NET_IB_REQ_SEND) {
-    WARN("NET/IB: %s: Attempting to initiate a failed request using a '%s' request while expecting a 'send' request (req=%p, comm=%p, id=%ld, slot=%d, failedSendRequest.id=%ld).", __func__, ncclIbReqTypeStr[request->type], request, request->base, request->id, slot, failedSendRequest->id);
+    ERR(ncclInternalError, "NET/IB: %s: Attempting to initiate a failed request using a '%s' request while expecting a 'send' request (req=%p, comm=%p, id=%ld, slot=%d, failedSendRequest.id=%ld).", __func__, ncclIbReqTypeStr[request->type], request, request->base, request->id, slot, failedSendRequest->id);
     return ncclInternalError;
   }
 
@@ -156,7 +156,7 @@ static ncclResult_t ncclIbResiliencySendRequestFree(struct ncclIbResiliencySend*
   assert(failedSendRequest != NULL);
   if (failedSendRequest->request == NULL) {
     int slot = failedSendRequest - sendResCtx->failedRequests;
-    WARN("NET/IB: %s: Attempting to free a non-existent failed request (slot=%d).", __func__, slot);
+    ERR(ncclInternalError, "NET/IB: %s: Attempting to free a non-existent failed request (slot=%d).", __func__, slot);
     return ncclInternalError;
   }
   INFO(NCCL_NET, "NET/IB: %s: Done handling failed send request (req=%p, comm=%p, id=%ld, slot=%ld).", __func__, failedSendRequest->request, failedSendRequest->request->base, failedSendRequest->request->id, failedSendRequest->request->id % NET_IB_MAX_REQUESTS);
@@ -176,7 +176,7 @@ static ncclResult_t ncclIbResiliencySendRequestFree(struct ncclIbResiliencySend*
 // Function to repost a given request.
 static ncclResult_t ncclIbResiliencyRepostRequest(struct ncclIbRequest* request) {
   if (request->type == NCCL_NET_IB_REQ_UNUSED) {
-    WARN("NET/IB: %s: Attempting to repost an unused request (id=%ld).", __func__, request->id);
+    ERR(ncclInternalError, "NET/IB: %s: Attempting to repost an unused request (id=%ld).", __func__, request->id);
     return ncclInternalError;
   }
   int slot = request->id % NET_IB_MAX_REQUESTS;
@@ -222,7 +222,7 @@ static ncclResult_t ncclIbResiliencyRepostRequest(struct ncclIbRequest* request)
     INFO(NCCL_NET, "NET/IB: %s: Reposting CTS (request=%p, comm=%p, id=%ld, slot=%ld)", __func__, request, request->base, request->id, request->id % NET_IB_MAX_REQUESTS);
     NCCLCHECK(ncclIbPostFifo((struct ncclIbRecvComm*)request->base, request, slot));
   } else {
-    WARN("NET/IB: %s: Unsupported type of request reposting (type=%d, id=%ld).", __func__, request->type, request->id);
+    ERR(ncclInternalError, "NET/IB: %s: Unsupported type of request reposting (type=%d, id=%ld).", __func__, request->type, request->id);
     return ncclInternalError;
   }
   return ncclSuccess;
@@ -233,7 +233,7 @@ static ncclResult_t ncclIbResiliencyHandleCompletionErrorReceiver(struct ncclIbR
   bool inRecvRange = (wc->wr_id >= 0 && wc->wr_id <= NET_IB_MAX_REQUESTS);
   bool inFlushRange = (wc->wr_id >= NCCL_IB_FLUSH_REQ_WR_ID_OFFSET && wc->wr_id < (NCCL_IB_FLUSH_REQ_WR_ID_OFFSET + NET_IB_MAX_REQUESTS));
   if (!inRecvRange && !inFlushRange && (wc->wr_id != NCCL_IB_RECV_WR_ID_DUMMY)) {
-    WARN("NET/IB: %s: Invalid wr_id (%ld). Unable to retrieve a request on the receiver side (comm=%p)", __func__, wc->wr_id, resCtx->baseComm);
+    ERR(ncclInternalError, "NET/IB: %s: Invalid wr_id (%ld). Unable to retrieve a request on the receiver side (comm=%p)", __func__, wc->wr_id, resCtx->baseComm);
     return ncclInternalError;
   }
   if (wc->wr_id == NCCL_IB_RECV_WR_ID_DUMMY) {
@@ -287,7 +287,7 @@ static ncclResult_t ncclIbResiliencyHandleCompletionErrorReceiver(struct ncclIbR
       WARN("NET/IB: %s: Unrecognized request. It might be a CTS message for which the request was already completed. Continue.", __func__);
       break;
     default:
-      WARN("NET/IB: %s: Unrecognized request type. request->type=%d", __func__, request->type);
+      ERR(ncclInternalError, "NET/IB: %s: Unrecognized request type. request->type=%d", __func__, request->type);
       return ncclInternalError;
   }
   return ncclSuccess;
@@ -395,7 +395,7 @@ static ncclResult_t ncclIbResiliencyProbePost(struct ncclIbResiliencySend* sendR
   assert(failedSendRequest->state == ncclIbResiliencyRequestStatePending);
 
   if (failedSendRequest->failedAttempts > ncclParamIbResiliencyPortFailoverMaxAttempts()) {
-    WARN("NET/IB: %s: Maximum number of probing attempts (%ld) reached for request %p (id=%ld). Cannot post another probe.", __func__, ncclParamIbResiliencyPortFailoverMaxAttempts(), failedSendRequest->request, failedSendRequest->request->id);
+    ERR(ncclRemoteError, "NET/IB: %s: Maximum number of probing attempts (%ld) reached for request %p (id=%ld). Cannot post another probe.", __func__, ncclParamIbResiliencyPortFailoverMaxAttempts(), failedSendRequest->request, failedSendRequest->request->id);
     return ncclRemoteError;
   }
 
@@ -421,7 +421,7 @@ static ncclResult_t ncclIbResiliencyProbePost(struct ncclIbResiliencySend* sendR
   }
 
   if (devIndex == sendResCtx->base.ndevs) {
-    WARN("NET/IB: %s: Could not find a functional device to post the probe for request %p (id=%ld)", __func__, failedSendRequest->request, failedSendRequest->request->id);
+    ERR(ncclInternalError, "NET/IB: %s: Could not find a functional device to post the probe for request %p (id=%ld)", __func__, failedSendRequest->request, failedSendRequest->request->id);
     return ncclInternalError;
   }
 
