@@ -1148,8 +1148,7 @@ struct CpAsyncSmemReduce {
     }
     SmemTile::wait_prior(0);
 #elif defined(__CUDA_ARCH__)
-    static_assert(
-        __CUDA_ARCH__ >= 800, "CpAsyncSmemReduce requires cp.async support");
+    __trap();
 #endif
     return nbytes;
   }
