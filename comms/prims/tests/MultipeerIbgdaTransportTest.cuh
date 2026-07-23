@@ -96,7 +96,8 @@ __global__ void progressSendRecvKernel(
     void* buffer,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    bool send);
+    bool send,
+    uint64_t* waitingCount);
 
 __global__ void progressReservationKernel(
     P2pIbgdaTransportDevice* transport,

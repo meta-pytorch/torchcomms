@@ -681,40 +681,41 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
-  __device__ void prepare_send_slot(
-      ThreadGroup& group,
-      uint32_t slotId,
-      uint64_t generation,
-      const Timeout& timeout = Timeout()) {
-    if (group.is_leader()) {
-      auto& slot = localChannels_[group.group_id].sendCompletionSlots[slotId];
-      if (slot.generation != generation) {
-        const uint64_t laneMask = slot.laneMask;
-        const uint32_t numLanes = num_qp_lanes();
-        for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
-          if ((laneMask & (1ULL << laneId)) == 0) {
-            continue;
-          }
-          IbgdaLane lane =
-              lane_from_ordinal(group.group_id, IbDirection::Send, laneId);
-          wait_local_on_qp(lane.qp, slot.values[laneId], timeout);
-        }
-        slot.laneMask = 0;
-        slot.generation = generation;
-      }
+  __device__ __forceinline__ bool is_local_completion_ready(
+      uint32_t channelId,
+      const IbLocalCompletionTicket& ticket) {
+    IbgdaLane lane =
+        lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
+    const int status = doca_gpu_dev_verbs_poll_one_cq_at<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
+    if (status == 0) {
+      return true;
     }
-    group.sync();
+    if (status == EBUSY) {
+      return false;
+    }
+    printf(
+        "P2pIbgdaTransportDevice: local completion failed lane=%u "
+        "ticket=%llu status=%d\n",
+        ticket.completionId,
+        static_cast<unsigned long long>(ticket.value),
+        status);
+    PIPES_DEVICE_TRAP();
+    return false;
   }
 
-  __device__ __forceinline__ void record_send_completion(
+  __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
-      uint32_t slotId,
-      uint64_t generation,
-      const IbLocalCompletionTicket& ticket) {
-    auto& slot = localChannels_[channelId].sendCompletionSlots[slotId];
-    slot.generation = generation;
-    slot.values[ticket.completionId] = ticket.value;
-    slot.laneMask |= 1ULL << ticket.completionId;
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout) {
+    IbgdaLane lane =
+        lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
+    wait_local_on_qp(lane.qp, ticket.value, timeout);
+  }
+
+  __device__ __forceinline__ uint32_t send_completion_lane_count() const {
+    return num_qp_lanes();
   }
 
   /** wait_counter (thread-scope) - Single-thread variant. */
@@ -1989,15 +1990,16 @@ class P2pIbgdaTransportDevice {
    *
    * Sender chunk state machine:
    *
-   *   WaitNicDone
+   *   WaitLocalCompletion
    *        |
    *        | local sendStaging is reusable; copy user src -> sendStaging
    *        v
    *   WaitSlotFree
    *        |
-   *        | remote recvStaging is reusable; RDMA put + DATA_READY + NIC_DONE
+   *        | remote recvStaging is reusable; RDMA put + DATA_READY
    *        v
-   *   Done for this chunk, then either WaitNicDone for next chunk or Done
+   *   Done for this chunk, then either WaitLocalCompletion for next chunk or
+   *   Done
    *
    * Receiver chunk state machine:
    *

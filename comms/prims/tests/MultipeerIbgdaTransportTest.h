@@ -167,7 +167,8 @@ void testProgressSendRecv(
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    uint64_t* waitingCount = nullptr);
 
 /**
  * Test kernel: initialize transport-owned send/recv progress state and report

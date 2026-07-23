@@ -426,13 +426,13 @@ namespace detail {
  * Internal stage for one transport-owned resumable send/recv operation.
  *
  * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
- * Send operations use `WaitNicDone` and `WaitSlotFree`; recv operations use
- * `WaitDataReady`. Blocking send/recv temporarily use `Busy` to make
- * same-direction overlap fail explicitly instead of sharing a cursor.
+ * Send operations use `WaitLocalCompletion` and `WaitSlotFree`; recv
+ * operations use `WaitDataReady`. Blocking send/recv temporarily use `Busy` to
+ * make same-direction overlap fail explicitly instead of sharing a cursor.
  */
 enum class IbSendRecvProgressStage : uint8_t {
   Done,
-  WaitNicDone,
+  WaitLocalCompletion,
   WaitSlotFree,
   WaitDataReady,
   Busy,

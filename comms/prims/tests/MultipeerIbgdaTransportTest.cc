@@ -1329,7 +1329,7 @@ TEST_F(
         cudaMemcpyDeviceToHost));
 
     const int64_t expectedReservation =
-        static_cast<int64_t>(dataBufferSize / numBlocks);
+        static_cast<int64_t>(dataBufferSize / numBlocks / pipelineDepth);
     EXPECT_EQ(output[0], expectedReservation);
     EXPECT_EQ(output[1], expectedReservation);
   } catch (const std::exception& e) {
@@ -1519,7 +1519,9 @@ TEST_F(
     DeviceBuffer sendBuffer(nbytes);
     DeviceBuffer recvBuffer(nbytes);
     DeviceBuffer errorCountBuf(sizeof(int));
+    DeviceBuffer waitingCountBuf(numBlocks * sizeof(uint64_t));
     auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+    auto* d_waitingCount = static_cast<uint64_t*>(waitingCountBuf.get());
 
     auto runDirection = [&](int senderRank, uint8_t pattern) {
       const bool isSender = globalRank == senderRank;
@@ -1529,6 +1531,8 @@ TEST_F(
       } else {
         CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, nbytes));
       }
+      CUDACHECK_TEST(
+          cudaMemset(d_waitingCount, 0, numBlocks * sizeof(uint64_t)));
       CUDACHECK_TEST(cudaDeviceSynchronize());
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -1539,9 +1543,22 @@ TEST_F(
           maxSignalBytes,
           isSender,
           numBlocks,
-          blockSize);
+          blockSize,
+          d_waitingCount);
       CUDACHECK_TEST(cudaDeviceSynchronize());
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      if (isSender) {
+        uint64_t waitingCount = 0;
+        CUDACHECK_TEST(cudaMemcpy(
+            &waitingCount,
+            d_waitingCount,
+            sizeof(waitingCount),
+            cudaMemcpyDeviceToHost));
+        EXPECT_GT(waitingCount, 0)
+            << "progress send did not observe backpressure across staging "
+               "reuse";
+      }
 
       if (!isSender) {
         CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
