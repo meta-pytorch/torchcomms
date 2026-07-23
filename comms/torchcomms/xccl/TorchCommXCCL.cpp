@@ -1045,8 +1045,9 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
           stream),
       "XCCL allGather failed in all_gather");
 
-  if (output_flattened.numel() != 0) {
-      copyFlattenedTensorToTensors(output_flattened, tensor_list, xpu_api_, stream);
+  if (output_flattened.numel() != 0) [[likely]] {
+    copyFlattenedTensorToTensors(
+        output_flattened, tensor_list, xpu_api_, stream);
   }
 
   work->recordEnd();

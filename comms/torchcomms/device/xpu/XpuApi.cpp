@@ -231,11 +231,11 @@ xpu_result_t DefaultXpuApi::memcpyAsync(
     const void* src,
     size_t count,
     const xpuStream_t& stream) {
-  if (count == 0) {
+  if (count == 0) [[unlikely]] {
     return XPU_SUCCESS;
   }
 
-  if (!dst || !src) {
+  if (!dst || !src) [[unlikely]] {
     return XPU_ERROR_INVALID_VALUE;
   }
 
