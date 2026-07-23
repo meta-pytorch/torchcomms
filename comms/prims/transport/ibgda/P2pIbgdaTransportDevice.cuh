@@ -105,6 +105,8 @@ struct NicDeviceIbgdaResources {
  *     Threads in the group coordinate the operation; callers that want the
  *     transport to shard a larger buffer should use put_cooperative().
  *     Signal/counter/flush are leader-only with group.sync().
+ *     The returned ticket carries data only in the leader thread. A later
+ *     group-scope wait_local() consumes that leader's ticket collectively.
  *
  *   Thread-scope: put(...) — single thread calls.
  *     QP selection uses the caller's physical blockIdx.x. Implemented as a
@@ -140,7 +142,8 @@ struct NicDeviceIbgdaResources {
  * the same QP, so the signal covers that put. A standalone signal uses the
  * block's control lane and does not cover earlier round-robined puts unless
  * the caller explicitly calls fence()/flush() first.
- * put() returns void — completion via wait_signal/wait_counter/flush.
+ * put() returns a local-completion frontier. Callers may ignore it and use an
+ * optional counter or flush instead.
  *
  * Two API layers:
  *   1. Slot-index API: resolve owned buffers by slot index, then forward
@@ -242,8 +245,8 @@ class P2pIbgdaTransportDevice {
    *                    the counter. Bounds-checked against numCounterSlots_.
    * @param counterVal  Value added to the local counter slot.
    */
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -255,7 +258,8 @@ class P2pIbgdaTransportDevice {
         (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
     IbgdaLocalBuffer ctrSlot =
         (counterId >= 0) ? counter_slot(counterId) : IbgdaLocalBuffer{};
-    put(group,
+    return put(
+        group,
         localBuf,
         remoteBuf,
         nbytes,
@@ -304,8 +308,8 @@ class P2pIbgdaTransportDevice {
    * use the group-scope APIs because the solo group id is not a channel id.
    * Args match the group-scope overload.
    */
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       int signalId = -1,
@@ -313,7 +317,8 @@ class P2pIbgdaTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1) {
     ThreadGroup solo = make_thread_solo();
-    put(solo,
+    return put(
+        solo,
         localBuf,
         remoteBuf,
         nbytes,
@@ -477,7 +482,8 @@ class P2pIbgdaTransportDevice {
    * larger user buffer. Use put_cooperative() for the convenience behavior that
    * splits the provided range across the group.
    *
-   * Returns void; completion is observed via wait_signal/wait_counter/flush.
+   * Returns a local-completion frontier. Callers may ignore it and use the
+   * optional counter or flush APIs instead.
    *
    * NOTE: signalBuf is intentionally NOT defaulted, even though `= {}` would
    * mean "no signal". Defaulting it would make put(group, local, remote, n)
@@ -497,8 +503,8 @@ class P2pIbgdaTransportDevice {
    *                   WQE through the companion QP.
    * @param counterVal Value added to *counterBuf.
    */
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -507,7 +513,7 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
       bool signalPerLane = false) {
-    put_impl(
+    return put_impl(
         group,
         localBuf,
         remoteBuf,
@@ -526,8 +532,8 @@ class P2pIbgdaTransportDevice {
    *
    * signalBuf intentionally not defaulted (see group-scope sibling above).
    */
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
@@ -535,7 +541,8 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
     ThreadGroup solo = make_thread_solo();
-    put(solo,
+    return put(
+        solo,
         localBuf,
         remoteBuf,
         nbytes,
@@ -660,6 +667,54 @@ class P2pIbgdaTransportDevice {
       uint64_t expected,
       const Timeout& timeout = Timeout()) {
     wait_counter_impl(group, counterBuf, expected, timeout);
+  }
+
+  __device__ void wait_local(
+      ThreadGroup& group,
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout = Timeout()) {
+    if (group.is_leader()) {
+      IbgdaLane lane = lane_from_ordinal(
+          group.group_id, IbDirection::Send, ticket.completionId);
+      wait_local_on_qp(lane.qp, ticket.value, timeout);
+    }
+    group.sync();
+  }
+
+  __device__ void prepare_send_slot(
+      ThreadGroup& group,
+      uint32_t slotId,
+      uint64_t generation,
+      const Timeout& timeout = Timeout()) {
+    if (group.is_leader()) {
+      auto& slot = localChannels_[group.group_id].sendCompletionSlots[slotId];
+      if (slot.generation != generation) {
+        const uint64_t laneMask = slot.laneMask;
+        const uint32_t numLanes = num_qp_lanes();
+        for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+          if ((laneMask & (1ULL << laneId)) == 0) {
+            continue;
+          }
+          IbgdaLane lane =
+              lane_from_ordinal(group.group_id, IbDirection::Send, laneId);
+          wait_local_on_qp(lane.qp, slot.values[laneId], timeout);
+        }
+        slot.laneMask = 0;
+        slot.generation = generation;
+      }
+    }
+    group.sync();
+  }
+
+  __device__ __forceinline__ void record_send_completion(
+      uint32_t channelId,
+      uint32_t slotId,
+      uint64_t generation,
+      const IbLocalCompletionTicket& ticket) {
+    auto& slot = localChannels_[channelId].sendCompletionSlots[slotId];
+    slot.generation = generation;
+    slot.values[ticket.completionId] = ticket.value;
+    slot.laneMask |= 1ULL << ticket.completionId;
   }
 
   /** wait_counter (thread-scope) - Single-thread variant. */
@@ -1057,7 +1112,7 @@ class P2pIbgdaTransportDevice {
     wait_lanes(group.group_id, direction, mask, state.lastFlushWqe);
   }
 
-  __device__ void put_impl(
+  __device__ IbLocalCompletionTicket put_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
@@ -1076,9 +1131,10 @@ class P2pIbgdaTransportDevice {
         PIPES_DEVICE_TRAP();
       }
       group.sync();
-      return;
+      return {};
     }
 
+    IbLocalCompletionTicket completion;
     if (group.is_leader()) {
       validate_group_scope(group);
       const bool hasCounter = counterBuf.ptr != nullptr;
@@ -1093,6 +1149,7 @@ class P2pIbgdaTransportDevice {
           (signalPerLane && signalBuf.ptr != nullptr)
           ? signalBuf.subBuffer(sendRecvSignalSlotOffset(lane.lane_ordinal))
           : signalBuf;
+      uint64_t dataTicket = 0;
       if (hasSignal && hasCounter) {
         const auto tickets = put_signal_counter_single_impl(
             lane,
@@ -1103,22 +1160,33 @@ class P2pIbgdaTransportDevice {
             signalVal,
             counterBuf,
             counterVal);
+        dataTicket = tickets.put_wqe;
+        record_put_wqe(lane, tickets.put_wqe);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasSignal) {
         const auto tickets = put_signal_single_impl(
             lane, localBuf, remoteBuf, nbytes, effectiveSignalBuf, signalVal);
+        dataTicket = tickets.put_wqe;
+        record_put_wqe(lane, tickets.put_wqe);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasCounter) {
         const uint64_t putTicket = put_counter_single_impl(
             lane, localBuf, remoteBuf, nbytes, counterBuf, counterVal);
+        dataTicket = putTicket;
         record_put_wqe(lane, putTicket);
       } else {
         const uint64_t putTicket =
             put_single_impl(lane, localBuf, remoteBuf, nbytes);
+        dataTicket = putTicket;
         record_put_wqe(lane, putTicket);
       }
+      completion = IbLocalCompletionTicket{
+          .completionId = lane.lane_ordinal,
+          .value = dataTicket,
+      };
     }
     group.sync();
+    return completion;
   }
 
   __device__ void put_cooperative_impl(

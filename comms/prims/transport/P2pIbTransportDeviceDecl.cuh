@@ -190,13 +190,18 @@ __device__ __forceinline__ ProgressChunk next_chunk(
  * These helpers implement the blocking `send`/`recv`/`forward`, the resumable
  * `init_*_progress` / `progress_*_once` pair, and their private helpers. The
  * send/recv algorithm is independent of the underlying transport: it only
- * needs the common explicit-buffer IB device ops `put` (fused signal+counter),
+ * needs the common explicit-buffer IB device ops `put`, `wait_local`,
  * `signal`, `wait_signal`, `wait_counter`, `read_signal`, and `read_counter`.
  *
  * Every public entry point takes the owning transport and routes every
  * transport op through it. `P2pIbgdaTransportDevice` and
  * `P2pIbrcTransportDevice` own the channel layout/state and use these helpers
  * only for the shared send/recv algorithm.
+ *
+ * Blocking send/forward use put() completion tickets for local staging reuse.
+ * The resumable progress APIs retain counter completion for now. Until they
+ * migrate in a follow-up, callers must not mix blocking and progress sends on
+ * the same channel because their local-completion streams are independent.
  */
 /**
  * Initialize transport-owned state for one pipelined send operation.
@@ -772,8 +777,9 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
  * finer-grained overlap at the receiver.
  *
  * Signaling protocol (per group):
- *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
- *                send waits on this before overwriting local sendStaging.
+ *   LOCAL_DONE — completion ticket returned by each RDMA put. Blocking send
+ *                waits on the latest channel frontier before overwriting
+ *                local sendStaging.
  *   SLOT_FREE  — receiver increments by bytesThis for each signaled byte
  *                range. send waits before overwriting recvStaging.
  *   DATA_READY — sender increments by bytesThis, piggybacked on put.
@@ -858,9 +864,6 @@ __device__ __forceinline__ void send(
   IbLocalChannel& localChannel =
       transport.local_channel(static_cast<uint32_t>(groupId));
   const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbgdaLocalBuffer localNicDoneWait = localChannel.nicDoneWait;
-  const IbgdaLocalBuffer localNicDoneCompletion =
-      localChannel.nicDoneCompletion;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, groupId);
   assert_progress_slot_idle(group, state, "send");
@@ -895,12 +898,10 @@ __device__ __forceinline__ void send(
     const std::size_t stagingOff =
         static_cast<std::size_t>(groupId) * pipelineBytes + slotOff + chunkOff;
     const uint64_t protocolStreamEnd = streamStart + protocolBytesThis;
+    const uint64_t pipelineCycle = streamStart / pipelineBytes;
 
     // (1) Wait for NIC to finish with this slot's local sendStaging.
-    if (protocolStreamEnd > pipelineBytes) {
-      transport.wait_counter(
-          group, localNicDoneWait, protocolStreamEnd - pipelineBytes, timeout);
-    }
+    transport.prepare_send_slot(group, slot, pipelineCycle, timeout);
 
     // (2) Cooperative copy: src -> local sendStaging via CopyOp.
     const std::size_t validBytes =
@@ -923,24 +924,25 @@ __device__ __forceinline__ void send(
           group, localSlotFree, protocolStreamEnd - pipelineBytes, timeout);
     }
 
-    // (4) threadfence_system + leader-only single-WQE RDMA put with
-    //     fused signal+counter. All threads fence to ensure memcpy
+    // (4) threadfence_system + leader-only RDMA put with fused signal.
     //     stores are visible to the NIC before the leader posts the WQE.
     __threadfence_system();
     group.sync();
     if (group.is_leader()) {
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      transport.put(
+      const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(stagingOff),
           remoteChannel.recvStaging.subBuffer(stagingOff),
           bytesThis,
           remoteChannel.dataReady,
           protocolBytesThis,
-          localNicDoneCompletion,
-          protocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
           /*signalPerLane=*/true);
+      transport.record_send_completion(
+          static_cast<uint32_t>(groupId), slot, pipelineCycle, completion);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1128,7 +1130,7 @@ __device__ __forceinline__ void recv(
  *
  * Signal ordering invariant (critical for ring deadlock avoidance):
  *   1. Wait DATA_READY from sender (this transport)
- *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
+ *   2. Wait for local completion on fwd transport's sendStaging
  *   3. CopyOp::forward(dst, fwd_staging, staging, ...)
  *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
  *   5. Wait SLOT_FREE from fwd transport's receiver
@@ -1149,10 +1151,10 @@ __device__ __forceinline__ void recv(
  *
  *   Fwd side (fwd transport):
  *     - Uses the forward channel's send progress cursor.
- *     - Waits NIC_DONE on the forward channel's local completion counter.
+ *     - Waits on the forward channel's local-completion ticket.
  *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
  *     - RDMA puts with DATA_READY on the forward remote channel and
- *       posts NIC_DONE credit per chunk to the local completion counter.
+ *       returns a ticket covering local completion of the data put.
  *
  * Any chain of send → forward* → recv is therefore valid: each
  * forward consumes exactly the signals its predecessor produces
@@ -1270,9 +1272,6 @@ __device__ __forceinline__ void forward(
   IbLocalChannel& fwdLocalChannel =
       fwdTransport.local_channel(static_cast<uint32_t>(groupId));
   const IbgdaLocalBuffer fwdSlotFree = fwdLocalChannel.slotFree;
-  const IbgdaLocalBuffer fwdNicDoneWait = fwdLocalChannel.nicDoneWait;
-  const IbgdaLocalBuffer fwdNicDoneCompletion =
-      fwdLocalChannel.nicDoneCompletion;
   const IbRemoteChannel fwdRemoteChannel =
       makeIbRemoteChannel(fwdChannelLayout, groupId);
   assert_progress_slot_idle(group, fwdSlotState, "forward send");
@@ -1334,6 +1333,7 @@ __device__ __forceinline__ void forward(
     const std::size_t fwdProtocolBytesThis =
         bytesThis + (isFinalChunk ? fwdProtocolTailPadding : 0);
     const uint64_t fwdProtocolStreamEnd = fwdStreamStart + fwdProtocolBytesThis;
+    const uint64_t fwdPipelineCycle = fwdStreamStart / fwdPipelineBytes;
 
     // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
     //     lane that carried this chunk (mirrors the upstream sender's Send
@@ -1346,14 +1346,8 @@ __device__ __forceinline__ void forward(
         recvProtocolBytesThis,
         timeout);
 
-    // (2) Wait for NIC_DONE on fwd's sendStaging (backpressure).
-    if (fwdProtocolStreamEnd > fwdPipelineBytes) {
-      fwdTransport.wait_counter(
-          group,
-          fwdNicDoneWait,
-          fwdProtocolStreamEnd - fwdPipelineBytes,
-          timeout);
-    }
+    // (2) Wait for local completion on fwd's sendStaging.
+    fwdTransport.prepare_send_slot(group, fwdSlot, fwdPipelineCycle, timeout);
 
     // (3) CopyOp::forward — transform recv staging -> dst + fwd staging.
     const std::size_t validBytes =
@@ -1389,16 +1383,21 @@ __device__ __forceinline__ void forward(
     if (group.is_leader()) {
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      fwdTransport.put(
+      const auto completion = fwdTransport.put(
           solo,
           fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
           fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
           bytesThis,
           fwdRemoteChannel.dataReady,
           fwdProtocolBytesThis,
-          fwdNicDoneCompletion,
-          fwdProtocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
           /*signalPerLane=*/true);
+      fwdTransport.record_send_completion(
+          static_cast<uint32_t>(groupId),
+          fwdSlot,
+          fwdPipelineCycle,
+          completion);
     }
     group.sync();
     dataOff += bytesThis;
@@ -1916,8 +1915,8 @@ struct P2pIbTransportDevice {
   __device__ void
   signal(ThreadGroup& group, int signalId, uint64_t signalVal = 1);
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -1926,8 +1925,8 @@ struct P2pIbTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1);
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       int signalId = -1,
@@ -1989,8 +1988,8 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -2000,8 +1999,8 @@ struct P2pIbTransportDevice {
       uint64_t counterVal = 1,
       bool signalPerLane = false);
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
@@ -2048,6 +2047,11 @@ struct P2pIbTransportDevice {
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
+      const Timeout& timeout = Timeout());
+
+  __device__ void wait_local(
+      ThreadGroup& group,
+      const IbLocalCompletionTicket& ticket,
       const Timeout& timeout = Timeout());
 
   __device__ void reset_signal(
