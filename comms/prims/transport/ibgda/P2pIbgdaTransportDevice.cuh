@@ -1331,7 +1331,7 @@ class P2pIbgdaTransportDevice {
       if (group.group_size > qp_depth) {
         printf(
             "[PIPES] FATAL: put group_size (%u) > QP depth (%u). "
-            "Set NCCL_CTRAN_IBGDA_QP_DEPTH >= %u to avoid deadlock.\n",
+            "Set MCCL_IB_QP_DEPTH >= %u to avoid deadlock.\n",
             group.group_size,
             qp_depth,
             group.group_size);
