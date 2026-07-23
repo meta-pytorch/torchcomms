@@ -158,7 +158,7 @@ ncclResult_t ncclRmaCePutLaunch(struct ncclComm* comm, struct ncclKernelPlan* pl
 
   // Make sure the RMA CE is initialized
   if (!comm->rmaState.rmaCeState.initialized) {
-    WARN("RMA CE is not initialized");
+    ERR(ncclInternalError, "RMA CE is not initialized");
     return ncclInternalError;
   }
 
@@ -198,7 +198,7 @@ ncclResult_t ncclRmaCePutLaunch(struct ncclComm* comm, struct ncclKernelPlan* pl
 
       // Validate peer buffer
       if (peerBuff == NULL) {
-        WARN("RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
+        ERR(ncclInvalidArgument, "RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -244,7 +244,7 @@ ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* p
 
   // Make sure the RMA CE is initialized
   if (!comm->rmaState.rmaCeState.initialized) {
-    WARN("RMA CE is not initialized");
+    ERR(ncclInternalError, "RMA CE is not initialized");
     return ncclInternalError;
   }
 

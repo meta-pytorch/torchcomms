@@ -18,7 +18,7 @@ ncclResult_t ncclParamRegistry::add(std::string key, ncclParamInfo_t info,
   auto& reg = state();
   std::lock_guard<std::mutex> lock(reg.mtx);
   if (reg.map.find(key) != reg.map.end()) {
-    WARN("PARAM: Duplicate registration for key \"%s\", ignoring.", key.c_str());
+    ERR(ncclInternalError, "PARAM: Duplicate registration for key \"%s\", ignoring.", key.c_str());
     return ncclInternalError;
   }
   reg.map[key] = {info, param};

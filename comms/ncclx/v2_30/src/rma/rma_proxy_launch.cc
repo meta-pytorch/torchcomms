@@ -163,7 +163,7 @@ ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan*
   ncclResult_t ret = ncclSuccess;
 
   if (!comm->rmaState.rmaProxyState.connected) {
-    WARN("RMA proxy is not connected");
+    ERR(ncclInternalError, "RMA proxy is not connected");
     return ncclInternalError;
   }
 
@@ -259,7 +259,7 @@ ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan
   ncclResult_t ret = ncclSuccess;
 
   if (!comm->rmaState.rmaProxyState.connected) {
-    WARN("RMA proxy is not connected");
+    ERR(ncclInternalError, "RMA proxy is not connected");
     return ncclInternalError;
   }
 

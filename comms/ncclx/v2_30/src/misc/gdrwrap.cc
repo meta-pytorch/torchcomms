@@ -43,7 +43,7 @@ std::mutex& getGdrMutex() {
     cast = (void**)&funcptr;                             \
     tmp = ncclOsDlsym(handle, symbol);                   \
     if (tmp == NULL) {                                   \
-      WARN("ncclOsDlsym failed on %s - %s", symbol, ncclOsDlerror()); \
+      ERR(ncclSystemError, "ncclOsDlsym failed on %s - %s", symbol, ncclOsDlerror()); \
       goto teardown;                                     \
     }                                                    \
     *cast = tmp;                                         \
@@ -68,7 +68,7 @@ static void initOnceFunc(void) {
 
   gdrhandle = ncclOsDlopen(GDRAPI_LIBNAME, NCCL_OS_DL_NOW);
   if (!gdrhandle) {
-    WARN("Failed to open %s - %s", GDRAPI_LIBNAME, ncclOsDlerror());
+    ERR(ncclSystemError, "Failed to open %s - %s", GDRAPI_LIBNAME, ncclOsDlerror());
     goto teardown;
   }
 
@@ -124,12 +124,12 @@ gdr_t wrap_gdr_open(void) {
 
 ncclResult_t wrap_gdr_close(gdr_t g) {
   if (gdr_internal_close == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret = gdr_internal_close(g);
   if (ret != 0) {
-    WARN("gdr_close() failed: %d", ret);
+    ERR(ncclSystemError, "gdr_close() failed: %d", ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -137,13 +137,13 @@ ncclResult_t wrap_gdr_close(gdr_t g) {
 
 ncclResult_t wrap_gdr_pin_buffer(gdr_t g, unsigned long addr, size_t size, uint64_t p2p_token, uint32_t va_space, gdr_mh_t *handle) {
   if (gdr_internal_pin_buffer == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_pin_buffer(g, addr, size, p2p_token, va_space, handle), ret);
   if (ret != 0) {
-    WARN("gdr_pin_buffer(addr %lx, size %zu) failed: %d", addr, size, ret);
+    ERR(ncclSystemError, "gdr_pin_buffer(addr %lx, size %zu) failed: %d", addr, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -164,13 +164,13 @@ bool ncclGdrPinV2Available(void) {
 
 ncclResult_t wrap_gdr_pin_buffer_v2(gdr_t g, unsigned long addr, size_t size, uint32_t flags, gdr_mh_t *handle) {
   if (!ncclGdrPinV2Available()) {
-    WARN("gdr_pin_buffer_v2 not available; GDRCopy >= 2.5 required");
+    ERR(ncclInternalError, "gdr_pin_buffer_v2 not available; GDRCopy >= 2.5 required");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_pin_buffer_v2(g, addr, size, flags, handle), ret);
   if (ret != 0) {
-    WARN("gdr_pin_buffer_v2(addr %lx, size %zu, flags %u) failed: %d", addr, size, flags, ret);
+    ERR(ncclSystemError, "gdr_pin_buffer_v2(addr %lx, size %zu, flags %u) failed: %d", addr, size, flags, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -178,13 +178,13 @@ ncclResult_t wrap_gdr_pin_buffer_v2(gdr_t g, unsigned long addr, size_t size, ui
 
 ncclResult_t wrap_gdr_unpin_buffer(gdr_t g, gdr_mh_t handle) {
   if (gdr_internal_unpin_buffer == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_unpin_buffer(g, handle), ret);
   if (ret != 0) {
-    WARN("gdr_unpin_buffer(handle %lx) failed: %d", handle.h, ret);
+    ERR(ncclSystemError, "gdr_unpin_buffer(handle %lx) failed: %d", handle.h, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -192,13 +192,13 @@ ncclResult_t wrap_gdr_unpin_buffer(gdr_t g, gdr_mh_t handle) {
 
 ncclResult_t wrap_gdr_get_info(gdr_t g, gdr_mh_t handle, gdr_info_t *info) {
   if (gdr_internal_get_info == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_get_info(g, handle, info), ret);
   if (ret != 0) {
-    WARN("gdr_get_info(handle %lx) failed: %d", handle.h, ret);
+    ERR(ncclSystemError, "gdr_get_info(handle %lx) failed: %d", handle.h, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -206,13 +206,13 @@ ncclResult_t wrap_gdr_get_info(gdr_t g, gdr_mh_t handle, gdr_info_t *info) {
 
 ncclResult_t wrap_gdr_map(gdr_t g, gdr_mh_t handle, void **va, size_t size) {
   if (gdr_internal_map == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_map(g, handle, va, size), ret);
   if (ret != 0) {
-    WARN("gdr_map(handle %lx, size %zu) failed: %d", handle.h, size, ret);
+    ERR(ncclSystemError, "gdr_map(handle %lx, size %zu) failed: %d", handle.h, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -220,13 +220,13 @@ ncclResult_t wrap_gdr_map(gdr_t g, gdr_mh_t handle, void **va, size_t size) {
 
 ncclResult_t wrap_gdr_unmap(gdr_t g, gdr_mh_t handle, void *va, size_t size) {
   if (gdr_internal_unmap == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_unmap(g, handle, va, size), ret);
   if (ret != 0) {
-    WARN("gdr_unmap(handle %lx, va %p, size %zu) failed: %d", handle.h, va, size, ret);
+    ERR(ncclSystemError, "gdr_unmap(handle %lx, va %p, size %zu) failed: %d", handle.h, va, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -234,7 +234,7 @@ ncclResult_t wrap_gdr_unmap(gdr_t g, gdr_mh_t handle, void *va, size_t size) {
 
 ncclResult_t wrap_gdr_runtime_get_version(int *major, int *minor) {
   if (gdr_internal_runtime_get_version == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   gdr_internal_runtime_get_version(major, minor);
@@ -243,7 +243,7 @@ ncclResult_t wrap_gdr_runtime_get_version(int *major, int *minor) {
 
 ncclResult_t wrap_gdr_driver_get_version(gdr_t g, int *major, int *minor) {
   if (gdr_internal_driver_get_version == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   gdr_internal_driver_get_version(g, major, minor);
@@ -252,13 +252,13 @@ ncclResult_t wrap_gdr_driver_get_version(gdr_t g, int *major, int *minor) {
 
 ncclResult_t wrap_gdr_copy_to_mapping(gdr_mh_t handle, void *map_d_ptr, const void *h_ptr, size_t size) {
   if (gdr_internal_copy_to_mapping == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_copy_to_mapping(handle, map_d_ptr, h_ptr, size), ret);
   if (ret != 0) {
-    WARN("gdr_copy_to_mapping(handle %lx, map_d_ptr %p, h_ptr %p, size %zu) failed: %d", handle.h, map_d_ptr, h_ptr, size, ret);
+    ERR(ncclSystemError, "gdr_copy_to_mapping(handle %lx, map_d_ptr %p, h_ptr %p, size %zu) failed: %d", handle.h, map_d_ptr, h_ptr, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -266,13 +266,13 @@ ncclResult_t wrap_gdr_copy_to_mapping(gdr_mh_t handle, void *map_d_ptr, const vo
 
 ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void *h_ptr, const void *map_d_ptr, size_t size) {
   if (gdr_internal_copy_from_mapping == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return ncclInternalError;
   }
   int ret;
   GDRLOCKCALL(gdr_internal_copy_from_mapping(handle, h_ptr, map_d_ptr, size), ret);
   if (ret != 0) {
-    WARN("gdr_copy_from_mapping(handle %lx, h_ptr %p, map_d_ptr %p, size %zu) failed: %d", handle.h, h_ptr, map_d_ptr, size, ret);
+    ERR(ncclSystemError, "gdr_copy_from_mapping(handle %lx, h_ptr %p, map_d_ptr %p, size %zu) failed: %d", handle.h, h_ptr, map_d_ptr, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;

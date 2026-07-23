@@ -103,7 +103,7 @@ ncclResult_t ncclTopoGetNode(struct ncclTopoSystem* system, struct ncclTopoNode*
 
 ncclResult_t ncclTopoCreateNode(struct ncclTopoSystem* system, struct ncclTopoNode** node, int type, uint64_t id) {
   if (system->nodes[type].count == NCCL_TOPO_MAX_NODES) {
-    WARN("Error : tried to create too many nodes of type %d", type);
+    ERR(ncclInternalError, "Error : tried to create too many nodes of type %d", type);
     return ncclInternalError;
   }
   struct ncclTopoNode* n = system->nodes[type].nodes+system->nodes[type].count;
@@ -171,7 +171,7 @@ ncclResult_t ncclTopoConnectNodes(struct ncclTopoNode* node, struct ncclTopoNode
     if (link->remNode == remNode && link->type == type) break;
   }
   if (link - node->links == NCCL_TOPO_MAX_LINKS) {
-    WARN("Error : too many Topo links (max %d)", NCCL_TOPO_MAX_LINKS);
+    ERR(ncclInternalError, "Error : too many Topo links (max %d)", NCCL_TOPO_MAX_LINKS);
     return ncclInternalError;
   }
   if (link->remNode == NULL) node->nlinks++;
@@ -235,7 +235,7 @@ ncclResult_t ncclTopoFlattenBcmSwitches(struct ncclTopoSystem* system) {
           if (remNode == pciSwitch) continue;
           // Add link from parent PCI switch -> PCI device
           if (pciSwitch->nlinks == NCCL_TOPO_MAX_LINKS) {
-            WARN("Error : too many Topo links (max %d)", NCCL_TOPO_MAX_LINKS);
+            ERR(ncclInternalError, "Error : too many Topo links (max %d)", NCCL_TOPO_MAX_LINKS);
             ret = ncclInternalError;
             goto fail;
           }
@@ -669,7 +669,7 @@ ncclResult_t ncclTopoAddNvLinks(struct ncclXmlNode* node, struct ncclTopoSystem*
     pBusId = NCCL_TOPO_ID(systemId, pBusId);
     NCCLCHECK(ncclTopoGetNode(system, &devNode, DEV, pBusId));
     if (devNode == NULL) {
-      WARN("Add NVLink error : could not find DEV for GPU %lx", pBusId);
+      ERR(ncclInternalError, "Add NVLink error : could not find DEV for GPU %lx", pBusId);
       return ncclInternalError;
     }
     int count;
@@ -724,7 +724,7 @@ ncclResult_t ncclTopoAddPciLinks(struct ncclXmlNode* node, struct ncclTopoSystem
     pBusId = NCCL_TOPO_ID(systemId, pBusId);
     NCCLCHECK(ncclTopoGetNode(system, &pci, PCI, pBusId));
     if (pci == NULL) {
-      WARN("Add PCI Link error : could not find PCI SW %lx", pBusId);
+      ERR(ncclInternalError, "Add PCI Link error : could not find PCI SW %lx", pBusId);
       return ncclInternalError;
     }
     struct ncclTopoNode* remote = NULL;
@@ -757,7 +757,7 @@ ncclResult_t ncclTopoAddC2c(struct ncclXmlNode* node, struct ncclTopoSystem* sys
     pBusId = NCCL_TOPO_ID(systemId, pBusId);
     NCCLCHECK(ncclTopoGetNode(system, &gpu, DEV, pBusId));
     if (gpu == NULL) {
-      WARN("Add NVLink error : could not find GPU %lx", pBusId);
+      ERR(ncclInternalError, "Add NVLink error : could not find GPU %lx", pBusId);
       return ncclInternalError;
     }
     int count = 0;
@@ -797,7 +797,7 @@ ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem
   while (systemId < system->nHosts && system->hostHashes[systemId] != localHostHash) systemId++;
   system->systemId = systemId;
   if(systemId == system->nHosts){
-    WARN("localHostHash = 0x%lx not found in the list of system hostHashes",localHostHash);
+    ERR(ncclInvalidArgument, "localHostHash = 0x%lx not found in the list of system hostHashes",localHostHash);
     return ncclInvalidArgument;
   }
 
@@ -1060,7 +1060,7 @@ ncclResult_t ncclTopoMakeUniqueBusId(struct ncclXml* xml, char* busId, struct nc
     i++;
   }
 
-  WARN("TOPO/NET : Couldn't generate unique busId after %d tries", i);
+  ERR(ncclInternalError, "TOPO/NET : Couldn't generate unique busId after %d tries", i);
   return ncclInternalError;
 }
 
@@ -1090,7 +1090,7 @@ ncclResult_t ncclTopoMakePciParent(struct ncclXml* xml, struct ncclXmlNode** par
   if (newBusId == NULL) {
     const char* name;
     NCCLCHECK(xmlGetAttr(physNetNode, "name", &name));
-    WARN("TOPO/NET : Can't find busId of child 0 %s", name);
+    ERR(ncclInternalError, "TOPO/NET : Can't find busId of child 0 %s", name);
     return ncclInternalError;
   }
 
@@ -1099,7 +1099,7 @@ ncclResult_t ncclTopoMakePciParent(struct ncclXml* xml, struct ncclXmlNode** par
 
 ncclResult_t ncclTopoMakeVnic(struct ncclXml* xml, struct ncclTopoNetInfo* netInfo, ncclNetVDeviceProps_t* vProps, struct ncclXmlNode** physNetNodes) {
   if (vProps->ndevs > netInfo->maxDevsPerNic) {
-    WARN("TOPO/NET : Tried to merge too many NICs. %d > %d", vProps->ndevs, netInfo->maxDevsPerNic);
+    ERR(ncclInternalError, "TOPO/NET : Tried to merge too many NICs. %d > %d", vProps->ndevs, netInfo->maxDevsPerNic);
     return ncclInternalError;
   }
 
@@ -1150,14 +1150,14 @@ ncclResult_t ncclTopoForceMerge(struct ncclXml* xml, struct ncclTopoNetInfo* net
     }
 
     if (vProps.ndevs != nUserIfs) {
-      WARN("TOPO/NET : Only matched %d devices, %d requested from %s",
+      ERR(ncclInvalidUsage, "TOPO/NET : Only matched %d devices, %d requested from %s",
         vProps.ndevs, nUserIfs, semi);
       ret = ncclInvalidUsage;
       goto fail;
     }
 
     if (vProps.ndevs > netInfo->maxDevsPerNic) {
-      WARN("Specified fused NIC %s which has too many devices (%d). Max %d", semi, vProps.ndevs, netInfo->maxDevsPerNic);
+      ERR(ncclInvalidUsage, "Specified fused NIC %s which has too many devices (%d). Max %d", semi, vProps.ndevs, netInfo->maxDevsPerNic);
       ret = ncclInvalidUsage;
       goto fail;
     }
@@ -1169,7 +1169,7 @@ ncclResult_t ncclTopoForceMerge(struct ncclXml* xml, struct ncclTopoNetInfo* net
         placedDevs[vProps.devs[i]] = 1;
       }
     } else {
-      WARN("TOPO/NET : Could not force merge NICs %s. Please specify a valid NCCL_NET_FORCE_MERGE string.", semi);
+      ERR(ncclInvalidUsage, "TOPO/NET : Could not force merge NICs %s. Please specify a valid NCCL_NET_FORCE_MERGE string.", semi);
       ret = ncclInvalidUsage;
       goto fail;
     }
@@ -1224,7 +1224,7 @@ ncclResult_t ncclTopoAutoMerge(struct ncclXml* xml, struct ncclTopoNetInfo* netI
       }
 
       if (vProps.ndevs > netInfo->maxDevsPerNic) {
-        WARN("TOPO/NET : Tried to merge too many NICs. %d > %d", vProps.ndevs, netInfo->maxDevsPerNic);
+        ERR(ncclInternalError, "TOPO/NET : Tried to merge too many NICs. %d > %d", vProps.ndevs, netInfo->maxDevsPerNic);
         return ncclInternalError;
       }
 
@@ -1707,7 +1707,7 @@ ncclResult_t ncclTopoGetLocal(struct ncclTopoSystem* system, int type, int index
     }
     if (paths[i].bw == maxBw && paths[i].type == minType) {
       if (count == NCCL_TOPO_MAX_NODES) {
-        WARN("Error : ran out of room to store found nodes in ncclTopoGetLocal."
+        ERR(ncclInternalError, "Error : ran out of room to store found nodes in ncclTopoGetLocal."
              " Filled %d of type %d, starting from index %d of type %d.",
              NCCL_TOPO_MAX_NODES, resultType, index, type);
         return ncclInternalError;
@@ -1775,7 +1775,7 @@ ncclResult_t ncclTopoGetNetDevsPolicy(enum netDevsPolicy* policy, int* policyNum
   static std::once_flag onceFlag;
   std::call_once(onceFlag, getNetDevsPolicyOnce);
   if (netDevsPolicy == NETDEVS_POLICY_MAX && netDevsPolicyNum <= 0) {
-    WARN("Invalid number of network devices = %d for policy MAX", netDevsPolicyNum);
+    ERR(ncclInternalError, "Invalid number of network devices = %d for policy MAX", netDevsPolicyNum);
     return ncclInternalError;
   }
   if (policy) *policy = netDevsPolicy;
@@ -1791,7 +1791,7 @@ ncclResult_t ncclTopoGetLocalNetType(struct ncclTopoSystem* system, int type, in
   int localNetCount;
   NCCLCHECK(ncclTopoGetLocal(system, GPU, gpu, type, localNets, &localNetCount, NULL));
   if (localNetCount==0) {
-    WARN("Could not find any local path from gpu %d to net.", gpu);
+    ERR(ncclInternalError, "Could not find any local path from gpu %d to net.", gpu);
     return ncclInternalError;
   }
 
@@ -1981,7 +1981,7 @@ ncclResult_t ncclCheckMultiRank(struct ncclComm* comm) {
       }
       if (numRanksFound == MAX_RANKS_ON_HOST) {
         if (firstRankOnHost == rank) {
-          WARN("ncclCheckMultiRank exceeded number of local ranks %d", MAX_RANKS_ON_HOST);
+          ERR(ncclInternalError, "ncclCheckMultiRank exceeded number of local ranks %d", MAX_RANKS_ON_HOST);
         }
         return ncclInternalError;
       }
@@ -1991,7 +1991,7 @@ ncclResult_t ncclCheckMultiRank(struct ncclComm* comm) {
   }
 
   if ((firstRankOnHost == -1 || firstRankOnHost == rank) && comm->isMultiRankGpu && ncclParamMultiRankGpuEnable() == 0) {
-    WARN("Multiple ranks detected using the same GPU on this node."
+    ERR(ncclInvalidUsage, "Multiple ranks detected using the same GPU on this node."
          " Set NCCL_MULTI_RANK_GPU_ENABLE=1 to enable this"
          " configuration.");
     return ncclInvalidUsage;

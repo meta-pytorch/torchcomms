@@ -104,7 +104,7 @@ ncclResult_t ncclIbDeregMrInternal(ncclIbNetCommDevBase* base, ibv_mr* mhandle) 
       return ncclSuccess;
     }
   }
-  WARN("NET/IB: could not find mr %p inside cache of %d entries", mhandle, cache->population);
+  ERR(ncclInternalError, "NET/IB: could not find mr %p inside cache of %d entries", mhandle, cache->population);
   return ncclInternalError;
 }
 

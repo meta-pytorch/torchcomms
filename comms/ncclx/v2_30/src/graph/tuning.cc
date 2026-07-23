@@ -70,7 +70,7 @@ ncclResult_t parseList(const char* str, const char* prefixElems[], int nprefixes
         // It makes no sense for any entry other than the first to not have a prefix,
         // because then all the prefixes before the prefix-less entry would be
         // overwritten.
-        WARN("All entries except the first must have a prefix: \"%s\"", str);
+        ERR(ncclInvalidUsage, "All entries except the first must have a prefix: \"%s\"", str);
         ret = ncclInvalidUsage;
         goto fail;
       }
@@ -103,7 +103,7 @@ ncclResult_t parseList(const char* str, const char* prefixElems[], int nprefixes
           }
         }
         if (e==nelems) {
-          WARN("Unrecognized element token \"%s\" when parsing \"%s\"", elem, str);
+          ERR(ncclInvalidUsage, "Unrecognized element token \"%s\" when parsing \"%s\"", elem, str);
           ret = ncclInvalidUsage;
           goto fail;
         }
@@ -113,7 +113,7 @@ ncclResult_t parseList(const char* str, const char* prefixElems[], int nprefixes
       tokStr = nullptr;
     }
     if (!foundPrefix) {
-      WARN("Unrecognized prefix token \"%s\" when parsing \"%s\"", prefix, str);
+      ERR(ncclInvalidUsage, "Unrecognized prefix token \"%s\" when parsing \"%s\"", prefix, str);
       ret = ncclInvalidUsage;
       goto fail;
     }

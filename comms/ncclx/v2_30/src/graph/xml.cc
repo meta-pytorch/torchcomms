@@ -37,7 +37,7 @@ struct xmlHandler {
 
 ncclResult_t xmlGetChar(FILE* file, char* c) {
   if (fread(c, 1, 1, file) == 0) {
-    WARN("XML Parse : Unexpected EOF");
+    ERR(ncclInternalError, "XML Parse : Unexpected EOF");
     return ncclInternalError;
   }
   return ncclSuccess;
@@ -53,7 +53,7 @@ ncclResult_t xmlGetValue(FILE* file, char* value, char* last) {
       value[o] = c;
       if (o == MAX_STR_LEN-1) {
         value[o] = '\0';
-        WARN("Error : value %s too long (max %d)", value, MAX_STR_LEN);
+        ERR(ncclInternalError, "Error : value %s too long (max %d)", value, MAX_STR_LEN);
         return ncclInternalError;
       }
       o++;
@@ -63,7 +63,7 @@ ncclResult_t xmlGetValue(FILE* file, char* value, char* last) {
     *last = c;
     return ncclSuccess;
 #else
-    WARN("XML Parse : Expected (double) quote.");
+    ERR(ncclInternalError, "XML Parse : Expected (double) quote.");
     return ncclInternalError;
 #endif
   }
@@ -74,7 +74,7 @@ ncclResult_t xmlGetValue(FILE* file, char* value, char* last) {
     value[o] = c;
     if (o == MAX_STR_LEN-1) {
       value[o] = '\0';
-      WARN("Error : value %s too long (max %d)", value, MAX_STR_LEN);
+      ERR(ncclInternalError, "Error : value %s too long (max %d)", value, MAX_STR_LEN);
       return ncclInternalError;
     }
     o++;
@@ -93,7 +93,7 @@ ncclResult_t xmlGetToken(FILE* file, char* name, char* value, char* last) {
     if (c == '=') {
       ptr[o] = '\0';
       if (value == NULL) {
-        WARN("XML Parse : Unexpected value with name %s", ptr);
+        ERR(ncclInternalError, "XML Parse : Unexpected value with name %s", ptr);
         return ncclInternalError;
       }
       return xmlGetValue(file, value, last);
@@ -101,7 +101,7 @@ ncclResult_t xmlGetToken(FILE* file, char* name, char* value, char* last) {
     ptr[o] = c;
     if (o == MAX_STR_LEN-1) {
       ptr[o] = '\0';
-      WARN("Error : name %s too long (max %d)", ptr, MAX_STR_LEN);
+      ERR(ncclInternalError, "Error : name %s too long (max %d)", ptr, MAX_STR_LEN);
       return ncclInternalError;
     }
     o++;
@@ -126,7 +126,7 @@ ncclResult_t xmlSkipComment(FILE* file, char* start, char next) {
   while (strcmp(end, "-->") != 0) {
     int c;
     if (fread(&c, 1, 1, file) != 1) {
-      WARN("XML Parse error : unterminated comment");
+      ERR(ncclInternalError, "XML Parse error : unterminated comment");
       return ncclInternalError;
     }
     SHIFT_APPEND(end, c);
@@ -141,7 +141,7 @@ ncclResult_t xmlGetNode(FILE* file, struct ncclXmlNode* node) {
     if (fread(&c, 1, 1, file) == 0) return ncclSuccess;
   }
   if (c != '<') {
-    WARN("XML Parse error : expecting '<', got '%c'", c);
+    ERR(ncclInternalError, "XML Parse error : expecting '<', got '%c'", c);
     return ncclInternalError;
   }
   // Read XML element name
@@ -159,7 +159,7 @@ ncclResult_t xmlGetNode(FILE* file, struct ncclXmlNode* node) {
     // Re-read the name, we got '/' in the first call
     NCCLCHECK(xmlGetToken(file, node->name, NULL, &c));
     if (c != '>') {
-      WARN("XML Parse error : unexpected trailing %c in closing tag %s", c, node->name);
+      ERR(ncclInternalError, "XML Parse error : unexpected trailing %c in closing tag %s", c, node->name);
       return ncclInternalError;
     }
     return ncclSuccess;
@@ -183,7 +183,7 @@ ncclResult_t xmlGetNode(FILE* file, struct ncclXmlNode* node) {
     NCCLCHECK(xmlGetToken(file, str, NULL, &c));
   }
   if (c != '>') {
-    WARN("XML Parse : expected >, got '%c'", c);
+    ERR(ncclInternalError, "XML Parse : expected >, got '%c'", c);
     return ncclInternalError;
   }
   return ncclSuccess;
@@ -193,7 +193,7 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
   if (head && head->type == NODE_TYPE_SINGLE) return ncclSuccess;
   while (1) {
     if (xml->maxIndex == xml->maxNodes) {
-      WARN("Error : XML parser is limited to %d nodes", xml->maxNodes);
+      ERR(ncclInternalError, "Error : XML parser is limited to %d nodes", xml->maxNodes);
       return ncclInternalError;
     }
     struct ncclXmlNode* node = xml->nodes+xml->maxIndex;
@@ -201,7 +201,7 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
     NCCLCHECK(xmlGetNode(file, node));
     if (node->type == NODE_TYPE_NONE) {
       if (head) {
-        WARN("XML Parse : unterminated %s", head->name);
+        ERR(ncclInternalError, "XML Parse : unterminated %s", head->name);
         return ncclInternalError;
       } else {
         // All done
@@ -210,7 +210,7 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
     }
     if (head && node->type == NODE_TYPE_CLOSE) {
       if (strcmp(node->name, head->name) != 0) {
-        WARN("XML Mismatch : %s / %s", head->name, node->name);
+        ERR(ncclInternalError, "XML Mismatch : %s / %s", head->name, node->name);
         return ncclInternalError;
       }
       return ncclSuccess;
@@ -220,7 +220,7 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
       if (strcmp(node->name, handlers[h].name) == 0) {
         if (head) {
           if (head->nSubs == MAX_SUBS) {
-            WARN("Error : XML parser is limited to %d subnodes", MAX_SUBS);
+            ERR(ncclInternalError, "Error : XML parser is limited to %d subnodes", MAX_SUBS);
             return ncclInternalError;
           }
           head->subs[head->nSubs++] = node;
@@ -375,7 +375,7 @@ ncclResult_t ncclTopoXmlLoadSystem(FILE* file, struct ncclXml* xml, struct ncclX
   int version;
   NCCLCHECK(xmlGetAttrInt(head, "version", &version));
   if (version != NCCL_TOPO_XML_VERSION) {
-    WARN("XML Topology has wrong version %d, %d needed", version, NCCL_TOPO_XML_VERSION);
+    ERR(ncclInvalidUsage, "XML Topology has wrong version %d, %d needed", version, NCCL_TOPO_XML_VERSION);
     return ncclInvalidUsage;
   }
   const char* name;
@@ -420,7 +420,7 @@ static ncclResult_t getPciPath(const char* busId, char** path) {
   memcpylower(busPath+sizeof("/sys/class/pci_bus/0000:00/../../")-1, busId, BUSID_SIZE-1);
   *path = ncclOsRealpath(busPath, NULL);
   if (*path == NULL) {
-    WARN("Could not find real path of %s", busPath);
+    ERR(ncclSystemError, "Could not find real path of %s", busPath);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -483,7 +483,7 @@ ncclResult_t ncclTopoGetXmlFromCpu(struct ncclXmlNode* cpuNode, struct ncclXml* 
     const char* numaId;
     NCCLCHECK(xmlGetAttr(cpuNode, "numaid", &numaId));
     if (numaId == NULL) {
-      WARN("GetXmlFromCpu : could not find CPU numa ID.");
+      ERR(ncclInternalError, "GetXmlFromCpu : could not find CPU numa ID.");
       return ncclInternalError;
     }
     // Set affinity
@@ -724,7 +724,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
       if (busId != NULL && strcmp(newBusId, busId) < 0) { subIndex = s; break; }
     }
     if (parent->nSubs == MAX_SUBS) {
-      WARN("Error : XML parser is limited to %d subnodes", MAX_SUBS);
+      ERR(ncclInternalError, "Error : XML parser is limited to %d subnodes", MAX_SUBS);
       ret = ncclInternalError;
       goto exit;
     }
@@ -1043,7 +1043,7 @@ ncclResult_t ncclTopoXmlGraphLoadGraphs(FILE* file, struct ncclXml* xmlGraph, st
   int version;
   NCCLCHECK(xmlGetAttrInt(head, "version", &version));
   if (version != NCCL_GRAPH_XML_VERSION) {
-    WARN("XML Graph has wrong version %d, %d needed", version, NCCL_GRAPH_XML_VERSION);
+    ERR(ncclInvalidUsage, "XML Graph has wrong version %d, %d needed", version, NCCL_GRAPH_XML_VERSION);
     return ncclInvalidUsage;
   }
   const char* name;
@@ -1059,7 +1059,7 @@ ncclResult_t ncclTopoXmlGraphLoadGraphs(FILE* file, struct ncclXml* xmlGraph, st
 ncclResult_t ncclTopoGetXmlGraphFromFile(const char* xmlGraphFile, struct ncclXml* xml) {
   FILE* file = fopen(xmlGraphFile, "r");
   if (file == NULL) {
-    WARN("Could not open XML graph file %s : %s", xmlGraphFile, strerror(errno));
+    ERR(ncclSystemError, "Could not open XML graph file %s : %s", xmlGraphFile, strerror(errno));
     return ncclSystemError;
   }
   struct xmlHandler handlers[] = { { "graphs", ncclTopoXmlGraphLoadGraphs } };
