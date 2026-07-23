@@ -1843,13 +1843,15 @@ RdmaTransportFactory::RdmaTransportFactory(
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<CudaDriverApi> cudaDriverApi,
     std::shared_ptr<CudaApi> cudaApi,
-    std::optional<uint8_t> portNum)
+    std::optional<uint8_t> portNum,
+    std::shared_ptr<DeviceAdapter> deviceAdapter)
     : TransportFactory(TransportType::RDMA),
       ibvApi_(std::move(ibvApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
       cudaApi_(std::move(cudaApi)),
       evb_(evb),
       nicsHandle_(std::make_shared<std::vector<NicResources>>()),
+      deviceAdapter_(std::move(deviceAdapter)),
       config_(config) {
   assert(evb_ != nullptr);
   if (deviceNames.empty()) {
@@ -1865,7 +1867,9 @@ RdmaTransportFactory::RdmaTransportFactory(
     cudaApi_ = std::make_shared<CudaApi>();
   }
 
-  deviceAdapter_ = createDeviceAdapter(cudaApi_, cudaDriverApi_);
+  if (!deviceAdapter_) {
+    deviceAdapter_ = createDeviceAdapter(cudaApi_, cudaDriverApi_);
+  }
 
   // Generate a random domain id to identify handles from this factory.
   std::mt19937_64 rng{std::random_device{}()};
@@ -2154,7 +2158,11 @@ RdmaTransportFactory::importSegment(
 
   uint64_t domainId = header.domainId;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), domainId, header.registrationBase, deviceAdapter_);
+      std::move(rkeys),
+      domainId,
+      header.registrationBase,
+      header.isDeviceMemory != 0,
+      deviceAdapter_);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(

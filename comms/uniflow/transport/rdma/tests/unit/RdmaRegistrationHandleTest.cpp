@@ -94,6 +94,7 @@ TEST_F(RdmaRegistrationHandleTest, SerializeSingleMr) {
   std::memcpy(&header, serialized.data(), sizeof(header));
   EXPECT_EQ(header.domainId, 42u);
   EXPECT_EQ(header.numMrs, 1u);
+  EXPECT_EQ(header.isDeviceMemory, 0u);
 
   uint32_t rkey;
   std::memcpy(
@@ -203,12 +204,16 @@ TEST_F(RdmaRegistrationHandleTest, SerializeDeserializeRoundTrip) {
 
   // addr and length are provided by the caller, not from the wire.
   RdmaRemoteRegistrationHandle remote(
-      std::move(rkeys), header.domainId, header.registrationBase);
+      std::move(rkeys),
+      header.domainId,
+      header.registrationBase,
+      header.isDeviceMemory != 0);
 
   EXPECT_EQ(remote.numMrs(), handle.numMrs());
   EXPECT_EQ(remote.rkey(0), handle.rkey(0));
   EXPECT_EQ(remote.rkey(1), handle.rkey(1));
   EXPECT_EQ(remote.registrationBase(), handle.registrationBase());
+  EXPECT_FALSE(remote.isDeviceMemory());
 }
 
 TEST_F(RdmaRegistrationHandleTest, RegistrationBaseDefaultsToZero) {
@@ -308,25 +313,54 @@ TEST_F(
   EXPECT_EQ(handle.toWireAddr(buf), kDevAddr - kBase);
 }
 
-// Remote handle with zero base: wire address is the raw pointer (no adapter
-// dereference, so a null adapter is fine).
+// Remote host handle with zero base: wire address is the raw pointer.
 TEST(RdmaRemoteRegistrationHandleTest, ToWireAddrZeroBaseReturnsRawAddr) {
   char buf[16]{};
   RdmaRemoteRegistrationHandle handle({0x1}, 42);
   EXPECT_EQ(handle.toWireAddr(buf), reinterpret_cast<uint64_t>(buf));
 }
 
-// Remote handle with a non-zero base: the adapter resolves the address, then
-// base is subtracted.
+// Remote host handle (isDeviceMemory=false) with a non-zero base: no adapter
+// resolution, base is simply subtracted.
+TEST(RdmaRemoteRegistrationHandleTest, ToWireAddrHostNonZeroBaseSubtractsBase) {
+  char buf[16]{};
+  constexpr uint64_t kBase = 0x1000;
+  RdmaRemoteRegistrationHandle handle(
+      {0x1}, 42, kBase, /*isDeviceMemory=*/false);
+  EXPECT_EQ(handle.toWireAddr(buf), reinterpret_cast<uint64_t>(buf) - kBase);
+}
+
+// Remote device handle (isDeviceMemory=true): the adapter resolves the address,
+// then base is subtracted. The input pointer is opaque to the adapter.
 TEST(
     RdmaRemoteRegistrationHandleTest,
-    ToWireAddrNonZeroBaseResolvesThenSubtractsBase) {
+    ToWireAddrDeviceMemoryResolvesThenSubtractsBase) {
   char buf[16]{};
   constexpr uint64_t kDevAddr = 0x7f0000005000ULL;
   constexpr uint64_t kBase = 0x7f0000000000ULL;
   auto adapter = std::make_shared<FakeDeviceAdapter>(kDevAddr);
-  RdmaRemoteRegistrationHandle handle({0x1}, 42, kBase, adapter);
+  RdmaRemoteRegistrationHandle handle(
+      {0x1}, 42, kBase, /*isDeviceMemory=*/true, adapter);
   EXPECT_EQ(handle.toWireAddr(buf), kDevAddr - kBase);
+}
+
+// A device-backed local handle (deviceId >= 0) serializes isDeviceMemory=1.
+TEST_F(RdmaRegistrationHandleTest, SerializeDeviceHandleSetsDeviceMemoryFlag) {
+  ibv_mr mr{};
+  mr.rkey = 0x99;
+  auto adapter = std::make_shared<FakeDeviceAdapter>(0x1234);
+  RdmaRegistrationHandle handle(
+      {&mr},
+      ibv_,
+      42,
+      /*registrationBase=*/0,
+      adapter,
+      /*deviceId=*/0);
+
+  auto serialized = handle.serialize();
+  RdmaRegistrationHandle::Header header;
+  std::memcpy(&header, serialized.data(), sizeof(header));
+  EXPECT_EQ(header.isDeviceMemory, 1u);
 }
 
 // --- Factory registerSegment/importSegment tests ---
@@ -379,7 +413,16 @@ class RdmaFactoryRegistrationTest : public ::testing::Test {
         &evb_,
         RdmaTransportConfig{},
         ibv_,
-        cudaDriver_);
+        cudaDriver_,
+        /*cudaApi=*/nullptr,
+        /*portNum=*/std::nullopt,
+        makeDeviceAdapter());
+  }
+
+  // Overridable so a derived fixture can inject a fake DeviceAdapter. Returning
+  // nullptr keeps the factory's default (real) adapter.
+  virtual std::shared_ptr<DeviceAdapter> makeDeviceAdapter() {
+    return nullptr;
   }
 
   std::shared_ptr<NiceMock<MockIbvApi>> ibv_;
@@ -509,6 +552,7 @@ TEST_F(RdmaFactoryRegistrationTest, ImportSegmentSucceeds) {
       dynamic_cast<RdmaRemoteRegistrationHandle*>(result.value().get());
   ASSERT_NE(remote, nullptr);
   EXPECT_EQ(remote->rkey(0), 0xAAAAu);
+  EXPECT_FALSE(remote->isDeviceMemory());
 }
 
 TEST_F(RdmaFactoryRegistrationTest, ImportSegmentRejectsTooSmallPayload) {
@@ -573,6 +617,44 @@ TEST_F(RdmaFactoryRegistrationTest, RegisterAndImportRoundTrip) {
   ASSERT_NE(local, nullptr);
   EXPECT_EQ(remote->rkey(0), local->rkey(0));
   EXPECT_EQ(remote->domainId(), local->domainId());
+}
+
+// Injects a FakeDeviceAdapter into the factory so a device-memory import drives
+// the full deserialize → toWireAddr device-resolution path with a controllable
+// adapter. This is exactly the path that regressed on MTIA.
+class RdmaFactoryDeviceAdapterTest : public RdmaFactoryRegistrationTest {
+ protected:
+  static constexpr uint64_t kResolvedDevAddr = 0x7f0000009000ULL;
+
+  std::shared_ptr<DeviceAdapter> makeDeviceAdapter() override {
+    return std::make_shared<FakeDeviceAdapter>(kResolvedDevAddr);
+  }
+};
+
+TEST_F(RdmaFactoryDeviceAdapterTest, ImportDeviceMemoryResolvesViaAdapter) {
+  constexpr uint64_t kBase = 0x7f0000000000ULL;
+  RdmaRegistrationHandle::Header header{
+      .domainId = 99,
+      .registrationBase = kBase,
+      .numMrs = 1,
+      .isDeviceMemory = 1,
+  };
+  uint32_t rkey = 0xAAAA;
+  std::vector<uint8_t> data(sizeof(header) + sizeof(rkey));
+  std::memcpy(data.data(), &header, sizeof(header));
+  std::memcpy(data.data() + sizeof(header), &rkey, sizeof(rkey));
+
+  char fakeBuf[8192]{};
+  auto result = factory_->importSegment(sizeof(fakeBuf), data);
+  ASSERT_TRUE(result.hasValue());
+
+  auto* remote =
+      dynamic_cast<RdmaRemoteRegistrationHandle*>(result.value().get());
+  ASSERT_NE(remote, nullptr);
+  EXPECT_TRUE(remote->isDeviceMemory());
+
+  char somePtr[16]{};
+  EXPECT_EQ(remote->toWireAddr(somePtr), kResolvedDevAddr - kBase);
 }
 
 // --- Multi-NIC partial failure tests ---

@@ -33,6 +33,7 @@ class RdmaRegistrationHandle : public RegistrationHandle {
     uint64_t domainId{0}; // Factory instance key
     uint64_t registrationBase{0}; // VA → wire-address offset
     uint8_t numMrs{0}; // Number of MRs (one per NIC)
+    uint8_t isDeviceMemory{0}; // 1 if the region is device (VRAM) memory
     // Followed by numMrs uint32_t rkeys.
   };
 
@@ -124,6 +125,7 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
       std::vector<uint32_t> rkeys,
       uint64_t domainId,
       uint64_t registrationBase = 0,
+      bool isDeviceMemory = false,
       std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
 
   ~RdmaRemoteRegistrationHandle() override = default;
@@ -154,14 +156,23 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
     return registrationBase_;
   }
 
-  /// Translate a client-supplied pointer to the wire address the NIC
-  /// expects in an SGE (`sge.addr`). Folds two platform-specific steps.
+  /// Whether the remote region is device (VRAM) memory, as advertised by the
+  /// exporting peer. Gates device-pointer resolution in toWireAddr().
+  bool isDeviceMemory() const noexcept {
+    return isDeviceMemory_;
+  }
+
+  /// Translate a remote pointer to the wire address the NIC expects in
+  /// `wr.rdma.remote_addr`. When the remote region is device memory, the
+  /// pointer is resolved to a bare device address via the adapter; base is
+  /// then subtracted.
   uint64_t toWireAddr(const void* ptr) const;
 
  private:
   std::vector<uint32_t> rkeys_;
   uint64_t domainId_;
   uint64_t registrationBase_{0};
+  bool isDeviceMemory_{false};
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
 };
 
