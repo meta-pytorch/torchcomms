@@ -2,14 +2,10 @@
 
 #include "comms/utils/logger/NcclScubaSample.h"
 
-#include <sstream>
-
-#if __has_include(<dwarf.h>)
-#include <folly/debugging/symbolizer/Symbolizer.h>
-#endif
+#include <folly/String.h>
 #include <folly/json/json.h>
 
-#include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/ErrorStackUtil.h"
 
 // Format uses these keys:
 // fbcode/rfe/scubadata/ScubaDataSample.cpp
@@ -61,22 +57,14 @@ void NcclScubaSample::setExceptionInfo(const std::exception& ex) {
 }
 
 void NcclScubaSample::setError(const std::string& error) {
-  // Get stack trace (requires elfutils/libdwarf for folly Symbolizer)
-#if __has_include(<dwarf.h>)
-  if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
-    std::stringstream ss;
-    ss << folly::symbolizer::getStackTraceStr();
-    std::vector<std::string> stackTraceMangled;
-    // @lint-ignore CLANGTIDY
-    folly::split('\n', ss.str(), stackTraceMangled);
-    for (auto& line : stackTraceMangled) {
-      auto demangledLine = folly::demangle(line.c_str()).toStdString();
-      line.swap(demangledLine);
-    }
-    this->stackTrace = stackTraceMangled;
-    addNormVector("stack_trace", std::move(stackTraceMangled));
-  }
-#endif
+  setError(error, ::meta::comms::logger::captureNativeErrorStack());
+}
+
+void NcclScubaSample::setError(
+    const std::string& error,
+    const std::vector<std::string>& stack) {
+  this->stackTrace = stack;
+  addNormVector("stack_trace", stack);
 
   // Set attributes locally
   this->hasException = true;
