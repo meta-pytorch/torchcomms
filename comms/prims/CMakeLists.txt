@@ -43,6 +43,14 @@ set_target_properties(prims PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+set(PRIMS_CUDA_ARCHS ${CMAKE_CUDA_ARCHITECTURES})
+list(FILTER PRIMS_CUDA_ARCHS EXCLUDE REGEX "^(5[0-9]|6[0-9]|7[0-9]|8[0-9])")
+if(NOT PRIMS_CUDA_ARCHS)
+    set(PRIMS_CUDA_ARCHS OFF)
+endif()
+set_target_properties(prims PROPERTIES CUDA_ARCHITECTURES "${PRIMS_CUDA_ARCHS}")
+message(STATUS "prims CUDA_ARCHITECTURES: ${PRIMS_CUDA_ARCHS} (from CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES})")
+
 # ROOT (fbcode root) resolves comms/prims/..., comms/common/*.cuh (header-only
 # bits: AtomicUtils/DeviceConstants/BitOps), and comms/ctran/ibverbx/... .
 target_include_directories(prims PRIVATE
