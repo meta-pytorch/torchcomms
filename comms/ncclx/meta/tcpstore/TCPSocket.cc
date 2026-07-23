@@ -259,7 +259,7 @@ std::unique_ptr<SocketImpl> SocketConnectOp::run() {
       host_,
       port_);
 
-  ERR("%s", msg.c_str());
+  ERR(ncclInternalError, "%s", msg.c_str());
   throw std::runtime_error(msg);
 }
 
@@ -458,7 +458,7 @@ void SocketConnectOp::throwTimeoutError() const {
       host_,
       port_);
 
-  ERR("%s", msg.c_str());
+  ERR(ncclInternalError, "%s", msg.c_str());
   throw std::runtime_error(msg);
 }
 

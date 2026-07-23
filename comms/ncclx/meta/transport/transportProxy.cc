@@ -65,7 +65,7 @@ TransportProxy::TransportProxy(struct ncclComm* comm) : parentComm_(comm) {
   ncclResult_t allocRes =
       ncclCuMemHostAlloc((void**)&syncPoolPtr_, nullptr, kDefaultSyncPoolSize);
   if (allocRes != ncclSuccess && allocRes != ncclInProgress) {
-    WARN_WITH_SCUBA(
+    WARN(
         "%s:%s:%d -> %d (%s)",
         __FILE__,
         __func__,
@@ -112,7 +112,7 @@ void TransportProxy::shutdown() {
     syncFlagPool_.clear();
     ncclResult_t freeRes = ncclCuMemHostFree((void*)syncPoolPtr_);
     if (freeRes != ncclSuccess && freeRes != ncclInProgress) {
-      WARN_WITH_SCUBA(
+      WARN(
           "%s:%s:%d -> %d (%s)",
           __FILE__,
           __func__,
