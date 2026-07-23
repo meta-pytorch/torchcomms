@@ -13,7 +13,7 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
   cudaPointerAttributes attr;
   cudaError_t err = cudaPointerGetAttributes(&attr, pointer);
   if (err != cudaSuccess || attr.devicePointer == NULL) {
-    WARN("%s : %s %p is not a valid pointer", opname, ptrname, pointer);
+    ERR(ncclInvalidArgument, "%s : %s %p is not a valid pointer", opname, ptrname, pointer);
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 10000
@@ -25,7 +25,7 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
 #else
   if (attr.memoryType == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
 #endif
-    WARN("%s : %s allocated on device %d mismatchs with NCCL device %d", opname, ptrname, attr.device, comm->cudaDev);
+    ERR(ncclInvalidArgument, "%s : %s allocated on device %d mismatchs with NCCL device %d", opname, ptrname, attr.device, comm->cudaDev);
     return ncclInvalidArgument;
   }
   return ncclSuccess;
@@ -33,7 +33,7 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
 
 ncclResult_t PtrCheck(const void* ptr, const char* opname, const char* ptrname) {
   if (ptr == NULL) {
-    WARN("%s : %s argument is NULL", opname, ptrname);
+    ERR(ncclInvalidArgument, "%s : %s argument is NULL", opname, ptrname);
     return ncclInvalidArgument;
   }
   return ncclSuccess;
@@ -42,7 +42,7 @@ ncclResult_t PtrCheck(const void* ptr, const char* opname, const char* ptrname) 
 ncclResult_t CommCheck(struct ncclComm* comm, const char* opname, const char* ptrname) {
   NCCLCHECK(PtrCheck(comm, opname, ptrname));
   if (comm->startMagic != NCCL_MAGIC || comm->endMagic != NCCL_MAGIC) {
-    WARN("Error: corrupted comm object detected");
+    ERR(ncclInvalidArgument, "Error: corrupted comm object detected");
     return ncclInvalidArgument;
   }
   return ncclSuccess;
@@ -97,7 +97,7 @@ static ncclResult_t registrationCheck(struct ncclInfo* info) {
   for (int r = 1; r < comm->nRanks; r++) {
     int infoIdx = r * 2;
     if (cmpBufInfo[0].isSymRegistered != bufInfo[infoIdx].isSymRegistered || cmpBufInfo[1].isSymRegistered != bufInfo[infoIdx + 1].isSymRegistered) {
-      if (comm->rank == 0) WARN("Coll %s size %ld symmetric registration check failed on rank %d: sendReg %d recvReg %d mismatch with rank 0 sendReg %d recvReg %d", info->opName, size, r, bufInfo[infoIdx].isSymRegistered, bufInfo[infoIdx + 1].isSymRegistered, cmpBufInfo[0].isSymRegistered, cmpBufInfo[1].isSymRegistered);
+      if (comm->rank == 0) ERR(ncclInvalidArgument, "Coll %s size %ld symmetric registration check failed on rank %d: sendReg %d recvReg %d mismatch with rank 0 sendReg %d recvReg %d", info->opName, size, r, bufInfo[infoIdx].isSymRegistered, bufInfo[infoIdx + 1].isSymRegistered, cmpBufInfo[0].isSymRegistered, cmpBufInfo[1].isSymRegistered);
       ret = ncclInvalidArgument;
       goto fail;
     }
@@ -111,12 +111,12 @@ static ncclResult_t registrationCheck(struct ncclInfo* info) {
   if (info->coll == ncclFuncAllReduce || info->coll == ncclFuncReduceScatter || info->coll == ncclFuncAlltoAll || info->coll == ncclFuncGather) {
     if (cmpBufInfo[0].isSymRegistered) {
       if (sendWinMismatch) {
-        if (comm->rank == 0) WARN("Coll %s size %ld symmetric registration check failed on rank %d: send buffer window (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, sendWinMismatchRank, bufInfo[sendWinMismatchRank * 2].bigOffset, cmpBufInfo[0].bigOffset);
+        if (comm->rank == 0) ERR(ncclInvalidArgument, "Coll %s size %ld symmetric registration check failed on rank %d: send buffer window (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, sendWinMismatchRank, bufInfo[sendWinMismatchRank * 2].bigOffset, cmpBufInfo[0].bigOffset);
         ret = ncclInvalidArgument;
         goto fail;
       }
       if (sendUserMismatch) {
-        if (comm->rank == 0) WARN("Coll %s size %ld symmetric registration check failed on rank %d: send buffer user offset (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, sendUserMismatchRank, bufInfo[sendUserMismatchRank * 2].userOffset, cmpBufInfo[0].userOffset);
+        if (comm->rank == 0) ERR(ncclInvalidArgument, "Coll %s size %ld symmetric registration check failed on rank %d: send buffer user offset (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, sendUserMismatchRank, bufInfo[sendUserMismatchRank * 2].userOffset, cmpBufInfo[0].userOffset);
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -126,12 +126,12 @@ static ncclResult_t registrationCheck(struct ncclInfo* info) {
   if (info->coll == ncclFuncAllGather || info->coll == ncclFuncAllReduce || info->coll == ncclFuncAlltoAll || info->coll == ncclFuncScatter) {
     if (cmpBufInfo[1].isSymRegistered) {
       if (recvWinMismatch) {
-        if (comm->rank == 0) WARN("Coll %s size %ld symmetric registration check failed on rank %d: recv buffer window (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, recvWinMismatchRank, bufInfo[recvWinMismatchRank * 2 + 1].bigOffset, cmpBufInfo[1].bigOffset);
+        if (comm->rank == 0) ERR(ncclInvalidArgument, "Coll %s size %ld symmetric registration check failed on rank %d: recv buffer window (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, recvWinMismatchRank, bufInfo[recvWinMismatchRank * 2 + 1].bigOffset, cmpBufInfo[1].bigOffset);
         ret = ncclInvalidArgument;
         goto fail;
       }
       if (recvUserMismatch) {
-        if (comm->rank == 0) WARN("Coll %s size %ld symmetric registration check failed on rank %d: recv buffer user offset (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, recvUserMismatchRank, bufInfo[recvUserMismatchRank * 2 + 1].userOffset, cmpBufInfo[1].userOffset);
+        if (comm->rank == 0) ERR(ncclInvalidArgument, "Coll %s size %ld symmetric registration check failed on rank %d: recv buffer user offset (0x%lx) mismatch with rank 0 (0x%lx)", info->opName, size, recvUserMismatchRank, bufInfo[recvUserMismatchRank * 2 + 1].userOffset, cmpBufInfo[1].userOffset);
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -157,11 +157,11 @@ ncclResult_t ncclArgsGlobalCheck(struct ncclArgsInfo* argsInfo) {
 ncclResult_t ArgsCheck(struct ncclInfo* info) {
   // First, the easy ones
   if (info->root < 0 || info->root >= info->comm->nRanks) {
-    WARN("%s : invalid root %d (root should be in the 0..%d range)", info->opName, info->root, info->comm->nRanks);
+    ERR(ncclInvalidArgument, "%s : invalid root %d (root should be in the 0..%d range)", info->opName, info->root, info->comm->nRanks);
     return ncclInvalidArgument;
   }
   if (info->datatype < 0 || info->datatype >= ncclNumTypes) {
-    WARN("%s : invalid type %d", info->opName, info->datatype);
+    ERR(ncclInvalidArgument, "%s : invalid type %d", info->opName, info->datatype);
     return ncclInvalidArgument;
   }
 
@@ -170,13 +170,13 @@ ncclResult_t ArgsCheck(struct ncclInfo* info) {
   // just as a reminder.
   // coverity[result_independent_of_operands]
   if (info->op < 0 || ncclMaxRedOp < info->op) {
-    WARN("%s : invalid reduction operation %d", info->opName, info->op);
+    ERR(ncclInvalidArgument, "%s : invalid reduction operation %d", info->opName, info->op);
     return ncclInvalidArgument;
   }
   int opIx = int(ncclUserRedOpMangle(info->comm, info->op)) - int(ncclNumOps);
   if (ncclNumOps <= info->op &&
       (info->comm->userRedOpCapacity <= opIx || info->comm->userRedOps[opIx].freeNext != -1)) {
-    WARN("%s : reduction operation %d unknown to this communicator", info->opName, info->op);
+    ERR(ncclInvalidArgument, "%s : reduction operation %d unknown to this communicator", info->opName, info->op);
     return ncclInvalidArgument;
   }
 

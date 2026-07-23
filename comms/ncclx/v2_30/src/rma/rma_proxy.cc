@@ -331,7 +331,7 @@ ncclResult_t ncclRmaProxyRegister(struct ncclComm* comm, void* address, size_t s
           NCCLCHECK(ncclRmaProxyRegMrSym(rmaProxyState->ncclGin, rmaProxyState->ginComms[n], rmaProxyState->props[n], address, size,
                                          NCCL_PTR_CUDA, 0, &rmaHostWins[n], &rmaDevWins[n]));
         if (rmaHostWins[n] == NULL) {
-          WARN("rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
+          ERR(ncclSystemError, "rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
           return ncclSystemError;
         }
       }
@@ -390,11 +390,11 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   struct ncclRmaProxyState *rmaProxyState = &comm->rmaState.rmaProxyState;
   rmaProxyState->comm = comm;
   if (rmaProxyState->ncclGin == NULL) {
-    WARN("GIN not supported.");
+    ERR(ncclInvalidUsage, "GIN not supported.");
     return ncclInvalidUsage;
   }
   if (ncclParamGinEnable() == 0) {
-    WARN("GIN is disabled.");
+    ERR(ncclInternalError, "GIN is disabled.");
     return ncclInternalError;
   }
   if (rmaProxyState->connected) return ncclSuccess;
@@ -404,7 +404,7 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   int ndev = 0;
   NCCLCHECK(rmaProxyState->ncclGin->devices(&ndev));
   if (ndev <= 0) {
-    WARN("No GIN-capable devices found.");
+    ERR(ncclInternalError, "No GIN-capable devices found.");
     return ncclInternalError;
   }
 
@@ -412,7 +412,7 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   NCCLCHECK(rmaProxyState->ncclGin->getProperties(0, &props));
   rmaProxyState->ginType = props.netDeviceType;
   if (rmaProxyState->ginType != NCCL_NET_DEVICE_GIN_PROXY) {
-    WARN("RMA proxy backend type mismatch.");
+    ERR(ncclInternalError, "RMA proxy backend type mismatch.");
     return ncclInternalError;
   }
 
@@ -437,7 +437,7 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   allCommCounts = NULL;
 
   if (ginCommCount == 0) {
-    WARN("Gin connect : min local net count is zero");
+    ERR(ncclSystemError, "Gin connect : min local net count is zero");
     ret = ncclSystemError;
     goto fail;
   }

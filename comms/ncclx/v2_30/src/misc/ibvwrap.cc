@@ -32,7 +32,7 @@ ncclResult_t wrap_ibv_symbols(void) {
 /* CHECK_NOT_NULL: helper macro to check for NULL symbol */
 #define CHECK_NOT_NULL(container, internal_name) \
   if (container.internal_name == NULL) { \
-     WARN("lib wrapper not initialized."); \
+     ERR(ncclInternalError, "lib wrapper not initialized."); \
      return ncclInternalError; \
   }
 
@@ -40,7 +40,7 @@ ncclResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   retval = container.call; \
   if (retval == error_retval) { \
-    WARN("Call to " name " failed with error %s", strerror(errno)); \
+    ERR(ncclSystemError, "Call to " name " failed with error %s", strerror(errno)); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
@@ -49,7 +49,7 @@ ncclResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   retval = container.call; \
   if (retval == error_retval) { \
-    WARN("Call to " name " failed"); \
+    ERR(ncclSystemError, "Call to " name " failed"); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
@@ -66,7 +66,7 @@ ncclResult_t wrap_ibv_symbols(void) {
     *supported = 0; \
     return ncclSuccess; \
   } else if (ret != success_retval) { \
-    WARN("Call to " name " failed with error %s errno %d", strerror(ret), ret); \
+    ERR(ncclSystemError, "Call to " name " failed with error %s errno %d", strerror(ret), ret); \
     *supported = 1; \
     return ncclSystemError; \
   } \
@@ -77,7 +77,7 @@ ncclResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   int ret = container.call; \
   if (ret != success_retval) { \
-    WARN("Call to " name " failed with error %s errno %d", strerror(ret), ret); \
+    ERR(ncclSystemError, "Call to " name " failed with error %s errno %d", strerror(ret), ret); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
@@ -86,7 +86,7 @@ ncclResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   int ret = container.call; \
   if (ret == error_retval) { \
-    WARN("Call to " name " failed"); \
+    ERR(ncclSystemError, "Call to " name " failed"); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
@@ -306,7 +306,7 @@ ncclResult_t wrap_ibv_modify_qp(struct ibv_qp* qp, struct ibv_qp_attr* attr, int
   } while (IBV_MQP_RETRY_ERRNO_ALL(ret) && attempts < maxCnt);
   if (ret != 0) {
     ibvModifyQpLog(qp, attr->qp_state, attr, attr_mask, qpMsg, sizeof(qpMsg));
-    WARN("Call to ibv_modify_qp failed with %d %s, %s", ret, strerror(ret), qpMsg);
+    ERR(ncclSystemError, "Call to ibv_modify_qp failed with %d %s, %s", ret, strerror(ret), qpMsg);
     return ncclSystemError;
   }
   return ncclSuccess;

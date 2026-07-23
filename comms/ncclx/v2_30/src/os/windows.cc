@@ -136,7 +136,7 @@ ncclResult_t ncclOsInitialize() {
   WSADATA wsaData;
   int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
   if (result != 0) {
-    WARN("WSAStartup failed with error: %d", result);
+    ERR(ncclSystemError, "WSAStartup failed with error: %d", result);
     return ncclSystemError;
   }
   INFO(NCCL_INIT|NCCL_NET, "WSAStartup succeeded, Winsock version %d.%d",
@@ -187,14 +187,14 @@ ncclResult_t ncclOsSocketTryAccept(struct ncclSocket* sock) {
     if (wsaError == WSAEINPROGRESS) {
       // Connection in progress, retry with backoff
       if (++sock->errorRetries == ncclParamRetryCnt()) {
-        WARN("ncclOsSocketTryAccept: exceeded error retry count after %d attempts, %s", sock->errorRetries, getWSAErrorMessage(wsaError));
+        ERR(ncclSystemError, "ncclOsSocketTryAccept: exceeded error retry count after %d attempts, %s", sock->errorRetries, getWSAErrorMessage(wsaError));
         return ncclSystemError;
       }
       INFO(NCCL_NET|NCCL_INIT, "Call to accept returned %s, retrying", getWSAErrorMessage(wsaError));
     } else if (wsaError != WSAEINTR && wsaError != WSAEWOULDBLOCK) {
       // WSAEWOULDBLOCK (10035) is expected for non-blocking accept - means no pending connection yet
       // WSAEINTR means interrupted, both are normal and we just return success to try again later
-      WARN("ncclOsSocketTryAccept: Accept failed: %s", getWSAErrorMessage(wsaError));
+      ERR(ncclSystemError, "ncclOsSocketTryAccept: Accept failed: %s", getWSAErrorMessage(wsaError));
       return ncclSystemError;
     }
   }
@@ -210,7 +210,7 @@ ncclResult_t ncclOsSocketSetFlags(struct ncclSocket* sock) {
   int sndBuf, rcvBuf;
   /* Set socket as non-blocking if async or if we need to be able to abort */
   if (!ncclOsSocketIsValid(sock)) {
-    WARN("ncclOsSocketSetFlags: invalid socket");
+    ERR(ncclInvalidArgument, "ncclOsSocketSetFlags: invalid socket");
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -218,7 +218,7 @@ ncclResult_t ncclOsSocketSetFlags(struct ncclSocket* sock) {
     u_long mode = 1;
     int iResult = ioctlsocket(sock->socketDescriptor, FIONBIO, &mode);
     if (iResult != NO_ERROR) {
-      WARN("ncclOsSocketSetFlags: ioctlsocket failed with error: %ld", iResult);
+      ERR(ncclSystemError, "ncclOsSocketSetFlags: ioctlsocket failed with error: %ld", iResult);
       ret = ncclSystemError;
       goto fail;
     }
@@ -254,7 +254,7 @@ ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
   newSocket = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0);
   if (newSocket == INVALID_SOCKET) {
       int wsaError = WSAGetLastError();
-      WARN("ncclOsSocketResetFd: socket() failed with error %d: %s", wsaError, getWSAErrorMessage(wsaError));
+      ERR(ncclSystemError, "ncclOsSocketResetFd: socket() failed with error %d: %s", wsaError, getWSAErrorMessage(wsaError));
       ret = ncclSystemError;
       goto cleanup;
   }
@@ -288,7 +288,7 @@ static ncclResult_t socketConnectCheck(struct ncclSocket* sock, int errCode, con
     if (sock->customRetry == 0) {
       if (sock->errorRetries++ == ncclParamRetryCnt()) {
         sock->state = ncclSocketStateError;
-        WARN("%s: connect to %s returned %s, exceeded error retry count after %d attempts",
+        ERR(ncclRemoteError, "%s: connect to %s returned %s, exceeded error retry count after %d attempts",
              funcName, ncclSocketToString(&sock->addr, line), getWSAErrorMessage(errCode), sock->errorRetries);
         return ncclRemoteError;
       }
@@ -302,7 +302,7 @@ static ncclResult_t socketConnectCheck(struct ncclSocket* sock, int errCode, con
     sock->state = ncclSocketStateConnecting;
   } else {
     sock->state = ncclSocketStateError;
-    WARN("%s: connect to %s failed : %s", funcName, ncclSocketToString(&sock->addr, line), getWSAErrorMessage(errCode));
+    ERR(ncclSystemError, "%s: connect to %s failed : %s", funcName, ncclSocketToString(&sock->addr, line), getWSAErrorMessage(errCode));
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -329,7 +329,7 @@ ncclResult_t ncclOsSocketPollConnect(struct ncclSocket* sock) {
     return ncclSuccess;
   } else if (ret < 0) {
     int wsaError = WSAGetLastError();
-    WARN("ncclOsSocketPollConnect to %s failed with error %s", ncclSocketToString(&sock->addr, line), getWSAErrorMessage(wsaError));
+    ERR(ncclSystemError, "ncclOsSocketPollConnect to %s failed with error %s", ncclSocketToString(&sock->addr, line), getWSAErrorMessage(wsaError));
     return ncclSystemError;
   }
 
@@ -348,7 +348,7 @@ ncclResult_t ncclOsSocketProgressOpt(int op, struct ncclSocket* sock, void* ptr,
     u_long mode = !block;
     int iResult = ioctlsocket(sock->socketDescriptor, FIONBIO, &mode);
     if (iResult != NO_ERROR) {
-      WARN("ncclOsSocketProgressOpt: ioctlsocket failed with error: %ld", iResult);
+      ERR(ncclSystemError, "ncclOsSocketProgressOpt: ioctlsocket failed with error: %ld", iResult);
       return ncclSystemError;
     }
     sock->socketBlockingMode = block;
@@ -370,7 +370,7 @@ ncclResult_t ncclOsSocketProgressOpt(int op, struct ncclSocket* sock, void* ptr,
       // WSAEINPROGRESS (10036) means operation is in progress
       // WSAEINTR means interrupted by signal
       if (wsaError != WSAEWOULDBLOCK && wsaError != WSAEINPROGRESS && wsaError != WSAEINTR) {
-        WARN("ncclOsSocketProgressOpt: Call to %s %s failed : %d (%s)", (op == NCCL_SOCKET_RECV ? "recv from" : "send to"),
+        ERR(ncclRemoteError, "ncclOsSocketProgressOpt: Call to %s %s failed : %d (%s)", (op == NCCL_SOCKET_RECV ? "recv from" : "send to"),
               ncclSocketToString(&sock->addr, line), wsaError, getWSAErrorMessage(wsaError));
         return ncclRemoteError;
       } else {
@@ -404,21 +404,21 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
   ULONG bufferSize = 0;
   DWORD result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &bufferSize);
   if (result != ERROR_BUFFER_OVERFLOW) {
-    WARN("GetAdaptersAddresses failed with error: %ld", result);
+    ERR(ncclSystemError, "GetAdaptersAddresses failed with error: %ld", result);
     ret = ncclSystemError;
     goto exit;
   }
 
   IP_ADAPTER_ADDRESSES* adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
   if (adapterAddresses == NULL) {
-    WARN("Failed to allocate memory for adapter addresses");
+    ERR(ncclSystemError, "Failed to allocate memory for adapter addresses");
     ret = ncclSystemError;
     goto exit;
   }
 
   result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapterAddresses, &bufferSize);
   if (result != NO_ERROR) {
-    WARN("GetAdaptersAddresses failed with error: %ld", result);
+    ERR(ncclSystemError, "GetAdaptersAddresses failed with error: %ld", result);
     ret = ncclSystemError;
     goto exit;
   }
@@ -567,21 +567,21 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
   ULONG bufferSize = 0;
   DWORD result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &bufferSize);
   if (result != ERROR_BUFFER_OVERFLOW) {
-    WARN("GetAdaptersAddresses failed with error: %ld", result);
+    ERR(ncclSystemError, "GetAdaptersAddresses failed with error: %ld", result);
     ret = ncclSystemError;
     goto exit;
   }
 
   IP_ADAPTER_ADDRESSES* adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
   if (adapterAddresses == NULL) {
-    WARN("Failed to allocate memory for adapter addresses");
+    ERR(ncclSystemError, "Failed to allocate memory for adapter addresses");
     ret = ncclSystemError;
     goto exit;
   }
 
   result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapterAddresses, &bufferSize);
   if (result != NO_ERROR) {
-    WARN("GetAdaptersAddresses failed with error: %ld", result);
+    ERR(ncclSystemError, "GetAdaptersAddresses failed with error: %ld", result);
     free(adapterAddresses);
     ret = ncclSystemError;
     goto exit;
@@ -685,7 +685,7 @@ ncclResult_t ncclOsGetAffinity(ncclAffinity* affinity) {
   DWORD_PTR processAffinityMask, systemAffinityMask;
   BOOL result = GetProcessAffinityMask(GetCurrentProcess(), &processAffinityMask, &systemAffinityMask);
   if (result == FALSE) {
-    WARN("GetProcessAffinityMask failed with error: %ld", GetLastError());
+    ERR(ncclSystemError, "GetProcessAffinityMask failed with error: %ld", GetLastError());
     return ncclSystemError;
   }
   *affinity = processAffinityMask;
@@ -695,7 +695,7 @@ ncclResult_t ncclOsGetAffinity(ncclAffinity* affinity) {
 ncclResult_t ncclOsSetAffinity(const ncclAffinity& affinity) {
   BOOL result = SetProcessAffinityMask(GetCurrentProcess(), affinity);
   if (result == FALSE) {
-    WARN("SetProcessAffinityMask failed with error: %ld", GetLastError());
+    ERR(ncclSystemError, "SetProcessAffinityMask failed with error: %ld", GetLastError());
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -724,7 +724,7 @@ ncclResult_t ncclOsNvmlOpen(ncclOsLibraryHandle* handle) {
 
   if (*handle == nullptr) {
     DWORD err = GetLastError();
-    WARN("Failed to load nvml.dll, error code: %lu", err);
+    ERR(ncclSystemError, "Failed to load nvml.dll, error code: %lu", err);
     return ncclSystemError;
   }
 
@@ -821,7 +821,7 @@ ncclResult_t ncclOsShmOpen(char* shmPath, size_t shmPathSize, size_t shmSize,
       shmPath);                // name of mapping object
 
     if (hMapFile == NULL) {
-      WARN("Error: failed to create shared memory mapping %s, error code: %lu", shmPath, GetLastError());
+      ERR(ncclSystemError, "Error: failed to create shared memory mapping %s, error code: %lu", shmPath, GetLastError());
       ret = ncclSystemError;
       goto fail;
     }
@@ -835,7 +835,7 @@ ncclResult_t ncclOsShmOpen(char* shmPath, size_t shmPathSize, size_t shmSize,
       shmPath);              // name of mapping object
 
     if (hMapFile == NULL) {
-      WARN("Error: failed to open shared memory mapping %s, error code: %lu", shmPath, GetLastError());
+      ERR(ncclSystemError, "Error: failed to open shared memory mapping %s, error code: %lu", shmPath, GetLastError());
       ret = ncclSystemError;
       goto fail;
     }
@@ -850,7 +850,7 @@ ncclResult_t ncclOsShmOpen(char* shmPath, size_t shmPathSize, size_t shmSize,
     realShmSize);        // number of bytes to map
 
   if (hptr == NULL) {
-    WARN("Error: Could not map view of file %s size %zu, error code: %lu", shmPath, realShmSize, GetLastError());
+    ERR(ncclSystemError, "Error: Could not map view of file %s size %zu, error code: %lu", shmPath, realShmSize, GetLastError());
     ret = ncclSystemError;
     goto fail;
   }

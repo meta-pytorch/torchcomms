@@ -43,7 +43,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
   char pipeName[NCCL_IPC_SOCKNAME_LEN];
   int len = snprintf(pipeName, NCCL_IPC_SOCKNAME_LEN, NCCL_IPC_PIPENAME_STR, rank, hash);
   if (len >= NCCL_IPC_SOCKNAME_LEN) {
-    WARN("IPC: Pipe name too long");
+    ERR(ncclInternalError, "IPC: Pipe name too long");
     return ncclInternalError;
   }
 
@@ -64,7 +64,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
   );
 
   if (hPipe == INVALID_HANDLE_VALUE) {
-    WARN("IPC: Failed to create named pipe %s: error %d", pipeName, GetLastError());
+    ERR(ncclSystemError, "IPC: Failed to create named pipe %s: error %d", pipeName, GetLastError());
     return ncclSystemError;
   }
 
@@ -79,7 +79,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
 
 ncclResult_t ncclIpcSocketGetFd(struct ncclIpcSocket* handle, int* fd) {
   if (handle == NULL) {
-    WARN("ncclIpcSocketGetFd: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclIpcSocketGetFd: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (fd) *fd = (int)handle->fd;
@@ -101,7 +101,7 @@ ncclResult_t ncclIpcSocketClose(ncclIpcSocket *handle) {
 
 ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, int *recvFd) {
   if (handle == NULL || handle->fd == NCCL_INVALID_SOCKET) {
-    WARN("IPC: Invalid socket handle");
+    ERR(ncclInvalidArgument, "IPC: Invalid socket handle");
     return ncclInvalidArgument;
   }
 
@@ -115,7 +115,7 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   // Wait for client to connect
   BOOL connected = ConnectNamedPipe(hPipe, NULL);
   if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) {
-    WARN("IPC: Failed to connect named pipe: error %d", GetLastError());
+    ERR(ncclSystemError, "IPC: Failed to connect named pipe: error %d", GetLastError());
     return ncclSystemError;
   }
 
@@ -133,13 +133,13 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
     if (error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE) {
       // Check abort flag
       if (handle->abortFlag && COMPILER_ATOMIC_LOAD(handle->abortFlag, std::memory_order_acquire)) {
-        WARN("IPC: Operation aborted");
+        ERR(ncclInternalError, "IPC: Operation aborted");
         return ncclInternalError;
       }
       continue;
     }
 
-    WARN("IPC: ReadFile failed: error %d", error);
+    ERR(ncclSystemError, "IPC: ReadFile failed: error %d", error);
     return ncclSystemError;
   }
 
@@ -164,7 +164,7 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
     );
 
     if (!dupSuccess) {
-      WARN("IPC: DuplicateHandle failed: error %d", GetLastError());
+      ERR(ncclSystemError, "IPC: DuplicateHandle failed: error %d", GetLastError());
       return ncclSystemError;
     }
 
@@ -184,7 +184,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   char pipeName[NCCL_IPC_SOCKNAME_LEN];
   int len = snprintf(pipeName, NCCL_IPC_SOCKNAME_LEN, NCCL_IPC_PIPENAME_STR, rank, hash);
   if (len >= NCCL_IPC_SOCKNAME_LEN) {
-    WARN("IPC: Pipe name too long");
+    ERR(ncclInternalError, "IPC: Pipe name too long");
     return ncclInternalError;
   }
 
@@ -210,13 +210,13 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
 
     DWORD error = GetLastError();
     if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND) {
-      WARN("IPC: Failed to connect to pipe %s: error %d", pipeName, error);
+      ERR(ncclSystemError, "IPC: Failed to connect to pipe %s: error %d", pipeName, error);
       return ncclSystemError;
     }
 
     // Check abort flag
     if (handle && handle->abortFlag && COMPILER_ATOMIC_LOAD(handle->abortFlag, std::memory_order_acquire)) {
-      WARN("IPC: Operation aborted");
+      ERR(ncclInternalError, "IPC: Operation aborted");
       return ncclInternalError;
     }
   }
@@ -226,7 +226,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   // Set pipe to message mode
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(hPipe, &mode, NULL, NULL)) {
-    WARN("IPC: SetNamedPipeHandleState failed: error %d", GetLastError());
+    ERR(ncclSystemError, "IPC: SetNamedPipeHandleState failed: error %d", GetLastError());
     CloseHandle(hPipe);
     return ncclSystemError;
   }
@@ -250,7 +250,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   BOOL success = WriteFile(hPipe, &msg, sizeof(msg), &bytesWritten, NULL);
 
   if (!success || bytesWritten != sizeof(msg)) {
-    WARN("IPC: WriteFile failed: error %d, wrote %d of %zu bytes", GetLastError(), bytesWritten, sizeof(msg));
+    ERR(ncclSystemError, "IPC: WriteFile failed: error %d, wrote %d of %zu bytes", GetLastError(), bytesWritten, sizeof(msg));
     CloseHandle(hPipe);
     return ncclSystemError;
   }

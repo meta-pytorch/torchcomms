@@ -130,7 +130,7 @@ static ncclResult_t setTreeDown(struct ncclTree* tree, int* indexes, int d) {
   int x = 0;
   while (x < NCCL_MAX_TREE_ARITY && tree->down[x] >= 0) x++;
   if (x == NCCL_MAX_TREE_ARITY) {
-    WARN("Internal error : tree already has %d children (%d %d %d)", x, tree->down[0], tree->down[1], tree->down[2]);
+    ERR(ncclInternalError, "Internal error : tree already has %d children (%d %d %d)", x, tree->down[0], tree->down[1], tree->down[2]);
     return ncclInternalError;
   }
   tree->down[x] = indexes[d];
