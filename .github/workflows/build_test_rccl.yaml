@@ -4,13 +4,6 @@ on:
   push:
     branches:
       - main
-  # TODO: remove pull_request trigger after validating ROCm CI is working correctly.
-  # This is temporary to test the workflow on PRs. Long-term, this should only run on push to main.
-  pull_request:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
 
 permissions:
       id-token: write
@@ -23,11 +16,11 @@ jobs:
       matrix:
         include:
           - name: RCCL
-            runs-on: linux.rocm.gpu.ecosystem.gfx950.8
+            runs-on: amd-mi350-runner
             gpu-arch-type: "rocm"
-            gpu-arch-version: "7.2"
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2'
-            docker-image: pytorch/manylinux2_28-builder:rocm7.2
+            gpu-arch-version: "7.0"
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0'
+            docker-image: pytorch/manylinux2_28-builder:rocm7.0
             cmake-version: "latest"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
@@ -53,9 +46,9 @@ jobs:
         conda activate venv
         python -m pip install --upgrade pip
         conda install conda-forge::libopenssl-static conda-forge::rsync -y
-        conda install conda-forge::glog=0.4.0 conda-forge::gflags=2.2.2 conda-forge::fmt=12.2.0 -y
+        conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
 
-        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2
+        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0
 
         if [ "${{ matrix.cmake-version }}" = "latest" ]; then
           conda install -y cmake
@@ -73,14 +66,20 @@ jobs:
         USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=1 USE_TRANSPORT=OFF pip install --no-build-isolation -v -e .
 
         # Verify installation - TODO re-enable this section after D90936340 stack lands
-        # TODO: confirm if D90936340 has landed and is resolved; remove this comment once confirmed
-        python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
-        python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"
-        python -c "import torchcomms; print('TorchComms imported successfully')"
+        #python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
+        #python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"
+        #python -c "import torchcomms; print('TorchComms imported successfully')"
 
         # Test RCCL backend availability
-        python -c "import torch, torchcomms; torchcomms.new_comm('rccl', torch.device('hip'), 'test_comm'); print('RCCL backend available')" || echo "RCCL backend test failed"
+        #python -c "
+        #import torchcomms
+        #try:
+        #    comm = torchcomms.new_comm('rccl', torch.device('hip'), 'test_comm')
+        #    print('RCCL backend available')
+        #except Exception as e:
+        #    print(f'RCCL backend test failed: {e}')
+        #"
 
         # Run integration tests
-        echo "Running RCCL integration tests..."
-        comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
+        #echo "Running RCCL integration tests..."
+        #comms/torchcomms/scripts/run_tests_integration_rccl_py.sh

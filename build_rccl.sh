@@ -11,7 +11,7 @@ else
   echo "Using ROCM_HOME: $ROCM_HOME"
 fi
 
-DEFAULT_BRANCH="rocm-7.2.0"
+DEFAULT_BRANCH="rocm-7.0.0"
 FORCE_BUILD=false
 CUSTOM_BRANCH=""
 
