@@ -819,7 +819,7 @@ void MultipeerIbgdaTransport::cleanup() {
   // freed after all per-NIC MRs.
   if (sinkBuffer_ != nullptr) {
 #ifdef __HIP_PLATFORM_AMD__
-    hipHostFree(sinkBuffer_);
+    (void)hipHostFree(sinkBuffer_);
 #else
     auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
     pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
