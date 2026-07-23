@@ -75,6 +75,8 @@ inline void algoStrToVal(
     val = NCCL_ALLREDUCE_ALGO::ctree;
   } else if (str == "cthierarchical_ring") {
     val = NCCL_ALLREDUCE_ALGO::cthierarchical_ring;
+  } else if (str == "ctmdirect") {
+    val = NCCL_ALLREDUCE_ALGO::ctmdirect;
   } else {
     val = NCCL_ALLREDUCE_ALGO::orig;
   }
@@ -182,6 +184,8 @@ inline std::string algoValToStr(enum NCCL_ALLREDUCE_ALGO val) {
       return "ctree";
     case NCCL_ALLREDUCE_ALGO::cthierarchical_ring:
       return "cthierarchical_ring";
+    case NCCL_ALLREDUCE_ALGO::ctmdirect:
+      return "ctmdirect";
   }
   return "unknown";
 }
