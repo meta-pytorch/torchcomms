@@ -9,35 +9,7 @@
 #define NCCL_CHECKS_H_
 
 #include "debug.h"
-#include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-
-constexpr const char* ncclCodeToString(ncclResult_t code) {
-  switch (code) {
-    case ncclSuccess                : return "no error";
-    case ncclUnhandledCudaError     : return "unhandled cuda error (run with NCCL_DEBUG=INFO for details)";
-    case ncclSystemError            : return "unhandled system error (run with NCCL_DEBUG=INFO for details)";
-    case ncclInternalError          : return "internal error - please report this issue to the NCCL developers";
-    case ncclInvalidArgument        : return "invalid argument (run with NCCL_DEBUG=WARN for details)";
-    case ncclInvalidUsage           : return "invalid usage (run with NCCL_DEBUG=WARN for details)";
-    case ncclRemoteError            : return "remote process exited or there was a network error";
-    case ncclInProgress             : return "NCCL operation in progress";
-    default                         : return "unknown result code";
-  }
-}
-
-// Report a CUDA error to colltrace for analyzer consumption
-#define COMMDUMP_REPORT_CUDA_ERROR(err)                                    \
-  do {                                                                      \
-    if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES > 0) {                  \
-      ProcessGlobalErrorsUtil::CudaError cudaErr;                           \
-      cudaErr.errorString = cudaGetErrorString(err);                        \
-      cudaErr.errorCode = static_cast<int>(err);                            \
-      cudaErr.scaleupDomain = ProcessGlobalErrorsUtil::getScaleupDomain();  \
-      cudaErr.localHostname = ProcessGlobalErrorsUtil::getHostname();       \
-      ProcessGlobalErrorsUtil::addCudaError(std::move(cudaErr));            \
-    }                                                                       \
-  } while (false)
+#include "meta/checks/MetaChecks.h"
 
 // Check CUDA RT calls
 #define CUDACHECK(cmd)                                                         \
@@ -187,6 +159,22 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   } \
 } while (0)
 
+// Report failure but continue - useful for cleanup paths where we want to
+// attempt all cleanup steps. Preserves the first error in RES.
+#define NCCLCHECKIGNORE(call, RES) do {                \
+  ncclResult_t TMPRES = call;                          \
+  if (TMPRES != ncclSuccess && TMPRES != ncclInProgress) { \
+    WARN_WITH_SCUBA(                                   \
+        "%s:%s:%d -> %d (%s)",                         \
+        __FILE__,                                      \
+        __func__,                                      \
+        __LINE__,                                      \
+        TMPRES,                                        \
+        ncclCodeToString(TMPRES));                     \
+    if (RES == ncclSuccess) RES = TMPRES;              \
+  }                                                    \
+} while (0)
+
 #define NCCLCHECKNOWARN(call, FLAGS) do { \
   ncclResult_t RES; \
   NOWARN(RES = call, FLAGS); \
@@ -238,52 +226,6 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     return args; \
   } \
 } while(0)
-
-#define CHECKABORT(statement, ...)   \
-  do {                               \
-    if (!(statement)) {              \
-      WARN("Check failed: %s", #statement); \
-      WARN(__VA_ARGS__);             \
-      abort();                       \
-    }                                \
-  } while (0);
-
-// Use of abort should be aware of potential memory leak risk
-// and place a signal handler to catch it and trigger termination processing
-#define CUDACHECKABORT(cmd)                              \
-  do {                                                   \
-    cudaError_t err = cmd;                               \
-    if (err != cudaSuccess) {                            \
-      ERR_WITH_SCUBA("Cuda failure '%s'", cudaGetErrorString(err)); \
-      COMMDUMP_REPORT_CUDA_ERROR(err);                       \
-      abort();                                           \
-    }                                                    \
-  } while (false)
-
-#define SYSCHECKVAL(call, name, retval)                     \
-  do {                                                      \
-    SYSCHECKSYNC(call, name, retval);                       \
-    if (retval == -1) {                                     \
-      ERR_WITH_SCUBA("Call to " name " failed : %s", strerror(errno)); \
-    return ncclSystemError; \
-  } \
-} while (false)
-
-// Report failure but continue - useful for cleanup paths where we want to
-// attempt all cleanup steps. Preserves the first error in RES.
-#define NCCLCHECKIGNORE(call, RES) do {                \
-  ncclResult_t TMPRES = call;                          \
-  if (TMPRES != ncclSuccess && TMPRES != ncclInProgress) { \
-    WARN_WITH_SCUBA(                                   \
-        "%s:%s:%d -> %d (%s)",                         \
-        __FILE__,                                      \
-        __func__,                                      \
-        __LINE__,                                      \
-        TMPRES,                                        \
-        ncclCodeToString(TMPRES));                     \
-    if (RES == ncclSuccess) RES = TMPRES;              \
-  }                                                    \
-} while (0)
 
 // Common thread creation implementation with error handling
 #define STDTHREADCREATE_IMPL(var, func, error_action, ...) do { \
