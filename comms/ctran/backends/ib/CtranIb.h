@@ -28,7 +28,6 @@
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 class CtranIb;
 class CtranIbVirtualConn;
