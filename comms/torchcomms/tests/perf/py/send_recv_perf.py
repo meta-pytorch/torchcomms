@@ -2,49 +2,45 @@
 # pyre-unsafe
 
 import torch
-import torchcomms
 from torchcomms.tests.perf.py.perf_test_helpers import (
+    BenchRecord,
+    CommAdapter,
     create_tensor,
-    PerfParams,
-    PerfResult,
+    log_perf_header,
+    log_perf_result,
     PerfTimer,
-    print_perf_header,
-    print_perf_result,
     sync_device,
 )
 
 
 def _do_ping_pong(
-    comm: torchcomms.TorchComm,
-    tensor: torch.Tensor,
+    send_call,
+    send_args,
+    send_kwargs,
+    recv_call,
+    recv_args,
+    recv_kwargs,
     rank: int,
     peer: int,
-    async_op: bool,
 ) -> None:
-    """Execute one ping-pong iteration between paired ranks."""
-    if rank % 2 == 0:
-        work = comm.send(tensor, peer, async_op)
-        if async_op:
-            work.wait()
-        work2 = comm.recv(tensor, peer, async_op)
-        if async_op:
-            work2.wait()
+    """Execute one ping-pong iteration between rank and peer."""
+    if rank < peer:
+        send_call(*send_args, **send_kwargs)
+        recv_call(*recv_args, **recv_kwargs)
     else:
-        work = comm.recv(tensor, peer, async_op)
-        if async_op:
-            work.wait()
-        work2 = comm.send(tensor, peer, async_op)
-        if async_op:
-            work2.wait()
+        recv_call(*recv_args, **recv_kwargs)
+        send_call(*send_args, **send_kwargs)
 
 
 def run_send_recv_perf(
-    comm: torchcomms.TorchComm,
-    params: PerfParams,
+    comm: CommAdapter,
+    record: BenchRecord,
     device: torch.device,
 ) -> None:
     rank = comm.get_rank()
     num_ranks = comm.get_size()
+    params = record.params
+    config = record.config
 
     if num_ranks < 2:
         if rank == 0:
@@ -55,39 +51,66 @@ def run_send_recv_perf(
             print("SendRecv test requires an even number of ranks, skipping")
         return
 
-    if rank == 0:
-        mode = "Asynchronous" if params.async_op else "Synchronous"
-        print(f"\n=== {mode} SendRecv Performance ===")
-    print_perf_header(rank)
-
-    peer = rank + 1 if rank % 2 == 0 else rank - 1
+    # Pair adjacent ranks (0<->1, 2<->3, …) so all pairs run concurrently, matching
+    # the nccl-tests / OSU send-recv benchmark patterns:
+    #   XOR with 1 flips the least significant bit, giving each rank its peer.
+    #   With an odd rank count the last rank computes a peer >= num_ranks so we skip it.
+    peer = rank ^ 1
+    if peer >= num_ranks:
+        return
     element_size = torch.tensor([], dtype=params.dtype).element_size()
 
-    msg_size = params.min_size
-    while msg_size <= params.max_size:
+    msg_size = config.min_size
+    while msg_size <= config.max_size:
         num_elements = msg_size // element_size
         if num_elements == 0:
             num_elements = 1
         tensor = create_tensor(num_elements, rank, device, params.dtype)
 
+        # Pre-resolve send/recv once so the timing loop avoids per-call dispatch.
+        send_call, send_args, send_kwargs = comm.resolve_collective(
+            "send", tensor, peer, async_op=params.async_op
+        )
+        recv_call, recv_args, recv_kwargs = comm.resolve_collective(
+            "recv", tensor, peer, async_op=params.async_op
+        )
+
         # Warmup
         for _ in range(params.warmup_iterations):
-            _do_ping_pong(comm, tensor, rank, peer, params.async_op)
+            _do_ping_pong(
+                send_call,
+                send_args,
+                send_kwargs,
+                recv_call,
+                recv_args,
+                recv_kwargs,
+                rank,
+                peer,
+            )
 
-        comm.barrier(False)
+        comm.run_collective("barrier", async_op=False)
 
         # Measure ping-pong latency
         timer = PerfTimer()
-        sync_device(device)
+        sync_device()
         timer.start()
 
         for i in range(params.measure_iterations):
-            _do_ping_pong(comm, tensor, rank, peer, params.async_op)
+            _do_ping_pong(
+                send_call,
+                send_args,
+                send_kwargs,
+                recv_call,
+                recv_args,
+                recv_kwargs,
+                rank,
+                peer,
+            )
 
-            if params.iteration_window > 0 and (i + 1) % params.iteration_window == 0:
-                sync_device(device)
+            if params.sync_interval > 0 and (i + 1) % params.sync_interval == 0:
+                sync_device()
 
-        sync_device(device)
+        sync_device()
         timer.stop()
 
         total = timer.elapsed_us()
@@ -98,17 +121,13 @@ def run_send_recv_perf(
         algo_bw = (num_elements * element_size) / one_way_time  # bytes/us = MB/s
         bus_bw_gbps = algo_bw / 1000.0  # Convert to GB/s
 
-        result = PerfResult(
-            message_size_bytes=num_elements * element_size,
-            num_ranks=2,
-            iterations=params.measure_iterations,
-            total_time_us=total,
-            avg_time_us=avg_time / 2,
-            min_time_us=avg_time / 2,
-            max_time_us=avg_time / 2,
-            bus_bw_gbps=bus_bw_gbps,
-        )
+        record.metrics.message_size_bytes = num_elements * element_size
+        record.metrics.total_time_us = total
+        record.metrics.avg_time_us = avg_time / 2
+        record.metrics.min_time_us = avg_time / 2
+        record.metrics.max_time_us = avg_time / 2
+        record.metrics.bus_bw_gbps = bus_bw_gbps
 
-        print_perf_result(result, rank)
+        log_perf_result(record, rank)
 
-        msg_size *= params.size_scaling_factor
+        msg_size *= config.size_scaling_factor
