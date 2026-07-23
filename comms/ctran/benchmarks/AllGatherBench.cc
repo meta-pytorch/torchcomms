@@ -212,7 +212,7 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_CTRAN_USE_PIPES", "1", 0);
     setenv("NCCL_CTRAN_IBGDA_SENDRECV_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE", "8388608", 0);
+    setenv("MCCL_CHANNEL_BUFFER_SIZE", "131072", 0);
     setenv("NCCL_DEBUG", "WARN", 0);
 
     ctran::CtranDistTestFixture::SetUp();
