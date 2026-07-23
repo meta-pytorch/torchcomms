@@ -79,3 +79,18 @@ ncclResult_t ncclSocketExtBindToDevice(struct ncclSocket* sock) {
   INFO(NCCL_INIT, "ncclSocketConnect bind to interface %s", localIfName);
   return ncclSuccess;
 }
+
+bool ncclSocketExtSkipByIpAddrPrefix(union ncclSocketAddress* addr) {
+  std::string addrString = ncclSocketToIPv6String(addr);
+  if (!NCCL_SOCKET_IPADDR_PREFIX.empty() &&
+      addrString.compare(
+          0, NCCL_SOCKET_IPADDR_PREFIX.length(), NCCL_SOCKET_IPADDR_PREFIX)) {
+    return true;
+  }
+  INFO(
+      NCCL_INIT,
+      "NCCL_SOCKET_IPADDR_PREFIX %s, current addrString %s",
+      NCCL_SOCKET_IPADDR_PREFIX.c_str(),
+      addrString.c_str());
+  return false;
+}
