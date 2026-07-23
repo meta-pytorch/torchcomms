@@ -44,7 +44,7 @@ static ncclResult_t ncclGinIbGdrGpuSupport(bool gdaki) {
   CUCHECK(cuDeviceGetAttribute(&dmaBufSupportOnDevice, CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, cudaDev));
   if (dmaBufSupportOnDevice == 1) return ncclSuccess;
 
-  WARN("Unable to use GIN: Peermem is not supported, and device %d does not support DMA-BUF.", cudaDev);
+  ERR(ncclInvalidUsage, "Unable to use GIN: Peermem is not supported, and device %d does not support DMA-BUF.", cudaDev);
   return ncclInvalidUsage;
 }
 
@@ -291,7 +291,7 @@ ncclResult_t ncclGinIbGdakiDevices(int* ndev) {
 ncclResult_t ncclGinIbGdakiGetProperties(int dev, ncclNetProperties_t* props) {
   std::lock_guard<std::mutex> lock(ncclGinIbGdakiLockMutex);
   if (dev >= ncclGinIbGdakiNDevs) {
-    WARN("NET/IB : Requested properties for GIN GDAKI NIC %d, only %d GIN GDAKI NICs have been created", dev, ncclGinIbGdakiNDevs);
+    ERR(ncclInvalidUsage, "NET/IB : Requested properties for GIN GDAKI NIC %d, only %d GIN GDAKI NICs have been created", dev, ncclGinIbGdakiNDevs);
     return ncclInvalidUsage;
   }
   NCCLCHECK(ncclIbGetPhysProperties(ncclGinIbGdakiDevIndexes[dev], props));
@@ -426,7 +426,7 @@ ncclResult_t ncclGinIbProxyCreateContext(void* collComm, ncclGinConfig_v13_t* co
   ncclIbSetTrafficClass(cComm->ctx, config->trafficClass);
 
   if (config->queueDepth != 0) {
-    WARN("GIN_IB_PROXY does not support specifying qp depth");
+    ERR(ncclInvalidUsage, "GIN_IB_PROXY does not support specifying qp depth");
     return ncclInvalidUsage;
   }
 
@@ -645,7 +645,7 @@ ncclResult_t ncclGinIbProxyIPutSignal(void *ginCtx, int context, uint64_t srcOff
                                       uint64_t signalOff, void *signalMhandle, uint64_t signalValue,
                                       uint32_t signalOp, void **request) {
   if (signalOp != NCCL_NET_SIGNAL_OP_INC && signalOp != NCCL_NET_SIGNAL_OP_ADD) {
-    WARN("ncclGinIbProxyIPutSignal: Unsupported signalOp %u", signalOp);
+    ERR(ncclInvalidArgument, "ncclGinIbProxyIPutSignal: Unsupported signalOp %u", signalOp);
     return ncclInvalidArgument;
   }
 
