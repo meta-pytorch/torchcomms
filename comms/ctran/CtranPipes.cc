@@ -109,6 +109,55 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     const size_t nvlDataBufferSize =
         nvlMaxNumChannels * config.nvlConfig.perChannelSize;
 
+    // The multimem staging window is decoupled from the P2P shared devbuf: a
+    // larger window means fewer staging rounds, which is the dominant cnvlmm
+    // throughput lever at large sizes. Falls back to the P2P size when the
+    // dedicated cvar is 0. Computed before the enable guard so setting only the
+    // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the
+    // path.
+    const size_t multimemDevbufSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
+        ? static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE)
+        : nvlSharedDevbufSize;
+    if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
+      const uint32_t multimemPipelineDepth = static_cast<uint32_t>(
+          std::max<size_t>(1, config.nvlConfig.pipelineDepth));
+      const uint32_t multimemMaxGroups =
+          static_cast<uint32_t>(std::max(1, MCCL_MAX_NBLOCKS));
+      // Must match `signalsPerLane` in `make_stage_layout`
+      // (MultimemNvlStageLayout.cuh, the device-side source of truth, added by
+      // the ReduceScatter copy prereq stacked on this diff) for the per-lane
+      // signal region: nvlRanks per-peer ready[] + nvlRanks per-peer ack[] + 4
+      // staging arrival-barrier slots (ready/ack counter+epoch, laid out past
+      // the SET-mode slots so ADD residue never contaminates a subsequent
+      // SET-mode CMP_GE wait) => 2 * nvlRanks + 4.
+      const uint32_t multimemSignalsPerLane =
+          static_cast<uint32_t>(2 * comm->statex_->nLocalRanks() + 4);
+      // Widen the product to u64 so it cannot overflow mid-product, and bound
+      // it against the u32 signal-count field before narrowing (a future large
+      // maxGroups/pipelineDepth/nLocalRanks must fail loudly, not silently
+      // wrap).
+      const uint64_t multimemInternalSignalCount =
+          static_cast<uint64_t>(multimemMaxGroups) * multimemPipelineDepth *
+          multimemSignalsPerLane;
+      if (multimemInternalSignalCount > std::numeric_limits<uint32_t>::max()) {
+        CLOGF(
+            ERR,
+            "CTRAN-PRIMS: multimem internalSignalCount {} exceeds uint32_t; maxGroups={} pipelineDepth={} signalsPerLane={}",
+            multimemInternalSignalCount,
+            multimemMaxGroups,
+            multimemPipelineDepth,
+            multimemSignalsPerLane);
+        return commInvalidArgument;
+      }
+      config.nvlConfig.enableMultimem = true;
+      config.nvlConfig.multimem = comms::prims::MultimemNvlTransportConfig{
+          .dataBufferSize = multimemDevbufSize,
+          .userSignalCount = 1,
+          .internalSignalCount =
+              static_cast<uint32_t>(multimemInternalSignalCount),
+      };
+    }
+
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
       if (NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE > 0) {
@@ -286,13 +335,17 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemSignals={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
         nvlDataBufferSize,
         config.nvlConfig.maxNumChannels,
         config.nvlConfig.perChannelSize,
+        config.nvlConfig.enableMultimem,
+        config.nvlConfig.enableMultimem
+            ? config.nvlConfig.multimem.internalSignalCount
+            : 0,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,
