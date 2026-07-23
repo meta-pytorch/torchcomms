@@ -18,6 +18,8 @@
 #include "comms/ctran/transport/ib/HostCbTransport.h"
 #include "comms/ctran/transport/ib/HostZcTransport.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -1336,6 +1338,204 @@ commResult_t CtranMapper::allGatherCtrlImpl(
   }
 
   return commSuccess;
+}
+
+commResult_t CtranMapper::setupMulticast(
+    void* hdl,
+    const std::vector<int>& ranks,
+    std::shared_ptr<ctran::utils::CtranMulticast>& outMulticast) {
+  outMulticast = nullptr;
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12040
+  // Multicast is fabric-only; fabric handles require CUDA 12.4+ and are not
+  // available on AMD. Leave the multicast unset (callers use unicast).
+  (void)hdl;
+  (void)ranks;
+  return commSuccess;
+#else
+  const auto& statex = comm->statex_;
+  const int rank = statex->rank();
+  const int cudaDev = statex->cudaDev();
+
+  // The multicast object enumerates + retains its own segment handles from the
+  // registered buffer via retainSegments() below, which self-detects the memory
+  // type and declines (unicast fallback) on a non-cuMem/VMM buffer -- so no
+  // separate cuMem check against the CtranIpc registration is needed here.
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
+  if (regElem == nullptr || regElem->ipcRegElem == nullptr) {
+    return commSuccess; // no NVL registration -> no multicast
+  }
+  const void* buf = regElem->buf;
+  const size_t bufLen = regElem->len;
+
+  // NVL group = self + NVL-backend peers of `ranks`, sorted ascending. Root is
+  // the lowest global rank; nvlLocalRank is our index within the group.
+  // INVARIANT: peers must agree symmetrically on NVL membership (else the
+  // group/ root/rank ordering diverges and the sequential rendezvous below
+  // mismatches), and every rank's registered buffer must be the same size (the
+  // object is sized to the root's mcSize and each rank binds/maps its own equal
+  // total) -- both hold for AllGatherP's symmetric recvbuff registration.
+  std::vector<int> group;
+  for (const auto peer : ranks) {
+    if (peer == rank ||
+        this->queryPeerBackend(regElem, peer) == CtranMapperBackend::NVL) {
+      group.push_back(peer);
+    }
+  }
+  std::sort(group.begin(), group.end());
+  const int nLocalRanks = static_cast<int>(group.size());
+  if (nLocalRanks <= 1) {
+    return commSuccess; // no NVL peers to multicast to
+  }
+  const int rootRank = group.front();
+  const bool isRoot = (rank == rootRank);
+  int nvlLocalRank = 0;
+  for (int i = 0; i < nLocalRanks; i++) {
+    if (group[i] == rank) {
+      nvlLocalRank = i;
+      break;
+    }
+  }
+
+  // Create the (standalone) multicast object for this team and retain the local
+  // buffer's segments: retainSegments() enumerates + RETAINS this object's own
+  // handle for each physical segment. The object is kept alive to function end;
+  // on any decline/failure path its dtor releases those handles.
+  auto mc = std::make_unique<ctran::utils::CtranMulticast>(
+      nvlLocalRank, nLocalRanks, cudaDev);
+  if (mc->retainSegments(buf, bufLen) != commSuccess) {
+    return commSuccess; // could not enumerate the backing segments -> unicast
+  }
+  const size_t mcSize = mc->retainedSize();
+
+  // Local eligibility: device supports multicast and every segment (and the
+  // total) is multicast-granularity aligned.
+  bool localOk = ctran::utils::CtranMulticast::isSupported(cudaDev);
+  size_t gran = 0;
+  if (localOk &&
+      (ctran::utils::CtranMulticast::granularity(cudaDev, nLocalRanks, gran) !=
+           commSuccess ||
+       gran == 0 || (mcSize % gran) != 0)) {
+    localOk = false;
+  }
+  if (localOk && !mc->segmentsAlignedTo(gran)) {
+    localOk = false;
+  }
+
+  // Rendezvous payload broadcast root->peers after the support vote.
+  struct McRzv {
+    int ok{0};
+    ctran::utils::CtranIpcHandle handle{};
+  };
+
+  // Round 1: gather the support bit to the root; the group proceeds only if all
+  // ranks agree (keeps create/bind unanimous, avoiding a split that would
+  // hang).
+  bool groupOk = localOk;
+  if (isRoot) {
+    // Post all recvs, then wait, so the peer round-trips pipeline (matching
+    // allGatherCtrlImpl) instead of serializing one wait per peer. unique_ptr
+    // keeps each request's address stable across vector growth (the IB layer
+    // holds references into the request objects).
+    std::vector<std::unique_ptr<CtranMapperRequest>> reqs;
+    std::vector<int> peerOks(group.size(), 0);
+    for (size_t i = 0; i < group.size(); i++) {
+      if (group[i] == rank) {
+        continue;
+      }
+      reqs.push_back(std::make_unique<CtranMapperRequest>());
+      FB_COMMCHECK(this->irecvCtrlMsg(
+          &peerOks[i], sizeof(int), group[i], reqs.back().get()));
+    }
+    for (auto& req : reqs) {
+      FB_COMMCHECK(this->waitRequest(req.get()));
+    }
+    for (size_t i = 0; i < group.size(); i++) {
+      groupOk = groupOk && (group[i] == rank || peerOks[i] != 0);
+    }
+  } else {
+    int myOk = localOk ? 1 : 0;
+    CtranMapperRequest req;
+    FB_COMMCHECK(this->isendCtrlMsg(&myOk, sizeof(myOk), rootRank, &req));
+    FB_COMMCHECK(this->waitRequest(&req));
+  }
+
+  // Round 2: root creates the fabric multicast object (if the group agreed) and
+  // broadcasts the decision + fabric handle; non-roots import it.
+  McRzv rzv;
+  if (isRoot) {
+    if (groupOk) {
+      CUmemGenericAllocationHandle mcHandle = 0;
+      if (mc->createRoot(mcSize, CU_MEM_HANDLE_TYPE_FABRIC, mcHandle) ==
+              commSuccess &&
+          ctran::utils::exportShareableHandle(
+              mcHandle, rzv.handle, /*isFabric=*/true) == commSuccess) {
+        rzv.ok = 1;
+      }
+    }
+    // Post all sends, then wait (pipelined broadcast).
+    std::vector<std::unique_ptr<CtranMapperRequest>> reqs;
+    for (const auto peer : group) {
+      if (peer == rank) {
+        continue;
+      }
+      reqs.push_back(std::make_unique<CtranMapperRequest>());
+      FB_COMMCHECK(
+          this->isendCtrlMsg(&rzv, sizeof(rzv), peer, reqs.back().get()));
+    }
+    for (auto& req : reqs) {
+      FB_COMMCHECK(this->waitRequest(req.get()));
+    }
+  } else {
+    CtranMapperRequest req;
+    FB_COMMCHECK(this->irecvCtrlMsg(&rzv, sizeof(rzv), rootRank, &req));
+    FB_COMMCHECK(this->waitRequest(&req));
+    if (rzv.ok) {
+      CUmemGenericAllocationHandle mcHandle = 0;
+      // Fatal on failure: the regular NVL buffer import earlier in this same
+      // rendezvous already proved fabric/IMEX works, so a failure to import the
+      // multicast object handle (same mechanism) is an exceptional error, not
+      // an expected degrade.
+      FB_COMMCHECK(
+          ctran::utils::importShareableHandle(
+              rzv.handle, mcHandle, /*isFabric=*/true));
+      mc->adoptImported(mcHandle);
+    }
+  }
+
+  if (!rzv.ok) {
+    // Group declined, or the root's createRoot/export failed -> unicast. `mc`
+    // goes out of scope here and its dtor releases any multicast object
+    // createRoot already allocated (createRoot stores it in mc's own
+    // mcHandle_), so the create-then-export-failure path does not leak.
+    return commSuccess;
+  }
+
+  // Every rank: add local device, bind each segment, map the multicast VA, then
+  // hand the multicast object back to the caller, which owns its lifetime +
+  // teardown.
+  // Failures here are FATAL (FB_COMMCHECK propagates; the caller now
+  // FB_COMMCHECKs this function): post-vote, fabric import + VA mapping share
+  // the substrate the regular NVL buffer import already exercised earlier in
+  // this same rendezvous, so a failure means unicast is equally dead -- the
+  // same fatal class the regular path aborts on. Aborting loudly (vs a silent
+  // per-rank unicast fallback) also avoids divergent multicast membership,
+  // where a rank that fell back would never bind its device and silently drop
+  // peers' multicast writes.
+  FB_COMMCHECK(mc->addDeviceAndBind());
+  FB_COMMCHECK(mc->mapVA(mcSize, gran));
+  // Hand the multicast object back to the caller (CtranWin::exchange), which
+  // owns its lifetime + teardown. Self-owning (retains its own segment
+  // handles), so no CtranIpc storage is involved.
+  outMulticast = std::move(mc);
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-MC: rank {} bound multicast over {} NVL ranks ({} bytes)",
+      rank,
+      nLocalRanks,
+      mcSize);
+  return commSuccess;
+#endif
 }
 
 commResult_t CtranMapper::barrier() {

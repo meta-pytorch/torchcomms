@@ -289,7 +289,9 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         myRank * sendSize,
         pArgs.remoteRecvBuffs,
         pArgs.remoteAccessKeys,
-        stream_));
+        stream_,
+        /*barrier=*/true,
+        pArgs.mcWrite));
 
     for (int step = 0; step < recvPlan.nSteps(); step++) {
       PipeSyncKernArgs syncArgs = {
@@ -316,7 +318,8 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
             pArgs.remoteRecvBuffs,
             pArgs.remoteAccessKeys,
             stream_,
-            chunkIndex++ == 0));
+            chunkIndex++ == 0,
+            pArgs.mcWrite));
       }
     }
 

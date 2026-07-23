@@ -460,6 +460,10 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegPipeline) {
   }
 }
 
+// NVL CE-multicast is now set up on the window/ctwin registration path
+// (win_register_multicast); its coverage lives with the ctwin window tests, not
+// this eager/graph AGP suite.
+
 TEST_F(CtranAllgatherPTest, InvalidPreq) {
   auto request = std::make_unique<CtranPersistentRequest>(
       CtranPersistentRequest::Type::ALLTOALL_P, ctranComm.get(), stream);

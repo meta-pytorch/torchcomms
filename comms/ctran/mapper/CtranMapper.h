@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -40,6 +41,11 @@
 // Forward declaration for MapperTrace due to NVCC's lack of concepts support
 namespace ncclx::colltrace {
 class MapperTrace;
+}
+
+// Forward declaration: setupMulticast hands back a self-owning CtranMulticast.
+namespace ctran::utils {
+class CtranMulticast;
 }
 
 namespace ctran {
@@ -562,6 +568,21 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET,
       bool recordExport = true,
       std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
+
+  // Set up a CUDA NVSwitch multicast overlay over the NVL subset of `ranks` for
+  // the buffer registered under `hdl` (a RegElem*) and hand it back to the
+  // caller. Runs an NVL-team rendezvous over the ctrl
+  // channel (support vote -> root createRoot+export -> broadcast -> peers
+  // adoptImported -> all retainSegments+bind+map). No-op / unicast-fallback if
+  // the group declines, multicast is unsupported, or the buffer is not
+  // cuMem-backed. Called from the window/ctwin registration path
+  // (CtranWin::exchange). On success, `outMulticast` receives the self-owning
+  // CtranMulticast (the window owns its lifetime); left null on
+  // unicast-fallback / decline / non-cuMem so the caller falls back to unicast.
+  commResult_t setupMulticast(
+      void* hdl,
+      const std::vector<int>& ranks,
+      std::shared_ptr<ctran::utils::CtranMulticast>& outMulticast);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.

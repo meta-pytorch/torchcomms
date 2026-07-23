@@ -48,6 +48,12 @@ class Config {
   // commSetConfig.
   bool winRegisterSymmetric = false;
 
+  // When true, set up an NVL CE-multicast overlay over the window's data
+  // registration (win_register_multicast), so ctwin AllGather fans out via a
+  // single NVSwitch write. Only takes effect on a symmetric, cuMem-backed
+  // window on multicast-capable HW. Mutable via commSetConfig.
+  bool winRegisterMulticast = false;
+
   enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
@@ -102,6 +108,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "win_register_ipc_only",
       "win_register_enable_signal",
       "win_register_symmetric",
+      "win_register_multicast",
   };
   return keys;
 }
@@ -118,6 +125,7 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "win_register_ipc_only",
       "win_register_enable_signal",
       "win_register_symmetric",
+      "win_register_multicast",
   };
   return keys;
 }

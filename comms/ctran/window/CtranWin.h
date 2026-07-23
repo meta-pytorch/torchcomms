@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -20,6 +22,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PRIMS)
@@ -200,6 +203,26 @@ struct CtranWin {
     return symmetric_;
   }
 
+  // Opt-in (win_register_multicast): set up a standalone NVL CE-multicast
+  // object over the window's data buffer during exchange(), so ctwin AllGather
+  // fans out via a single NVSwitch write. Only takes effect on a symmetric,
+  // cuMem-backed window on multicast-capable HW; unicast fallback otherwise.
+  inline void setMulticast(bool val) {
+    multicast_ = val;
+  }
+
+  inline bool isMulticast() const {
+    return multicast_;
+  }
+
+  // Multicast write base for a user pointer in this window's data buffer, or
+  // std::nullopt when there is no multicast object (unicast). Computed from the
+  // multicast object alone -- no CtranIpc involvement -- so ctwin AllGather
+  // fans out via a single NVSwitch write.
+  inline std::optional<void*> multicastWriteBase(const void* userPtr) const {
+    return mc_ ? mc_->writeBase(userPtr) : std::nullopt;
+  }
+
   inline uint64_t id() const {
     return id_;
   }
@@ -252,6 +275,13 @@ struct CtranWin {
   // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
   // hint; consumed by a later window-based allgather. Cached only for now.
   bool symmetric_{false};
+  // Records the win_register_multicast hint; see setMulticast(). Consumed in
+  // exchange() to set up the NVL CE-multicast object.
+  bool multicast_{false};
+  // The standalone NVL CE-multicast object for this window's data buffer, set
+  // in exchange() and read via multicastWriteBase(). Self-owning; released with
+  // the window. null unless win_register_multicast engaged.
+  std::shared_ptr<ctran::utils::CtranMulticast> mc_;
   // Per-comm unique id assigned at exchange() (see CtranComm::assignWindowId).
   uint64_t id_{0};
   // rank: window::OpCountType as key

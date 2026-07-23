@@ -90,6 +90,9 @@ inline commResult_t exchangeIpcReg(CtranComm* comm, PersistArgs& pArgs) {
                            : pArgs.remoteIpcRegHdls_.at(i).toString());
   }
 
+  // NVL CE-multicast is set up on the window/ctwin registration path
+  // (CtranWin::exchange); the eager/graph AGP path here stays unicast, so
+  // pArgs.mcWrite is left std::nullopt.
   pArgs.initState = InitState::kInitialized;
   return commSuccess;
 }

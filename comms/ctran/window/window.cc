@@ -389,6 +389,52 @@ commResult_t CtranWin::exchange() {
   FB_COMMCHECK(windowBarrier(comm, mapper));
   recordWinStage("WinExchange/Barrier", barrierTimer.durationUs());
 
+  // NVL CE-multicast (opt-in via win_register_multicast). Runs an
+  // NVL-team rendezvous over the same ctrl channel and builds a self-owning
+  // standalone multicast object over the window's data buffer; ctwin's AGP
+  // request reads its write base via multicastWriteBase, so nvlCeBcast fans out
+  // with a single NVSwitch write.
+  //
+  // INVARIANT (must hold or the rendezvous + barrier below deadlock): all ranks
+  // enter this block together. Guaranteed because the gate is rank-uniform --
+  // symmetric + multicast are collective win_register_* hints applied
+  // identically on every rank, and winDataPtr is non-null for every
+  // registered/allocated window by the time exchange() runs. Note
+  // setupMulticast is itself collective (a support-vote rendezvous over
+  // exchangeRanks), so uniform entry is required for it, not just for the
+  // trailing barrier; its vote then handles per-rank multicast-support
+  // divergence, leaving the object unset (unicast) on decline / non-cuMem. The
+  // trailing barrier ensures every rank has bound before the window is used.
+  if (isSymmetric() && winDataPtr != nullptr && isMulticast()) {
+    std::shared_ptr<ctran::utils::CtranMulticast> mc;
+    FB_COMMCHECK(mapper->setupMulticast(dataRegHdl, exchangeRanks, mc));
+    const bool mcEngaged = (mc != nullptr);
+    if (mcEngaged) {
+      // exchange() is a CtranWin member; store the window's multicast object
+      // directly (the window owns its lifetime, torn down in free()).
+      mc_ = std::move(mc);
+    }
+    FB_COMMCHECK(windowBarrier(comm, mapper));
+    if (mcEngaged) {
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-WINDOW: Rank {} bound NVL CE-multicast on win {} comm {} commHash {:x} ({} bytes)",
+          myRank,
+          (void*)this,
+          (void*)comm,
+          statex->commHash(),
+          dataBytes);
+    } else {
+      CLOGF_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-WINDOW: Rank {} requested NVL CE-multicast on win {} but it did not engage (unicast fallback)",
+          myRank,
+          (void*)this);
+    }
+  }
+
   // Cache only symmetric windows: ctwin collective algos needs all ranks
   // locally compute peerAddr = peerBase + offset, meaning same offset from base
   // on all ranks.
@@ -532,6 +578,11 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
     reqs->clear();
   }
+
+  // Release the multicast object after the persistent requests that cached its
+  // write base are gone. Self-owning (its own segment handles + VA), so this is
+  // independent of the data-registration teardown below.
+  mc_.reset();
 
   // Drop this window's entry from the comm cache before tearing down buffers so
   // a later lookup cannot resolve to a freed window.
@@ -801,6 +852,12 @@ commResult_t ctranWinRegister(
   if (hints.get("win_register_symmetric", symmetricVal) == commSuccess) {
     newWin->setSymmetric(
         meta::comms::hints::WinHintUtils::parseBool(symmetricVal));
+  }
+
+  std::string multicastVal;
+  if (hints.get("win_register_multicast", multicastVal) == commSuccess) {
+    newWin->setMulticast(
+        meta::comms::hints::WinHintUtils::parseBool(multicastVal));
   }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
