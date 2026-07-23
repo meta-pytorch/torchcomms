@@ -393,52 +393,38 @@ class P2pIbrcTransportDevice {
     group.sync();
   }
 
-  __device__ void prepare_send_slot(
-      ThreadGroup& group,
-      uint32_t slotId,
-      uint64_t generation,
-      const Timeout& timeout = Timeout()) const {
-    if (group.is_leader()) {
-      auto& slot = localChannels_[group.group_id].sendCompletionSlots[slotId];
-      if (slot.generation != generation) {
-        const uint64_t laneMask = slot.laneMask;
-        const uint32_t lanes = num_qp_lanes();
-        for (uint32_t lane = 0; lane < lanes; ++lane) {
-          if ((laneMask & (1ULL << lane)) == 0) {
-            continue;
-          }
-          const auto& queue = cmdQueues[queue_for_lane(
-              group.group_id, IbDirection::Send, lane)];
-          while (static_cast<int64_t>(
-                     load_acquire_system_u64(queue.ci) - slot.values[lane]) <
-                 0) {
-            check_status(queue);
-            if (timeout.checkExpired()) {
-              printf(
-                  "P2pIbrcTransportDevice: send slot wait timed out lane=%u "
-                  "expected=%llu\n",
-                  lane,
-                  static_cast<unsigned long long>(slot.values[lane]));
-              PIPES_DEVICE_TRAP();
-            }
-          }
-        }
-        slot.laneMask = 0;
-        slot.generation = generation;
-      }
-    }
-    group.sync();
+  __device__ __forceinline__ bool is_local_completion_ready(
+      uint32_t channelId,
+      const IbLocalCompletionTicket& ticket) const {
+    const auto& queue = cmdQueues[queue_for_lane(
+        channelId, IbDirection::Send, ticket.completionId)];
+    check_status(queue);
+    return static_cast<int64_t>(
+               load_acquire_system_u64(queue.ci) - ticket.value) >= 0;
   }
 
-  __device__ __forceinline__ void record_send_completion(
+  __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
-      uint32_t slotId,
-      uint64_t generation,
-      const IbLocalCompletionTicket& ticket) const {
-    auto& slot = localChannels_[channelId].sendCompletionSlots[slotId];
-    slot.generation = generation;
-    slot.values[ticket.completionId] = ticket.value;
-    slot.laneMask |= 1ULL << ticket.completionId;
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout) const {
+    const auto& queue = cmdQueues[queue_for_lane(
+        channelId, IbDirection::Send, ticket.completionId)];
+    while (static_cast<int64_t>(
+               load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
+      check_status(queue);
+      if (timeout.checkExpired()) {
+        printf(
+            "P2pIbrcTransportDevice: local completion timed out lane=%u "
+            "expected=%llu\n",
+            ticket.completionId,
+            static_cast<unsigned long long>(ticket.value));
+        PIPES_DEVICE_TRAP();
+      }
+    }
+  }
+
+  __device__ __forceinline__ uint32_t send_completion_lane_count() const {
+    return num_qp_lanes();
   }
 
   __device__ void put_cooperative(

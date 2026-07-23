@@ -432,22 +432,31 @@ __global__ void progressSendRecvKernel(
     void* buffer,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    bool send) {
+    bool send,
+    uint64_t* waitingCount) {
   auto group = make_block_group();
   Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
+  uint64_t waits = 0;
   if (send) {
     transport->init_send_progress(group, nbytes, maxSignalBytes);
-    while (transport->progress_send_once(
-               group, buffer, nbytes, maxSignalBytes, timeout) !=
-           IbgdaSendRecvProgressStatus::Done) {
-    }
+    IbgdaSendRecvProgressStatus status;
+    do {
+      status = transport->progress_send_once(
+          group, buffer, nbytes, maxSignalBytes, timeout);
+      waits += status == IbgdaSendRecvProgressStatus::Waiting;
+    } while (status != IbgdaSendRecvProgressStatus::Done);
   } else {
     transport->init_recv_progress(group, nbytes, maxSignalBytes);
-    while (transport->progress_recv_once(
-               group, buffer, nbytes, maxSignalBytes, timeout) !=
-           IbgdaSendRecvProgressStatus::Done) {
-    }
+    IbgdaSendRecvProgressStatus status;
+    do {
+      status = transport->progress_recv_once(
+          group, buffer, nbytes, maxSignalBytes, timeout);
+      waits += status == IbgdaSendRecvProgressStatus::Waiting;
+    } while (status != IbgdaSendRecvProgressStatus::Done);
+  }
+  if (waitingCount != nullptr && group.is_leader()) {
+    waitingCount[group.group_id] = waits;
   }
 }
 
@@ -476,7 +485,8 @@ void testProgressSendRecv(
     std::size_t maxSignalBytes,
     bool send,
     int numBlocks,
-    int blockSize) {
+    int blockSize,
+    uint64_t* waitingCount) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)buffer;
@@ -485,10 +495,11 @@ void testProgressSendRecv(
   (void)send;
   (void)numBlocks;
   (void)blockSize;
+  (void)waitingCount;
   throw std::runtime_error("progress send/recv is NVIDIA-only");
 #else
   progressSendRecvKernel<<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, maxSignalBytes, send);
+      transport, buffer, nbytes, maxSignalBytes, send, waitingCount);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
