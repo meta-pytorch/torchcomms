@@ -12,12 +12,10 @@
 
 #include "comms/ctran/profiler/GpeProfilerReport.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
+#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 struct CommLogData;
-namespace ctran::utils {
-class Abort;
-} // namespace ctran::utils
 
 namespace ctran {
 

@@ -119,6 +119,8 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/ibverbx/*.cc)
 ## Include cvars files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/cvars/*.cc)
+## Include common fault-tolerance files
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/common/fault_tolerance/*.cc)
 ## Include ctran files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/backends/*.cc)
