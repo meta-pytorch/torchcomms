@@ -99,6 +99,10 @@ class MultimemNvlTransport {
  private:
   const int commRank_{-1};
   const int nvlRanks_{-1};
+  // This rank's index within the NVL team (its position in nvlRankToCommRank_).
+  // Retained so getDeviceTransport() can expose it to the device staging
+  // protocol, which keys its per-rank signal slots on the NVL-local rank.
+  int nvlRank_{-1};
   const std::vector<int> nvlRankToCommRank_;
   // Recorded after the rank-map validation in the constructor body so a bad
   // topology fails before cudaGetDevice is consulted (lets tests cover the
