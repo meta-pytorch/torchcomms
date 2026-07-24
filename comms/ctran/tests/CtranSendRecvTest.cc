@@ -31,10 +31,10 @@ class CtranSendRecvTest : public CtranIntraProcessFixture {
     CtranIntraProcessFixture::SetUp();
   }
   void startWorkers(bool abortEnabled) {
-    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
     if (abortEnabled) {
       for (int i = 0; i < kNRanks; ++i) {
-        aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+        aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
       }
     }
     CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);

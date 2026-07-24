@@ -10,9 +10,9 @@
 #include <string>
 #include <string_view>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/profiler/GpeProfilerReport.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 struct CommLogData;
@@ -92,7 +92,7 @@ class GpeProfiler {
       uint64_t commHash,
       int samplingWeight,
       std::unique_ptr<IGpeProfilerReporter> reporter = nullptr,
-      std::shared_ptr<::ctran::utils::Abort> abort = nullptr);
+      std::shared_ptr<::comms::fault_tolerance::Abort> abort = nullptr);
 
   ~GpeProfiler() = default;
 
@@ -143,7 +143,7 @@ class GpeProfiler {
   // Source of the live abort flag for the per-mark "is the comm
   // aborted right now?" check that bypasses the sampling gate.
   // nullptr disables the bypass (only sampled / marker rows emit).
-  const std::shared_ptr<::ctran::utils::Abort> abort_;
+  const std::shared_ptr<::comms::fault_tolerance::Abort> abort_;
 
   Watch watch_; // Reset on mark(ITER_START) to set iter t0.
 

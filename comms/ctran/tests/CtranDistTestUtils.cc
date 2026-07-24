@@ -121,8 +121,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
   std::string commDesc = fmt::format("CtranTestComm-{}", globalRank);
 
-  auto comm =
-      std::make_unique<CtranComm>(ctran::utils::createAbort(/*enabled=*/false));
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/false));
   comm->logMetaData_.commId = 0;
   comm->logMetaData_.commHash = commHash;
   comm->logMetaData_.commDesc = commDesc;

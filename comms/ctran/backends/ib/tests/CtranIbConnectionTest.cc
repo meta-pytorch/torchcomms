@@ -61,7 +61,8 @@ class CtranIbConnectionTest : public ::testing::Test {
     EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
 
     // ensure abort is not enabled for normal path
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/!doTransfer);
+    auto abortCtrl =
+        comms::fault_tolerance::createAbort(/*enabled=*/!doTransfer);
 
     // Create CtranIb instance
     auto ctranIb = std::make_unique<CtranIb>(
@@ -279,7 +280,7 @@ TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
 
   EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
 
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/false);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/false);
 
   auto ctranIb = std::make_unique<CtranIb>(
       rank,
@@ -324,7 +325,7 @@ TEST_F(CtranIbConnectionTest, ExternalBootstrapAccessorNullInInternalMode) {
 
   EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
 
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/false);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/false);
   auto ctranIb = std::make_unique<CtranIb>(
       rank,
       rank, // cudaDev

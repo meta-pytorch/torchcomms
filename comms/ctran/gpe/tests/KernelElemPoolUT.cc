@@ -11,9 +11,9 @@
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/utils/CudaWrap.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 class KernelElemPoolTest : public ::testing::Test {
@@ -441,7 +441,7 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
   ASSERT_NE(elem, nullptr);
 
   // Enable abortCtrl
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   EXPECT_TRUE(abortCtrl->Enabled());
   EXPECT_FALSE(abortCtrl->Test());
 
@@ -477,7 +477,7 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
   ASSERT_NE(elem, nullptr);
 
   // Enable abortCtrl
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   EXPECT_TRUE(abortCtrl->Enabled());
   EXPECT_FALSE(abortCtrl->Test());
 
