@@ -66,8 +66,8 @@ TEST(AsyncErrorTest, AbortOnError) {
 }
 
 TEST(AsyncErrorTest, FaultToleranceDisabled) {
-  auto comm =
-      std::make_unique<CtranComm>(ctran::utils::createAbort(/*enabled=*/false));
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/false));
   EXPECT_THROW(
       {
         CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
@@ -81,8 +81,8 @@ TEST(AsyncErrorTest, FaultToleranceDisabled) {
 }
 
 TEST(AsyncErrorTest, FaultToleranceEnabled) {
-  auto comm =
-      std::make_unique<CtranComm>(ctran::utils::createAbort(/*enabled=*/true));
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/true));
   CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
       comm,
       { throw ::ctran::utils::Exception("UT error", commRemoteError); },

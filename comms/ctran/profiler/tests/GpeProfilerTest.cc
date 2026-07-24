@@ -10,9 +10,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/profiler/GpeProfilerReport.h"
 #include "comms/ctran/profiler/tests/MockGpeProfilerReporter.h"
-#include "comms/ctran/utils/Abort.h"
 
 using namespace ::testing;
 
@@ -26,13 +26,13 @@ struct ProfilerHarness {
   std::unique_ptr<GpeProfiler> profiler;
   MockGpeProfilerReporter* mockPtr{nullptr};
   std::vector<GpeProfilerReport>* rowsPtr{nullptr};
-  std::shared_ptr<::ctran::utils::Abort> abort;
+  std::shared_ptr<::comms::fault_tolerance::Abort> abort;
 };
 
 ProfilerHarness makeHarness(
     std::vector<GpeProfilerReport>& rows,
     int samplingWeight,
-    std::shared_ptr<::ctran::utils::Abort> abort = nullptr) {
+    std::shared_ptr<::comms::fault_tolerance::Abort> abort = nullptr) {
   auto mock = std::make_unique<MockGpeProfilerReporter>();
   auto* mockPtr = mock.get();
   EXPECT_CALL(*mockPtr, report(_))
@@ -219,7 +219,7 @@ TEST_F(GpeProfilerTest, BackfillSkipsUnstampedSlots) {
 // mark() bypasses the sampling gate AND backfills any stamped predecessors.
 TEST_F(GpeProfilerTest, LiveAbortBypassesSamplingMidIter) {
   std::vector<GpeProfilerReport> rows;
-  auto abort = ::ctran::utils::createAbort(/*enabled=*/true);
+  auto abort = ::comms::fault_tolerance::createAbort(/*enabled=*/true);
   auto h = makeHarness(rows, /*samplingWeight=*/1000, abort);
 
   h.profiler->mark(GpeTracePoint::ITER_START);

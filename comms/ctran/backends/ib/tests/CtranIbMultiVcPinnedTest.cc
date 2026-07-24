@@ -14,16 +14,16 @@
 #include <folly/SocketAddress.h>
 #include <folly/futures/Future.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbImpl.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-using AbortPtr = std::shared_ptr<ctran::utils::Abort>;
+using AbortPtr = std::shared_ptr<comms::fault_tolerance::Abort>;
 using namespace std::literals::chrono_literals;
 
 namespace {
@@ -126,7 +126,7 @@ void runTwoRanks(Action0 action0, Action1 action1) {
 
   std::thread t0([&]() {
     EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     SocketServerAddr serverAddr = makeServerAddr();
     auto ib = std::make_unique<CtranIb>(
         0,
@@ -151,7 +151,7 @@ void runTwoRanks(Action0 action0, Action1 action1) {
   });
   std::thread t1([&]() {
     EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     SocketServerAddr serverAddr = makeServerAddr();
     auto ib = std::make_unique<CtranIb>(
         1,
@@ -546,7 +546,7 @@ TEST_F(CtranIbMultiVcPinnedTest, FetchAndAddVcRoundTrip) {
 // Guard: progress(device) must reject out-of-range device indices with
 // commInternalError instead of polling an out-of-bounds CQ.
 TEST_F(CtranIbMultiVcPinnedTest, ProgressInvalidDeviceReturnsError) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   auto ib = makeIb(/*rank=*/0, abortCtrl);
   ASSERT_NE(ib, nullptr);
   ASSERT_EQ(ib->getNumIbDevices(), kExpectedNumNics);
@@ -583,7 +583,7 @@ void runNRanks(int nRanks, Action action) {
   for (int rank = 0; rank < nRanks; ++rank) {
     threads.emplace_back([rank, nRanks, shared, &action]() {
       EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
-      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       SocketServerAddr serverAddr = makeServerAddr();
       auto ib = std::make_unique<CtranIb>(
           rank,
