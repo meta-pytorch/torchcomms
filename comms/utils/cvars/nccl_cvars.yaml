@@ -1886,6 +1886,17 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : MCCL_ALLREDUCE_CNVLMM_ONESHOT_BYTES_THRESHOLD
+   type        : uint64_t
+   default     : 131072
+   description : |-
+     Total message size in bytes at or below which the cnvlmm (NVLink multimem)
+     staging AllReduce uses the 1-shot reduce-to-all path; larger messages use
+     the 2-shot reduce-scatter + all-gather path. 1-shot has every rank
+     reduce-read the full slice (lowest latency, ~nranks x switch egress);
+     2-shot reduces only each rank's shard then broadcasts it (~1x reduce + 1x
+     broadcast, saturates bandwidth at large sizes). Only affects the staging
+     (unregistered-buffer) path; the no-copy path is always 2-shot. Default 128 KiB.
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -3264,6 +3275,23 @@ cvars:
               Requires nNodes==1, >2 local ranks, and a Prims-backed multimem
               NVL transport; store-only over fp32/fp16/bf16/int32 element
               widths. Explicitly selecting cnvlmm is a hard requirement: if the
+              comm/opts are unsupported the request is rejected
+              (commInvalidArgument); it does not fall back to the baseline path.
+
+ - name        : MCCL_ALLREDUCE_ALGO
+   type        : enum
+   default     : none
+   choices     : none, cnvlmm
+   description : |-
+     Selects the MCCL-hosted AllReduce algorithm dispatched through the
+     ICollective interface (McclComm::allReduce).
+     none - do not select an MCCL-hosted algorithm; fall through to the existing
+            AllReduce dispatch (NCCL_ALLREDUCE_ALGO, incl. the fused ctree/
+            cthierarchical_ring paths).
+     cnvlmm - single-NVLink-domain AllReduce over NVLink multimem (NVLS
+              in-switch reduce). Requires nNodes==1, >2 local ranks, a Prims-
+              backed multimem NVL transport, and commSum over fp32/fp16/bf16/
+              int32. Explicitly selecting cnvlmm is a hard requirement: if the
               comm/opts are unsupported the request is rejected
               (commInvalidArgument); it does not fall back to the baseline path.
 
