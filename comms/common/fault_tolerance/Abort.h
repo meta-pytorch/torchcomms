@@ -6,22 +6,22 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 
 namespace comms::fault_tolerance {
 
-class Abort final {
- private:
-  enum class AbortReason : int {
-    NONE = 0,
-    ABORTED = 1,
-    TIMED_OUT = 2,
-  };
+enum class AbortReason : int {
+  NONE = 0,
+  ABORTED = 1,
+  TIMED_OUT = 2,
+};
 
+class Abort final {
+ public:
   static constexpr int encode(AbortReason reason) {
     return static_cast<int>(reason);
   }
 
- public:
   /**
    * Constructs an abort controller.
    *
@@ -42,19 +42,26 @@ class Abort final {
   }
 
   /**
-   * Records an explicit abort.
+   * Records the first abort reason.
    *
-   * The first writer wins. Later timeout checks do not override an explicit
-   * abort already visible to other host threads.
+   * The abort state starts as `AbortReason::NONE` and can transition exactly
+   * once to one valid terminal reason. The first writer wins. Later calls with
+   * a different reason do not override the reason already visible to other host
+   * threads. Valid terminal reasons are `AbortReason::ABORTED` and
+   * `AbortReason::TIMED_OUT`; `AbortReason::NONE` and unknown enum values are
+   * invalid input and are rejected before attempting to update shared state.
    */
-  inline void setAbort() {
+  inline void setAbort(AbortReason reason = AbortReason::ABORTED) {
     if (!enabled_) {
       return;
+    }
+    if (!isValidTerminalReason(reason)) {
+      throw std::invalid_argument("Abort reason must be ABORTED or TIMED_OUT");
     }
     int expected = encode(AbortReason::NONE);
     abort_.compare_exchange_strong(
         expected,
-        encode(AbortReason::ABORTED),
+        encode(reason),
         std::memory_order_acq_rel,
         std::memory_order_acquire);
   }
@@ -99,13 +106,13 @@ class Abort final {
    * returns false.
    */
   inline bool isTimedOut() {
-    if (!hasTimeout_.load(std::memory_order_acquire)) {
-      return false;
-    }
-
     if (abort_.load(std::memory_order_acquire) ==
         encode(AbortReason::TIMED_OUT)) {
       return true;
+    }
+
+    if (!hasTimeout_.load(std::memory_order_acquire)) {
+      return false;
     }
 
     // Check for timeout if timeout is set
@@ -212,6 +219,17 @@ class Abort final {
   }
 
  private:
+  static constexpr bool isValidTerminalReason(AbortReason reason) {
+    switch (reason) {
+      case AbortReason::ABORTED:
+      case AbortReason::TIMED_OUT:
+        return true;
+      case AbortReason::NONE:
+        return false;
+    }
+    return false;
+  }
+
   const bool enabled_;
 
   std::atomic<int> abort_{encode(AbortReason::NONE)};
