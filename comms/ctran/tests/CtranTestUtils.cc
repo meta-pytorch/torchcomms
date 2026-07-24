@@ -489,7 +489,7 @@ void CtranStandaloneFixture::TearDown() {
 }
 
 std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
-    std::shared_ptr<::ctran::utils::Abort> abort) {
+    std::shared_ptr<::comms::fault_tolerance::Abort> abort) {
   auto ctranComm = std::make_unique<CtranComm>(abort);
 
   ctranComm->bootstrap_ = std::make_unique<testing::MockBootstrap>();
@@ -654,7 +654,8 @@ void CtranIntraProcessFixture::SetUp() {
 
 void CtranIntraProcessFixture::startWorkers(
     int nRanks,
-    const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts) {
+    const std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>>&
+        aborts) {
   ASSERT_TRUE(aborts.size() == 0 || aborts.size() == nRanks)
       << "must supply either 0 or nRanks number of abort controls";
 
@@ -670,8 +671,9 @@ void CtranIntraProcessFixture::startWorkers(
     auto& state = perRankStates_.back();
     state.sharedBootstrapState = sharedBootstrapState;
     state.ctranComm = std::make_unique<CtranComm>(
-        aborts.size() == 0 ? ::ctran::utils::createAbort(/*enabled=*/false)
-                           : folly::copy(aborts[i]));
+        aborts.size() == 0
+            ? ::comms::fault_tolerance::createAbort(/*enabled=*/false)
+            : folly::copy(aborts[i]));
     state.nRanks = nRanks;
     state.rank = i;
     state.cudaDev = i;

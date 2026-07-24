@@ -7,7 +7,7 @@
 #include <memory>
 #include <optional>
 
-namespace ctran::utils {
+namespace comms::fault_tolerance {
 
 class Abort final {
  public:
@@ -30,7 +30,6 @@ class Abort final {
       return false;
     }
 
-    // Check if abort was explicitly set
     if (abort_.load(std::memory_order_acquire)) {
       return true;
     }
@@ -150,4 +149,4 @@ class Abort final {
 
 std::shared_ptr<Abort> createAbort(bool enabled);
 
-} // namespace ctran::utils
+} // namespace comms::fault_tolerance

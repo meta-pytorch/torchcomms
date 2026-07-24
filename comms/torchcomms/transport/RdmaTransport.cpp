@@ -12,6 +12,7 @@
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/regcache/RegCache.h"
@@ -200,7 +201,7 @@ RdmaTransport::RdmaTransport(
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
-      ::ctran::utils::createAbort(/*enabled=*/false),
+      ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       nullptr /* socketFactory */,
       maxNumCqe,
       maxNumNic);

@@ -15,13 +15,13 @@
 
 #include <folly/futures/Future.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
 #include "comms/ctran/tests/bootstrap/MockBootstrap.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -69,8 +69,8 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
 
   COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
 
-  std::unique_ptr<CtranComm> ctranComm =
-      std::make_unique<CtranComm>(::ctran::utils::createAbort(abortEnabled));
+  std::unique_ptr<CtranComm> ctranComm = std::make_unique<CtranComm>(
+      ::comms::fault_tolerance::createAbort(abortEnabled));
 
   // Create and initialize bootstrap; needed for CTRAN backend initialization
   auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
@@ -288,8 +288,8 @@ class CtranStandaloneFixture : public CtranTestFixtureBase {
   // @param abort: Optional abort control for fault tolerance testing.
   //               Defaults to enabled abort.
   std::unique_ptr<CtranComm> makeCtranComm(
-      std::shared_ptr<::ctran::utils::Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/true));
+      std::shared_ptr<::comms::fault_tolerance::Abort> abort =
+          comms::fault_tolerance::createAbort(/*enabled=*/true));
 
   int rank{0}; // Always 0 for standalone tests
 };
@@ -344,7 +344,8 @@ class CtranIntraProcessFixture : public CtranTestFixtureBase {
 
   void startWorkers(
       int nRanks,
-      const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts);
+      const std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>>&
+          aborts);
 
   void run(int rank, const Work& work) {
     perRankStates_[rank].workPromise.setValue(work);
