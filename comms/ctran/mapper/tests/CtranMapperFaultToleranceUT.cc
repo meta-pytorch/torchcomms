@@ -16,7 +16,8 @@ class CtranMapperFaultToleranceTest : public CtranStandaloneFixture {
 
   void SetUp() override {
     CtranStandaloneFixture::SetUp();
-    ctranComm = makeCtranComm(::ctran::utils::createAbort(/*enabled=*/true));
+    ctranComm =
+        makeCtranComm(::comms::fault_tolerance::createAbort(/*enabled=*/true));
   }
   void startTimer(int delaySeconds, std::function<void()> routine) {
     timer_ = std::thread([delaySeconds, routine = std::move(routine)]() {

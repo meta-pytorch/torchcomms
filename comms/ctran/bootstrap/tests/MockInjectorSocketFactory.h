@@ -41,7 +41,7 @@ class MockInjectorSocketFactory : public ISocketFactory {
         mockServerSockets_(std::move(mockServerSockets)) {}
 
   std::unique_ptr<ISocket> createClientSocket(
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override {
     if (currentIndex_ >= mockSockets_.size()) {
       throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked sockets available. "
@@ -56,7 +56,7 @@ class MockInjectorSocketFactory : public ISocketFactory {
   std::unique_ptr<ISocket> createClientSocket(
       int sockFd,
       const folly::SocketAddress& peerAddr,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override {
     if (currentIndex_ >= mockSockets_.size()) {
       throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked sockets available. "
@@ -70,7 +70,7 @@ class MockInjectorSocketFactory : public ISocketFactory {
 
   std::unique_ptr<IServerSocket> createServerSocket(
       int acceptRetryCnt,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override {
     if (currentServerIndex_ >= mockServerSockets_.size()) {
       throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked server sockets "

@@ -344,7 +344,7 @@ CtranIb::CtranIb(
           : shouldEnableLocalFlushByDefault(comm->statex_->cudaArch()),
       BootstrapMode::kDefaultServer,
       std::nullopt,
-      ::ctran::utils::createAbort(/*enabled=*/false),
+      ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       socketFactory,
       maxNumCqe);
   CLOGF_SUBSYS(
