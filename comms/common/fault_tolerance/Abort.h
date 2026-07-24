@@ -73,7 +73,7 @@ class Abort final {
 
     // Check for timeout if timeout is set
     auto now = std::chrono::steady_clock::now();
-    if (now >= timeoutTime_.load(std::memory_order_acquire)) {
+    if (now >= deadline_.load(std::memory_order_acquire)) {
       int expected = encode(AbortReason::NONE);
       if (abort_.compare_exchange_strong(
               expected,
@@ -100,13 +100,13 @@ class Abort final {
     }
 
     auto now = std::chrono::steady_clock::now();
-    auto timeoutTime = timeoutTime_.load(std::memory_order_acquire);
-    if (now >= timeoutTime) {
+    auto deadline = deadline_.load(std::memory_order_acquire);
+    if (now >= deadline) {
       return std::chrono::milliseconds{0};
     }
 
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-        timeoutTime - now);
+        deadline - now);
   }
 
   inline void SetTimeout(std::chrono::milliseconds duration) {
@@ -114,8 +114,8 @@ class Abort final {
       return;
     }
 
-    auto timeoutTime = std::chrono::steady_clock::now() + duration;
-    timeoutTime_.store(timeoutTime, std::memory_order_release);
+    auto deadline = std::chrono::steady_clock::now() + duration;
+    deadline_.store(deadline, std::memory_order_release);
     hasTimeout_.store(true, std::memory_order_release);
   }
 
@@ -136,8 +136,7 @@ class Abort final {
       return;
     }
 
-    defaultTimeoutDurationMs_.store(
-        duration.count(), std::memory_order_release);
+    timeoutMs_.store(duration.count(), std::memory_order_release);
   }
 
   inline std::optional<std::chrono::milliseconds> GetDefaultTimeoutDuration()
@@ -146,7 +145,7 @@ class Abort final {
       return std::nullopt;
     }
 
-    auto v = defaultTimeoutDurationMs_.load(std::memory_order_acquire);
+    auto v = timeoutMs_.load(std::memory_order_acquire);
     if (v < 0) {
       return std::nullopt;
     }
@@ -158,10 +157,10 @@ class Abort final {
 
   std::atomic<int> abort_{encode(AbortReason::NONE)};
   std::atomic<bool> hasTimeout_{false};
-  std::atomic<std::chrono::steady_clock::time_point> timeoutTime_{
+  std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
   // -1 = unset.
-  std::atomic<int64_t> defaultTimeoutDurationMs_{-1};
+  std::atomic<int64_t> timeoutMs_{-1};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
   static_assert(std::atomic<int>::is_always_lock_free);
