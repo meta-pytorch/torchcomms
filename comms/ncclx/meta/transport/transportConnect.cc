@@ -25,11 +25,12 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
   }
   // Set default value of useGdr and useNetPXN in first connection
   // note that ncclTransportP2pSetup below may update the values
-  if (comm->algoConnectedChannels[NCCL_ALGO_RING] == 0) {
+  if (lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_RING] == 0) {
     comm->useGdr = true;
     comm->useNetPXN = false;
   }
-  for (int c = comm->algoConnectedChannels[NCCL_ALGO_RING]; c < nChannels;
+  for (int c = lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_RING];
+       c < nChannels;
        c++) {
     connectionSummary ringSummary;
     struct ncclChannel* channel = comm->channels + c;
@@ -53,7 +54,7 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
 
   // exchange ring info in first connection, if needed
 #if NCCL_MINOR >= 29
-  if (comm->algoConnectedChannels[NCCL_ALGO_RING] == 0 &&
+  if (lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_RING] == 0 &&
       (ncclParamLocalRegister() || ncclParamGraphRegister())) {
     struct RingConnInfo {
       bool useNetPXN{false};
@@ -81,11 +82,11 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
       NCCL_INIT,
       "commDesc: %s connected rings from channel %d to %d, use ring PXN %d GDR %d",
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
-      comm->algoConnectedChannels[NCCL_ALGO_RING],
+      lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_RING],
       nChannels - 1,
       comm->useNetPXN,
       comm->useGdr);
-  comm->algoConnectedChannels[NCCL_ALGO_RING] = nChannels;
+  lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_RING] = nChannels;
   // mark initAlgoChannels to be compatible with baseline NCCL
   comm->initAlgoChannels[NCCL_ALGO_RING] = true;
   return ncclSuccess;
@@ -95,7 +96,8 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels) {
   if (!comm || comm->nRanks == 1) {
     return ncclSuccess;
   }
-  for (int c = comm->algoConnectedChannels[NCCL_ALGO_TREE]; c < nChannels;
+  for (int c = lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_TREE];
+       c < nChannels;
        c++) {
     connectionSummary treeUpwardSummary;
     struct ncclChannel* channel = comm->channels + c;
@@ -136,9 +138,9 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels) {
       NCCL_INIT,
       "commDesc: %s connected Trees from channel %d to %d",
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
-      comm->algoConnectedChannels[NCCL_ALGO_TREE],
+      lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_TREE],
       nChannels - 1);
-  comm->algoConnectedChannels[NCCL_ALGO_TREE] = nChannels;
+  lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_TREE] = nChannels;
   // mark initAlgoChannels to be compatible with baseline NCCL
   comm->initAlgoChannels[NCCL_ALGO_TREE] = true;
   return ncclSuccess;
@@ -151,7 +153,8 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
   for (int mask = 1; mask < comm->nRanks; mask <<= 1) {
     int prevPeer = (comm->rank + mask) % comm->nRanks;
     int nextPeer = (comm->rank + comm->nRanks - mask) % comm->nRanks;
-    for (int c = comm->algoConnectedChannels[NCCL_ALGO_PAT]; c < nChannels;
+    for (int c = lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_PAT];
+         c < nChannels;
          c++) {
       connectionSummary rsSummary;
       NCCLCHECK(ncclTransportP2pConnect(
@@ -171,7 +174,8 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
           c);
     }
     NCCLCHECK(ncclTransportP2pSetup(comm, nullptr, 0));
-    for (int c = comm->algoConnectedChannels[NCCL_ALGO_PAT]; c < nChannels;
+    for (int c = lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_PAT];
+         c < nChannels;
          c++) {
       connectionSummary agSummary;
       NCCLCHECK(ncclTransportP2pConnect(
@@ -196,9 +200,9 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
       NCCL_INIT,
       "commDesc %s connected binomial trees channel from %d to %d",
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
-      comm->algoConnectedChannels[NCCL_ALGO_PAT],
+      lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_PAT],
       nChannels - 1);
-  comm->algoConnectedChannels[NCCL_ALGO_PAT] = nChannels;
+  lazyChannelState(comm).algoConnectedChannels[NCCL_ALGO_PAT] = nChannels;
   // mark initAlgoChannels to be compatible with baseline NCCL
   comm->initAlgoChannels[NCCL_ALGO_PAT] = true;
   return ncclSuccess;
@@ -213,8 +217,8 @@ bool algoCanLazySetupChannel(struct ncclComm* comm, struct ncclTaskColl* task) {
   } else {
     /* update nMaxChannelsNeedInit and algoMaxChannelsNeedConnect to ensure all
      * channels will be setup and selected algorithm will be connected */
-    comm->planner.nMaxChannelsNeedInit = comm->nChannels;
-    comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm) =
+    lazyChannelPlanState(comm).nMaxChannelsNeedInit = comm->nChannels;
+    lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(task->algorithm) =
         comm->nChannels;
     return false;
   }
@@ -226,37 +230,41 @@ bool algoNeedConnect(struct ncclComm* comm, struct ncclTaskColl* task) {
      * channels at scheduling time, update nMaxChannelsNeedInit and
      * algoMaxChannelsNeedConnect in planner to ensure all channels will be
      * setup and the selected algorithm will be connected */
-    comm->planner.nMaxChannelsNeedInit = comm->nChannels;
-    comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm) =
+    lazyChannelPlanState(comm).nMaxChannelsNeedInit = comm->nChannels;
+    lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(task->algorithm) =
         comm->nChannels;
-    return comm->nChannelsReady < comm->nChannels;
+    return lazyChannelState(comm).nChannelsReady < comm->nChannels;
   }
   // update the maximal number of channels need to be initialized later
-  if (task->nMaxChannels > comm->nChannelsReady) {
-    comm->planner.nMaxChannelsNeedInit =
-        std::max(comm->planner.nMaxChannelsNeedInit, task->nMaxChannels);
+  if (task->nMaxChannels > lazyChannelState(comm).nChannelsReady) {
+    lazyChannelPlanState(comm).nMaxChannelsNeedInit = std::max(
+        lazyChannelPlanState(comm).nMaxChannelsNeedInit, task->nMaxChannels);
   }
   /* update the max number of channels need to be connected for the given
    * algorithm */
-  comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm) = std::max(
-      comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm),
-      task->nMaxChannels);
+  lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(task->algorithm) =
+      std::max(
+          lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(
+              task->algorithm),
+          task->nMaxChannels);
 
-  if (comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm) >
-      comm->algoConnectedChannels[task->algorithm]) {
+  if (lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(
+          task->algorithm) >
+      lazyChannelState(comm).algoConnectedChannels[task->algorithm]) {
     INFO(
         NCCL_INIT,
         "commDesc: %s commHash: %lx needs nChannels=%d (%d initialized) for op %s with %lu bytes using algo %s and protocol %s, (%d channels connected) %d total channels will be connected for this algo",
         NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
         comm->commHash,
         task->nMaxChannels,
-        comm->nChannelsReady,
+        lazyChannelState(comm).nChannelsReady,
         ncclFuncStr[task->func],
         task->count * ncclTypeSize(task->datatype),
         ncclAlgoToString(task->algorithm),
         ncclProtoToString(task->protocol),
-        comm->algoConnectedChannels[task->algorithm],
-        comm->planner.algoMaxChannelsNeedConnect.at(task->algorithm));
+        lazyChannelState(comm).algoConnectedChannels[task->algorithm],
+        lazyChannelPlanState(comm).algoMaxChannelsNeedConnect.at(
+            task->algorithm));
     return true;
   }
   return false;
@@ -267,8 +275,8 @@ void p2pNeedConnect(
     int peer,
     int channelId,
     bool isSendNotRecv) {
-  comm->planner.nMaxChannelsNeedInit =
-      std::max(comm->planner.nMaxChannelsNeedInit, channelId + 1);
+  lazyChannelPlanState(comm).nMaxChannelsNeedInit =
+      std::max(lazyChannelPlanState(comm).nMaxChannelsNeedInit, channelId + 1);
   if (isSendNotRecv) {
     comm->connectSend[peer] |= (1UL << channelId);
   } else {
@@ -283,20 +291,20 @@ void p2pNeedConnect(
       channelId,
       isSendNotRecv ? "send" : "recv",
       peer,
-      comm->planner.nMaxChannelsNeedInit);
+      lazyChannelPlanState(comm).nMaxChannelsNeedInit);
 }
 
 ncclResult_t devCommSetupChannels(ncclComm_t comm) {
   // devCommSetup should be called at init time to cache devCommAndChans
-  if (UNLIKELY(!comm->devCommAndChans.has_value())) {
+  if (UNLIKELY(!lazyChannelState(comm).devCommAndChans.has_value())) {
     return ncclInternalError;
   }
   INFO(
       NCCL_INIT,
-      "commDesc: %s commHash: %lx devCommSetupChannels: copy channels' metadata, comm->nChannelsReady=%d",
+      "commDesc: %s commHash: %lx devCommSetupChannels: copy channels' metadata, lazyChannelState(comm).nChannelsReady=%d",
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
       comm->commHash,
-      comm->nChannelsReady);
+      lazyChannelState(comm).nChannelsReady);
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
   sampleGuardBegin.sample().setCommunicatorMetadata(
       comm ? &comm->logMetaData : nullptr);
@@ -305,7 +313,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
   struct ncclKernelCommAndChannels tmpCommAndChans;
   memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
   struct ncclKernelCommAndChannels* devCommAndChans =
-      comm->devCommAndChans.value();
+      lazyChannelState(comm).devCommAndChans.value();
   cudaStream_t deviceStream;
 
   NCCLCHECKGOTO(
@@ -322,7 +330,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
       fail);
 
   // only copy metadata for channels have already initialized
-  for (int c = 0; c < comm->nChannelsReady; c++) {
+  for (int c = 0; c < lazyChannelState(comm).nChannelsReady; c++) {
     tmpCommAndChans.channels[c].peers = comm->channels[c].devPeers;
     tmpCommAndChans.channels[c].ring = comm->channels[c].ring;
     tmpCommAndChans.channels[c].ring.userRanks =
@@ -349,7 +357,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
   ret = ncclCudaMemcpyAsync(
       devCommAndChans->channels,
       tmpCommAndChans.channels,
-      comm->nChannelsReady,
+      lazyChannelState(comm).nChannelsReady,
       deviceStream);
 
 exit:
@@ -373,25 +381,25 @@ ncclResult_t setupChannels(struct ncclComm* comm, int maxNchannels) {
       "commDesc: %s: commHash: %lx setup %d channels and copy metadata to GPU from channel %d to %d",
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
       comm->commHash,
-      (maxNchannels - comm->nChannelsReady),
-      comm->nChannelsReady,
+      (maxNchannels - lazyChannelState(comm).nChannelsReady),
+      lazyChannelState(comm).nChannelsReady,
       maxNchannels - 1);
   NcclScubaEvent initEvent(&comm->logMetaData);
   initEvent.lapAndRecord("setupChannels START");
-  for (int c = comm->nChannelsReady; c < maxNchannels; c++) {
+  for (int c = lazyChannelState(comm).nChannelsReady; c < maxNchannels; c++) {
     if (c < comm->nChannels) {
       NCCLCHECK(setupChannel(
           comm,
           c,
           comm->rank,
           comm->nRanks,
-          comm->rings.value().data() + c * comm->nRanks));
+          lazyChannelState(comm).rings.value().data() + c * comm->nRanks));
     } else {
       // rest of channels are only for p2p, just initialize them
       NCCLCHECK(initChannel(comm, c));
     }
   }
-  comm->nChannelsReady = maxNchannels;
+  lazyChannelState(comm).nChannelsReady = maxNchannels;
 
   // copy channels' metadata to device
   NCCLCHECK(devCommSetupChannels(comm));
@@ -411,8 +419,9 @@ ncclResult_t setupChannels(struct ncclComm* comm, int maxNchannels) {
 
   // all channels are setup for collectives, free rings graph which won't be
   // used anymore
-  if (comm->nChannelsReady == comm->nChannels && comm->rings.has_value()) {
-    comm->rings.reset();
+  if (lazyChannelState(comm).nChannelsReady == comm->nChannels &&
+      lazyChannelState(comm).rings.has_value()) {
+    lazyChannelState(comm).rings.reset();
   }
 
   initEvent.lapAndRecord("setupChannels COMPLETE");
@@ -785,9 +794,12 @@ ncclResult_t p2pPreconnect(struct ncclComm* comm) {
     sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
   }
   // setup channels if needed before setup transport
-  if (comm->lazySetupChannels &&
-      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
-    NCCLCHECK(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit));
+  if (lazyChannelState(comm).lazySetupChannels &&
+      lazyChannelState(comm).nChannelsReady <
+          lazyChannelPlanState(comm).nMaxChannelsNeedInit) {
+    NCCLCHECK(
+        ncclx::setupChannels(
+            comm, lazyChannelPlanState(comm).nMaxChannelsNeedInit));
   }
   NcclScubaEvent initEvent(&comm->logMetaData);
   initEvent.lapAndRecord("p2pPreconnectFunc START");
@@ -815,9 +827,12 @@ ncclResult_t collPreconnect(
     sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
   }
   // setup channels if needed before setup transport
-  if (comm->lazySetupChannels &&
-      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
-    NCCLCHECK(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit));
+  if (lazyChannelState(comm).lazySetupChannels &&
+      lazyChannelState(comm).nChannelsReady <
+          lazyChannelPlanState(comm).nMaxChannelsNeedInit) {
+    NCCLCHECK(
+        ncclx::setupChannels(
+            comm, lazyChannelPlanState(comm).nMaxChannelsNeedInit));
   }
 
   for (int i = 0; i < NCCL_NUM_ALGORITHMS; ++i) {

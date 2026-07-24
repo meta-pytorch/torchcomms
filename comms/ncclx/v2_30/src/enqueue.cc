@@ -27,6 +27,7 @@
 #include <cfloat> // FLT_MAX
 
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -519,7 +520,7 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     // If NCCLX lazy channel setup is enabled and applicable, mark algos and
     // number of channels need to be setup later in ncclCollPreconnectFunc for
     // collectives. Otherwise, fallback to baseline runtime connection logic
-    if (comm->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
+    if (comm->ncclxExt->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
       *needConnect = ncclx::algoNeedConnect(comm, task);
       algoNeedConnect[task->algorithm] |= *needConnect;
     } else if (
@@ -2617,7 +2618,7 @@ static ncclResult_t p2pTaskAppend(
         int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, c);
         /* if lazy setup is enabled, mark the channel as needing setup if
           * peerInfo is not initilized on the assigned channelId */
-        if (comm->lazySetupChannels && !comm->channels[channelId].peers) {
+        if (comm->ncclxExt->lazySetupChannels && !comm->channels[channelId].peers) {
           ncclx::p2pNeedConnect(comm, peer, channelId, isSendNotRecv);
         } else {
         if (isSendNotRecv) {

@@ -634,8 +634,8 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   ncclCommPushCudaFree(comm, devCommAndChans);
 
   // [META]: Cache devCommAndChans to be used later for lazily allocating channels
-  if (comm->lazySetupChannels) {
-    comm->devCommAndChans = devCommAndChans;
+  if (comm->ncclxExt->lazySetupChannels) {
+    comm->ncclxExt->devCommAndChans = devCommAndChans;
   }
 
   memLogMetaData = comm->logMetaData;
@@ -1115,7 +1115,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
+  comm->ncclxExt->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1598,16 +1598,16 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   comm->runtimeConn = comm->cuMemSupport && ncclParamRuntimeConnect();
 
-  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
+  if (comm->runtimeConn == 0 && comm->ncclxExt->lazySetupChannels == 1) {
     WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
   }
 
-  if (comm->lazySetupChannels) {
+  if (comm->ncclxExt->lazySetupChannels) {
     INFO(
         NCCL_INIT,
         "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
     // cache the ring info to be used for setupChannel later when needed
-    comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
+    comm->ncclxExt->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
   } else if (comm->runtimeConn) {
     for (int c=0; c<comm->nChannels; c++) {
       NCCLCHECKGOTO(setupChannel(comm, c, rank, nranks, rings+c*nranks), ret, fail);
