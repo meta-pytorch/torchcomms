@@ -144,6 +144,7 @@ TEST(AbortTest, timeoutDisabledNoop) {
 
   // Test should return false as abort is disabled:w
   EXPECT_FALSE(abort.Test());
+  EXPECT_FALSE(abort.TimedOut());
 }
 
 TEST(AbortTest, explicitSetTakesPrecedenceOverTimeout) {
@@ -166,6 +167,31 @@ TEST(AbortTest, timeoutAndExplicitSetBothTrue) {
 
   // Test should return true (both conditions are true)
   EXPECT_TRUE(abort.Test());
+}
+
+TEST(AbortTest, explicitAbortWinsOverExpiredTimeout) {
+  Abort abort{/*enabled=*/true};
+
+  abort.SetTimeout(std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  abort.Set();
+
+  EXPECT_TRUE(abort.Test());
+  EXPECT_FALSE(abort.TimedOut());
+}
+
+TEST(AbortTest, timeoutWinsBeforeExplicitAbort) {
+  Abort abort{/*enabled=*/true};
+
+  abort.SetTimeout(std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  EXPECT_TRUE(abort.TimedOut());
+
+  abort.Set();
+
+  EXPECT_TRUE(abort.Test());
+  EXPECT_TRUE(abort.TimedOut());
 }
 
 TEST(AbortTest, multipleTimeoutCalls) {
