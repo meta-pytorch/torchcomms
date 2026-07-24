@@ -512,21 +512,25 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
   NCCLCHECK(cfg->update(hints));
 
   std::string updated;
-  auto appendIfSet = [&](const char* key, const auto& field) {
+  auto appendIfSet = [&](const char* key, const std::string& value) {
     std::string val;
     if (hints->get(key, val) == ncclSuccess) {
       if (!updated.empty()) {
         updated += ' ';
       }
-      updated += fmt::format("{}={}", key, algoValToStr(field));
+      updated += fmt::format("{}={}", key, value);
     }
   };
-  appendIfSet("sendrecvAlgo", cfg->sendrecvAlgo);
-  appendIfSet("allgatherAlgo", cfg->allgatherAlgo);
-  appendIfSet("allreduceAlgo", cfg->allreduceAlgo);
-  appendIfSet("alltoallAlgo", cfg->alltoallAlgo);
-  appendIfSet("alltoallvAlgo", cfg->alltoallvAlgo);
-  appendIfSet("rmaAlgo", cfg->rmaAlgo);
+  appendIfSet("sendrecvAlgo", algoValToStr(cfg->sendrecvAlgo));
+  appendIfSet("allgatherAlgo", algoValToStr(cfg->allgatherAlgo));
+  appendIfSet("allreduceAlgo", algoValToStr(cfg->allreduceAlgo));
+  appendIfSet("alltoallAlgo", algoValToStr(cfg->alltoallAlgo));
+  appendIfSet("alltoallvAlgo", algoValToStr(cfg->alltoallvAlgo));
+  appendIfSet("rmaAlgo", algoValToStr(cfg->rmaAlgo));
+  appendIfSet("win_register_ipc_only", cfg->winRegisterIpcOnly ? "1" : "0");
+  appendIfSet(
+      "win_register_enable_signal", cfg->winRegisterEnableSignal ? "1" : "0");
+  appendIfSet("win_register_symmetric", cfg->winRegisterSymmetric ? "1" : "0");
 
   if (!updated.empty()) {
     INFO(

@@ -480,7 +480,8 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
-      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
+      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}] "
+      "ipcOnly={} enableSignal={} symmetric={}",
       myRank,
       allocDataBuf_ ? "Allocated" : "User Provided",
       winDataPtr,
@@ -492,7 +493,10 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       statex->commHash(),
       statex->nNodes(),
       statex->nRanks(),
-      statex->nLocalRanks());
+      statex->nLocalRanks(),
+      ipcOnly_,
+      enableSignal_,
+      symmetric_);
   return commSuccess;
 }
 
