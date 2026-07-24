@@ -159,6 +159,9 @@ void checkAlgoStrToVal(enum NCCL_ALLTOALL_ALGO algo) {
     case NCCL_ALLTOALL_ALGO::ctgraph:
       str = "ctgraph";
       break;
+    case NCCL_ALLTOALL_ALGO::ctwin:
+      str = "ctwin";
+      break;
   }
   enum NCCL_ALLTOALL_ALGO result;
   algoStrToVal(str, result);

@@ -126,7 +126,8 @@ bool ctranAllToAllSupport(
     commDataType_t datatype,
     CtranComm* comm,
     enum NCCL_ALLTOALL_ALGO algo,
-    cudaStream_t stream = nullptr);
+    cudaStream_t stream = nullptr,
+    void* recvbuff = nullptr);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,

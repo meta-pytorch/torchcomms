@@ -253,11 +253,12 @@ commResult_t CtranWin::exchange() {
   // allGather round-trip; otherwise gather each rank's size.
   // FIXME(ctwin): confirm whether this size allGather is needed at all for the
   // non-symmetric path (added in D87390033).
-  std::vector<size_t> allRankSizes(nRanks);
+  std::vector<size_t> allRankSizes;
   if (isSymmetric()) {
     allRankSizes.assign(nRanks, dataBytes);
   } else {
     CtranMapperTimer sizeAllGatherTimer;
+    allRankSizes.resize(nRanks);
     allRankSizes[myRank] = dataBytes;
     auto resFuture = comm->bootstrap_->allGather(
         allRankSizes.data(), sizeof(size_t), myRank, nRanks);
@@ -479,7 +480,8 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
-      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
+      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}] "
+      "ipcOnly={} enableSignal={} symmetric={}",
       myRank,
       allocDataBuf_ ? "Allocated" : "User Provided",
       winDataPtr,
@@ -491,7 +493,10 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       statex->commHash(),
       statex->nNodes(),
       statex->nRanks(),
-      statex->nLocalRanks());
+      statex->nLocalRanks(),
+      ipcOnly_,
+      enableSignal_,
+      symmetric_);
   return commSuccess;
 }
 

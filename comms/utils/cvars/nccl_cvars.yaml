@@ -2232,12 +2232,13 @@ cvars:
  - name        : NCCL_ALLTOALL_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctgraph
+   choices     : orig, ctran, ctgraph, ctwin
    description : |-
      The algorithm to use for alltoall communication
      orig - Copy-based communication
      ctran - Ctran-based communication
      ctgraph - Cudagraph-aware Ctran-based communication (captured into a CUDA graph)
+     ctwin - Ctran window-aware: detects whether the recvbuf is in a registered symmetric window and dispatches to the persistent AllToAllP algorithm, similar to ctgraph but capture-safe via a window-cached persistent request.
 
  - name        : NCCL_ALLTOALLV_ALGO
    type        : enum

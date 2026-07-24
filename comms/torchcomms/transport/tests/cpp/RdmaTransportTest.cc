@@ -993,6 +993,41 @@ TEST_F(RdmaTransportTest, DestructorCancelsPendingWorks) {
   EXPECT_EQ(cudaFree(buffer), cudaSuccess);
 }
 
+// A broken transport (any prior IB-level failure) must fail all subsequent
+// async APIs immediately with commInternalError, without issuing IB
+// operations. The transport is deliberately left unconnected: if any API
+// tried to issue an IB operation it would throw on the connected() check.
+TEST_F(RdmaTransportTest, BrokenTransportFailsFast) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  EXPECT_FALSE(transport->bind().empty());
+
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  transport->markBrokenForTest();
+
+  auto writeFuture = transport->write(
+      rdmaMemory.createView(buffer, bufferSize), remoteBuffer, false);
+  EXPECT_EQ(std::move(writeFuture).get(), commInternalError);
+
+  auto readView = rdmaMemory.createMutableView(buffer, bufferSize);
+  auto readFuture = transport->read(readView, remoteBuffer);
+  EXPECT_EQ(std::move(readFuture).get(), commInternalError);
+
+  EXPECT_EQ(transport->waitForWrite().get(), commInternalError);
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
 // Test that a production write with a timeout returns commTimeout when IB
 // cannot complete the operation (peer has disconnected).
 TEST_F(RdmaTransportTest, WriteTimeoutProductionDisconnectedPeer) {
@@ -1086,4 +1121,119 @@ TEST_F(RdmaTransportTest, WriteTimeoutProductionDisconnectedPeer) {
   clientThread.join();
 
   EXPECT_EQ(writeResult, commTimeout);
+}
+
+// A production write whose timeout fires while the IB operation is still
+// outstanding must not free the operation's CtranIbRequest: CtranIb's VC
+// queues hold a raw pointer to it and write to it when the operation's CQE
+// later arrives. Flood a healthy peer with zero-timeout writes so the works
+// retire before their CQEs land, then keep progressing (a follow-up write)
+// and destroy the transport. Under ASAN this catches the use-after-free.
+TEST_F(RdmaTransportTest, WriteZeroTimeoutLateCompletionSafe) {
+  auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
+  auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
+  auto [memoryInfoPromise, memoryInfoFuture] =
+      folly::makePromiseContract<RdmaRemoteBuffer>();
+  // Synchronization: server tells client all writes are done
+  auto [donePromise, doneFuture] = folly::makePromiseContract<bool>();
+
+  // Large enough that a write cannot complete before the zero timeout is
+  // evaluated on the first progress pass.
+  const size_t bufferSize = 64 * 1024 * 1024;
+  const int numFloodWrites = 32;
+
+  std::thread serverThread([&]() {
+    EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+    auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+    auto transport = std::make_unique<torch::comms::RdmaTransport>(
+        0, evbThread->getEventBase());
+
+    std::string myUrl = transport->bind();
+    EXPECT_FALSE(myUrl.empty());
+    urlPromise0.setValue(myUrl);
+
+    std::string peerUrl = std::move(urlFuture1).get();
+    EXPECT_EQ(transport->connect(peerUrl), commSuccess);
+
+    void* buffer = nullptr;
+    EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+    torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, 0);
+
+    auto clientMemInfo = std::move(memoryInfoFuture).get();
+
+    // Zero-timeout writes: each work retires on the first progress pass
+    // while its put is still on the wire; the CQE lands afterwards.
+    std::vector<folly::SemiFuture<commResult_t>> floodFutures;
+    floodFutures.reserve(numFloodWrites);
+    for (int i = 0; i < numFloodWrites; ++i) {
+      floodFutures.push_back(transport->write(
+          rdmaMemory.createView(buffer, bufferSize),
+          clientMemInfo,
+          false,
+          std::chrono::milliseconds(0)));
+    }
+    int numTimeouts = 0;
+    for (auto& future : floodFutures) {
+      auto result = std::move(future).get();
+      EXPECT_TRUE(result == commSuccess || result == commTimeout)
+          << "unexpected result " << result;
+      if (result == commTimeout) {
+        ++numTimeouts;
+      }
+    }
+    // The point of the test is exercising the retired-work path; with a
+    // 64MB payload and a 0ms timeout, writes cannot complete in time.
+    EXPECT_GE(numTimeouts, 1);
+
+    // A follow-up write keeps the progress loop running through the late
+    // CQEs of the timed-out writes and must still succeed.
+    auto finalFuture = transport->write(
+        rdmaMemory.createView(buffer, bufferSize),
+        clientMemInfo,
+        true,
+        std::chrono::seconds(30));
+    EXPECT_EQ(commSuccess, std::move(finalFuture).get());
+
+    donePromise.setValue(true);
+
+    // Destroy the transport; any works still retired are freed only after
+    // the IB instance is torn down.
+    transport.reset();
+    EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+  });
+
+  std::thread clientThread([&]() {
+    EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
+    auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+    auto transport = std::make_unique<torch::comms::RdmaTransport>(
+        1, evbThread->getEventBase());
+
+    std::string myUrl = transport->bind();
+    EXPECT_FALSE(myUrl.empty());
+    urlPromise1.setValue(myUrl);
+
+    std::string peerUrl = std::move(urlFuture0).get();
+    EXPECT_EQ(transport->connect(peerUrl), commSuccess);
+
+    void* buffer = nullptr;
+    EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+    torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, 1);
+
+    RdmaRemoteBuffer myMemInfo{
+        .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+    memoryInfoPromise.setValue(myMemInfo);
+
+    // Wait for the notify of the server's final write.
+    auto waitFuture = transport->waitForWrite();
+    EXPECT_EQ(commSuccess, std::move(waitFuture).get());
+
+    // Keep the transport and buffer alive until the server is done writing.
+    std::move(doneFuture).get();
+
+    transport.reset();
+    EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+  });
+
+  serverThread.join();
+  clientThread.join();
 }
