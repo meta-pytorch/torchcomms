@@ -22,10 +22,37 @@ jobs:
       test-infra-repository: pytorch/test-infra
       test-infra-ref: main
       with-cuda: enable
-      with-rocm: disable
+      with-rocm: enable
       with-cpu: disable
-  build:
+
+  configure-matrix:
     needs: generate-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-runners.outputs.matrix }}
+    steps:
+      - id: set-runners
+        env:
+          MATRIX: ${{ needs.generate-matrix.outputs.matrix }}
+        run: |
+          patched=$(python3 - <<'PY'
+          import json, os
+          runners = {
+              "cuda": "linux.g5.12xlarge.nvidia.gpu",
+              "rocm": "linux.2xlarge",
+          }
+          matrix = json.loads(os.environ["MATRIX"])
+          for entry in matrix["include"]:
+              runner = runners.get(entry.get("gpu_arch_type"))
+              if runner:
+                  entry["validation_runner"] = runner
+          print(json.dumps(matrix))
+          PY
+          )
+          echo "matrix=${patched}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: configure-matrix
     name: ${{ matrix.repository }}
     uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
     with:
@@ -39,6 +66,5 @@ jobs:
       package-name: torchcomms
       test-infra-repository: pytorch/test-infra
       test-infra-ref: main
-      build-matrix: ${{ needs.generate-matrix.outputs.matrix }}
+      build-matrix: ${{ needs.configure-matrix.outputs.matrix }}
       trigger-event: ${{ github.event_name }}
-      runner: linux.g5.12xlarge.nvidia.gpu

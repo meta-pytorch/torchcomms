@@ -31,4 +31,17 @@ pip install pyyaml
 export NCCL_SKIP_CONDA_INSTALL=1
 export CLEAN_BUILD=1
 
+if [[ "${CU_VERSION:-}" == rocm* ]]; then
+  export USE_SYSTEM_LIBS=ON
+  export USE_NCCL=OFF
+  export USE_NCCLX=OFF
+  export USE_GLOO=OFF
+  export USE_RCCL=ON
+  export USE_RCCLX=OFF
+  export USE_TRANSPORT=OFF
+  export USE_TRANSPORT_CCA_HOOK=OFF
+  export ROCM_HOME=/opt/rocm
+  export RCCL_INCLUDE=/opt/rocm/include/rccl
+fi
+
 python setup.py bdist_wheel
