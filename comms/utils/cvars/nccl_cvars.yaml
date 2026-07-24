@@ -3251,6 +3251,22 @@ cvars:
    description : |-
      Use f32 accumulation for fp16/bf16 multimem reduce; false = native 2-byte accumulation.
 
+ - name        : MCCL_ALLGATHER_ALGO
+   type        : enum
+   default     : none
+   choices     : none, cnvlmm
+   description : |-
+     Selects the MCCL-hosted AllGather algorithm dispatched through the
+     ICollective interface (McclComm::allGather).
+     none - do not select an MCCL-hosted algorithm; fall through to the existing
+            ctran AllGather path (NCCL_ALLGATHER_ALGO).
+     cnvlmm - single-NVLink-domain AllGather over NVLink multimem (NVLS store).
+              Requires nNodes==1, >2 local ranks, and a Prims-backed multimem
+              NVL transport; store-only over fp32/fp16/bf16/int32 element
+              widths. Explicitly selecting cnvlmm is a hard requirement: if the
+              comm/opts are unsupported the request is rejected
+              (commInvalidArgument); it does not fall back to the baseline path.
+
  - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
    type        : bool
    default     : true
