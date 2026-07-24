@@ -1,17 +1,18 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <thread>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "comms/ctran/utils/Abort.h"
+#include "comms/common/fault_tolerance/Abort.h"
 
-namespace ctran::testing {
+namespace comms::fault_tolerance::testing {
 
-using ::ctran::utils::Abort;
+using ::comms::fault_tolerance::Abort;
 
 TEST(AbortTest, enabledDefaultNotAbort) {
   Abort abort{/*enabled=*/true};
@@ -97,7 +98,7 @@ TEST(AbortTest, MultipleAbortTest) {
 }
 
 TEST(AbortFactoryTest, enabled) {
-  auto abort = ::ctran::utils::createAbort(/*enabled=*/true);
+  auto abort = ::comms::fault_tolerance::createAbort(/*enabled=*/true);
   ASSERT_TRUE(abort->Enabled());
 
   abort->Set();
@@ -106,7 +107,7 @@ TEST(AbortFactoryTest, enabled) {
 }
 
 TEST(AbortFactoryTest, disabledNoop) {
-  auto abort = ::ctran::utils::createAbort(/*enabled=*/false);
+  auto abort = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
   ASSERT_FALSE(abort->Enabled());
 
   abort->Set();
@@ -487,4 +488,4 @@ TEST(AbortTest, defaultTimeoutDisabledSetterNoop) {
   EXPECT_EQ(abort.GetDefaultTimeoutDuration(), std::nullopt);
 }
 
-} // namespace ctran::testing
+} // namespace comms::fault_tolerance::testing
