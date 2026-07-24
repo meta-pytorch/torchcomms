@@ -999,19 +999,19 @@ class CtranIb {
     // VC may not be established yet, e.g., if the connection is established
     // by listenThread. Continue check till it is established.
     if (!PerfConfig::skipVcConnectionCheck) {
-      while (vc == nullptr && !abortCtrl_->Test()) {
+      while (vc == nullptr && !abortCtrl_->isAborted()) {
         vc = vcState_.getVc<PerfConfig>(peerRank);
       }
     }
 
-    while (notifyCnt != 0 && !abortCtrl_->Test()) {
+    while (notifyCnt != 0 && !abortCtrl_->isAborted()) {
       FB_COMMCHECK(this->progressInternal<PerfConfig>());
 
       CTRAN_IB_PER_OBJ_LOCK_GUARD(
           vc->mutex, { FB_COMMCHECK(vc->checkNotifies(notifyCnt)); });
     }
 
-    if (abortCtrl_->Test()) {
+    if (abortCtrl_->isAborted()) {
       // TODO(T238821628): re-evaluate error code
       throw ctran::utils::Exception("comm aborted", commRemoteError);
     }

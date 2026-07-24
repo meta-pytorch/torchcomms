@@ -50,7 +50,7 @@ struct GpeIterMetadata {
 //      verdict.
 //   3. mark(WAIT_KERNEL / HOST_ALGO / TERMINATE_KERNEL / CMD_DEQUEUE):
 //      emits iff (a) the iter was sampled by injectMetadata, OR
-//      (b) `abort->Test()` is true at mark time (live-abort bypass),
+//      (b) `abort->isAborted()` is true at mark time (live-abort bypass),
 //      OR (c) this is the ALGO_ABORTED marker. The per-iter timeline
 //      is stamped on every mark regardless of sampling so
 //      debugString() and the backfill walk see the full waterfall.

@@ -262,7 +262,7 @@ TEST_P(CtranGpeFTEnabledAbortTest, HostDetectedTimeoutFromDefault) {
   ASSERT_TRUE(ctranComm->abortEnabled());
   FtTestSync sync;
   sync.setTimeout();
-  ctranComm->getAbort()->SetDefaultTimeoutDuration(
+  ctranComm->getAbort()->setDefaultTimeout(
       kHostAlgoFnWait - std::chrono::milliseconds(500));
   runTestWillAbort(
       kernelFn,
@@ -283,7 +283,7 @@ TEST_P(CtranGpeFTEnabledAbortTest, HostDetectedTimeoutPerOpOverridesDefault) {
   ASSERT_TRUE(ctranComm->abortEnabled());
   FtTestSync sync;
   sync.setTimeout();
-  ctranComm->getAbort()->SetDefaultTimeoutDuration(
+  ctranComm->getAbort()->setDefaultTimeout(
       kHostAlgoFnWait + std::chrono::milliseconds(5000));
   runTestWillAbort(
       kernelFn,
