@@ -46,10 +46,10 @@ class CtranAllReduceTest
     CtranIntraProcessFixture::SetUp();
   }
   void startWorkers(bool abortEnabled) {
-    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
     if (abortEnabled) {
       for (int i = 0; i < kNRanks; ++i) {
-        aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+        aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
       }
     }
     CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
@@ -350,10 +350,10 @@ class CtranAllReduceRingMinSizeTest
   }
 
   void startWorkers(int numRanks = kDefaultNumRanks) {
-    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
     aborts.reserve(numRanks);
     for (int i = 0; i < numRanks; ++i) {
-      aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+      aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
     }
     CtranIntraProcessFixture::startWorkers(numRanks, /*aborts=*/aborts);
   }
@@ -478,7 +478,8 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
 
   void runAllReduce(size_t nElem) {
     CtranIntraProcessFixture::startWorkers(
-        kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
+        kNRanks,
+        /*aborts=*/{comms::fault_tolerance::createAbort(/*enabled=*/true)});
 
     run(/*rank=*/0, [this, nElem](PerRankState& state) {
       // set up src buffer to hold magic values, and zero out dst buffers

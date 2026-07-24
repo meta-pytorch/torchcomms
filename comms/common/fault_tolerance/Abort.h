@@ -7,9 +7,20 @@
 #include <memory>
 #include <optional>
 
-namespace ctran::utils {
+namespace comms::fault_tolerance {
 
 class Abort final {
+ private:
+  enum class AbortReason : int {
+    NONE = 0,
+    ABORTED = 1,
+    TIMED_OUT = 2,
+  };
+
+  static constexpr int encode(AbortReason reason) {
+    return static_cast<int>(reason);
+  }
+
  public:
   explicit Abort(bool enabled) : enabled_(enabled) {}
   ~Abort() = default;
@@ -22,7 +33,12 @@ class Abort final {
     if (!enabled_) {
       return;
     }
-    abort_.store(true, std::memory_order_release);
+    int expected = encode(AbortReason::NONE);
+    abort_.compare_exchange_strong(
+        expected,
+        encode(AbortReason::ABORTED),
+        std::memory_order_acq_rel,
+        std::memory_order_acquire);
   }
 
   inline bool Test() {
@@ -30,8 +46,7 @@ class Abort final {
       return false;
     }
 
-    // Check if abort was explicitly set
-    if (abort_.load(std::memory_order_acquire)) {
+    if (abort_.load(std::memory_order_acquire) != encode(AbortReason::NONE)) {
       return true;
     }
 
@@ -51,16 +66,23 @@ class Abort final {
       return false;
     }
 
-    if (timedOut_.load(std::memory_order_acquire)) {
+    if (abort_.load(std::memory_order_acquire) ==
+        encode(AbortReason::TIMED_OUT)) {
       return true;
     }
 
     // Check for timeout if timeout is set
     auto now = std::chrono::steady_clock::now();
     if (now >= timeoutTime_.load(std::memory_order_acquire)) {
-      abort_.store(true, std::memory_order_release);
-      timedOut_.store(true, std::memory_order_release);
-      return true;
+      int expected = encode(AbortReason::NONE);
+      if (abort_.compare_exchange_strong(
+              expected,
+              encode(AbortReason::TIMED_OUT),
+              std::memory_order_acq_rel,
+              std::memory_order_acquire)) {
+        return true;
+      }
+      return expected == encode(AbortReason::TIMED_OUT);
     }
 
     return false;
@@ -134,15 +156,15 @@ class Abort final {
  private:
   const bool enabled_;
 
-  std::atomic<bool> abort_{false};
+  std::atomic<int> abort_{encode(AbortReason::NONE)};
   std::atomic<bool> hasTimeout_{false};
-  std::atomic<bool> timedOut_{false};
   std::atomic<std::chrono::steady_clock::time_point> timeoutTime_{
       std::chrono::steady_clock::time_point{}};
   // -1 = unset.
   std::atomic<int64_t> defaultTimeoutDurationMs_{-1};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
+  static_assert(std::atomic<int>::is_always_lock_free);
   static_assert(
       std::atomic<std::chrono::steady_clock::time_point>::is_always_lock_free);
   static_assert(std::atomic<int64_t>::is_always_lock_free);
@@ -150,4 +172,4 @@ class Abort final {
 
 std::shared_ptr<Abort> createAbort(bool enabled);
 
-} // namespace ctran::utils
+} // namespace comms::fault_tolerance

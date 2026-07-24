@@ -10,12 +10,12 @@
 #include <folly/Synchronized.h>
 #include <folly/synchronization/Baton.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::fttesting {
@@ -131,7 +131,8 @@ class CtranGpeFaultToleranceTestBase : public ::ctran::CtranStandaloneFixture {
   void SetUpInternal(bool abortEnabled) {
     CtranStandaloneFixture::SetUp();
 
-    ctranComm = makeCtranComm(::ctran::utils::createAbort(abortEnabled));
+    ctranComm =
+        makeCtranComm(::comms::fault_tolerance::createAbort(abortEnabled));
 
     ASSERT_CUDASUCCESS(cudaStreamCreate(&stream));
 
