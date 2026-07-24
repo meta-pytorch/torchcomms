@@ -5,17 +5,17 @@
 
 #include <cuda_runtime.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 
 namespace ctran::testing {
 
-using ::ctran::utils::Abort;
+using ::comms::fault_tolerance::Abort;
 
 #define ASSERT_CUDASUCCESS(cmd)                                     \
   do {                                                              \
@@ -47,7 +47,8 @@ class CtranGpeKernelTestBase
   void SetUp() override {
     CtranStandaloneFixture::SetUp();
 
-    ctranComm = makeCtranComm(ctran::utils::createAbort(/*enabled=*/true));
+    ctranComm =
+        makeCtranComm(comms::fault_tolerance::createAbort(/*enabled=*/true));
 
     ASSERT_CUDASUCCESS(cudaStreamCreate(&stream_));
     ASSERT_CUDASUCCESS(cudaHostAlloc(
