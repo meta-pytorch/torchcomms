@@ -17,6 +17,8 @@ static inline const std::string allToAllAlgoName(enum NCCL_ALLTOALL_ALGO algo) {
       return "CtranAllToAll";
     case NCCL_ALLTOALL_ALGO::ctgraph:
       return "CtranCudagraphAware";
+    case NCCL_ALLTOALL_ALGO::ctwin:
+      return "CtranAllToAllCtwin";
     case NCCL_ALLTOALL_ALGO::orig:
       return "Baseline";
     default:

@@ -99,6 +99,8 @@ inline void algoStrToVal(const std::string& str, enum NCCL_ALLTOALL_ALGO& val) {
     val = NCCL_ALLTOALL_ALGO::ctran;
   } else if (str == "ctgraph") {
     val = NCCL_ALLTOALL_ALGO::ctgraph;
+  } else if (str == "ctwin") {
+    val = NCCL_ALLTOALL_ALGO::ctwin;
   } else {
     val = NCCL_ALLTOALL_ALGO::orig;
   }
@@ -208,6 +210,8 @@ inline std::string algoValToStr(enum NCCL_ALLTOALL_ALGO val) {
       return "ctran";
     case NCCL_ALLTOALL_ALGO::ctgraph:
       return "ctgraph";
+    case NCCL_ALLTOALL_ALGO::ctwin:
+      return "ctwin";
   }
   return "unknown";
 }

@@ -377,7 +377,7 @@ ncclResult_t ncclAllToAll(
 
   auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
   if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream)) {
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream, recvbuff)) {
     return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
   }
 
