@@ -584,20 +584,20 @@ int ServerSocket::shutdown() {
 }
 
 std::unique_ptr<ISocket> SocketFactory::createClientSocket(
-    std::shared_ptr<ctran::utils::Abort> abort) {
+    std::shared_ptr<comms::fault_tolerance::Abort> abort) {
   return std::make_unique<Socket>();
 }
 
 std::unique_ptr<ISocket> SocketFactory::createClientSocket(
     int sockFd,
     const folly::SocketAddress& peerAddr,
-    std::shared_ptr<ctran::utils::Abort> abort) {
+    std::shared_ptr<comms::fault_tolerance::Abort> abort) {
   return std::make_unique<Socket>(sockFd, false, peerAddr);
 }
 
 std::unique_ptr<IServerSocket> SocketFactory::createServerSocket(
     int acceptRetryCnt,
-    std::shared_ptr<ctran::utils::Abort> abort) {
+    std::shared_ptr<comms::fault_tolerance::Abort> abort) {
   return std::make_unique<ServerSocket>(acceptRetryCnt);
 }
 

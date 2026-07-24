@@ -57,7 +57,7 @@ Bootstrap::Bootstrap(
     VcState& vcState,
     const VcLayout& vcLayout,
     std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory,
-    std::shared_ptr<::ctran::utils::Abort> abortCtrl,
+    std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl,
     const CommLogData& logData,
     CtranComm* comm,
     std::vector<CtranIbDevice>& devices,

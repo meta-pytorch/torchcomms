@@ -11,6 +11,7 @@
 #include <folly/futures/Future.h>
 #include <folly/synchronization/Baton.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
@@ -19,10 +20,9 @@
 #include "comms/ctran/bootstrap/tests/MockISocket.h"
 #include "comms/ctran/bootstrap/tests/MockInjectorSocketFactory.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-using AbortPtr = std::shared_ptr<ctran::utils::Abort>;
+using AbortPtr = std::shared_ptr<comms::fault_tolerance::Abort>;
 using namespace std::literals::chrono_literals;
 using ::testing::_;
 using ::testing::StrictMock;
@@ -170,7 +170,7 @@ class TwoRankTestHelper {
     std::thread rank0Thread([&]() {
       EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
       SocketServerAddr serverAddr = getSocketServerAddress();
-      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
           0, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
 
@@ -184,7 +184,7 @@ class TwoRankTestHelper {
     std::thread rank1Thread([&]() {
       EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
       SocketServerAddr serverAddr = getSocketServerAddress();
-      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
           1, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
 
@@ -283,7 +283,7 @@ class CtranIbBootstrapParameterizedTest
       CtranIb::BootstrapMode mode,
       bool abortEnabled = true,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(abortEnabled);
+    auto abortCtrl = comms::fault_tolerance::createAbort(abortEnabled);
 
     auto param = GetParam();
     auto socketFactory = param.socketFactoryCreator();
@@ -323,7 +323,7 @@ TEST_F(CtranIbBootstrapCommonTest, SingleInterfaceInSocketIfnameSucceeds) {
   };
 
   NCCL_SOCKET_IFNAME = "lo"; // Single interface (no comma)
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   // Should not throw; single interface is valid
   auto ctranIb = createCtranIb(
@@ -342,7 +342,7 @@ TEST_F(CtranIbBootstrapCommonTest, MultiInterfaceInSocketIfnameSucceeds) {
   };
 
   NCCL_SOCKET_IFNAME = "lo,eth0";
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   auto ctranIb = createCtranIb(
       /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
@@ -357,7 +357,7 @@ TEST_F(CtranIbBootstrapCommonTest, EmptySocketIfnameFailsNoInterfaces) {
   };
 
   NCCL_SOCKET_IFNAME = "";
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   try {
     auto ctranIb = createCtranIb(
@@ -406,7 +406,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   SocketServerAddr serverAddr = getSocketServerAddress();
   auto ctranIb = createCtranIb(
       /*rank=*/0,
@@ -449,7 +449,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   SocketServerAddr serverAddr = getSocketServerAddress();
   auto ctranIb = createCtranIb(
       /*rank=*/0,
@@ -591,7 +591,7 @@ class CtranIbAbortCtrlMsgTest
   void SetUp() override {
     CtranIbBootstrapTestBase::SetUp();
     EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-    abortCtrl_ = ctran::utils::createAbort(/*enabled=*/true);
+    abortCtrl_ = comms::fault_tolerance::createAbort(/*enabled=*/true);
   }
 
   void TearDown() override {
@@ -698,7 +698,7 @@ class CtranIbAbortCtrlMsgTest
 
   std::unique_ptr<CtranIb> ctranIb_;
   folly::Baton<> acceptSocketBaton_;
-  std::shared_ptr<ctran::utils::Abort> abortCtrl_;
+  std::shared_ptr<comms::fault_tolerance::Abort> abortCtrl_;
   std::vector<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>
       mockSockets_;
   std::vector<std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>>
@@ -909,7 +909,8 @@ std::shared_ptr<PreparedMockedServerSocket> prepareMockIServerSocket(
     bool unblockAcceptInShutdown,
     bool abortEnabled = false) {
   auto prepared = std::make_shared<PreparedMockedServerSocket>();
-  prepared->abortCtrl = ctran::utils::createAbort(/*enabled=*/abortEnabled);
+  prepared->abortCtrl =
+      comms::fault_tolerance::createAbort(/*enabled=*/abortEnabled);
   prepared->acceptCalledBaton = std::make_shared<folly::Baton<>>();
   prepared->unblockAcceptBaton = std::make_shared<folly::Baton<>>();
   prepared->hasShutDown = std::make_shared<std::atomic_flag>();
@@ -1037,7 +1038,7 @@ TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
 
 // Test that abort during bus card exchange fails gracefully
 TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   folly::Baton<> acceptSocketBaton;
 
   auto mockSocket =
@@ -1434,7 +1435,7 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumCqe) {
   };
 
   auto makeIb = [&](std::optional<int> maxNumCqe = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     return createCtranIb(
         /*rank=*/0,
         CtranIb::BootstrapMode::kDefaultServer,
@@ -1475,7 +1476,7 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumNic) {
   const int defaultNumNics = NCCL_CTRAN_IB_DEVICES_PER_RANK;
 
   auto makeIb = [&](std::optional<int> maxNumNic = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     return createCtranIb(
         /*rank=*/0,
         CtranIb::BootstrapMode::kDefaultServer,

@@ -67,7 +67,7 @@ AbortableSocket::AbortableSocket(
 
   if (abort_ == nullptr) {
     throw ctran::utils::Exception(
-        "Invalid ctran::utils::Abort object", commInvalidArgument);
+        "Invalid comms::fault_tolerance::Abort object", commInvalidArgument);
   }
 
   prepareSocket();
@@ -737,7 +737,7 @@ std::unique_ptr<ISocket> AbortableSocketFactory::createClientSocket(
 
 std::unique_ptr<IServerSocket> AbortableSocketFactory::createServerSocket(
     int acceptRetryCnt,
-    std::shared_ptr<ctran::utils::Abort> abort) {
+    std::shared_ptr<comms::fault_tolerance::Abort> abort) {
   return std::make_unique<AbortableServerSocket>(acceptRetryCnt, abort);
 }
 
