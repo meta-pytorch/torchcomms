@@ -253,11 +253,12 @@ commResult_t CtranWin::exchange() {
   // allGather round-trip; otherwise gather each rank's size.
   // FIXME(ctwin): confirm whether this size allGather is needed at all for the
   // non-symmetric path (added in D87390033).
-  std::vector<size_t> allRankSizes(nRanks);
+  std::vector<size_t> allRankSizes;
   if (isSymmetric()) {
     allRankSizes.assign(nRanks, dataBytes);
   } else {
     CtranMapperTimer sizeAllGatherTimer;
+    allRankSizes.resize(nRanks);
     allRankSizes[myRank] = dataBytes;
     auto resFuture = comm->bootstrap_->allGather(
         allRankSizes.data(), sizeof(size_t), myRank, nRanks);
