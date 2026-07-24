@@ -30,6 +30,7 @@ add_compile_definitions(MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM FMT_USE_CONSTEXPR)
 
 # CTranIB
 add_subdirectory(comms/utils)
+add_subdirectory(comms/common/fault_tolerance)
 add_subdirectory(comms/ctran)
 
 # Get folly LDFLAGS using pkg-config
@@ -89,6 +90,7 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     ctran
+    fault_tolerance
     utils
 )
 if(USE_SYSTEM_LIBS)
