@@ -916,6 +916,147 @@ __device__ __forceinline__ SendRecvGeometry calcGeometry(
   };
 }
 
+struct SendSignal {
+  IbgdaRemoteBuffer buf;
+  uint64_t val;
+};
+
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ SendSignal prepareSendBuf(
+    protocol::Simple,
+    ThreadGroup& group,
+    char* staging,
+    const char* src,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    const IbRemoteChannel& remoteChannel,
+    uint64_t signalVal,
+    Args... args) {
+#if PIPES_IS_DEVICE_COMPILE
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    CopyOp::send(staging, src, validBytes, group, dataOff, args...);
+  }
+  group.sync();
+  return SendSignal{remoteChannel.dataReady, signalVal};
+#else
+  (void)group;
+  (void)staging;
+  (void)src;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)remoteChannel;
+  (void)signalVal;
+  ((void)args, ...);
+  return SendSignal{};
+#endif
+}
+
+// Simple decode: wait for the sender's DATA_READY on this chunk's lane, then
+// cooperative CopyOp::recv from contiguous staging.
+template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+__device__ __forceinline__ void consumeRecvBuf(
+    protocol::Simple,
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    char* dst,
+    const char* staging,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t waitCredit,
+    const Timeout& timeout,
+    Args... args) {
+#if PIPES_IS_DEVICE_COMPILE
+  wait_recv_data_ready(
+      transport, group, localChannel, localDataReady, waitCredit, timeout);
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    CopyOp::recv(dst, staging, validBytes, group, dataOff, args...);
+  }
+  group.sync();
+#else
+  (void)transport;
+  (void)group;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)dst;
+  (void)staging;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)waitCredit;
+  (void)timeout;
+  ((void)args, ...);
+#endif
+}
+
+// Simple forward: wait for the upstream chunk's DATA_READY, then a single fused
+// CopyOp::forward transforms recvStaging -> dst + fwdStaging, and return the
+// DATA_READY SendSignal that the relay put piggybacks. This is the forward
+// analog of consumeRecvBuf (recv-side readiness) fused with prepareSendBuf
+// (relay signal); LL later overrides it to poll inline flags, repack the fwd
+// staging, and return an empty signal.
+template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+__device__ __forceinline__ SendSignal prepareForwardBuf(
+    protocol::Simple,
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& recvLocalChannel,
+    const IbgdaLocalBuffer& recvDataReady,
+    char* dst,
+    char* fwdStaging,
+    const char* recvStaging,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t recvWaitCredit,
+    const IbRemoteChannel& fwdRemoteChannel,
+    uint64_t fwdSignalVal,
+    const Timeout& timeout,
+    Args... args) {
+#if PIPES_IS_DEVICE_COMPILE
+  wait_recv_data_ready(
+      transport,
+      group,
+      recvLocalChannel,
+      recvDataReady,
+      recvWaitCredit,
+      timeout);
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    CopyOp::forward(
+        dst, fwdStaging, recvStaging, validBytes, group, dataOff, args...);
+  }
+  group.sync();
+  return SendSignal{fwdRemoteChannel.dataReady, fwdSignalVal};
+#else
+  (void)transport;
+  (void)group;
+  (void)recvLocalChannel;
+  (void)recvDataReady;
+  (void)dst;
+  (void)fwdStaging;
+  (void)recvStaging;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)recvWaitCredit;
+  (void)fwdRemoteChannel;
+  (void)fwdSignalVal;
+  (void)timeout;
+  ((void)args, ...);
+  return SendSignal{};
+#endif
+}
+
 template <
     typename Transport,
     typename CopyOp = Memcpy,
@@ -1007,18 +1148,17 @@ __device__ __forceinline__ void send(
     prepare_send_slot(transport, group, slot, pipelineCycle, timeout);
 
     // (2) Cooperative copy: src -> local sendStaging via CopyOp.
-    const std::size_t validBytes =
-        valid_payload_bytes(dataOff, payloadBytes, nbytes);
-    if (validBytes > 0) {
-      CopyOp::send(
-          channelLayout.sendStagingPtr + stagingOff,
-          static_cast<const char*>(src) + dataOff,
-          validBytes,
-          group,
-          dataOff,
-          args...);
-    }
-    group.sync();
+    const SendSignal sig = prepareSendBuf<CopyOp>(
+        Proto{},
+        group,
+        channelLayout.sendStagingPtr + stagingOff,
+        static_cast<const char*>(src) + dataOff,
+        payloadBytes,
+        nbytes,
+        dataOff,
+        remoteChannel,
+        protocolBytesThis,
+        args...);
 
     // (3) Backpressure: wait for receiver to free this byte range's
     //     recvStaging offset. Symmetric with DATA_READY.
@@ -1039,8 +1179,8 @@ __device__ __forceinline__ void send(
           channelLayout.sendStagingBuf.subBuffer(stagingOff),
           remoteChannel.recvStaging.subBuffer(stagingOff),
           bytesThis,
-          remoteChannel.dataReady,
-          protocolBytesThis,
+          sig.buf,
+          sig.val,
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
@@ -1174,29 +1314,22 @@ __device__ __forceinline__ void recv(
         static_cast<std::size_t>(slot) * perBlockSlotWire +
         Proto::wire_bytes(chunkOff);
 
-    // (1) Wait for sender's DATA_READY on the specific round-robin lane that
-    //     carried this chunk (mirrors the sender's per-channel Send cursor).
-    wait_recv_data_ready(
+    // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL, the
+    //         inline flag) and cooperatively copy recvStaging -> dst (decode).
+    consumeRecvBuf<CopyOp>(
+        Proto{},
         transport,
         group,
         localChannel,
         localDataReady,
+        static_cast<char*>(dst) + dataOff,
+        channelLayout.recvStagingPtr + stagingOff,
+        payloadBytes,
+        nbytes,
+        dataOff,
         protocolBytesThis,
-        timeout);
-
-    // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
-    const std::size_t validBytes =
-        valid_payload_bytes(dataOff, payloadBytes, nbytes);
-    if (validBytes > 0) {
-      CopyOp::recv(
-          static_cast<char*>(dst) + dataOff,
-          channelLayout.recvStagingPtr + stagingOff,
-          validBytes,
-          group,
-          dataOff,
-          args...);
-    }
-    group.sync();
+        timeout,
+        args...);
 
     transport.signal(
         group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
@@ -1398,34 +1531,29 @@ __device__ __forceinline__ void forward(
     const uint64_t fwdPipelineCycle =
         fwdStreamPayload / fwdGeo.pipelineBytesPayload;
 
-    // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
-    //     lane that carried this chunk (mirrors the upstream sender's Send
-    //     cursor via recvLocalChannel.recvDataReadyLaneCursor).
-    wait_recv_data_ready(
+    // (1) Wait for local completion on fwd's sendStaging.
+    prepare_send_slot(fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
+
+    // (2) prepareForwardBuf: recv-side readiness + fused transform recvStaging
+    //     -> dst + fwdStaging, returning the relay SendSignal for the put.
+    //     Tag-dispatched on Proto (Simple = DATA_READY wait + contiguous copy).
+    const SendSignal sig = prepareForwardBuf<CopyOp>(
+        Proto{},
         transport,
         group,
         recvLocalChannel,
         recvDataReady,
+        dst ? static_cast<char*>(dst) + dataOff : nullptr,
+        fwdChannelLayout.sendStagingPtr + fwdStagingOff,
+        channelLayout.recvStagingPtr + recvStagingOff,
+        payloadBytes,
+        nbytes,
+        dataOff,
         recvProtocolBytesThis,
-        timeout);
-
-    // (2) Wait for local completion on fwd's sendStaging.
-    prepare_send_slot(fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
-
-    // (3) CopyOp::forward — transform recv staging -> dst + fwd staging.
-    const std::size_t validBytes =
-        valid_payload_bytes(dataOff, payloadBytes, nbytes);
-    if (validBytes > 0) {
-      CopyOp::forward(
-          dst ? static_cast<char*>(dst) + dataOff : nullptr,
-          fwdChannelLayout.sendStagingPtr + fwdStagingOff,
-          channelLayout.recvStagingPtr + recvStagingOff,
-          validBytes,
-          group,
-          dataOff,
-          args...);
-    }
-    group.sync();
+        fwdRemoteChannel,
+        fwdProtocolBytesThis,
+        timeout,
+        args...);
 
     transport.signal(
         group,
@@ -1454,8 +1582,8 @@ __device__ __forceinline__ void forward(
           fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
           fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
           bytesThis,
-          fwdRemoteChannel.dataReady,
-          fwdProtocolBytesThis,
+          sig.buf,
+          sig.val,
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
