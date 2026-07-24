@@ -153,6 +153,38 @@ __device__ __forceinline__ uint64_t ack_signal_id(
       static_cast<uint64_t>(nvlRanks + rank);
 }
 
+// Arrival-counter barrier slots for the STAGING full barriers (input-ready in
+// stage_and_wait_all_inputs, ack in reduce_round_to_all_ranks). Live in four
+// dedicated slots past the SET-mode ready/ack region so they never alias the
+// per-peer SET slots. Counter slot is multicast-added +
+// locally read; epoch slot is a per-rank local-only baseline.
+__device__ __forceinline__ uint64_t staging_ready_counter_id(
+    const StageLayout& layout,
+    uint32_t lane,
+    int nvlRanks) {
+  return layout.signalBase +
+      static_cast<uint64_t>(lane) * layout.signalsPerLane +
+      static_cast<uint64_t>(2 * nvlRanks + 0);
+}
+__device__ __forceinline__ uint64_t
+staging_ready_epoch_id(const StageLayout& layout, uint32_t lane, int nvlRanks) {
+  return layout.signalBase +
+      static_cast<uint64_t>(lane) * layout.signalsPerLane +
+      static_cast<uint64_t>(2 * nvlRanks + 1);
+}
+__device__ __forceinline__ uint64_t
+staging_ack_counter_id(const StageLayout& layout, uint32_t lane, int nvlRanks) {
+  return layout.signalBase +
+      static_cast<uint64_t>(lane) * layout.signalsPerLane +
+      static_cast<uint64_t>(2 * nvlRanks + 2);
+}
+__device__ __forceinline__ uint64_t
+staging_ack_epoch_id(const StageLayout& layout, uint32_t lane, int nvlRanks) {
+  return layout.signalBase +
+      static_cast<uint64_t>(lane) * layout.signalsPerLane +
+      static_cast<uint64_t>(2 * nvlRanks + 3);
+}
+
 __device__ __forceinline__ uint64_t
 round_id(uint64_t roundBase, uint64_t primitiveRound) {
   return roundBase + primitiveRound + 1;
