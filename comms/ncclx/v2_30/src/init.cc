@@ -63,6 +63,7 @@
 #include "comms/utils/logger/LoggingFormat.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "meta/transport/transportExt.h"
 
@@ -299,6 +300,8 @@ static void ncclxCommFree(ncclComm_t comm) {
     delete static_cast<ncclx::Config*>(comm->config.ncclxConfig);
     comm->config.ncclxConfig = nullptr;
   }
+  delete comm->ncclxExt;
+  comm->ncclxExt = nullptr;
 }
 
 static ncclResult_t commFree(ncclComm_t comm) {
@@ -2027,7 +2030,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
 
-  if (comm->useCtran_) {
+  if (comm->ncclxExt->useCtran) {
     NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
   // --------------------- done
@@ -2585,14 +2588,15 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->abortFlagRefCount, 1), res, fail);
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
+  NEW_NOTHROW_GOTO(comm->ncclxExt, ncclxCommExt, res, fail);
   // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
-  comm->useCtran_ = NCCLX_CONFIG_FIELD(*config, useCtran);
+  comm->ncclxExt->useCtran = NCCLX_CONFIG_FIELD(*config, useCtran);
   comm->usePatAvg_ = NCCLX_CONFIG_FIELD(*config, usePatAvg);
   comm->noLocal_ = NCCLX_CONFIG_FIELD(*config, noLocal);
   INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d",
        comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
        NCCLX_CONFIG_FIELD(*config, commDesc).c_str(),
-       comm->useCtran_, comm->usePatAvg_, comm->noLocal_);
+       comm->ncclxExt->useCtran, comm->usePatAvg_, comm->noLocal_);
   *comm->abortFlagRefCount = 1;
   NCCLCHECKGOTO(parseCommConfig(comm, config), res, fail);
   /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
@@ -3280,6 +3284,7 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   } else {
     NCCLCHECKGOTO(ncclCalloc(&childComm, 1), res, fail);
     childComm->startMagic = childComm->endMagic = NCCL_MAGIC;
+    NEW_NOTHROW_GOTO(childComm->ncclxExt, ncclxCommExt, res, fail);
 
     // Set the shareResource field, this is used throughout the init and must be reset every time.
     // Never share resources if the parent communicator has been revoked.
@@ -3309,12 +3314,12 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
     childComm->initState = ncclInternalError;
     // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
-    childComm->useCtran_ = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
+    childComm->ncclxExt->useCtran = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
     childComm->usePatAvg_ = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
     childComm->noLocal_ = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
     INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d",
         childComm, NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str(),
-        childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_);
+        childComm->ncclxExt->useCtran, childComm->usePatAvg_, childComm->noLocal_);
   }
 
   NEW_NOTHROW_GOTO(job, ncclCommInitRankAsyncJob, res, fail);
@@ -3504,6 +3509,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   // All ranks allocate a NEW comm structure for the grown communicator
   NCCLCHECKGOTO(ncclCalloc(&newComm, 1), res, fail);
   newComm->startMagic = newComm->endMagic = NCCL_MAGIC;
+  NEW_NOTHROW_GOTO(newComm->ncclxExt, ncclxCommExt, res, fail);
 
   // All ranks allocate fresh resources for grown communicator
   NCCLCHECKGOTO(ncclCalloc(&newComm->abortFlag, 1), res, fail);
