@@ -125,23 +125,23 @@ class CtranComm {
   }
 
   inline bool abortEnabled() const {
-    return abort_->Enabled();
+    return abort_->isEnabled();
   }
 
   inline void setAbort() {
-    abort_->Set();
+    abort_->setAbort();
   }
 
   inline bool testAbort() const {
-    return abort_->Test();
+    return abort_->isAborted();
   }
 
   inline void setTimeout(const std::chrono::milliseconds& timeout) {
-    return abort_->SetTimeout(timeout);
+    return abort_->startTimeout(timeout);
   }
 
   inline void cancelTimeout() {
-    return abort_->CancelTimeout();
+    return abort_->cancelTimeout();
   }
 
   inline bool useNativeOpCount() const {

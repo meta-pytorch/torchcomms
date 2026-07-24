@@ -183,10 +183,10 @@ TEST_F(AbortableSocketTest, ConnectionRefused) {
     }
   }
 
-  clientAbort->Set();
+  clientAbort->setAbort();
   connectThread.join();
   EXPECT_TRUE(sem.try_acquire_for(1ms));
-  EXPECT_TRUE(clientAbort->Test());
+  EXPECT_TRUE(clientAbort->isAborted());
 }
 
 TEST_F(AbortableSocketTest, MultipleConnectionAttempts) {
@@ -211,7 +211,7 @@ TEST_F(AbortableSocketTest, MultipleConnectionAttempts) {
 
   std::this_thread::sleep_for(500ms);
   EXPECT_EQ(result.load(), -1);
-  abortCtrl->Set();
+  abortCtrl->setAbort();
   connectThread.join();
   EXPECT_EQ(result.load(), ECONNABORTED);
 }
@@ -342,7 +342,7 @@ TEST_F(AbortableSocketTest, BindAndUnbind) {
 
 TEST_F(AbortableServerSocketTest, AcceptTimeout) {
   std::chrono::milliseconds timeout{250ms};
-  serverAbort->SetTimeout(timeout);
+  serverAbort->startTimeout(timeout);
 
   auto startTime = std::chrono::steady_clock::now();
   auto maybeClient = server->acceptSocket();
@@ -373,8 +373,8 @@ void testTimeoutOperation(
     OperationFn operation,
     std::optional<std::chrono::milliseconds> minElapsed = std::nullopt,
     std::optional<std::chrono::milliseconds> maxElapsed = std::nullopt) {
-  abortObj->SetTimeout(timeout);
-  ASSERT_TRUE(abortObj->HasTimeout());
+  abortObj->startTimeout(timeout);
+  ASSERT_TRUE(abortObj->isTimeoutActive());
 
   auto startTime = std::chrono::steady_clock::now();
   int result = operation();
@@ -573,10 +573,10 @@ void testAbortBlockingOperation(
   // Give it some time to get into blocking state
   std::this_thread::sleep_for(delayBeforeAbort);
 
-  EXPECT_FALSE(abortObj->Test());
+  EXPECT_FALSE(abortObj->isAborted());
 
   // Abort the operation
-  abortObj->Set();
+  abortObj->setAbort();
 
   // Wait for operation thread to complete
   operationThread.join();
@@ -625,7 +625,7 @@ TEST_F(AbortableSocketTest, AbortAcceptConcurrent) {
   });
 
   std::this_thread::sleep_for(250ms);
-  serverAbort->Set();
+  serverAbort->setAbort();
 
   // Wait for threads to complete
   acceptThread.join();
@@ -646,7 +646,7 @@ TEST_F(AbortableSocketTest, ConnectTimeout) {
   folly::SocketAddress unreachableAddr("::1", 9999);
 
   // Set timeout that will expire during connection attempts
-  abort->SetTimeout(100ms);
+  abort->startTimeout(100ms);
 
   auto startTime = std::chrono::steady_clock::now();
   int result = client.connect(unreachableAddr, "lo");
@@ -655,8 +655,8 @@ TEST_F(AbortableSocketTest, ConnectTimeout) {
 
   // Should have timed out via the abort mechanism
   EXPECT_TRUE(result == ECONNABORTED || result == ETIMEDOUT);
-  EXPECT_TRUE(abort->Test());
-  EXPECT_TRUE(abort->TimedOut());
+  EXPECT_TRUE(abort->isAborted());
+  EXPECT_TRUE(abort->isTimedOut());
 
   // Should complete within reasonable time after timeout
   EXPECT_GE(elapsed, 100ms);
@@ -732,9 +732,9 @@ TEST_F(AbortableSocketTest, AbortSendRecvConcurrent) {
 
   std::this_thread::sleep_for(50ms);
 
-  clientAbort->Set();
-  serverAbort->Set();
-  EXPECT_TRUE(clientAbort->Test());
+  clientAbort->setAbort();
+  serverAbort->setAbort();
+  EXPECT_TRUE(clientAbort->isAborted());
 
   if (recvThread.joinable()) {
     recvThread.join();
@@ -768,7 +768,7 @@ void testOperationAfterAbort(
     std::shared_ptr<comms::fault_tolerance::Abort> abortObj,
     OperationFn operation,
     std::chrono::milliseconds maxElapsed = 500ms) {
-  abortObj->Set();
+  abortObj->setAbort();
 
   auto startTime = std::chrono::steady_clock::now();
   int result = operation();

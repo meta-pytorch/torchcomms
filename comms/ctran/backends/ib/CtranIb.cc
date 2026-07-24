@@ -440,7 +440,7 @@ void CtranIb::init(
 
   if (socketFactory != nullptr) {
     socketFactory_ = socketFactory; // ISocketFactory explicitly specified.
-  } else if (abortCtrl_->Enabled()) {
+  } else if (abortCtrl_->isEnabled()) {
     socketFactory_ = // Abort is enabled, so we want AbortableSockets.
         std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
   } else { // Fall back to old, non-abortable sockets.
@@ -448,7 +448,7 @@ void CtranIb::init(
   }
 
   const bool commAbortEnabled = comm && comm->abortEnabled();
-  if (commAbortEnabled && abortCtrl->Enabled()) {
+  if (commAbortEnabled && abortCtrl->isEnabled()) {
     throw ::ctran::utils::Exception(
         "CtranIB::init called on two different enabled Abort controls",
         commInternalError,
@@ -1173,7 +1173,7 @@ const std::vector<std::shared_ptr<CtranIbVirtualConn>>& CtranIb::connectVcs(
     if (const auto* vcs = vcState_.tryGetVcs(peerRank)) {
       return *vcs;
     }
-    if (abortCtrl_ && abortCtrl_->Test()) {
+    if (abortCtrl_ && abortCtrl_->isAborted()) {
       static const std::vector<std::shared_ptr<CtranIbVirtualConn>> empty;
       return empty;
     }
