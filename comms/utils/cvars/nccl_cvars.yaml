@@ -2300,6 +2300,17 @@ cvars:
      Enable CTRAN backends to pre-connect to peers at
      the beginning of the collective call.
 
+ - name        : NCCL_CTRAN_WIN_ENABLE_MULTICAST
+   type        : bool
+   default     : true
+   description : |-
+     Enable NVL CE-multicast for window registration. When true (default), a
+     symmetric, ipc_only, cuMem-backed window on multicast-capable HW sets up an
+     NVL CE-multicast object at registration so window collectives (e.g. ctwin
+     AllGather) fan out via a single NVSwitch write; falls back to unicast
+     otherwise. Set false to disable multicast (killswitch) without a code/conda
+     change.
+
  - name        : NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS
    type        : bool
    default     : false

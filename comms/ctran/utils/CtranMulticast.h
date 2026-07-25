@@ -25,9 +25,10 @@ namespace ctran::utils {
 //
 // This class encapsulates ONLY the LOCAL (per-rank) CUDA operations + RAII
 // teardown; the collective exchange of the multicast object handle across the
-// NVL team is driven by the caller (e.g. CtranMapper::setupMulticast),
-// which uses the CtranIpc export/importShareableHandle helpers to move the
-// handle this class produces (createRoot) / consumes (adoptImported).
+// NVL team is driven by the caller (e.g. window::setupMulticast), which uses
+// the mapper's intraNvlDomainAllGather + the CtranIpc
+// export/importShareableHandle helpers to move the handle this class produces
+// (createRoot) / consumes (adoptImported).
 //
 // NOTE: not internally locked; the caller serializes access.
 class CtranMulticast {
@@ -40,10 +41,17 @@ class CtranMulticast {
   CtranMulticast(CtranMulticast&&) = delete;
   CtranMulticast& operator=(CtranMulticast&&) = delete;
 
-  // Runtime support gate (no arch/compute-capability conditional): the
-  // cuMulticast* driver entry points are present AND the device reports
-  // CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED. Mirrors PyTorch
-  // deviceSupportsMulticast and prims isMultimemSupported.
+  // Runtime support gate (no arch/compute-capability conditional), memoized
+  // process-wide: the cuMulticast* driver entry points are present, the device
+  // reports CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, AND fabric memory handles
+  // are usable (isCuMemFabricEnabled()). The fabric check is required because
+  // the attribute reports HW capability but not whether the env permits sharing
+  // the multicast object: it uses a CU_MEM_HANDLE_TYPE_FABRIC handle, and
+  // without the IMEX channel cuMulticastCreate returns
+  // CUDA_ERROR_NOT_PERMITTED. NVIDIA exposes no attribute for fabric/IMEX
+  // availability, so it is trialed once (the same alloc+export+import probe
+  // regular cuMem IPC uses to pick fabric vs fd; cf. PyTorch c10
+  // get_fabric_access).
   static bool isSupported(int cudaDev);
 
   // Multicast-object allocation granularity for the device+team; mcSize and

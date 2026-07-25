@@ -3,6 +3,7 @@
 
 #include "comms/ctran/utils/CtranMulticast.h"
 
+#include "comms/ctran/utils/Alloc.h" // isCuMemFabricEnabled
 #include "comms/ctran/utils/Checks.h" // FB_COMMCHECK
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -74,8 +75,28 @@ bool CtranMulticast::isSupported(int cudaDev) {
           WARN,
           "CTRAN-MC: multicast disabled -- device {} reports no multicast support",
           cudaDev);
+      return false;
     }
-    return sup != 0;
+    // The MULTICAST_SUPPORTED attribute reports HW capability but NOT whether
+    // the env permits sharing a multicast object: it is shared across the NVL
+    // domain via a CU_MEM_HANDLE_TYPE_FABRIC handle, which needs the IMEX
+    // channel. On nodes without IMEX (e.g. RE/CI hosts) cuMulticastCreate
+    // returns CUDA_ERROR_NOT_PERMITTED even though the attribute is set. NVIDIA
+    // exposes no attribute for fabric/IMEX availability -- it can only be
+    // trialed -- so reuse ctran's existing memoized fabric probe:
+    // isCuMemFabricEnabled() sets the FABRIC bit iff a FABRIC cuMem
+    // alloc+export+import succeeds (the same signal regular cuMem IPC uses to
+    // choose fabric vs POSIX-fd handles). No fabric -> the multicast object
+    // cannot be shared across the domain -> declare unsupported so the group
+    // falls back to unicast.
+    if (!isCuMemFabricEnabled()) {
+      CLOGF(
+          WARN,
+          "CTRAN-MC: multicast disabled -- device {} reports multicast support but fabric memory handles are unavailable (IMEX channel not enabled?); the multicast object cannot be shared across the NVL domain",
+          cudaDev);
+      return false;
+    }
+    return true;
   }();
   return supported;
 }

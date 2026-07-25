@@ -11,10 +11,15 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/DevMemType.h"
 
 #include <folly/ScopeGuard.h>
 
+#include <algorithm>
+#include <exception>
 #include <memory>
+#include <vector>
 
 using ctran::algos::GpeKernelSync;
 using ctran::allgatherp::AlgoImpl;
