@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 
 #include <gmock/gmock.h>
@@ -13,6 +14,7 @@
 namespace comms::fault_tolerance::testing {
 
 using ::comms::fault_tolerance::Abort;
+using ::comms::fault_tolerance::AbortReason;
 
 TEST(AbortTest, enabledDefaultNotAbort) {
   Abort abort{/*enabled=*/true};
@@ -440,6 +442,45 @@ TEST(AbortTest, timedOutFalseForExplicitSet) {
   abort.setAbort();
   EXPECT_TRUE(abort.isAborted());
   EXPECT_FALSE(abort.isTimedOut());
+}
+
+TEST(AbortTest, setAbortTimedOutRecordsTimeout) {
+  Abort abort{/*enabled=*/true};
+
+  abort.setAbort(AbortReason::TIMED_OUT);
+
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(abort.isTimedOut());
+}
+
+TEST(AbortTest, setAbortRejectsNone) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_THROW(abort.setAbort(AbortReason::NONE), std::invalid_argument);
+  EXPECT_FALSE(abort.isAborted());
+}
+
+TEST(AbortTest, setAbortRejectsUnknownReason) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_THROW(
+      abort.setAbort(static_cast<AbortReason>(3)), std::invalid_argument);
+  EXPECT_FALSE(abort.isAborted());
+
+  abort.setAbort(AbortReason::ABORTED);
+
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_FALSE(abort.isTimedOut());
+}
+
+TEST(AbortTest, firstTerminalReasonWins) {
+  Abort abort{/*enabled=*/true};
+
+  abort.setAbort(AbortReason::TIMED_OUT);
+  abort.setAbort(AbortReason::ABORTED);
+
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(abort.isTimedOut());
 }
 
 TEST(AbortTest, timeRemainingNoTimeout) {
