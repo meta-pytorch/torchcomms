@@ -1534,6 +1534,18 @@ cvars:
     each is used with a dedicated NVLink peer. It serves as a bi-directional
     point-to-point staged data copy channel between every two peers.
 
+ - name        : MCCL_NVL_MULTIMEM_BUFSIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+    Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
+    Decoupled from NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE so the multimem path can
+    use a larger window without growing the P2P staging buffers. A larger window
+    means fewer staging rounds, which is the dominant cnvlmm throughput lever at
+    large message sizes. 0 falls back to the effective P2P NVL shared devbuf
+    size (the larger of the P2P and hier-AG NVL devbuf sizes when hier-AG
+    overlap is enabled). Default 32 MiB.
+
 
  - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
    type        : uint64_t
