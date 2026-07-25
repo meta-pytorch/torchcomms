@@ -9,15 +9,6 @@
 #include "comms/utils/Conversion.h"
 
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
-
-namespace {
-void addToProcessGlobalErrors(EventsScubaUtil::SampleGuard& sampleGuard) {
-  const auto& sample = sampleGuard.sample();
-  ProcessGlobalErrorsUtil::addErrorAndStackTrace(
-      sample.exceptionMessage, sample.stackTrace);
-}
-} // namespace
 
 /* static */
 commResult_t ErrorStackTraceUtil::log(commResult_t result) {
@@ -29,5 +20,4 @@ commResult_t ErrorStackTraceUtil::log(commResult_t result) {
 void ErrorStackTraceUtil::logErrorMessage(std::string errorMessage) {
   auto sampleGuard = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("ERROR");
   sampleGuard.sample().setError(errorMessage);
-  addToProcessGlobalErrors(sampleGuard);
 }
