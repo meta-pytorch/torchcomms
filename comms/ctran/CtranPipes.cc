@@ -10,7 +10,6 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/algos/ReduceScatter/ReduceScatterDirectIbConfig.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -207,23 +206,36 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           MCCL_MAX_NCHANNELS);
       return commInvalidArgument;
     }
-    const auto numChannels = static_cast<size_t>(MCCL_MAX_NCHANNELS);
+    const int maxChannels = static_cast<int>(MCCL_MAX_NCHANNELS);
+    const int channelPipelineDepth =
+        static_cast<int>(MCCL_CHANNEL_PIPELINE_DEPTH);
+    if (channelPipelineDepth <= 0) {
+      CLOGF(
+          ERR,
+          "MCCL_CHANNEL_PIPELINE_DEPTH must be positive, got {}",
+          channelPipelineDepth);
+      return commInvalidArgument;
+    }
+
     size_t ibgdaDataBufferSize = 0;
     if (pc.ibgdaDataBufferSize > 0) {
       ibgdaDataBufferSize = static_cast<size_t>(pc.ibgdaDataBufferSize);
     } else {
-      const auto perChannelSize = static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
-      if (perChannelSize > std::numeric_limits<size_t>::max() / numChannels) {
+      const auto perDirectionChannelBuffer =
+          static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
+      if (perDirectionChannelBuffer > std::numeric_limits<size_t>::max() /
+              static_cast<size_t>(maxChannels)) {
         CLOGF(
             ERR,
             "MCCL_CHANNEL_BUFFER_SIZE={} overflows total size for {} channels",
-            perChannelSize,
-            numChannels);
+            perDirectionChannelBuffer,
+            maxChannels);
         return commInvalidArgument;
       }
-      ibgdaDataBufferSize = perChannelSize * numChannels;
+      ibgdaDataBufferSize =
+          perDirectionChannelBuffer * static_cast<size_t>(maxChannels);
     }
-    config.ibConfig.dataBufferSize = static_cast<size_t>(ibgdaDataBufferSize);
+    config.ibConfig.dataBufferSize = ibgdaDataBufferSize;
     config.ibConfig.qpDepth = MCCL_IB_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
@@ -257,75 +269,50 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
       return commInvalidArgument;
     }
-    config.ibConfig.maxGroups = static_cast<int>(MCCL_MAX_NCHANNELS);
+    config.ibConfig.maxGroups = maxChannels;
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
-    const bool directIbReduceScatter =
-        NCCL_REDUCESCATTER_ALGO == NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
-    if (directIbReduceScatter) {
-      config.ibConfig.perChannelSize =
-          ctran::reducescatter::direct_ib::kPerChannelSize;
-      config.ibConfig.max_num_channels =
-          ctran::reducescatter::direct_ib::kMaxNumBlocks;
-      config.ibConfig.pipelineDepth =
-          ctran::reducescatter::direct_ib::kPipelineDepth;
-      config.ibConfig.qpsPerConnection =
-          ctran::reducescatter::direct_ib::kQpsPerConnection;
-      config.ibConfig.maxGroups =
-          ctran::reducescatter::direct_ib::kMaxNumBlocks;
-      config.ibConfig.dataBufferSize =
-          config.ibConfig.fixedChannelDataBufferSize();
+    if (config.ibConfig.dataBufferSize == 0) {
       CLOGF(
-          INFO,
-          "Direct IB ReduceScatter pins IB config: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, qpsPerConnection={}, maxGroups={}, dataBufferSize={}",
-          config.ibConfig.perChannelSize,
-          config.ibConfig.max_num_channels,
-          config.ibConfig.pipelineDepth,
-          config.ibConfig.qpsPerConnection,
-          config.ibConfig.maxGroups,
-          config.ibConfig.dataBufferSize);
+          ERR,
+          "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or pipesIbgdaDataBufferSize");
+      return commInvalidArgument;
     }
-
-    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE && !directIbReduceScatter) {
-      if (config.ibConfig.dataBufferSize == 0) {
-        CLOGF(
-            ERR,
-            "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or pipesIbgdaDataBufferSize");
-        return commInvalidArgument;
-      }
-      if (config.ibConfig.dataBufferSize % numChannels != 0) {
-        CLOGF(
-            ERR,
-            "IB data-buffer size {} must be divisible by channel count {}",
-            config.ibConfig.dataBufferSize,
-            numChannels);
-        return commInvalidArgument;
-      }
-      const int pipelineDepth = static_cast<int>(MCCL_CHANNEL_PIPELINE_DEPTH);
-      if (pipelineDepth <= 0) {
-        CLOGF(
-            ERR,
-            "MCCL_CHANNEL_PIPELINE_DEPTH must be positive, got {}",
-            pipelineDepth);
-        return commInvalidArgument;
-      }
-
-      config.ibConfig.perChannelSize =
-          config.ibConfig.dataBufferSize / numChannels;
-      config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
-      config.ibConfig.pipelineDepth = pipelineDepth;
-    }
-    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE || directIbReduceScatter) {
+    if (config.ibConfig.dataBufferSize % static_cast<size_t>(maxChannels) !=
+        0) {
       CLOGF(
-          INFO,
-          "Prims IBGDA sendRecv configured: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
-          config.ibConfig.perChannelSize,
-          config.ibConfig.max_num_channels,
-          config.ibConfig.pipelineDepth,
+          ERR,
+          "IB data-buffer size {} must be divisible by channel count {}",
           config.ibConfig.dataBufferSize,
-          directIbReduceScatter);
+          maxChannels);
+      return commInvalidArgument;
     }
+    const size_t perDirectionChannelBuffer =
+        config.ibConfig.dataBufferSize / static_cast<size_t>(maxChannels);
+    const auto pipelineDepth = static_cast<size_t>(channelPipelineDepth);
+    if (perDirectionChannelBuffer % pipelineDepth != 0) {
+      CLOGF(
+          ERR,
+          "IB per-direction channel buffer {} must be divisible by pipeline depth {}",
+          perDirectionChannelBuffer,
+          channelPipelineDepth);
+      return commInvalidArgument;
+    }
+
+    config.ibConfig.perChannelSize = perDirectionChannelBuffer;
+    config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
+    config.ibConfig.pipelineDepth = channelPipelineDepth;
+    const size_t channelChunkSize = config.ibConfig.perChannelSize /
+        static_cast<size_t>(config.ibConfig.pipelineDepth);
+    CLOGF(
+        INFO,
+        "Prims IB sendRecv configured: perChannelSize={}, channelChunkSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}",
+        config.ibConfig.perChannelSize,
+        channelChunkSize,
+        config.ibConfig.max_num_channels,
+        config.ibConfig.pipelineDepth,
+        config.ibConfig.dataBufferSize);
 
     if (MCCL_IB_MODE == MCCL_IB_MODE::ibrc) {
       config.ibMode = comms::prims::IbBackendMode::kIbrc;

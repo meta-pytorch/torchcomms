@@ -1968,17 +1968,6 @@ cvars:
      On timeout, materializePeer throws rather than hanging.
      No per-comm override.
 
- - name        : NCCL_CTRAN_IBGDA_SENDRECV_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable send/recv staging buffers for prims IB transports in
-     MultiPeerTransport. Required for cthierarchical_ring. When enabled,
-     allocates additional GPU memory for pipelined send/recv staging per IB
-     peer. The effective per-channel buffer must be positive via
-     MCCL_CHANNEL_BUFFER_SIZE or the per-communicator
-     pipesIbgdaDataBufferSize hint.
-
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
@@ -3182,9 +3171,17 @@ cvars:
      benchmarking. Valid values are 1 through the compile-time maximum tree
      children.
 
+ - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Maximum bytes per signaled sub-chunk for MCCL fused AllReduce IB phases.
+     Applies to ctree and cthierarchical_ring. 0 preserves the transport
+     default signaling cadence.
+
  - name        : MCCL_MAX_NCHANNELS
    type        : int
-   default     : 64
+   default     : 32
    description : |-
      Maximum number of fixed prims IB channels per peer. Channels index
      staging, signal, and QP resources through ThreadGroup::group_id and do
@@ -3211,23 +3208,23 @@ cvars:
 
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t
-   default     : 0
+   default     : 2097152
    description : |-
-     Per-channel prims IB send/recv staging size in bytes, shared by the IBGDA
-     and IBRC backends. Total staging per peer and direction is this value
-     multiplied by MCCL_MAX_NCHANNELS. Combined with
-     MCCL_CHANNEL_PIPELINE_DEPTH: chunk size = this / depth. A value of 0
-     provides no global staging size; a per-communicator
-     pipesIbgdaDataBufferSize total override may still provide an effective
-     total.
+     Per-channel, per-direction prims IB send/recv staging size in bytes,
+     shared by the IBGDA and IBRC backends. Total staging per peer and
+     direction is this value multiplied by MCCL_MAX_NCHANNELS. Combined with
+     MCCL_CHANNEL_PIPELINE_DEPTH: channel chunk size = this / depth.
+     The default is 2MiB per channel per direction; with the default pipeline
+     depth of 4 this yields 512KiB chunks, or 4MiB combined send+recv staging
+     per channel.
 
  - name        : MCCL_CHANNEL_PIPELINE_DEPTH
    type        : int
-   default     : 2
+   default     : 4
    description : |-
-     Number of staging ring slots (pipeline depth) per prims IB channel,
-     shared by the IBGDA and IBRC backends. Chunk size is the per-channel
-     buffer size divided by this depth.
+     Number of staging slots per prims IB channel, shared by the IBGDA and
+     IBRC backends. Each slot carries one channel chunk. Channel chunk size is
+     MCCL_CHANNEL_BUFFER_SIZE divided by this depth.
 
  - name        : MCCL_CTRAN_BACKENDS
    type        : enumlist
