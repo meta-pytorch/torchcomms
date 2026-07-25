@@ -8,18 +8,18 @@
 #include <folly/Expected.h>
 #include <folly/IPAddress.h>
 #include <folly/SocketAddress.h>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/bootstrap/ISocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/Exception.h"
 
-using ctran::utils::Abort;
+using comms::fault_tolerance::Abort;
 
 namespace ctran::bootstrap {
 
 /**
- * C++ wrapper over socket interface, integrated with ctran::utils::Abort
- * to cancel active operations.
+ * C++ wrapper over socket interface, integrated with
+ * comms::fault_tolerance::Abort to cancel active operations.
  */
 class AbortableSocket : public ISocket {
 // TODO(T243405238): Improve error reporting.
@@ -40,11 +40,11 @@ class AbortableSocket : public ISocket {
    */
   explicit AbortableSocket(
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/true))
+          comms::fault_tolerance::createAbort(/*enabled=*/true))
       : abort_(abort) {
     if (abort_ == nullptr) {
       throw ctran::utils::Exception(
-          "Invalid ctran::utils::Abort object", commInvalidArgument);
+          "Invalid comms::fault_tolerance::Abort object", commInvalidArgument);
     }
   };
 
@@ -55,7 +55,7 @@ class AbortableSocket : public ISocket {
       int sockFd,
       folly::SocketAddress peerAddr,
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/true));
+          comms::fault_tolerance::createAbort(/*enabled=*/true));
 
   /**
    * AbortableSocket is movable
@@ -175,11 +175,11 @@ class AbortableServerSocket : public IServerSocket {
   explicit AbortableServerSocket(
       int acceptRetryCnt,
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/true))
+          comms::fault_tolerance::createAbort(/*enabled=*/true))
       : acceptRetryCnt_(acceptRetryCnt), abort_(abort) {
     if (abort_ == nullptr) {
       throw ctran::utils::Exception(
-          "Invalid ctran::utils::Abort object", commInvalidArgument);
+          "Invalid comms::fault_tolerance::Abort object", commInvalidArgument);
     }
   }
   ~AbortableServerSocket();

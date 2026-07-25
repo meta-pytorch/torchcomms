@@ -37,13 +37,15 @@ class CtranBroadcastTest : public CtranIntraProcessFixture,
 
   void startWorkers(
       const TestParam& param,
-      std::optional<std::vector<std::shared_ptr<::ctran::utils::Abort>>>
+      std::optional<
+          std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>>>
           aborts = std::nullopt) {
     overrideEnvConfig(param);
     CtranIntraProcessFixture::startWorkers(
         kNRanks,
         /*aborts=*/
-        aborts.value_or(std::vector<std::shared_ptr<::ctran::utils::Abort>>{}));
+        aborts.value_or(
+            std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>>{}));
   }
 
   void runTest(const TestParam& param) {
@@ -152,10 +154,10 @@ TEST_P(CtranBroadcastTest, AbortDisabled) {
 TEST_P(CtranBroadcastTest, AbortEnabled) {
   auto param = GetParam();
 
-  std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+  std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
   aborts.reserve(kNRanks);
   for (int i = 0; i < kNRanks; ++i) {
-    aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+    aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
   }
   startWorkers(param, aborts);
 

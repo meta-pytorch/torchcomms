@@ -7,8 +7,8 @@
 #include <fmt/format.h>
 #include <glog/logging.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/profiler/GpeProfilerReport.h"
-#include "comms/ctran/utils/Abort.h"
 
 namespace ctran {
 
@@ -18,7 +18,7 @@ GpeProfiler::GpeProfiler(
     uint64_t commHash,
     int samplingWeight,
     std::unique_ptr<IGpeProfilerReporter> reporter,
-    std::shared_ptr<::ctran::utils::Abort> abort)
+    std::shared_ptr<::comms::fault_tolerance::Abort> abort)
     : logMetaData_(logMetaData),
       rank_(rank),
       commHash_(commHash),
