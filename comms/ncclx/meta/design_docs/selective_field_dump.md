@@ -42,7 +42,6 @@ skipped entirely if none of its keys are requested (`anyKeyRequested` check).
 | `dumpNewCollTrace()` → `commDumpToMap()` | CT_pastColls, CT_currentColls, CT_pendingColls, CT_currentIteration, CT_currentIterationCommTimeUs |
 | `dumpProxyTrace()` | PT_pastColls, PT_activeOps, PT_activeColls |
 | `dumpMapperTrace()` | MT_currentColl, MT_unfinishedRequests, MT_recvNotifiedByPeer, MT_putFinishedByPeer |
-| `dumpProcessGlobalErrors()` | processGlobalErrors |
 | `dumpMemoryTrace()` | memory |
 
 ### GlobalInfo Keys (in outer map under "GlobalInfo")
@@ -71,7 +70,6 @@ ncclCommDumpAll(map, requestFields)
             │      │                                           → commDumpToMap(requestFields)
             │      ├─ anyKeyRequested({PT_*})?               → dumpProxyTrace(requestFields)
             │      ├─ anyKeyRequested({MT_*})?               → dumpMapperTrace(requestFields)
-            │      ├─ isKeyRequested(processGlobalErrors)?   → dumpProcessGlobalErrors(requestFields)
             │      └─ isKeyRequested(memory)?                → dumpMemoryTrace(requestFields)
             │
             ├─ isKeyRequested(GlobalInfo::NetworkPerfInfo)?
