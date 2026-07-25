@@ -3200,7 +3200,7 @@ cvars:
 
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t
-   default     : 0
+   default     : 524288
    description : |-
      Per-channel prims IB send/recv staging size in bytes, shared by the IBGDA
      and IBRC backends. Total staging per peer and direction is this value
