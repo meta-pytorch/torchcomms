@@ -59,12 +59,6 @@ def main() -> None:
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 
-    # TorchComms constructs the backend below; c10d only needs the custom
-    # backend type so the CUDA NCCLX backend can be the default PG backend.
-    dist.Backend.backend_type_map.setdefault(
-        "ncclx",
-        dist.ProcessGroup.BackendType.CUSTOM,
-    )
     dist_config.use_torchcomms = True
     dist.init_process_group(
         backend="cuda:ncclx",
