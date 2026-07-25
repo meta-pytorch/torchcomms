@@ -22,14 +22,32 @@ class Abort final {
   }
 
  public:
+  /**
+   * Constructs an abort controller.
+   *
+   * Enabled controllers honor abort and timeout operations. Disabled
+   * controllers are no-op placeholders for callers that must pass an abort
+   * object while fault tolerance is disabled.
+   */
   explicit Abort(bool enabled) : enabled_(enabled) {}
   ~Abort() = default;
 
-  inline bool Enabled() const {
+  /**
+   * Returns whether this controller is enabled.
+   *
+   * Disabled controllers never report an abort or active timeout.
+   */
+  inline bool isEnabled() const {
     return enabled_;
   }
 
-  inline void Set() {
+  /**
+   * Records an explicit abort.
+   *
+   * The first writer wins. Later timeout checks do not override an explicit
+   * abort already visible to other host threads.
+   */
+  inline void setAbort() {
     if (!enabled_) {
       return;
     }
@@ -41,7 +59,14 @@ class Abort final {
         std::memory_order_acquire);
   }
 
-  inline bool Test() {
+  /**
+   * Returns true when an explicit abort or expired active timeout has aborted
+   * this controller.
+   *
+   * This also checks the active deadline and records `AbortReason::TIMED_OUT`
+   * if the timeout is the first abort reason.
+   */
+  inline bool isAborted() {
     if (!enabled_) {
       return false;
     }
@@ -54,14 +79,26 @@ class Abort final {
       return false;
     }
 
-    return TimedOut();
+    return isTimedOut();
   }
 
-  inline bool HasTimeout() const {
+  /**
+   * Returns whether a per-operation timeout deadline is currently active.
+   *
+   * This does not imply that the deadline has expired.
+   */
+  inline bool isTimeoutActive() const {
     return hasTimeout_.load(std::memory_order_acquire);
   }
 
-  inline bool TimedOut() {
+  /**
+   * Returns true only when the recorded abort reason is timeout.
+   *
+   * If the active deadline has expired, this attempts to record
+   * `AbortReason::TIMED_OUT`. If an explicit abort already won the race, this
+   * returns false.
+   */
+  inline bool isTimedOut() {
     if (!hasTimeout_.load(std::memory_order_acquire)) {
       return false;
     }
@@ -88,9 +125,13 @@ class Abort final {
     return false;
   }
 
-  // Returns the time remaining until the timeout is hit.
-  // Returns -1 if no timeout is set.
-  inline std::chrono::milliseconds TimeRemaining() {
+  /**
+   * Returns the time remaining before the active timeout deadline.
+   *
+   * Returns `-1ms` when no timeout is active and `0ms` after the active
+   * deadline has expired.
+   */
+  inline std::chrono::milliseconds getTimeRemaining() {
     if (!enabled_) {
       return std::chrono::milliseconds{-1};
     }
@@ -109,7 +150,13 @@ class Abort final {
         deadline - now);
   }
 
-  inline void SetTimeout(std::chrono::milliseconds duration) {
+  /**
+   * Starts or replaces the active per-operation timeout deadline.
+   *
+   * The deadline is computed from the current steady-clock time plus
+   * `duration`.
+   */
+  inline void startTimeout(std::chrono::milliseconds duration) {
     if (!enabled_) {
       return;
     }
@@ -119,9 +166,12 @@ class Abort final {
     hasTimeout_.store(true, std::memory_order_release);
   }
 
-  // CancelTimeout resets timeout state.
-  // Users can first Test(), then explicitly Set() to preserve state.
-  inline void CancelTimeout() {
+  /**
+   * Cancels the active per-operation timeout deadline.
+   *
+   * This does not clear an abort reason that has already been recorded.
+   */
+  inline void cancelTimeout() {
     if (!enabled_) {
       return;
     }
@@ -129,9 +179,13 @@ class Abort final {
     hasTimeout_.store(false, std::memory_order_release);
   }
 
-  // Stores a duration; GPE applies it as a per-iteration deadline when no
-  // per-op timeout is supplied. Safe to update concurrently.
-  inline void SetDefaultTimeoutDuration(std::chrono::milliseconds duration) {
+  /**
+   * Stores the default timeout duration.
+   *
+   * GPE applies this as a per-iteration deadline when no per-operation timeout
+   * is supplied. This is only a stored duration; it does not start a deadline.
+   */
+  inline void setDefaultTimeout(std::chrono::milliseconds duration) {
     if (!enabled_) {
       return;
     }
@@ -139,8 +193,13 @@ class Abort final {
     timeoutMs_.store(duration.count(), std::memory_order_release);
   }
 
-  inline std::optional<std::chrono::milliseconds> GetDefaultTimeoutDuration()
-      const {
+  /**
+   * Returns the default timeout duration when one has been configured.
+   *
+   * Returns `std::nullopt` for disabled controllers or before a default
+   * timeout has been set.
+   */
+  inline std::optional<std::chrono::milliseconds> getDefaultTimeout() const {
     if (!enabled_) {
       return std::nullopt;
     }
@@ -169,6 +228,10 @@ class Abort final {
   static_assert(std::atomic<int64_t>::is_always_lock_free);
 };
 
+/**
+ * Creates an enabled abort controller or returns the shared disabled
+ * controller.
+ */
 std::shared_ptr<Abort> createAbort(bool enabled);
 
 } // namespace comms::fault_tolerance

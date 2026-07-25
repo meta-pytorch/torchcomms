@@ -135,7 +135,7 @@ int AbortableSocket::connect(
   const auto sockLen = addr.getAddress(&sockAddr);
   size_t retryCount{0};
 
-  while (!abort_->Test()) {
+  while (!abort_->isAborted()) {
     XLOGF(DBG, "Connecting to {} via {}", addr.describe(), ifName);
     int ret = ::connect(fd_.load(), (const struct sockaddr*)&sockAddr, sockLen);
 
@@ -238,8 +238,8 @@ int AbortableSocket::close() {
 
 int AbortableSocket::send(const void* buf, const size_t len) {
   size_t totalSent{0};
-  auto remaining = abort_->HasTimeout()
-      ? abort_->TimeRemaining() + std::chrono::milliseconds(1)
+  auto remaining = abort_->isTimeoutActive()
+      ? abort_->getTimeRemaining() + std::chrono::milliseconds(1)
       : std::chrono::milliseconds(-1);
   while (totalSent < len && waitForWritable(remaining)) {
     int sent =
@@ -257,8 +257,8 @@ int AbortableSocket::send(const void* buf, const size_t len) {
     if (sent > 0) {
       totalSent += sent;
     }
-    if (abort_->HasTimeout() > 0) {
-      remaining = abort_->TimeRemaining();
+    if (abort_->isTimeoutActive()) {
+      remaining = abort_->getTimeRemaining();
     }
   }
 
@@ -272,8 +272,8 @@ int AbortableSocket::send(const void* buf, const size_t len) {
 int AbortableSocket::recv(void* buf, const size_t len) {
   size_t totalRecvd{0};
 
-  auto remaining = abort_->HasTimeout()
-      ? (abort_->TimeRemaining() + std::chrono::milliseconds(1))
+  auto remaining = abort_->isTimeoutActive()
+      ? (abort_->getTimeRemaining() + std::chrono::milliseconds(1))
       : std::chrono::milliseconds(-1);
   while (totalRecvd < len && waitForReadable(remaining)) {
     int rcvd =
@@ -297,8 +297,8 @@ int AbortableSocket::recv(void* buf, const size_t len) {
     if (rcvd > 0) {
       totalRecvd += rcvd;
     }
-    if (abort_->HasTimeout() > 0) {
-      remaining = abort_->TimeRemaining();
+    if (abort_->isTimeoutActive()) {
+      remaining = abort_->getTimeRemaining();
     }
   }
 
@@ -330,7 +330,7 @@ bool AbortableSocket::waitForEvent(
   const auto maxPollTimeout = std::chrono::milliseconds(50);
   auto startTime = std::chrono::steady_clock::now();
 
-  while (!abort_->Test()) {
+  while (!abort_->isAborted()) {
     struct pollfd pfd{
         .fd = fd,
         .events = events,
@@ -634,7 +634,7 @@ AbortableServerSocket::acceptAsync() {
 
 folly::Expected<std::unique_ptr<ISocket>, int>
 AbortableServerSocket::acceptSocket() {
-  while (!abort_->Test()) {
+  while (!abort_->isAborted()) {
     auto maybeSocket = acceptAsync();
     if (!maybeSocket.hasError() || maybeSocket.error() != EAGAIN) {
       return maybeSocket;

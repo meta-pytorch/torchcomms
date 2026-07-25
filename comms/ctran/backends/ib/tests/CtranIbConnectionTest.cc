@@ -191,7 +191,7 @@ class CtranIbConnectionTest : public ::testing::Test {
         // !doTransfer, emulating send stuck case
         std::thread timer([&]() {
           std::this_thread::sleep_for(std::chrono::seconds(2));
-          abortCtrl->Set();
+          abortCtrl->setAbort();
         });
         SCOPE_EXIT {
           timer.join();

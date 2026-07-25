@@ -442,8 +442,8 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
 
   // Enable abortCtrl
   auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
-  EXPECT_TRUE(abortCtrl->Enabled());
-  EXPECT_FALSE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isEnabled());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   // Set elem status to simulate ongoing work
   for (int i = 0; i < ngroups; i++) {
@@ -458,7 +458,7 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
   });
   elem->wait(abortCtrl);
   EXPECT_TRUE(elem->isComplete());
-  EXPECT_FALSE(abortCtrl->Test());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   completer.join();
 
@@ -478,8 +478,8 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
 
   // Enable abortCtrl
   auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
-  EXPECT_TRUE(abortCtrl->Enabled());
-  EXPECT_FALSE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isEnabled());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   // Set elem status to simulate ongoing work that won't complete
   for (int i = 0; i < ngroups; i++) {
@@ -488,11 +488,11 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
 
   std::thread aborter([abortCtrl]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    abortCtrl->Set();
+    abortCtrl->setAbort();
   });
   elem->wait(abortCtrl);
   EXPECT_FALSE(elem->isComplete());
-  EXPECT_TRUE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isAborted());
 
   aborter.join();
 

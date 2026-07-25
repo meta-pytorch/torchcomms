@@ -52,21 +52,21 @@ static const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctdirect;
  *         registers and reduces them into the receive buffer.
  */
 
-#define THROW_IF_ABORTED(code, ...)                                            \
-  do {                                                                         \
-    code;                                                                      \
-    if (comm->testAbort()) {                                                   \
-      auto _abort = comm->getAbort();                                          \
-      std::string _ctx =                                                       \
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
-      std::string _desc{__VA_ARGS__};                                          \
-      throw ctran::utils::Exception(                                           \
-          _ctx,                                                                \
-          commRemoteError,                                                     \
-          comm->logMetaData_.rank,                                             \
-          comm->logMetaData_.commHash,                                         \
-          _desc.empty() ? std::nullopt : std::make_optional(_desc));           \
-    }                                                                          \
+#define THROW_IF_ABORTED(code, ...)                                           \
+  do {                                                                        \
+    code;                                                                     \
+    if (comm->testAbort()) {                                                  \
+      auto _abort = comm->getAbort();                                         \
+      std::string _ctx = _abort->isTimedOut() ? "comm aborted due to timeout" \
+                                              : "comm aborted";               \
+      std::string _desc{__VA_ARGS__};                                         \
+      throw ctran::utils::Exception(                                          \
+          _ctx,                                                               \
+          commRemoteError,                                                    \
+          comm->logMetaData_.rank,                                            \
+          comm->logMetaData_.commHash,                                        \
+          _desc.empty() ? std::nullopt : std::make_optional(_desc));          \
+    }                                                                         \
   } while (0)
 
 static commResult_t impl(

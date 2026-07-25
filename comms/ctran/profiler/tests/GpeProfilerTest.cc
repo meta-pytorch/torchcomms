@@ -232,7 +232,7 @@ TEST_F(GpeProfilerTest, LiveAbortBypassesSamplingMidIter) {
   EXPECT_TRUE(rows.empty()); // pre-abort + unsampled — nothing emitted
 
   // Abort flips. Next mark must emit + backfill all 3 predecessors.
-  abort->Set();
+  abort->setAbort();
   std::this_thread::sleep_for(std::chrono::microseconds(50));
   h.profiler->mark(GpeTracePoint::HOST_ALGO);
 
