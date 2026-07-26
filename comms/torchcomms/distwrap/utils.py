@@ -219,6 +219,11 @@ def torchcomms_create_split_group(
         if device_type not in device_types_to_create:
             continue
         split_torchcomms = parent_tc.split(ranks, name=group_desc, hints=hints)
+        if split_torchcomms is None:
+            raise RuntimeError(
+                f"TorchComm backend {device_backends[device_type]!r} returned no "
+                f"communicator for rank {my_rank} in group {group_desc!r}"
+            )
 
         new_torchcomms_instances[device_type] = split_torchcomms
 

@@ -110,6 +110,8 @@ class DeviceMeshTest(unittest.TestCase):
         tp_comm = comm.split(tp_ranks, "tp")
         # pyrefly: ignore [bad-argument-type]
         dp_comm = comm.split(dp_ranks, "dp")
+        assert tp_comm is not None
+        assert dp_comm is not None
 
         sub_comms = {"dp": dp_comm, "tp": tp_comm}
 
@@ -254,7 +256,9 @@ class DeviceMeshTest(unittest.TestCase):
 
         # Create communicators using the new single-list API
         for dim_name, ranks in ranks_per_dim.items():
-            comm_per_dim[dim_name] = comm.split(ranks, dim_name)
+            sub_comm = comm.split(ranks, dim_name)
+            assert sub_comm is not None
+            comm_per_dim[dim_name] = sub_comm
 
         try:
             device_mesh_3d = init_device_mesh(
@@ -287,7 +291,9 @@ class DeviceMeshTest(unittest.TestCase):
         )
 
         for flatten_dim_name, ranks in flatten_ranks_per_dim.items():
-            comm_per_dim[flatten_dim_name] = comm.split(ranks, flatten_dim_name)
+            sub_comm = comm.split(ranks, flatten_dim_name)
+            assert sub_comm is not None
+            comm_per_dim[flatten_dim_name] = sub_comm
             self._setup_flattened_mesh_dim(
                 device_mesh_3d,
                 flatten_dim_name,
@@ -359,6 +365,7 @@ class DeviceMeshTest(unittest.TestCase):
         direct_split_comm = comm.split(
             pg_ranks_by_dim.tolist(), name="direct_split_test"
         )
+        assert direct_split_comm is not None
 
         # Test collective operation on the split process group
         t = torch.ones(10, device=device, dtype=torch.int32)

@@ -1176,6 +1176,7 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         # Split the communicator - this should trigger splitHook
         split_comm = comm.split(all_ranks, "split_child")
+        assert split_comm is not None
 
         # Perform an operation on the parent communicator
         t_parent = torch.rand(10, 10, device=device)
@@ -1259,9 +1260,11 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         # First level split
         level1_comm = comm.split(all_ranks, "level1")
+        assert level1_comm is not None
 
         # Second level split from the first split
         level2_comm = level1_comm.split(all_ranks, "level2")
+        assert level2_comm is not None
 
         # Perform operations at each level
         t = torch.rand(10, 10, device=device)
