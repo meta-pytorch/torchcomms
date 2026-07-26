@@ -4,13 +4,20 @@
 # This source code is licensed under the BSD-3 license found in the
 # LICENSE file in the root directory of this source tree.
 
+import hashlib
+import json
 import os.path
 import pathlib
-import shlex
+import re
+import shutil
+import subprocess
 import sys
+from collections.abc import Iterable
 
+from packaging_utils import validate_core_dynamic_search_paths
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as build_ext_orig
+from setuptools.command.build_py import build_py as build_py_orig
 
 try:
     import torch
@@ -55,6 +62,231 @@ def flag_str(val: bool):
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 TORCH_ROOT = os.path.dirname(torch.__file__)
+PROJECTION_MARKER = pathlib.Path(ROOT) / ".torchcomms_private_projection"
+NATIVE_SOURCE_MANIFEST = "_native_source_manifest.json"
+FORBIDDEN_RETAINED_PREFIXES = (
+    b"/data/users/",
+    b"/home/",
+    b"/opt/conda/conda-bld",
+    b"/tmp/torchcomms",
+    b"/usr/local/src/conda",
+)
+
+
+def compiler_prefix_map_flags(
+    mappings: Iterable[tuple[pathlib.Path, str]],
+) -> list[str]:
+    expanded: dict[pathlib.Path, str] = {}
+    for source, destination in mappings:
+        lexical = pathlib.Path(os.path.abspath(source))
+        physical = lexical.resolve(strict=True)
+        for candidate in (lexical, physical):
+            if candidate == pathlib.Path("/"):
+                continue
+            prior = expanded.get(candidate)
+            if prior is not None and prior != destination:
+                raise ValueError(f"conflicting prefix mappings for {candidate}")
+            expanded[candidate] = destination
+
+    flags = []
+    for source, destination in sorted(
+        expanded.items(), key=lambda item: (len(str(item[0])), str(item[0]))
+    ):
+        flags.extend(
+            (
+                f"-ffile-prefix-map={source}={destination}",
+                f"-fdebug-prefix-map={source}={destination}",
+            )
+        )
+    return flags
+
+
+def reproducible_compiler_flags(build_temp: pathlib.Path) -> list[str]:
+    mappings = [
+        (pathlib.Path(sys.prefix), "/python-env"),
+        (pathlib.Path(ROOT), "/torchcomms-source"),
+        (pathlib.Path(TORCH_ROOT), "/torch"),
+        (build_temp, "/torchcomms-build"),
+    ]
+    for variable, destination in (
+        ("CONDA_PREFIX", "/python-env"),
+        ("CUDA_HOME", "/cuda"),
+    ):
+        value = os.environ.get(variable)
+        if value:
+            mappings.append((pathlib.Path(value), destination))
+    return compiler_prefix_map_flags(mappings)
+
+
+def retained_forbidden_prefixes(build_temp: pathlib.Path) -> tuple[bytes, ...]:
+    if not PROJECTION_MARKER.is_file():
+        return ()
+    paths = [
+        pathlib.Path(ROOT),
+        build_temp,
+        pathlib.Path(sys.prefix),
+        pathlib.Path(TORCH_ROOT),
+    ]
+    for variable in ("CONDA_PREFIX", "CUDA_HOME"):
+        value = os.environ.get(variable)
+        if value:
+            paths.append(pathlib.Path(value))
+    prefixes = set(FORBIDDEN_RETAINED_PREFIXES)
+    for path in paths:
+        lexical = pathlib.Path(os.path.abspath(path))
+        for candidate in (lexical, lexical.resolve(strict=True)):
+            if candidate != pathlib.Path("/"):
+                prefixes.add(str(candidate).encode())
+    return tuple(sorted(prefixes, key=lambda prefix: (len(prefix), prefix)))
+
+
+def validate_dynamic_search_paths(
+    path: pathlib.Path, dynamic: str, strict: bool
+) -> None:
+    try:
+        validate_core_dynamic_search_paths(dynamic, strict=strict)
+    except ValueError as error:
+        raise RuntimeError(f"{error}: {path}") from error
+
+
+def validate_native_artifacts(
+    root: pathlib.Path,
+    forbidden_prefixes: tuple[bytes, ...],
+    strict_dynamic_paths: bool,
+) -> None:
+    if not root.is_dir():
+        raise RuntimeError(f"core native artifact directory is missing: {root}")
+    elf_paths = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        with path.open("rb") as candidate:
+            data = candidate.read()
+            if not data.startswith(b"\x7fELF"):
+                continue
+        retained = [prefix.decode() for prefix in forbidden_prefixes if prefix in data]
+        if retained:
+            raise RuntimeError(f"core native artifact retains paths: {retained}")
+        elf_paths.append(path)
+    if not elf_paths:
+        raise RuntimeError(f"core build produced no ELF artifacts under {root}")
+    command = os.environ.get("READELF", "readelf")
+    executable = shutil.which(command)
+    if executable is None:
+        raise RuntimeError(f"READELF executable was not found: {command}")
+    environment = os.environ.copy()
+    environment["LC_ALL"] = "C"
+    for path in elf_paths:
+        dynamic = subprocess.check_output(
+            [executable, "-dW", str(path)],
+            env=environment,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        validate_dynamic_search_paths(path, dynamic, strict_dynamic_paths)
+
+
+def cuda_toolkit_version(cuda_root: pathlib.Path) -> str:
+    nvcc = (cuda_root / "bin/nvcc").resolve()
+    if not nvcc.is_file() or not os.access(nvcc, os.X_OK):
+        raise RuntimeError("CUDA_HOME must identify a toolkit with bin/nvcc")
+    output = subprocess.check_output([nvcc, "--version"], text=True)
+    match = re.search(r"release (\d+\.\d+)", output)
+    if match is None:
+        raise RuntimeError("could not determine CUDA_HOME toolkit version")
+    return match.group(1)
+
+
+def validate_cuda_toolkit(cuda_root: pathlib.Path, exact: bool) -> None:
+    toolkit_version = cuda_toolkit_version(cuda_root)
+    torch_cuda = torch.version.cuda
+    if torch_cuda is None:
+        if exact:
+            raise RuntimeError("private projections require CUDA-enabled PyTorch")
+        return
+    if toolkit_version.partition(".")[0] != torch_cuda.partition(".")[0]:
+        raise RuntimeError(
+            f"PyTorch CUDA {torch_cuda} and toolkit {toolkit_version} "
+            "have different major versions"
+        )
+    if exact and toolkit_version != torch_cuda:
+        raise RuntimeError(
+            f"PyTorch CUDA {torch_cuda} does not exactly match private "
+            f"projection toolkit {toolkit_version}"
+        )
+
+
+def validate_retained_build_environment() -> None:
+    if PROJECTION_MARKER.is_symlink() or (
+        PROJECTION_MARKER.exists() and not PROJECTION_MARKER.is_file()
+    ):
+        raise RuntimeError("private projection marker must be a regular file")
+    if not PROJECTION_MARKER.is_file():
+        return
+    value = os.environ.get("CONDA_PREFIX")
+    if not value:
+        raise RuntimeError("private projections require CONDA_PREFIX")
+    prefix = pathlib.Path(value).resolve(strict=True)
+    for label, path in (
+        ("Python executable", pathlib.Path(sys.executable)),
+        ("Python prefix", pathlib.Path(sys.prefix)),
+        ("PyTorch package", pathlib.Path(TORCH_ROOT)),
+    ):
+        if not path.resolve(strict=True).is_relative_to(prefix):
+            raise RuntimeError(f"{label} is outside CONDA_PREFIX: {path}")
+    cuda_home = os.environ.get("CUDA_HOME")
+    if not cuda_home:
+        raise RuntimeError("private projections require CUDA_HOME")
+    validate_cuda_toolkit(pathlib.Path(cuda_home).resolve(strict=True), exact=True)
+
+
+validate_retained_build_environment()
+
+
+def merged_flags(variable: str, generated: list[str]) -> str:
+    values = [os.environ.get(variable, "").strip(), *generated]
+    return " ".join(value for value in values if value)
+
+
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def native_source_records() -> dict[str, str]:
+    root = pathlib.Path(ROOT).resolve()
+    source_root = root / "comms/torchcomms"
+    suffixes = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".inc", ".inl"}
+    records = {}
+    for path in sorted(source_root.rglob("*")):
+        if path.suffix not in suffixes:
+            continue
+        resolved = path.resolve()
+        if not resolved.is_relative_to(source_root) or not resolved.is_file():
+            raise RuntimeError(f"native TorchComms source is unsafe: {path}")
+        relative_source = path.relative_to(source_root)
+        if "tests" in relative_source.parts or "examples" in relative_source.parts:
+            continue
+        if relative_source.parts[:1] == ("fb",):
+            continue
+        records[path.relative_to(root).as_posix()] = file_sha256(resolved)
+    if not records:
+        raise RuntimeError("no native TorchComms sources were found")
+    return records
+
+
+def native_source_manifest() -> dict[str, object]:
+    records = native_source_records()
+    digest = hashlib.sha256()
+    for relative, recorded_hash in records.items():
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(recorded_hash.encode())
+        digest.update(b"\0")
+    return {"files": records, "schema": 1, "sha256": digest.hexdigest()}
 
 
 def get_torch_pybind11_include_root(build_temp: pathlib.Path) -> pathlib.Path:
@@ -163,11 +395,13 @@ class build_ext(build_ext_orig):
         # any python sources to bundle, the dirs will be missing
         build_temp = pathlib.Path(self.build_temp).absolute()
         build_temp.mkdir(parents=True, exist_ok=True)
-        extdir = pathlib.Path(self.get_ext_fullpath(ext.name))
+        extdir = pathlib.Path(self.get_ext_fullpath(ext.name)).absolute()
 
-        build_flags = []
+        prefix_map_flags = reproducible_compiler_flags(build_temp)
+        build_flags = list(prefix_map_flags)
         if detect_hipify_v2():
             build_flags += ["-DHIPIFY_V2"]
+        linker_flags = merged_flags("LDFLAGS", ["-Wl,--build-id=none"])
         pybind11_include_root = get_torch_pybind11_include_root(build_temp)
 
         cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
@@ -181,7 +415,11 @@ class build_ext(build_ext_orig):
             f"-DCMAKE_INSTALL_DIR={extdir.parent.absolute()}",
             f"-DCMAKE_PREFIX_PATH={TORCH_ROOT}",
             f"-DTORCHCOMMS_PYBIND11_INCLUDE_DIR={pybind11_include_root}",
-            f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(build_flags))}",
+            f"-DCMAKE_C_FLAGS={merged_flags('CFLAGS', prefix_map_flags)}",
+            f"-DCMAKE_CXX_FLAGS={merged_flags('CXXFLAGS', build_flags)}",
+            f"-DCMAKE_CUDA_FLAGS={merged_flags('CUDAFLAGS', [f'-Xcompiler={flag}' for flag in prefix_map_flags])}",
+            f"-DCMAKE_SHARED_LINKER_FLAGS={linker_flags}",
+            f"-DCMAKE_MODULE_LINKER_FLAGS={linker_flags}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DLIB_SUFFIX={os.environ.get('LIB_SUFFIX', 'lib')}",
             f"-DUSE_NCCL={flag_str(USE_NCCL)}",
@@ -194,15 +432,54 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
+        if PROJECTION_MARKER.is_file():
+            cmake_args.append("-DCMAKE_SKIP_BUILD_RPATH=ON")
+        cuda_home = os.environ.get("CUDA_HOME")
+        if cuda_home:
+            cuda_root = pathlib.Path(cuda_home).resolve(strict=True)
+            nvcc = cuda_root / "bin/nvcc"
+            if not nvcc.is_file():
+                raise RuntimeError("CUDA_HOME must identify a toolkit with bin/nvcc")
+            validate_cuda_toolkit(cuda_root, exact=PROJECTION_MARKER.is_file())
+            cmake_args.extend(
+                (
+                    f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                    f"-DCUDAToolkit_ROOT={cuda_root}",
+                    f"-DCUDA_TOOLKIT_ROOT_DIR={cuda_root}",
+                )
+            )
         build_args = ["--", "-j"]
 
         os.chdir(str(build_temp))
         self.spawn(["cmake", str(cwd)] + cmake_args)
         if not self.dry_run:
             self.spawn(["cmake", "--build", ".", "--target", "install"] + build_args)
+            if not extdir.is_file():
+                raise RuntimeError(f"CMake did not produce the extension at {extdir}")
+            validate_native_artifacts(
+                extdir.parent.absolute(),
+                retained_forbidden_prefixes(build_temp),
+                strict_dynamic_paths=PROJECTION_MARKER.is_file(),
+            )
+            extdir.chmod(0o755)
         # Troubleshooting: if fail on line above then delete all possible
         # temporary CMake files including "CMakeCache.txt" in top level dir.
         os.chdir(str(cwd))
+
+
+class build_py(build_py_orig):
+    def run(self):
+        super().run()
+        destination = (
+            pathlib.Path(self.build_lib) / "torchcomms" / NATIVE_SOURCE_MANIFEST
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(native_source_manifest(), sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+        )
+        destination.chmod(0o644)
 
 
 extras_require = {
@@ -250,7 +527,7 @@ setup(
         "torchcomms.backends": backend_entry_points,
     },
     ext_modules=ext_modules,
-    cmdclass={"build_ext": build_ext},
+    cmdclass={"build_ext": build_ext, "build_py": build_py},
     install_requires=install_requires,
     extras_require=extras_require,
 )
