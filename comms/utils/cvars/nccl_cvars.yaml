@@ -3237,6 +3237,28 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_REDUCESCATTER_ALGO
+   type        : enum
+   default     : none
+   choices     : none, cnvlmm
+   description : |-
+     Selects the MCCL-hosted ReduceScatter algorithm dispatched through the
+     ICollective interface (McclComm::reduceScatter).
+     none - do not select an MCCL-hosted algorithm; fall through to the existing
+            ctran ReduceScatter path (NCCL_REDUCESCATTER_ALGO).
+     cnvlmm - single-NVLink-domain ReduceScatter over NVLink multimem (NVLS
+              in-switch reduce). Requires nNodes==1, >2 local ranks, a Prims-
+              backed multimem NVL transport, and commSum over fp32/fp16/bf16/
+              int32; if those preconditions are not met the request is rejected
+              with commInvalidArgument (it does NOT fall through to the ctran
+              baseline - set this cvar to none for the baseline path).
+
+ - name        : MCCL_CNVLMM_REDUCE_ACC_F32
+   type        : bool
+   default     : true
+   description : |-
+     Use f32 accumulation for fp16/bf16 multimem reduce; false = native 2-byte accumulation.
+
  - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
    type        : bool
    default     : true
