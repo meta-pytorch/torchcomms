@@ -154,6 +154,10 @@ class TorchCommFake : public TorchCommBackend {
     shouldFailReconfigure_ = fail;
   }
 
+  void setReconfigureThrows(bool shouldThrow) {
+    shouldThrowReconfigure_ = shouldThrow;
+  }
+
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
@@ -251,6 +255,7 @@ class TorchCommFake : public TorchCommBackend {
   std::optional<std::chrono::milliseconds> timeout_;
   std::unordered_map<std::string, std::string> hints_;
   bool shouldFailReconfigure_{false};
+  bool shouldThrowReconfigure_{false};
   std::unordered_set<void*> registered_addrs_;
   std::optional<SendOptions> lastSendOptions_;
   int lastSendDst_{-1};

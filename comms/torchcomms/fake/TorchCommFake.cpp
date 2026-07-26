@@ -5,6 +5,8 @@
 #include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 
+#include <stdexcept>
+
 namespace torch::comms {
 
 namespace {
@@ -266,6 +268,10 @@ std::shared_ptr<TorchCommWindow> TorchCommFake::new_window(
 
 c10::intrusive_ptr<TorchWork> TorchCommFake::reconfigure(
     const ReconfigureOptions& /* opts */) {
+  if (shouldThrowReconfigure_) {
+    initialized_ = false;
+    throw std::runtime_error("injected reconfigure failure");
+  }
   if (shouldFailReconfigure_) {
     initialized_ = false;
     return c10::make_intrusive<TorchWorkFailed>();

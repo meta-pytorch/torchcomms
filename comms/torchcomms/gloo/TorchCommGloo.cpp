@@ -36,12 +36,8 @@ namespace torch::comms {
 
 template <typename T>
 inline T* getDataPointer(const at::Tensor& tensor) {
-  // This method is only used in ProcessGroupGloo for now. Call sites must make
-  // sure that the input tensor is contiguous. It is OK if the tensor does not
-  // start from the beginning of the storage. For example, it could come from
-  // chunk(..., dim=0)[1]. Hence, we need to use data_ptr() instead of
-  // tensor.storage().data()
-  // NB: not using tensor.data<T>() because tensor is not aware of gloo::TYPE
+  // data_ptr supports contiguous views with nonzero storage offsets.
+  // Callers validate contiguity; the tensor does not know gloo::TYPE.
   return static_cast<T*>(tensor.data_ptr());
 }
 
@@ -430,7 +426,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::createWork(
     std::function<void()> fn,
     bool async_op) {
   if (async_op) {
-    return c10::make_intrusive<TorchWorkThread>(std::move(fn));
+    return TorchWorkThread::create(std::move(fn));
   }
 
   try {
@@ -616,11 +612,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
         // Start all operations without waiting
         for (size_t i = 0; i < op_infos.size(); ++i) {
           auto& info = op_infos[i];
-          // For tag matching:
-          // - SEND to peer P: tag = sender_rank * 1000 + send_index_to_peer
-          // - RECV from peer P: tag = source_rank * 1000 +
-          // recv_index_from_source This ensures send[i] from A to B matches
-          // recv[i] at B from A
+          // Per-peer indices make send[i] from A match recv[i] at B.
+          // The sender rank occupies the tag's 1000-wide namespace.
           uint64_t tag;
           if (info.type == BatchSendRecv::P2POp::OpType::SEND) {
             tag = base_tag + static_cast<uint64_t>(my_rank) * 1000 +

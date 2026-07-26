@@ -220,6 +220,14 @@ class SplitTest(unittest.TestCase):
     def _ranks_for_split(self, ranks, current_rank):
         return ranks if current_rank in ranks else []
 
+    def _barrier_and_wait(self, comm):
+        """Rendezvous on the host before communicator teardown."""
+        work = comm.barrier(True)
+        work.wait()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            work.wait()
+
     def test_contiguous_group(self):
         """Test contiguous group with first half of ranks."""
         split_size = self.num_ranks // 2
@@ -255,12 +263,15 @@ class SplitTest(unittest.TestCase):
             self._verify_communication(new_torchcomm)
 
             # Finalize the communicator before it's destroyed
+            self._barrier_and_wait(new_torchcomm)
             new_torchcomm.finalize()
         else:
             # Current rank should not be in the group and get None
             self.assertIsNone(
                 new_torchcomm, f"Rank {self.rank} should not have a child communicator"
             )
+
+        self._barrier_and_wait(self.torchcomm)
 
     def test_non_contiguous_group(self):
         """Test non-contiguous group with even ranks only."""
@@ -295,12 +306,15 @@ class SplitTest(unittest.TestCase):
             self._verify_communication(new_torchcomm)
 
             # Finalize the communicator before it's destroyed
+            self._barrier_and_wait(new_torchcomm)
             new_torchcomm.finalize()
         else:
             # Current rank should not be in the group and get None
             self.assertIsNone(
                 new_torchcomm, f"Rank {self.rank} should not have a child communicator"
             )
+
+        self._barrier_and_wait(self.torchcomm)
 
     def test_duplicate_ranks(self):
         """Test that duplicate ranks are properly rejected with a runtime error."""
@@ -359,6 +373,7 @@ class SplitTest(unittest.TestCase):
                 first_level_comm,
                 f"Rank {self.rank} should not have a first-level child communicator",
             )
+            self._barrier_and_wait(self.torchcomm)
             return
 
         # Current rank is in the first level, should have a communicator
@@ -400,7 +415,9 @@ class SplitTest(unittest.TestCase):
                 f"Rank {first_level_rank} should not have a second-level child communicator",
             )
 
+            self._barrier_and_wait(first_level_comm)
             first_level_comm.finalize()
+            self._barrier_and_wait(self.torchcomm)
             return
 
         # Current rank is in the second level, should have a communicator
@@ -419,8 +436,11 @@ class SplitTest(unittest.TestCase):
         )
 
         # Finalize the communicators before they're destroyed
+        self._barrier_and_wait(second_level_comm)
         second_level_comm.finalize()
+        self._barrier_and_wait(first_level_comm)
         first_level_comm.finalize()
+        self._barrier_and_wait(self.torchcomm)
 
 
 if __name__ == "__main__":

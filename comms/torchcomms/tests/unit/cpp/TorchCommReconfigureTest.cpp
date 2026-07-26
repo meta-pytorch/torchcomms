@@ -146,4 +146,18 @@ TEST_F(TorchCommReconfigureTest, ReconfigureSuccessThenFailureClearsRanks) {
   EXPECT_TRUE(comm->getRanks().empty());
 }
 
+TEST_F(TorchCommReconfigureTest, ReconfigureExceptionClearsRanks) {
+  auto comm = createComm(true);
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+
+  comm->reconfigure(makeOpts());
+  ASSERT_EQ(comm->getRanks().size(), 1);
+
+  backend->setReconfigureThrows(true);
+  EXPECT_THROW(comm->reconfigure(makeOpts()), std::runtime_error);
+  EXPECT_TRUE(comm->getRanks().empty());
+}
+
 } // namespace torch::comms

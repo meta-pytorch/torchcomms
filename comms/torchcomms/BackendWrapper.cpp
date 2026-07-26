@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <utility>
 
 namespace torch::comms {
 
@@ -68,84 +70,250 @@ std::vector<uint64_t> toVecUint64(const std::vector<int64_t>& vec) {
   return vecUint64;
 }
 
+bool isTerminal(TorchWork::WorkStatus status) {
+  return status == TorchWork::WorkStatus::COMPLETED ||
+      status == TorchWork::WorkStatus::ERROR ||
+      status == TorchWork::WorkStatus::TIMEDOUT;
+}
+
+std::exception_ptr exceptionForStatus(TorchWork::WorkStatus status) {
+  if (status == TorchWork::WorkStatus::ERROR) {
+    return std::make_exception_ptr(
+        std::runtime_error("TorchComms operation failed"));
+  }
+  if (status == TorchWork::WorkStatus::TIMEDOUT) {
+    return std::make_exception_ptr(
+        std::runtime_error("TorchComms operation timed out"));
+  }
+  return nullptr;
+}
+
+std::optional<c10d::WorkResult> resultForStatus(TorchWork::WorkStatus status) {
+  if (status == TorchWork::WorkStatus::COMPLETED) {
+    return c10d::WorkResult::SUCCESS;
+  }
+  if (status == TorchWork::WorkStatus::TIMEDOUT) {
+    return c10d::WorkResult::TIMEOUT;
+  }
+  if (status == TorchWork::WorkStatus::ERROR) {
+    return c10d::WorkResult::COMM_ERROR;
+  }
+  return std::nullopt;
+}
+
+constexpr auto kFiniteWaitPollInterval = std::chrono::milliseconds(1);
+
 } // namespace
+
+void WorkWrapper::joinWorkNoThrow(
+    const c10::intrusive_ptr<TorchWork>& work) noexcept {
+  if (!work) {
+    return;
+  }
+  try {
+    work->wait();
+    return;
+  } catch (const std::exception& error) {
+    TC_LOG(WARNING) << "Failed to join work during wrapper cleanup: "
+                    << error.what();
+  } catch (...) {
+    TC_LOG(WARNING) << "Failed to join work during wrapper cleanup";
+  }
+  if (isTerminal(work->status())) {
+    return;
+  }
+  try {
+    work->setStatus(TorchWork::WorkStatus::ERROR);
+  } catch (const std::exception& error) {
+    TC_LOG(WARNING) << "Failed to publish work error during wrapper cleanup: "
+                    << error.what();
+  } catch (...) {
+    TC_LOG(WARNING) << "Failed to publish work error during wrapper cleanup";
+  }
+}
 
 WorkWrapper::WorkWrapper(
     c10::intrusive_ptr<TorchWork> work,
     std::vector<at::Tensor> outputTensors,
     bool hostBlocking)
     : work_(std::move(work)),
+      completionState_(std::make_shared<CompletionState>()),
       outputTensors_(std::move(outputTensors)),
       hostBlocking_(hostBlocking) {
   std::vector<c10::Device> devices;
   // CPU needs to wait for the TorchWork to complete before marking Future
   // as completed
-  for (const auto& tensor : outputTensors_) {
-    if (tensor.device().type() != c10::DeviceType::CPU) {
-      devices.push_back(tensor.device());
-      break;
+  if (!exceptionForStatus(work_->status())) {
+    for (const auto& tensor : outputTensors_) {
+      if (tensor.device().type() != c10::DeviceType::CPU) {
+        devices.push_back(tensor.device());
+        break;
+      }
     }
   }
+  completionFuture_ = c10::make_intrusive<c10::ivalue::Future>(
+      c10::ListType::create(c10::TensorType::get()), devices);
   future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()), devices);
+  resultFuture_ =
+      c10::make_intrusive<c10::ivalue::Future>(c10::AnyEnumType::get());
+  completionFuture_->addCallback(
+      [future = future_](c10::ivalue::Future& completionFuture) {
+        if (future->completed()) {
+          return;
+        }
+        try {
+          if (completionFuture.hasError()) {
+            future->setError(completionFuture.exception_ptr());
+          } else {
+            future->markCompleted(
+                completionFuture.value(), completionFuture.storages());
+          }
+        } catch (...) {
+          if (!future->completed()) {
+            throw;
+          }
+        }
+      });
 
-  // If we are doing a barrier collective, for all device types, devices vector
-  // would be empty we would fallback to same CPU synchronization logic
+  work_->registerWorkEndHook([state = completionState_,
+                              resultFuture = resultFuture_,
+                              work = work_.get()]() {
+    const auto status = work->status();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->status = status;
+    }
+    state->cv.notify_all();
+    if (const auto result = resultForStatus(status);
+        result.has_value() && !resultFuture->completed()) {
+      resultFuture->markCompleted(
+          c10::IValue(static_cast<std::uint8_t>(*result)));
+    }
+  });
+
   if (!devices.empty()) {
-    work_->markCompleted(
-        c10::intrusive_ptr<c10::ivalue::Future>(future_), outputTensors_);
-  } else if (work_->isCompleted()) {
-    // For other device types (CPU) synchronous op already finished —
-    // resolve now.
-    future_->markCompleted(c10::IValue(outputTensors_));
+    if (const auto error = exceptionForStatus(work_->status())) {
+      completionFuture_->setError(error);
+    } else {
+      work_->markCompleted(
+          c10::intrusive_ptr<c10::ivalue::Future>(completionFuture_),
+          outputTensors_);
+    }
   } else {
-    // For other device types (CPU) async: register end hook so
-    // future completes when setStatus fires.
-    work_->registerWorkEndHook([future = future_, tensors = outputTensors_]() {
+    work_->registerWorkEndHook([future = completionFuture_,
+                                tensors = outputTensors_,
+                                work = work_.get()]() {
       if (!future->completed()) {
-        future->markCompleted(c10::IValue(tensors));
+        if (work->status() == TorchWork::WorkStatus::COMPLETED) {
+          future->markCompleted(c10::IValue(tensors));
+        } else {
+          future->setError(exceptionForStatus(work->status()));
+        }
       }
     });
   }
 }
 
+void WorkWrapper::terminalizeFailure(std::exception_ptr error) noexcept {
+  if (!isTerminal(work_->status())) {
+    try {
+      work_->setStatus(TorchWork::WorkStatus::ERROR);
+    } catch (...) {
+    }
+  }
+  try {
+    finish(std::move(error));
+  } catch (...) {
+  }
+}
+
+TorchWork::WorkStatus WorkWrapper::refreshStatus() {
+  const auto current = work_->status();
+  if (isTerminal(current) || !work_->supportsActivePolling()) {
+    return current;
+  }
+  try {
+    return work_->pollStatus();
+  } catch (...) {
+    terminalizeFailure(std::current_exception());
+    return work_->status();
+  }
+}
+
+bool WorkWrapper::isCompleted() {
+  const auto status = refreshStatus();
+  if (isTerminal(status) && !c10d::Work::isCompleted()) {
+    finish(exceptionForStatus(status));
+  }
+  return isTerminal(status);
+}
+
+bool WorkWrapper::isSuccess() const {
+  return work_->status() == TorchWork::WorkStatus::COMPLETED &&
+      c10d::Work::isSuccess();
+}
+
+std::exception_ptr WorkWrapper::exception() const {
+  auto error = c10d::Work::exception();
+  return error ? error : exceptionForStatus(work_->status());
+}
+
 bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
   if (timeout != kNoTimeout) {
-    auto ex = std::make_exception_ptr(
-        std::runtime_error("wait timeout not supported"));
-    finish(ex);
-    std::rethrow_exception(ex);
-  }
-  try {
-    work_->wait();
-    if (hostBlocking_) {
-      work_->hostSynchronize();
+    TORCH_CHECK(timeout.count() > 0, "Work wait timeout must be positive");
+    TORCH_CHECK(
+        work_->supportsActivePolling() || isTerminal(work_->status()),
+        "Finite Work wait is not supported by this TorchComms backend");
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto polledStatus = [this]() { return refreshStatus(); };
+    while (!isTerminal(polledStatus())) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        TORCH_CHECK(isTerminal(polledStatus()), "Operation timed out!");
+        break;
+      }
+      std::unique_lock<std::mutex> lock(completionState_->mutex);
+      completionState_->cv.wait_until(
+          lock, std::min(deadline, now + kFiniteWaitPollInterval), [this]() {
+            return completionState_->status.has_value();
+          });
     }
-  } catch (...) {
-    finish(std::current_exception());
-    throw;
   }
-  if (!future_->completed()) {
-    future_->markCompleted(c10::IValue(outputTensors_));
-  }
-  finish();
+  synchronize();
   return true;
 }
+
 void WorkWrapper::synchronize() {
   try {
+    if (auto error = exception()) {
+      std::rethrow_exception(error);
+    }
     work_->wait();
     if (hostBlocking_) {
       work_->hostSynchronize();
     }
+    if (auto error = exception()) {
+      std::rethrow_exception(error);
+    }
   } catch (...) {
-    finish(std::current_exception());
-    throw;
-  }
-  if (!future_->completed()) {
-    future_->markCompleted(c10::IValue(outputTensors_));
+    const auto error = std::current_exception();
+    terminalizeFailure(error);
+    std::rethrow_exception(error);
   }
   finish();
 }
+
+void WorkWrapper::blockCurrentStream() {
+  try {
+    work_->wait();
+  } catch (...) {
+    const auto error = std::current_exception();
+    terminalizeFailure(error);
+    std::rethrow_exception(error);
+  }
+}
+
 std::vector<at::Tensor> WorkWrapper::result() {
   return outputTensors_;
 }
@@ -153,10 +321,28 @@ c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
   return future_;
 }
 
+c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFutureResult() {
+  return resultFuture_;
+}
+
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
     : Backend(comm->getRank(), comm->getSize()),
-      comm_(comm),
+      comm_(std::move(comm)),
       options_(c10::make_intrusive<Options>()) {}
+
+c10::intrusive_ptr<c10d::Work> BackendWrapper::wrapWork(
+    c10::intrusive_ptr<TorchWork> work,
+    std::vector<at::Tensor> outputTensors,
+    bool hostBlocking) {
+  TORCH_CHECK(work, "TorchComms returned a null work");
+  try {
+    return c10::make_intrusive<WorkWrapper>(
+        work, std::move(outputTensors), hostBlocking);
+  } catch (...) {
+    WorkWrapper::joinWorkNoThrow(work);
+    throw;
+  }
+}
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
     std::vector<at::Tensor>& tensors,
@@ -172,7 +358,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->broadcast(
           tensors.at(0), static_cast<int>(opts.rootRank), opts.asyncOp, bopts),
       tensors);
@@ -192,7 +378,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_reduce(
           tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts),
       tensors);
@@ -212,7 +398,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_reduce(
           tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts),
       tensors);
@@ -232,7 +418,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->reduce(
           tensors.at(0),
           static_cast<int>(opts.rootRank),
@@ -276,7 +462,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather(
   bool aliased = outputList.size() > 1 &&
       outputList[0].data_ptr() == outputList[1].data_ptr();
   if (!aliased) {
-    return c10::make_intrusive<WorkWrapper>(
+    return wrapWork(
         comm_->all_gather(outputList, input, opts.asyncOp, bopts), outputList);
   }
 
@@ -289,7 +475,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather(
   auto staging = at::empty(
       {getSize() * input.numel()},
       input.options().memory_format(at::MemoryFormat::Contiguous));
-  auto work = c10::make_intrusive<WorkWrapper>(
+  auto work = wrapWork(
       comm_->all_gather_single(staging, input, opts.asyncOp, sopts),
       outputList);
   auto rows = staging.view({getSize(), input.numel()});
@@ -318,7 +504,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_gather(
           outputTensorLists.at(0), inputTensors.at(0), opts.asyncOp, bopts),
       outputTensorLists.at(0));
@@ -345,7 +531,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_gather_single(
           output_tensors.at(0), inputTensors.at(0), opts.asyncOp, bopts),
       output_tensors);
@@ -361,7 +547,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_allgather_base(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_gather_single(outputTensor, inputTensor, opts.asyncOp, bopts),
       std::vector<at::Tensor>{outputTensor});
 }
@@ -395,7 +581,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->gather(
           outputTensors.at(0),
           inputTensors.at(0),
@@ -430,7 +616,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
     inputTensors = {};
     inputTensors.emplace_back();
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->scatter(
           outputTensors.at(0),
           inputTensors.at(0),
@@ -458,7 +644,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->reduce_scatter(
           outputTensors.at(0),
           inputTensors.at(0),
@@ -489,7 +675,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->reduce_scatter_single(
           outputTensors.at(0),
           inputTensors.at(0),
@@ -509,7 +695,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_reduce_scatter_base(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->reduce_scatter_single(
           outputTensor,
           inputTensor,
@@ -532,7 +718,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall_base(
     } else {
       bopts.timeout = options_->timeout;
     }
-    return c10::make_intrusive<WorkWrapper>(
+    return wrapWork(
         comm_->all_to_all_single(
             outputTensor, inputTensor, opts.asyncOp, bopts),
         std::vector<at::Tensor>{outputTensor});
@@ -543,7 +729,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall_base(
     } else {
       bopts.timeout = options_->timeout;
     }
-    return c10::make_intrusive<WorkWrapper>(
+    return wrapWork(
         comm_->all_to_all_v_single(
             outputTensor,
             inputTensor,
@@ -565,7 +751,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->all_to_all(outputTensors, inputTensors, opts.asyncOp, bopts),
       outputTensors);
 }
@@ -588,29 +774,16 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   // collective. Async barriers keep the non-blocking, stream-ordered behavior
   // via the work.
   auto work = comm_->barrier(opts.asyncOp, bopts);
-  return c10::make_intrusive<WorkWrapper>(
-      std::move(work),
-      std::vector<at::Tensor>{},
-      /*hostBlocking=*/!opts.asyncOp);
+  return wrapWork(std::move(work), {}, /*hostBlocking=*/!opts.asyncOp);
 }
 
 void BackendWrapper::monitoredBarrier(
     const c10d::BarrierOptions& opts,
     bool waitAllRanks) {
-  // Reimplements c10d::ProcessGroupGloo::monitoredBarrier on TorchComms.
-  //
-  // The native gloo version posts async send/recv and then wait(timeout)s on
-  // each work to find stragglers. That form is unavailable here: WorkWrapper::
-  // wait() rejects any finite timeout ("wait timeout not supported"). Instead
-  // we run the same coordinator protocol with SYNCHRONOUS, per-op-timeout P2P
-  // on the underlying comm: a synchronous gloo recv with a finite timeout
-  // throws a catchable exception on timeout (TorchCommGloo::recv ->
-  // gloo UnboundBuffer::waitRecv(timeout)) and does NOT poison the comm
-  // (TorchCommGloo::checkAndAbortIfTimedOutOrError is a no-op), so rank 0 can
-  // keep probing the remaining ranks after one times out.
-  //
-  // Only meaningful for the gloo (CPU) backend; the dist.monitored_barrier
-  // entry point already restricts callers to gloo groups.
+  // Mirror c10d's Gloo protocol with synchronous P2P because UnboundBuffer
+  // has no safe active poll for finite Work waits. Per-op transport timeouts
+  // remain catchable, so rank 0 can keep probing after one rank times out.
+  // c10d already restricts monitored_barrier to Gloo groups.
   const int rank = getRank();
   const int worldSize = getSize();
 
@@ -792,13 +965,12 @@ BackendWrapper::send(std::vector<at::Tensor>& tensors, int dstRank, int tag) {
     // Per-op Work returned during coalescing is a no-op sentinel; the real
     // Work covering the whole batch is returned by endCoalescing(). c10d's
     // batch_isend_irecv discards these per-op returns.
-    return c10::make_intrusive<WorkWrapper>(
-        c10::make_intrusive<TorchWorkCompleted>(), tensors);
+    return wrapWork(c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
   SendOptions opts;
   opts.timeout = options_->timeout;
   opts.tag = tag;
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->send(tensors.at(0), dstRank, /*async_op=*/true, opts), tensors);
 }
 
@@ -812,13 +984,12 @@ BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
   if (coalescing_batch_.has_value()) {
     // See the note in send(): the coalesced path does not thread `tag`.
     coalescing_batch_->recv(tensors.at(0), srcRank);
-    return c10::make_intrusive<WorkWrapper>(
-        c10::make_intrusive<TorchWorkCompleted>(), tensors);
+    return wrapWork(c10::make_intrusive<TorchWorkCompleted>(), tensors);
   }
   RecvOptions opts;
   opts.timeout = options_->timeout;
   opts.tag = tag;
-  return c10::make_intrusive<WorkWrapper>(
+  return wrapWork(
       comm_->recv(tensors.at(0), srcRank, /*async_op=*/true, opts), tensors);
 }
 
@@ -839,13 +1010,11 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::endCoalescing() {
   if (batch.ops.empty()) {
     // Empty coalescing window — return a completed sentinel so callers can
     // .wait() without blocking.
-    return c10::make_intrusive<WorkWrapper>(
-        c10::make_intrusive<TorchWorkCompleted>());
+    return wrapWork(c10::make_intrusive<TorchWorkCompleted>());
   }
   BatchP2POptions bopts;
   bopts.timeout = options_->timeout;
-  return c10::make_intrusive<WorkWrapper>(
-      batch.issue(/*async_op=*/true, bopts));
+  return wrapWork(batch.issue(/*async_op=*/true, bopts));
 }
 
 std::shared_ptr<TorchComm> BackendWrapper::getComm() const {

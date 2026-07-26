@@ -492,13 +492,12 @@ InitHandle TorchComm::getInitHandle() const {
 
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
+  ranks_.clear();
   auto work = impl_->reconfigure(opts);
   work->waitBlocking();
 
   if (work->isCompleted()) {
     initRanks();
-  } else {
-    ranks_.clear();
   }
 
   return work;

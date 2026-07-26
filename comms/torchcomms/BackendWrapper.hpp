@@ -12,6 +12,9 @@
 #include "comms/torchcomms/TorchWork.hpp"
 
 #include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <optional>
 
 namespace torch::comms {
@@ -25,14 +28,33 @@ class WorkWrapper : public c10d::Work {
   ~WorkWrapper() override = default;
 
   void synchronize() override;
+  void blockCurrentStream() override;
+  bool isCompleted() override;
+  bool isSuccess() const override;
+  std::exception_ptr exception() const override;
   bool wait(std::chrono::milliseconds timeout) override;
   std::vector<at::Tensor> result() override;
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
+  c10::intrusive_ptr<c10::ivalue::Future> getFutureResult() override;
 
  private:
+  struct CompletionState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::optional<TorchWork::WorkStatus> status;
+  };
+
+  TorchWork::WorkStatus refreshStatus();
+  static void joinWorkNoThrow(
+      const c10::intrusive_ptr<TorchWork>& work) noexcept;
+  void terminalizeFailure(std::exception_ptr error) noexcept;
+
   friend class BackendWrapper;
   c10::intrusive_ptr<TorchWork> work_;
+  c10::intrusive_ptr<c10::ivalue::Future> completionFuture_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
+  c10::intrusive_ptr<c10::ivalue::Future> resultFuture_;
+  std::shared_ptr<CompletionState> completionState_;
   std::vector<at::Tensor> outputTensors_;
   // When set (synchronous barrier), wait()/synchronize() also host-block via
   // work_->hostSynchronize() after the stream-ordered wait().
@@ -184,6 +206,12 @@ class BackendWrapper : public c10d::Backend {
   // Delegates to TorchComm::abort() which uses graceful revoke in
   // reconfigurable mode and destructive abort otherwise.
   void abort() override;
+
+ protected:
+  c10::intrusive_ptr<c10d::Work> wrapWork(
+      c10::intrusive_ptr<TorchWork> work,
+      std::vector<at::Tensor> outputTensors = {},
+      bool hostBlocking = false);
 
  private:
   std::shared_ptr<TorchComm> comm_;
