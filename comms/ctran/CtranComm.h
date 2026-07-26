@@ -7,17 +7,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/Synchronized.h>
 #include <folly/container/F14Set.h>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
@@ -75,7 +77,7 @@ namespace ctran {
 struct CtranWin;
 }
 
-using ctran::utils::Abort;
+using comms::fault_tolerance::Abort;
 using ctran::utils::AsyncError;
 using ctran::utils::Exception;
 
@@ -85,7 +87,7 @@ class CtranComm {
   // For real communicationator we should use factory method to create.
   explicit CtranComm(
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/false),
+          comms::fault_tolerance::createAbort(/*enabled=*/false),
       ctranConfig commConfig = ctranConfig{});
 
   // The MemCache allocator is destroyed in a different time than all
@@ -125,23 +127,23 @@ class CtranComm {
   }
 
   inline bool abortEnabled() const {
-    return abort_->Enabled();
+    return abort_->isEnabled();
   }
 
   inline void setAbort() {
-    abort_->Set();
+    abort_->setAbort();
   }
 
   inline bool testAbort() const {
-    return abort_->Test();
+    return abort_->isAborted();
   }
 
   inline void setTimeout(const std::chrono::milliseconds& timeout) {
-    return abort_->SetTimeout(timeout);
+    return abort_->startTimeout(timeout);
   }
 
   inline void cancelTimeout() {
-    return abort_->CancelTimeout();
+    return abort_->cancelTimeout();
   }
 
   inline bool useNativeOpCount() const {

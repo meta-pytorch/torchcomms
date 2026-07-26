@@ -829,7 +829,7 @@ void CtranGpe::Impl::gpeThreadFn() {
 
       if (cmd->timeout.has_value()) {
         comm->setTimeout(cmd->timeout.value());
-      } else if (auto d = comm->getAbort()->GetDefaultTimeoutDuration();
+      } else if (auto d = comm->getAbort()->getDefaultTimeout();
                  d.has_value()) {
         // Fall back to comm-level default (CUDA-graph replay path).
         comm->setTimeout(*d);
@@ -840,7 +840,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           // must never flip back to not-aborted.
           comm->setAbort();
           const std::string_view reason =
-              comm->getAbort()->TimedOut() ? "timeout" : "explicit";
+              comm->getAbort()->isTimedOut() ? "timeout" : "explicit";
 
           // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
           if (!isTerminateCmd) {
@@ -1218,9 +1218,11 @@ void KernelElem::wait(int groupId) {
   }
 }
 
-void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
+void KernelElem::wait(
+    std::shared_ptr<comms::fault_tolerance::Abort> abort,
+    int groupId) {
   // wait for all thread blocks to complete
-  while (!this->isComplete(groupId) && !abort->Test()) {
+  while (!this->isComplete(groupId) && !abort->isAborted()) {
     // friendly spin so we don't hog CPU
     std::this_thread::yield();
   }

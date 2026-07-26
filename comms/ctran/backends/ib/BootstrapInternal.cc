@@ -40,13 +40,13 @@ const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
 // like what would happen if FT is disabled (via
 // the FB_SYSCHECKTHROW_EX macro).
 #define HANDLE_SOCKET_ERROR(cmd, self)                                       \
-  if (!self->abortCtrl_->Enabled()) {                                        \
+  if (!self->abortCtrl_->isEnabled()) {                                      \
     FB_SYSCHECKTHROW_EX(cmd, self->rank_, self->commHash_, self->commDesc_); \
   } else {                                                                   \
     int errCode = cmd;                                                       \
-    if (errCode || self->abortCtrl_->Test()) {                               \
+    if (errCode || self->abortCtrl_->isAborted()) {                          \
       CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode);        \
-      self->abortCtrl_->Set(); /* Ensure remote is notified */               \
+      self->abortCtrl_->setAbort(); /* Ensure remote is notified */          \
       break;                                                                 \
     }                                                                        \
   }
@@ -57,7 +57,7 @@ Bootstrap::Bootstrap(
     VcState& vcState,
     const VcLayout& vcLayout,
     std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory,
-    std::shared_ptr<::ctran::utils::Abort> abortCtrl,
+    std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl,
     const CommLogData& logData,
     CtranComm* comm,
     std::vector<CtranIbDevice>& devices,

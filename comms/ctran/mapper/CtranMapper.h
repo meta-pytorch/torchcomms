@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -223,7 +224,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     auto _abort = comm->getAbort();
     std::string _ctx =
-        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
     throw ctran::utils::Exception(
         _ctx,
         commRemoteError,
@@ -235,7 +236,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   [[noreturn]] void throwTcpDmRequestsAbort(size_t numRequests) {
     auto _abort = comm->getAbort();
     std::string _ctx =
-        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
     throw ctran::utils::Exception(
         _ctx,
         commRemoteError,
@@ -562,6 +563,18 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET,
       bool recordExport = true,
       std::vector<ctran::ScopedIpcRegHdl>* outIpcHdls = nullptr);
+
+  // One-round all-gather of a fixed-size ctrl message over this comm's NVL
+  // domain (statex->localRankToRanks() -- the same membership
+  // intraAllGatherCtrl and the exec broadcast use): on return recvData[i *
+  // elemSize] holds domain rank i's sendData (self is at localRank()). The
+  // exchange mechanism itself is transport-generic (plain isend/irecv ctrl
+  // all-to-all that would work for any peer set); only the peer list is scoped
+  // to the NVL domain. Callers layer their own payload + decision on top.
+  commResult_t intraNvlDomainAllGather(
+      const void* sendData,
+      void* recvData,
+      size_t elemSize);
 
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
@@ -1141,8 +1154,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   [[noreturn]] inline void throwCommAbortException(
       const std::string& abortContext) {
     auto commAbort = comm->getAbort();
-    std::string message =
-        commAbort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    std::string message = commAbort->isTimedOut()
+        ? "comm aborted due to timeout"
+        : "comm aborted";
     throw ctran::utils::Exception(
         message,
         commRemoteError,
@@ -1258,7 +1272,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     if (comm->testAbort()) {
       auto _abort = comm->getAbort();
       std::string _ctx =
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted";
+          _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
       throw ctran::utils::Exception(
           _ctx,
           commRemoteError,
