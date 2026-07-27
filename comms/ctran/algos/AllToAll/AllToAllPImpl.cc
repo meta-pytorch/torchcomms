@@ -235,6 +235,13 @@ commResult_t ctranAllToAllPIbImpl(
       ibPutReqs, useProfiler ? (&timestamp->putComplete) : nullptr));
   // Wait for all receives (i.e., remote IB puts) to complete
   FB_COMMCHECK(comm->ctran_->mapper->waitAllNotifies<PerfConfig>(notifyVec));
+  // Flush received RDMA writes into recvbuff once all peers' data has arrived,
+  // so GPU copy engines/kernels observe it. No-op unless local flush is enabled
+  // (e.g. GB300, pre-H100 arch, or NCCL_CTRAN_NET_FORCE_FLUSH).
+  if (!ibRecvPeers.empty()) {
+    FB_COMMCHECK(
+        comm->ctran_->mapper->flush<PerfConfig>(recvbuff, pArgs->recvHdl));
+  }
 
   if (useProfiler) {
     comm->ctran_->mapper->timestamps.emplace_back(std::move(timestamp));
