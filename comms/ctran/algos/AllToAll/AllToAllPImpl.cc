@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/algos/common/NvlUtils.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/CtranPerf.h"
@@ -34,6 +35,7 @@ using ctran::alltoallp::PersistArgs;
       counts,                                \
       displs,                                \
       pArgs->datatype,                       \
+      op->opCount,                           \
       comm,                                  \
       std::move(timestamp),                  \
       pArgs);
@@ -104,6 +106,7 @@ commResult_t ctranAllToAllPIbImpl(
     std::vector<size_t>& recvCounts,
     std::vector<size_t>& rDispls,
     commDataType_t datatype,
+    uint64_t opCount,
     CtranComm* comm,
     std::unique_ptr<CtranMapperTimestamp> timestamp,
     ctran::alltoallp::PersistArgs* pArgs) {
@@ -113,6 +116,12 @@ commResult_t ctranAllToAllPIbImpl(
 
   const std::string algoName = AlgoImpl::algoName(myAlgo);
   const bool useProfiler = NCCL_CTRAN_PROFILING != NCCL_CTRAN_PROFILING::none;
+
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
 
   std::vector<const void*> sendBuffs(nRanks);
 
@@ -133,6 +142,13 @@ commResult_t ctranAllToAllPIbImpl(
     }
     CtranMapperContext context(algoName, sendSizes, recvSizes);
     comm->ctran_->mapper->setContext(std::move(context));
+
+    CTRAN_PROFILER_IF(profiler, {
+      auto& algoContext = profiler->algoContext;
+      algoContext.algorithmName = algoName;
+      algoContext.sendContext.messageSizes = folly::join(',', sendSizes);
+      algoContext.recvContext.messageSizes = folly::join(',', recvSizes);
+    });
   }
 
   // Prepare buffers shifted with displacement, and set ctrl/put/notify
@@ -169,11 +185,15 @@ commResult_t ctranAllToAllPIbImpl(
   //     ensure remote buffer is ready to be updated (e.g., double buffering).
   bool doHandshake = !pArgs->skipCtrlMsg || !pArgs->ibKeysExchanged;
   if (doHandshake) {
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
     FB_COMMCHECK(ibHandshake(
         comm->ctran_->mapper.get(),
         statex.get(),
         pArgs,
         !pArgs->ibKeysExchanged));
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
   }
   pArgs->ibKeysExchanged = true;
 
@@ -191,6 +211,8 @@ commResult_t ctranAllToAllPIbImpl(
   // Search for the handle only when there are SendPeers to avoid attempting to
   // search/register with a buffer size of 0.
   if (!ibSendPeers.empty()) {
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
     // TODO: move this to main thread before submitting to GPE
     FB_COMMCHECK(searchRegHandle(
         comm,
@@ -198,6 +220,8 @@ commResult_t ctranAllToAllPIbImpl(
         contigSendBufSize * commTypeSize(datatype),
         sendMemHdl,
         tmpRegHdls));
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
   }
 
   // Per-collective IB QP config override from NCCL_CTRAN_IB_QP_CONFIG_ALGO;
@@ -208,6 +232,9 @@ commResult_t ctranAllToAllPIbImpl(
   const size_t qpScalingTh = alltoallpIbConfig
       ? alltoallpIbConfig->qpScalingTh
       : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   std::vector<CtranMapperRequest> ibPutReqs(ibSendPeers.size());
   int idx = 0;
@@ -248,6 +275,11 @@ commResult_t ctranAllToAllPIbImpl(
     FB_COMMCHECK(
         comm->ctran_->mapper->flush<PerfConfig>(recvbuff, pArgs->recvHdl));
   }
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   if (useProfiler) {
     comm->ctran_->mapper->timestamps.emplace_back(std::move(timestamp));
