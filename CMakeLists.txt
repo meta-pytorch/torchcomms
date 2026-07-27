@@ -95,7 +95,10 @@ endif()
 # Set ROOT early — needed by build_ncclx.cmake and backend CMakeLists.
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
-set(USE_SYSTEM_LIBS $ENV{USE_SYSTEM_LIBS})
+# USE_SYSTEM_LIBS is passed via -D from setup.py; fall back to env for direct cmake invocations.
+if(NOT DEFINED USE_SYSTEM_LIBS)
+    set(USE_SYSTEM_LIBS $ENV{USE_SYSTEM_LIBS})
+endif()
 
 # Find CONDA_PREFIX — must be set before third-party includes so find_package
 # can discover libs installed by build_ncclx.sh.

@@ -3,9 +3,13 @@
 file(GLOB TORCHCOMMS_RCCLX_SOURCES "comms/torchcomms/rcclx/*.cpp")
 
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
-set(ROCM_HOME $ENV{ROCM_HOME})
+# ROCM_HOME is passed via -D from setup.py;
+# fall back to env then default for direct cmake invocations.
 if(NOT ROCM_HOME)
-    set(ROCM_HOME "/opt/rocm")
+    set(ROCM_HOME $ENV{ROCM_HOME})
+    if(NOT ROCM_HOME)
+        set(ROCM_HOME "/opt/rocm")
+    endif()
 endif()
 set(ROCM_INCLUDE "${ROCM_HOME}/include")
 set(RCCLX_INCLUDE $ENV{RCCLX_INCLUDE})
