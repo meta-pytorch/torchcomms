@@ -10,6 +10,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphParamTest.h"
 
@@ -388,6 +389,111 @@ TEST_F(CudaGraphAllToAllPCtgraphIbConfig, CtgraphHonorsAllToAllIbConfig) {
   EXPECT_EQ(ibConfig->numQps, 1);
   EXPECT_EQ(ibConfig->vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
   EXPECT_EQ(ibConfig->qpMsgs, 8);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+// Verifies the ctgraph AllToAllP path actually feeds the ctran::Profiler
+// (whose reporter writes to the `nccl_profiler_algo` Scuba table). Without
+// this, the instrumentation added in `ctranAllToAllPIbImpl` would compile
+// but silently no-op — the default test env sets
+// NCCL_CTRAN_TRANSPORT_PROFILER=false, so `comm->ctran_->profiler` is
+// nullptr and every CTRAN_PROFILER_IF block skips. This fixture flips both
+// knobs so the profiler is constructed AND every collective is traced,
+// then reads the accumulated profiler state after the graph replays.
+class CudaGraphAllToAllPCtgraphProfilerScuba : public CtranCudaGraphTestBase {
+ protected:
+  void SetUp() override {
+    CtranDistTestFixture::SetUp(
+        ctran::CtranEnvs{
+            {"NCCL_CTRAN_TRANSPORT_PROFILER", "true"},
+            {"NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1"},
+        });
+  }
+};
+
+TEST_F(
+    CudaGraphAllToAllPCtgraphProfilerScuba,
+    CtgraphInvokesAlgoProfilerReporter) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+  ctran::TestDeviceBuffer send(count * nRanks * sizeof(int32_t));
+  ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
+  fillAllToAllSendBuf(send.get(), count, globalRank, nRanks);
+
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
+  cudaGraph_t graph;
+  cudaGraphExec_t exec;
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  if (!ctranAllToAllSupport(
+          count,
+          commInt32,
+          comm.get(),
+          NCCL_ALLTOALL_ALGO::ctgraph,
+          stream.get())) {
+    cudaGraph_t skipped = nullptr;
+    cudaStreamEndCapture(stream.get(), &skipped);
+    if (skipped != nullptr) {
+      cudaGraphDestroy(skipped);
+    }
+    GTEST_SKIP() << "AllToAllP ctgraph not supported";
+  }
+  ASSERT_EQ(
+      ctranAllToAll(
+          send.get(),
+          recv.get(),
+          count,
+          commInt32,
+          comm.get(),
+          stream.get(),
+          NCCL_ALLTOALL_ALGO::ctgraph),
+      commSuccess);
+  ASSERT_EQ(cudaStreamEndCapture(stream.get(), &graph), cudaSuccess);
+  ASSERT_EQ(cudaGraphInstantiate(&exec, graph, 0), cudaSuccess);
+
+  ASSERT_EQ(cudaGraphLaunch(exec, stream.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+
+  verifyAllToAllTranspose(recv.get(), count, globalRank, nRanks);
+
+  // `ctranAllToAllPIbImpl` (the file that holds the new instrumentation)
+  // only runs for inter-node peers. On single-node topologies the collective
+  // completes via the intra-node NVL path and never touches the profiler, so
+  // there's nothing to assert; skip on those configs and let the multi-node
+  // variants (e.g. `1x8_nolocal`) carry the coverage.
+  if (comm->statex_->nNodes() <= 1) {
+    GTEST_SKIP() << "Single-node topology skips ctranAllToAllPIbImpl";
+  }
+
+  ASSERT_NE(comm->ctran_, nullptr);
+  ASSERT_NE(comm->ctran_->profiler, nullptr)
+      << "Profiler must be constructed when NCCL_CTRAN_TRANSPORT_PROFILER=true";
+  auto* profiler = comm->ctran_->profiler.get();
+
+  // Post-condition set inside `ctranAllToAllPIbImpl`: on a traced collective
+  // the CTRAN_PROFILER_IF block populates the algo name. Distinguishes a real
+  // instrumented run from any incidental default state.
+  EXPECT_EQ(profiler->algoContext.algorithmName, "CtranAllToAllP")
+      << "Profiler algoContext must be populated by ctranAllToAllPIbImpl";
+
+  // `reportToScuba()` (called at the end of `ctranAllToAllPIbImpl`) ends the
+  // implicit ALGO_TOTAL event, so its duration is nonzero iff the reporter
+  // path actually ran end-to-end. This is the closest we can get in-test to
+  // "the report reached the Scuba pipeline" without mocking the reporter.
+  EXPECT_GT(profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_TOTAL), 0u)
+      << "reportToScuba must have run (ends ALGO_TOTAL event)";
+  EXPECT_GT(profiler->getEventDurationUs(ctran::ProfilerEvent::ALGO_DATA), 0u)
+      << "ALGO_DATA start/end must wrap the IB put loop";
 
   ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
   ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
