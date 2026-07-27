@@ -4,6 +4,7 @@
 
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
+#include <c10/util/Logging.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommBatch.hpp>
 #include <comms/torchcomms/TorchCommHooks.hpp>
@@ -12,11 +13,12 @@
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.2";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.3";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -174,6 +176,8 @@ class TorchCommBackend {
   }
 
   // Communicator Management
+  // Ranks are parent-local. Backends define whether nonmembers pass the same
+  // membership list or an empty list, and return nullptr for nonmembers.
   virtual std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
       const std::string& name,
@@ -196,11 +200,19 @@ class TorchCommBackend {
   // Multiple hooks can be registered and will be called in order.
 
   virtual void registerAbortHook(int64_t hookId, AbortHook hook) {
+    std::lock_guard lock(hooksMutex_);
+    if (abortHooks_.contains(hookId)) {
+      return;
+    }
     abortHooks_.emplace(hookId, std::move(hook));
   }
 
   virtual void unregisterAbortHook(int64_t hookId) {
-    abortHooks_.erase(hookId);
+    decltype(abortHooks_)::node_type removed;
+    {
+      std::lock_guard lock(hooksMutex_);
+      removed = abortHooks_.extract(hookId);
+    }
   }
 
   std::unordered_map<int64_t, AbortHook> abortHooks_;
@@ -209,11 +221,19 @@ class TorchCommBackend {
   // Called by backends when graph replay events are detected.
 
   virtual void registerGraphReplayHook(int64_t hookId, GraphReplayHook hook) {
+    std::lock_guard lock(hooksMutex_);
+    if (graphReplayHooks_.contains(hookId)) {
+      return;
+    }
     graphReplayHooks_.emplace(hookId, std::move(hook));
   }
 
   virtual void unregisterGraphReplayHook(int64_t hookId) {
-    graphReplayHooks_.erase(hookId);
+    decltype(graphReplayHooks_)::node_type removed;
+    {
+      std::lock_guard lock(hooksMutex_);
+      removed = graphReplayHooks_.extract(hookId);
+    }
   }
 
   std::unordered_map<int64_t, GraphReplayHook> graphReplayHooks_;
@@ -419,8 +439,23 @@ class TorchCommBackend {
   }
 
  protected:
-  void runAbortHooks() {
-    for (const auto& [_, hook] : abortHooks_) {
+  void runAbortHooks() noexcept {
+    std::vector<AbortHook> hooks;
+    try {
+      std::lock_guard lock(hooksMutex_);
+      hooks.reserve(abortHooks_.size());
+      for (const auto& [_, hook] : abortHooks_) {
+        hooks.push_back(hook);
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "[TorchCommBackend] Failed to snapshot abort hooks: "
+                 << e.what();
+      return;
+    } catch (...) {
+      LOG(ERROR) << "[TorchCommBackend] Failed to snapshot abort hooks.";
+      return;
+    }
+    for (const auto& hook : hooks) {
       try {
         hook();
       } catch (const std::exception& e) {
@@ -437,8 +472,23 @@ class TorchCommBackend {
       uint64_t replay_id,
       void* stream,
       size_t collective_index,
-      std::string_view event) {
-    for (const auto& [_, hook] : graphReplayHooks_) {
+      std::string_view event) noexcept {
+    std::vector<GraphReplayHook> hooks;
+    try {
+      std::lock_guard lock(hooksMutex_);
+      hooks.reserve(graphReplayHooks_.size());
+      for (const auto& [_, hook] : graphReplayHooks_) {
+        hooks.push_back(hook);
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "[TorchCommBackend] Failed to snapshot graph replay hooks: "
+                 << e.what();
+      return;
+    } catch (...) {
+      LOG(ERROR) << "[TorchCommBackend] Failed to snapshot graph replay hooks.";
+      return;
+    }
+    for (const auto& hook : hooks) {
       try {
         hook(graph_id, replay_id, stream, collective_index, event);
       } catch (const std::exception& e) {
@@ -450,6 +500,9 @@ class TorchCommBackend {
       }
     }
   }
+
+ private:
+  std::mutex hooksMutex_;
 };
 
 /**

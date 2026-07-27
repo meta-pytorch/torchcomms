@@ -217,6 +217,17 @@ class SplitTest(unittest.TestCase):
             equal = torch.all(output.eq(expected)).item()
             self.assertTrue(equal, f"Tensors are not equal for {description}")
 
+    def _ranks_for_split(self, ranks, current_rank):
+        return ranks if current_rank in ranks else []
+
+    def _barrier_and_wait(self, comm):
+        """Rendezvous on the host before communicator teardown."""
+        work = comm.barrier(True)
+        work.wait()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            work.wait()
+
     def test_contiguous_group(self):
         """Test contiguous group with first half of ranks."""
         split_size = self.num_ranks // 2
@@ -224,13 +235,7 @@ class SplitTest(unittest.TestCase):
             split_size = 1  # Ensure at least one rank
 
         rank_in_group = self.rank < split_size
-        ranks = []
-
-        if rank_in_group:
-            # Only fill ranks if current rank is in the group
-            for i in range(split_size):
-                ranks.append(i)
-        # Otherwise, ranks remains empty
+        ranks = self._ranks_for_split(list(range(split_size)), self.rank)
 
         # Call split function
         new_torchcomm = self.torchcomm.split(ranks, name="contiguous_split_comm")
@@ -258,6 +263,7 @@ class SplitTest(unittest.TestCase):
             self._verify_communication(new_torchcomm)
 
             # Finalize the communicator before it's destroyed
+            self._barrier_and_wait(new_torchcomm)
             new_torchcomm.finalize()
         else:
             # Current rank should not be in the group and get None
@@ -265,16 +271,12 @@ class SplitTest(unittest.TestCase):
                 new_torchcomm, f"Rank {self.rank} should not have a child communicator"
             )
 
+        self._barrier_and_wait(self.torchcomm)
+
     def test_non_contiguous_group(self):
         """Test non-contiguous group with even ranks only."""
         rank_in_group = self.rank % 2 == 0  # Even ranks only
-        ranks = []
-
-        if rank_in_group:
-            # Only fill ranks if current rank is in the group (even ranks)
-            for i in range(0, self.num_ranks, 2):
-                ranks.append(i)
-        # Otherwise, ranks remains empty
+        ranks = self._ranks_for_split(list(range(0, self.num_ranks, 2)), self.rank)
 
         # Call split function
         new_torchcomm = self.torchcomm.split(ranks, name="noncontig_child_comm")
@@ -304,12 +306,15 @@ class SplitTest(unittest.TestCase):
             self._verify_communication(new_torchcomm)
 
             # Finalize the communicator before it's destroyed
+            self._barrier_and_wait(new_torchcomm)
             new_torchcomm.finalize()
         else:
             # Current rank should not be in the group and get None
             self.assertIsNone(
                 new_torchcomm, f"Rank {self.rank} should not have a child communicator"
             )
+
+        self._barrier_and_wait(self.torchcomm)
 
     def test_duplicate_ranks(self):
         """Test that duplicate ranks are properly rejected with a runtime error."""
@@ -345,13 +350,9 @@ class SplitTest(unittest.TestCase):
             first_split_size = 1
 
         rank_in_first_level = self.rank < first_split_size
-        first_level_ranks = []
-
-        if rank_in_first_level:
-            # Only fill ranks if current rank is in the first level
-            for i in range(first_split_size):
-                first_level_ranks.append(i)
-        # Otherwise, first_level_ranks remains empty
+        first_level_ranks = self._ranks_for_split(
+            list(range(first_split_size)), self.rank
+        )
 
         # Call split function to create first-level child communicator
         first_level_comm = self.torchcomm.split(
@@ -372,6 +373,7 @@ class SplitTest(unittest.TestCase):
                 first_level_comm,
                 f"Rank {self.rank} should not have a first-level child communicator",
             )
+            self._barrier_and_wait(self.torchcomm)
             return
 
         # Current rank is in the first level, should have a communicator
@@ -390,13 +392,9 @@ class SplitTest(unittest.TestCase):
             second_split_size = 1
 
         rank_in_second_level = first_level_rank < second_split_size
-        second_level_ranks = []
-
-        if rank_in_second_level:
-            # Only fill ranks if current rank is in the second level
-            for i in range(second_split_size):
-                second_level_ranks.append(i)
-        # Otherwise, second_level_ranks remains empty
+        second_level_ranks = self._ranks_for_split(
+            list(range(second_split_size)), first_level_rank
+        )
 
         # Call split function to create second-level child communicator
         second_level_comm = first_level_comm.split(
@@ -417,7 +415,9 @@ class SplitTest(unittest.TestCase):
                 f"Rank {first_level_rank} should not have a second-level child communicator",
             )
 
+            self._barrier_and_wait(first_level_comm)
             first_level_comm.finalize()
+            self._barrier_and_wait(self.torchcomm)
             return
 
         # Current rank is in the second level, should have a communicator
@@ -436,8 +436,11 @@ class SplitTest(unittest.TestCase):
         )
 
         # Finalize the communicators before they're destroyed
+        self._barrier_and_wait(second_level_comm)
         second_level_comm.finalize()
+        self._barrier_and_wait(first_level_comm)
         first_level_comm.finalize()
+        self._barrier_and_wait(self.torchcomm)
 
 
 if __name__ == "__main__":
