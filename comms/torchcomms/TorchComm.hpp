@@ -17,6 +17,10 @@
 
 namespace torch::comms {
 
+namespace test {
+class TorchCommTestPeer;
+}
+
 // Reset the global op_id generator. Used when creating isolated
 // FlightRecorder instances to ensure each test gets a fresh op_id space.
 void resetGlobalOpIdGenerator();
@@ -287,6 +291,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   TorchComm& operator=(TorchComm&&) = delete;
 
   friend class BatchSendRecv;
+  friend class test::TorchCommTestPeer;
   friend std::shared_ptr<TorchComm> new_comm(
       const std::string& backend_name,
       at::Device device,

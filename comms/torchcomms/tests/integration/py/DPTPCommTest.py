@@ -137,6 +137,8 @@ class DPTPCommTest(unittest.TestCase):
         tp_comm = comm.split(tp_ranks, "tp")
         # pyrefly: ignore [bad-argument-type]
         dp_comm = comm.split(dp_ranks, "dp")
+        assert tp_comm is not None
+        assert dp_comm is not None
 
         try:
             device_mesh_2d = init_device_mesh(

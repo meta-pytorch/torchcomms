@@ -35,6 +35,7 @@ target_include_directories(TorchCommNCCLBootstrapTest PRIVATE
 )
 target_compile_features(TorchCommNCCLBootstrapTest PRIVATE cxx_std_20)
 target_link_libraries(TorchCommNCCLBootstrapTest PRIVATE
+    glog::glog_direct_sources
     torchcomms
     ${TORCH_LIBRARIES}
     GTest::gtest_main
