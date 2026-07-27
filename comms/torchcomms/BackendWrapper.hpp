@@ -5,7 +5,6 @@
 #include <torch/csrc/distributed/c10d/Backend.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
-
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/TorchCommTypes.hpp"
@@ -16,6 +15,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
+#include <utility>
 
 namespace torch::comms {
 
@@ -25,6 +26,10 @@ class WorkWrapper : public c10d::Work {
       c10::intrusive_ptr<TorchWork> work,
       std::vector<at::Tensor> outputTensors = {},
       bool hostBlocking = false);
+  explicit WorkWrapper(
+      std::vector<c10::intrusive_ptr<TorchWork>> works,
+      std::vector<at::Tensor> outputTensors = {},
+      bool hostBlocking = false);
   ~WorkWrapper() override = default;
 
   void synchronize() override;
@@ -32,7 +37,7 @@ class WorkWrapper : public c10d::Work {
   bool isCompleted() override;
   bool isSuccess() const override;
   std::exception_ptr exception() const override;
-  bool wait(std::chrono::milliseconds timeout) override;
+  bool wait(std::chrono::milliseconds timeout = kNoTimeout) override;
   std::vector<at::Tensor> result() override;
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
   c10::intrusive_ptr<c10::ivalue::Future> getFutureResult() override;
@@ -42,22 +47,28 @@ class WorkWrapper : public c10d::Work {
     std::mutex mutex;
     std::condition_variable cv;
     std::optional<TorchWork::WorkStatus> status;
+    TorchWork::WorkStatus aggregate{TorchWork::WorkStatus::COMPLETED};
+    size_t remaining{0};
+    bool terminalPublished{false};
+    std::vector<at::Tensor> outputTensors;
   };
 
   TorchWork::WorkStatus refreshStatus();
   static void joinWorkNoThrow(
       const c10::intrusive_ptr<TorchWork>& work) noexcept;
+  static void joinWorksNoThrow(
+      const std::vector<c10::intrusive_ptr<TorchWork>>& works) noexcept;
   void terminalizeFailure(std::exception_ptr error) noexcept;
 
   friend class BackendWrapper;
-  c10::intrusive_ptr<TorchWork> work_;
+  std::vector<c10::intrusive_ptr<TorchWork>> works_;
   c10::intrusive_ptr<c10::ivalue::Future> completionFuture_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   c10::intrusive_ptr<c10::ivalue::Future> resultFuture_;
   std::shared_ptr<CompletionState> completionState_;
   std::vector<at::Tensor> outputTensors_;
-  // When set (synchronous barrier), wait()/synchronize() also host-block via
-  // work_->hostSynchronize() after the stream-ordered wait().
+  // When set, wait()/synchronize() call hostSynchronize() after each
+  // stream-ordered wait.
   bool hostBlocking_;
 };
 
@@ -111,6 +122,13 @@ class BackendWrapper : public c10d::Backend {
       std::vector<std::vector<at::Tensor>>& output_tensors,
       std::vector<at::Tensor>& input_tensors,
       const c10d::GatherOptions& opts = c10d::GatherOptions()) override;
+  // Older 2.14 nightlies do not expose this virtual despite their version.
+  // @lint-ignore CLANGTIDY clang-diagnostic-suggest-override
+  // @lint-ignore CLANGTIDY facebook-hte-MissingOverride
+  c10::intrusive_ptr<c10d::Work> gather_into_tensor(
+      at::Tensor& output_tensor,
+      at::Tensor& input_tensor,
+      const c10d::GatherOptions& opts = c10d::GatherOptions());
   c10::intrusive_ptr<c10d::Work> scatter(
       std::vector<at::Tensor>& output_tensors,
       std::vector<std::vector<at::Tensor>>& input_tensors,
@@ -208,17 +226,103 @@ class BackendWrapper : public c10d::Backend {
   void abort() override;
 
  protected:
+  class CoalescingOperationScope {
+   public:
+    ~CoalescingOperationScope() noexcept;
+    CoalescingOperationScope(const CoalescingOperationScope&) = delete;
+    CoalescingOperationScope& operator=(const CoalescingOperationScope&) =
+        delete;
+    CoalescingOperationScope(CoalescingOperationScope&&) = delete;
+    CoalescingOperationScope& operator=(CoalescingOperationScope&&) = delete;
+
+    void dismiss();
+
+   private:
+    friend class BackendWrapper;
+    explicit CoalescingOperationScope(BackendWrapper* owner);
+    BackendWrapper* owner_;
+  };
+
+  CoalescingOperationScope coalescingOperationScope();
+
+  enum class TensorPairAliasPolicy {
+    DISALLOW,
+    ALL_GATHER_RANK_SLICE,
+  };
+
+  static void validateCoalescedTensors(
+      const std::vector<at::Tensor>& tensors,
+      std::string_view operation);
+  void validateCoalescedTensorPairs(
+      const std::vector<at::Tensor>& inputs,
+      const std::vector<at::Tensor>& outputs,
+      int64_t inputMultiplier,
+      int64_t outputMultiplier,
+      std::string_view operation,
+      TensorPairAliasPolicy aliasPolicy =
+          TensorPairAliasPolicy::DISALLOW) const;
+
+  template <typename Launch>
+  static std::vector<c10::intrusive_ptr<TorchWork>> launchWorks(
+      size_t count,
+      Launch&& launch) {
+    std::vector<c10::intrusive_ptr<TorchWork>> works;
+    works.reserve(count);
+    try {
+      for (size_t index = 0; index < count; ++index) {
+        auto work = launch(index);
+        TORCH_CHECK(work, "TorchComms returned a null work");
+        works.push_back(std::move(work));
+      }
+    } catch (...) {
+      WorkWrapper::joinWorksNoThrow(works);
+      throw;
+    }
+    return works;
+  }
+
+  template <typename Launch>
+  c10::intrusive_ptr<c10d::Work> launchAndWrapWork(
+      Launch&& launch,
+      std::vector<at::Tensor> outputTensors = {},
+      bool hostBlocking = false) {
+    prepareCollectiveForCoalescing();
+    try {
+      return wrapWork(
+          std::forward<Launch>(launch)(),
+          std::move(outputTensors),
+          hostBlocking);
+    } catch (...) {
+      if (coalescing_batch_.has_value()) {
+        if (active_coalescing_scope_ != nullptr) {
+          active_coalescing_scope_->dismiss();
+        }
+        resetCoalescingState();
+      }
+      throw;
+    }
+  }
+
   c10::intrusive_ptr<c10d::Work> wrapWork(
       c10::intrusive_ptr<TorchWork> work,
       std::vector<at::Tensor> outputTensors = {},
       bool hostBlocking = false);
+  c10::intrusive_ptr<c10d::Work> wrapWork(
+      const std::vector<c10::intrusive_ptr<TorchWork>>& works,
+      std::vector<at::Tensor> outputTensors = {},
+      bool hostBlocking = false);
 
  private:
+  void prepareCollectiveForCoalescing();
+  void resetCoalescingState() noexcept;
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
 
-  // Active coalescing batch. c10d serializes one window per process group.
+  // One active window may contain deferred P2P or launched collectives.
   std::optional<BatchSendRecv> coalescing_batch_;
+  std::vector<c10::intrusive_ptr<WorkWrapper>> coalesced_collective_wrappers_;
+  std::vector<at::Tensor> coalesced_collective_outputs_;
+  CoalescingOperationScope* active_coalescing_scope_{nullptr};
 
   // Per-call tag sequence for monitoredBarrier's check-in/ack P2P. Kept
   // per-BackendWrapper (not process-global) so each ProcessGroup owns its own

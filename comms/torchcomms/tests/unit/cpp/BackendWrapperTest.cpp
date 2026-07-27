@@ -43,6 +43,10 @@ class ControllableWork final : public TorchWork {
     setStatus(status);
   }
 
+  void fail() {
+    setStatus(WorkStatus::ERROR);
+  }
+
   int waitCount() const {
     return waitCount_.load();
   }
@@ -54,6 +58,25 @@ class ControllableWork final : public TorchWork {
  private:
   std::atomic<int> waitCount_{0};
   std::atomic<int> pollCount_{0};
+};
+
+class ThrowingWork final : public TorchWork {
+ public:
+  ThrowingWork() {
+    setStatus(WorkStatus::INPROGRESS);
+  }
+
+  void wait() override {
+    ++waitCount_;
+    throw std::runtime_error("wait failed");
+  }
+
+  int waitCount() const {
+    return waitCount_.load();
+  }
+
+ private:
+  std::atomic<int> waitCount_{0};
 };
 
 class PollingWork final : public TorchWork {
@@ -207,6 +230,18 @@ TEST(BackendWrapperTest, FiniteWaitTimeoutDoesNotPoisonWork) {
   EXPECT_TRUE(work->isCompleted());
   EXPECT_TRUE(work->isSuccess());
   EXPECT_EQ(nativeWork->waitCount(), 1);
+}
+
+TEST(BackendWrapperTest, RejectsNullWorkChildren) {
+  EXPECT_THROW(
+      static_cast<void>(
+          c10::make_intrusive<WorkWrapper>(c10::intrusive_ptr<TorchWork>{})),
+      c10::Error);
+  EXPECT_THROW(
+      static_cast<void>(c10::make_intrusive<WorkWrapper>(
+          std::vector<c10::intrusive_ptr<TorchWork>>{
+              c10::make_intrusive<ControllableWork>(), nullptr})),
+      c10::Error);
 }
 
 TEST(BackendWrapperTest, FiniteWaitActivelyPollsNativeCompletion) {
@@ -392,6 +427,117 @@ TEST(BackendWrapperTest, FutureResultTracksDeferredTerminalStatus) {
   }
 }
 
+TEST(BackendWrapperTest, AggregateWorkReportsFailureBeforePendingChild) {
+  auto pending = c10::make_intrusive<ControllableWork>();
+  auto failed = c10::make_intrusive<ControllableWork>();
+  failed->fail();
+  auto work = c10::make_intrusive<WorkWrapper>(
+      std::vector<c10::intrusive_ptr<TorchWork>>{pending, failed});
+
+  EXPECT_TRUE(work->isCompleted());
+  EXPECT_FALSE(work->isSuccess());
+  EXPECT_NE(work->exception(), nullptr);
+}
+
+TEST(BackendWrapperTest, AggregateWaitAttemptsEveryChildAfterFailure) {
+  auto throwing = c10::make_intrusive<ThrowingWork>();
+  auto pending = c10::make_intrusive<ControllableWork>();
+  auto work = c10::make_intrusive<WorkWrapper>(
+      std::vector<c10::intrusive_ptr<TorchWork>>{throwing, pending});
+
+  EXPECT_THROW(work->wait(), std::runtime_error);
+  EXPECT_EQ(throwing->waitCount(), 1);
+  EXPECT_EQ(pending->waitCount(), 1);
+}
+
+TEST(BackendWrapperTest, AggregateCompletesOnlyAfterEveryChild) {
+  auto first = c10::make_intrusive<ControllableWork>();
+  auto second = c10::make_intrusive<ControllableWork>();
+  auto work = c10::make_intrusive<WorkWrapper>(
+      std::vector<c10::intrusive_ptr<TorchWork>>{first, second});
+
+  first->complete();
+  EXPECT_FALSE(work->isCompleted());
+  second->complete();
+  EXPECT_TRUE(work->wait(std::chrono::milliseconds(100)));
+  EXPECT_TRUE(work->isSuccess());
+}
+
+TEST(BackendWrapperTest, AggregateCpuFutureWaitsForEveryChild) {
+  auto first = c10::make_intrusive<ControllableWork>();
+  auto second = c10::make_intrusive<ControllableWork>();
+  std::vector<at::Tensor> outputs{at::ones({1})};
+  auto work = c10::make_intrusive<WorkWrapper>(
+      std::vector<c10::intrusive_ptr<TorchWork>>{first, second}, outputs);
+  auto future = work->getFuture();
+
+  first->complete();
+  EXPECT_FALSE(future->completed());
+  second->complete();
+  EXPECT_TRUE(future->completed());
+  EXPECT_FALSE(future->hasError());
+}
+
+TEST(BackendWrapperTest, ConcurrentAggregateFailuresPublishFuturesOnce) {
+  constexpr int kIterations = 64;
+  constexpr int kChildren = 16;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    std::vector<c10::intrusive_ptr<ControllableWork>> children;
+    std::vector<c10::intrusive_ptr<TorchWork>> nativeWorks;
+    children.reserve(kChildren);
+    nativeWorks.reserve(kChildren);
+    for (int child = 0; child < kChildren; ++child) {
+      auto work = c10::make_intrusive<ControllableWork>();
+      children.push_back(work);
+      nativeWorks.emplace_back(std::move(work));
+    }
+    auto work = c10::make_intrusive<WorkWrapper>(std::move(nativeWorks));
+    auto future = work->getFuture();
+    auto resultFuture = work->getFutureResult();
+    std::atomic<int> futureCallbacks{0};
+    std::atomic<int> resultCallbacks{0};
+    std::atomic<int> ready{0};
+    std::atomic<bool> release{false};
+    std::atomic<int> errors{0};
+    future->addCallback([&](c10::ivalue::Future&) { ++futureCallbacks; });
+    resultFuture->addCallback([&](c10::ivalue::Future&) { ++resultCallbacks; });
+
+    std::vector<std::thread> threads;
+    threads.reserve(kChildren);
+    for (const auto& child : children) {
+      threads.emplace_back([&, child]() {
+        ++ready;
+        while (!release.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        try {
+          child->finish(TorchWork::WorkStatus::ERROR);
+        } catch (...) {
+          ++errors;
+        }
+      });
+    }
+    while (ready.load(std::memory_order_acquire) != kChildren) {
+      std::this_thread::yield();
+    }
+    release.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+      thread.join();
+    }
+
+    EXPECT_EQ(errors.load(), 0);
+    EXPECT_EQ(futureCallbacks.load(), 1);
+    EXPECT_EQ(resultCallbacks.load(), 1);
+    ASSERT_TRUE(future->completed());
+    EXPECT_TRUE(future->hasError());
+    ASSERT_TRUE(resultFuture->completed());
+    EXPECT_EQ(
+        resultFuture->value().toInt(),
+        static_cast<std::int64_t>(
+            static_cast<std::uint8_t>(c10d::WorkResult::COMM_ERROR)));
+  }
+}
+
 TEST(BackendWrapperTest, ThreadWorkCallbackCanWaitAndReleaseLastOwner) {
   auto release = std::make_shared<std::promise<void>>();
   auto gate = release->get_future().share();
@@ -403,7 +549,7 @@ TEST(BackendWrapperTest, ThreadWorkCallbackCanWaitAndReleaseLastOwner) {
   auto callbackResult = callback->get_future();
   (*owner)->getFuture()->addCallback([owner, callback](c10::ivalue::Future&) {
     try {
-      (*owner)->wait(std::chrono::seconds(5));
+      (*owner)->wait();
       owner->reset();
       callback->set_value();
     } catch (...) {
