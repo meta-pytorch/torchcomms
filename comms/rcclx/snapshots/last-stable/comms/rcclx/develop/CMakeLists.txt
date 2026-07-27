@@ -733,8 +733,6 @@ set(COMMON_FILES
   comms/utils/logger/NcclScubaSample.h
   comms/utils/logger/NcclWriterWrapper.cc
   comms/utils/logger/NcclWriterWrapper.h
-  comms/utils/logger/ProcessGlobalErrorsUtil.cc
-  comms/utils/logger/ProcessGlobalErrorsUtil.h
   comms/utils/logger/ScubaLogger.cc
   comms/utils/logger/ScubaLogger.h
   comms/utils/RankUtils.cc

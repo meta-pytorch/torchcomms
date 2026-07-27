@@ -41,6 +41,26 @@ class ctranAllToAllvTest : public ctran::CtranDistTestFixture,
     }
   }
 
+  void generateInterNodeOnlyCountsDisps(size_t count) {
+    // Only self and inter-node (IB) peers carry data; every same-node (NVL)
+    // peer is zero-size (a2a_hier's rail-leg shape), so the AllToAllv kernel
+    // runs the 1-block stub while the GPE thread drives the IB peers. On a
+    // single-node build this degenerates to a self-only copy, which still
+    // exercises the same stub path.
+    const int myNode = ctranComm->statex_->node();
+    const int stride = count * 2;
+    sendTotalCount = stride * numRanks;
+    recvTotalCount = stride * numRanks;
+    for (int i = 0; i < numRanks; ++i) {
+      const bool carriesData =
+          (i == globalRank) || (ctranComm->statex_->node(i) != myNode);
+      sendCounts[i] = carriesData ? count : 0;
+      sendDisps[i] = stride * i;
+      recvCounts[i] = carriesData ? count : 0;
+      recvDisps[i] = stride * i;
+    }
+  }
+
   void generateDistRandomCountsDisps() {
     // assign random send count for each peer
     srand(time(NULL) + globalRank);
@@ -254,6 +274,25 @@ TEST_P(ctranAllToAllvTestParam, ZeroByteAllToAllv) {
   EXPECT_EQ(errs, 0) << "rank " << globalRank
                      << " checked receive buffer (expect no update) with "
                      << errs << " errors";
+
+  releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
+  releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
+}
+
+// Exercises the low-SM stub path: data only for self and inter-node (IB)
+// peers, so no same-node NVL peer has work and AllToAllv launches 1 block.
+TEST_P(ctranAllToAllvTestParam, AllToAllvIbPeersOnly) {
+  const bool enable_lowlatency_config = GetParam();
+  EnvRAII env1(NCCL_CTRAN_NO_ERROR_CHECK, enable_lowlatency_config);
+  EnvRAII env2(NCCL_CTRAN_ENABLE_PRECONNECT, enable_lowlatency_config);
+
+  generateInterNodeOnlyCountsDisps(4096);
+  generateDistRandomExpValue();
+
+  sendBuf = (int*)createDataBuf(sendTotalCount * sizeof(int), true);
+  recvBuf = (int*)createDataBuf(recvTotalCount * sizeof(int), true);
+
+  run();
 
   releaseDataBuf(sendBuf, sendTotalCount * sizeof(int), true);
   releaseDataBuf(recvBuf, recvTotalCount * sizeof(int), true);
