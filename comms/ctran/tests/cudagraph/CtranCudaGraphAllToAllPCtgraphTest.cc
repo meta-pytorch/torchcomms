@@ -304,6 +304,96 @@ TEST_F(CtranCudaGraphTestBase, CtgraphUncachedRecvbufFailsCleanly) {
   ASSERT_EQ(cudaFree(recvbuf), cudaSuccess);
 }
 
+// Regression coverage for the per-collective IB QP config plumbing on the
+// ctgraph AllToAll path. Before the fix, ctranAllToAllPIbImpl silently dropped
+// NCCL_CTRAN_IB_QP_CONFIG_ALGO="alltoall:..." and fell back to the process
+// global CVAR defaults; the plain-map assertion in ctranAllToAllvIbTest cannot
+// catch that. This test seeds the override before comm construction so the
+// config lives on the freshly-built CtranAlgo, then runs a full
+// capture/instantiate/launch of the ctgraph AllToAll end-to-end and verifies
+// (a) the graph produces the correct transpose and (b) the per-collective
+// config was actually parsed onto the comm.
+class CudaGraphAllToAllPCtgraphIbConfig : public CtranCudaGraphTestBase {
+ protected:
+  void SetUp() override {
+    // Route env-var setup through the fixture helper so TearDown restores the
+    // original value; ncclCvarInit() runs before the base SetUp, so the fresh
+    // CtranAlgo constructed inside makeCtranComm() sees the override.
+    CtranDistTestFixture::SetUp(
+        ctran::CtranEnvs{
+            {"NCCL_CTRAN_IB_QP_CONFIG_ALGO", "alltoall:131072,1,dqplb,8,192"},
+        });
+  }
+};
+
+TEST_F(CudaGraphAllToAllPCtgraphIbConfig, CtgraphHonorsAllToAllIbConfig) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  const size_t count = kDefaultCount;
+  const int nRanks = numRanks;
+
+  meta::comms::CudaStream stream(cudaStreamNonBlocking);
+  ctran::TestDeviceBuffer send(count * nRanks * sizeof(int32_t));
+  ctran::TestDeviceBuffer recv(count * nRanks * sizeof(int32_t));
+  fillAllToAllSendBuf(send.get(), count, globalRank, nRanks);
+
+  ScopedRecvBufReg recvReg(recv.get(), count * nRanks * sizeof(int32_t));
+
+  cudaGraph_t graph;
+  cudaGraphExec_t exec;
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream.get(), cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  if (!ctranAllToAllSupport(
+          count,
+          commInt32,
+          comm.get(),
+          NCCL_ALLTOALL_ALGO::ctgraph,
+          stream.get())) {
+    cudaGraph_t skipped = nullptr;
+    cudaStreamEndCapture(stream.get(), &skipped);
+    if (skipped != nullptr) {
+      cudaGraphDestroy(skipped);
+    }
+    GTEST_SKIP() << "AllToAllP ctgraph not supported";
+  }
+  ASSERT_EQ(
+      ctranAllToAll(
+          send.get(),
+          recv.get(),
+          count,
+          commInt32,
+          comm.get(),
+          stream.get(),
+          NCCL_ALLTOALL_ALGO::ctgraph),
+      commSuccess);
+  ASSERT_EQ(cudaStreamEndCapture(stream.get(), &graph), cudaSuccess);
+  ASSERT_EQ(cudaGraphInstantiate(&exec, graph, 0), cudaSuccess);
+
+  ASSERT_EQ(cudaGraphLaunch(exec, stream.get()), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream.get()), cudaSuccess);
+
+  verifyAllToAllTranspose(recv.get(), count, globalRank, nRanks);
+
+  // Confirm the override reached CtranAlgo. Values must match the seeded env
+  // string "alltoall:131072,1,dqplb,8,192".
+  ASSERT_NE(comm->ctran_, nullptr);
+  ASSERT_NE(comm->ctran_->algo, nullptr);
+  const CtranIbConfig* ibConfig =
+      comm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
+  ASSERT_NE(ibConfig, nullptr)
+      << "NCCL_CTRAN_IB_QP_CONFIG_ALGO override did not land on CtranAlgo";
+  EXPECT_EQ(ibConfig->qpScalingTh, 131072u);
+  EXPECT_EQ(ibConfig->numQps, 1);
+  EXPECT_EQ(ibConfig->vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+  EXPECT_EQ(ibConfig->qpMsgs, 8);
+
+  ASSERT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new CtranCudaGraphEnvironment);

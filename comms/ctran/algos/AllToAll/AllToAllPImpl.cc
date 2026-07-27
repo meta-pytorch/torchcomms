@@ -200,6 +200,15 @@ commResult_t ctranAllToAllPIbImpl(
         tmpRegHdls));
   }
 
+  // Per-collective IB QP config override from NCCL_CTRAN_IB_QP_CONFIG_ALGO;
+  // cached once per thread since the parsed map lives on CtranAlgo for the
+  // comm's lifetime. Nullptr means fall back to the VC's default config.
+  static thread_local auto alltoallpIbConfig =
+      comm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
+  const size_t qpScalingTh = alltoallpIbConfig
+      ? alltoallpIbConfig->qpScalingTh
+      : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
+
   std::vector<CtranMapperRequest> ibPutReqs(ibSendPeers.size());
   int idx = 0;
   // Issue network puts using provided remote recvbuff handles
@@ -208,12 +217,8 @@ commResult_t ctranAllToAllPIbImpl(
       timestamp->recvCtrl.push_back(CtranMapperTimestampPoint(peer));
     }
     auto sendSize = sendCounts[peer] * commTypeSize(datatype);
-    // FIXME: we should compare sendSize with real maxWqeSize:
-    // NCCL_CTRAN_IB_QP_SCALING_THRESHOLD may not be maxWqeSize if user
-    // specified NCCL_CTRAN_IB_QP_CONFIG_ALGO to overwrite qp_scaling_threshold
-    // for certain algo.
     bool enableFastPath = NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS &&
-        (sendSize <= NCCL_CTRAN_IB_QP_SCALING_THRESHOLD);
+        (sendSize <= qpScalingTh);
     FB_COMMCHECK(comm->ctran_->mapper->iput<PerfConfig>(
         sendBuffs[peer],
         remoteRecvBuffs[peer],
@@ -223,6 +228,7 @@ commResult_t ctranAllToAllPIbImpl(
             .memHdl_ = sendMemHdl,
             .remoteAccessKey_ = pArgs->remoteAccessKeys[peer],
             .notify_ = true /*notify*/,
+            .ibConfig_ = alltoallpIbConfig,
             .ibFastPath_ = enableFastPath},
         &ibPutReqs[idx++]));
     if (useProfiler) {
