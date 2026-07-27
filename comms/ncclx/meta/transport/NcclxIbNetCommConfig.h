@@ -36,9 +36,10 @@ inline int ibResolveSplitDataOnQps(
 template <typename IbComm>
 void ncclxIbCommInit(IbComm* comm, void* ctx) {
   auto* ncclxCtx = static_cast<NcclxIbNetCommConfig*>(ctx);
-  if (ncclxCtx)
+  if (ncclxCtx) {
     comm->base.splitDataOnQps =
         ibResolveSplitDataOnQps(ncclxCtx, comm->base.splitDataOnQps);
+  }
 }
 
 } // namespace ncclx
