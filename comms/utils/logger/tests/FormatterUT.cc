@@ -98,7 +98,7 @@ TEST(GlogFormatter, log) {
   constexpr std::string_view kPrefix = "NCCL";
 
   // Test a very simple single-line log message
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} myfile.cpp:1234] {}:{}:{} [{}][{}] {} WARN hello world\n",
       tid,
       hostname,
@@ -122,7 +122,7 @@ TEST(GlogFormatter, logThreadName) {
 
   meta::comms::logger::initThreadMetaData(kThreadName);
   // Test a very simple single-line log message
-  auto expected = folly::sformat(
+  auto expected = fmt::format(
       "W0417 13:45:56.123456 {:5d} myfile.cpp:1234] {}:{}:{} [{}][{}] {} WARN hello world\n",
       tid,
       hostname,
@@ -165,7 +165,7 @@ TEST(GlogFormatter, logThreadNameChanged) {
     });
     thread.join();
     // Test a very simple single-line log message
-    auto expected = folly::sformat(
+    auto expected = fmt::format(
         "W0417 13:45:56.123456 {:5d} myfile.cpp:1234] {}:{}:{} [{}][{}] {} WARN hello world\n",
         otherThreadID,
         hostname,
