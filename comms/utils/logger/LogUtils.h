@@ -52,6 +52,19 @@ void initCommLogging(bool alwaysInit = false);
 #define CLOGF(level, ...) XLOGF(level, ##__VA_ARGS__)
 
 /**
+ * CERR(code, fmt, ...) logs an ERR-level message (like CLOGF(ERR, ...)) AND
+ * records one Scuba error record carrying the commResult_t `code`. Use it at
+ * fatal/root-cause CTRAN error sites; keep plain CLOGF(ERR, ...) for
+ * recoverable/propagated logs that should not create an error record.
+ */
+#define CERR(code, ...)                         \
+  do {                                          \
+    XLOGF(ERR, ##__VA_ARGS__);                  \
+    ::meta::comms::logger::logCommErrorToScuba( \
+        (code), fmt::format(__VA_ARGS__));      \
+  } while (0)
+
+/**
  * Usage:
  *   CLOGF_IF(INFO, size > threshold, "Large data: {} bytes", size);
  *

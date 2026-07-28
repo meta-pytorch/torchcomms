@@ -114,7 +114,7 @@ CtranIbSingleton::CtranIbSingleton() {
         "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    CLOGF(ERR, msg);
+    CERR(commSystemError, "{}", msg);
     throw ctran::utils::Exception(msg, commSystemError);
   }
 
@@ -462,7 +462,7 @@ void CtranIb::init(
         std::to_string(NCCL_CTRAN_IB_DEVICES_PER_RANK) +
         ") exceeds CTRAN_MAX_IB_DEVICES_PER_RANK (" +
         std::to_string(CTRAN_MAX_IB_DEVICES_PER_RANK) + ")";
-    CLOGF(ERR, "CTRAN-IB: {}", msg);
+    CERR(commInvalidArgument, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commInvalidArgument,
@@ -477,7 +477,7 @@ void CtranIb::init(
     std::string msg = "cudaDev (" + std::to_string(cudaDev) +
         ") * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE exceeds the number of contexts (" +
         std::to_string(s->ibvDevices.size()) + ")";
-    CLOGF(ERR, "CTRAN-IB: {}", msg);
+    CERR(commSystemError, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commSystemError,
@@ -636,7 +636,7 @@ void CtranIb::init(
         "gets at least one data QP.",
         NCCL_CTRAN_IB_MAX_QPS,
         maxVcsPerPeer);
-    CLOGF(ERR, msg);
+    CERR(commInvalidArgument, "{}", msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
   }
   vcLayout_ = ctran::ib::VcLayout(numNics, maxVcsPerPeer);

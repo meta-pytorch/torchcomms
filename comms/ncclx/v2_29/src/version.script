@@ -12,6 +12,8 @@ cxa: Folly’s exception tracer intercepts all exceptions and uses
       *ctran*;
       *prims*;
       *cxa*;
+      /* Scuba error loggers called cross-.so from _comms_ncclx via CERR (CtranMapper.h) */
+      *ErrorToScuba*;
       *getDevMemType*;
       *getCudaDevFromPtr*;
       *StreamCaptureModeGuard*;
