@@ -1630,6 +1630,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ControlMsgType::SYNC, payload, size, peerRank, req->ibReq);
     }
     // only support ib for now
+    CERR(
+        commInvalidArgument,
+        "CTRAN-MAPPER: isendCtrlMsg only supports the IB backend for peerRank {}",
+        peerRank);
     return commInvalidArgument;
   }
 
@@ -1664,6 +1668,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return ctranIb->irecvCtrlMsg<PerfConfig>(
           payload, size, peerRank, req->ibReq);
     }
+    CERR(
+        commInvalidArgument,
+        "CTRAN-MAPPER: irecvCtrlMsg only supports the IB backend for peerRank {}",
+        peerRank);
     return commInvalidArgument;
   }
 
@@ -1742,6 +1750,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (ctranTcpDm) {
       return ctranTcpDm->isendCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
+    CERR(
+        commInternalError,
+        "CTRAN-MAPPER: isendCtrl found no available backend for peerRank {}",
+        peerRank);
     return commInternalError;
   }
 
@@ -1775,6 +1787,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (ctranTcpDm) {
       return ctranTcpDm->irecvCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
+    CERR(
+        commInternalError,
+        "CTRAN-MAPPER: irecvCtrl found no available backend for peerRank {}",
+        peerRank);
     return commInternalError;
   }
 
