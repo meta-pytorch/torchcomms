@@ -3,13 +3,11 @@
 file(GLOB TORCHCOMMS_RCCLX_SOURCES "comms/torchcomms/rcclx/*.cpp")
 
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
-# ROCM_HOME is passed via -D from setup.py;
-# fall back to env then default for direct cmake invocations.
-if(NOT ROCM_HOME)
-    set(ROCM_HOME $ENV{ROCM_HOME})
-    if(NOT ROCM_HOME)
-        set(ROCM_HOME "/opt/rocm")
-    endif()
+# ROCM_PATH is set by LoadHIP.cmake, included via find_package(Torch).
+if(ROCM_PATH)
+    set(ROCM_HOME ${ROCM_PATH})
+else()
+    message(FATAL_ERROR "ROCM_PATH is not set. Ensure PyTorch is installed and LoadHIP.cmake is available.")
 endif()
 set(ROCM_INCLUDE "${ROCM_HOME}/include")
 set(RCCLX_INCLUDE $ENV{RCCLX_INCLUDE})

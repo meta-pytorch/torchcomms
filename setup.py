@@ -93,12 +93,6 @@ USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
 USE_TRITON = flag_enabled("USE_TRITON", False)
-# ROCm paths: default to standard /opt/rocm install; override via env if needed.
-USE_SYSTEM_LIBS = flag_enabled("USE_SYSTEM_LIBS", IS_ROCM)
-ROCM_HOME = os.environ.get("ROCM_HOME", "/opt/rocm") if IS_ROCM else ""
-RCCL_INCLUDE = os.environ.get(
-    "RCCL_INCLUDE", f"{ROCM_HOME}/include/rccl" if IS_ROCM else ""
-)
 
 
 def parse_requirements(path: str) -> list[str]:
@@ -200,9 +194,6 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
-            f"-DUSE_SYSTEM_LIBS={flag_str(USE_SYSTEM_LIBS)}",
-            f"-DROCM_HOME={ROCM_HOME}",
-            f"-DRCCL_INCLUDE={RCCL_INCLUDE}",
         ]
         build_args = ["--", "-j"]
 
