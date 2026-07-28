@@ -16,17 +16,19 @@
 
 ncclResult_t CheckCommAndReturn(ncclComm_t comm) {
   if (!ncclGetCuMemSysSupported()) {
-    FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
+    ERR(ncclInternalError, "ncclWin requires CUMEM support.");
+    return ncclInternalError;
   }
 
   if (!ctranInitialized(comm->ctranComm_.get())) {
-    FB_ERRORRETURN(ncclInternalError, "ncclWin requires Ctran support.");
+    ERR(ncclInternalError, "ncclWin requires Ctran support.");
+    return ncclInternalError;
   }
 
   auto statex = comm->ctranComm_->statex_.get();
   if (statex == nullptr) {
-    FB_ERRORRETURN(
-        ncclInternalError, "Communicator does not have statex initialized.");
+    ERR(ncclInternalError, "Communicator does not have statex initialized.");
+    return ncclInternalError;
   }
   return ncclSuccess;
 }
@@ -81,9 +83,9 @@ ncclResult_t ncclWinRegister(
     const ncclx::Hints& hints) {
   NCCLCHECK(CheckCommAndReturn(comm));
   if (baseptr == nullptr) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
+    ERR(ncclInvalidUsage,
         "Invalid baseptr to create shared buffer in ncclWinRegister.");
+    return ncclInvalidUsage;
   }
 
   ncclWin* win_ = new ncclWin();
@@ -116,16 +118,17 @@ ncclResult_t
 ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
   ncclWin* ncclWinPtr = ncclWinMap().find(win);
   if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
-        "Invalid parameter(s) to query shared buffer in ncclWinSharedQuery: comm {}, win {}",
+    ERR(ncclInvalidUsage,
+        "Invalid parameter(s) to query shared buffer in ncclWinSharedQuery: comm %p, win %p",
         (void*)comm,
         (void*)win);
+    return ncclInvalidUsage;
   }
 
   auto statex = comm->ctranComm_->statex_.get();
   if (statex == nullptr) {
-    FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+    ERR(ncclInternalError, "Empty communicator statex.");
+    return ncclInternalError;
   }
 
   NCCLCHECK(metaCommToNccl(
@@ -137,16 +140,17 @@ NCCL_API(ncclResult_t, ncclWinFree, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclWinFree(ncclComm_t comm, ncclWindow_t win) {
   ncclWin* ncclWinPtr = ncclWinMap().find(win);
   if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
-        "Invalid parameter(s) to free window: comm {}, win {}",
+    ERR(ncclInvalidUsage,
+        "Invalid parameter(s) to free window: comm %p, win %p",
         (void*)comm,
         (void*)win);
+    return ncclInvalidUsage;
   }
 
   auto statex = comm->ctranComm_->statex_.get();
   if (statex == nullptr) {
-    FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+    ERR(ncclInternalError, "Empty communicator statex.");
+    return ncclInternalError;
   }
 
   // Remove from map first, then cleanup resources
@@ -172,24 +176,25 @@ ncclResult_t
 ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
   ncclWin* ncclWinPtr = ncclWinMap().find(win);
   if (!win || !ncclWinPtr || !attr) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
-        "Invalid parameter(s) in ncclWinGetAttributes: win {}, attr {}",
+    ERR(ncclInvalidUsage,
+        "Invalid parameter(s) in ncclWinGetAttributes: win %p, attr %p",
         (void*)win,
         (void*)attr);
+    return ncclInvalidUsage;
   }
 
   auto statex = ncclWinPtr->comm->ctranComm_->statex_.get();
   if (statex == nullptr) {
-    FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+    ERR(ncclInternalError, "Empty communicator statex.");
+    return ncclInternalError;
   }
 
   if (rank < 0 || rank >= statex->nRanks()) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
-        "Invalid rank {} in ncclWinGetAttributes: must be in range [0, {})",
+    ERR(ncclInvalidUsage,
+        "Invalid rank %d in ncclWinGetAttributes: must be in range [0, %d)",
         rank,
         statex->nRanks());
+    return ncclInvalidUsage;
   }
 
   auto newAttr = new ncclWinAttr();
