@@ -68,7 +68,7 @@ ncclResult_t ncclAsyncLaunch(
       /* first met communicator */
       ncclGroupBlocking = comm->config.blocking;
     } else if (ncclGroupBlocking != comm->config.blocking) {
-      WARN("Blocking and nonblocking communicators are not allowed in the same group.");
+      ERR(ncclInvalidArgument, "Blocking and nonblocking communicators are not allowed in the same group.");
       ret = ncclInvalidArgument;
     }
     if (ret == ncclSuccess) {
@@ -344,7 +344,7 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
       // We have entered barriers but are aborting without leaving them. Thus
       // these comms are permanently trashed. We need a good mechanism for
       // tracking and reporting that.
-      WARN("Either none or all communicators in a ncclGroup() can be CUDA graph captured.");
+      ERR(ncclInvalidUsage, "Either none or all communicators in a ncclGroup() can be CUDA graph captured.");
       result = ncclInvalidUsage;
       goto failure;
     }
@@ -779,7 +779,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
   internalSimInfo.magic = 0;
 
   if (ncclGroupDepth == 0) {
-    WARN("ncclGroupEnd: not in a group call.");
+    ERR(ncclInvalidUsage, "ncclGroupEnd: not in a group call.");
     ret = ncclInvalidUsage;
     goto exit;
   }
@@ -802,7 +802,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
     realSize = realSize > sizeof(ncclSimInfo_t) ? sizeof(ncclSimInfo_t) : realSize;
     memcpy((void*)&internalSimInfo, (void*)simInfo, realSize);
     if (internalSimInfo.magic != 0x74685283) {
-      WARN("ncclSimInfo_t argument not initialized via NCCL_SIM_INFO_INITIALIZER");
+      ERR(ncclInvalidArgument, "ncclSimInfo_t argument not initialized via NCCL_SIM_INFO_INITIALIZER");
       ret = ncclInvalidArgument;
       goto fail;
     }
