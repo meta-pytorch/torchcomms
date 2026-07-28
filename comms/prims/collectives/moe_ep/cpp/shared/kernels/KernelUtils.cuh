@@ -172,7 +172,16 @@ __device__ __forceinline__ int ld_acquire_sys_global(const int* ptr) {
 
 __device__ __forceinline__ int ld_volatile_global(const volatile int* ptr) {
 #ifdef __HIP_PLATFORM_AMD__
-  return *ptr;
+  // AMD/xGMI: cross-GPU peer writes do NOT invalidate the local L2 (see the
+  // ld_nc_global note below), so a plain volatile load can read a stale cached
+  // value indefinitely. Every intranode use of this helper polls peer-written
+  // FIFO head/tail/offset or barrier-completion state, so a stale read makes
+  // the producer/consumer or barrier spin forever -> GPU hang (intermittent,
+  // surfaces under the full model's L2 pressure). Read the coherent value with
+  // a system-scoped ACQUIRE atomic load, pairing with the peers' system atomics
+  // / st_release_sys_global writes.
+  return __hip_atomic_load(
+      const_cast<const int*>(ptr), __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #else
   int ret;
   asm volatile("ld.volatile.global.s32 %0, [%1];" : "=r"(ret) : "l"(ptr));

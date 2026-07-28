@@ -141,10 +141,13 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
           ? channel_prefix_matrix
                 [responsible_rank * num_channels + responsible_channel - 1]
           : 0;
-      st_relaxed_sys_global(channel_start_offset.buffer(), -value - 1);
+      // Release-store the start/end offsets (readiness signals the receiver
+      // acquire-reads) so the handshake is a proper release/acquire pair on
+      // AMD.
+      st_release_sys_global(channel_start_offset.buffer(), -value - 1);
       value = channel_prefix_matrix
           [responsible_rank * num_channels + responsible_channel];
-      st_relaxed_sys_global(channel_end_offset.buffer(), -value - 1);
+      st_release_sys_global(channel_end_offset.buffer(), -value - 1);
     }
     syncwarp();
 
@@ -434,7 +437,11 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
 
       if (recv_warp_id_in_rank == num_recv_warps_per_rank - 1 &&
           recv_lane_id == 0) {
-        st_relaxed_sys_global(
+        // Release-store the head (slot-free signal) so the sender's
+        // acquire-load of the head observes that this receiver finished reading
+        // the slot before reusing it (WAR ordering across xGMI). Relaxed gives
+        // no such guarantee on AMD.
+        st_release_sys_global(
             channel_head_idx.buffer(), cached_channel_head_idx);
       }
 

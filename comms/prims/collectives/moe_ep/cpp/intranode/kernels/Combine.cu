@@ -148,12 +148,18 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
             st_nt_global);
 
         if (lane_id == 0) {
+          // src_idx is this rank's LOCAL input (cached-written by the model),
+          // so it must be read with a cached load. ld_nc_global on AMD bypasses
+          // L2 and reads stale HBM for local cached data -> garbage index.
+          // Matches Dispatch.cu's local `x` read (ld_cached_global).
           channel_src_idx_buffers[dst_slot_idx] =
-              ld_nc_global(src_idx + token_idx + i);
+              ld_cached_global(src_idx + token_idx + i);
         }
         if (num_topk > 0 && lane_id < num_topk) {
+          // topk_weights is LOCAL input too -> cached load (see src_idx above).
           channel_topk_weights_buffers[dst_slot_idx * num_topk + lane_id] =
-              ld_nc_global(topk_weights + (token_idx + i) * num_topk + lane_id);
+              ld_cached_global(
+                  topk_weights + (token_idx + i) * num_topk + lane_id);
         }
       }
       token_idx += num_round_tokens;
@@ -226,7 +232,11 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
         }
         if (min_head != INT_MAX && min_head > last_head) {
           last_head = min_head;
-          st_relaxed_sys_global(channel_head_idx_ptr, last_head);
+          // Release-store the head (slot-free signal) to pair with the sender's
+          // acquire-load of the head: the receiver's payload reads must be
+          // globally complete before the sender may reuse (overwrite) the slot.
+          // A relaxed store gives no such ordering on AMD/xGMI → WAR hazard.
+          st_release_sys_global(channel_head_idx_ptr, last_head);
         }
       }
     } else {
@@ -267,8 +277,13 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
            token_idx += num_recv_warps - 1) {
         int expected_head = -1;
         if (lane_id < kNumRanks) {
+          // send_head is this rank's LOCAL dispatch metadata (cached-written in
+          // Dispatch.cu). Reading it with ld_nc_global (L2-bypass) on AMD reads
+          // stale HBM -> garbage expected_head -> OOB slot read below
+          // (channel_x_buffers) -> HSA_STATUS_ERROR_EXCEPTION. Use a cached
+          // load (matches Dispatch.cu's local reads). THIS was the crash.
           expected_head =
-              ld_nc_global(send_head + token_idx * kNumRanks + lane_id);
+              ld_cached_global(send_head + token_idx * kNumRanks + lane_id);
         }
 
         long long start_time = wall_clock64_compat();
