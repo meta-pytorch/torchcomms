@@ -107,7 +107,7 @@ static ncclResult_t ncclDevCommRequirementsFilter_v22902(ncclComm_t comm, ncclDe
   }
   if (userRequestedGin) {
     char compiledBuf[16], runtimeBuf[16];
-    WARN("The application was compiled with too old version of NCCL. It was compiled with NCCL version %s, but is running with NCCL library version %s. Because of its use of GIN device kernels, it needs to be recompiled, preferably with the same NCCL version that it will be running with.",
+    ERR(ncclInvalidUsage, "The application was compiled with too old version of NCCL. It was compiled with NCCL version %s, but is running with NCCL library version %s. Because of its use of GIN device kernels, it needs to be recompiled, preferably with the same NCCL version that it will be running with.",
          ncclVersionToString(reqs->version, compiledBuf, sizeof(compiledBuf)),
          ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
     return ncclInvalidUsage;
