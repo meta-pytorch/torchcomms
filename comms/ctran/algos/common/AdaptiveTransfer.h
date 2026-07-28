@@ -42,7 +42,8 @@ inline commResult_t checkAndSetTransferMode(
   if (backend == CtranMapperBackend::IB) {
     auto regCache = ctran::RegCache::getInstance();
     if (!regCache) {
-      CLOGF(ERR, "CTRAN-ADAPTIVE: Failed to get RegCache instance");
+      CERR(
+          commInternalError, "CTRAN-ADAPTIVE: Failed to get RegCache instance");
       return commInternalError;
     }
 
