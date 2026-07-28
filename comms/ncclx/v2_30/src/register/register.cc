@@ -211,7 +211,7 @@ static ncclResult_t commDeregister(struct ncclComm *comm, bool isGraph, struct n
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   for (slot = 0; slot < cache->population && cache->slots[slot] != reg; slot++);
   if (slot == cache->population) {
-    WARN("Deregister: Could not find handle");
+    ERR(ncclInvalidUsage, "Deregister: Could not find handle");
     return ncclInvalidUsage;
   }
   if (isGraph) --reg->graphRefs;

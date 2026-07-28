@@ -151,12 +151,12 @@ ncclResult_t ncclNetCheckDeviceVersion(struct ncclComm* comm, ncclNet_t* net, in
           props.netDeviceVersion);
         return ncclSuccess;
       } else {
-        WARN("NCCL_DEVICE_UNPACK plugin has incompatible version %d, this NCCL build is compatible with %d, not using it",
+        ERR(ncclInternalError, "NCCL_DEVICE_UNPACK plugin has incompatible version %d, this NCCL build is compatible with %d, not using it",
           props.netDeviceVersion, NCCL_NET_DEVICE_UNPACK_VERSION);
         return ncclInternalError;
       }
     default:
-      WARN("Unknown device code index %d", type);
+      ERR(ncclInternalError, "Unknown device code index %d", type);
       return ncclInternalError;
   }
 
@@ -338,7 +338,7 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
     }
   }
   if (ncclNetPluginInitialized) return ncclSuccess;
-  WARN("Failed to initialize any NET plugin");
+  ERR(ncclInvalidUsage, "Failed to initialize any NET plugin");
   return ncclInvalidUsage;
 }
 
@@ -374,7 +374,7 @@ ncclResult_t ncclNetGetDevCount(int netPluginIndex, int* nPhysDevs, int* nVirtDe
   *nVirtDevs = netPluginLibs[netPluginIndex].netVirtDevs;
   return ncclSuccess;
 fail:
-  WARN("%s: trying to access the number of devices of an uninitialized netPlugin[%d]", __func__, netPluginIndex);
+  ERR(ncclInternalError, "%s: trying to access the number of devices of an uninitialized netPlugin[%d]", __func__, netPluginIndex);
   return ncclInternalError;
 }
 
@@ -386,7 +386,7 @@ ncclResult_t ncclCollNetGetDevCount(int netPluginIndex, int* nPhysDevs, int* nVi
   *nVirtDevs = netPluginLibs[netPluginIndex].collNetVirtDevs;
   return ncclSuccess;
 fail:
-  WARN("%s: trying to access the number of devices of an uninitialized netPlugin[%d]", __func__, netPluginIndex);
+  ERR(ncclInternalError, "%s: trying to access the number of devices of an uninitialized netPlugin[%d]", __func__, netPluginIndex);
   return ncclInternalError;
 }
 
@@ -396,7 +396,7 @@ ncclResult_t ncclNetSetVirtDevCount(int netPluginIndex, int nVirtDevs) {
   netPluginLibs[netPluginIndex].netVirtDevs = nVirtDevs;
   return ncclSuccess;
 fail:
-  WARN("%s: failed to set the number of devices for netPlugin[%d] to %d", __func__, netPluginIndex,nVirtDevs);
+  ERR(ncclInternalError, "%s: failed to set the number of devices for netPlugin[%d] to %d", __func__, netPluginIndex,nVirtDevs);
   return ncclInternalError;
 }
 
@@ -406,7 +406,7 @@ ncclResult_t ncclCollNetSetVirtDevCount(int netPluginIndex, int nVirtDevs) {
   netPluginLibs[netPluginIndex].collNetVirtDevs = nVirtDevs;
   return ncclSuccess;
 fail:
-  WARN("%s: failed to set the number of devices for netPlugin[%d] to %d", __func__, netPluginIndex,nVirtDevs);
+  ERR(ncclInternalError, "%s: failed to set the number of devices for netPlugin[%d] to %d", __func__, netPluginIndex,nVirtDevs);
   return ncclInternalError;
 }
 
