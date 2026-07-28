@@ -61,7 +61,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -378,11 +377,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
       for (int c=0; c<MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
         if (comm->sharedRes->devPeers[c]) {
-          if (comm->channelMetadataOnHost) {
-            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
-          } else if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
-            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
-          }
+          ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
         }
       }
       free(comm->sharedRes->tpRankToLocalRank);
@@ -2007,11 +2002,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
 
-
-  // NCCLX - NCCL_MEM_USE_SLAB_ALLOCATOR
-  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
-    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
-  }
   comm->channelMetadataOnHost =
       ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
 

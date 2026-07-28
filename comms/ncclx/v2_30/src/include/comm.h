@@ -35,7 +35,6 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
-#include "comms/ctran/memory/SlabAllocator.h"
 #include "meta/algoconf/InfoExt.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/utils/commSpecs.h"
@@ -612,8 +611,6 @@ struct ncclComm {
   // metadata to be used for initializing channels lazily if enabled
   std::optional<struct ncclKernelCommAndChannels*> devCommAndChans{std::nullopt};
   std::optional<std::vector<int>> rings{std::nullopt};
-  // Slab Allocator for baseline initChannel metadata allocation
-  std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator{nullptr};
 
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect mismatches.
 
