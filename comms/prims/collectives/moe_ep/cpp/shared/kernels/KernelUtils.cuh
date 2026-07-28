@@ -311,6 +311,24 @@ __device__ __forceinline__ void st_na_global(int4* ptr, int4 val) {
 #endif
 }
 
+// Nontemporal (cache-bypassing) 16B store for the sender's cross-device data
+// copy: streams the payload past L2 toward the peer as it is produced. Use for
+// sender->peer copies only; local receiver writes keep the plain st_na_global.
+__device__ __forceinline__ void st_nt_global(int4* ptr, int4 val) {
+#ifdef __HIP_PLATFORM_AMD__
+  int* p = reinterpret_cast<int*>(ptr);
+  __builtin_nontemporal_store(val.x, p + 0);
+  __builtin_nontemporal_store(val.y, p + 1);
+  __builtin_nontemporal_store(val.z, p + 2);
+  __builtin_nontemporal_store(val.w, p + 3);
+#else
+  asm volatile("st.global.cs.v4.s32 [%0], {%1, %2, %3, %4};"
+               :
+               : "l"(ptr), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w)
+               : "memory");
+#endif
+}
+
 // Cached read for LOCAL data (sender's own input). On AMD, plain `__ldg`
 // suffices — local L1/L2 are coherent with the producer (CPU/torch). Using
 // `ld_nc_global` (cache-bypass) here would force every read to round-trip
