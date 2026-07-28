@@ -509,9 +509,9 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       }
     }
 
-    __threadfence_system();
     group.sync();
     if (group.is_leader()) {
+      __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const std::size_t protocolBytesThis =
@@ -1027,11 +1027,10 @@ __device__ __forceinline__ void send(
           group, localSlotFree, protocolStreamEnd - pipelineBytesWire, timeout);
     }
 
-    // (4) threadfence_system + leader-only RDMA put with fused signal.
-    //     stores are visible to the NIC before the leader posts the WQE.
-    __threadfence_system();
+    // (4) Leader-only single-WQE RDMA put with fused signal.
     group.sync();
     if (group.is_leader()) {
+      __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = transport.put(
@@ -1443,10 +1442,10 @@ __device__ __forceinline__ void forward(
           timeout);
     }
 
-    // (6) threadfence_system + RDMA put via fwd transport.
-    __threadfence_system();
+    // (6) Leader-only RDMA put via the forwarding transport.
     group.sync();
     if (group.is_leader()) {
+      __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = fwdTransport.put(
