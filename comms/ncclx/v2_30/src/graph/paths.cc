@@ -31,7 +31,7 @@ static ncclResult_t getPath(struct ncclTopoSystem* system, struct ncclTopoNode* 
       return ncclSuccess;
     }
   }
-  WARN("Could not find node of type %d id %lx", t, id);
+  ERR(ncclInternalError, "Could not find node of type %d id %lx", t, id);
   return ncclInternalError;
 }
 
@@ -89,7 +89,7 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
             }
           }
           if (remPath->list[0] == NULL) {
-            WARN("Failed to find reverse path from remNode %d/%lx nlinks %d to node %d/%lx",
+            ERR(ncclInternalError, "Failed to find reverse path from remNode %d/%lx nlinks %d to node %d/%lx",
                  remNode->type, remNode->id, remNode->nlinks, node->type, node->id);
             return ncclInternalError;
           }
@@ -181,7 +181,7 @@ ncclResult_t ncclGetLocalCpu(struct ncclTopoSystem* system, int gpu, int* retCpu
     }
   }
   if (localCpu == -1) {
-    WARN("Error : could not find CPU close to GPU %d", gpu);
+    ERR(ncclInternalError, "Error : could not find CPU close to GPU %d", gpu);
     return ncclInternalError;
   }
   *retCpu = localCpu;
@@ -427,7 +427,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
         if (!good) {
           if (!ncclParamIgnoreDisabledP2p()) {
             if (path->type <= PATH_NVB) {
-              WARN("P2P is disabled between NVLINK connected GPUs %d and %d. This should not be the case given their connectivity, and is probably due to a hardware issue. If you still want to proceed, you can set NCCL_IGNORE_DISABLED_P2P=1.", indexes[i-1], indexes[i-0]);
+              ERR(ncclUnhandledCudaError, "P2P is disabled between NVLINK connected GPUs %d and %d. This should not be the case given their connectivity, and is probably due to a hardware issue. If you still want to proceed, you can set NCCL_IGNORE_DISABLED_P2P=1.", indexes[i-1], indexes[i-0]);
               return ncclUnhandledCudaError;
             } else if (path->type < PATH_SYS) {
               INFO(NCCL_INIT, "P2P is disabled between connected GPUs %d and %d. You can repress this message with NCCL_IGNORE_DISABLED_P2P=1.", indexes[i-1], indexes[i-0]);
@@ -672,7 +672,7 @@ ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank
       }
     }
     if (node->type != GPU) {
-      WARN("Could not find intermediate GPU between GPU rank %d and NIC %lx", rank, netId);
+      ERR(ncclInternalError, "Could not find intermediate GPU between GPU rank %d and NIC %lx", rank, netId);
       return ncclInternalError;
     }
     NCCLCHECK(ncclTopoDevToRank(system, NCCL_TOPO_ID_SYSTEM_ID(node->id), node->gpu.dev, /*warn=*/true, intermediateRank));
@@ -904,7 +904,7 @@ ncclResult_t ncclTopoTrimSystem(struct ncclTopoSystem* system, struct ncclComm* 
       if (gpu->id == ids[i]) break; else gpu=NULL;
     }
     if (gpu == NULL) {
-      WARN("Could not find id %lx", ids[i]);
+      ERR(ncclInternalError, "Could not find id %lx", ids[i]);
       ret = ncclInternalError;
       goto fail;
     }

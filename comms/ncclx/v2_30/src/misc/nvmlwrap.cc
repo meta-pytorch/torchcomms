@@ -120,7 +120,7 @@ ncclResult_t ncclNvmlEnsureInitialized() {
   #endif
   nvmlReturn_t res1 = (have_v2 ? pfn_nvmlInit_v2 : pfn_nvmlInit)();
   if (res1 != NVML_SUCCESS) {
-    WARN("nvmlInit%s() failed: %s", have_v2 ? "_v2" : "", pfn_nvmlErrorString(res1));
+    ERR(ncclSystemError, "nvmlInit%s() failed: %s", have_v2 ? "_v2" : "", pfn_nvmlErrorString(res1));
     initResult = ncclSystemError;
     return initResult;
   }
@@ -128,14 +128,14 @@ ncclResult_t ncclNvmlEnsureInitialized() {
   unsigned int ndev;
   res1 = (have_v2 ? pfn_nvmlDeviceGetCount_v2 : pfn_nvmlDeviceGetCount)(&ndev);
   if (res1 != NVML_SUCCESS) {
-    WARN("nvmlDeviceGetCount%s() failed: %s", have_v2 ? "_v2" :"", pfn_nvmlErrorString(res1));
+    ERR(ncclSystemError, "nvmlDeviceGetCount%s() failed: %s", have_v2 ? "_v2" :"", pfn_nvmlErrorString(res1));
     initResult = ncclSystemError;
     return initResult;
   }
 
   ncclNvmlDeviceCount = int(ndev);
   if (ncclNvmlMaxDevices < ncclNvmlDeviceCount) {
-    WARN("nvmlDeviceGetCount() reported more devices (%d) than the internal maximum (ncclNvmlMaxDevices=%d)", ncclNvmlDeviceCount, ncclNvmlMaxDevices);
+    ERR(ncclInternalError, "nvmlDeviceGetCount() reported more devices (%d) than the internal maximum (ncclNvmlMaxDevices=%d)", ncclNvmlDeviceCount, ncclNvmlMaxDevices);
     initResult = ncclInternalError;
     return initResult;
   }
@@ -143,14 +143,14 @@ ncclResult_t ncclNvmlEnsureInitialized() {
   for(int a=0; a < ncclNvmlDeviceCount; a++) {
     res1 = pfn_nvmlDeviceGetHandleByIndex(a, &ncclNvmlDevices[a].handle);
     if (res1 != NVML_SUCCESS) {
-      WARN("nvmlDeviceGetHandleByIndex(%d) failed: %s", int(a), pfn_nvmlErrorString(res1));
+      ERR(ncclSystemError, "nvmlDeviceGetHandleByIndex(%d) failed: %s", int(a), pfn_nvmlErrorString(res1));
       initResult = ncclSystemError;
       return initResult;
     }
 
     res1 = pfn_nvmlDeviceGetCudaComputeCapability(ncclNvmlDevices[a].handle, &ncclNvmlDevices[a].computeCapabilityMajor, &ncclNvmlDevices[a].computeCapabilityMinor);
     if (res1 != NVML_SUCCESS) {
-      WARN("nvmlDeviceGetCudaComputeCapability(%d) failed: %s", int(a), pfn_nvmlErrorString(res1));
+      ERR(ncclSystemError, "nvmlDeviceGetCudaComputeCapability(%d) failed: %s", int(a), pfn_nvmlErrorString(res1));
       initResult = ncclSystemError;
       return initResult;
     }
@@ -163,14 +163,14 @@ ncclResult_t ncclNvmlEnsureInitialized() {
 
       res1 = pfn_nvmlDeviceGetP2PStatus(da, db, NVML_P2P_CAPS_INDEX_READ, &ncclNvmlDevicePairs[a][b].p2pStatusRead);
       if (res1 != NVML_SUCCESS) {
-        WARN("nvmlDeviceGetP2PStatus(%d,%d,NVML_P2P_CAPS_INDEX_READ) failed: %s", a, b, pfn_nvmlErrorString(res1));
+        ERR(ncclSystemError, "nvmlDeviceGetP2PStatus(%d,%d,NVML_P2P_CAPS_INDEX_READ) failed: %s", a, b, pfn_nvmlErrorString(res1));
         initResult = ncclSystemError;
         return initResult;
       }
 
       res1 = pfn_nvmlDeviceGetP2PStatus(da, db, NVML_P2P_CAPS_INDEX_WRITE, &ncclNvmlDevicePairs[a][b].p2pStatusWrite);
       if (res1 != NVML_SUCCESS) {
-        WARN("nvmlDeviceGetP2PStatus(%d,%d,NVML_P2P_CAPS_INDEX_READ) failed: %s", a, b, pfn_nvmlErrorString(res1));
+        ERR(ncclSystemError, "nvmlDeviceGetP2PStatus(%d,%d,NVML_P2P_CAPS_INDEX_READ) failed: %s", a, b, pfn_nvmlErrorString(res1));
         initResult = ncclSystemError;
         return initResult;
       }
@@ -184,7 +184,7 @@ ncclResult_t ncclNvmlEnsureInitialized() {
 #define NVMLCHECK(name, ...) do { \
   nvmlReturn_t e44241808 = pfn_##name(__VA_ARGS__); \
   if (e44241808 != NVML_SUCCESS) { \
-    WARN(#name "() failed: %s", pfn_nvmlErrorString(e44241808)); \
+    ERR(ncclSystemError, #name "() failed: %s", pfn_nvmlErrorString(e44241808)); \
     return ncclSystemError; \
   } \
 } while(0)

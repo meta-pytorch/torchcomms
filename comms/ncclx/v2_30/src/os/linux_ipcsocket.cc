@@ -37,7 +37,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
   handle->fd = NCCL_INVALID_SOCKET;
   handle->socketName[0] = '\0';
   if ((fd = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
-    WARN("UDS: Socket creation error : %s (%d)", strerror(errno), errno);
+    ERR(ncclSystemError, "UDS: Socket creation error : %s (%d)", strerror(errno), errno);
     return ncclSystemError;
   }
 
@@ -47,7 +47,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
   // Create unique name for the socket.
   int len = snprintf(temp, NCCL_IPC_SOCKNAME_LEN, NCCL_IPC_SOCKNAME_STR, rank, hash);
   if (len > (int)(sizeof(cliaddr.sun_path) - 1)) {
-    WARN("UDS: Cannot bind provided name to socket. Name too large");
+    ERR(ncclInternalError, "UDS: Cannot bind provided name to socket. Name too large");
     close(fd);
     return ncclInternalError;
   }
@@ -65,7 +65,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
     cliaddr.sun_path[0] = '\0'; // Linux abstract socket trick
   }
   if (bind(fd, (struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
-    WARN("UDS: Binding to socket %s failed : %s (%d)", temp, strerror(errno), errno);
+    ERR(ncclSystemError, "UDS: Binding to socket %s failed : %s (%d)", temp, strerror(errno), errno);
     close(fd);
     return ncclSystemError;
   }
@@ -86,7 +86,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket *handle, int rank, uint64_t hash, v
 
 ncclResult_t ncclIpcSocketGetFd(struct ncclIpcSocket* handle, int* fd) {
   if (handle == NULL) {
-    WARN("ncclIpcSocketGetFd: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclIpcSocketGetFd: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (fd) *fd = handle->fd;
@@ -139,7 +139,7 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
 
   while ((ret = recvmsg(handle->fd, &msg, 0)) <= 0) {
     if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      WARN("UDS: Receiving data over socket failed : %d", errno);
+      ERR(ncclSystemError, "UDS: Receiving data over socket failed : %d", errno);
       return ncclSystemError;
     }
     if (handle->abortFlag && COMPILER_ATOMIC_LOAD(handle->abortFlag, std::memory_order_acquire)) return ncclInternalError;
@@ -148,13 +148,13 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   if (recvFd != NULL) {
     if (((cmptr = CMSG_FIRSTHDR(&msg)) != NULL) && (cmptr->cmsg_len == CMSG_LEN(sizeof(int)))) {
       if ((cmptr->cmsg_level != SOL_SOCKET) || (cmptr->cmsg_type != SCM_RIGHTS)) {
-        WARN("UDS: Receiving data over socket failed");
+        ERR(ncclSystemError, "UDS: Receiving data over socket failed");
       return ncclSystemError;
       }
 
       memmove(recvFd, CMSG_DATA(cmptr), sizeof(*recvFd));
     } else {
-      WARN("UDS: Receiving data over socket %s failed", handle->socketName);
+      ERR(ncclSystemError, "UDS: Receiving data over socket %s failed", handle->socketName);
       return ncclSystemError;
     }
     TRACE(NCCL_INIT|NCCL_P2P, "UDS: Got recvFd %d from socket %s", *recvFd, handle->socketName);
@@ -187,7 +187,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
 
   int len = snprintf(temp, NCCL_IPC_SOCKNAME_LEN, NCCL_IPC_SOCKNAME_STR, rank, hash);
   if (len > (sizeof(cliaddr.sun_path) - 1)) {
-    WARN("UDS: Cannot connect to provided name for socket. Name too large");
+    ERR(ncclInternalError, "UDS: Cannot connect to provided name for socket. Name too large");
     return ncclInternalError;
   }
   strcpy(cliaddr.sun_path, temp);
@@ -228,7 +228,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket *handle, void *hdr, int hdrLen, 
   ssize_t sendResult;
   while ((sendResult = sendmsg(handle->fd, &msg, 0)) < 0) {
     if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      WARN("UDS: Sending data over socket %s failed : %s (%d)", temp, strerror(errno), errno);
+      ERR(ncclSystemError, "UDS: Sending data over socket %s failed : %s (%d)", temp, strerror(errno), errno);
       return ncclSystemError;
     }
     if (handle->abortFlag && COMPILER_ATOMIC_LOAD(handle->abortFlag, std::memory_order_acquire)) return ncclInternalError;
