@@ -189,8 +189,8 @@ commResult_t CtranAlgo::initKernelResources() {
   int rank = statex->rank();
 
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN only supports NVL peers up to {}, but nLocalRanks is {}. "
         "This will likely cause seg fault or data corruption! "
         "Try set CTRAN_MAX_NVL_PEERS to be larger or equal to nLocalRanks via "
@@ -226,8 +226,8 @@ commResult_t CtranAlgo::initKernelResources() {
       statex->cudaDev()));
 
   if (maxSharedMemOptin < sizeof(CtranAlgoDeviceState)) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-ALGO: sharedMemPerBlockOptin {} on device {} is smaller than the size of CtranAlgoDeviceState {}",
         maxSharedMemOptin,
         statex->cudaDev(),
@@ -327,15 +327,17 @@ commResult_t CtranAlgo::initKernelResources() {
   const size_t nvlMaxNumChannels =
       static_cast<size_t>(std::max(1, CTRAN_ALGO_MAX_THREAD_BLOCKS));
   if (nvlPipelineDepth == 0) {
-    CLOGF(ERR, "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
+    CERR(
+        commInvalidArgument,
+        "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
     return commInvalidArgument;
   }
   const size_t nvlChannelAlign = 16ULL * nvlPipelineDepth;
   const size_t nvlPerChannelBuffer =
       alignDown(nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
   if (nvlPerChannelBuffer == 0) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "CTRAN-ALGO: invalid NVL P2P config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned per-channel buffer",
         nvlSharedDevbufSize,
         nvlMaxNumChannels,
@@ -946,8 +948,8 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
     auto coll = getCollType(commAttrKeyValuePair.first);
     auto& statex = comm_->statex_;
     if (coll == CollType::UNKNOWN) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-ALGO: Unknown collective type {} in pimpl {} commHash {:x}, commDesc {}.",
           commAttrKeyValuePair.first,
           (void*)this,
@@ -972,8 +974,8 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
           commAttrKeyValuePair.second[qpConfigIndex::VC_MODE] == "dqplb") {
         config.vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb;
       } else {
-        CLOGF(
-            ERR,
+        CERR(
+            commInternalError,
             "CTRAN-ALGO: Invalid VC mode {} in pimpl {} commHash {:x}, commDesc {}.",
             commAttrKeyValuePair.second[qpConfigIndex::VC_MODE],
             (void*)this,
@@ -983,8 +985,8 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
       }
       collToVcConfigMap_[coll] = config;
     } else {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-ALGO: Invalid collective->vc config specified for {} in pimpl {} commHash {:x}, commDesc {}. Expected {} parameters but received only {}",
           commAttrKeyValuePair.first,
           (void*)this,

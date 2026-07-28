@@ -184,8 +184,8 @@ commResult_t ctranReduceScatterDirect(
       stream);
 
   if (comm->statex_->nNodes() > 1) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "ctranReduceScatterDirect supports only single node, but nNodes={}",
         comm->statex_->nNodes());
     return commInternalError;

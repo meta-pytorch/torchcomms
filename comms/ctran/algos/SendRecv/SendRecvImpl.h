@@ -76,8 +76,8 @@ inline commResult_t selfSendRecvImpl(
     CtranComm* comm) {
   const auto statex = comm->statex_.get();
   if (selfSends.size() != selfRecvs.size()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidUsage,
         "Invalid usage: number of self ncclSend ({}) and ncclRecv ({}) does not match on rank {}",
         selfSends.size(),
         selfRecvs.size(),

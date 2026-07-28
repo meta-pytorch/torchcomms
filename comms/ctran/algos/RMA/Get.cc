@@ -30,7 +30,9 @@ static commResult_t getImpl(
 
   // IB backend must be available for current Get implementation
   if (!comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CLOGF(ERR, "GET only support IB backend for now, and no IB backend found");
+    CERR(
+        commInternalError,
+        "GET only support IB backend for now, and no IB backend found");
     return commInternalError;
   }
 
@@ -109,8 +111,8 @@ commResult_t ctranGet(
   size_t countNbytes = count * commTypeSize(datatype);
   size_t peerWinSize = win->getDataSize(peer);
   if ((targetDispNbytes + countNbytes) > peerWinSize) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "Invalid target displacement from {} bytes to {} bytes exceeding peer {}'s window size {}",
         targetDispNbytes,
         targetDispNbytes + countNbytes,
