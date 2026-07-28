@@ -469,7 +469,7 @@ ncclResult_t ncclCommEnsureReady(ncclComm_t comm) {
   } else {
     NCCLCHECK(ncclCommGetAsyncError(comm, &ret));
     if (ret == ncclInProgress) {
-      WARN("Attempt to use communicator before the previous operation returned ncclSuccess");
+      ERR(ncclInvalidArgument, "Attempt to use communicator before the previous operation returned ncclSuccess");
       ret = ncclInvalidArgument;
       goto exit;
     }
@@ -483,11 +483,11 @@ exit:
 static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, int ndev, int rank) {
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
   if (ndev < 1) {
-    WARN("invalid device count (%d) requested", ndev);
+    ERR(ncclInvalidArgument, "invalid device count (%d) requested", ndev);
     return ncclInvalidArgument;
   }
   if (rank >= ndev || rank < 0) {
-    WARN("rank %d exceeds ndev=%d", rank, ndev);
+    ERR(ncclInvalidArgument, "rank %d exceeds ndev=%d", rank, ndev);
     return ncclInvalidArgument;
   }
 
@@ -528,7 +528,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 
   if (parent && parent->shareResources) {
     if (parent->ncclNet != comm->ncclNet) {
-      WARN("Split shares resources, but parent comm netName %s is different from child comm netName %s", parent->ncclNet->name, comm->ncclNet->name);
+      ERR(ncclInvalidUsage, "Split shares resources, but parent comm netName %s is different from child comm netName %s", parent->ncclNet->name, comm->ncclNet->name);
       return ncclInvalidUsage;
     }
   }
@@ -965,7 +965,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
   int groupCount = 0;
   for (int n = 0; n < comm->nNodes; ++n) {
     if (0 != comm->nodeRanks[n].localRanks % groupSize) {
-      WARN("nLocals = %d should be a diviser of the number of ranks in node %d = %d", groupSize, n, comm->nodeRanks[n].localRanks);
+      ERR(ncclInternalError, "nLocals = %d should be a diviser of the number of ranks in node %d = %d", groupSize, n, comm->nodeRanks[n].localRanks);
       return ncclInternalError;
     }
     int nGroupsInNode = comm->nodeRanks[n].localRanks / groupSize;
@@ -977,7 +977,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
     if (n < comm->node) group += nGroupsInNode;
   }
   if (groupCount != nGroups) {
-    WARN("Group creation failed: %d vs %d", groupCount, nGroups);
+    ERR(ncclInternalError, "Group creation failed: %d vs %d", groupCount, nGroups);
     return ncclInternalError;
   }
   INFO(NCCL_GRAPH,"%s: group size used is %d",__func__,groupSize);
@@ -1010,7 +1010,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
   free(groupToLocal);
 
   if (round != comm->nRanks) {
-    WARN("P2p schedule creation has bugs.");
+    ERR(ncclInternalError, "P2p schedule creation has bugs.");
     return ncclInternalError;
   }
   return ncclSuccess;
@@ -1096,7 +1096,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   comm->cuMemSupport = 1;
   for (int i = 0; i < nranks; i++) {
     if (comm->peerInfo[i].version != comm->peerInfo[rank].version) {
-      WARN("Mismatched NCCL version detected : rank %d version %d rank %d version %d",
+      ERR(ncclInvalidUsage, "Mismatched NCCL version detected : rank %d version %d rank %d version %d",
            i, comm->peerInfo[i].version, rank, comm->peerInfo[rank].version);
       ret = ncclInvalidUsage;
       goto fail;
@@ -1158,7 +1158,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     TRACE(NCCL_INIT,"pidHash[%d] %lx intraProcRank %d intraProcRanks %d intraProcRank0 %d",
         rank, comm->peerInfo[rank].pidHash, intraProcRank, intraProcRanks, intraProcRank0);
     if (intraProcRank == -1 || intraProcRank0 == -1 || comm->peerInfo[intraProcRank0].comm == NULL) {
-      WARN("Failed to determine intra proc ranks rank %d hostHash %lx pidHash %lx intraProcRank %d intraProcRanks %d intraProcRank0 %d",
+      ERR(ncclInternalError, "Failed to determine intra proc ranks rank %d hostHash %lx pidHash %lx intraProcRank %d intraProcRanks %d intraProcRank0 %d",
           rank, comm->peerInfo[rank].hostHash, comm->peerInfo[rank].pidHash,
           intraProcRank, intraProcRanks, intraProcRank0);
       ret = ncclInternalError;
@@ -1215,7 +1215,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   NCCLCHECK(ncclCheckMultiRank(comm));
   if (comm->isMultiRankGpu) {
     if (ncclParamNvlsEnable() == 1) {
-      WARN("Multiple ranks detected using the same GPU on this node"
+      ERR(ncclInvalidUsage, "Multiple ranks detected using the same GPU on this node"
            " and NCCL_NVLS_ENABLE has been set to \"1\"."
            " At this time multiple ranks per gpu is incompatible with"
            " NVLS.");
@@ -1389,7 +1389,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
         INFO(NCCL_INIT, "Detected mixed local Net device counts across ranks (min %d, max %d). Ignoring due to NCCL_IGNORE_NET_MISMATCH.",
              minLocalNetCount, maxLocalNetCount);
       } else {
-        WARN("Detected mixed local Net device counts across ranks (min %d, max %d). Set NCCL_IGNORE_NET_MISMATCH=1 to continue.",
+        ERR(ncclSystemError, "Detected mixed local Net device counts across ranks (min %d, max %d). Set NCCL_IGNORE_NET_MISMATCH=1 to continue.",
              minLocalNetCount, maxLocalNetCount);
         ret = ncclSystemError;
       }
@@ -1408,7 +1408,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
         INFO(NCCL_INIT, "Detected mixed local CollNet device counts across ranks (min %d, max %d). Ignoring due to NCCL_IGNORE_COLLNET_MISMATCH.",
              minLocalCollNetCount, maxLocalCollNetCount);
       } else {
-        WARN("Detected mixed local CollNet device counts across ranks (min %d, max %d). Set NCCL_IGNORE_COLLNET_MISMATCH=1 to continue.",
+        ERR(ncclSystemError, "Detected mixed local CollNet device counts across ranks (min %d, max %d). Set NCCL_IGNORE_COLLNET_MISMATCH=1 to continue.",
              minLocalCollNetCount, maxLocalCollNetCount);
         ret = ncclSystemError;
       }
@@ -1460,7 +1460,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   TRACE(NCCL_INIT,"hostHash[%d] %lx localRank %d localRanks %d localRank0 %d",
         rank, comm->peerInfo[rank].hostHash, comm->localRank, comm->localRanks, comm->localRankToRank[0]);
   if (comm->localRank == -1 || comm->localRankToRank[0] == -1 || comm->localRanks == 0) {
-    WARN("Failed to determine local ranks rank %d hostHash %lx pidHash %lx localRank %d localRanks %d localRank0 %d",
+    ERR(ncclInternalError, "Failed to determine local ranks rank %d hostHash %lx pidHash %lx localRank %d localRanks %d localRank0 %d",
          rank, comm->peerInfo[rank].hostHash, comm->peerInfo[rank].pidHash,
          comm->localRank, comm->localRanks, comm->localRankToRank[0]);
     ret = ncclInternalError;
@@ -2346,7 +2346,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
     realSize = realSize > sizeof(ncclConfig_t) ? sizeof(ncclConfig_t) : realSize;
     memcpy((void*)internalConfigPtr, (void*)config, realSize);
     if (internalConfigPtr->magic != NCCL_API_MAGIC) {
-      WARN("ncclConfig_t argument not initialized via NCCL_CONFIG_INITIALIZER");
+      ERR(ncclInvalidArgument, "ncclConfig_t argument not initialized via NCCL_CONFIG_INITIALIZER");
       ret = ncclInvalidArgument;
       goto fail;
     }
@@ -2390,13 +2390,13 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
 
   /* check input config attributes, -1 means user-undefined and we should use default value from NCCL. */
   if (internalConfigPtr->blocking != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->blocking != 0 && internalConfigPtr->blocking != 1) {
-    WARN("Invalid config blocking attribute value %d", internalConfigPtr->blocking);
+    ERR(ncclInvalidArgument, "Invalid config blocking attribute value %d", internalConfigPtr->blocking);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->cgaClusterSize != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->cgaClusterSize < 0) {
-    WARN("Invalid config cgaClusterSize attribute value %d", internalConfigPtr->cgaClusterSize);
+    ERR(ncclInvalidArgument, "Invalid config cgaClusterSize attribute value %d", internalConfigPtr->cgaClusterSize);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2406,69 +2406,69 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
     (internalConfigPtr->maxCTAs != NCCL_CONFIG_UNDEF_INT &&
       internalConfigPtr->maxCTAs <= 0) ||
     (internalConfigPtr->minCTAs > internalConfigPtr->maxCTAs)) {
-    WARN("Invalid config min/max channels attribute value %d/%d", internalConfigPtr->minCTAs, internalConfigPtr->maxCTAs);
+    ERR(ncclInvalidArgument, "Invalid config min/max channels attribute value %d/%d", internalConfigPtr->minCTAs, internalConfigPtr->maxCTAs);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->splitShare != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->splitShare != 0 && internalConfigPtr->splitShare != 1) {
-    WARN("Invalid config splitShare attribute value %d", internalConfigPtr->splitShare);
+    ERR(ncclInvalidArgument, "Invalid config splitShare attribute value %d", internalConfigPtr->splitShare);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->collnetEnable != NCCL_CONFIG_UNDEF_INT && (internalConfigPtr->collnetEnable < 0 || internalConfigPtr->collnetEnable > 1)) {
-    WARN("Invalid config collnetEnable attribute value %d", internalConfigPtr->collnetEnable);
+    ERR(ncclInvalidArgument, "Invalid config collnetEnable attribute value %d", internalConfigPtr->collnetEnable);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->CTAPolicy != NCCL_CONFIG_UNDEF_INT) {
     if (!ctaPolicyIsValid(internalConfigPtr->CTAPolicy)) {
-      WARN("Invalid config policy attribute value %d", internalConfigPtr->CTAPolicy);
+      ERR(ncclInvalidArgument, "Invalid config policy attribute value %d", internalConfigPtr->CTAPolicy);
       ret = ncclInvalidArgument;
       goto fail;
     }
   }
 
   if (internalConfigPtr->shrinkShare != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->shrinkShare != 0 && internalConfigPtr->shrinkShare != 1) {
-    WARN("Invalid config shrinkShare attribute value %d", internalConfigPtr->shrinkShare);
+    ERR(ncclInvalidArgument, "Invalid config shrinkShare attribute value %d", internalConfigPtr->shrinkShare);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nvlsCTAs != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->nvlsCTAs <= 0) {
-    WARN("Invalid config nvlsCTAs attribute value %d", internalConfigPtr->nvlsCTAs);
+    ERR(ncclInvalidArgument, "Invalid config nvlsCTAs attribute value %d", internalConfigPtr->nvlsCTAs);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nChannelsPerNetPeer != NCCL_CONFIG_UNDEF_INT && (internalConfigPtr->nChannelsPerNetPeer <= 0 || internalConfigPtr->nChannelsPerNetPeer > MAXCHANNELS)) {
-    WARN("Invalid config nChannelsPerNetPeer attribute value %d", internalConfigPtr->nChannelsPerNetPeer);
+    ERR(ncclInvalidArgument, "Invalid config nChannelsPerNetPeer attribute value %d", internalConfigPtr->nChannelsPerNetPeer);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nvlinkCentricSched != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->nvlinkCentricSched != 0 && internalConfigPtr->nvlinkCentricSched != 1) {
-    WARN("Invalid config nvlinkCentricSched attribute value %d", internalConfigPtr->nvlinkCentricSched);
+    ERR(ncclInvalidArgument, "Invalid config nvlinkCentricSched attribute value %d", internalConfigPtr->nvlinkCentricSched);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->graphUsageMode != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->graphUsageMode != 0 && internalConfigPtr->graphUsageMode != 1 && internalConfigPtr->graphUsageMode != 2) {
-    WARN("Invalig config graphUsageMode attribute value %d", internalConfigPtr->graphUsageMode);
+    ERR(ncclInvalidArgument, "Invalig config graphUsageMode attribute value %d", internalConfigPtr->graphUsageMode);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->numRmaCtx != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->numRmaCtx <= 0) {
-    WARN("Invalid config numRmaCtx attribute value %d", internalConfigPtr->numRmaCtx);
+    ERR(ncclInvalidArgument, "Invalid config numRmaCtx attribute value %d", internalConfigPtr->numRmaCtx);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->maxP2pPeers != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->maxP2pPeers <= 0) {
-    WARN("Invalid config maxP2pPeers attribute value %d", internalConfigPtr->maxP2pPeers);
+    ERR(ncclInvalidArgument, "Invalid config maxP2pPeers attribute value %d", internalConfigPtr->maxP2pPeers);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2545,7 +2545,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
 
   if (nId <= 0 || nId > nranks) {
-    WARN("improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
+    ERR(ncclInvalidArgument, "improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
     return ncclInvalidArgument;
   }
   ncclResult_t res = ncclSuccess;
@@ -2575,7 +2575,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   commLogData.commDesc = commDescForLog;
   sampleGuardBegin.sample().setCommunicatorMetadata(&commLogData);
   if (nranks < 1 || myrank < 0 || myrank >= nranks) {
-    WARN("Invalid rank requested : %d/%d", myrank, nranks);
+    ERR(ncclInvalidArgument, "Invalid rank requested : %d/%d", myrank, nranks);
     res = ncclInvalidArgument;
     goto fail;
   }
@@ -2684,7 +2684,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   CUDACHECK(cudaGetDevice(&oldDev));
   NCCLCHECKGOTO(PtrCheck(comms, "CommInitAll", "comms"), ret, fail);
   if (ndev < 0) {
-    WARN("Invalid device count requested : %d", ndev);
+    ERR(ncclInvalidArgument, "Invalid device count requested : %d", ndev);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2695,7 +2695,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
     for (int i = 0; i < ndev; ++i) {
       /* invalid device check. */
       if (devlist[i] < 0 || devlist[i] >= totalnDev) {
-        WARN("Invalid device %d (totalnDev=%d)", devlist[i], totalnDev);
+        ERR(ncclInvalidArgument, "Invalid device %d (totalnDev=%d)", devlist[i], totalnDev);
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -2735,7 +2735,7 @@ fail:
 
 ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState) {
   if (nextState < 0 || nextState >= ncclNumResults || comm == NULL) {
-    WARN("ncclCommSetAsyncError: error comm %p sets state %d", comm, nextState);
+    ERR(ncclInvalidArgument, "ncclCommSetAsyncError: error comm %p sets state %d", comm, nextState);
     return ncclInvalidArgument;
   }
 
@@ -3035,7 +3035,7 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
   NCCLCHECK(ncclGroupStartInternal());
   // Try and prevent a double free of the comm struct (user error)
   if (comm->rank == -1 || comm->nRanks == -1 || comm->cudaDev == -1 || comm->busId == -1) {
-    WARN("comm %p has already been destroyed", comm);
+    ERR(ncclInvalidArgument, "comm %p has already been destroyed", comm);
     return ncclInvalidArgument;
   }
 
@@ -3412,11 +3412,11 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
 
   if (newcomm == NULL) return ncclInvalidArgument;
   if (nRanks <= 0) {
-    WARN("ncclCommGrow: total ranks must be positive, got %d", nRanks);
+    ERR(ncclInvalidArgument, "ncclCommGrow: total ranks must be positive, got %d", nRanks);
     return ncclInvalidArgument;
   }
   if (comm && nRanks <= comm->nRanks) {
-    WARN("ncclCommGrow: total ranks %d is less than current ranks %d", nRanks, comm->nRanks);
+    ERR(ncclInvalidArgument, "ncclCommGrow: total ranks %d is less than current ranks %d", nRanks, comm->nRanks);
     return ncclInvalidArgument;
   }
 
@@ -3449,7 +3449,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
     NCCLCHECKGOTO(CommCheck(comm, __func__, "comm"), res, exit);
     NCCLCHECKGOTO(ncclCommEnsureReady(comm), res, exit);
     if (rank != -1) {
-      WARN("ncclCommGrow: existing ranks must pass rank=-1, got %d", rank);
+      ERR(ncclInvalidArgument, "ncclCommGrow: existing ranks must pass rank=-1, got %d", rank);
       res = ncclInvalidArgument;
       goto exit;
     }
@@ -3462,7 +3462,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
       NCCLCHECKGOTO(bcastGrowHandle(&recvHandle, comm, /*isRoot=*/false), res, exit);
       // verify the magic is the same as the one computed by the root
       if (recvHandle.magic != hashCombine(comm->magic, comm->childCount)) {
-        WARN("ncclCommGrow: magic mismatch computed by the root, got %lx expected %lx",
+        ERR(ncclInvalidArgument, "ncclCommGrow: magic mismatch computed by the root, got %lx expected %lx",
           recvHandle.magic, hashCombine(comm->magic, comm->childCount));
         res = ncclInvalidArgument;
         goto exit;
@@ -3472,17 +3472,17 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   } else {
     // New ranks: validate parameters
     if (rank < 0) {
-      WARN("ncclCommGrow: new ranks must pass valid rank >= 0, got %d", rank);
+      ERR(ncclInvalidArgument, "ncclCommGrow: new ranks must pass valid rank >= 0, got %d", rank);
       res = ncclInvalidArgument;
       goto exit;
     }
     if (uniqueId == NULL) {
-      WARN("ncclCommGrow: new ranks must pass non-NULL uniqueId");
+      ERR(ncclInvalidArgument, "ncclCommGrow: new ranks must pass non-NULL uniqueId");
       res = ncclInvalidArgument;
       goto exit;
     }
     if (rank >= nRanks) {
-      WARN("ncclCommGrow: new rank %d exceeds total ranks %d", rank, nRanks);
+      ERR(ncclInvalidArgument, "ncclCommGrow: new rank %d exceeds total ranks %d", rank, nRanks);
       res = ncclInvalidArgument;
       goto exit;
     }
