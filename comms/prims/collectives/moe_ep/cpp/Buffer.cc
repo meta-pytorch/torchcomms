@@ -722,7 +722,7 @@ py::tuple Buffer::intranode_dispatch(
           topkIdx.has_value(), "num_worst_tokens > 0 requires topk_idx");
     } else {
       // Block until notify_dispatch flushes the per-rank/per-expert counters.
-      cudaStreamSynchronize(stream);
+      (void)cudaStreamSynchronize(stream);
       numRecvTokens = *intranode_->getMoeRecvCounterHost();
       TORCH_CHECK(
           numRecvTokens >= 0, "notify_dispatch did not publish counter");
@@ -1152,7 +1152,7 @@ py::tuple Buffer::low_latency_dispatch(
       stream);
 
   // Synchronize to get packed_recv_count values
-  cudaStreamSynchronize(stream);
+  (void)cudaStreamSynchronize(stream);
 
   // Build handle for combine: (src_info, layout_range, packed_recv_x_ref).
   // Test accesses handle[0], handle[1]; handle[2] is for
@@ -1272,7 +1272,7 @@ py::tuple Buffer::low_latency_combine(
       false, // zero_copy
       stream);
 
-  cudaStreamSynchronize(stream);
+  (void)cudaStreamSynchronize(stream);
 
   auto noopHook = py::cpp_function([]() {});
   return py::make_tuple(combinedX, EventHandle(), noopHook);
