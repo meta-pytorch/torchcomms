@@ -1472,12 +1472,14 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
     if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
       if (!ncclGetCuMemSysSupported()) {
-        FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
+        ERR(ncclInternalError, "ncclWin requires CUMEM support.");
+        return ncclInternalError;
       }
       if (buff == nullptr) {
-        FB_ERRORRETURN(
+        ERR(
             ncclInvalidUsage,
             "Invalid baseptr to create shared buffer in ncclWinRegister.");
+        return ncclInvalidUsage;
       }
 
       ncclWin* win_ = new ncclWin();
@@ -1564,7 +1566,8 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
     if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
       auto statex = comm->ctranComm_->statex_.get();
       if (statex == nullptr) {
-        FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+        ERR(ncclInternalError, "Empty communicator statex.");
+        return ncclInternalError;
       }
 
       // Remove from map first, then cleanup resources
