@@ -12,7 +12,7 @@
 #define NCCLARGCHECK(statement, ...)                                        \
   do {                                                                      \
     if (!(statement)) {                                                     \
-      ERR_WITH_SCUBA(__VA_ARGS__);                                          \
+      ERR(ncclInvalidArgument, __VA_ARGS__);                                \
       return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidArgument)); \
     }                                                                       \
   } while (0);
