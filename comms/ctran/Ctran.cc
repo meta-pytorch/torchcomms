@@ -63,7 +63,9 @@ commResult_t Ctran::commRegister(void* buff, size_t size, void** handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CLOGF(ERR, "Ctran mapper is not initialized, skip commRegister");
+    CERR(
+        commInternalError,
+        "Ctran mapper is not initialized, skip commRegister");
     return commInternalError;
   } else if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
     return this->mapper->regMem(buff, size, handle);
@@ -76,7 +78,9 @@ commResult_t Ctran::commDeregister(void* handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CLOGF(ERR, "Ctran mapper is not initialized, skip commDeregister");
+    CERR(
+        commInternalError,
+        "Ctran mapper is not initialized, skip commDeregister");
     return commInternalError;
   } else if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
     return this->mapper->deregMem(handle);
@@ -283,7 +287,7 @@ commResult_t globalRegisterWithPtr(
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "globalRegisterWithPtr: RegCache not available");
+    CERR(commInternalError, "globalRegisterWithPtr: RegCache not available");
     return commInternalError;
   }
 
@@ -299,7 +303,7 @@ globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease) {
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "globalDeregisterWithPtr: RegCache not available");
+    CERR(commInternalError, "globalDeregisterWithPtr: RegCache not available");
     return commInternalError;
   }
 
