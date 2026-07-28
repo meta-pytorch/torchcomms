@@ -198,7 +198,9 @@ class IpcRegCache {
       ctran::regcache::IpcDesc& ipcDesc,
       std::vector<ctran::utils::CtranIpcSegDesc>& extraSegments) {
     if (ipcRegElem == nullptr) {
-      CLOGF(ERR, "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
+      CERR(
+          commInvalidArgument,
+          "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
       return commInvalidArgument;
     }
     auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);

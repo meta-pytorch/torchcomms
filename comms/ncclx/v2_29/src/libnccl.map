@@ -2,6 +2,8 @@
     global:
         nccl*;
         pnccl*;
+        /* Cross-.so error reporting symbols; keep in sync with version.script */
+        *ErrorToScuba*;
 
     local:
         *;

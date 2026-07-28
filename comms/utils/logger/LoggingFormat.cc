@@ -15,7 +15,9 @@
 #include <folly/logging/LogName.h>
 #include <folly/synchronization/CallOnce.h>
 
+#include "comms/utils/Conversion.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/ErrorStackUtil.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/NcclScubaSample.h"
 
@@ -362,6 +364,21 @@ void setLastError(const std::string& message, std::vector<std::string> stack) {
   auto w = lastCommsError.wlock();
   w->lastErrorMessage = message;
   w->lastErrorNativeStack = std::move(stack);
+}
+
+void logCommErrorToScuba(commResult_t code, const std::string& message) {
+  if (!NCCL_SCUBA_LOG_ERROR_ENABLED) {
+    return;
+  }
+  std::vector<std::string> stack;
+  if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
+    stack = captureNativeErrorStack();
+  }
+  logErrorToScuba(
+      message,
+      static_cast<int>(code),
+      ::meta::comms::commCodeToString(code),
+      stack);
 }
 
 std::string getLastCommsError() {

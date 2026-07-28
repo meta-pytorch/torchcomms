@@ -73,7 +73,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   {                                                                   \
     const auto err = cmd;                                             \
     if (err != cudaSuccess) {                                         \
-      XLOG(ERR) << fmt::format("Call for {} failed", #cmd);           \
+      CERR(commUnhandledCudaError, "Call for {} failed", #cmd);       \
       return folly::makeUnexpected(                                   \
           getCommsErrorFromCudaError(err, __FILE__, __LINE__, #cmd)); \
     }                                                                 \
@@ -101,8 +101,8 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   do {                                                              \
     cudaError_t err = cmd;                                          \
     if (err != cudaSuccess) {                                       \
-      CLOGF(                                                        \
-          ERR,                                                      \
+      CERR(                                                         \
+          commUnhandledCudaError,                                   \
           "{}:{} Cuda failure {}",                                  \
           __FILE__,                                                 \
           __LINE__,                                                 \
@@ -170,7 +170,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
     if (!(statement)) {                                                        \
       auto errorMsg =                                                          \
           fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__);       \
-      CLOGF(ERR, errorMsg);                                                    \
+      CERR(commInternalError, "{}", errorMsg);                                 \
       throw std::runtime_error(                                                \
           fmt::format(                                                         \
               "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
