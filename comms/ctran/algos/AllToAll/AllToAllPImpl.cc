@@ -410,6 +410,7 @@ commResult_t createPersistentRequest(
     bool waitForInit,
     bool skipCtrlMsg) {
   if (out == nullptr) {
+    CERR(commInvalidArgument, "AllToAllP: output buffer must not be null");
     return commInvalidArgument;
   }
   *out = nullptr;
