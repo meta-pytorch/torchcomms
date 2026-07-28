@@ -16,11 +16,13 @@ ncclResult_t
 getValidatedNcclWin(ncclWindow_t win, ncclWin** outWin, const char* funcName) {
   ncclWin* ncclWinPtr = ncclWinMap().find(win);
   if (!ncclWinPtr) {
-    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle in {}", funcName);
+    ERR(ncclInvalidUsage, "Invalid window handle in %s", funcName);
+    return ncclInvalidUsage;
   }
   auto comm = ncclWinPtr->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
-    FB_ERRORRETURN(ncclInternalError, "{} requires Ctran support", funcName);
+    ERR(ncclInternalError, "%s requires Ctran support", funcName);
+    return ncclInternalError;
   }
   *outWin = ncclWinPtr;
   return ncclSuccess;
