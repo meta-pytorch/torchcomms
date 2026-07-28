@@ -115,7 +115,7 @@ static ncclResult_t proxyGinPollCompletions(void *collComm,
         ncclResult_t res = ginBackend->test(collComm, state->request, &state->done);
         if (res != ncclSuccess) {
             ctx->hasError = true;
-            WARN("Error on GFD test %d - stateIdx: %lu, request: %p", res, state - hostGpuCtx->states, state->request);
+            ERR(res, "Error on GFD test %d - stateIdx: %lu, request: %p", res, state - hostGpuCtx->states, state->request);
             return res;
         }
         if (state->done) {
@@ -249,7 +249,7 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx *ctx,
     void *dstHandle = (void *)(uint64_t)gfd->qword[ncclGinProxyGfdDstHandle].dstHandle.dstHandle;
     uint64_t size = gfd->qword[ncclGinProxyGfdHeader].header.size;
     if (!ginBackend->iget) {
-      WARN("GIN plugin does not support GET");
+      ERR(ncclInvalidUsage, "GIN plugin does not support GET");
       return ncclInvalidUsage;
     }
     NCCLCHECK(ginBackend->iget(ctx->ginCtx, hostGpuCtx->contextId, srcOff, srcHandle, size, dstOff, dstHandle,
@@ -259,7 +259,7 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx *ctx,
 
   if (extractOp(gfd) & ncclGinProxyOpFlush) {
     if (!ginBackend->iflush) {
-      WARN("GIN plugin does not support FLUSH");
+      ERR(ncclInvalidUsage, "GIN plugin does not support FLUSH");
       return ncclInvalidUsage;
     }
     NCCLCHECK(ginBackend->iflush(ctx->ginCtx, hostGpuCtx->contextId, ctx->signalsGinHandle, targetRank,&state->request));
