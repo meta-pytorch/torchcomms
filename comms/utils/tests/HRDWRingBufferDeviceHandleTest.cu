@@ -3,6 +3,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -78,6 +79,39 @@ class DeviceHandleTest : public ::testing::Test {
 
   cudaStream_t stream_{nullptr};
 };
+
+// Locks the trivially-default-constructible + trivially-copyable invariants the
+// __shared__ embedding relies on.
+TEST(HRDWRingBufferDeviceHandleTraits, TriviallyDefaultConstructible) {
+  using hrdw_ring_buffer::MemoryCoherenceScope;
+  using hrdw_ring_buffer::WritePolicy;
+
+  // Default (Overwrite) handle, as used by the colltrace ring.
+  static_assert(
+      std::is_trivially_default_constructible_v<
+          HRDWRingBufferDeviceHandle<TestEvent>>,
+      "Overwrite device handle must be trivially default-constructible");
+  // Blocking handle carries extra (readIndex/abort/spinBackoff) fields, as used
+  // by the GPE dispatch ring.
+  static_assert(
+      std::is_trivially_default_constructible_v<HRDWRingBufferDeviceHandle<
+          TelemetryEvent,
+          MemoryCoherenceScope::System,
+          WritePolicy::Blocking>>,
+      "Blocking device handle must be trivially default-constructible");
+  // Still trivially copyable (passed by value to GPU kernels).
+  static_assert(
+      std::is_trivially_copyable_v<HRDWRingBufferDeviceHandle<TestEvent>>,
+      "device handle must stay trivially copyable");
+
+  // Value-initialization must still zero every member (valid() == false), which
+  // is what every producer relies on for an "unarmed" handle.
+  HRDWRingBufferDeviceHandle<TestEvent> handle{};
+  EXPECT_EQ(handle.ring, nullptr);
+  EXPECT_EQ(handle.writeIndex, nullptr);
+  EXPECT_EQ(handle.mask, 0u);
+  EXPECT_EQ(handle.shift, 0u);
+}
 
 TEST_F(DeviceHandleTest, BasicInlineWrite) {
   constexpr int kCount = 32;
