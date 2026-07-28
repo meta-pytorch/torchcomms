@@ -365,7 +365,7 @@ static ncclResult_t p2pMap(struct ncclComm *comm, struct ncclProxyConnector* pro
       if (err == cudaErrorPeerAccessAlreadyEnabled) {
         cudaGetLastError();
       } else if (err != cudaSuccess) {
-        WARN("failed to peer with device %d(=%lx): %d %s",
+        ERR(ncclInternalError, "failed to peer with device %d(=%lx): %d %s",
             peerInfo->cudaDev, peerInfo->busId, err, cudaGetErrorString(err));
         return ncclInternalError;
       }
