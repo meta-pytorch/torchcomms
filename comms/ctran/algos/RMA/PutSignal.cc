@@ -98,7 +98,7 @@ static commResult_t putSignalImpl(
 
   // The IB backend must be available
   if (!comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CLOGF(ERR, "Put signal doesn't have IB backend");
+    CERR(commInternalError, "Put signal doesn't have IB backend");
     return commInternalError;
   }
 
@@ -173,7 +173,7 @@ static commResult_t signalImpl(
 
   // The IB backend must be available
   if (!comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CLOGF(ERR, "Signal doesn't have IB backend");
+    CERR(commInternalError, "Signal doesn't have IB backend");
     return commInternalError;
   }
 

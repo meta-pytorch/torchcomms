@@ -1343,7 +1343,11 @@ commResult_t ctran::RegCache::acquireScopedRegister(
     const CommLogData& logMetaData,
     ctran::ScopedRegHdl& scopedRegHdl) {
   if (buf == nullptr || len == 0) {
-    CLOGF(ERR, "acquireScopedRegister: invalid buf {} len {}", (void*)buf, len);
+    CERR(
+        commInvalidUsage,
+        "acquireScopedRegister: invalid buf {} len {}",
+        (void*)buf,
+        len);
     return commInvalidUsage;
   }
 
@@ -1571,7 +1575,7 @@ commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
 
     auto it = regHdlToElemMap.find(regHdl);
     if (it == regHdlToElemMap.end()) {
-      CLOGF(ERR, "deregRange: regElem {} not found", (void*)regHdl);
+      CERR(commInvalidUsage, "deregRange: regElem {} not found", (void*)regHdl);
       return commInvalidUsage;
     }
 
@@ -1686,7 +1690,7 @@ std::vector<std::vector<ctran::regcache::Segment*>> getContiguousRegions(
 commResult_t ctran::RegCache::regAll() {
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "regAll: RegCache instance not available");
+    CERR(commInternalError, "regAll: RegCache instance not available");
     return commInternalError;
   }
 
@@ -1730,7 +1734,9 @@ commResult_t ctran::RegCache::regAll() {
 
     int cudaDev = contiguousRegions[0].front()->cudaDev;
     if (cudaDev < 0) {
-      CLOGF(ERR, "regAll: could not determine cudaDev from cached segments");
+      CERR(
+          commInternalError,
+          "regAll: could not determine cudaDev from cached segments");
       return commInternalError;
     }
 
@@ -1819,7 +1825,7 @@ commResult_t ctran::RegCache::regAll() {
 commResult_t ctran::RegCache::deregAll() {
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "deregAll: RegCache instance not available");
+    CERR(commInternalError, "deregAll: RegCache instance not available");
     return commInternalError;
   }
 

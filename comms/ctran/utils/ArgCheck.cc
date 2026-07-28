@@ -8,7 +8,7 @@ namespace ctran {
 
 commResult_t PtrCheck(void* ptr, const char* opname, const char* ptrname) {
   if (ptr == nullptr) {
-    CLOGF(ERR, "{} : {} argument is NULL", opname, ptrname);
+    CERR(commInvalidArgument, "{} : {} argument is NULL", opname, ptrname);
     return commInvalidArgument;
   }
   return commSuccess;

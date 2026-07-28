@@ -132,7 +132,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
           "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
           NCCL_SOCKET_IFNAME,
           NCCL_SOCKET_IPADDR_PREFIX);
-      CLOGF(ERR, msg);
+      CERR(commSystemError, "{}", msg);
       throw ctran::utils::Exception(
           msg, commSystemError, rank_, commHash_, commDesc_);
     } else {
