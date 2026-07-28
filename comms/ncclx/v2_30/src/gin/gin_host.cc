@@ -77,7 +77,7 @@ ncclResult_t setLocalGinType(struct ncclComm* comm) {
     }
     return ncclSuccess;
   }
-  WARN("Cannot get gin type: ncclGin is not null but net device type (%d) is not a gin type",
+  ERR(ncclInternalError, "Cannot get gin type: ncclGin is not null but net device type (%d) is not a gin type",
        props.netDeviceType);
   return ncclInternalError;
 }
@@ -122,13 +122,13 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
   ncclResult_t ret = ncclSuccess;
   if (ncclParamGinEnable() == 0) {
-    WARN("GIN is disabled.");
+    ERR(ncclInternalError, "GIN is disabled.");
     return ncclInternalError;
   }
 
   // Load plugin
   if (ginState->ncclGin == NULL) {
-    WARN("GIN not supported.");
+    ERR(ncclInvalidUsage, "GIN not supported.");
     return ncclInvalidUsage;
   }
 
@@ -138,12 +138,12 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
   int ndev = 0;
   NCCLCHECK(ginState->ncclGin->devices(&ndev));
   if (ndev <= 0) {
-    WARN("No GIN-capable devices found.");
+    ERR(ncclInternalError, "No GIN-capable devices found.");
     return ncclInternalError;
   }
 
   if (!comm->symmetricSupport) {
-    WARN("Communicator does not support symmetric memory!");
+    ERR(ncclInternalError, "Communicator does not support symmetric memory!");
     return ncclInternalError;
   }
 
@@ -313,7 +313,7 @@ ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const*
   struct ncclGinStateDevComm* dc = ginState->devComms, *prevDc = NULL;
   while (1) {
     if (dc == NULL) {
-      WARN("Dev comm not found\n");
+      ERR(ncclInternalError, "Dev comm not found\n");
       return ncclInternalError;
     }
     if (dc->devHandles[0]->handle == devComm->ginHandles[0]) break;
@@ -367,7 +367,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
     // Multi-segment GIN registration requires DMABUF support on all GIN connections
     for (int n = 0; n < ginState->ginCommCount; n++) {
       if (!(ginState->ginProps[n].ptrSupport & NCCL_PTR_DMABUF)) {
-        WARN("Window registration of addresses that span multiple physical segments requires DMABUF support with GIN.");
+        ERR(ncclInvalidArgument, "Window registration of addresses that span multiple physical segments requires DMABUF support with GIN.");
         return ncclInvalidArgument;
       }
     }
@@ -377,7 +377,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
     NCCLCHECK(ginState->ncclGin->regMrSym(ginState->ginComms[n], address, size, NCCL_PTR_CUDA, mrFlags,
                                           &ginHostWins[n], &ginDevWins[n]));
     if (ginHostWins[n] == NULL) {
-      WARN("rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
+      ERR(ncclSystemError, "rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
       return ncclSystemError;
     }
   }
@@ -394,21 +394,21 @@ ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t s
 
   // GIN must already be connected
   if (!ginState->connected) {
-    WARN("ncclGinRegisterLocal: GIN not connected.");
+    ERR(ncclInvalidUsage, "ncclGinRegisterLocal: GIN not connected.");
     return ncclInvalidUsage;
   }
 
   for (int n = 0; n < ginState->ginCommCount; n++) {
     if (ginState->ginType == NCCL_GIN_TYPE_PROXY) {
       // Proxy path not yet supported for local-only registration
-      WARN("ncclGinRegisterLocal: Proxy path not yet supported");
+      ERR(ncclInvalidUsage, "ncclGinRegisterLocal: Proxy path not yet supported");
       return ncclInvalidUsage;
     } else {
       NCCLCHECK(ginState->ncclGin->regMrLocal(ginState->ginComms[n], address, size, NCCL_PTR_CUDA, 0,
                                               &ginHostWins[n], &ginDevWins[n]));
     }
     if (ginHostWins[n] == NULL) {
-      WARN("rank %d - GIN Local register failed: buff %p, size %ld", comm->rank, address, size);
+      ERR(ncclSystemError, "rank %d - GIN Local register failed: buff %p, size %ld", comm->rank, address, size);
       return ncclSystemError;
     }
   }
@@ -419,7 +419,7 @@ ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm, void* ginHostWins[NCC
   struct ncclGinState* ginState = &comm->sharedRes->ginState;
   for (int n = 0; n < ginState->ginCommCount; n++) {
     if (ginState->ginType == NCCL_GIN_TYPE_PROXY) {
-      WARN("ncclGinDeregisterLocal: Proxy path not yet supported");
+      ERR(ncclInvalidUsage, "ncclGinDeregisterLocal: Proxy path not yet supported");
       return ncclInvalidUsage;
     } else {
       NCCLCHECK(ginState->ncclGin->deregMrLocal(ginState->ginComms[n], ginHostWins[n]));
