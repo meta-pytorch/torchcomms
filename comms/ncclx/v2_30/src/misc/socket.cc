@@ -709,11 +709,3 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
   }
   return ncclSuccess;
 }
-
-std::string ncclSocketToIPv6String(union ncclSocketAddress *addr) {
-  struct sockaddr *saddr = &addr->sa;
-  char host[NI_MAXHOST];
-  int flag = NI_NUMERICHOST;
-  (void) getnameinfo(saddr, sizeof(union ncclSocketAddress), host, NI_MAXHOST, NULL, 0, flag);
-  return {host};
-}

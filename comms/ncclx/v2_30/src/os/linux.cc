@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cstdbool>
 #include "socket.h"
+#include "meta/socket_ext/socket_ext.h"
 #include "utils.h"
 #include "checks.h"
 #include "param.h"
