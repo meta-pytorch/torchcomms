@@ -128,6 +128,7 @@ commResult_t CtranMulticast::createRoot(
   // previously-held multicast object.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
+    mcHandle_ = 0; // so a cuMulticastCreate failure below can't double-release
   }
   CUmulticastObjectProp prop = {};
   prop.numDevices = static_cast<unsigned int>(nLocalRanks_);
@@ -229,13 +230,16 @@ commResult_t CtranMulticast::addDeviceAndBind() {
 commResult_t CtranMulticast::mapVA(size_t mcSize, size_t gran) {
   FB_CUCHECK(cuMemAddressReserve(
       &mcVA_, mcSize, /*alignment=*/gran, /*addr=*/0, /*flags=*/0));
+  // Record the reserved size now so a failure in the map/setAccess below leaves
+  // the dtor unmapping/freeing exactly what was reserved (mcSize_ may otherwise
+  // still hold a different createRoot size).
+  mcSize_ = mcSize;
   FB_CUCHECK(cuMemMap(mcVA_, mcSize, /*offset=*/0, mcHandle_, /*flags=*/0));
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev_;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   FB_CUCHECK(cuMemSetAccess(mcVA_, mcSize, &accessDesc, /*count=*/1));
-  mcSize_ = mcSize;
   return commSuccess;
 }
 

@@ -456,6 +456,27 @@ ncclResult_t metaTunerGetChunkSize(
     return ncclInternalError;
   }
 
+  // getChunkSize's nBytes is the PER-RANK data size: enqueue.cc calls
+  // calcCollChunking with globalBytesPerElement*task->count, and for AllGather
+  // / ReduceScatter task->count is the per-rank send/recv count. getCollInfo,
+  // by contrast, receives the collective TOTAL. matchesCollective's
+  // bytesPerRank check assumes nBytes is the total and divides by nRanks, so we
+  // scale the per-rank nBytes back up to the total here -- otherwise
+  // bytesPerRank is compared against total/nRanks^2 and a size-scoped chunk
+  // rule only fires at tiny rank counts (silently no-ops at scale).
+  int64_t nRanksForChunk = static_cast<int64_t>(context->nNodes) *
+      static_cast<int64_t>(context->nLocalRanks);
+  if (nRanksForChunk <= 0) {
+    nRanksForChunk = 1;
+  }
+  // Saturate instead of letting size_t silently wrap: an overflowed product
+  // would shrink to a bogus small total, making matchesCollective derive a
+  // wrong (tiny) bytesPerRank and match an unintended rule. ranksForChunk is
+  // >= 1 (guarded above), so the division is safe.
+  const auto ranksForChunk = static_cast<size_t>(nRanksForChunk);
+  const size_t totalBytesForChunk =
+      nBytes > SIZE_MAX / ranksForChunk ? SIZE_MAX : nBytes * ranksForChunk;
+
   for (const auto& config : context->configs) {
     if (config.chunkSize == 0) {
       continue;
@@ -466,7 +487,7 @@ ncclResult_t metaTunerGetChunkSize(
     if (!matchesCollective(
             config,
             collType,
-            nBytes,
+            totalBytesForChunk,
             /* numPipeOps */ -1,
             context->nNodes,
             context->nLocalRanks,
@@ -477,13 +498,17 @@ ncclResult_t metaTunerGetChunkSize(
 
     // Core clamps the result to bufferMaxChunkSize; we do not clamp here.
     *chunkSize = config.chunkSize;
+    // Log the scaled total and derived per-rank shard that matching actually
+    // ran against (not the raw per-rank nBytes), so this line correlates with
+    // matchesCollective's mismatch log, which prints the same two values.
     NCCLX_TUNER_LOG(
         context->logFunction,
         NCCL_LOG_INFO,
         fmt::format(
-            "NCCLX TUNER: chunkSize override collType={} nBytes={} algo={} proto={} -> {} (clamped by core to bufferMaxChunkSize)",
+            "NCCLX TUNER: chunkSize override collType={} nBytes={} bytesPerRank={} algo={} proto={} -> {} (clamped by core to bufferMaxChunkSize)",
             static_cast<int>(collType),
-            nBytes,
+            totalBytesForChunk,
+            totalBytesForChunk / ranksForChunk,
             algo,
             proto,
             config.chunkSize));

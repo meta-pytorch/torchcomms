@@ -33,6 +33,18 @@ ifeq ($(NCCLX_TUNER_WITH_FOLLY_JSON),1)
 CXXFLAGS += -DNCCLX_TUNER_WITH_FOLLY_JSON
 endif
 
+# NCCLX v2.30 uses tuner API v6, which adds the getChunkSize hook. Gate the
+# v6-only getChunkSize callback in meta/tuner on this flag -- matching
+# def_build.bzl. The conda feedstock build sets NCCLX_TUNER_HAS_GETCHUNKSIZE=1;
+# a bare OSS `make` leaves it off so chunkSize overrides compile out (proto/algo
+# and channel rules still work).
+# TODO: Remove this flag once v2.29 is deleted (all remaining versions use tuner
+# API v6+, so getChunkSize can be enabled unconditionally).
+NCCLX_TUNER_HAS_GETCHUNKSIZE ?= 0
+ifeq ($(NCCLX_TUNER_HAS_GETCHUNKSIZE),1)
+CXXFLAGS += -DNCCLX_TUNER_HAS_GETCHUNKSIZE
+endif
+
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
 endif
