@@ -400,12 +400,10 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
       continue;
     }
 
-    auto addrString = ncclSocketToIPv6String((union ncclSocketAddress *)interface->ifa_addr);
-    if (!NCCL_SOCKET_IPADDR_PREFIX.empty() &&
-        addrString.compare(0, NCCL_SOCKET_IPADDR_PREFIX.length(), NCCL_SOCKET_IPADDR_PREFIX)) {
+    if (ncclSocketExtSkipByIpAddrPrefix(
+            (union ncclSocketAddress*)interface->ifa_addr)) {
       continue;
     }
-    INFO(NCCL_INIT, "NCCL_SOCKET_IPADDR_PREFIX %s, current addrString %s", NCCL_SOCKET_IPADDR_PREFIX.c_str(), addrString.c_str());
 
     // Check that this interface has not already been saved
     // getifaddrs() normal order appears to be; IPv4, IPv6 Global, IPv6 Link
