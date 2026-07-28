@@ -70,7 +70,7 @@ static ncclResult_t findRevLink(struct ncclTopoNode* node1, struct ncclTopoNode*
       return ncclSuccess;
     }
   }
-  WARN("Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
+  ERR(ncclInternalError, "Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
   return ncclInternalError;
 }
 
@@ -128,7 +128,7 @@ static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncc
   struct ncclTopoLinkList* revPath = node2->paths[type1]+index1;
 
   if (path == NULL) {
-    WARN("No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
+    ERR(ncclInternalError, "No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
     return ncclInternalError;
   }
 
@@ -218,7 +218,7 @@ static ncclResult_t getGpuIndex(struct ncclTopoSystem* system, int rank, int* in
       return ncclSuccess;
     }
   }
-  WARN("Could not find gpu rank %d", rank);
+  ERR(ncclInternalError, "Could not find gpu rank %d", rank);
   return ncclInternalError;
 }
 
@@ -229,7 +229,7 @@ static ncclResult_t getNetIndex(struct ncclTopoSystem* system, int64_t id, int* 
       return ncclSuccess;
     }
   }
-  WARN("Could not find net id %lx", id);
+  ERR(ncclInternalError, "Could not find net id %lx", id);
   return ncclInternalError;
 }
 
@@ -855,7 +855,7 @@ ncclResult_t ncclTopoGetChannelFromXml(struct ncclXmlNode *xmlChannel, int c, st
           if (NCCL_TOPO_ID(systemId, system->nodes[GPU].nodes[g].gpu.dev) == dev) rank = system->nodes[GPU].nodes[g].gpu.rank;
         }
         if (rank == -1) {
-          WARN("XML Import Channel : dev %ld not found.", dev);
+          ERR(ncclSystemError, "XML Import Channel : dev %ld not found.", dev);
           return ncclSystemError;
         }
       }
@@ -922,7 +922,7 @@ ncclResult_t ncclTopoGetXmlFromChannel(struct ncclTopoGraph* graph, int c, struc
       }
     }
     if (dev == -1) {
-      WARN("XML Export Channel : rank %d not found.", intra[g]);
+      ERR(ncclInternalError, "XML Export Channel : rank %d not found.", intra[g]);
       return ncclInternalError;
     }
     NCCLCHECK(xmlSetAttrLong(node, "dev", dev));
@@ -1330,7 +1330,7 @@ ncclResult_t getNvlsNetDev(struct ncclComm* comm, struct ncclTopoGraph* graph, i
 exit:
   return ret;
 fail:
-  WARN("Could not find NIC for rank %d in NVLS graph", comm->rank);
+  ERR(ret, "Could not find NIC for rank %d in NVLS graph", comm->rank);
   goto exit;
 }
 

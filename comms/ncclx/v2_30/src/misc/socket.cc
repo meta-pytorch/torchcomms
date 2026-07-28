@@ -31,7 +31,7 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
       return ncclSuccess;
     } else {
       char line[SOCKET_NAME_MAXLEN+1];
-      WARN("socketProgress: Connection closed by remote peer %s",
+      ERR(ncclRemoteError, "socketProgress: Connection closed by remote peer %s",
            ncclSocketToString(&sock->addr, line, /*numericHostForm*/0));
       return ncclRemoteError;
     }
@@ -69,7 +69,7 @@ ncclResult_t ncclSocketShutdown(struct ncclSocket* sock, int how) {
 
 ncclResult_t ncclSocketGetFd(struct ncclSocket* sock, ncclSocketDescriptor* socketDescriptor) {
   if (sock == NULL) {
-    WARN("ncclSocketGetFd: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketGetFd: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (socketDescriptor) *socketDescriptor = sock->socketDescriptor;
@@ -78,7 +78,7 @@ ncclResult_t ncclSocketGetFd(struct ncclSocket* sock, ncclSocketDescriptor* sock
 
 ncclResult_t ncclSocketSetFd(ncclSocketDescriptor socketDescriptor, struct ncclSocket* sock) {
   if (sock == NULL) {
-    WARN("ncclSocketSetFd: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketSetFd: pass NULL socket");
     return ncclInvalidArgument;
   }
   sock->socketDescriptor = socketDescriptor;
@@ -88,11 +88,11 @@ ncclResult_t ncclSocketSetFd(ncclSocketDescriptor socketDescriptor, struct ncclS
 
 ncclResult_t ncclSocketListen(struct ncclSocket* sock) {
   if (sock == NULL) {
-    WARN("ncclSocketListen: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketListen: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (!ncclOsSocketIsValid(sock)) {
-    WARN("ncclSocketListen: socket is invalid");
+    ERR(ncclInvalidArgument, "ncclSocketListen: socket is invalid");
     return ncclInvalidArgument;
   }
 
@@ -210,7 +210,7 @@ ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress *ifAddrs,
 
 ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char* ip_port_pair) {
   if (!(ip_port_pair && strlen(ip_port_pair) > 1)) {
-    WARN("Net : string is null");
+    ERR(ncclInvalidArgument, "Net : string is null");
     return ncclInvalidArgument;
   }
 
@@ -220,7 +220,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
     struct netIf ni;
     // parse <ip_or_hostname>:<port> string, expect one pair
     if (parseStringList(ip_port_pair, &ni, 1) != 1) {
-      WARN("Net : No valid <IPv4_or_hostname>:<port> pair found");
+      ERR(ncclInvalidArgument, "Net : No valid <IPv4_or_hostname>:<port> pair found");
       return ncclInvalidArgument;
     }
 
@@ -231,7 +231,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
     hints.ai_socktype = SOCK_STREAM;
 
     if ( (rv = getaddrinfo(ni.prefix, NULL, &hints, &p)) != 0) {
-      WARN("Net : error encountered when getting address info : %s", gai_strerror(rv));
+      ERR(ncclInvalidArgument, "Net : error encountered when getting address info : %s", gai_strerror(rv));
       return ncclInvalidArgument;
     }
 
@@ -250,7 +250,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
       sin6.sin6_flowinfo = 0;                          // needed by IPv6, but possibly obsolete
       sin6.sin6_scope_id = 0;                          // should be global scope, set to 0
     } else {
-      WARN("Net : unsupported IP family");
+      ERR(ncclInvalidArgument, "Net : unsupported IP family");
       freeaddrinfo(p);
       return ncclInvalidArgument;
     }
@@ -264,7 +264,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
       if (ip_port_pair[i] == ']') break;
     }
     if (i == len) {
-      WARN("Net : No valid [IPv6]:port pair found");
+      ERR(ncclInvalidArgument, "Net : No valid [IPv6]:port pair found");
       return ncclInvalidArgument;
     }
     bool global_scope = (j == -1 ? true : false);     // If no % found, global scope; otherwise, link scope
@@ -282,7 +282,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
     sin6.sin6_family = AF_INET6;                       // IPv6
 
     if (inet_pton(AF_INET6, ip_str, &(sin6.sin6_addr)) != 1) {     // IP address
-      WARN("Net : error encountered when converting IPv6 address");
+      ERR(ncclInvalidArgument, "Net : error encountered when converting IPv6 address");
       return ncclInvalidArgument;
     }
 
@@ -295,7 +295,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
 
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr) {
   if (sock == NULL) {
-    WARN("ncclSocketGetAddr: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketGetAddr: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (sock->state != ncclSocketStateReady) return ncclInternalError;
@@ -347,7 +347,7 @@ static ncclResult_t socketFinalizeAccept(struct ncclSocket* sock) {
     memcpy(&type, sock->finalizeBuffer, sizeof(type));
   }
   if (type != sock->type) {
-    WARN("socketFinalizeAccept from %s: wrong type %d != %d", ncclSocketToString(&sock->addr, line), type, sock->type);
+    ERR(ncclInternalError, "socketFinalizeAccept from %s: wrong type %d != %d", ncclSocketToString(&sock->addr, line), type, sock->type);
     (void) ncclSocketClose(sock);
     sock->state = ncclSocketStateError;
     return ncclInternalError;
@@ -359,7 +359,7 @@ static ncclResult_t socketFinalizeAccept(struct ncclSocket* sock) {
 
 ncclResult_t ncclSocketPollConnect(struct ncclSocket* sock) {
   if (sock == NULL) {
-    WARN("ncclSocketPollConnect: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketPollConnect: pass NULL socket");
     return ncclInvalidArgument;
   }
   NCCLCHECK(ncclOsSocketPollConnect(sock));
@@ -414,7 +414,7 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running) {
     return ncclSuccess;
   }
   if (sock->state == ncclSocketStateError || sock->state == ncclSocketStateClosed) {
-    WARN("ncclSocketReady: unexpected socket state %d", sock->state);
+    ERR(ncclRemoteError, "ncclSocketReady: unexpected socket state %d", sock->state);
     return ncclRemoteError;
   }
   *running = (sock->state == ncclSocketStateReady) ? 1 : 0;
@@ -431,18 +431,18 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName)
 #endif
 
   if (sock == NULL) {
-    WARN("ncclSocketConnect: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketConnect: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (!ncclOsSocketIsValid(sock)) {
-    WARN("ncclSocketConnect: socket is invalid");
+    ERR(ncclInvalidArgument, "ncclSocketConnect: socket is invalid");
     return ncclInvalidArgument;
   }
 
   if (sock->state != ncclSocketStateInitialized) {
-    WARN("ncclSocketConnect: wrong socket state %d", sock->state);
-    if (sock->state == ncclSocketStateError) return ncclRemoteError;
-    return ncclInternalError;
+    ncclResult_t stateErr = (sock->state == ncclSocketStateError) ? ncclRemoteError : ncclInternalError;
+    ERR(stateErr, "ncclSocketConnect: wrong socket state %d", sock->state);
+    return stateErr;
   }
   TRACE(NCCL_INIT|NCCL_NET,"Connecting to socket %s", ncclSocketToString(&sock->addr, line));
 
@@ -478,7 +478,7 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName)
     case ncclSocketStateError:
       return ncclSystemError;
     default:
-      WARN("ncclSocketConnect: wrong socket state %d", sock->state);
+      ERR(ncclInternalError, "ncclSocketConnect: wrong socket state %d", sock->state);
       return ncclInternalError;
   }
 }
@@ -487,16 +487,13 @@ ncclResult_t ncclSocketAccept(struct ncclSocket* sock, struct ncclSocket* listen
   ncclResult_t ret = ncclSuccess;
 
   if (listenSock == NULL || sock == NULL) {
-    WARN("ncclSocketAccept: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketAccept: pass NULL socket");
     ret = ncclInvalidArgument;
     goto exit;
   }
   if (listenSock->state != ncclSocketStateReady) {
-    WARN("ncclSocketAccept: wrong socket state %d", listenSock->state);
-    if (listenSock->state == ncclSocketStateError)
-      ret = ncclSystemError;
-    else
-      ret = ncclInternalError;
+    ret = (listenSock->state == ncclSocketStateError) ? ncclSystemError : ncclInternalError;
+    ERR(ret, "ncclSocketAccept: wrong socket state %d", listenSock->state);
     goto exit;
   }
 
@@ -526,7 +523,7 @@ ncclResult_t ncclSocketAccept(struct ncclSocket* sock, struct ncclSocket* listen
       ret = ncclSystemError;
       break;
     default:
-      WARN("ncclSocketAccept: wrong socket state %d", sock->state);
+      ERR(ncclInternalError, "ncclSocketAccept: wrong socket state %d", sock->state);
       ret = ncclInternalError;
       break;
   }
@@ -559,7 +556,7 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
     family = sock->addr.sa.sa_family;
     if (family != AF_INET && family != AF_INET6) {
       char line[SOCKET_NAME_MAXLEN+1];
-      WARN("ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
+      ERR(ncclInternalError, "ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
           ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
 
       WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.30 you will have ncclSocketInit errors. "
@@ -592,7 +589,7 @@ fail:
 
 ncclResult_t ncclSocketProgress(int op, struct ncclSocket* sock, void* ptr, int size, int* offset, int* closed) {
   if (sock == NULL) {
-    WARN("ncclSocketProgress: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketProgress: pass NULL socket");
     return ncclInvalidArgument;
   }
   NCCLCHECK(socketProgress(op, sock, ptr, size, offset, closed));
@@ -601,7 +598,7 @@ ncclResult_t ncclSocketProgress(int op, struct ncclSocket* sock, void* ptr, int 
 
 ncclResult_t ncclSocketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
   if (sock == NULL) {
-    WARN("ncclSocketWait: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketWait: pass NULL socket");
     return ncclInvalidArgument;
   }
   NCCLCHECK(socketWait(op, sock, ptr, size, offset));
@@ -611,11 +608,11 @@ ncclResult_t ncclSocketWait(int op, struct ncclSocket* sock, void* ptr, int size
 ncclResult_t ncclSocketSend(struct ncclSocket* sock, void* ptr, int size) {
   int offset = 0;
   if (sock == NULL) {
-    WARN("ncclSocketSend: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketSend: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (sock->state != ncclSocketStateReady) {
-    WARN("ncclSocketSend: socket state (%d) is not ready", sock->state);
+    ERR(ncclInternalError, "ncclSocketSend: socket state (%d) is not ready", sock->state);
     return ncclInternalError;
   }
   NCCLCHECK(socketWait(NCCL_SOCKET_SEND, sock, ptr, size, &offset));
@@ -625,11 +622,11 @@ ncclResult_t ncclSocketSend(struct ncclSocket* sock, void* ptr, int size) {
 ncclResult_t ncclSocketRecv(struct ncclSocket* sock, void* ptr, int size) {
   int offset = 0;
   if (sock == NULL) {
-    WARN("ncclSocketRecv: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketRecv: pass NULL socket");
     return ncclInvalidArgument;
   }
   if (sock->state != ncclSocketStateReady && sock->state != ncclSocketStateTerminating) {
-    WARN("ncclSocketRecv: socket state (%d) is not ready", sock->state);
+    ERR(ncclInternalError, "ncclSocketRecv: socket state (%d) is not ready", sock->state);
     return ncclInternalError;
   }
   NCCLCHECK(socketWait(NCCL_SOCKET_RECV, sock, ptr, size, &offset));
@@ -639,12 +636,12 @@ ncclResult_t ncclSocketRecv(struct ncclSocket* sock, void* ptr, int size) {
 ncclResult_t ncclSocketSendRecv(struct ncclSocket* sendSock, void* sendPtr, int sendSize, struct ncclSocket* recvSock, void* recvPtr, int recvSize) {
   int sendOffset = 0, recvOffset = 0;
   if (sendSock == NULL || recvSock == NULL) {
-    WARN("ncclSocketSendRecv: invalid socket %p/%p", sendSock, recvSock);
+    ERR(ncclInternalError, "ncclSocketSendRecv: invalid socket %p/%p", sendSock, recvSock);
     return ncclInternalError;
   }
   if (sendSock->state != ncclSocketStateReady ||
       (recvSock->state != ncclSocketStateReady && recvSock->state != ncclSocketStateTerminating)) {
-    WARN("ncclSocketSendRecv: socket state (%d/%d) is not ready", sendSock->state, recvSock->state);
+    ERR(ncclInternalError, "ncclSocketSendRecv: socket state (%d/%d) is not ready", sendSock->state, recvSock->state);
     return ncclInternalError;
   }
   while (sendOffset < sendSize || recvOffset < recvSize) {
@@ -657,13 +654,13 @@ ncclResult_t ncclSocketSendRecv(struct ncclSocket* sendSock, void* sendPtr, int 
 
 ncclResult_t ncclSocketMultiOp(struct ncclSocketOp* ops, int numOps) {
   if (ops == NULL || numOps <= 0) {
-    WARN("ncclSocketMultiOp: invalid arguments ops=%p numOps=%d", ops, numOps);
+    ERR(ncclInvalidArgument, "ncclSocketMultiOp: invalid arguments ops=%p numOps=%d", ops, numOps);
     return ncclInvalidArgument;
   }
 
   for (int i = 0; i < numOps; i++) {
     if (ops[i].sock == NULL) {
-      WARN("ncclSocketMultiOp: invalid socket at index %d", i);
+      ERR(ncclInvalidArgument, "ncclSocketMultiOp: invalid socket at index %d", i);
       return ncclInvalidArgument;
     }
     ops[i].offset = 0;
@@ -682,7 +679,7 @@ ncclResult_t ncclSocketMultiOp(struct ncclSocketOp* ops, int numOps) {
 ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int* closed, bool blocking) {
   int offset = 0;
   if (sock == NULL) {
-    WARN("ncclSocketTryRecv: pass NULL socket");
+    ERR(ncclInvalidArgument, "ncclSocketTryRecv: pass NULL socket");
     return ncclInvalidArgument;
   }
   *closed = 0;

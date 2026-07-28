@@ -230,7 +230,7 @@ static ncclResult_t rasLocalHandle(bool* terminate) {
     INFO(NCCL_RAS, "RAS handling local termination request");
     *terminate = true;
   } else {
-    WARN("RAS received unknown notification type %d", msg.type);
+    ERR(ncclInternalError, "RAS received unknown notification type %d", msg.type);
     return ncclInternalError;
   }
 
@@ -405,7 +405,7 @@ ncclResult_t rasMsgHandle(struct rasMsg* msg, struct rasSocket* sock) {
   } else if (msg->type == RAS_MSG_COLLRESP) {
     NCCLCHECK(rasMsgHandleCollResp(msg, sock));
   } else {
-    WARN("RAS received unknown message type (%d) from %s", msg->type, ncclSocketToString(&sock->sock.addr, rasLine));
+    ERR(ncclInternalError, "RAS received unknown message type (%d) from %s", msg->type, ncclSocketToString(&sock->sock.addr, rasLine));
     return ncclInternalError;
   }
 
@@ -429,7 +429,7 @@ static ncclResult_t rasMsgHandleConnInit(const struct rasMsg* msg, struct rasSoc
 
   if (msg->connInit.ncclVersion != NCCL_VERSION_CODE) {
     // Close any such sockets immediately!  This is basically unrecoverable...
-    WARN("NCCL version mismatch with remote peer %s (local: %s, remote %s)",
+    ERR(ncclInvalidUsage, "NCCL version mismatch with remote peer %s (local: %s, remote %s)",
          ncclSocketToString(&sock->sock.addr, rasLine),
          ncclVersionToString(NCCL_VERSION_CODE, versionLocal, sizeof(versionLocal)),
          ncclVersionToString(msg->connInit.ncclVersion, versionRemote, sizeof(versionRemote)));

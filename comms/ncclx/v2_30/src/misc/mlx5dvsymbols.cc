@@ -51,7 +51,7 @@ ncclResult_t buildMlx5dvSymbols(struct ncclMlx5dvSymbols* mlx5dvSymbols) {
     cast = (void**)&funcptr;                             \
     tmp = dlvsym(handle, symbol, MLX5DV_VERSION);       \
     if (tmp == NULL) {                                   \
-      WARN("dlvsym failed on %s - %s version %s", symbol, dlerror(), MLX5DV_VERSION);  \
+      ERR(ncclSystemError, "dlvsym failed on %s - %s version %s", symbol, dlerror(), MLX5DV_VERSION);  \
       goto teardown;                                     \
     }                                                    \
     *cast = tmp;                                         \
