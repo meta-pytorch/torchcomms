@@ -539,8 +539,8 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
 
   // Validate that QPs have been initialized via getLocalBusCard()
   if (!areQpsInitialized()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IB-VC: setupVc called before getLocalBusCard(). "
         "QPs not initialized: controlQp={}, notifyQp={}, atomicQp={}, dataQps={}. "
         "peerRank={}",
@@ -562,8 +562,8 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     QpUniqueId qpId =
         std::make_pair(this->ibvDataQps_.at(i).qp()->qp_num, ibDevice);
     if (qpNumToIdx_.find(qpId) != qpNumToIdx_.end()) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB-VC: QP {} on device {} already exists",
           this->ibvDataQps_.at(i).qp()->qp_num,
           ibDevice);

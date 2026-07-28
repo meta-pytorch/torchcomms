@@ -224,8 +224,8 @@ commResult_t Bootstrap::exchangeAndPublish(
     bool isServer,
     int peerRank) {
   if (peerRank < 0 || (comm_ && peerRank >= comm_->statex_->nRanks())) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "invalid peerRank ({}) < 0 or >= nRanks {}",
         peerRank,
         comm_ ? comm_->statex_->nRanks() : -1);
