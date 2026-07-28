@@ -233,7 +233,7 @@ static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum,
 
   int fd = open(roceTypePath, O_RDONLY);
   if (fd == -1) {
-    WARN("NET/IB: open failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
+    ERR(ncclSystemError, "NET/IB: open failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
     return ncclSystemError;
   }
   int ret = read(fd, gidRoceVerStr, 15);
@@ -243,7 +243,7 @@ static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum,
     // In containerized environments, read could return EINVAL if the GID index is not mapped to the
     // container sysfs. In this case return ncclSuccess and let the caller move to next GID index.
     if (errno == EINVAL) return ncclSuccess;
-    WARN("NET/IB: read failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
+    ERR(ncclSystemError, "NET/IB: read failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
     return ncclSystemError;
   }
 
@@ -358,7 +358,7 @@ static ncclResult_t ncclIbCreateQpMlx5(struct ncclIbQpCreateAttr* createQpAttrs,
     dvAttr.comp_mask |= MLX5DV_QP_INIT_ATTR_MASK_QP_CREATE_FLAGS;
   }
   qp->qp = wrap_mlx5dv_create_qp(createQpAttrs->pd->context, &qpInitAttr, &dvAttr);
-  if (qp->qp == NULL) { WARN("NET/IB: %s: mlx5dv_create_qp failed to create QP: %m", __func__);  return ncclInternalError; }
+  if (qp->qp == NULL) { ERR(ncclInternalError, "NET/IB: %s: mlx5dv_create_qp failed to create QP: %m", __func__);  return ncclInternalError; }
   return ncclSuccess;
 }
 
@@ -525,12 +525,12 @@ static ncclResult_t ncclIbSenderQpsCreate(ncclIbSendComm* comm, struct ncclIbCon
 
     if (ibDev->ibProvider == IB_PROVIDER_MLX5 && ncclParamIbOooRq()) {
       if (ibDev->ar == 0) {
-        WARN("NET/IB: %s: OOO RQ is force enabled but AR is not enabled, which is required for OOO RQ (device=%s)", __func__, ibDev->devName);
+        ERR(ncclInternalError, "NET/IB: %s: OOO RQ is force enabled but AR is not enabled, which is required for OOO RQ (device=%s)", __func__, ibDev->devName);
         return ncclInternalError;
       }
       qpCreateAttrs.oooRq = (comm->base.remOooRq && comm->base.localOooRq);
       if (!qpCreateAttrs.oooRq) {
-        WARN("NET/IB: %s: OOO RQ is force enabled but not supported on both sides of the connection (device=%s, localOooRq=%d, remOooRq=%d)",
+        ERR(ncclInternalError, "NET/IB: %s: OOO RQ is force enabled but not supported on both sides of the connection (device=%s, localOooRq=%d, remOooRq=%d)",
           __func__, ibDev->devName, comm->base.localOooRq, comm->base.remOooRq);
         return ncclInternalError;
       }
@@ -671,7 +671,7 @@ ncclResult_t ncclIbConnect(void* ctx, int dev, void* opaqueHandle, void** sendCo
   if (stage->state == ncclIbCommStateConnecting)   goto ib_connect;
   if (stage->state == ncclIbCommStateConnected)    goto ib_send_ready;
   if (stage->state != ncclIbCommStateStart) {
-    WARN("Error: trying to connect already connected sendComm");
+    ERR(ncclInternalError, "Error: trying to connect already connected sendComm");
     return ncclInternalError;
   }
   stage->buffer = NULL;
@@ -694,7 +694,7 @@ ib_connect_check:
   // IB Setup
   struct ncclIbMergedDev* mergedDev;
   if (dev >= ncclNMergedIbDevs) {
-    WARN("NET/IB : Trying to use non-existent virtual device %d", dev);
+    ERR(ncclInternalError, "NET/IB : Trying to use non-existent virtual device %d", dev);
     return ncclInternalError;
   }
 
@@ -822,7 +822,7 @@ ib_recv_dev_list:
     if (link_layer == IBV_LINK_LAYER_UNSPECIFIED) link_layer = devInfo->link_layer;
     if (link_layer != devInfo->link_layer) {
       int ibDev0 = comm->devs[0].base.ibDevN;
-      WARN("NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
+      ERR(ncclInternalError, "NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
            commDev->base.ibDevN, ibDev->devName, ibDev->portNum, NCCL_IB_LLSTR(ibDev->portAttr.link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
       return ncclInternalError;
     }
@@ -860,7 +860,7 @@ ib_connect:
     link_layer = ncclIbDevs[ibDev0].portAttr.link_layer;
     for (int i = 0; i < remMeta.ndevs; i++) {
       if (remMeta.devs[i].link_layer != link_layer) {
-        WARN("NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
+        ERR(ncclInternalError, "NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
              NCCL_IB_LLSTR(remMeta.devs[i].link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
         return ncclInternalError;
       }
@@ -999,19 +999,19 @@ static ncclResult_t ncclIbReceiverQpsCreateToRts(ncclIbRecvComm* rComm, struct n
     }
     if (ibDev->ibProvider == IB_PROVIDER_MLX5 && ncclParamIbOooRq()) {
       if (ibDev->ar == 0) {
-        WARN("NET/IB: %s: OOO RQ is force enabled but AR is not enabled, which is required for OOO RQ (device=%s)", __func__, ibDev->devName);
+        ERR(ncclInternalError, "NET/IB: %s: OOO RQ is force enabled but AR is not enabled, which is required for OOO RQ (device=%s)", __func__, ibDev->devName);
         return ncclInternalError;
       }
       qpCreateAttrs.oooRq = (rComm->base.remOooRq && rComm->base.localOooRq);
       // out-of-order recv prerequisite: oooRq is supported on both sides
       if (!qpCreateAttrs.oooRq) {
-        WARN("NET/IB: %s: OOO RQ is force enabled but not supported on both sides of the connection (device=%s, localOooRq=%d, remOooRq=%d)",
+        ERR(ncclInternalError, "NET/IB: %s: OOO RQ is force enabled but not supported on both sides of the connection (device=%s, localOooRq=%d, remOooRq=%d)",
           __func__, ibDev->devName, rComm->base.localOooRq, rComm->base.remOooRq);
         return ncclInternalError;
       }
       // out-of-order recv prerequisite: oooRq size requirements are met
       if (ibDev->oooRqSize < qpCreateAttrs.maxRecvWorkRequest) {
-        WARN("NET/IB: %s: OOO RQ is force enabled but size %u is less than the required recv work request size %u on device:%s",
+        ERR(ncclInternalError, "NET/IB: %s: OOO RQ is force enabled but size %u is less than the required recv work request size %u on device:%s",
           __func__, ibDev->oooRqSize, qpCreateAttrs.maxRecvWorkRequest, ibDev->devName);
         return ncclInternalError;
       }
@@ -1194,7 +1194,7 @@ ncclResult_t ncclIbAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle
   if (stage->state == ncclIbCommStateSend) goto ib_send;
   if (stage->state == ncclIbCommStatePendingReady) goto ib_recv_ready;
   if (stage->state != ncclIbCommStateStart) {
-    WARN("Listencomm in unknown state %d", stage->state);
+    ERR(ncclInternalError, "Listencomm in unknown state %d", stage->state);
     return ncclInternalError;
   }
 
@@ -1227,7 +1227,7 @@ ib_recv_dev_list:
   ncclNetVDeviceProps_t remoteVProps;
   memcpy(&remoteVProps, stage->buffer, sizeof(ncclNetVDeviceProps_t));
   if (lComm->dev >= ncclNMergedIbDevs) {
-    WARN("NET/IB : Trying to use non-existent virtual device %d", lComm->dev);
+    ERR(ncclInternalError, "NET/IB : Trying to use non-existent virtual device %d", lComm->dev);
     return ncclInternalError;
   }
 
@@ -1313,7 +1313,7 @@ ib_recv:
     if (link_layer == IBV_LINK_LAYER_UNSPECIFIED) link_layer = ibDev->portAttr.link_layer;
     if (link_layer != ibDev->portAttr.link_layer) {
       int ibDev0 = rComm->devs[0].base.ibDevN;
-      WARN("NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
+      ERR(ncclInternalError, "NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
            ibDevN, ibDev->devName, ibDev->portNum, NCCL_IB_LLSTR(ibDev->portAttr.link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
       return ncclInternalError;
     }
@@ -1324,7 +1324,7 @@ ib_recv:
   for (int i = 0; i < remMeta.ndevs; i++) {
     if (remMeta.devs[i].link_layer != link_layer) {
       int ibDev0 = rComm->devs[0].base.ibDevN;
-      WARN("NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
+      ERR(ncclInternalError, "NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link type using NCCL_IB_HCA",
            NCCL_IB_LLSTR(remMeta.devs[i].link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
       return ncclInternalError;
     }
