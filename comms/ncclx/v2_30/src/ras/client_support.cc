@@ -552,7 +552,7 @@ static ncclResult_t rasClientRun(struct rasClient* client) {
       client->status = RAS_CLIENT_FINISHED;
       break;
     default:
-      WARN("Invalid client status %d", client->status);
+      ERR(ncclInternalError, "Invalid client status %d", client->status);
       ret = ncclInternalError;
       goto exit;
   }
