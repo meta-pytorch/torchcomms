@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "comm.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "shmutils.h"
 #include "shm.h"
 #include "transport.h"
@@ -78,7 +79,7 @@ static ncclResult_t shmCanConnect(int* ret, struct ncclComm* comm, struct ncclTo
   *ret = 0;
   initCeOperation();
 
-  if (ncclParamShmDisable() == 1 || comm->noLocal_) return ncclSuccess;
+  if (ncclParamShmDisable() == 1 || comm->ncclxExt->noLocal) return ncclSuccess;
 
   int useNet = 0;
   NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, &useNet));
