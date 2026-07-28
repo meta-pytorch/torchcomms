@@ -57,8 +57,8 @@ inline static commResult_t checkDisplacementBounds(
   size_t totalBytes = dispNbytes + (elemSize * elemCount);
 
   if (totalBytes > winSize) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "Invalid displacement from {} bytes to {} bytes exceeding the window size {}",
         dispNbytes,
         totalBytes,
@@ -72,8 +72,8 @@ inline static commResult_t checkSignalDisplacement(
     size_t disp,
     size_t signalSize) {
   if (disp > signalSize) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "Invalid displacement {} exceeding the signal buffer size {}",
         disp,
         signalSize);
@@ -409,8 +409,8 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
 
     // Propagate other errors - do not fallback as they may indicate
     // stream corruption from prior async operations
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN RMA: Hardware wait failed with error ({}), not falling back",
         errStr ? errStr : "unknown error");
     return commInternalError;

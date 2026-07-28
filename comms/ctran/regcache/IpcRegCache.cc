@@ -280,8 +280,8 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   auto peerIt = lockedMap->find(peerId);
   if (peerIt == lockedMap->end() ||
       peerIt->second.find(key) == peerIt->second.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
         peerId,
         basePtr,

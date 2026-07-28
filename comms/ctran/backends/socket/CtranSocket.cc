@@ -304,8 +304,8 @@ commResult_t CtranSocket::updateSocket(
     int peerRank) {
   auto locked = socketMaps_.wlock();
   if (locked->rankToSocket.find(peerRank) != locked->rankToSocket.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-SOCKET: socket already exists for peerRank {} in pimpl {} "
         "commHash {:x}, commDesc {}. It likely indicates a NCCL bug.",
         peerRank,
@@ -429,8 +429,10 @@ commResult_t CtranSocket::progressInternal() {
     continueWhileLoop = false;
     int count = poll(fds.data(), fds.size(), NCCL_CTRAN_SOCKET_POLL_TIMEOUT);
     if (count < 0) {
-      CLOGF_SUBSYS(
-          ERR, COLL, "CTRAN-SOCKET: polling error, errno {}", strerror(errno));
+      CERR(
+          commInternalError,
+          "CTRAN-SOCKET: polling error, errno {}",
+          strerror(errno));
       return commInternalError;
     } else if (count > 0) {
       CLOGF_TRACE(COLL, "CTRAN-SOCKET: polling returns {} events", count);
@@ -477,9 +479,8 @@ commResult_t CtranSocket::progressInternal() {
               bytes_read);
         }
       } else if (fds[fid].revents != 0) {
-        CLOGF_SUBSYS(
-            ERR,
-            COLL,
+        CERR(
+            commInternalError,
             "CTRAN-SOCKET: unexpected poll event {} rank {}",
             fds[fid].revents,
             peerRanks[fid]);
