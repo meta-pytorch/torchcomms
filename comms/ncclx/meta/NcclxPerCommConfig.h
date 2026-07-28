@@ -17,15 +17,18 @@ inline ncclResult_t ncclxValidatePerCommConfig(const ncclConfig_t& config) {
   auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
 
   if (ncclxCfg->ncclBuffSize.has_value()) {
-    ERR("Per-comm ncclBuffSize override is not supported with splitShare=1");
+    ERR(ncclInvalidArgument,
+        "Per-comm ncclBuffSize override is not supported with splitShare=1");
     return ncclInvalidArgument;
   }
   if (ncclxCfg->ibSplitDataOnQps.has_value()) {
-    ERR("Per-comm ibSplitDataOnQps override is not supported with splitShare=1");
+    ERR(ncclInvalidArgument,
+        "Per-comm ibSplitDataOnQps override is not supported with splitShare=1");
     return ncclInvalidArgument;
   }
   if (ncclxCfg->ibQpsPerConnection.has_value()) {
-    ERR("Per-comm ibQpsPerConnection override is not supported with splitShare=1");
+    ERR(ncclInvalidArgument,
+        "Per-comm ibQpsPerConnection override is not supported with splitShare=1");
     return ncclInvalidArgument;
   }
 
