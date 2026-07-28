@@ -79,7 +79,7 @@ commResult_t getGpuArch(ctran::allreduce::ring::GpuArch* arch) {
   FB_CUDACHECK(cudaGetDevice(&cudaDev));
   auto cudaArch = ctran::utils::getCudaArch(cudaDev);
   if (!cudaArch.hasValue()) {
-    CLOGF(ERR, "{}", cudaArch.error());
+    CERR(commUnhandledCudaError, "{}", cudaArch.error());
     return commUnhandledCudaError;
   }
   if (cudaArch.value() < 1000) {
@@ -1319,7 +1319,7 @@ commResult_t ctranAllReduceRing(
         count,
         count * typeSize,
         typeSize);
-    CLOGF(ERR, "{}", errorMsg);
+    CERR(commInvalidArgument, "{}", errorMsg);
     throw ctran::utils::Exception(errorMsg, commInvalidArgument);
   }
 
