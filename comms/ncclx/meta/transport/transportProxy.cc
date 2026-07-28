@@ -39,9 +39,9 @@ commResult_t tranportProxyInit(struct ncclComm* comm, struct ncclComm* parent) {
       mode != NCCL_USE_TRANSPORT_PROXY::none &&
       ncclx::getChannelMetadataLoc() ==
           NCCL_CHANNEL_METADATA_LOCATION::device) {
-    FB_ERRORRETURN(
-        commInternalError,
+    WARN(
         "NCCL_USE_TRANSPORT_PROXY is not supported with NCCL_CHANNEL_METADATA_LOCATION=device");
+    return commInternalError;
   }
 
   if (mode == NCCL_USE_TRANSPORT_PROXY::shared && parent != nullptr) {
