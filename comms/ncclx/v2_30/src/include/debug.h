@@ -93,29 +93,8 @@ void ncclResetDebugInit();
 }
 #endif
 
-void ncclSetMyThreadLoggingName(std::string_view name);
-
-#define NCCL_NAMED_THREAD_START(threadName)       \
-  do {                                            \
-    ncclSetMyThreadLoggingName(threadName);       \
-    INFO(                                         \
-        NCCL_INIT,                                \
-        "[NCCL THREAD] Starting %s thread at %s", \
-        threadName,                               \
-        __func__);                                \
-  } while (0)
-
-#define NCCL_NAMED_THREAD_START_EXT(threadName, rank, commHash, commDesc)              \
-  do {                                                                                 \
-    ncclSetMyThreadLoggingName(threadName);                                            \
-    INFO(                                                                              \
-        NCCL_INIT,                                                                     \
-        "[NCCL THREAD] Starting %s thread for rank %d commHash %lx commDesc %s at %s", \
-        threadName,                                                                    \
-        rank,                                                                          \
-        commHash,                                                                      \
-        commDesc.c_str(),                                                              \
-        __func__);                                                                     \
-  } while (0);
+// NCCLX: layer Meta-only debug/thread helpers on top of the pristine upstream
+// debug macros above. Keep this as the last include so it can use INFO(...).
+#include "meta/checks/MetaDebug.h"
 
 #endif
