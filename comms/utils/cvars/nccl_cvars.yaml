@@ -3157,6 +3157,11 @@ cvars:
      Maximum number of logical CUDA blocks used by MCCL collectives that
      support message-size-based block tuning.
 
+ - name        : MCCL_ABORT_TIMEOUT_MS
+   type        : float
+   default     : 30000.0
+   description : Timeout in milliseconds for MCCL device-side abort polling.
+
  - name        : MCCL_TREE_FANOUT
    type        : int
    default     : 2
