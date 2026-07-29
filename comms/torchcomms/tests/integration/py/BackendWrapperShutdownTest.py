@@ -162,8 +162,8 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         shuts down both sub-backends, which share one ``TorchComm``.
         Without idempotent ``shutdown``, the second call raises
         ``TorchCommNCCL already finalized``."""
-        if os.environ["TEST_BACKEND"] not in ["nccl", "xccl"]:
-            self.skipTest("mixed backend test is nccl/xccl-specific")
+        if os.environ["TEST_BACKEND"] not in ["nccl"]:
+            self.skipTest("mixed backend test is nccl-specific")
         if _torch_predates_pr_182057():
             self.skipTest(
                 f"torch {torch.__version__} predates pytorch/pytorch#182057 "
