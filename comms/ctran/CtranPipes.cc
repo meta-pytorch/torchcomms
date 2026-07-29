@@ -10,6 +10,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -388,6 +389,11 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             comm->statex_->cudaDev(),
             bootstrapPtr,
             config);
+    auto primsOrderedWorkStreamGuard =
+        std::make_unique<ctran::utils::OrderedWorkStreamGuard>();
+    primsOrderedWorkStreamGuard->init(
+        comm->logMetaData_, false /* synchronizeEagerAfterCapturedWork */);
+    comm->primsOrderedWorkStreamGuard_ = std::move(primsOrderedWorkStreamGuard);
     CLOGF(
         INFO,
         "Prims MultiPeerTransport initialized: nvlPeers={}, ibPeers={}, p2pDisable={}",

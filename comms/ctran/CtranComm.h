@@ -75,7 +75,10 @@ class MultiPeerTransport;
 }
 namespace ctran {
 struct CtranWin;
+namespace utils {
+class OrderedWorkStreamGuard;
 }
+} // namespace ctran
 
 using comms::fault_tolerance::Abort;
 using ctran::utils::AsyncError;
@@ -252,6 +255,8 @@ class CtranComm {
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
   std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
+  std::unique_ptr<ctran::utils::OrderedWorkStreamGuard>
+      primsOrderedWorkStreamGuard_;
 #endif // defined(ENABLE_PRIMS)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor

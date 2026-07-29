@@ -25,6 +25,7 @@
 #include "comms/ctran/utils/CommGroupUtils.h"
 
 #if defined(ENABLE_PRIMS)
+#include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/prims/trace/PipesTrace.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
@@ -236,6 +237,7 @@ void CtranComm::destroy() {
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
 #if defined(ENABLE_PRIMS)
+  primsOrderedWorkStreamGuard_.reset();
   pipesTrace_.reset();
   // Must be destroyed before ctran_ (which owns SharedResource staging
   // buffers used as external data buffers) and before bootstrap_ (since
