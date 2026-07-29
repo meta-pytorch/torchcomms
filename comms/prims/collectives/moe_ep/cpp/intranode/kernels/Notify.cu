@@ -39,7 +39,14 @@ __device__ __forceinline__ bool not_finished_inline(int* task, int expected) {
   const int lane_id = static_cast<int>(threadIdx.x) % kWarpSize;
   bool result = false;
   if (lane_id < kNumRanks) {
-    result = ld_volatile_global(task + lane_id) != expected;
+    // CRITICAL (AMD/xGMI): peers signal barrier completion by writing this
+    // FIFO slot via atomicSub_system. A plain cached/volatile load can read a
+    // stale L2 copy indefinitely (xGMI peer writes don't invalidate local L2),
+    // so the spin never observes the slot reach `expected` -> barrier deadlock
+    // (intermittent, surfaces under L2 pressure from the full model). Use a
+    // system-scoped ACQUIRE load to pair with the writers' system atomics +
+    // __threadfence_system and read the coherent value.
+    result = ld_acquire_sys_global(task + lane_id) != expected;
   }
 #ifdef __HIP_PLATFORM_AMD__
   return __any(result);
