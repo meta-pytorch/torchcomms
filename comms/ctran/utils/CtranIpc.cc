@@ -138,8 +138,8 @@ commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
   std::vector<CtranIpcSegDesc> extraSegments;
   FB_COMMCHECK(ipcExport(ipcDesc, extraSegments));
   if (!extraSegments.empty()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations. [{}]",
         this->toString());
     return commInternalError;
@@ -276,16 +276,16 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
     bool shouldSupportCudaMalloc) {
   // Should never call load from an instance with allocation mode
   if (this->mode_ != CtranIpcMem::Mode::LOAD) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: try to load a memory range to an instance with allocation mode. It indicates a COMM internal bug.");
     return commInternalError;
   }
 
   // A load instance should manage only one memory range at lifetime
   if (this->pbase_) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: CtranIpcMem already manages an existing memory range: {}. It indicates a COMM internal bug.",
         this->toString().c_str());
     return commInternalError;
@@ -378,13 +378,13 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
         (segmentHandleType != cuMemHandleType_);
 
     if (isUnsupportedType) {
-      CLOGF(
-          ERR,
-          "CTRAN-IPC: [pbase {:x} range {}] associated with [ptr {} len {}] "
+      CERR(
+          commInvalidUsage,
+          "CTRAN-IPC: [pbase {} range {}] associated with [ptr {} len {}] "
           "has unsupported allocation properties for IPC export: "
           "handleType = {} ({}), supportedExportType = {} ({}), gpuDirectRDMACapable = {}, "
           "segmentHandleType = {} ({})",
-          segs[i].base,
+          reinterpret_cast<void*>(segs[i].base),
           segs[i].size,
           (void*)ptr,
           len,
@@ -622,8 +622,8 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
 
 commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
   if (ipcDesc.totalSegments != 1) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: Number of segments is expected to be 1, but got {}",
         ipcDesc.totalSegments);
     return commInternalError;

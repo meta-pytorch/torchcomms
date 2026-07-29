@@ -152,13 +152,13 @@ inline ncclResult_t ProxyTrace::completeTraceEntries(
     auto opCount = sub->traceArgs.collInfo.opCount;
 
     if (!checkActiveOpExist(commHash, opCount, proxyOpId)) {
-      FB_ERRORRETURN(
-          ncclInternalError,
+      ERR(ncclInternalError,
           "PROXYTRACE: failed to complete %s entry of commHash %s opCount %lx proxyOpId %d, because no active entry exists",
           proxyOpTypetrMap[opType].c_str(),
           hashToHexStr(commHash).c_str(),
           opCount,
           proxyOpId);
+      return ncclInternalError;
     }
 
     auto& entry = activeOps_[commHash][opCount][proxyOpId];
@@ -235,13 +235,13 @@ inline ncclResult_t ProxyTrace::updateTraceEntryStep(
   auto opCount = sub->traceArgs.collInfo.opCount;
 
   if (!checkActiveOpExist(commHash, opCount, proxyOpId)) {
-    FB_ERRORRETURN(
-        ncclInternalError,
+    ERR(ncclInternalError,
         "PROXYTRACE: failed to update %s entry of commHash %s opCount %lx proxyOpId %d, because no active entry exists",
         proxyOpTypetrMap[opType].c_str(),
         hashToHexStr(commHash).c_str(),
         opCount,
         proxyOpId);
+    return ncclInternalError;
   }
 
   auto& entry = activeOps_[commHash][opCount][proxyOpId];

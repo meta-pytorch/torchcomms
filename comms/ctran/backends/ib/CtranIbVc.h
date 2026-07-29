@@ -726,8 +726,8 @@ class CtranIbVirtualConn {
       int device) {
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(put.ibRegElem);
     if (smrs == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)put.sbuf);
       return commSystemError;
@@ -854,8 +854,8 @@ class CtranIbVirtualConn {
 
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)sbuf);
       return commSystemError;
@@ -960,8 +960,8 @@ class CtranIbVirtualConn {
 
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)dbuf);
       return commSystemError;
@@ -992,8 +992,8 @@ class CtranIbVirtualConn {
       // sanity check
       // all previous spray messages should be completed
       if (outstandingGets_.size() > 0 || pendingGets_.size() > 0) {
-        CLOGF(
-            ERR,
+        CERR(
+            commSystemError,
             "igetFast issued when previous regular gets are still in progress: outstandingGets {}, pendingGets {}",
             outstandingGets_.size(),
             pendingGets_.size());
@@ -1003,8 +1003,8 @@ class CtranIbVirtualConn {
       uint64_t maxWqeSize = maxWqeSizeFor(config, len, /*qps=*/1);
 
       if (len > maxWqeSize) {
-        CLOGF(
-            ERR,
+        CERR(
+            commSystemError,
             "igetFast issued with len {} > maxWqeSize {}",
             len,
             maxWqeSize);
@@ -1012,8 +1012,8 @@ class CtranIbVirtualConn {
       }
 
       if (outstandingFastGets_.size() >= maxQpMsgs_) {
-        CLOGF(
-            ERR,
+        CERR(
+            commSystemError,
             "igetFast issued when outstanding fast gets {} > maxQpMsgs_ {}",
             outstandingFastGets_.size(),
             maxQpMsgs_);
@@ -1073,8 +1073,8 @@ class CtranIbVirtualConn {
       CtranIbRequest* req) {
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)sbuf);
       return commSystemError;
@@ -1244,7 +1244,7 @@ class CtranIbVirtualConn {
       } break;
 
       default:
-        CLOGF(ERR, "CTRAN-IB: Found unknown opcode: {}", opcode);
+        CERR(commSystemError, "CTRAN-IB: Found unknown opcode: {}", opcode);
         return commSystemError;
     }
 
@@ -1690,8 +1690,8 @@ class CtranIbVirtualConn {
       }
       pendingAtomicReqs_.pop_front();
     } else {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB-VC: Received completion for atomic Ops but no pending request");
       return commInternalError;
     }

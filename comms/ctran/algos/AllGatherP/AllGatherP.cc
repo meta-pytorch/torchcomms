@@ -95,6 +95,7 @@ commResult_t createPersistentRequest(
     CtranPersistentRequest** out,
     bool waitForInit) {
   if (out == nullptr) {
+    CERR(commInvalidArgument, "AllGatherP: output buffer must not be null");
     return commInvalidArgument;
   }
   *out = nullptr;

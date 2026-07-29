@@ -941,8 +941,8 @@ commResult_t checkUserBufType(const DevMemType bufType) {
         devMemTypeStr(bufType));
     return commSuccess;
   }
-  CLOGF(
-      ERR,
+  CERR(
+      commInvalidUsage,
       "CTRAN-WINDOW: Unsupported buffer type {} provided when registering window. Supported buffer types are kCumem, kHostPinned, kHostUnregistered, kCudaMalloc",
       devMemTypeStr(bufType));
 
@@ -1014,8 +1014,8 @@ commResult_t ctranWinSharedQuery(int rank, CtranWin* win, void** addr) {
 
   // Validate rank is within valid bounds
   if (rank < 0 || rank >= comm->statex_->nRanks()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "CTRAN-WINDOW: Invalid rank {} for sharedQuery (valid range: [0, {}))",
         rank,
         comm->statex_->nRanks());

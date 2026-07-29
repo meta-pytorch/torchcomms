@@ -43,28 +43,28 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
 
 #define CHECK_VALID_CTRAN(comm)                                             \
   if (!ctranInitialized(comm)) {                                            \
-    FB_ERRORRETURN(                                                         \
-        ncclInvalidUsage,                                                   \
+    ERR(ncclInvalidUsage,                                                   \
         "CTRAN must be enabled and initialized for persistent collective"); \
+    return ncclInvalidUsage;                                                \
   }
 
 #define CHECK_PREQ_TYPE(pReq, type)                                \
   if (pReq->type != type) {                                        \
-    FB_ERRORRETURN(                                                \
-        ncclInvalidArgument,                                       \
+    ERR(ncclInvalidArgument,                                       \
         "%s requires persistent request type %d, but received %d", \
         __func__,                                                  \
-        type,                                                      \
-        pReq->type);                                               \
+        static_cast<int>(type),                                    \
+        static_cast<int>(pReq->type));                             \
+    return ncclInvalidArgument;                                    \
   }
 
 #define GET_VALID_PREQ_OR_ERRRETURN(req, pReq)                    \
   do {                                                            \
     if (request == nullptr) {                                     \
-      FB_ERRORRETURN(                                             \
-          ncclInvalidArgument,                                    \
+      ERR(ncclInvalidArgument,                                    \
           "%s received invalid nullptr request",                  \
           __func__);                                              \
+      return ncclInvalidArgument;                                 \
     }                                                             \
     *(pReq) = reinterpret_cast<CtranPersistentRequest*>(request); \
   } while (0)
@@ -119,18 +119,18 @@ __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {
       (void*)pReq->comm_);
 
   if (!ctranInitialized(pReq->comm_)) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
+    ERR(ncclInvalidUsage,
         "CTRAN must be enabled and initialized for persistent collective");
+    return ncclInvalidUsage;
   }
 
   switch (pReq->type) {
     default:
-      FB_ERRORRETURN(
-          ncclInvalidArgument,
-          "Persistent request {} has unknown op type {}",
+      ERR(ncclInvalidArgument,
+          "Persistent request %p has unknown op type %d",
           (void*)pReq,
-          (void*)pReq->type);
+          static_cast<int>(pReq->type));
+      return ncclInvalidArgument;
   }
 }
 
@@ -143,9 +143,9 @@ __attribute__((visibility("default"))) ncclResult_t AllToAllInit(
     cudaStream_t stream,
     void*& request) {
   if (!ctran::AllToAllPSupport(comm->ctranComm_.get())) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
+    ERR(ncclInvalidUsage,
         "Persistent AllToAll is not supported. Check whether CTRAN is enabled.");
+    return ncclInvalidUsage;
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
@@ -167,24 +167,24 @@ __attribute__((visibility("default"))) ncclResult_t AllToAllInit(
 __attribute__((visibility("default"))) ncclResult_t
 AllToAllExec(const void* sendbuff, const size_t count, void* request) {
   if (request == nullptr) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
+    ERR(ncclInvalidUsage,
         "request shouldn't be nullptr for persistent collective");
+    return ncclInvalidUsage;
   }
   CtranPersistentRequest* pReq =
       reinterpret_cast<CtranPersistentRequest*>(request);
 
   if (!ctranInitialized(pReq->comm_)) {
-    FB_ERRORRETURN(
-        ncclInvalidUsage,
+    ERR(ncclInvalidUsage,
         "CTRAN must be enabled and initialized for persistent collective");
+    return ncclInvalidUsage;
   }
 
   if (pReq->type != CtranPersistentRequest::Type::ALLTOALL_P) {
-    FB_ERRORRETURN(
-        ncclInvalidArgument,
+    ERR(ncclInvalidArgument,
         "Unexpected PersistentRequest type %d called into AllToAllExec",
-        pReq->type);
+        static_cast<int>(pReq->type));
+    return ncclInvalidArgument;
   }
 
   return metaCommToNccl(ctran::AllToAllPExec(sendbuff, count, pReq));
@@ -209,11 +209,11 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
           "allToAllvDedupDestroy: experimental API moved to comms/experiments/algos");
       return ncclInvalidUsage;
     default:
-      FB_ERRORRETURN(
-          ncclInvalidArgument,
-          "Persistent request {} has unknown op type {}",
+      ERR(ncclInvalidArgument,
+          "Persistent request %p has unknown op type %d",
           (void*)pReq,
-          pReq->type);
+          static_cast<int>(pReq->type));
+      return ncclInvalidArgument;
   }
 
   return ncclSuccess;

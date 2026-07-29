@@ -32,7 +32,7 @@
           wc.qp_num,                                                                                  \
           wc.status,                                                                                  \
           ibv_wc_status_str(wc.status));                                                              \
-      CLOGF(ERR, "{}", errMsg);                                                                       \
+      CERR(commRemoteError, "{}", errMsg);                                                            \
       return commRemoteError;                                                                         \
     }                                                                                                 \
   } while (0)

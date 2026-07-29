@@ -54,7 +54,9 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
   auto lockedMap = commsMap_.wlock();
   if (!lockedMap->contains(comm)) {
-    ERR("Deregistering comm %p that is not registered", comm);
+    ERR(ncclInternalError,
+        "Deregistering comm %p that is not registered",
+        comm);
     return false;
   }
   // Just mark the comm as dead. Since we have all the information, we can
@@ -176,7 +178,9 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl(
   }
   auto commMonitorPtr = getInstance();
   if (commMonitorPtr == nullptr) {
-    ERR("Failed to get comms monitor instance to register comm %p", comm);
+    ERR(ncclInternalError,
+        "Failed to get comms monitor instance to register comm %p",
+        comm);
     return false;
   }
   return commMonitorPtr->deregisterCommImpl(comm);
@@ -188,7 +192,9 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl(
   }
   auto commMonitorPtr = getInstance();
   if (commMonitorPtr == nullptr) {
-    ERR("Failed to get comms monitor instance to register comm %p", comm);
+    ERR(ncclInternalError,
+        "Failed to get comms monitor instance to register comm %p",
+        comm);
     return false;
   }
   return commMonitorPtr->registerCommImpl(comm);
@@ -201,7 +207,8 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl(
   }
   auto lockedMap = commMonitorPtr->commsMap_.rlock();
   if (!lockedMap) {
-    ERR("Getting commsMap_ lock to get number of monitored comms timed out");
+    ERR(ncclInternalError,
+        "Getting commsMap_ lock to get number of monitored comms timed out");
     return -1;
   }
   return lockedMap->size();

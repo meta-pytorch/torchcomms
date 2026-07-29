@@ -474,7 +474,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
       if (err == cudaErrorPeerAccessAlreadyEnabled) {
         cudaGetLastError();
       } else if (err != cudaSuccess) {
-        WARN("failed to peer with device %d: %d %s", map->cudaDev, err, cudaGetErrorString(err));
+        ERR(ncclInternalError, "failed to peer with device %d: %d %s", map->cudaDev, err, cudaGetErrorString(err));
         return ncclInternalError;
       }
     }
@@ -654,7 +654,7 @@ static ncclResult_t recvFree(struct ncclComm* comm, struct ncclConnector* recv) 
 static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int cuda, int tpLocalRank, int type, int sameProcess,
     int nChannels, char** gpuPtr, char** cpuPtr, int* size, ncclIpcDesc *ipcDesc) {
   if (cuda == 0 && sameProcess == 0) {
-      WARN("PXN should not use host buffers for data");
+      ERR(ncclInternalError, "PXN should not use host buffers for data");
       return ncclInternalError;
   }
   struct ncclProxyProgressState* progressState = &proxyState->progressState;
@@ -762,7 +762,7 @@ static ncclResult_t sendProxySetup(struct ncclProxyConnection* connection, struc
   /* point-to-point size limits*/
   resources->maxP2pBytes = props.maxP2pBytes;
   if((resources->maxP2pBytes <= 0) || (resources->maxP2pBytes > NCCL_MAX_NET_SIZE_BYTES)) {
-    WARN("sendProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
+    ERR(ncclInternalError, "sendProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
       [allowed range: %ld - %ld] \n", resources->maxP2pBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
     return ncclInternalError;
   }
@@ -801,7 +801,7 @@ static ncclResult_t recvProxySetup(struct ncclProxyConnection* connection, struc
   /* point-to-point size limits*/
   resources->maxP2pBytes = props.maxP2pBytes;
   if((resources->maxP2pBytes <= 0) || (resources->maxP2pBytes > NCCL_MAX_NET_SIZE_BYTES)) {
-    WARN("recvProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
+    ERR(ncclInternalError, "recvProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
       [allowed range: %ld - %ld] \n", resources->maxP2pBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
     return ncclInternalError;
   }
@@ -1608,7 +1608,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               // Force a PCI-E read from GPU memory
               asm volatile ("mov (%0), %%eax" :: "l"(resources->gdcFlush) : "%eax", "memory");
 #else
-              WARN("NET: GDR Flush only supported on x86_64");
+              ERR(ncclInternalError, "NET: GDR Flush only supported on x86_64");
               return ncclInternalError;
 #endif
             } else {

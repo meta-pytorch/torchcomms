@@ -20,12 +20,6 @@ using namespace ctran::ibvwrap;
 
 namespace {
 static folly::Singleton<VerbsUtils> kVerbsUtils;
-
-static inline commResult_t addToStackTrace(const std::string errorMessage) {
-  CLOGF(ERR, "{}", errorMessage.c_str());
-  ErrorStackTraceUtil::logErrorMessage(errorMessage);
-  return commSystemError;
-}
 } // namespace
 
 /* Set ibv_get_async_event to poll mode intead of default blocking mode.
@@ -43,11 +37,13 @@ commResult_t IbUtils::pollForAsyncEvent(
   int flags = fcntl(fdSet.fd, F_GETFL);
 
   if (flags == -1) {
-    return addToStackTrace("fcntl flags failure");
+    CERR(commSystemError, "fcntl flags failure");
+    return commSystemError;
   }
   auto ret = fcntl(fdSet.fd, F_SETFL, flags | O_NONBLOCK);
   if (ret == -1) {
-    return addToStackTrace("fcntl set NONBLOCK failure");
+    CERR(commSystemError, "fcntl set NONBLOCK failure");
+    return commSystemError;
   }
 
   bool stopRequested = false;
@@ -77,16 +73,18 @@ commResult_t IbUtils::pollForAsyncEvent(
     return commSystemError;
   }
   if (ret < 0) {
-    return addToStackTrace(
-        fmt::format(
-            "NET/IB : poll for IB async events failed with error code:{}",
-            ret));
+    CERR(
+        commSystemError,
+        "NET/IB : poll for IB async events failed with error code:{}",
+        ret);
+    return commSystemError;
   }
   if ((fdSet.revents & POLLIN) != POLLIN) {
-    return addToStackTrace(
-        fmt::format(
-            "NET/IB : poll returned unexpected POLLERR or POLLHUP for dev={} (probably a bad device)",
-            ibvContext->device->name));
+    CERR(
+        commSystemError,
+        "NET/IB : poll returned unexpected POLLERR or POLLHUP for dev={} (probably a bad device)",
+        ibvContext->device->name);
+    return commSystemError;
   }
   return commSuccess;
 }
@@ -112,7 +110,7 @@ void IbUtils::timeoutHandler(
           locked.as_lock(), duration, [&] { return *locked; })) {
     std::string errorMessage = fmt::format(
         "Link down timeout reached for {} ({} ms).", devName, duration.count());
-    addToStackTrace(errorMessage);
+    CERR(commSystemError, "{}", errorMessage);
     XLOGF(
         WARN,
         "ctranCommSetAsyncError: error comm NULL sets state %d",
@@ -215,7 +213,7 @@ commResult_t IbUtils::triageIbAsyncEvents(
       // a link down event is not considered an error unless it is down
       // for a period longer than the configured timeout
       // so do not return commSystemError here
-      addToStackTrace(msg);
+      CERR(commSystemError, "{}", msg);
       // for now, only ctran supports timer
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
         // set timer; if timer expires it will trigger an error
@@ -233,7 +231,7 @@ commResult_t IbUtils::triageIbAsyncEvents(
     case ibverbx::IBV_EVENT_SRQ_ERR:
     case ibverbx::IBV_EVENT_DEVICE_FATAL:
       ret = commSystemError;
-      addToStackTrace(msg);
+      CERR(commSystemError, "{}", msg);
       // preserve baseline functionality by not sending async error
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
         XLOGF(

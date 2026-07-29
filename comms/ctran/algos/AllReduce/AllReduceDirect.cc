@@ -199,8 +199,8 @@ static commResult_t impl(
           intraNodeLocalRecvbuffReq[lr].get()));
       if (intraNodeRemoteRecvAccessKeys[lr].backend !=
           CtranMapperBackend::NVL) {
-        CLOGF(
-            ERR,
+        CERR(
+            commInternalError,
             "NVLink backend not available between rank {} and {}",
             rank,
             statex->localRankToRank(lr));
@@ -576,8 +576,8 @@ commResult_t ctranAllReduceDirect(
 
   // Prevent buffer overflow in localReduce.srcs array
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidUsage,
         "nLocalRanks ({}) exceeds CTRAN_MAX_NVL_PEERS ({}). This will cause buffer overflow in localReduce.srcs array! ",
         nLocalRanks,
         CTRAN_MAX_NVL_PEERS);

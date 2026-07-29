@@ -296,6 +296,6 @@ ncclResult_t ncclGinGetDevCount(int ginPluginIndex, int* nPhysDevs, int* nVirtDe
   *nPhysDevs = ginPluginLibs[ginPluginIndex].ginPhysDevs;
   return ncclSuccess;
 fail:
-  WARN("%s: trying to access the number of devices of an uninitialized ginPlugin[%d]", __func__, ginPluginIndex);
+  ERR(ncclInternalError, "%s: trying to access the number of devices of an uninitialized ginPlugin[%d]", __func__, ginPluginIndex);
   return ncclInternalError;
 }

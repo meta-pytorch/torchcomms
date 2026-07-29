@@ -12,6 +12,8 @@
 #include <folly/logging/LogFormatter.h>
 #include <folly/logging/LogLevel.h>
 
+#include "comms/utils/commSpecs.h"
+
 namespace meta::comms::logger {
 
 enum class LogLevel {
@@ -79,7 +81,7 @@ void appendErrorToStack(std::string error);
 // native stack in the stack_trace column). The caller is responsible for gating
 // this on NCCL_SCUBA_LOG_ERROR_ENABLED and for capturing the native `stack`
 // once (via captureNativeErrorStack()) so it can be shared across reporters.
-void logErrorToScuba(
+__attribute__((visibility("default"))) void logErrorToScuba(
     const std::string& message,
     int code,
     const std::string& errorName,
@@ -88,6 +90,12 @@ void logErrorToScuba(
 // Update the ncclGetLastError() state with the latest error message and its
 // pre-captured native stack. Unconditional; independent of Scuba error logging.
 void setLastError(const std::string& message, std::vector<std::string> stack);
+
+// Record a CTRAN ERR-level error to Scuba, carrying the commResult_t code.
+// Gated by NCCL_SCUBA_LOG_ERROR_ENABLED; a no-op when disabled.
+__attribute__((visibility("default"))) void logCommErrorToScuba(
+    commResult_t code,
+    const std::string& message);
 
 class NcclLogFormatter : public folly::LogFormatter {
  public:

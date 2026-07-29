@@ -599,8 +599,8 @@ class CtranIb {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,
           comm ? comm->statex_->nRanks() : -1);
@@ -613,8 +613,8 @@ class CtranIb {
       std::shared_ptr<CtranIbVirtualConn>& vc,
       int peerRank) {
     if (vc == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "No valid VirtualConnection (VC) found for peerRank {}",
           peerRank);
       return commInternalError;
@@ -633,8 +633,11 @@ class CtranIb {
     deviceEnd = numNics;
     if (device.has_value()) {
       if (*device < 0 || *device >= numNics) {
-        CLOGF(
-            ERR, "CTRAN-IB: invalid device {} (numNics={})", *device, numNics);
+        CERR(
+            commInternalError,
+            "CTRAN-IB: invalid device {} (numNics={})",
+            *device,
+            numNics);
         return commInternalError;
       }
       deviceBegin = *device;
@@ -1080,8 +1083,8 @@ class CtranIb {
         std::shared_ptr<CtranIbVirtualConn> vc =
             vcState_.getVcByQp<PerfConfig>(std::make_pair(wc.qp_num, device));
         if (vc == nullptr) {
-          CLOGF(
-              ERR,
+          CERR(
+              commInternalError,
               "No valid VirtualConnection (VC) found for qpn {}",
               wc.qp_num);
           return commInternalError;

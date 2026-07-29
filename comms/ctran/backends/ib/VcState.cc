@@ -43,8 +43,8 @@ commResult_t VcState::setupAndPublishVc(
     const std::vector<std::string>& remoteVcIdentifiers,
     int peerRank) {
   if (vcs.empty() || vcs.size() != remoteVcIdentifiers.size()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IB: setupAndPublishVc called with vcs.size()={} remoteVcIdentifiers.size()={} for peerRank {} in pimpl {} commHash {:x} commDesc {}",
         vcs.size(),
         remoteVcIdentifiers.size(),
@@ -66,8 +66,8 @@ commResult_t VcState::setupAndPublishVc(
   {
     auto locked = vcStateMaps_.wlock();
     if (locked->rankToVcs.find(peerRank) != locked->rankToVcs.end()) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB: VirtualConnection (VC) already exists for peerRank {} in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
           peerRank,
           owner_,
@@ -150,8 +150,8 @@ commResult_t VcState::checkAndInsertQpToVcMap(
     QpUniqueId& qpId,
     std::shared_ptr<CtranIbVirtualConn>& vc) {
   if (map.find(qpId) != map.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IB: QP {} on device {} already exists in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
         qpId.first,
         qpId.second,

@@ -15,7 +15,7 @@ static ncclGin_t ncclGin;
 static ncclResult_t ncclGin_createContext(void* collComm, ncclGinConfig_t* config,
     void** ginCtx, ncclNetDeviceHandle_t** devHandle) {
   if (config->nContexts > 1) {
-    WARN("GIN plugin v11 does not support multiple contexts");
+    ERR(ncclInvalidUsage, "GIN plugin v11 does not support multiple contexts");
     return ncclInvalidUsage;
   }
   if (ncclGin_v11->createContext == NULL) {
@@ -37,7 +37,7 @@ static ncclResult_t ncclGin_destroyContext(void* ginCtx) {
 static ncclResult_t ncclGin_iput(void* ginCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size,
     uint64_t dstOff, void* dstMhandle, uint32_t rank, void** request) {
   if (context != 0) {
-    WARN("GIN plugin v11 does not support multiple contexts");
+    ERR(ncclInvalidUsage, "GIN plugin v11 does not support multiple contexts");
     return ncclInvalidUsage;
   }
   return ncclGin_v11->iput(ginCtx, srcOff, srcMhandle, size, dstOff, dstMhandle, rank, request);
@@ -54,7 +54,7 @@ static ncclResult_t ncclGin_iputSignal(void* ginCtx, int context, uint64_t srcOf
     size_t size, uint64_t dstOff, void* dstMhandle, uint32_t rank, uint64_t signalOff, void *signalMhandle,
     uint64_t signalValue, uint32_t signalOp, void** request) {
   if (context != 0) {
-    WARN("GIN plugin v11 does not support multiple connections");
+    ERR(ncclInvalidUsage, "GIN plugin v11 does not support multiple connections");
     return ncclInvalidUsage;
   }
   return ncclGin_v11->iputSignal(ginCtx, srcOff, srcMhandle, size, dstOff, dstMhandle, rank, signalOff, signalMhandle, signalValue, signalOp, request);

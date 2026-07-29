@@ -19,7 +19,10 @@
 #include "comms/utils/CudaRAII.h"
 #endif
 
+#ifndef MOE_EP_OSS_INTRANODE
+// internode + bootstrap closure — not staged in the OSS intranode build.
 #include "comms/common/bootstrap/IBootstrap.h"
+#endif
 #include "comms/prims/collectives/moe_ep/cpp/intranode/Runtime.h"
 #include "comms/prims/collectives/moe_ep/cpp/intranode/kernels/Combine.cuh"
 #include "comms/prims/collectives/moe_ep/cpp/intranode/kernels/Dispatch.cuh"
@@ -561,14 +564,9 @@ py::tuple Buffer::intranode_dispatch(
     x = xTuple[0].cast<torch::Tensor>();
     xScales = xTuple[1].cast<torch::Tensor>();
     isFp8 = true;
-    // FP8 scale path is not yet supported: the kernel derives num_scales from
-    // scale_hidden_stride (Dispatch.cu), which collapses to 1 for contiguous
-    // scales and silently under-fills the recv-scale buffer. Reject the
-    // (data, scales) tuple until the FP8 scale path threads num_scales.
-    TORCH_CHECK(
-        !isFp8,
-        "intranode_dispatch: FP8 (x=(data, scales)) is not supported yet; the "
-        "scale path is not implemented. Pass a bf16/fp16 tensor.");
+    // FP8 (x=(data, scales)) uses the same kernel as bf16: token bytes move
+    // opaquely and per-token scales travel in a separate symmetric buffer.
+    // num_scales comes from x_scales.size(1); x_scales must be contiguous.
   } else {
     // Tensor path — fall back on cast-or-throw to bypass unreliable
     // pybind11::isinstance<torch::Tensor>.
@@ -612,6 +610,9 @@ py::tuple Buffer::intranode_dispatch(
             xScales->scalar_type() == torch::kInt,
         "x_scales must be float32 or int32");
     TORCH_CHECK(xScales->dim() == 2, "x_scales must be 2D");
+    TORCH_CHECK(
+        xScales->is_contiguous(),
+        "x_scales must be contiguous [num_tokens, num_scales]");
     TORCH_CHECK(
         xScales->size(0) == numTokens,
         "x_scales.size(0) must equal num_tokens");
@@ -815,6 +816,7 @@ py::tuple Buffer::intranode_dispatch(
       hiddenInt4,
       numTopk,
       numExperts,
+      numScales,
       scaleTokenStride,
       scaleHiddenStride,
       intranode_->getPeerDataPtrsDevice(),

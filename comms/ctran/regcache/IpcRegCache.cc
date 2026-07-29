@@ -280,8 +280,8 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   auto peerIt = lockedMap->find(peerId);
   if (peerIt == lockedMap->end() ||
       peerIt->second.find(key) == peerIt->second.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
         peerId,
         basePtr,
@@ -492,7 +492,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   // Initialize local peer ID (hostname:pid) for IPC communications
   char hostname[256];
   if (gethostname(hostname, sizeof(hostname)) != 0) {
-    CLOGF(ERR, "CTRAN-REGCACHE: Failed to get hostname");
+    CERR(commInternalError, "CTRAN-REGCACHE: Failed to get hostname");
     return commInternalError;
   }
   hostname[sizeof(hostname) - 1] = '\0';

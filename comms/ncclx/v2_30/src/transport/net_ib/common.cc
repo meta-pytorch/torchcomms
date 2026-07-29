@@ -29,7 +29,7 @@ extern int ncclParamIbResiliencyPortFailover();
 
 ncclResult_t ncclIbStatsCheckFatalCount(struct ncclIbStats* stat, const char* funcName) {
   if (ncclParamIbAsyncEvents() && COMPILER_ATOMIC_LOAD(&stat->fatalErrorCount, std::memory_order_relaxed)) {
-    WARN("communicator encountered a fatal error (detected in %s)", funcName);
+    ERR(ncclSystemError, "communicator encountered a fatal error (detected in %s)", funcName);
     return ncclSystemError;
   }
   return ncclSuccess;

@@ -65,8 +65,8 @@ bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
 commResult_t checkEpochLock(CtranIb* ctranIb) {
   if (NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK &&
       NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE && !epochLockedFlags[ctranIb].load()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE is set to true, but the critical section is called "
         "without acquiring the epoch lock on the calling thread. It is likely a NCCL bug.");
     return commInternalError;
@@ -114,7 +114,7 @@ CtranIbSingleton::CtranIbSingleton() {
         "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    CLOGF(ERR, msg);
+    CERR(commSystemError, "{}", msg);
     throw ctran::utils::Exception(msg, commSystemError);
   }
 
@@ -462,7 +462,7 @@ void CtranIb::init(
         std::to_string(NCCL_CTRAN_IB_DEVICES_PER_RANK) +
         ") exceeds CTRAN_MAX_IB_DEVICES_PER_RANK (" +
         std::to_string(CTRAN_MAX_IB_DEVICES_PER_RANK) + ")";
-    CLOGF(ERR, "CTRAN-IB: {}", msg);
+    CERR(commInvalidArgument, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commInvalidArgument,
@@ -477,7 +477,7 @@ void CtranIb::init(
     std::string msg = "cudaDev (" + std::to_string(cudaDev) +
         ") * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE exceeds the number of contexts (" +
         std::to_string(s->ibvDevices.size()) + ")";
-    CLOGF(ERR, "CTRAN-IB: {}", msg);
+    CERR(commSystemError, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commSystemError,
@@ -636,7 +636,7 @@ void CtranIb::init(
         "gets at least one data QP.",
         NCCL_CTRAN_IB_MAX_QPS,
         maxVcsPerPeer);
-    CLOGF(ERR, msg);
+    CERR(commInvalidArgument, "{}", msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
   }
   vcLayout_ = ctran::ib::VcLayout(numNics, maxVcsPerPeer);
@@ -745,8 +745,8 @@ commResult_t CtranIb::epochLock() {
   }
 
   if (epochLockedFlags[this].load()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "epochLock() already called on the same thread without epochUnlock(). It is likely a COMM bug.");
     return commInternalError;
   }
@@ -763,8 +763,8 @@ commResult_t CtranIb::epochTryLock() {
   }
 
   if (epochLockedFlags[this].load()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "epochLock() already called on the same thread without epochUnlock(). It is likely a COMM bug.");
     return commInternalError;
   }
@@ -783,8 +783,8 @@ commResult_t CtranIb::epochUnlock() {
   }
 
   if (!epochLockedFlags[this].load()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "epochUnlock() is called without an outstanding epochLock() on the thread. It is likely a COMM bug.");
     return commInternalError;
   }
@@ -801,8 +801,8 @@ commResult_t CtranIb::regMem(
     void** ibRegElem) {
   commResult_t res = commSuccess;
   if (len < CTRAN_MIN_REGISTRATION_SIZE && NCCL_CTRAN_REGISTRATION_SIZE_CHECK) {
-    CLOGF(
-        ERR,
+    CERR(
+        commSystemError,
         "CTRAN-IB: cannot register buffer, size ({}) < {}",
         len,
         CTRAN_MIN_REGISTRATION_SIZE);
@@ -862,8 +862,8 @@ commResult_t CtranIb::regMem(
       // fall back to ibv_reg_mr
       if (comms::utils::cumem::isBackedByMultipleCuMemAllocations(
               buf, cudaDev, len)) {
-        CLOGF(
-            ERR,
+        CERR(
+            commInvalidUsage,
             "CTRAN-IB: Memory region (buf {}, len {}) spans multiple cuMem allocations, ibv_reg_mr may fail!",
             buf,
             len);
@@ -1091,8 +1091,8 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
     std::vector<std::string> pgTrafficClassPair;
     folly::split(":", pgTrafficClassPairStr, pgTrafficClassPair);
     if (pgTrafficClassPair.size() != 2) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB: Invalid PG->Traffic class pair {} in pimpl {} commHash {:x}, commDesc {}.",
           pgTrafficClassPairStr,
           (void*)this,
@@ -1103,8 +1103,8 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
     std::string tcStr = pgTrafficClassPair[1];
     auto tc = folly::tryTo<uint32_t>(tcStr);
     if (!tc.hasValue()) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB: Invalid Traffic Class value provided {} in pimpl {} commHash {:x}, commDesc {}.",
           tcStr,
           (void*)this,
