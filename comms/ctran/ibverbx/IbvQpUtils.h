@@ -35,6 +35,22 @@ struct RemoteQpInfo {
 folly::Expected<IbvQp, Error>
 createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr);
 
+// createRcQpWithOooDp - Creates an RC QP with the option to enable mlx5
+// out-of-order data placement (OOO_DP). When oooDp=true, goes through
+// mlx5dv_create_qp with MLX5DV_QP_CREATE_OOO_DP so packet-sprayed data
+// (adaptive routing) may arrive out of order on the RQ. When oooDp=false,
+// bypasses mlx5dv entirely and delegates to the standard createRcQp() path
+// — so deployments without libmlx5 loaded still create QPs normally.
+// Caller must ensure the underlying device supports OOO DP when oooDp=true
+// (mlx5 provider, adaptive routing enabled, ooo_recv_wrs_caps.max_rc >=
+// maxRecvWr) — this helper does not gate.
+folly::Expected<IbvQp, Error> createRcQpWithOooDp(
+    const IbvPd* ibvPd,
+    ibv_cq* cq,
+    int maxSendWr,
+    int maxRecvWr,
+    bool oooDp);
+
 // initQp - Transitions QP to INIT state with port and access
 // configuration
 folly::Expected<folly::Unit, Error>
