@@ -73,6 +73,14 @@ class IbvPd {
       ibv_qp_init_attr_ex* initAttrEx,
       mlx5dv_qp_init_attr* mlx5InitAttr) const;
 
+  // Create an RC QP via mlx5dv_create_qp so mlx5 direct-verbs create-flags
+  // (e.g. MLX5DV_QP_CREATE_OOO_DP for out-of-order data placement) can be
+  // applied. Caller is responsible for building initAttrEx (IBV_QPT_RC, caps,
+  // etc.) and mlx5InitAttr (comp_mask, create_flags). See NCCL_IB_OOO_RQ.
+  folly::Expected<IbvQp, Error> createExtRcQpMlx5(
+      ibv_qp_init_attr_ex* initAttrEx,
+      mlx5dv_qp_init_attr* mlx5InitAttr) const;
+
  private:
   friend class IbvDevice;
 
