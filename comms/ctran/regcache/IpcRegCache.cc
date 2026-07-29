@@ -392,8 +392,8 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
     int32_t exportCount) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote release");
     return commInternalError;
   }
@@ -441,8 +441,8 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
     ctran::regcache::IpcReqCb* reqCb) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote export");
     return commInternalError;
   }

@@ -669,7 +669,7 @@ enum NCCL_ALLREDUCE_ALGO CtranAlgo::getAllReduceAlgo() {
 commResult_t CtranAlgo::exchangePeerTmpbuf(int peer) {
   // if peer is out of range, we report an error
   if (comm_->statex_->nRanks() < peer) {
-    CLOGF(WARN, "Invalid value for peer: {}", peer);
+    CERR(commInvalidArgument, "Invalid value for peer: {}", peer);
     return commInvalidArgument;
   }
   // if tmpbuffs are already exchanged, we don't need to do anything

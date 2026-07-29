@@ -383,8 +383,8 @@ commResult_t CtranGpe::allocKernelElems(
     this->pimpl->kernelElemPool->reclaim();
 
     if (numElems > this->pimpl->kernelElemPool->size()) {
-      CLOGF(
-          WARN,
+      CERR(
+          commInternalError,
           "CTRAN-GPE: Internal KernelElem pool has unexpected high usage (capacity: {}, available: {}, current request: {}). "
           "It is likely that some COMM kernels are not released properly",
           this->pimpl->kernelElemPool->capacity(),

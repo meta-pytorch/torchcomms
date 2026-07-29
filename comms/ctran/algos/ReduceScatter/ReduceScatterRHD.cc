@@ -336,15 +336,15 @@ commResult_t ctranReduceScatterRHD(
       stream);
   const size_t totalBufSize = recvcount * typeSize * statex->nRanks();
   if (NCCL_CTRAN_INTERNODE_TMPBUF_SIZE < totalBufSize) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "ctranReduceScatterRHD: data buffer of size {} bytes "
         "is too large to fit in tmpBuf",
         totalBufSize);
     return commInternalError;
   } else if ((statex->nRanks() & (statex->nRanks() - 1)) != 0) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "ctranReduceScatterRHD: current implementation requires"
         "number of ranks to be a power of 2, nRanks: {}",
         statex->nRanks());
