@@ -291,12 +291,14 @@ class P2pIbrcTransportDevice {
       if (localBuf.ptr == nullptr || remoteBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: put data buffer is null");
       }
-      threadfence_system();
     }
     group.sync();
 
     IbLocalCompletionTicket completion;
     if (group.is_leader()) {
+      if (hasData) {
+        threadfence_system();
+      }
       validate_group_scope(group);
       const uint32_t queueId = select_put_queue_id(group, IbDirection::Send);
       // queue_for_lane encodes the lane ordinal modulo the total lane count.
