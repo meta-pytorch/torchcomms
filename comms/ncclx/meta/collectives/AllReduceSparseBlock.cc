@@ -5,16 +5,15 @@
 #include "enqueue.h"
 #include "nccl.h"
 
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
 
-#define NCCLARGCHECK(statement, ...)                                        \
-  do {                                                                      \
-    if (!(statement)) {                                                     \
-      ERR(ncclInvalidArgument, __VA_ARGS__);                                \
-      return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidArgument)); \
-    }                                                                       \
+#define NCCLARGCHECK(statement, ...)              \
+  do {                                            \
+    if (!(statement)) {                           \
+      ERR(ncclInvalidArgument, __VA_ARGS__);      \
+      return metaCommToNccl(commInvalidArgument); \
+    }                                             \
   } while (0);
 
 static void* unpackSendBlocksKerns[ncclNumTypes] = {

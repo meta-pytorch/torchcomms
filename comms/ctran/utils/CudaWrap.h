@@ -5,7 +5,6 @@
 #include <cuda_runtime.h>
 #include <fmt/format.h>
 
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #if CUDART_VERSION >= 11030
@@ -51,56 +50,50 @@ namespace ctran::utils {
 #define FB_CUPFN(symbol) symbol
 
 // Check CUDA PFN driver calls
-#define FB_CUCHECK(cmd)                          \
-  do {                                           \
-    CUresult err = cmd;                          \
-    if (err != CUDA_SUCCESS) {                   \
-      const char* errStr;                        \
-      (void)cuGetErrorString(err, &errStr);      \
-      CERR(                                      \
-          commUnhandledCudaError,                \
-          "Cuda failure {} '{}'",                \
-          static_cast<int>(err),                 \
-          errStr);                               \
-      ErrorStackTraceUtil::logErrorMessage(      \
-          "Cuda Error: " + std::string(errStr)); \
-      return commUnhandledCudaError;             \
-    }                                            \
+#define FB_CUCHECK(cmd)                     \
+  do {                                      \
+    CUresult err = cmd;                     \
+    if (err != CUDA_SUCCESS) {              \
+      const char* errStr;                   \
+      (void)cuGetErrorString(err, &errStr); \
+      CERR(                                 \
+          commUnhandledCudaError,           \
+          "Cuda failure {} '{}'",           \
+          static_cast<int>(err),            \
+          errStr);                          \
+      return commUnhandledCudaError;        \
+    }                                       \
   } while (false)
 
-#define FB_CUCHECK_RETURN(cmd, ret)              \
-  do {                                           \
-    CUresult err = cmd;                          \
-    if (err != CUDA_SUCCESS) {                   \
-      const char* errStr;                        \
-      (void)cuGetErrorString(err, &errStr);      \
-      CERR(                                      \
-          commUnhandledCudaError,                \
-          "Cuda failure {} '{}'",                \
-          static_cast<int>(err),                 \
-          errStr);                               \
-      ErrorStackTraceUtil::logErrorMessage(      \
-          "Cuda Error: " + std::string(errStr)); \
-      return ret;                                \
-    }                                            \
+#define FB_CUCHECK_RETURN(cmd, ret)         \
+  do {                                      \
+    CUresult err = cmd;                     \
+    if (err != CUDA_SUCCESS) {              \
+      const char* errStr;                   \
+      (void)cuGetErrorString(err, &errStr); \
+      CERR(                                 \
+          commUnhandledCudaError,           \
+          "Cuda failure {} '{}'",           \
+          static_cast<int>(err),            \
+          errStr);                          \
+      return ret;                           \
+    }                                       \
   } while (false)
 
-#define FB_CUCHECK_GOTO(cmd, ret, label)         \
-  do {                                           \
-    CUresult err = cmd;                          \
-    if (err != CUDA_SUCCESS) {                   \
-      const char* errStr;                        \
-      cuGetErrorString(err, &errStr);            \
-      CERR(                                      \
-          commUnhandledCudaError,                \
-          "Cuda failure {} '{}'",                \
-          static_cast<int>(err),                 \
-          errStr);                               \
-      ErrorStackTraceUtil::logErrorMessage(      \
-          "Cuda Error: " + std::string(errStr)); \
-      ret = commUnhandledCudaError;              \
-      goto label;                                \
-    }                                            \
+#define FB_CUCHECK_GOTO(cmd, ret, label) \
+  do {                                   \
+    CUresult err = cmd;                  \
+    if (err != CUDA_SUCCESS) {           \
+      const char* errStr;                \
+      cuGetErrorString(err, &errStr);    \
+      CERR(                              \
+          commUnhandledCudaError,        \
+          "Cuda failure {} '{}'",        \
+          static_cast<int>(err),         \
+          errStr);                       \
+      ret = commUnhandledCudaError;      \
+      goto label;                        \
+    }                                    \
   } while (false)
 
 #define FB_CUCHECKRES(res)                                               \
@@ -109,7 +102,7 @@ namespace ctran::utils {
       const char* errStr;                                                \
       (void)cuGetErrorString(res, &errStr);                              \
       CERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
-      return ErrorStackTraceUtil::log(commUnhandledCudaError);           \
+      return commUnhandledCudaError;                                     \
     }                                                                    \
   } while (false)
 
@@ -161,8 +154,6 @@ namespace ctran::utils {
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
           errStr);                                              \
-      ErrorStackTraceUtil::logErrorMessage(                     \
-          "Cuda Error: " + std::string(errStr));                \
       return commUnhandledCudaError;                            \
     }                                                           \
   } while (false)
@@ -178,8 +169,6 @@ namespace ctran::utils {
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
           errStr);                                              \
-      ErrorStackTraceUtil::logErrorMessage(                     \
-          "Cuda Error: " + std::string(errStr));                \
       return ret;                                               \
     }                                                           \
   } while (false)
@@ -195,8 +184,6 @@ namespace ctran::utils {
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
           errStr);                                              \
-      ErrorStackTraceUtil::logErrorMessage(                     \
-          "Cuda Error: " + std::string(errStr));                \
       ret = commUnhandledCudaError;                             \
       goto label;                                               \
     }                                                           \
@@ -208,7 +195,7 @@ namespace ctran::utils {
       const char* errStr;                                                \
       (void)::ctran::utils::pfn_cuGetErrorString(res, &errStr);          \
       CERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
-      return ErrorStackTraceUtil::log(commUnhandledCudaError);           \
+      return commUnhandledCudaError;                                     \
     }                                                                    \
   } while (false)
 

@@ -3,7 +3,7 @@
 ## Context
 
 `ncclCommDumpAll` and `ncclCommDump` dump everything for every communicator —
-comm info, colltrace, proxy trace, mapper trace, process global errors, memory,
+comm info, colltrace, proxy trace, mapper trace, memory,
 and global info. This is expensive when callers only need a subset (e.g., just
 the aggregated iteration time). We add a `requestFields` hint that specifies
 which individual output keys to include. Each dump function checks which of its

@@ -147,6 +147,6 @@ commResult_t ctranReduceScatter(
           "ctranReduceScatter: no valid algorithm to support nLocalRanks {} nNodes {}",
           nLocalRanks,
           nNodes);
-      return ErrorStackTraceUtil::log(commInternalError);
+      return commInternalError;
   }
 }
