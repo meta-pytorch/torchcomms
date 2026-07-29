@@ -18,6 +18,7 @@
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
+#include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/GpeDeviceRing.h"
@@ -26,7 +27,6 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
-#include "comms/utils/GraphCaptureSideStream.h"
 
 struct CommLogData;
 
@@ -211,67 +211,6 @@ commResult_t allocGpeKernelSyncs(
     int nworkers,
     std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs);
 
-class OrderedWorkStreamGuard {
- public:
-  ~OrderedWorkStreamGuard();
-
-  void init(const CommLogData& logMetaData);
-
-  class Scope {
-   public:
-    Scope(
-        OrderedWorkStreamGuard& guard,
-        cudaStream_t userStream,
-        const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
-    ~Scope();
-
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-    Scope(Scope&& other) noexcept;
-    Scope& operator=(Scope&& other) noexcept;
-
-    commResult_t status() const {
-      return status_;
-    }
-    cudaStream_t stream() const {
-      return userStream_;
-    }
-
-   private:
-    OrderedWorkStreamGuard* guard_;
-    cudaStream_t userStream_;
-    ctran::utils::cudagraph::StreamCaptureInfo captureInfo_;
-    commResult_t status_;
-  };
-
-  Scope acquire(
-      cudaStream_t userStream,
-      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
-
- private:
-  commResult_t doAcquire(
-      cudaStream_t userStream,
-      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
-  commResult_t doRelease(
-      cudaStream_t userStream,
-      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
-
-  cudaEvent_t execModeSyncEvent_{};
-  unsigned long long lastCaptureId_{0};
-  bool everCaptured_{false};
-  cudaStream_t lastUserStream_{nullptr};
-  cudaGraphNode_t lastRecordNode_{};
-
-  // Side stream used during capture to host the external cudaEventRecord
-  // node for execModeSyncEvent_ off the user stream's critical path, so
-  // its release fence doesn't stall compute between ctran submissions.
-  // The next doAcquire still adds lastRecordNode_ (now on the side) as
-  // an explicit capture dependency of userStream, preserving ordering.
-  std::unique_ptr<meta::comms::GraphSideStream> sideStream_;
-
-  const CommLogData* logMetaData_{nullptr};
-};
-
 class CtranGpe::Impl {
  public:
   Impl();
@@ -343,7 +282,7 @@ class CtranGpe::Impl {
   folly::Synchronized<CmdQueue, std::mutex> cmdQueue_;
   std::condition_variable cmdQueueCv_;
   std::thread thread_;
-  OrderedWorkStreamGuard ws_;
+  ctran::utils::OrderedWorkStreamGuard ws_;
 
   // Device-ring dispatch state (NCCL_CTRAN_GPE_DEVICE_RING). Ring + reader are
   // null unless the ring path is enabled. The reader and ringPending_ are

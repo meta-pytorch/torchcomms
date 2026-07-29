@@ -57,64 +57,6 @@ CtranGpe::Impl::Impl() {
 
 CtranGpe::Impl::~Impl() = default;
 
-void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
-  logMetaData_ = &logMetaData;
-  FB_CUDACHECKTHROW_EX(
-      cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
-      logMetaData);
-  sideStream_ = std::make_unique<meta::comms::GraphSideStream>();
-}
-
-OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
-  FB_CHECKABORT(
-      logMetaData_ != nullptr,
-      "OrderedWorkStreamGuard destroyed without init()");
-  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execModeSyncEvent_), *logMetaData_);
-}
-
-OrderedWorkStreamGuard::Scope::Scope(
-    OrderedWorkStreamGuard& guard,
-    cudaStream_t userStream,
-    const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo)
-    : guard_(&guard), userStream_(userStream), captureInfo_(captureInfo) {
-  status_ = guard_->doAcquire(userStream_, captureInfo_);
-}
-
-OrderedWorkStreamGuard::Scope::~Scope() {
-  if (guard_) {
-    guard_->doRelease(userStream_, captureInfo_);
-  }
-}
-
-OrderedWorkStreamGuard::Scope::Scope(Scope&& other) noexcept
-    : guard_(other.guard_),
-      userStream_(other.userStream_),
-      captureInfo_(other.captureInfo_),
-      status_(other.status_) {
-  other.guard_ = nullptr;
-}
-
-OrderedWorkStreamGuard::Scope& OrderedWorkStreamGuard::Scope::operator=(
-    Scope&& other) noexcept {
-  if (this != &other) {
-    if (guard_) {
-      guard_->doRelease(userStream_, captureInfo_);
-    }
-    guard_ = other.guard_;
-    userStream_ = other.userStream_;
-    captureInfo_ = other.captureInfo_;
-    status_ = other.status_;
-    other.guard_ = nullptr;
-  }
-  return *this;
-}
-
-OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
-    cudaStream_t userStream,
-    const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo) {
-  return Scope(*this, userStream, captureInfo);
-}
-
 void CUDART_CB CtranGpe::Impl::cmdCb(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
   if (cmd->persistent) {
@@ -176,105 +118,6 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
     std::this_thread::yield();
   }
   delete cmd;
-}
-
-commResult_t OrderedWorkStreamGuard::doAcquire(
-    cudaStream_t userStream,
-    const utils::cudagraph::StreamCaptureInfo& captureInfo) {
-  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
-
-  bool isNewCapture = isCapturing && captureInfo.id != lastCaptureId_;
-  if (isNewCapture) {
-    lastCaptureId_ = captureInfo.id;
-    everCaptured_ = true;
-  }
-
-  auto doWait = [&]() -> commResult_t {
-    FB_CUDACHECK(cudaStreamWaitEvent(
-        userStream,
-        execModeSyncEvent_,
-        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault));
-    return commSuccess;
-  };
-
-  if (lastUserStream_ == nullptr) {
-    if (isCapturing) {
-      return doWait();
-    }
-    return commSuccess; // first submit ever
-  }
-
-  if (!isCapturing) {
-    if (everCaptured_) {
-      // Graph replays bypass submit(), so we cannot know for certain whether
-      // the previous operation was a graph replay or eager. CPU-side sync
-      // ensures any in-flight graph host node (which enqueues a GPE command)
-      // has fired before the caller can cmdEnqueue. Without this, the eager
-      // command lands in the GPE queue first and the single-threaded GPE
-      // deadlocks.
-      FB_CUDACHECK(cudaEventSynchronize(execModeSyncEvent_));
-    } else if (userStream != lastUserStream_) {
-      // Cross-stream eager, no graphs: GPU-side ordering only.
-      // We don't make any thread-safety guarantees for submit()
-      // so this is sufficient.
-      FB_COMMCHECK(doWait());
-    }
-    return commSuccess;
-  }
-
-  if (!isNewCapture) {
-    // Intra-capture cross-stream: add the RECORD node from the previous
-    // doRelease as a capture dependency of this stream. This creates an
-    // explicit graph edge, since cudaStreamWaitEvent cannot see RECORD
-    // nodes added via cudaGraphAddEventRecordNode.
-#if defined(__HIP_PLATFORM_AMD__)
-    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
-        userStream, &lastRecordNode_, 1, hipStreamAddCaptureDependencies));
-#elif CUDART_VERSION >= 13000
-    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
-        userStream,
-        &lastRecordNode_,
-        nullptr,
-        1,
-        cudaStreamAddCaptureDependencies));
-#else
-    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
-        userStream, &lastRecordNode_, 1, cudaStreamAddCaptureDependencies));
-#endif
-  }
-
-  return doWait();
-}
-
-commResult_t OrderedWorkStreamGuard::doRelease(
-    cudaStream_t userStream,
-    const utils::cudagraph::StreamCaptureInfo& captureInfo) {
-  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
-
-  if (!isCapturing) {
-    FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
-  } else {
-    // Route the external EVENT_RECORD node onto a side stream so its
-    // release fence doesn't stall unrelated work on userStream between
-    // ctran submissions. The next doAcquire on userStream still sees
-    // lastRecordNode_ via cudaStreamUpdateCaptureDependencies, which
-    // reinstates the explicit DAG edge ordering the next ctran op after
-    // this record. Non-ctran work on userStream is not serialized
-    // behind the record.
-    commResult_t innerRes = commSuccess;
-    FB_CUDACHECK(
-        sideStream_->fork_from(userStream, [&](cudaStream_t sideStream) {
-          innerRes = utils::cudagraph::addEventRecordNodeToCapture(
-              sideStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_);
-        }));
-    if (innerRes != commSuccess) {
-      return innerRes;
-    }
-  }
-
-  lastUserStream_ = userStream;
-
-  return commSuccess;
 }
 
 commResult_t CtranGpe::Impl::submit(
@@ -357,7 +200,7 @@ commResult_t CtranGpe::Impl::submit(
       comm, opGroup, kernelConfig, ifchecksum);
 
   cudaStream_t launchStream = kernelConfig.stream;
-  std::optional<OrderedWorkStreamGuard::Scope> wsScope;
+  std::optional<ctran::utils::OrderedWorkStreamGuard::Scope> wsScope;
 
   // Acquire the work-stream baton before adding the host node so that
   // during graph replay the host node (which enqueues a GPE command) only
@@ -368,7 +211,7 @@ commResult_t CtranGpe::Impl::submit(
   // is stuck behind it in the queue).
   auto maybeAcquireWorkStreamScope = [&]() {
     if (!kernelConfig.canConcurrent) {
-      wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
+      wsScope.emplace(ws_, kernelConfig.stream, streamCaptureInfo);
       FB_COMMCHECK(wsScope->status());
       launchStream = wsScope->stream();
     }
@@ -397,7 +240,7 @@ commResult_t CtranGpe::Impl::submit(
       cmd->coll.comm = comm;
     }
 
-    maybeAcquireWorkStreamScope();
+    FB_COMMCHECK(maybeAcquireWorkStreamScope());
 
     if (isCapturing) {
       cmd->persistent = true;
@@ -442,7 +285,7 @@ commResult_t CtranGpe::Impl::submit(
       cmdEnqueue(cmd);
     }
   } else {
-    maybeAcquireWorkStreamScope();
+    FB_COMMCHECK(maybeAcquireWorkStreamScope());
   }
 
   // For the no-cmd path during graph capture, retain cleanup on the graph.
@@ -726,7 +569,7 @@ commResult_t CtranGpe::Impl::submitHost(
 }
 
 void CtranGpe::Impl::start() {
-  ws_.init(comm->logMetaData_);
+  ws_.init(comm->logMetaData_, true /* synchronizeEagerAfterCapturedWork */);
   thread_ = std::thread([this] { gpeThreadFn(); });
 }
 
