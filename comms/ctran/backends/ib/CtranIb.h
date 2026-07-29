@@ -1046,8 +1046,8 @@ class CtranIb {
         CTRAN_IB_PER_OBJ_LOCK_GUARD(cqMutex, {
           auto maybeWcsVector = devices[device].ibvCq->pollCq(1);
           if (maybeWcsVector.hasError()) {
-            CLOGF(
-                WARN,
+            CERR(
+                commSystemError,
                 "Call to pollCq() on device {} failed with error {}",
                 device,
                 maybeWcsVector.error().errStr);

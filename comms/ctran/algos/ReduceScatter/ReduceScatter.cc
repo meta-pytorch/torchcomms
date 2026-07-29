@@ -142,8 +142,8 @@ commResult_t ctranReduceScatter(
       return ctranReduceScatterDirectIb(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
     default:
-      CLOGF(
-          WARN,
+      CERR(
+          commInternalError,
           "ctranReduceScatter: no valid algorithm to support nLocalRanks {} nNodes {}",
           nLocalRanks,
           nNodes);
