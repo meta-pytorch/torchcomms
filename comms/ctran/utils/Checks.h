@@ -350,8 +350,8 @@
 #define FOLLY_EXPECTED_CHECK(RES) \
   do {                            \
     if (RES.hasError()) {         \
-      CLOGF(                      \
-          ERR,                    \
+      CERR(                       \
+          commSystemError,        \
           "{}:{} -> {}, {}",      \
           __FILE__,               \
           __LINE__,               \
@@ -602,14 +602,13 @@
 #define FB_CUDACHECKTHREAD(a)             \
   do {                                    \
     if ((a) != cudaSuccess) {             \
-      CLOGF_SUBSYS(                       \
-          ERR,                            \
-          INIT,                           \
-          "{}:{}} -> {}} [Async thread]", \
+      args->ret = commUnhandledCudaError; \
+      CERR(                               \
+          commUnhandledCudaError,         \
+          "{}:{} -> {} [Async thread]",   \
           __FILE__,                       \
           __LINE__,                       \
           args->ret);                     \
-      args->ret = commUnhandledCudaError; \
       return args;                        \
     }                                     \
   } while (0)
@@ -624,7 +623,7 @@
 
 #define FB_ERRORRETURN(error, ...)                                  \
   do {                                                              \
-    CLOGF(ERR, ##__VA_ARGS__);                                      \
+    CERR(error, ##__VA_ARGS__);                                     \
     ErrorStackTraceUtil::logErrorMessage(fmt::format(__VA_ARGS__)); \
     return error;                                                   \
   } while (0)
