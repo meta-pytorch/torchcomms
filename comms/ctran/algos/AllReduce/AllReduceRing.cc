@@ -1520,3 +1520,74 @@ commResult_t ctranAllReduceRing(
 
   return commSuccess;
 }
+
+commResult_t ctranAllReduceRingSmallMsg(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream,
+    std::optional<std::chrono::milliseconds> timeout) {
+  const size_t nRanks = static_cast<size_t>(comm->statex_->nRanks());
+  const size_t typeSize = static_cast<size_t>(commTypeSize(datatype));
+
+  // Lazily allocate the persistent staging buffers owned by the comm, reused
+  // across collectives and freed in CtranComm::destroy(). They grow on demand,
+  // so one pair of buffers serves every datatype. (Not valid under CUDA-graph
+  // capture; the first padded call must run eagerly.)
+  const size_t requiredBytes = nRanks * typeSize;
+  if (comm->smallMsgStageBytes_ < requiredBytes) {
+    if (comm->smallMsgStageSrc_ != nullptr) {
+      FB_CUDACHECK(cudaFree(comm->smallMsgStageSrc_));
+      comm->smallMsgStageSrc_ = nullptr;
+    }
+    if (comm->smallMsgStageDst_ != nullptr) {
+      FB_CUDACHECK(cudaFree(comm->smallMsgStageDst_));
+      comm->smallMsgStageDst_ = nullptr;
+    }
+    FB_CUDACHECK(cudaMalloc(&comm->smallMsgStageSrc_, requiredBytes));
+    FB_CUDACHECK(cudaMalloc(&comm->smallMsgStageDst_, requiredBytes));
+    comm->smallMsgStageBytes_ = requiredBytes;
+  }
+
+  // Copy the real input in and zero-fill the padded tail.
+  if (count > 0) {
+    FB_CUDACHECK(cudaMemcpyAsync(
+        comm->smallMsgStageSrc_,
+        sendbuff,
+        count * typeSize,
+        cudaMemcpyDefault,
+        stream));
+  }
+  FB_CUDACHECK(cudaMemsetAsync(
+      static_cast<char*>(comm->smallMsgStageSrc_) + count * typeSize,
+      0,
+      (nRanks - count) * typeSize,
+      stream));
+
+  const commResult_t ret = ctranAllReduceRing(
+      comm->smallMsgStageSrc_,
+      comm->smallMsgStageDst_,
+      nRanks,
+      datatype,
+      redOp,
+      comm,
+      stream,
+      timeout);
+  if (ret != commSuccess) {
+    return ret;
+  }
+
+  // Copy the reduced result for the original element count back to recvbuff.
+  if (count > 0) {
+    FB_CUDACHECK(cudaMemcpyAsync(
+        recvbuff,
+        comm->smallMsgStageDst_,
+        count * typeSize,
+        cudaMemcpyDefault,
+        stream));
+  }
+  return commSuccess;
+}
