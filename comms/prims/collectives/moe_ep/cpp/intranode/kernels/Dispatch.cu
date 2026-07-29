@@ -478,6 +478,7 @@ void intranode_dispatch(
     int hidden_int4,
     int num_topk,
     int num_experts,
+    int num_scales,
     int scale_token_stride,
     int scale_hidden_stride,
     void** buffer_ptrs,
@@ -492,9 +493,8 @@ void intranode_dispatch(
   EP_HOST_ASSERT(num_sms % 2 == 0);
   SETUP_LAUNCH_CONFIG(num_sms, kNumThreads, stream);
 
-  const int num_scales = (scale_token_stride > 0 || scale_hidden_stride > 0)
-      ? scale_hidden_stride
-      : 0;
+  // num_scales is threaded explicitly from the binding (x_scales.size(1)); it
+  // is 0 on the bf16 path, which makes every scale loop a no-op.
 
 #define INTRANODE_DISPATCH_CASE(ranks)                 \
   LAUNCH_KERNEL_NON_COOPERATIVE(                       \
