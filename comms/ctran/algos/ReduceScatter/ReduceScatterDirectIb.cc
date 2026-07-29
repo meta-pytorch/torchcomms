@@ -22,6 +22,30 @@
 
 static const auto myAlgo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
 
+bool ctranReduceScatterDirectIbSupport(CtranComm* comm, int* unsupportedPeer) {
+  if (unsupportedPeer != nullptr) {
+    *unsupportedPeer = -1;
+  }
+  if (comm == nullptr || comm->statex_ == nullptr ||
+      comm->statex_->nRanks() <= 1 ||
+      comm->statex_->nNodes() != comm->statex_->nRanks() ||
+      comm->statex_->nRanks() > comms::prims::kDirectReduceScatterIbMaxRanks ||
+      comm->multiPeerTransport_ == nullptr) {
+    return false;
+  }
+
+  const auto* mpt = comm->multiPeerTransport_.get();
+  for (int peer = 0; peer < comm->statex_->nRanks(); ++peer) {
+    if (peer != comm->statex_->rank() && !mpt->has_ibgda(peer)) {
+      if (unsupportedPeer != nullptr) {
+        *unsupportedPeer = peer;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 namespace {
 
 bool checkedMultiply(size_t lhs, size_t rhs, size_t& result) {
@@ -161,21 +185,23 @@ commResult_t validateDirectIbReduceScatter(
     return commInvalidArgument;
   }
 
-  auto* mpt = comm->multiPeerTransport_.get();
-  for (int peer = 0; peer < nRanks; ++peer) {
-    if (peer == statex->rank()) {
-      continue;
-    }
-    if (!mpt->has_ibgda(peer) || !mpt->prefers_ibgda(peer)) {
+  int unsupportedPeer = -1;
+  if (!ctranReduceScatterDirectIbSupport(comm, &unsupportedPeer)) {
+    if (unsupportedPeer >= 0) {
+      const auto* mpt = comm->multiPeerTransport_.get();
       CERR(
           commInvalidArgument,
-          "ReduceScatter {} requires preferred IBGDA transport for peer {}, has_ibgda={} prefers_ibgda={}",
+          "ReduceScatter {} requires IBGDA transport for peer {}, has_ibgda={}",
           reduceScatterAlgoName(myAlgo),
-          peer,
-          mpt->has_ibgda(peer),
-          mpt->prefers_ibgda(peer));
-      return commInvalidArgument;
+          unsupportedPeer,
+          mpt->has_ibgda(unsupportedPeer));
+    } else {
+      CLOGF(
+          ERR,
+          "ReduceScatter {} is unsupported for this communicator",
+          reduceScatterAlgoName(myAlgo));
     }
+    return commInvalidArgument;
   }
 
   return commSuccess;
@@ -183,12 +209,14 @@ commResult_t validateDirectIbReduceScatter(
 
 } // namespace
 
-commResult_t ctranReduceScatterDirectIb(
+static commResult_t ctranReduceScatterDirectIbImpl(
     const void* sendbuff,
     void* recvbuff,
     size_t recvcount,
     commDataType_t datatype,
     commRedOp_t redOp,
+    const uint64_t* seedPtr,
+    bool quantized,
     CtranComm* comm,
     cudaStream_t stream) {
   CTRAN_COLL_INFO(
@@ -236,9 +264,19 @@ commResult_t ctranReduceScatterDirectIb(
   try {
     mpt->materializePeers(peers);
 
+    size_t wireRecvBytes = recvBytes;
+    size_t wireTotalBytes = totalBytes;
+    if (quantized &&
+        (!checkedMultiply(
+             recvcount, commTypeSize(commBfloat16), wireRecvBytes) ||
+         !checkedMultiply(
+             wireRecvBytes, static_cast<size_t>(nRanks), wireTotalBytes))) {
+      return commInvalidArgument;
+    }
+
     const int numBlocks =
         ctran::reducescatter::direct_ib::numBlocksForTotalBytes(
-            totalBytes, MCCL_MAX_NCHANNELS);
+            wireTotalBytes, MCCL_MAX_NCHANNELS);
 
     comms::prims::DirectReduceScatterIbLaunchParams params{};
     params.my_rank = statex->rank();
@@ -248,6 +286,8 @@ commResult_t ctranReduceScatterDirectIb(
         ctran::reducescatter::direct_ib::signalingDataSize(recvBytes);
     params.input = static_cast<const float*>(sendbuff);
     params.output = static_cast<float*>(recvbuff);
+    params.seed_ptr = seedPtr;
+    params.quantized = quantized;
     params.in_place = isExactReduceScatterInPlace(
         reinterpret_cast<uintptr_t>(sendbuff),
         reinterpret_cast<uintptr_t>(recvbuff),
@@ -279,6 +319,51 @@ commResult_t ctranReduceScatterDirectIb(
   return commSuccess;
 }
 
+commResult_t ctranReduceScatterDirectIb(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t datatype,
+    commRedOp_t redOp,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  return ctranReduceScatterDirectIbImpl(
+      sendbuff,
+      recvbuff,
+      recvcount,
+      datatype,
+      redOp,
+      nullptr,
+      false,
+      comm,
+      stream);
+}
+
+commResult_t ctranReduceScatterQuantizeDirectIb(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t inputType,
+    commDataType_t transportType,
+    commRedOp_t redOp,
+    const uint64_t* seedPtr,
+    CtranComm* comm,
+    cudaStream_t stream) {
+  if (transportType != commBfloat16 || redOp != commSum || seedPtr == nullptr) {
+    return commInvalidArgument;
+  }
+  return ctranReduceScatterDirectIbImpl(
+      sendbuff,
+      recvbuff,
+      recvcount,
+      inputType,
+      redOp,
+      seedPtr,
+      true,
+      comm,
+      stream);
+}
+
 #else // !ENABLE_PRIMS
 
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
@@ -295,6 +380,20 @@ commResult_t ctranReduceScatterDirectIb(
   CERR(
       commInvalidArgument,
       "ReduceScatter CtranReduceScatterDirectIb requires ENABLE_PRIMS");
+  return commInvalidArgument;
+}
+
+commResult_t ctranReduceScatterQuantizeDirectIb(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    size_t /*recvcount*/,
+    commDataType_t /*inputType*/,
+    commDataType_t /*transportType*/,
+    commRedOp_t /*redOp*/,
+    const uint64_t* /*seedPtr*/,
+    CtranComm* /*comm*/,
+    cudaStream_t /*stream*/) {
+  CLOGF(ERR, "ReduceScatter CtranReduceScatterDirectIb requires ENABLE_PRIMS");
   return commInvalidArgument;
 }
 

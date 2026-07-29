@@ -2222,6 +2222,15 @@ cvars:
      ctring_ib - Prims-native IBGDA ring algorithm
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
 
+ - name        : NCCL_REDUCESCATTER_QUANTIZED_ALGO
+   type        : enum
+   default     : pat
+   choices     : pat, ctdirect_ib
+   description : |-
+     The algorithm to use for quantized ReduceScatter communication
+     pat - Parallel Aggregation Tree algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
+
  - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
    type        : bool
    default     : false

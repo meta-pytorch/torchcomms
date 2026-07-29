@@ -5,6 +5,7 @@
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
+#include "comms/prims/core/QuantCopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/transport/P2pIbTransportDevice.cuh"
@@ -12,6 +13,7 @@
 namespace comms::prims {
 
 template <
+    bool kQuantized,
     bool kStaggerChannels,
     typename T,
     typename AccumOp,
@@ -39,14 +41,16 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             .group_id = block.group_id,
             .block_id = block.block_id,
             .total_groups = block.total_groups,
-            .scope = SyncScope::MULTIWARP}
+            .scope = SyncScope::MULTIWARP,
+            .barrier_id = kQuantized ? 0 : ThreadGroup::kAutoBarrierId}
       : ThreadGroup{
             .thread_id_in_group = block.thread_id_in_group - kRecvThreads,
             .group_size = kSendThreads,
             .group_id = block.group_id,
             .block_id = block.block_id,
             .total_groups = block.total_groups,
-            .scope = SyncScope::MULTIWARP};
+            .scope = SyncScope::MULTIWARP,
+            .barrier_id = kQuantized ? 1 : ThreadGroup::kAutoBarrierId};
 
   const int channels = static_cast<int>(group.total_groups);
   const int channel = static_cast<int>(group.group_id);
@@ -89,8 +93,22 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
           ? reinterpret_cast<const char*>(own_src)
           : output_bytes;
       auto transport = args.peers[peer];
-      transport.template recv<ReduceOp>(
-          group, output_bytes, tile_bytes, max_sig, timeout, local_input);
+      if constexpr (kQuantized) {
+        const std::size_t wire_bytes =
+            output_tile.tile_size(channel) * sizeof(__nv_bfloat16);
+        QuantizedReduceScatterCopyOp::Args copy_args{
+            .sender_input_base = nullptr,
+            .receiver_input_base = reinterpret_cast<const T*>(local_input),
+            .receiver_output_base = output,
+            .seed = *args.seed_ptr,
+            .logical_element_base = 0,
+        };
+        transport.template recv<QuantizedReduceScatterCopyOp>(
+            group, output_bytes, wire_bytes, max_sig, timeout, copy_args);
+      } else {
+        transport.template recv<ReduceOp>(
+            group, output_bytes, tile_bytes, max_sig, timeout, local_input);
+      }
     }
   } else {
     if (W <= 1) {
@@ -106,18 +124,45 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
           args.chunk_elements,
           group);
       auto transport = args.peers[peer];
-      transport.send(
-          group,
-          reinterpret_cast<const char*>(send_tile.data()),
-          send_tile.bytes(),
-          max_sig,
-          timeout);
+      if constexpr (kQuantized) {
+        const std::size_t wire_bytes =
+            send_tile.tile_size(channel) * sizeof(__nv_bfloat16);
+        const std::uint64_t total_elements =
+            static_cast<std::uint64_t>(args.chunk_elements) *
+            static_cast<std::uint64_t>(W);
+        const std::uint64_t logical_element_base =
+            static_cast<std::uint64_t>(my_rank) * total_elements +
+            static_cast<std::uint64_t>(peer) * args.chunk_elements +
+            static_cast<std::uint64_t>(channel) * send_tile.tile_elements;
+        QuantizedReduceScatterCopyOp::Args copy_args{
+            .sender_input_base = send_tile.data(),
+            .receiver_input_base = nullptr,
+            .receiver_output_base = nullptr,
+            .seed = *args.seed_ptr,
+            .logical_element_base = logical_element_base,
+        };
+        transport.template send<QuantizedReduceScatterCopyOp>(
+            group,
+            reinterpret_cast<const char*>(send_tile.data()),
+            wire_bytes,
+            max_sig,
+            timeout,
+            copy_args);
+      } else {
+        transport.send(
+            group,
+            reinterpret_cast<const char*>(send_tile.data()),
+            send_tile.bytes(),
+            max_sig,
+            timeout);
+      }
     }
   }
 #endif
 }
 
 template __global__ void direct_reduce_scatter_ib_kernel<
+    false,
     true,
     float,
     SumOp,
@@ -134,6 +179,7 @@ void launch_direct_reduce_scatter_ib_impl(
     cudaStream_t stream,
     Timeout timeout) {
   auto* kernel = direct_reduce_scatter_ib_kernel<
+      false,
       true,
       float,
       SumOp,
@@ -172,6 +218,24 @@ void launch_direct_reduce_scatter_ib_impl(
         static_cast<int>(dynamic_smem)));
   }
   kernel<<<num_blocks, 512, dynamic_smem, stream>>>(args, timeout);
+  PIPES_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_direct_reduce_scatter_ib_quantized_impl(
+    const DirectReduceScatterIbArgs<float>& args,
+    int num_blocks,
+    cudaStream_t stream,
+    Timeout timeout) {
+  auto* kernel = direct_reduce_scatter_ib_kernel<
+      true,
+      true,
+      float,
+      SumOp,
+      352,
+      288,
+      640,
+      CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>;
+  kernel<<<num_blocks, 640, 0, stream>>>(args, timeout);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 

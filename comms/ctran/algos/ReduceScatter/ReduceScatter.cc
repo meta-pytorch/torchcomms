@@ -82,7 +82,11 @@ bool ctranReduceScatterSupport(
       }
       break;
     case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-      return true;
+#if defined(ENABLE_PRIMS)
+      return ctranReduceScatterDirectIbSupport(comm);
+#else
+      return false;
+#endif
     case NCCL_REDUCESCATTER_ALGO::ctring_ib:
       // Hosted by MCCL; CTRAN reports unsupported so non-MCCL callers fall
       // back.
@@ -149,4 +153,30 @@ commResult_t ctranReduceScatter(
           nNodes);
       return ErrorStackTraceUtil::log(commInternalError);
   }
+}
+
+commResult_t ctranReduceScatterQuantize(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t inputType,
+    commDataType_t transportType,
+    commRedOp_t redOp,
+    const uint64_t* seedPtr,
+    CtranComm* comm,
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo) {
+  if (algo != NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
+    return commInvalidArgument;
+  }
+  return ctranReduceScatterQuantizeDirectIb(
+      sendbuff,
+      recvbuff,
+      recvcount,
+      inputType,
+      transportType,
+      redOp,
+      seedPtr,
+      comm,
+      stream);
 }
