@@ -48,8 +48,8 @@ commResult_t CtranAvlTree::remove(void* hdl) {
 
   auto it = handles_.find(hdl);
   if (it == handles_.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidUsage,
         "CTRAN-AVL-TREE: Trying to remove hdl {} while the handle is not in the cache, likely double freeing",
         (void*)hdl);
     return commInvalidUsage;

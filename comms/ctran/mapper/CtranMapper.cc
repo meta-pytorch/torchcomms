@@ -824,8 +824,8 @@ commResult_t CtranMapper::searchRegHandle(
 
   if (!regHdl_) {
     if (!allowDynamic) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInvalidUsage,
           "CTRAN-MAPPER: buffer {} len {} is not pre-registered by user. ",
           buf,
           len);

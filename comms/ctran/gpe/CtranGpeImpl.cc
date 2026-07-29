@@ -288,8 +288,8 @@ commResult_t CtranGpe::Impl::submit(
 
   // Error checking before GPE cmd and kernel submission
   if (kernelConfig.args.devState_d == nullptr) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "COMM internally passed invalid devState_d (nullptr) to kernel {}",
         kernelTypeToName[kernelConfig.type]);
     return commInternalError;
