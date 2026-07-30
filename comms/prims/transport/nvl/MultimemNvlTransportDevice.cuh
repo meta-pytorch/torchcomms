@@ -65,15 +65,19 @@ __device__ __forceinline__ void multimem_red_release_sys_add_u64(
 
 } // namespace detail
 
+/** Reduction operator for the multimem data reduce verbs. Only Add today. */
+enum class MultimemRedOp { Add };
+
 /**
  * Device-side handle for one multicast staging window.
  *
  * `multimemData` and multimem signal spans are multicast VAs. Writes into the
  * multicast pointer preserve multicast semantics; `localData` and local signal
  * spans are this rank's backing memory after multicast replication. Callers
- * that want to broadcast into the multicast VA should obtain
- * `multimem_data_ptr()` and use PTX `multimem.st.*` intrinsics (or a helper
- * built on top, e.g. the one in `MultimemNvlStaging.cuh`).
+ * that want to broadcast into or reduce from the multicast VA should obtain
+ * `multimem_data_ptr()` and pass it to the `multimem::store()` (multimem.st) /
+ * `multimem::load_reduce_at()` (multimem.ld_reduce) free functions, defined in
+ * `MultimemNvlStore.cuh` / `MultimemNvlReduce.cuh`.
  */
 struct MultimemNvlTransportDevice {
   char* localData{nullptr};
@@ -83,6 +87,8 @@ struct MultimemNvlTransportDevice {
   DeviceSpan<SignalState> internalLocalSignals{};
   DeviceSpan<SignalState> internalMultimemSignals{};
   std::size_t dataBufferSize{0};
+  int nvlRank{0};
+  int nvlRanks{1};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;
