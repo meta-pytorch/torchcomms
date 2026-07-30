@@ -122,22 +122,21 @@ class HostWindow {
    * Must be called after exchange() and after all registerLocalBuffer()
    * and registerAndExchangeBuffer() calls.
    *
-   * @throws std::runtime_error if lazy mode is enabled (ibLazyConnect=true).
-   *   Use getDeviceWindow(peers) instead.
+   * Materializes every IB peer for compatibility. Prefer
+   * getDeviceWindow(peers) when the operation uses a bounded peer set.
    */
   DeviceWindow getDeviceWindow() const;
 
   /**
-   * getDeviceWindow (lazy mode) - Materialize specific IBGDA peers,
+   * getDeviceWindow - Materialize specific on-demand IB peers,
    * then return the DeviceWindow.
    *
-   * Call this instead of getDeviceWindow() when lazy mode is enabled.
    * Materializes the listed peers (QPs, buffers, bilateral exchange)
    * before building the DeviceWindow. Unmaterialized peers remain as
    * zeroed transport slots — the kernel must only access materialized
    * peers.
    *
-   * No-op for non-IBGDA peers or in eager mode.
+   * Non-IB peers require no transport materialization.
    *
    * @param peers List of global peer ranks to materialize
    */

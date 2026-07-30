@@ -118,12 +118,6 @@ uint64_t Ctran::getCtranOpCount() const {
 }
 
 #if defined(ENABLE_PRIMS)
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
-  if (!multiPeerTransport_) {
-    return nullptr;
-  }
-  return multiPeerTransport_->get_device_handle().transports.data();
-}
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
     const std::vector<int>& peers) {
   if (!multiPeerTransport_) {
@@ -132,9 +126,6 @@ comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
   return multiPeerTransport_->get_device_handle(peers).transports.data();
 }
 #else
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
-  return nullptr;
-}
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
     const std::vector<int>& /*peers*/) {
   return nullptr;

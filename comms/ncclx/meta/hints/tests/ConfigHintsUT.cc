@@ -345,24 +345,24 @@ TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
   delete ncclxCfg;
 }
 
-// ----- ibLazyConnect tests -----
+// ----- deviceIbLazyConnect tests -----
 
-TEST(ConfigHintsUT, LazyPeerInit_DefaultIsFalse) {
+TEST(ConfigHintsUT, LazyPeerInit_DefaultIsTrue) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
   ASSERT_NE(config.ncclxConfig, nullptr);
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, deviceIbLazyConnect));
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
 TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  hints.set("ibLazyConnect", "true");
+  hints.set("deviceIbLazyConnect", "true");
   config.hints = &hints;
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
   ASSERT_NE(config.ncclxConfig, nullptr);
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, deviceIbLazyConnect));
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 

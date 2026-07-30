@@ -46,7 +46,7 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     return ncclInternalError;
   }
 
-  auto handle = mpt->get_device_handle();
+  auto handle = mpt->get_device_handle(mpt->ib_peer_ranks());
   *outTransportsPtr = handle.transports.data();
   *outMyRank = handle.myRank;
   *outNRanks = handle.nRanks;

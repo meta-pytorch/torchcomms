@@ -32,7 +32,7 @@
 namespace comms::prims {
 
 // Forward declaration — include MultiPeerDeviceHandle.cuh to use
-// get_device_handle()
+// get_device_handle(peers).
 struct MultiPeerDeviceHandle;
 
 struct MultiPeerTransportConfig {
@@ -70,7 +70,7 @@ struct MultiPeerTransportConfig {
  * Usage:
  *   auto transport = MultiPeerTransport(myRank, nRanks, deviceId, bootstrap,
  * config); transport.exchange();                            // COLLECTIVE auto
- * handle = transport.get_device_handle();     // For kernels
+ * handle = transport.get_device_handle(peers); // For kernels
  */
 class MultiPeerTransport {
  public:
@@ -200,13 +200,6 @@ class MultiPeerTransport {
   // --- Device handle (for passing to kernels) ---
 
   /**
-   * @return MultiPeerDeviceHandle suitable for passing to CUDA kernels.
-   * @throws std::runtime_error if lazy mode is enabled or exchange() not
-   * called.
-   */
-  MultiPeerDeviceHandle get_device_handle() const;
-
-  /**
    * Materialize the specified IBGDA peers, then return the device handle.
    * Use with lazy mode for DeviceWindow or direct Transport[] access.
    *
@@ -216,6 +209,8 @@ class MultiPeerTransport {
 
   bool is_lazy_mode() const;
 
+  // Every requested edge must be requested by both endpoint ranks in the same
+  // connect round. Peer-vector order may differ between ranks.
   void materializePeers(const std::vector<int>& peers);
 
   void connectPeers();
@@ -289,7 +284,6 @@ class MultiPeerTransport {
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
-  const bool ibLazyConnect_{false};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
 
   // --- Topology (populated in constructor) ---
