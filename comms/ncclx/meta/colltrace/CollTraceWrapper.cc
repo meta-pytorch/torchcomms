@@ -19,6 +19,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/hints/GlobalHints.h"
 #include "meta/wrapper/DataTypeConv.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 #include "debug.h"
 #include "nccl.h"
@@ -311,7 +312,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   // Initialize standalone AlgoStats if algostat mode enabled
   // This is independent of which colltrace implementation is used
   if (algoStatEnabled) {
-    comm->algoStats = meta::comms::colltrace::AlgoStats::getOrCreate(
+    ncclCommAlgoStats(comm) = meta::comms::colltrace::AlgoStats::getOrCreate(
         comm->logMetaData.commHash, comm->logMetaData.commDesc);
   }
 
@@ -383,13 +384,13 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
       },
       std::move(plugins));
 
-  comm->newCollTrace = std::move(colltraceNew);
+  ncclCommNewCollTrace(comm) = std::move(colltraceNew);
 
   return ncclSuccess;
 }
 
 ncclResult_t newCollTraceDestroy(ncclComm* comm) {
-  comm->newCollTrace.reset();
+  ncclCommNewCollTrace(comm).reset();
   return ncclSuccess;
 }
 
@@ -420,7 +421,7 @@ getMetadataFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
 
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
-  auto colltrace = plan.comm->newCollTrace;
+  auto colltrace = ncclCommNewCollTrace(plan.comm);
   if (colltrace == nullptr) {
     // For all the invalid cases, we ruturn a dummy handle just so that we
     // don't need to add extra checks in the baseline NCCL code
@@ -476,8 +477,8 @@ __attribute__((visibility("default"))) void dumpAlgoStat(
   }
 
   // Baseline and ctran share the same AlgoStats instance via getOrCreate.
-  if (comm->algoStats) {
-    auto dump = comm->algoStats->dump();
+  if (meta::comms::ncclx::ncclCommAlgoStats(comm)) {
+    auto dump = meta::comms::ncclx::ncclCommAlgoStats(comm)->dump();
     for (const auto& [opName, algoMap] : dump.entries) {
       for (const auto& [algoName, sizeMap] : algoMap) {
         for (const auto& [sz, count] : sizeMap) {
@@ -555,11 +556,11 @@ std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
 
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
-  if (plan->comm->algoStats) {
+  if (meta::comms::ncclx::ncclCommAlgoStats(plan->comm)) {
     auto algoInfo = parseAlgoInfoFromNcclKernelPlan(*plan);
     if (algoInfo.has_value()) {
-      plan->comm->algoStats->record(
-          algoInfo->opName, algoInfo->algoName, algoInfo->msgSize);
+      meta::comms::ncclx::ncclCommAlgoStats(plan->comm)
+          ->record(algoInfo->opName, algoInfo->algoName, algoInfo->msgSize);
     }
   }
 

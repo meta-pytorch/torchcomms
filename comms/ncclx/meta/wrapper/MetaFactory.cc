@@ -13,6 +13,7 @@
 #include "meta/commstate/FactoryCommStateX.h"
 #include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 using namespace ctran;
 
@@ -85,7 +86,8 @@ ncclResult_t createCtranComm(ncclComm* comm) {
 
   NCCLCHECK(ncclx::initCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
 
-  comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
+  comm->ctranComm_->colltraceNew_ =
+      meta::comms::ncclx::ncclCommNewCollTrace(comm);
 
   NCCLCHECK_COMM(ctranInit(comm->ctranComm_.get()));
 
