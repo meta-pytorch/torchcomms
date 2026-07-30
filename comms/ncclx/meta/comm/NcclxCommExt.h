@@ -2,10 +2,17 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
+#include <optional>
+#include <vector>
+
+#include "nccl_tuner.h" // @manual -- provides NCCL_NUM_ALGORITHMS
 
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
+
+struct ncclKernelCommAndChannels;
 
 // Opaque per-communicator NCCLX state.
 //
@@ -32,4 +39,25 @@ struct ncclxCommExt {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
   // AlgoStats: per-communicator algorithm-selection stats (algostat mode).
   std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
+
+  // ---- Lazy Channel Setup (NCCL_LAZY_SETUP_CHANNELS) per-communicator state
+  // -- Relocated off the forked upstream ncclComm/ncclKernelPlanner to keep
+  // those structs pristine; the feature lives in
+  // meta/transport/transportConnect.*.
+  //
+  // if channels can/will be setup lazily for this communicator
+  bool lazySetupChannels{false};
+  // number of channels that are initialized and ready for use
+  int nChannelsReady{0};
+  // number of channels that are connected for each algorithm
+  std::array<int, NCCL_NUM_ALGORITHMS> algoConnectedChannels{0};
+  // metadata to be used for initializing channels lazily if enabled
+  std::optional<struct ncclKernelCommAndChannels*> devCommAndChans{
+      std::nullopt};
+  // cached ring info, used to set up channels lazily when needed
+  std::optional<std::vector<int>> rings{std::nullopt};
+  // high-water mark of channels that need to be initialized (across plans)
+  int nMaxChannelsNeedInit{0};
+  // high-water mark of channels each algorithm needs to connect (across plans)
+  std::array<int, NCCL_NUM_ALGORITHMS> algoMaxChannelsNeedConnect{0};
 };
