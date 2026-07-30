@@ -1781,7 +1781,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IB_QP_CONFIG_ALGO
    type        : dictlist
-   default     : alltoall:1048576,16,dqplb,128,224
+   default     : alltoall:1048576,4,spray,128,224
    description : |-
      Specify the vc config for each collective. The format is
      <ALGO0: VAL0>,<ALGO1: VAL1>,<ALGO2: VAL2>,<ALGO3: VAL3>
