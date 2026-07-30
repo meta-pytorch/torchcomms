@@ -77,10 +77,9 @@ class MultipeerIbrcTransport
 
   P2pIbrcTransportDevice* getP2pTransportDeviceSlot(int peerRank) const;
 
-  // Per-peer device handle accessor used by Ring/SendRecv algorithms (the
-  // counterpart of IBGDA's getP2pTransportDevice). IBRC builds all slots
-  // eagerly, so this returns the slot pointer directly.
-  P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank) const;
+  // Per-peer device handle accessor used by Ring/SendRecv algorithms. The
+  // requested peer is materialized before its device slot is returned.
+  P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank);
 
  private:
   // Lazy per-peer materialization hook. The shared base owns queueing,

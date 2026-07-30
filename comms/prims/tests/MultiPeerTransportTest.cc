@@ -219,7 +219,7 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
   auto transport = createTransport();
   transport->exchange();
 
-  auto handle = transport->get_device_handle();
+  auto handle = transport->get_device_handle(transport->ib_peer_ranks());
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
@@ -234,7 +234,7 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
 
 TEST_F(MultiPeerTransportTestFixture, DeviceHandleBeforeExchange) {
   auto transport = createTransport();
-  EXPECT_THROW(transport->get_device_handle(), std::runtime_error);
+  EXPECT_THROW(transport->get_device_handle({}), std::runtime_error);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -696,7 +696,7 @@ TEST_F(MultiPeerTransportTestFixture, DisableIb_DeviceHandleZeroIbPeers) {
   auto transport = createDisableIbTransport();
 
   transport->exchange();
-  auto handle = transport->get_device_handle();
+  auto handle = transport->get_device_handle({});
 
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);

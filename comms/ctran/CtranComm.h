@@ -38,12 +38,16 @@ using meta::comms::CommBackend;
 // Per-communicator Prims transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
+  // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
+  // policy does not affect NCCLX or standalone Ctran communicators.
+  int64_t enablePrims{-1};
   int64_t nvlChunkSize{-1};
-  bool ibLazyConnect{false};
+  bool ibLazyConnect{true};
   int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
-    return nvlChunkSize == other.nvlChunkSize &&
+    return enablePrims == other.enablePrims &&
+        nvlChunkSize == other.nvlChunkSize &&
         ibLazyConnect == other.ibLazyConnect &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
@@ -182,16 +186,8 @@ class CtranComm {
     return parentRanks_;
   }
 
-  // Get a pointer to the Transport array from MultiPeerTransport,
-  // indexed by global rank. Returns nullptr if MultiPeerTransport is not
-  // initialized.
-  comms::prims::Transport* getMultiPeerTransportsPtr() const;
-
-  // Lazy-safe overload: materializes `peers` (via get_device_handle(peers))
-  // and returns the Transport array pointer. Required in lazy-connect mode,
-  // where the no-arg overload throws. Non-const because materialization
-  // mutates transport state. An empty `peers` list materializes nothing and
-  // still returns a valid pointer (for ranks that use no IB slots).
+  // Materializes `peers` and returns the Transport array indexed by global
+  // rank. An empty peer list initializes no IB transport slots.
   comms::prims::Transport* getMultiPeerTransportsPtr(
       const std::vector<int>& peers);
 

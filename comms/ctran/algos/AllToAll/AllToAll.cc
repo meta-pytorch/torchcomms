@@ -256,6 +256,8 @@ bool ctranAllToAllSupport(
 // IB support will be added in a follow-up via IBGDA (not CPU proxy).
 // ============================================================================
 
+bool ctranDeviceAllToAllvSupport(CtranComm* comm);
+
 commResult_t ctranDeviceAllToAllv(
     const void* sendbuff,
     void* recvbuff,
@@ -267,6 +269,13 @@ commResult_t ctranDeviceAllToAllv(
     int64_t sendcountsMultiplier,
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
+  if (!ctranDeviceAllToAllvSupport(comm)) {
+    CERR(
+        commInvalidArgument,
+        "DeviceAllToAllvPipes requires an initialized NVLink-only communicator");
+    return commInvalidArgument;
+  }
+
   auto opCount = comm->ctran_->getOpCount();
 
   KernelConfig config = KernelConfig(
@@ -333,8 +342,8 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
 
   // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
   // Reject communicators with any IB-only peers to prevent silent data loss.
-  // Use host-side API — getMultiPeerTransportsPtr() returns a device pointer
-  // that cannot be dereferenced on the host.
+  // Use host-side API — getMultiPeerTransportsPtr(peers) returns a device
+  // pointer that cannot be dereferenced on the host.
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);

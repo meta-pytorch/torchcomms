@@ -1962,20 +1962,11 @@ cvars:
 
  - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
    type        : bool
-   default     : false
+   default     : true
    description : |-
-     When true, MultipeerIbgdaTransport defers per-peer state allocation to
-     first use (lazy mode). When false (default), all per-peer state is
-     allocated eagerly at construction. Per-comm override via
-     CommOptions.hints["ncclx::ibLazyConnect"].
-
- - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
-   type        : uint32_t
-   default     : 30000
-   description : |-
-     Timeout (in milliseconds) for materializePeer bilateral exchange.
-     On timeout, materializePeer throws rather than hanging.
-     No per-comm override.
+     Deprecated compatibility knob. Per-peer transport state is always
+     initialized on demand; setting this false no longer enables eager
+     all-peer allocation.
 
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist

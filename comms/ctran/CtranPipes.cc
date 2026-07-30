@@ -260,8 +260,6 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           static_cast<uint8_t>(NCCL_CTRAN_IBGDA_RNR_RETRY);
     }
     config.ibConfig.ibLazyConnect = pc.ibLazyConnect;
-    config.ibConfig.materializePeerTimeoutMs =
-        NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
     if (NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC <= 0) {
       CLOGF(
           ERR,
@@ -328,7 +326,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemSignals={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemSignals={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
@@ -345,8 +343,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         static_cast<int>(config.topoConfig.mnnvlMode),
         config.ibConfig.dataBufferSize,
         config.ibConfig.qpDepth,
-        config.ibConfig.ibLazyConnect,
-        config.ibConfig.materializePeerTimeoutMs);
+        config.ibConfig.ibLazyConnect);
 
     CLOGF(
         INFO,

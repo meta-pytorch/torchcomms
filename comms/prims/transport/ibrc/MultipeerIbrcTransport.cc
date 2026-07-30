@@ -303,17 +303,6 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
             config_.qpsPerConnection,
             numQpsPerPeerPerNic));
   }
-  if (!config.ibLazyConnect &&
-      numQpsPerPeerPerNic > kMaxEagerExchangeQpsPerPeerPerNic) {
-    throw std::invalid_argument(
-        fmt::format(
-            "eager IBRC allGather exchange supports at most {} QPs per "
-            "(peer,NIC); got {}. Enable ibLazyConnect for larger "
-            "max_num_channels * 2 * qpsPerConnection shapes.",
-            kMaxEagerExchangeQpsPerPeerPerNic,
-            numQpsPerPeerPerNic));
-  }
-
   peerResources_.resize(nRanks_ - 1);
   peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
 
@@ -335,9 +324,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     progressCpus_ = selectProgressCpus();
     initializeControlResources();
     initializeDeviceTransportSlots();
-    if (config_.ibLazyConnect) {
-      peerMaterialized_.resize(nRanks_ - 1, false);
-    }
+    peerMaterialized_.resize(nRanks_ - 1, false);
   } catch (const std::exception&) {
     cleanup();
     throw;
@@ -349,27 +336,9 @@ MultipeerIbrcTransport::~MultipeerIbrcTransport() {
 }
 
 void MultipeerIbrcTransport::exchange() {
-  if (!config_.ibLazyConnect) {
-    exchangeAndConnectQps();
-    allocateSignalCounterResources(
-        IbCounterStorage::HostPinned, /*allocateDiscardSignal=*/false);
-    // Allocate + collectively exchange send/recv staging before building the
-    // device transports, so updatePeerDeviceTransport can embed the resulting
-    // IbChannelLayout. Delegated to the shared base; IBRC uses a host-mapped
-    // NIC_DONE counter (CPU proxy writes it) via the HostPinned counter
-    // storage.
-    allocateSendRecvBuffersEager(IbCounterStorage::HostPinned);
-    exchangeSendRecvBuffersEager();
-    allocateCmdQueuesForAllPeers();
-    VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " allocated "
-            << allocatedCmdQueueCount() << " command queues";
-    startProgressThread();
-  } else {
-    VLOG(1)
-        << "MultipeerIbrcTransport: rank " << myRank_
-        << " lazy exchange complete (per-peer QPs and command queues deferred "
-           "to materializePeer)";
-  }
+  VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_
+          << " exchange complete (per-peer QPs and command queues deferred "
+             "to materializePeer)";
 }
 
 void MultipeerIbrcTransport::cleanup() {
@@ -1547,12 +1516,10 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
-  if (config_.ibLazyConnect) {
-    LOG_FIRST_N(WARNING, 1)
-        << "MultipeerIbrcTransport: lazy mode is enabled but Transport[] "
-        << "array is being built with possibly unmaterialized IBRC slots. "
-        << "Call get_device_handle(peers) before kernels access lazy peers.";
-  }
+  LOG_FIRST_N(WARNING, 1)
+      << "MultipeerIbrcTransport: Transport[] array is being built with "
+      << "possibly unmaterialized IBRC slots. Call get_device_handle(peers) "
+      << "before kernels access those peers.";
   if (p2pTransportDevices_.device == nullptr) {
     throw std::runtime_error(
         "getP2pTransportDeviceSlot: IBRC device transport slots are not initialized");
@@ -1564,10 +1531,10 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
 }
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
-    int peerRank) const {
-  // IBRC builds every peer slot eagerly in initializeDeviceTransportSlots(), so
-  // the per-peer accessor is just slot pointer arithmetic (no materialization,
-  // hence no lazy warning unlike getP2pTransportDeviceSlot()).
+    int peerRank) {
+  if (!isPeerMaterialized(peerRank)) {
+    materializePeer(peerRank);
+  }
   if (p2pTransportDevices_.device == nullptr) {
     throw std::runtime_error(
         "getP2pTransportDevice: IBRC device transport slots are not initialized");
@@ -1609,7 +1576,7 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
 }
 
 void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
-  // Quiesce progress before teardown; next doMaterializePeer restarts it.
+  publishTransportError(EIO, "peer materialization failed");
   stopProgressThread();
   cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);

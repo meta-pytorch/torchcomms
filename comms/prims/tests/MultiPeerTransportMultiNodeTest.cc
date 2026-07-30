@@ -1,5 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -104,7 +105,8 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
         localSize_);
   }
 
-  std::unique_ptr<MultiPeerTransport> create_transport_states() {
+  std::unique_ptr<MultiPeerTransport> create_transport_states(
+      bool p2pDisable = false) {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
@@ -116,6 +118,10 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
         .ibConfig =
             {
                 .cudaDevice = localRank,
+            },
+        .topoConfig =
+            {
+                .p2pDisable = p2pDisable,
             },
     };
     auto bootstrap = std::make_shared<MpiBootstrap>();
@@ -197,7 +203,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
   auto states = create_transport_states();
   states->exchange();
 
-  auto handle = states->get_device_handle();
+  auto handle = states->get_device_handle(states->ib_peer_ranks());
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
@@ -214,6 +220,47 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
   }
 
   // IBGDA is universal — all non-self peers.
+  EXPECT_EQ(handle.numIbPeers, numRanks - 1)
+      << "IBGDA transports should cover all peers";
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleAcrossPeerRounds) {
+  if (numRanks < 4) {
+    GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
+  }
+
+  auto states = create_transport_states(/*p2pDisable=*/true);
+  states->exchange();
+
+  const auto& ibPeers = states->ib_peer_ranks();
+  ASSERT_EQ(ibPeers.size(), numRanks - 1);
+  auto addIbPeer = [&ibPeers](std::vector<int>& peers, int peer) {
+    if (std::find(ibPeers.begin(), ibPeers.end(), peer) != ibPeers.end() &&
+        std::find(peers.begin(), peers.end(), peer) == peers.end()) {
+      peers.push_back(peer);
+    }
+  };
+
+  std::vector<int> ringPeers;
+  addIbPeer(ringPeers, (globalRank + numRanks - 1) % numRanks);
+  addIbPeer(ringPeers, (globalRank + 1) % numRanks);
+  auto ringHandle = states->get_device_handle(ringPeers);
+
+  std::vector<int> treePeers;
+  if (globalRank > 0) {
+    addIbPeer(treePeers, (globalRank - 1) / 2);
+  }
+  addIbPeer(treePeers, globalRank * 2 + 1);
+  addIbPeer(treePeers, globalRank * 2 + 2);
+  std::reverse(treePeers.begin(), treePeers.end());
+  auto handle = states->get_device_handle(treePeers);
+
+  EXPECT_EQ(ringHandle.transports.data(), handle.transports.data());
+  EXPECT_EQ(handle.myRank, globalRank);
+  EXPECT_EQ(handle.nRanks, numRanks);
+  EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
   EXPECT_EQ(handle.numIbPeers, numRanks - 1)
       << "IBGDA transports should cover all peers";
 

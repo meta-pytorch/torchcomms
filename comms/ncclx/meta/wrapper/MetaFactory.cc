@@ -46,7 +46,7 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
       tconfig.pipesConfig.nvlChunkSize =
           static_cast<int64_t>(ncclxCfg->pipesNvlChunkSize.value());
     }
-    tconfig.pipesConfig.ibLazyConnect = ncclxCfg->ibLazyConnect;
+    tconfig.pipesConfig.ibLazyConnect = ncclxCfg->deviceIbLazyConnect;
     if (ncclxCfg->pipesIbgdaDataBufferSize.has_value()) {
       tconfig.pipesConfig.ibgdaDataBufferSize =
           static_cast<int64_t>(ncclxCfg->pipesIbgdaDataBufferSize.value());
