@@ -33,8 +33,6 @@
 #include <optional>
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/utils/colltrace/AlgoStats.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "meta/algoconf/InfoExt.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
@@ -842,8 +840,6 @@ struct ncclComm {
   // Opaque NCCLX-only per-comm state; see meta/comm/NcclxCommExt.h.
   ncclxCommExt* ncclxExt{nullptr};
   struct CommLogData logMetaData;
-  std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
-  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
