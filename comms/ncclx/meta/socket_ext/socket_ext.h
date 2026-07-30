@@ -21,3 +21,9 @@ ncclResult_t ncclSocketExtSetTos(struct ncclSocket* sock, int family);
 // Binds a client socket to the interface named by NCCL_CLIENT_SOCKET_IFNAME
 // via SO_BINDTODEVICE. No-op when the cvar is empty.
 ncclResult_t ncclSocketExtBindToDevice(struct ncclSocket* sock);
+
+// Interface-discovery filter for NCCL_SOCKET_IPADDR_PREFIX. Returns true when
+// the cvar is set and `addr` does not start with the prefix (i.e. the interface
+// should be skipped). For interfaces that are kept it logs the address
+// (NCCL_INIT), matching the previous inline behavior.
+bool ncclSocketExtSkipByIpAddrPrefix(union ncclSocketAddress* addr);
