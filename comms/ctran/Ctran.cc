@@ -223,6 +223,17 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
 void CtranComm::destroy() {
   cudagraphDeferredCleanup.runAll();
 
+  // Free the lazily-allocated small-message AllReduce-ring staging buffers.
+  if (smallMsgStageSrc_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageSrc_));
+    smallMsgStageSrc_ = nullptr;
+  }
+  if (smallMsgStageDst_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageDst_));
+    smallMsgStageDst_ = nullptr;
+  }
+  smallMsgStageBytes_ = 0;
+
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
