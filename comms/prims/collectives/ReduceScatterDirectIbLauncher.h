@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <cstdint>
 
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
@@ -19,6 +20,8 @@ struct DirectReduceScatterIbLaunchParams {
   std::size_t signaling_data_size{0};
   const float* input{nullptr};
   float* output{nullptr};
+  const uint64_t* seed_ptr{nullptr};
+  bool quantized{false};
   bool in_place{false};
   int num_blocks{16};
   float timeout_ms{0.0f};

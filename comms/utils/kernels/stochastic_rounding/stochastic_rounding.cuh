@@ -13,7 +13,8 @@
 #include <cuda_bf16.h>
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000) && \
-    defined(__CUDA_ARCH_FEAT_SM100_ALL)
+    (defined(__CUDA_ARCH_FEAT_SM100_ALL) ||              \
+     defined(__CUDA_ARCH_FEAT_SM103_ALL))
 constexpr bool kHasHardwareSR = true;
 #else
 constexpr bool kHasHardwareSR = false;
@@ -42,7 +43,8 @@ __device__ __forceinline__ bool isFinite(float val) {
 __device__ __forceinline__ __nv_bfloat162
 stochastic_round_bf16x2_blackwell(float2 vals, uint32_t rand_bits) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000) && \
-    defined(__CUDA_ARCH_FEAT_SM100_ALL)
+    (defined(__CUDA_ARCH_FEAT_SM100_ALL) ||              \
+     defined(__CUDA_ARCH_FEAT_SM103_ALL))
   // Use cvt.rs.bf16x2.f32 for vectorized stochastic rounding
   // PTX instruction: cvt.rs.bf16x2.f32 dst, src_hi, src_lo, rand;
   // - dst: 32-bit register containing 2 packed BF16 values
