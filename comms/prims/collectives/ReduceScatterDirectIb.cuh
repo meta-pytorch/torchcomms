@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <cstdint>
 
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
@@ -22,10 +23,17 @@ struct DirectReduceScatterIbArgs {
   P2pIbTransportDevice peers[kDirectIbDeviceMaxRanks]{};
   const T* input{nullptr};
   T* output{nullptr};
+  const uint64_t* seed_ptr{nullptr};
   bool in_place{false};
 };
 
 void launch_direct_reduce_scatter_ib_impl(
+    const DirectReduceScatterIbArgs<float>& args,
+    int num_blocks,
+    cudaStream_t stream,
+    Timeout timeout);
+
+void launch_direct_reduce_scatter_ib_quantized_impl(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     cudaStream_t stream,
