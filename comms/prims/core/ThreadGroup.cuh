@@ -66,6 +66,7 @@ enum class SyncScope { THREAD, WARP, MULTIWARP, BLOCK, CLUSTER };
  *   - thread_id_in_group = 2 (position within warp: 34 % 32 = 2)
  */
 struct ThreadGroup {
+  static constexpr uint32_t kAutoBarrierId = UINT32_MAX;
   // LOCAL IDENTITY (within group):
   // ===============================
 
@@ -102,6 +103,8 @@ struct ThreadGroup {
   // CLUSTER: uses cluster.sync().
   SyncScope scope;
 
+  uint32_t barrier_id = kAutoBarrierId;
+
   __device__ inline void sync() {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     switch (scope) {
@@ -128,7 +131,8 @@ struct ThreadGroup {
         // group. `group_size` is configurable for make_multiwarp_group().
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t barrierId = tid / group_size;
+        uint32_t barrierId =
+            barrier_id == kAutoBarrierId ? tid / group_size : barrier_id;
         // Keep compiler memory operations on their respective sides of the
         // hardware barrier.
         asm volatile("bar.sync %0, %1;"
@@ -275,7 +279,8 @@ struct ThreadGroup {
         __shared__ uint64_t __tg_broadcast_scratch[kMaxMultiwarpsPerBlock];
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t scratch_idx = tid / group_size;
+        uint32_t scratch_idx =
+            barrier_id == kAutoBarrierId ? tid / group_size : barrier_id;
         if (is_leader()) {
           __tg_broadcast_scratch[scratch_idx] = static_cast<uint64_t>(val);
         }
@@ -477,7 +482,7 @@ struct ThreadGroup {
  * PartitionResult - Result of partitioning a ThreadGroup
  */
 struct PartitionResult {
-  uint32_t partition_id;
+  uint32_t partition_id{};
   ThreadGroup subgroup;
 };
 
