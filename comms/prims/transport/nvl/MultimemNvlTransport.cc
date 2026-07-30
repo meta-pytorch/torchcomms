@@ -107,6 +107,14 @@ MultimemNvlTransport::MultimemNvlTransport(
       break;
     }
   }
+  // Defensive backstop for the validateRankMap invariant: a -1 here would flow
+  // into device-side signal-slot indexing and produce out-of-bounds offsets, so
+  // fail loudly rather than corrupt memory if the map ever omits this rank.
+  if (nvlRank < 0) {
+    throw std::runtime_error(
+        "MultimemNvlTransport: commRank not found in nvlRankToCommRank_");
+  }
+  nvlRank_ = nvlRank;
 
   cudaDevice_ = getCurrentCudaDevice();
 
@@ -217,6 +225,8 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .internalMultimemSignals = DeviceSpan<SignalState>(
           multimemSignals + userSignalCount, internalSignalCount),
       .dataBufferSize = config_.dataBufferSize,
+      .nvlRank = nvlRank_,
+      .nvlRanks = nvlRanks_,
   };
 }
 
