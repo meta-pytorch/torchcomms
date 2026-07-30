@@ -65,15 +65,19 @@ __device__ __forceinline__ void multimem_red_release_sys_add_u64(
 
 } // namespace detail
 
+/** Reduction operator for the multimem data reduce verbs. Only Add today. */
+enum class MultimemRedOp { Add };
+
 /**
  * Device-side handle for one multicast staging window.
  *
  * `multimemData` and multimem signal spans are multicast VAs. Writes into the
  * multicast pointer preserve multicast semantics; `localData` and local signal
  * spans are this rank's backing memory after multicast replication. Callers
- * that want to broadcast into the multicast VA should obtain
- * `multimem_data_ptr()` and use PTX `multimem.st.*` intrinsics (or a helper
- * built on top, e.g. the one in `MultimemNvlStaging.cuh`).
+ * that want to broadcast into or reduce from the multicast VA should obtain
+ * `multimem_data_ptr()` and pass it to the `multimem::store()` (multimem.st) /
+ * `multimem::load_reduce_at()` (multimem.ld_reduce) free functions, defined in
+ * `MultimemNvlStore.cuh` / `MultimemNvlReduce.cuh`.
  */
 struct MultimemNvlTransportDevice {
   char* localData{nullptr};
@@ -83,6 +87,16 @@ struct MultimemNvlTransportDevice {
   DeviceSpan<SignalState> internalLocalSignals{};
   DeviceSpan<SignalState> internalMultimemSignals{};
   std::size_t dataBufferSize{0};
+  int nvlRank{0};
+  int nvlRanks{1};
+  // When true, the STAGING full barriers (input-ready in
+  // stage_and_wait_all_inputs, ack in reduce_round_to_all_ranks) use the O(1)
+  // arrival-counter barrier instead of the per-peer SIGNAL_SET loop. Plumbed
+  // from NCCL_CTRAN_ALLREDUCE_CNVLMM_STAGING_ARRIVAL_BARRIER. The arrival
+  // counter/epoch slots are repurposed from the per-(group,lane) staging signal
+  // region (disjoint from the rsag ack[] slots), so this needs no host sizing
+  // change. The device cannot read cvars, hence this bool field.
+  bool stagingArrivalBarrier{false};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;
@@ -134,6 +148,63 @@ struct MultimemNvlTransportDevice {
       const Timeout& timeout = Timeout()) const {
     internal_local_signal_ptr(signal_id)->wait_until(
         group, op, expected, timeout);
+  }
+
+  /**
+   * O(1) arrival-counter barrier over the NVL team (NVLS lsa_barrier-style),
+   * built from the existing SIGNAL_ADD / wait primitives.
+   *
+   * `counter_id` is a multicast-backed internal slot used ONLY by this barrier
+   * point (one per CTA group), and `epoch_id` is a separate internal slot used
+   * as this rank's PRIVATE (local-view-only) baseline. Each barrier: the group
+   * leader multimem.red.add's 1 into the counter (fanning +1 into every rank's
+   * backing), so after all `nvlRanks` arrive every rank's local copy of the
+   * counter has advanced by exactly `nvlRanks`. The group then waits its single
+   * local counter slot to reach `epoch + nvlRanks` and advances the epoch. The
+   * u64 counter is monotonic and never reset, so no wraparound handling is
+   * needed; the wait `Timeout` turns a mismatch into a clean abort, not a hang.
+   *
+   * Replaces the legacy O(nvlRanks) per-peer SIGNAL_SET barrier (every rank
+   * polls all N peer slots). Caller must use disjoint (counter_id, epoch_id)
+   * slots per barrier point and per CTA group; both must be zero-initialized
+   * (the internal signal region is) and persist across launches (it does).
+   *
+   * PRECONDITION: for a given communicator+signal-region, the (group_id, lane,
+   * barrier-point) -> physical slot mapping must be stable across every op that
+   * uses this barrier. The per-group base depends only on group_id, so varying
+   * numBlocks/total_groups across ops is safe; `nvlRanks` is fixed per comm.
+   * The one variable that would break the counter/epoch pairing is
+   * `pipelineDepth` (it scales the per-lane stride): all ops on a comm that use
+   * this barrier MUST use the same pipelineDepth, else a slot inherits residue
+   * from an op with a different geometry and `target` becomes unreachable
+   * (Timeout) or already-satisfied (premature release). Unlike the SET path
+   * (absolute monotonic roundId), the ADD counter has no self-correcting
+   * absolute value.
+   */
+  __device__ __forceinline__ void arrival_barrier(
+      ThreadGroup& group,
+      uint64_t counter_id,
+      uint64_t epoch_id,
+      const Timeout& timeout = Timeout()) const {
+    // The arrival target is this transport's multicast team size (`nvlRanks`);
+    // taken from the member so a caller cannot pass a mismatched count (which
+    // would skew the target: too large -> hang until Timeout, too small ->
+    // premature release).
+    const uint64_t target = internal_local_signal_ptr(epoch_id)->load() +
+        static_cast<uint64_t>(nvlRanks);
+    // Arrive: leader adds 1 to the shared multicast counter (fences +
+    // group.sync internally, then the multimem.red.add fans the increment to
+    // all backings).
+    signal_internal(group, counter_id, SignalOp::SIGNAL_ADD, 1);
+    // Wait: O(1) - spin this rank's single local counter slot until all
+    // arrived.
+    wait_internal_signal_until(
+        group, counter_id, CmpOp::CMP_GE, target, timeout);
+    // Advance this rank's private baseline for the next use of this slot.
+    if (group.is_leader()) {
+      internal_local_signal_ptr(epoch_id)->store(target);
+    }
+    group.sync();
   }
 
  private:
