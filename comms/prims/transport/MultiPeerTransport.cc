@@ -267,6 +267,25 @@ Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
   return nvlTransport_->getDeviceTransports().data();
 }
 
+bool MultiPeerTransport::has_multimem_nvl_transport() const {
+  // nvlTransport_ is legitimately null in normal builds without an NVL domain
+  // (e.g. nRanks == 1), same as get_nvl_transports_array() above; the null
+  // check is not masking an invariant.
+  return nvlTransport_ && nvlTransport_->hasMultimemNvlTransport();
+}
+
+MultimemNvlTransportDevice
+MultiPeerTransport::get_multimem_nvl_transport_device() const {
+  // Honor the header contract: throw when NVL transport is absent OR multimem
+  // is not configured / not eligible, rather than blindly delegating.
+  if (!has_multimem_nvl_transport()) {
+    throw std::runtime_error(
+        "MultiPeerTransport: multimem NVL transport is not configured or not "
+        "eligible");
+  }
+  return nvlTransport_->getMultimemNvlTransportDevice();
+}
+
 P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()
     const {
   return P2pSelfTransportDevice{};
