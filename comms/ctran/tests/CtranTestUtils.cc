@@ -13,7 +13,6 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/mccl/utils/Utils.h"
@@ -94,16 +93,16 @@ commResult_t commMemAllocDisjoint(
   int cudaDev;
 
   if (ptr == NULL || size == 0) {
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   // Still allow cumem based allocation if cumem is supported.
   if (!ctran::utils::getCuMemSysSupported()) {
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));
   FB_CUCHECK(cuDeviceGet(&currentDev, cudaDev));
@@ -139,7 +138,7 @@ commResult_t commMemAllocDisjoint(
   if (vaSize < mappedSize) {
     LOG(ERROR) << "reservedVASize " << reservedVASize
                << " is smaller than mapped size " << mappedSize;
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   for (int i = 0; i < numSegments; i++) {
@@ -186,17 +185,17 @@ commResult_t commMemFreeDisjoint(
 
   if (ptr == NULL) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   if (!ctran::utils::getCuMemSysSupported()) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   FB_CUCHECK(cuPointerGetAttribute(

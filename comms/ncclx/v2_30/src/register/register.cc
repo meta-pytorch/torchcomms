@@ -14,7 +14,6 @@
 #include "group.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
@@ -153,7 +152,7 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
   // Disable it for now to avoid undefined behavior due to handle conflict.
   if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
     ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+    return metaCommToNccl(commInvalidUsage);
   }
 
   if (ctranInitialized(comm->ctranComm_.get()) &&
@@ -234,7 +233,7 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
   // Disable it for now to avoid undefined behavior due to handle conflict.
   if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
     ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+    return metaCommToNccl(commInvalidUsage);
   }
 
   /* handles are only valid if either ctran registration or baseline

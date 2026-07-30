@@ -242,13 +242,13 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
         ipcDesc.desc, cudaDev, logMetaData, extraSegments);
   } catch (std::exception& e) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: failed to import IPC remote registration from peer {} ipcDesc {}, error {}",
         peerId,
         ipcDesc.toString(),
         e.what());
-    return ErrorStackTraceUtil::log(commInternalError);
+    return commInternalError;
   }
 
   CLOGF_TRACE(
@@ -286,7 +286,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
         peerId,
         basePtr,
         uid);
-    return ErrorStackTraceUtil::log(commInternalError);
+    return commInternalError;
   }
 
   auto keyIt = peerIt->second.find(key);
