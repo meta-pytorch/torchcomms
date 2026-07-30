@@ -364,7 +364,11 @@ commResult_t allGatherPExec(
     case NCCL_ALLGATHER_P_ALGO::ctsrdpipeline:
       return algo->execStreamedRecursiveDoubling(sendbuff, count, datatype);
     default:
-      return ErrorStackTraceUtil::log(commInternalError);
+      CERR(
+          commInternalError,
+          "AllGatherP: unknown algorithm variant {}",
+          static_cast<int>(variant));
+      return commInternalError;
   }
 }
 

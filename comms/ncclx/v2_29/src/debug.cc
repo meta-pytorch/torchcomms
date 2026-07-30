@@ -28,9 +28,10 @@
 #include <folly/logging/LogStreamProcessor.h>
 #include <folly/logging/xlog.h>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/ErrorStackUtil.h"
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)
 
@@ -460,8 +461,20 @@ void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, con
   va_start(vargs, fmt);
   (void) vsnprintf(buffer, sizeof(buffer), fmt, vargs);
   va_end(vargs);
-  ::meta::comms::logger::appendErrorToStack(std::string{buffer});
-  ErrorStackTraceUtil::logErrorMessage(std::string{buffer});
+  const std::string message{buffer};
+  ::meta::comms::logger::appendErrorToStack(message);
+  // This path has no ncclResult_t, so record with code 0 (logErrorToScuba omits
+  // the error_code column when code == 0). Mirrors v2_30's ncclMetaDebugLogError
+  // Scuba write, capturing the native stack once (gated on
+  // NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED).
+  if (NCCL_SCUBA_LOG_ERROR_ENABLED) {
+    std::vector<std::string> stack;
+    if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
+      stack = ::meta::comms::logger::captureNativeErrorStack();
+    }
+    ::meta::comms::logger::logErrorToScuba(
+        message, /*code*/ 0, /*errorName*/ "", stack);
+  }
   ncclMetaDebugLog(level, flags, file, func, line, "%s", buffer);
 }
 

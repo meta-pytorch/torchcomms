@@ -104,7 +104,7 @@ void IbUtils::timeoutHandler(
     IbUtils* ibutils,
     std::chrono::milliseconds duration,
     const std::string devName,
-    const int port) {
+    [[maybe_unused]] const int port) {
   auto locked = ibutils->linkUpEvent_.lock();
   if (!ibutils->linkUpSignal_.wait_for(
           locked.as_lock(), duration, [&] { return *locked; })) {
