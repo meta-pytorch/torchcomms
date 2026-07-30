@@ -13,6 +13,7 @@
 #include <folly/synchronization/CallOnce.h>
 
 #include <fmt/core.h>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/regcache/RegCache.h"
@@ -187,6 +188,16 @@ struct RdmaTransport::Work {
   CtranIbRequest ibReq;
   folly::Promise<commResult_t> promise;
 
+  // The production Write/Read paths hand &ibReq to CtranIb (iput/iget),
+  // whose VC queues keep a raw pointer to it until the operation completes;
+  // such a Work must not be destroyed while the operation is outstanding
+  // (see retiredWorks_). Mock works and WaitForWrite never issue an IB
+  // operation.
+  bool hasIbOp() const {
+    return mockContext.type == RdmaTransport::MockType::None &&
+        (type == Type::Write || type == Type::Read);
+  }
+
   // Mock context for this work (type from setMockForTest)
   RdmaTransport::MockContext mockContext;
 
@@ -212,7 +223,7 @@ RdmaTransport::RdmaTransport(
       true /* enableLocalFlush */,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
-      ::ctran::utils::createAbort(/*enabled=*/false),
+      ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       nullptr /* socketFactory */,
       maxNumCqe,
       maxNumNic);
@@ -241,12 +252,22 @@ RdmaTransport::~RdmaTransport() {
             "~RdmaTransport: draining {} pending works with commUserAbort",
             numPending);
       }
+      auto retiredWorks = retiredWorks_.wlock();
       for (auto it = pendingWorks->begin(); it != pendingWorks->end();) {
-        (*it)->promise.setValue(commUserAbort);
+        auto work = std::move(*it);
         it = pendingWorks->erase(it);
+        work->promise.setValue(commUserAbort);
+        if (work->hasIbOp() && !work->ibReq.isComplete()) {
+          retiredWorks->emplace_back(std::move(work));
+        }
       }
     });
   }
+  // Destroy the IB instance before freeing retired works: CtranIb's VC
+  // queues hold raw pointers to their CtranIbRequests, so the works may
+  // only be freed once no CQE processing can dereference them.
+  ib_.reset();
+  retiredWorks_.wlock()->clear();
 }
 
 namespace {
@@ -302,6 +323,9 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
     const RdmaRemoteBuffer& remoteBuffer,
     bool notify,
     std::optional<std::chrono::milliseconds> timeout) {
+  if (broken_.load(std::memory_order_relaxed)) {
+    return commInternalError;
+  }
   auto currentMockType = mockContext_.rlock()->type;
 
   // Skip connected check when mock is enabled for testing
@@ -323,7 +347,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
     auto ibRemoteKey =
         CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
     CtranIbEpochRAII epochRAII(ib_.get());
-    FB_COMMCHECK(ib_->iput(
+    const auto ibRes = ib_->iput(
         localBuffer.data(),
         remoteBuffer.ptr,
         localBuffer.size(),
@@ -333,7 +357,21 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
         notify,
         nullptr,
         &work->ibReq,
-        false));
+        false);
+    if (ibRes != commSuccess && ibRes != commInProgress) {
+      XLOGF(
+          ERR,
+          "RdmaTransport::write: iput failed with {}",
+          static_cast<int>(ibRes));
+      // The IB instance can't be trusted anymore; fail all future
+      // operations fast so the owner tears the transport down.
+      broken_.store(true, std::memory_order_relaxed);
+      // iput may have stored a pointer to work->ibReq in the VC queues
+      // before failing; park the work instead of destroying it.
+      work->promise.setValue(ibRes);
+      retiredWorks_.wlock()->emplace_back(std::move(work));
+      return sf;
+    }
     // Capture timeout for production write timeout
     if (timeout.has_value()) {
       work->timeout = timeout;
@@ -357,6 +395,9 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
+  if (broken_.load(std::memory_order_relaxed)) {
+    return commInternalError;
+  }
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);
 
@@ -375,6 +416,9 @@ folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
 folly::SemiFuture<commResult_t> RdmaTransport::read(
     RdmaMemory::MutableView& localBuffer,
     const RdmaRemoteBuffer& remoteBuffer) {
+  if (broken_.load(std::memory_order_relaxed)) {
+    return commInternalError;
+  }
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);
 
@@ -386,7 +430,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   CtranIbEpochRAII epochRAII(ib_.get());
-  FB_COMMCHECK(ib_->iget(
+  const auto ibRes = ib_->iget(
       remoteBuffer.ptr,
       localBuffer.mutable_data(),
       localBuffer.size(),
@@ -395,7 +439,21 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
       ibRemoteKey,
       nullptr,
       &work->ibReq,
-      false));
+      false);
+  if (ibRes != commSuccess && ibRes != commInProgress) {
+    XLOGF(
+        ERR,
+        "RdmaTransport::read: iget failed with {}",
+        static_cast<int>(ibRes));
+    // The IB instance can't be trusted anymore; fail all future
+    // operations fast so the owner tears the transport down.
+    broken_.store(true, std::memory_order_relaxed);
+    // iget may have stored a pointer to work->ibReq in the VC queues
+    // before failing; park the work instead of destroying it.
+    work->promise.setValue(ibRes);
+    retiredWorks_.wlock()->emplace_back(std::move(work));
+    return sf;
+  }
 
   // Add work to pending list and schedule progress
   auto pendingWorks = pendingWorks_.wlock();
@@ -412,17 +470,47 @@ void RdmaTransport::progress() {
   bool hasError = false;
   if (res != commSuccess && res != commInProgress) {
     hasError = true;
+    // The IB instance is in an unrecoverable state: works drained below may
+    // never complete and would stay retired until destruction. Fail all
+    // future operations fast so the owner tears the transport down.
+    broken_.store(true, std::memory_order_relaxed);
     LOG(ERROR) << "IB progress failed";
   }
 
+  // Reap retired works whose IB operation has since completed; only then is
+  // it safe to free their embedded CtranIbRequest. Works whose operation
+  // never completes (e.g. dead peer) are freed in the destructor after ib_
+  // is torn down.
+  {
+    auto retiredWorks = retiredWorks_.wlock();
+    for (auto it = retiredWorks->begin(); it != retiredWorks->end();) {
+      if ((*it)->ibReq.isComplete()) {
+        it = retiredWorks->erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   auto pendingWorks = pendingWorks_.wlock();
+  // Fulfill a work's promise and remove it from the pending list. A work
+  // whose IB operation is still outstanding must not be destroyed: CtranIb
+  // holds a raw pointer to work->ibReq and writes to it when the
+  // operation's CQEs arrive. Park such works in retiredWorks_ instead.
+  auto retire = [this, &pendingWorks](auto& it, commResult_t result) {
+    auto work = std::move(*it);
+    it = pendingWorks->erase(it);
+    work->promise.setValue(result);
+    if (work->hasIbOp() && !work->ibReq.isComplete()) {
+      retiredWorks_.wlock()->emplace_back(std::move(work));
+    }
+  };
   for (auto it = pendingWorks->begin(); it != pendingWorks->end();) {
     // Mock failure always takes precedence — return commInternalError
     // regardless of IB state
     auto& work = *it;
     if (work->mockContext.type == MockType::Failure) {
-      work->promise.setValue(commInternalError);
-      it = pendingWorks->erase(it);
+      retire(it, commInternalError);
       continue;
     }
 
@@ -432,8 +520,7 @@ void RdmaTransport::progress() {
       if (work->timeout.has_value()) {
         auto elapsed = std::chrono::steady_clock::now() - work->creationTime;
         if (elapsed >= work->timeout.value()) {
-          work->promise.setValue(commTimeout);
-          it = pendingWorks->erase(it);
+          retire(it, commTimeout);
           continue;
         }
       }
@@ -442,16 +529,14 @@ void RdmaTransport::progress() {
     }
 
     if (hasError) {
-      (*it)->promise.setValue(res);
-      it = pendingWorks->erase(it);
+      retire(it, res);
       continue;
     }
 
     // Check IB completion
     if (((*it)->type == Work::Type::Write || (*it)->type == Work::Type::Read) &&
         (*it)->ibReq.isComplete()) {
-      (*it)->promise.setValue(commSuccess);
-      it = pendingWorks->erase(it);
+      retire(it, commSuccess);
       continue;
     }
 
@@ -459,8 +544,7 @@ void RdmaTransport::progress() {
     if ((*it)->type == Work::Type::Write && (*it)->timeout.has_value()) {
       auto elapsed = std::chrono::steady_clock::now() - (*it)->creationTime;
       if (elapsed >= (*it)->timeout.value()) {
-        (*it)->promise.setValue(commTimeout);
-        it = pendingWorks->erase(it);
+        retire(it, commTimeout);
         continue;
       }
     }
@@ -469,8 +553,7 @@ void RdmaTransport::progress() {
       bool done = false;
       auto waitRes = ib_->checkNotify(kDummyRank, &done);
       if (waitRes != commSuccess || done) {
-        (*it)->promise.setValue(waitRes);
-        it = pendingWorks->erase(it);
+        retire(it, waitRes);
         continue;
       }
     }
@@ -493,6 +576,10 @@ void RdmaTransport::setMockForTest(MockContext context) {
 // TODO: Remove after upper layer removes calling abort().
 void RdmaTransport::abort() {
   XLOG(DBG) << "abort() called (no-op, cleanup deferred to destructor)";
+}
+
+void RdmaTransport::markBrokenForTest() {
+  broken_.store(true, std::memory_order_relaxed);
 }
 
 } // namespace torch::comms

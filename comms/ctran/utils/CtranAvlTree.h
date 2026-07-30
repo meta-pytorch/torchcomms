@@ -36,6 +36,13 @@ class CtranAvlTree {
   // return nullptr.
   void* search(const void* addr, std::size_t len) const;
 
+  // Atomically search for the element whose range contains [addr, addr+len) and
+  // return its value (nullptr if none). Equivalent to search() followed by
+  // lookup() but performed under a single lock, so it is free of the ABA race a
+  // separate search()+lookup() would have if another thread removes and reuses
+  // the handle in between.
+  void* searchVal(const void* addr, std::size_t len) const;
+
   // Lookup the value of the provided handle.
   void* lookup(void* hdl) const;
 
@@ -67,6 +74,9 @@ class CtranAvlTree {
 
  private:
   class TreeElem;
+  // Find the element whose range contains [addr, addr+len), or nullptr if none.
+  // Caller must hold mutex_.
+  TreeElem* searchElemLocked(uintptr_t addr, std::size_t len) const;
   class TreeElem* root_{nullptr};
   std::vector<TreeElem*> list_;
   // Store all valid handles for fast handle validation.

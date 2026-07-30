@@ -90,7 +90,7 @@ ncclResult_t ncclCudaGetCapturingGraph(
         graph->graphUsageMode = graphUsageMode;
       #endif
       if (status != cudaStreamCaptureStatusNone) {
-        WARN("NCCL cannot be captured in a graph if either it wasn't built with CUDA runtime >= 11.3 or if the installed CUDA driver < R465.");
+        ERR(ncclInvalidUsage, "NCCL cannot be captured in a graph if either it wasn't built with CUDA runtime >= 11.3 or if the installed CUDA driver < R465.");
         return ncclInvalidUsage;
       }
     } else {
@@ -281,7 +281,7 @@ ncclResult_t ncclStrongStreamRelease(
           CUDACHECK(cudaEventRecord(ss->serialEvent, ss->liveStream));
         }
         if (ss->liveAcquiredBy != localThreadId() && ncclParamLaunchRaceFatal()) {
-          WARN("%s", launchRaceFatalMsg);
+          ERR(ncclInvalidUsage, "%s", launchRaceFatalMsg);
           return ncclInvalidUsage;
         }
       } else {
@@ -344,7 +344,7 @@ ncclResult_t ncclStrongStreamRelease(
         #endif
 
         if (cap->acquiredBy != localThreadId() && ncclParamLaunchRaceFatal()) {
-          WARN("%s", launchRaceFatalMsg);
+          ERR(ncclInvalidUsage, "%s", launchRaceFatalMsg);
           return ncclInvalidUsage;
         }
       }

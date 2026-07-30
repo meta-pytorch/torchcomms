@@ -13,9 +13,6 @@
 
 namespace torch::comms {
 
-// Initialize the static counter
-int TorchCommNCCLBootstrap::counter_ = 0;
-
 const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
@@ -87,24 +84,26 @@ TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() noexcept {
   }
 }
 
-std::string TorchCommNCCLBootstrap::getNCCLStoreKey() {
-  std::string key = fmt::format("{}{}", getNCCLStoreKeyPrefix(), counter_);
-  counter_++;
-  return key;
+std::string TorchCommNCCLBootstrap::getNCCLStoreKey(std::string_view name) {
+  // Key the bootstrap on the comm's name, which is identical across all ranks
+  // that participate in the comm and unique per comm (store_ is also uniquely
+  // prefixed per comm). A previous implementation used a process-wide counter
+  // incremented once per bootstrap; that counter diverges across ranks when
+  // comms have asymmetric membership (members-only or subset groups skip
+  // non-member ranks), so a later comm spanning diverged ranks would have rank
+  // 0 set one key while other ranks wait on a different key -> bootstrap hang.
+  return fmt::format("{}{}", getNCCLStoreKeyPrefix(), name);
 }
 
 std::string TorchCommNCCLBootstrap::getNCCLStoreKeyPrefix() {
   return "nccl_storekey_";
 };
 
-int TorchCommNCCLBootstrap::getNCCLStoreKeyCounter() {
-  return counter_;
-}
-
-ncclUniqueId TorchCommNCCLBootstrap::exchangeUniqueIdStore() {
+ncclUniqueId TorchCommNCCLBootstrap::exchangeUniqueIdStore(
+    std::string_view name) {
   ncclUniqueId uniqueId;
 
-  auto key = getNCCLStoreKey();
+  auto key = getNCCLStoreKey(name);
   if (rank_ == 0) {
     // Generate unique ID on rank 0
     ncclResult_t ncclErr = nccl_api_->getUniqueId(&uniqueId);
@@ -137,7 +136,7 @@ ncclUniqueId TorchCommNCCLBootstrap::exchangeUniqueIdTCPStore(
   store_ = createPrefixStore(std::string(name), timeout_);
   created_internal_store_ = true;
 
-  return exchangeUniqueIdStore();
+  return exchangeUniqueIdStore(name);
 }
 
 bool TorchCommNCCLBootstrap::isTCPStoreEnabled() {
@@ -146,7 +145,7 @@ bool TorchCommNCCLBootstrap::isTCPStoreEnabled() {
 
 ncclUniqueId TorchCommNCCLBootstrap::exchangeUniqueId(std::string_view name) {
   if (store_ != nullptr) {
-    return exchangeUniqueIdStore();
+    return exchangeUniqueIdStore(name);
   }
 
   bool is_tcp_store_enabled = isTCPStoreEnabled();

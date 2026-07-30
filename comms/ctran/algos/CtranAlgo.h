@@ -263,7 +263,8 @@ class CtranPersistentRequest {
   // reaches the token through here; running it releases the pooled pipeSync +
   // scoped registration (via destroyPersistentRequest), at most once across all
   // teardown paths. The token does NOT delete this request object -- that stays
-  // with the object's owner -- so ~CtranPersistentRequest stays defaulted.
+  // with the object's owner -- so ~CtranPersistentRequest remains a defaulted
+  // destructor (defined out-of-line; see the note at its declaration below).
   std::shared_ptr<PersistentCleanup> cleanup_;
 
   CtranPersistentRequest(
@@ -288,7 +289,14 @@ class CtranPersistentRequest {
   CtranPersistentRequest(Type type, CtranComm* comm, cudaStream_t stream)
       : type(type), comm_(comm), stream(stream) {}
 
-  ~CtranPersistentRequest() = default;
+  // Defaulted, but deliberately defined out-of-line (in CtranAlgo.cc) so the
+  // ~unique_ptr<OpElem> -> ~OpElem instantiation stays inside libctran. Do NOT
+  // re-inline this as `= default;` here: OpElem is a global-scope type, so an
+  // inline destructor forces callers outside libctran (e.g. MCCL / the OSS
+  // McclLinkTest) to export/resolve OpElem::~OpElem() across the .so boundary,
+  // silently breaking the OSS link. Buck CI will not catch it (it ignores the
+  // version script).
+  ~CtranPersistentRequest();
 };
 
 template <>

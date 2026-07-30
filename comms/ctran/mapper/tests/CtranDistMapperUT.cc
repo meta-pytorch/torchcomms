@@ -641,6 +641,12 @@ TEST_F(CtranDistMapperTest, intraBarrier) {
 TEST_F(CtranDistMapperTest, intraBarrierWithCtrl) {
   auto mapper = comm_->ctran_->mapper.get();
   const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+
   void* buf = nullptr;
   void* handle = nullptr;
   constexpr size_t bufSize = 8192;

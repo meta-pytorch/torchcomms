@@ -172,7 +172,16 @@ __device__ __forceinline__ int ld_acquire_sys_global(const int* ptr) {
 
 __device__ __forceinline__ int ld_volatile_global(const volatile int* ptr) {
 #ifdef __HIP_PLATFORM_AMD__
-  return *ptr;
+  // AMD/xGMI: cross-GPU peer writes do NOT invalidate the local L2 (see the
+  // ld_nc_global note below), so a plain volatile load can read a stale cached
+  // value indefinitely. Every intranode use of this helper polls peer-written
+  // FIFO head/tail/offset or barrier-completion state, so a stale read makes
+  // the producer/consumer or barrier spin forever -> GPU hang (intermittent,
+  // surfaces under the full model's L2 pressure). Read the coherent value with
+  // a system-scoped ACQUIRE atomic load, pairing with the peers' system atomics
+  // / st_release_sys_global writes.
+  return __hip_atomic_load(
+      const_cast<const int*>(ptr), __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #else
   int ret;
   asm volatile("ld.volatile.global.s32 %0, [%1];" : "=r"(ret) : "l"(ptr));
@@ -305,6 +314,24 @@ __device__ __forceinline__ void st_na_global(int4* ptr, int4 val) {
   *ptr = val;
 #else
   asm volatile("st.global.v4.s32 [%0], {%1, %2, %3, %4};"
+               :
+               : "l"(ptr), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w)
+               : "memory");
+#endif
+}
+
+// Nontemporal (cache-bypassing) 16B store for the sender's cross-device data
+// copy: streams the payload past L2 toward the peer as it is produced. Use for
+// sender->peer copies only; local receiver writes keep the plain st_na_global.
+__device__ __forceinline__ void st_nt_global(int4* ptr, int4 val) {
+#ifdef __HIP_PLATFORM_AMD__
+  int* p = reinterpret_cast<int*>(ptr);
+  __builtin_nontemporal_store(val.x, p + 0);
+  __builtin_nontemporal_store(val.y, p + 1);
+  __builtin_nontemporal_store(val.z, p + 2);
+  __builtin_nontemporal_store(val.w, p + 3);
+#else
+  asm volatile("st.global.cs.v4.s32 [%0], {%1, %2, %3, %4};"
                :
                : "l"(ptr), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w)
                : "memory");

@@ -170,6 +170,7 @@ commResult_t ctranAllGatherCudagraphAware(
           recvBytes,
           comm->statex_->cudaDev(),
           comm->ctran_->mapper->getBackends(),
+          comm->logMetaData_,
           localRecvReg));
 
       // Heap-own the scoped ref so a graph-destroy callback can release it.

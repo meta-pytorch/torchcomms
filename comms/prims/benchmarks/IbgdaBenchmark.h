@@ -53,6 +53,17 @@ void launchIbgdaPutWaitCounterBatch(
     unsigned long long* totalCycles,
     cudaStream_t stream);
 
+/** Launch batched raw puts, waiting on each returned local-completion ticket.
+ */
+void launchIbgdaPutWaitLocalBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream);
+
 /**
  * Launch batched kernel: Multiple put + flush iterations
  *

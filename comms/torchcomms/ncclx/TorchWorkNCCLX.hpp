@@ -68,6 +68,10 @@ class TorchWorkNCCLX : public TorchWork {
     cpuTensors_ = std::move(tensors);
   }
 
+  // Host-block the current stream for a synchronous barrier. See
+  // TorchWork::hostSynchronize(); invoked by WorkWrapper::wait().
+  void hostSynchronize() override;
+
  protected:
   void recordStart(std::string_view coll_name);
   void recordEnd();

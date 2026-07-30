@@ -426,13 +426,13 @@ namespace detail {
  * Internal stage for one transport-owned resumable send/recv operation.
  *
  * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
- * Send operations use `WaitNicDone` and `WaitSlotFree`; recv operations use
- * `WaitDataReady`. Blocking send/recv temporarily use `Busy` to make
- * same-direction overlap fail explicitly instead of sharing a cursor.
+ * Send operations use `WaitLocalCompletion` and `WaitSlotFree`; recv
+ * operations use `WaitDataReady`. Blocking send/recv temporarily use `Busy` to
+ * make same-direction overlap fail explicitly instead of sharing a cursor.
  */
 enum class IbSendRecvProgressStage : uint8_t {
   Done,
-  WaitNicDone,
+  WaitLocalCompletion,
   WaitSlotFree,
   WaitDataReady,
   Busy,
@@ -552,6 +552,23 @@ enum class IbDirection : uint8_t {
 inline constexpr int kIbDirections = 2;
 inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
 
+// Identifies a lane-local completion threshold returned by put().
+// completionId is the send-lane ordinal; value is complete once that lane's
+// backend-specific completion frontier reaches it.
+struct IbLocalCompletionTicket {
+  uint32_t completionId{0};
+  uint64_t value{0};
+};
+
+// Completion thresholds accumulated for one channel's pipeline slot.
+// generation identifies the slot use; laneMask selects valid values entries,
+// each the latest ticket value that must complete before the slot is reused.
+struct IbSendCompletionSlot {
+  uint64_t generation{0};
+  uint64_t laneMask{0};
+  uint64_t values[kIbMaxQpLanesPerChannelDirection]{};
+};
+
 struct IbQpState {
   uint32_t cursor{0};
   uint64_t pendingFlushLanesMask{0};
@@ -589,6 +606,8 @@ struct IbLocalChannel {
   IbgdaLocalBuffer nicDoneWait;
   IbgdaLocalBuffer nicDoneCompletion;
 
+  IbSendCompletionSlot* sendCompletionSlots{nullptr};
+
   IbQpState sendQp;
   IbQpState recvQp;
 };
@@ -601,12 +620,14 @@ struct IbRemoteChannel {
 
 IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
     const IbChannelLayout& layout,
-    int channelId) {
+    int channelId,
+    IbSendCompletionSlot* sendCompletionSlots = nullptr) {
   IbLocalChannel channel{};
   channel.dataReady = layout.localDataReadySignal(channelId);
   channel.slotFree = layout.localSlotFreeSignal(channelId);
   channel.nicDoneWait = layout.localCounter(channelId);
   channel.nicDoneCompletion = layout.localCompletionCounter(channelId);
+  channel.sendCompletionSlots = sendCompletionSlots;
   return channel;
 }
 

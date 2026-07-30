@@ -150,6 +150,14 @@ commResult_t ctranAllToAll(
         allToAllAlgoName(algo));
   }
 
+  // Window-aware persistent path: the recvbuff lives in a registered symmetric
+  // window; reuse (or lazily build) a window-cached persistent AllToAllP
+  // request. Capture-safe without being a graph-aware algo.
+  if (algo == NCCL_ALLTOALL_ALGO::ctwin) {
+    return ctranAllToAllCtwin(
+        sendbuff, recvbuff, count, datatype, comm, stream, algo);
+  }
+
   // TODO: alltoallKerns perform poorly on HCM due to lack of NVL connection
   // between some GPUs We need detect topology and switch to use IB transport in
   // such a case
@@ -182,7 +190,8 @@ bool ctranAllToAllSupport(
     commDataType_t datatype,
     CtranComm* comm,
     enum NCCL_ALLTOALL_ALGO algo,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    void* recvbuff) {
   // Currently there is only one ctran algo for alltoall, but we pass algo as a
   // parameter for future extension and consistency across collectives.
   // Currently just return false if algo is set to orig
@@ -191,6 +200,14 @@ bool ctranAllToAllSupport(
   }
 
   const auto statex = comm->statex_.get();
+
+  // Window-aware persistent algo: recvbuff must sit in a symmetric AllToAllP
+  // window. Dormant (false) until a caller passes recvbuff.
+  if (algo == NCCL_ALLTOALL_ALGO::ctwin) {
+    const size_t recvBytes = count * statex->nRanks() * commTypeSize(datatype);
+    return checkCtranAllToAllCtwinSupport(
+        comm, recvbuff, recvBytes, algo, nullptr);
+  }
 
   // Cudagraph-aware algo requires an active CUDA graph capture on the stream.
   if (isGraphAwareAlgo(algo)) {

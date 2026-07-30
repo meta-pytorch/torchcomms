@@ -129,7 +129,12 @@ struct ThreadGroup {
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
         uint32_t barrierId = tid / group_size;
-        asm volatile("bar.sync %0, %1;" : : "r"(barrierId), "r"(group_size));
+        // Keep compiler memory operations on their respective sides of the
+        // hardware barrier.
+        asm volatile("bar.sync %0, %1;"
+                     :
+                     : "r"(barrierId), "r"(group_size)
+                     : "memory");
 #else
         // AMD: no named barriers, fall back to block-level sync
         __syncthreads();
@@ -569,8 +574,9 @@ __device__ inline PartitionResult ThreadGroup::partition(
           .block_id = block_id,
           .total_groups = partition_size,
           .scope = scope}};
-#endif
+#else
   return PartitionResult{};
+#endif
 }
 
 /**
@@ -762,8 +768,9 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
           .block_id = block_id,
           .total_groups = groups_in_partition,
           .scope = scope}};
-#endif
+#else
   return PartitionResult{};
+#endif
 }
 
 /**

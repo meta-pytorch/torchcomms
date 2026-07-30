@@ -111,8 +111,8 @@ class CtranSocket {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,
           comm ? comm->statex_->nRanks() : -1);

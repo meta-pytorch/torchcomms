@@ -29,7 +29,6 @@
 
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)
 
@@ -466,17 +465,6 @@ void ncclSetThreadName(std::thread& thread, const char *fmt, ...) {
 
 void ncclSetMyThreadLoggingName(std::string_view name) {
   meta::comms::logger::initThreadMetaData(name);
-}
-
-void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) {
-  char buffer[256];
-  va_list vargs;
-  va_start(vargs, fmt);
-  (void) vsnprintf(buffer, sizeof(buffer), fmt, vargs);
-  va_end(vargs);
-  ::meta::comms::logger::appendErrorToStack(std::string{buffer});
-  ErrorStackTraceUtil::logErrorMessage(std::string{buffer});
-  ncclMetaDebugLog(level, flags, file, func, line, "%s", buffer);
 }
 
 /* Meta's logging function with separate file and func parameters.

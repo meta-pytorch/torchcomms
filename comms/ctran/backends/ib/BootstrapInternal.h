@@ -14,10 +14,10 @@
 
 #include <sys/socket.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/VcLayout.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/commSpecs.h"
 
@@ -52,7 +52,7 @@ class Bootstrap {
       VcState& vcState,
       const VcLayout& vcLayout,
       std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory,
-      std::shared_ptr<::ctran::utils::Abort> abortCtrl,
+      std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl,
       const CommLogData& logData,
       CtranComm* comm,
       std::vector<CtranIbDevice>& devices,
@@ -106,7 +106,7 @@ class Bootstrap {
   VcState& vcState_;
   const VcLayout& vcLayout_;
   std::shared_ptr<::ctran::bootstrap::ISocketFactory> socketFactory_;
-  std::shared_ptr<::ctran::utils::Abort> abortCtrl_;
+  std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl_;
   const CommLogData& logData_;
   CtranComm* comm_{nullptr};
   std::vector<CtranIbDevice>& devices_;

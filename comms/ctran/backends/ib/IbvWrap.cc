@@ -29,20 +29,24 @@ commResult_t wrap_ibv_symbols(void) {
 }
 
 /* CHECK_NOT_NULL: helper macro to check for NULL symbol */
-#define CHECK_NOT_NULL(container, internal_name) \
-  if (container.internal_name == nullptr) {      \
-    CLOGF(WARN, "lib wrapper not initialized."); \
-    return commInternalError;                    \
+#define CHECK_NOT_NULL(container, internal_name)             \
+  if (container.internal_name == nullptr) {                  \
+    CERR(commInternalError, "lib wrapper not initialized."); \
+    return commInternalError;                                \
   }
 
-#define IBV_PTR_CHECK_ERRNO(                                               \
-    container, internal_name, call, retval, error_retval, name)            \
-  CHECK_NOT_NULL(container, internal_name);                                \
-  retval = container.call;                                                 \
-  if (retval == error_retval) {                                            \
-    CLOGF(WARN, "Call to {} failed with error {}", name, strerror(errno)); \
-    return commSystemError;                                                \
-  }                                                                        \
+#define IBV_PTR_CHECK_ERRNO(                                    \
+    container, internal_name, call, retval, error_retval, name) \
+  CHECK_NOT_NULL(container, internal_name);                     \
+  retval = container.call;                                      \
+  if (retval == error_retval) {                                 \
+    CERR(                                                       \
+        commSystemError,                                        \
+        "Call to {} failed with error {}",                      \
+        name,                                                   \
+        strerror(errno));                                       \
+    return commSystemError;                                     \
+  }                                                             \
   return commSuccess;
 
 #define IBV_PTR_CHECK(                                          \
@@ -50,7 +54,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);                     \
   retval = container.call;                                      \
   if (retval == error_retval) {                                 \
-    CLOGF(WARN, "Call to {} failed", name);                     \
+    CERR(commSystemError, "Call to {} failed", name);           \
     return commSystemError;                                     \
   }                                                             \
   return commSuccess;
@@ -86,8 +90,8 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);               \
   int ret = container.call;                               \
   if (ret != success_retval) {                            \
-    CLOGF(                                                \
-        WARN,                                             \
+    CERR(                                                 \
+        commSystemError,                                  \
         "Call to {} failed with error {} errno {}",       \
         name,                                             \
         strerror(ret),                                    \
@@ -100,7 +104,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);                               \
   int ret = container.call;                                               \
   if (ret == error_retval) {                                              \
-    CLOGF(WARN, "Call to failed", name);                                  \
+    CERR(commSystemError, "Call to failed", name);                        \
     return commSystemError;                                               \
   }                                                                       \
   return commSuccess;
@@ -541,8 +545,8 @@ wrap_ibv_modify_qp(struct ibv_qp* qp, struct ibv_qp_attr* attr, int attr_mask) {
   } while (IBV_MQP_RETRY_ERRNO_ALL(ret) && attempts < maxCnt);
   if (ret != 0) {
     ibvModifyQpLog(qp, attr->qp_state, attr, attr_mask, qpMsg, sizeof(qpMsg));
-    CLOGF(
-        WARN,
+    CERR(
+        commSystemError,
         "Call to ibv_modify_qp failed with {} {}, {}",
         ret,
         strerror(ret),

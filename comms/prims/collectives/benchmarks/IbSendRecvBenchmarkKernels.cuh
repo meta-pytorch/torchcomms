@@ -5,13 +5,26 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
 #include <cuda_runtime.h>
+
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 
 namespace comms::prims::ib::benchmark {
 
 using torchcomms::device::DeviceWindowNCCL;
 using torchcomms::device::RegisteredBufferNCCL;
+
+constexpr int kChecksumPartialBlocks = 32;
+constexpr uint64_t kNoMismatchIndex = UINT64_MAX;
+
+struct MismatchRecord {
+  uint64_t index{kNoMismatchIndex};
+  uint32_t observed{0};
+  uint32_t expected{0};
+};
 
 /**
  * Launch a zero-copy put BW kernel (benchmark only).
@@ -41,5 +54,35 @@ void launch_put_bw_kernel(
     int signal_base,
     int iterations,
     cudaStream_t stream);
+
+void launch_init_rank_pattern_kernel(
+    void* data,
+    size_t nbytes,
+    int rank,
+    cudaStream_t stream);
+
+uint8_t expected_rank_pattern_byte(int rank, size_t index);
+
+void launch_buffer_checksum(
+    const void* data,
+    size_t nbytes,
+    int expected_rank,
+    uint64_t* checksum,
+    uint64_t* partials,
+    MismatchRecord* mismatch_partials,
+    cudaStream_t stream);
+
+void launch_rank_pattern_checksum(
+    size_t nbytes,
+    int rank,
+    uint64_t* checksum,
+    uint64_t* partials,
+    cudaStream_t stream);
+
+uint64_t
+compute_buffer_checksum(const void* data, size_t nbytes, cudaStream_t stream);
+
+uint64_t
+compute_rank_pattern_checksum(size_t nbytes, int rank, cudaStream_t stream);
 
 } // namespace comms::prims::ib::benchmark

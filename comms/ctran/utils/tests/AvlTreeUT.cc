@@ -323,6 +323,34 @@ TEST_F(CtranUtilsAvlTreeTest, SearchNonOverlapRanges) {
   rangeRegistList.clear();
 }
 
+// searchVal is search()+lookup() done atomically; verify it returns the
+// containing element's value and nullptr for a miss.
+TEST_F(CtranUtilsAvlTreeTest, SearchVal) {
+  auto tree = std::make_unique<CtranAvlTree>();
+
+  void* valA = reinterpret_cast<void*>(0xA);
+  void* valB = reinterpret_cast<void*>(0xB);
+  void* hdlA = tree->insert(reinterpret_cast<void*>(0x1000), 0x100, valA);
+  void* hdlB = tree->insert(reinterpret_cast<void*>(0x2000), 0x100, valB);
+  ASSERT_NE(hdlA, nullptr);
+  ASSERT_NE(hdlB, nullptr);
+
+  // Exact and subrange lookups return the containing element's value.
+  EXPECT_EQ(tree->searchVal(reinterpret_cast<void*>(0x1000), 0x100), valA);
+  EXPECT_EQ(tree->searchVal(reinterpret_cast<void*>(0x1040), 0x10), valA);
+  EXPECT_EQ(tree->searchVal(reinterpret_cast<void*>(0x2000), 0x100), valB);
+  // Equivalent to a separate search() + lookup().
+  EXPECT_EQ(
+      tree->searchVal(reinterpret_cast<void*>(0x1000), 0x100),
+      tree->lookup(tree->search(reinterpret_cast<void*>(0x1000), 0x100)));
+  // Misses (gap, past all) return nullptr.
+  EXPECT_EQ(tree->searchVal(reinterpret_cast<void*>(0x1500), 0x10), nullptr);
+  EXPECT_EQ(tree->searchVal(reinterpret_cast<void*>(0x3000), 0x10), nullptr);
+
+  tree->remove(hdlA);
+  tree->remove(hdlB);
+}
+
 // Test ToString
 TEST_F(CtranUtilsAvlTreeTest, ToString) {
   auto tree = std::make_unique<CtranAvlTree>();

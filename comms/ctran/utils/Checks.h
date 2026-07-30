@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <folly/Format.h>
 
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/Conversion.h"
 #include "comms/utils/commSpecs.h"
@@ -29,16 +28,18 @@
  *     macro that ignores
  */
 
-#define FB_CUDACHECK_RETURN(cmd, ret)                                    \
-  do {                                                                   \
-    cudaError_t err = cmd;                                               \
-    if (err != cudaSuccess) {                                            \
-      auto errStr = cudaGetErrorString(err);                             \
-      CLOGF(ERR, "Cuda failure {} '{}'", static_cast<int>(err), errStr); \
-      ErrorStackTraceUtil::logErrorMessage(                              \
-          "Cuda Error: " + std::string(errStr));                         \
-      return ret;                                                        \
-    }                                                                    \
+#define FB_CUDACHECK_RETURN(cmd, ret)        \
+  do {                                       \
+    cudaError_t err = cmd;                   \
+    if (err != cudaSuccess) {                \
+      auto errStr = cudaGetErrorString(err); \
+      CERR(                                  \
+          commUnhandledCudaError,            \
+          "Cuda failure {} '{}'",            \
+          static_cast<int>(err),             \
+          errStr);                           \
+      return ret;                            \
+    }                                        \
   } while (false)
 
 #define FB_CUDACHECK(cmd) FB_CUDACHECK_RETURN(cmd, commUnhandledCudaError)
@@ -47,8 +48,8 @@
   do {                                                             \
     cudaError_t err = cmd;                                         \
     if (err != cudaSuccess) {                                      \
-      CLOGF(                                                       \
-          ERR,                                                     \
+      CERR(                                                        \
+          commUnhandledCudaError,                                  \
           "{}:{} Cuda failure {}",                                 \
           __FILE__,                                                \
           __LINE__,                                                \
@@ -90,36 +91,38 @@
 #define FB_CUDACHECKTHROW_EX_NOCOMM(cmd) \
   FB_CUDACHECKTHROW_EX_DIRECT(cmd, std::nullopt, std::nullopt, std::nullopt)
 
-#define FB_CUDACHECKGOTO(cmd, RES, label)                     \
-  do {                                                        \
-    cudaError_t err = cmd;                                    \
-    if (err != cudaSuccess) {                                 \
-      CLOGF(ERR, "Cuda failure {}", cudaGetErrorString(err)); \
-      RES = commUnhandledCudaError;                           \
-      goto label;                                             \
-    }                                                         \
+#define FB_CUDACHECKGOTO(cmd, RES, label)                                      \
+  do {                                                                         \
+    cudaError_t err = cmd;                                                     \
+    if (err != cudaSuccess) {                                                  \
+      CERR(                                                                    \
+          commUnhandledCudaError, "Cuda failure {}", cudaGetErrorString(err)); \
+      RES = commUnhandledCudaError;                                            \
+      goto label;                                                              \
+    }                                                                          \
   } while (false)
 
-#define FB_CUCHECKGOTO(cmd, RES, label)                   \
-  do {                                                    \
-    CUresult err = cmd;                                   \
-    if (err != CUDA_SUCCESS) {                            \
-      const char* errStr;                                 \
-      cuGetErrorString(err, &errStr);                     \
-      CLOGF(ERR, "Cuda failure {}", std::string(errStr)); \
-      RES = commUnhandledCudaError;                       \
-      goto label;                                         \
-    }                                                     \
+#define FB_CUCHECKGOTO(cmd, RES, label)                                     \
+  do {                                                                      \
+    CUresult err = cmd;                                                     \
+    if (err != CUDA_SUCCESS) {                                              \
+      const char* errStr;                                                   \
+      cuGetErrorString(err, &errStr);                                       \
+      CERR(commUnhandledCudaError, "Cuda failure {}", std::string(errStr)); \
+      RES = commUnhandledCudaError;                                         \
+      goto label;                                                           \
+    }                                                                       \
   } while (false)
 
-#define FB_CUDACHECKGUARD(cmd, RES)                           \
-  do {                                                        \
-    cudaError_t err = cmd;                                    \
-    if (err != cudaSuccess) {                                 \
-      CLOGF(ERR, "Cuda failure {}", cudaGetErrorString(err)); \
-      RES = commUnhandledCudaError;                           \
-      return;                                                 \
-    }                                                         \
+#define FB_CUDACHECKGUARD(cmd, RES)                                            \
+  do {                                                                         \
+    cudaError_t err = cmd;                                                     \
+    if (err != cudaSuccess) {                                                  \
+      CERR(                                                                    \
+          commUnhandledCudaError, "Cuda failure {}", cudaGetErrorString(err)); \
+      RES = commUnhandledCudaError;                                            \
+      return;                                                                  \
+    }                                                                          \
   } while (false)
 
 // Report failure but clear error and continue
@@ -139,32 +142,33 @@
 
 // Use of abort should be aware of potential memory leak risk
 // and place a signal handler to catch it and trigger termination processing
-#define FB_CUDACHECKABORT(cmd)                                \
-  do {                                                        \
-    cudaError_t err = cmd;                                    \
-    if (err != cudaSuccess) {                                 \
-      CLOGF(ERR, "Cuda failure {}", cudaGetErrorString(err)); \
-      abort();                                                \
-    }                                                         \
+#define FB_CUDACHECKABORT(cmd)                                                 \
+  do {                                                                         \
+    cudaError_t err = cmd;                                                     \
+    if (err != cudaSuccess) {                                                  \
+      CERR(                                                                    \
+          commUnhandledCudaError, "Cuda failure {}", cudaGetErrorString(err)); \
+      abort();                                                                 \
+    }                                                                          \
   } while (false)
 
-#define FB_SYSCHECK(statement, name)                              \
-  do {                                                            \
-    int retval;                                                   \
-    FB_SYSCHECKSYNC((statement), name, retval);                   \
-    if (retval == -1) {                                           \
-      CLOGF(ERR, "Call to " name " failed: {}", strerror(errno)); \
-      return commSystemError;                                     \
-    }                                                             \
+#define FB_SYSCHECK(statement, name)                                         \
+  do {                                                                       \
+    int retval;                                                              \
+    FB_SYSCHECKSYNC((statement), name, retval);                              \
+    if (retval == -1) {                                                      \
+      CERR(commSystemError, "Call to " name " failed: {}", strerror(errno)); \
+      return commSystemError;                                                \
+    }                                                                        \
   } while (false)
 
-#define FB_SYSCHECKVAL(call, name, retval)                         \
-  do {                                                             \
-    FB_SYSCHECKSYNC(call, name, retval);                           \
-    if (retval == -1) {                                            \
-      CLOGF(ERR, "Call to " name " failed : {}", strerror(errno)); \
-      return commSystemError;                                      \
-    }                                                              \
+#define FB_SYSCHECKVAL(call, name, retval)                                    \
+  do {                                                                        \
+    FB_SYSCHECKSYNC(call, name, retval);                                      \
+    if (retval == -1) {                                                       \
+      CERR(commSystemError, "Call to " name " failed : {}", strerror(errno)); \
+      return commSystemError;                                                 \
+    }                                                                         \
   } while (false)
 
 #define FB_SYSCHECKSYNC(statement, name, retval)                             \
@@ -178,30 +182,36 @@
     }                                                                        \
   } while (true)
 
-#define FB_SYSCHECKGOTO(statement, name, RES, label)              \
-  do {                                                            \
-    int retval;                                                   \
-    FB_SYSCHECKSYNC((statement), name, retval);                   \
-    if (retval == -1) {                                           \
-      CLOGF(ERR, "Call to " name " failed: {}", strerror(errno)); \
-      RES = commSystemError;                                      \
-      goto label;                                                 \
-    }                                                             \
+#define FB_SYSCHECKGOTO(statement, name, RES, label)                         \
+  do {                                                                       \
+    int retval;                                                              \
+    FB_SYSCHECKSYNC((statement), name, retval);                              \
+    if (retval == -1) {                                                      \
+      CERR(commSystemError, "Call to " name " failed: {}", strerror(errno)); \
+      RES = commSystemError;                                                 \
+      goto label;                                                            \
+    }                                                                        \
   } while (0)
 
-#define FB_SYSCHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)                  \
-  do {                                                                         \
-    int err = cmd;                                                             \
-    if (err != 0) {                                                            \
-      auto errstr = folly::errnoStr(err);                                      \
-      CLOGF(ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, err, errstr.c_str()); \
-      throw ctran::utils::Exception(                                           \
-          std::string("System error: ") + errstr,                              \
-          commSystemError,                                                     \
-          rank,                                                                \
-          commHash,                                                            \
-          desc);                                                               \
-    }                                                                          \
+#define FB_SYSCHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc) \
+  do {                                                        \
+    int err = cmd;                                            \
+    if (err != 0) {                                           \
+      auto errstr = folly::errnoStr(err);                     \
+      CERR(                                                   \
+          commSystemError,                                    \
+          "{}:{} -> {} ({})",                                 \
+          __FILE__,                                           \
+          __LINE__,                                           \
+          err,                                                \
+          errstr.c_str());                                    \
+      throw ctran::utils::Exception(                          \
+          std::string("System error: ") + errstr,             \
+          commSystemError,                                    \
+          rank,                                               \
+          commHash,                                           \
+          desc);                                              \
+    }                                                         \
   } while (0)
 
 #define FB_SYSCHECKTHROW_EX_LOGDATA(cmd, logData) \
@@ -225,42 +235,48 @@
       FB_SYSCHECKTHROW_EX_LOGDATA, \
       UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
 
-#define FB_SYSCHECKRETURN(cmd, retval)                                         \
-  do {                                                                         \
-    int err = cmd;                                                             \
-    if (err != 0) {                                                            \
-      auto errstr = folly::errnoStr(err);                                      \
-      CLOGF(ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, err, errstr.c_str()); \
-      return retval;                                                           \
-    }                                                                          \
+#define FB_SYSCHECKRETURN(cmd, retval)    \
+  do {                                    \
+    int err = cmd;                        \
+    if (err != 0) {                       \
+      auto errstr = folly::errnoStr(err); \
+      CERR(                               \
+          commSystemError,                \
+          "{}:{} -> {} ({})",             \
+          __FILE__,                       \
+          __LINE__,                       \
+          err,                            \
+          errstr.c_str());                \
+      return retval;                      \
+    }                                     \
   } while (0)
 
 // Pthread calls don't set errno and never return EINTR.
-#define FB_PTHREADCHECK(statement, name)                           \
-  do {                                                             \
-    int retval = (statement);                                      \
-    if (retval != 0) {                                             \
-      CLOGF(ERR, "Call to " name " failed: {}", strerror(retval)); \
-      return commSystemError;                                      \
-    }                                                              \
+#define FB_PTHREADCHECK(statement, name)                                      \
+  do {                                                                        \
+    int retval = (statement);                                                 \
+    if (retval != 0) {                                                        \
+      CERR(commSystemError, "Call to " name " failed: {}", strerror(retval)); \
+      return commSystemError;                                                 \
+    }                                                                         \
   } while (0)
 
-#define FB_PTHREADCHECKGOTO(statement, name, RES, label)           \
-  do {                                                             \
-    int retval = (statement);                                      \
-    if (retval != 0) {                                             \
-      CLOGF(ERR, "Call to " name " failed: {}", strerror(retval)); \
-      RES = commSystemError;                                       \
-      goto label;                                                  \
-    }                                                              \
+#define FB_PTHREADCHECKGOTO(statement, name, RES, label)                      \
+  do {                                                                        \
+    int retval = (statement);                                                 \
+    if (retval != 0) {                                                        \
+      CERR(commSystemError, "Call to " name " failed: {}", strerror(retval)); \
+      RES = commSystemError;                                                  \
+      goto label;                                                             \
+    }                                                                         \
   } while (0)
 
 #define FB_NEQCHECK(statement, value) \
   do {                                \
     if ((statement) != value) {       \
       /* Print the back trace*/       \
-      CLOGF(                          \
-          ERR,                        \
+      CERR(                           \
+          commSystemError,            \
           "{}:{} -> {} ({})",         \
           __FILE__,                   \
           __LINE__,                   \
@@ -270,23 +286,28 @@
     }                                 \
   } while (0)
 
-#define FB_NEQCHECKGOTO(statement, value, RES, label)                         \
-  do {                                                                        \
-    if ((statement) != value) {                                               \
-      /* Print the back trace*/                                               \
-      RES = commSystemError;                                                  \
-      CLOGF(                                                                  \
-          ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, RES, strerror(errno)); \
-      goto label;                                                             \
-    }                                                                         \
+#define FB_NEQCHECKGOTO(statement, value, RES, label) \
+  do {                                                \
+    if ((statement) != value) {                       \
+      /* Print the back trace*/                       \
+      RES = commSystemError;                          \
+      CERR(                                           \
+          commSystemError,                            \
+          "{}:{} -> {} ({})",                         \
+          __FILE__,                                   \
+          __LINE__,                                   \
+          RES,                                        \
+          strerror(errno));                           \
+      goto label;                                     \
+    }                                                 \
   } while (0)
 
 #define FB_EQCHECK(statement, value) \
   do {                               \
     if ((statement) == value) {      \
       /* Print the back trace*/      \
-      CLOGF(                         \
-          ERR,                       \
+      CERR(                          \
+          commSystemError,           \
           "{}:{} -> {} ({})",        \
           __FILE__,                  \
           __LINE__,                  \
@@ -296,15 +317,20 @@
     }                                \
   } while (0)
 
-#define FB_EQCHECKGOTO(statement, value, RES, label)                          \
-  do {                                                                        \
-    if ((statement) == value) {                                               \
-      /* Print the back trace*/                                               \
-      RES = commSystemError;                                                  \
-      CLOGF(                                                                  \
-          ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, RES, strerror(errno)); \
-      goto label;                                                             \
-    }                                                                         \
+#define FB_EQCHECKGOTO(statement, value, RES, label) \
+  do {                                               \
+    if ((statement) == value) {                      \
+      /* Print the back trace*/                      \
+      RES = commSystemError;                         \
+      CERR(                                          \
+          commSystemError,                           \
+          "{}:{} -> {} ({})",                        \
+          __FILE__,                                  \
+          __LINE__,                                  \
+          RES,                                       \
+          strerror(errno));                          \
+      goto label;                                    \
+    }                                                \
   } while (0)
 
 // Propagate errors up
@@ -321,8 +347,8 @@
 #define FOLLY_EXPECTED_CHECK(RES) \
   do {                            \
     if (RES.hasError()) {         \
-      CLOGF(                      \
-          ERR,                    \
+      CERR(                       \
+          commSystemError,        \
           "{}:{} -> {}, {}",      \
           __FILE__,               \
           __LINE__,               \
@@ -480,7 +506,7 @@
 #define FB_CHECKTHROW_EX_DIRECT(statement, rank, commHash, commDesc, msg) \
   do {                                                                    \
     if (!(statement)) {                                                   \
-      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);               \
+      CERR(commInternalError, "Check failed: {} - {}", #statement, msg);  \
       throw ctran::utils::Exception(                                      \
           fmt::format("Check failed: {} - {}", #statement, msg),          \
           commInternalError,                                              \
@@ -490,17 +516,17 @@
     }                                                                     \
   } while (0)
 
-#define FB_CHECKTHROW_EX_LOGDATA(statement, commLogData, msg)    \
-  do {                                                           \
-    if (!(statement)) {                                          \
-      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);      \
-      throw ctran::utils::Exception(                             \
-          fmt::format("Check failed: {} - {}", #statement, msg), \
-          commInternalError,                                     \
-          (commLogData).rank,                                    \
-          (commLogData).commHash,                                \
-          (commLogData).commDesc);                               \
-    }                                                            \
+#define FB_CHECKTHROW_EX_LOGDATA(statement, commLogData, msg)            \
+  do {                                                                   \
+    if (!(statement)) {                                                  \
+      CERR(commInternalError, "Check failed: {} - {}", #statement, msg); \
+      throw ctran::utils::Exception(                                     \
+          fmt::format("Check failed: {} - {}", #statement, msg),         \
+          commInternalError,                                             \
+          (commLogData).rank,                                            \
+          (commLogData).commHash,                                        \
+          (commLogData).commDesc);                                       \
+    }                                                                    \
   } while (0)
 
 // Selector macro, used with FB_CHECKTHROW_EX to delegate
@@ -527,7 +553,7 @@
     if (!(statement)) {                                                  \
       auto errorMsg =                                                    \
           fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__); \
-      CLOGF(ERR, errorMsg);                                              \
+      CERR(commInternalError, "{}", errorMsg);                           \
       throw ctran::utils::Exception(errorMsg, commInternalError);        \
     }                                                                    \
   } while (0)
@@ -573,31 +599,29 @@
 #define FB_CUDACHECKTHREAD(a)             \
   do {                                    \
     if ((a) != cudaSuccess) {             \
-      CLOGF_SUBSYS(                       \
-          ERR,                            \
-          INIT,                           \
-          "{}:{}} -> {}} [Async thread]", \
+      args->ret = commUnhandledCudaError; \
+      CERR(                               \
+          commUnhandledCudaError,         \
+          "{}:{} -> {} [Async thread]",   \
           __FILE__,                       \
           __LINE__,                       \
           args->ret);                     \
-      args->ret = commUnhandledCudaError; \
       return args;                        \
     }                                     \
   } while (0)
 
-#define FB_COMMARGCHECK(statement, ...)                     \
-  do {                                                      \
-    if (!(statement)) {                                     \
-      CLOGF(ERR, ##__VA_ARGS__);                            \
-      return ErrorStackTraceUtil::log(commInvalidArgument); \
-    }                                                       \
+#define FB_COMMARGCHECK(statement, ...)         \
+  do {                                          \
+    if (!(statement)) {                         \
+      CERR(commInvalidArgument, ##__VA_ARGS__); \
+      return commInvalidArgument;               \
+    }                                           \
   } while (0);
 
-#define FB_ERRORRETURN(error, ...)                                  \
-  do {                                                              \
-    CLOGF(ERR, ##__VA_ARGS__);                                      \
-    ErrorStackTraceUtil::logErrorMessage(fmt::format(__VA_ARGS__)); \
-    return error;                                                   \
+#define FB_ERRORRETURN(error, ...) \
+  do {                             \
+    CERR(error, ##__VA_ARGS__);    \
+    return error;                  \
   } while (0)
 
 #define FB_ERRORTHROW_EX(error, logData, ...)       \

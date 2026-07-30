@@ -102,7 +102,8 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
 
-  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream)) {
+  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream,
+                                                  recvbuff, sendcount * comm->nRanks * ncclTypeSize(datatype))) {
     return metaCommToNccl(ctranAllGather(
         sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
   }
@@ -367,16 +368,18 @@ ncclResult_t ncclAllToAll(
   NCCLCHECK(CudaPtrCheck(sendbuff, comm, "sendbuff", "ncclAllToAll"));
   NCCLCHECK(CudaPtrCheck(recvbuff, comm, "recvbuff", "ncclAllToAll"));
   if (sendbuff == recvbuff) {
-    FB_ERRORRETURN(
+    ERR(
         ncclInvalidArgument,
         "Found sendbuff %p == recvbuff %p. In-place ncclAllToAll is not supported.",
         sendbuff,
         recvbuff);
+    return ncclInvalidArgument;
   }
 
-  if ((NCCL_ALLTOALL_ALGO != NCCL_ALLTOALL_ALGO::orig) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO, stream)) {
-    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, NCCL_ALLTOALL_ALGO));
+  auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
+  if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream, recvbuff)) {
+    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
   }
 
   // fallback to baseline send/recv based alltoall
@@ -447,11 +450,12 @@ ncclResult_t ncclAllToAllv(
   }
 
   if (totalSendCount && totalRecvCount && sendbuff == recvbuff) {
-    FB_ERRORRETURN(
+    ERR(
         ncclInvalidArgument,
         "Found sendbuff %p == recvbuff %p. In-place ncclAllToAllv is not supported.",
         sendbuff,
         recvbuff);
+    return ncclInvalidArgument;
   }
 
   if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) == NCCL_ALLTOALLV_ALGO::ctran) &&
@@ -504,9 +508,10 @@ ncclResult_t ncclx::deviceAllToAllv(
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
   if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
-    FB_ERRORRETURN(
+    ERR(
         ncclInvalidUsage,
         "deviceAllToAllv requires ctran with pipes transport support");
+    return ncclInvalidUsage;
   }
   return metaCommToNccl(ctranDeviceAllToAllv(
       sendbuff,

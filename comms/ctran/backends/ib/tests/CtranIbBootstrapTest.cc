@@ -11,6 +11,7 @@
 #include <folly/futures/Future.h>
 #include <folly/synchronization/Baton.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
@@ -19,10 +20,9 @@
 #include "comms/ctran/bootstrap/tests/MockISocket.h"
 #include "comms/ctran/bootstrap/tests/MockInjectorSocketFactory.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-using AbortPtr = std::shared_ptr<ctran::utils::Abort>;
+using AbortPtr = std::shared_ptr<comms::fault_tolerance::Abort>;
 using namespace std::literals::chrono_literals;
 using ::testing::_;
 using ::testing::StrictMock;
@@ -170,7 +170,7 @@ class TwoRankTestHelper {
     std::thread rank0Thread([&]() {
       EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
       SocketServerAddr serverAddr = getSocketServerAddress();
-      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
           0, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
 
@@ -184,7 +184,7 @@ class TwoRankTestHelper {
     std::thread rank1Thread([&]() {
       EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
       SocketServerAddr serverAddr = getSocketServerAddress();
-      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
           1, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
 
@@ -283,7 +283,7 @@ class CtranIbBootstrapParameterizedTest
       CtranIb::BootstrapMode mode,
       bool abortEnabled = true,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(abortEnabled);
+    auto abortCtrl = comms::fault_tolerance::createAbort(abortEnabled);
 
     auto param = GetParam();
     auto socketFactory = param.socketFactoryCreator();
@@ -323,7 +323,7 @@ TEST_F(CtranIbBootstrapCommonTest, SingleInterfaceInSocketIfnameSucceeds) {
   };
 
   NCCL_SOCKET_IFNAME = "lo"; // Single interface (no comma)
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   // Should not throw; single interface is valid
   auto ctranIb = createCtranIb(
@@ -342,7 +342,7 @@ TEST_F(CtranIbBootstrapCommonTest, MultiInterfaceInSocketIfnameSucceeds) {
   };
 
   NCCL_SOCKET_IFNAME = "lo,eth0";
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   auto ctranIb = createCtranIb(
       /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
@@ -357,7 +357,7 @@ TEST_F(CtranIbBootstrapCommonTest, EmptySocketIfnameFailsNoInterfaces) {
   };
 
   NCCL_SOCKET_IFNAME = "";
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
 
   try {
     auto ctranIb = createCtranIb(
@@ -406,7 +406,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   SocketServerAddr serverAddr = getSocketServerAddress();
   auto ctranIb = createCtranIb(
       /*rank=*/0,
@@ -420,7 +420,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   std::thread abortThread([&]() {
     abortThreadStarted.post();
     std::this_thread::sleep_for(100ms);
-    abortCtrl->Set();
+    abortCtrl->setAbort();
   });
 
   // Try to connect to a non-existent server
@@ -443,13 +443,13 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   EXPECT_NE(result, commSuccess);
 
   // Verify abort flag is set
-  EXPECT_TRUE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isAborted());
 
   abortThread.join();
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   SocketServerAddr serverAddr = getSocketServerAddress();
   auto ctranIb = createCtranIb(
       /*rank=*/0,
@@ -457,7 +457,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
       abortCtrl,
       &serverAddr);
 
-  abortCtrl->SetTimeout(250ms);
+  abortCtrl->startTimeout(250ms);
 
   // Try to connect to a non-existent server
   SocketServerAddr invalidServerAddr = getSocketServerAddress(
@@ -475,7 +475,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
   // Should abort quickly
   EXPECT_LT(elapsed, 5s);
   EXPECT_NE(result, commSuccess);
-  EXPECT_TRUE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isAborted());
 }
 
 // Test that bootstrap respects magic number validation
@@ -591,7 +591,7 @@ class CtranIbAbortCtrlMsgTest
   void SetUp() override {
     CtranIbBootstrapTestBase::SetUp();
     EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-    abortCtrl_ = ctran::utils::createAbort(/*enabled=*/true);
+    abortCtrl_ = comms::fault_tolerance::createAbort(/*enabled=*/true);
   }
 
   void TearDown() override {
@@ -698,7 +698,7 @@ class CtranIbAbortCtrlMsgTest
 
   std::unique_ptr<CtranIb> ctranIb_;
   folly::Baton<> acceptSocketBaton_;
-  std::shared_ptr<ctran::utils::Abort> abortCtrl_;
+  std::shared_ptr<comms::fault_tolerance::Abort> abortCtrl_;
   std::vector<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>
       mockSockets_;
   std::vector<std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>>
@@ -717,7 +717,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, SocketConnectError) {
                          bool async) { return ECONNABORTED; });
 
   testAbortedCtrlMsg(std::move(mockSocket), true);
-  EXPECT_FALSE(abortCtrl_->Test());
+  EXPECT_FALSE(abortCtrl_->isAborted());
 }
 
 TEST_P(CtranIbAbortCtrlMsgTest, AbortDuringSocketConnect) {
@@ -731,7 +731,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, AbortDuringSocketConnect) {
                     const std::chrono::milliseconds timeout,
                     size_t numRetries,
                     bool async) {
-        abortCtrl_->Set();
+        abortCtrl_->setAbort();
         return 0; // Only trigger abort; don't return error code here...
       });
 
@@ -744,7 +744,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, AbortDuringSocketConnect) {
           [&](const void* buf, const size_t len) { return ECONNABORTED; });
 
   testAbortedCtrlMsg(std::move(mockSocket), true);
-  EXPECT_TRUE(abortCtrl_->Test());
+  EXPECT_TRUE(abortCtrl_->isAborted());
 }
 
 TEST_P(CtranIbAbortCtrlMsgTest, AbortOnSocketSend) {
@@ -760,17 +760,17 @@ TEST_P(CtranIbAbortCtrlMsgTest, AbortOnSocketSend) {
 
   EXPECT_CALL(*mockSocket, send(_, _))
       .WillRepeatedly([&](const void* buf, const size_t len) {
-        if (abortCtrl_->Test()) {
+        if (abortCtrl_->isAborted()) {
           // Once abort is triggered, should return errcode.
           return ECONNABORTED;
         }
-        abortCtrl_->Set();
+        abortCtrl_->setAbort();
         return 0; // Only trigger abort; don't return error code here...
       });
 
   EXPECT_CALL(*mockSocket, recv(_, _))
       .WillRepeatedly([&](const void* buf, const size_t len) {
-        if (abortCtrl_->Test()) {
+        if (abortCtrl_->isAborted()) {
           // Once abort is triggered, should return errcode.
           return ECONNABORTED;
         }
@@ -778,7 +778,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, AbortOnSocketSend) {
       });
 
   testAbortedCtrlMsg(std::move(mockSocket), true);
-  EXPECT_TRUE(abortCtrl_->Test());
+  EXPECT_TRUE(abortCtrl_->isAborted());
 }
 
 TEST_P(CtranIbAbortCtrlMsgTest, SocketSendError) {
@@ -800,7 +800,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, SocketSendError) {
           [&](const void* buf, const size_t len) { return ECONNABORTED; });
 
   testAbortedCtrlMsg(std::move(mockSocket), true);
-  EXPECT_FALSE(abortCtrl_->Test());
+  EXPECT_FALSE(abortCtrl_->isAborted());
 }
 
 TEST_P(CtranIbAbortCtrlMsgTest, SocketRecvError) {
@@ -822,7 +822,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, SocketRecvError) {
           [&](const void* buf, const size_t len) { return ECONNABORTED; });
 
   testAbortedCtrlMsg(std::move(mockSocket), true);
-  EXPECT_FALSE(abortCtrl_->Test());
+  EXPECT_FALSE(abortCtrl_->isAborted());
 }
 
 TEST_P(CtranIbAbortCtrlMsgTest, NoAbortNoError) {
@@ -853,7 +853,7 @@ TEST_P(CtranIbAbortCtrlMsgTest, NoAbortNoError) {
       });
 
   testAbortedCtrlMsg(std::move(mockSocket), false);
-  EXPECT_FALSE(abortCtrl_->Test());
+  EXPECT_FALSE(abortCtrl_->isAborted());
 }
 
 // Instantiate parameterized tests with both Socket and AbortableSocket
@@ -909,7 +909,8 @@ std::shared_ptr<PreparedMockedServerSocket> prepareMockIServerSocket(
     bool unblockAcceptInShutdown,
     bool abortEnabled = false) {
   auto prepared = std::make_shared<PreparedMockedServerSocket>();
-  prepared->abortCtrl = ctran::utils::createAbort(/*enabled=*/abortEnabled);
+  prepared->abortCtrl =
+      comms::fault_tolerance::createAbort(/*enabled=*/abortEnabled);
   prepared->acceptCalledBaton = std::make_shared<folly::Baton<>>();
   prepared->unblockAcceptBaton = std::make_shared<folly::Baton<>>();
   prepared->hasShutDown = std::make_shared<std::atomic_flag>();
@@ -983,13 +984,14 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
   auto start = std::chrono::steady_clock::now();
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start);
-  while (!preparedServerSocket->abortCtrl->Test() && elapsed.count() < 10000) {
+  while (!preparedServerSocket->abortCtrl->isAborted() &&
+         elapsed.count() < 10000) {
     std::this_thread::sleep_for(10ms);
     elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
   }
 
-  EXPECT_TRUE(preparedServerSocket->abortCtrl->Test());
+  EXPECT_TRUE(preparedServerSocket->abortCtrl->isAborted());
 
   // Destroy CtranIb
   auto startDestroy = std::chrono::steady_clock::now();
@@ -1032,12 +1034,12 @@ TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
   // If we get here without hanging, the test passed
   EXPECT_TRUE(preparedMockIServerSocket->unblockAcceptBaton->ready())
       << "Shutdown should have been called";
-  EXPECT_FALSE(preparedMockIServerSocket->abortCtrl->Test());
+  EXPECT_FALSE(preparedMockIServerSocket->abortCtrl->isAborted());
 }
 
 // Test that abort during bus card exchange fails gracefully
 TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   folly::Baton<> acceptSocketBaton;
 
   auto mockSocket =
@@ -1056,7 +1058,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
       .WillOnce([&](const void* buf, const size_t len) { return 0; })
       .WillOnce([&](const void* buf, const size_t len) {
         // Third send (bus card) triggers abort and fails.
-        abortCtrl->Set();
+        abortCtrl->setAbort();
         return ECONNABORTED;
       })
       .WillRepeatedly([&](const void* buf, const size_t len) {
@@ -1139,7 +1141,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
   // Verify abort happened quickly
   EXPECT_LT(elapsed, 10s);
   EXPECT_NE(result, commSuccess);
-  EXPECT_TRUE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isAborted());
 
   // Verify VC was not established
   auto vc = ctranIb->getVc(1);
@@ -1159,7 +1161,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
     sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
     // Set timeout to abort waitNotify
-    abortCtrl->SetTimeout(std::chrono::milliseconds(500));
+    abortCtrl->startTimeout(std::chrono::milliseconds(500));
 
     XLOG(INFO) << "Rank 0 calling ctranIb->waitNotify(1, 1)";
 
@@ -1170,7 +1172,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
 
     // Should abort after timeout
     EXPECT_LT(elapsed, std::chrono::seconds(5));
-    EXPECT_TRUE(abortCtrl->Test());
+    EXPECT_TRUE(abortCtrl->isAborted());
     XLOGF(INFO, "Rank 0 waitNotify aborted by timeout as expected");
   };
 
@@ -1434,7 +1436,7 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumCqe) {
   };
 
   auto makeIb = [&](std::optional<int> maxNumCqe = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     return createCtranIb(
         /*rank=*/0,
         CtranIb::BootstrapMode::kDefaultServer,
@@ -1475,7 +1477,7 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumNic) {
   const int defaultNumNics = NCCL_CTRAN_IB_DEVICES_PER_RANK;
 
   auto makeIb = [&](std::optional<int> maxNumNic = std::nullopt) {
-    auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+    auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
     return createCtranIb(
         /*rank=*/0,
         CtranIb::BootstrapMode::kDefaultServer,

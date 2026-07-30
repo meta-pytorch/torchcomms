@@ -72,3 +72,7 @@ endif()
 install(TARGETS torchcomms_comms_nccl
     LIBRARY DESTINATION .
 )
+
+if (BUILD_TESTS)
+    add_subdirectory(comms/torchcomms/nccl/tests/unit/cpp)
+endif()

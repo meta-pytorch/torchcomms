@@ -84,7 +84,9 @@ commResult_t ctranGroupEndHook(
 bool ctranAllGatherSupport(
     CtranComm* comm,
     enum NCCL_ALLGATHER_ALGO algo,
-    cudaStream_t stream = nullptr);
+    cudaStream_t stream = nullptr,
+    const void* recvbuff = nullptr,
+    size_t recvBytes = 0);
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,
@@ -124,7 +126,8 @@ bool ctranAllToAllSupport(
     commDataType_t datatype,
     CtranComm* comm,
     enum NCCL_ALLTOALL_ALGO algo,
-    cudaStream_t stream = nullptr);
+    cudaStream_t stream = nullptr,
+    void* recvbuff = nullptr);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,

@@ -34,7 +34,7 @@ class StagedBufferTest : public ::testing::Test {
     pd_.reset();
     devices_.clear();
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-    cudaDeviceReset();
+    (void)cudaDeviceReset();
   }
 
   std::vector<ibverbx::IbvDevice> devices_;

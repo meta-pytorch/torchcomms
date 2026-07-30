@@ -124,7 +124,7 @@ template __global__ void direct_reduce_scatter_ib_kernel<
     128,
     384,
     512,
-    TileReduceStaged<float, SumOp, 24576, 384>>(
+    CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>(
     const __grid_constant__ DirectReduceScatterIbArgs<float>,
     Timeout);
 
@@ -140,10 +140,32 @@ void launch_direct_reduce_scatter_ib_impl(
       128,
       384,
       512,
-      TileReduceStaged<float, SumOp, 24576, 384>>;
-  using ReduceOp = TileReduceStaged<float, SumOp, 24576, 384>;
+      CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>;
+  using ReduceOp = CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>;
   constexpr std::size_t dynamic_smem = ReduceOp::smem_bytes();
   if constexpr (dynamic_smem > 0) {
+    int device = 0;
+    PIPES_CUDA_CHECK(cudaGetDevice(&device));
+
+    int compute_capability_major = 0;
+    PIPES_CUDA_CHECK(cudaDeviceGetAttribute(
+        &compute_capability_major, cudaDevAttrComputeCapabilityMajor, device));
+    if (compute_capability_major < 8) {
+      throw std::runtime_error(
+          "CpAsyncSmemReduce requires a GPU with compute capability 8.0 or "
+          "newer");
+    }
+
+    int max_dynamic_smem = 0;
+    PIPES_CUDA_CHECK(cudaDeviceGetAttribute(
+        &max_dynamic_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+    if (dynamic_smem > static_cast<std::size_t>(max_dynamic_smem)) {
+      throw std::runtime_error(
+          "CpAsyncSmemReduce requires " + std::to_string(dynamic_smem) +
+          " bytes of dynamic shared memory, but the GPU supports only " +
+          std::to_string(max_dynamic_smem));
+    }
+
     PIPES_CUDA_CHECK(cudaFuncSetAttribute(
         kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,

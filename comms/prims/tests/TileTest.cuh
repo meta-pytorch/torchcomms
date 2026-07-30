@@ -12,6 +12,23 @@ namespace comms::prims::test {
 
 constexpr int kTileTestBlockSize = 256;
 constexpr int kTileTestTileElems = 2048;
+constexpr int kTileTestByteTileElems = 4096;
+
+enum class TileTestDataType {
+  kInt8,
+  kUint8,
+  kInt32,
+  kUint32,
+  kInt64,
+  kUint64,
+  kFloat64,
+};
+
+enum class TileTestReduceOp {
+  kSum,
+  kMax,
+  kMin,
+};
 
 void test_tile_load_store_float(
     const float* input,
@@ -52,6 +69,14 @@ void test_tile_accumulate_min_float(
     const float* a,
     const float* b,
     float* output,
+    std::size_t ntiles);
+
+void test_tile_accumulate_dtype(
+    TileTestDataType dtype,
+    TileTestReduceOp op,
+    const void* a,
+    const void* b,
+    void* output,
     std::size_t ntiles);
 
 void test_tile_load_accumulate_sum_float(

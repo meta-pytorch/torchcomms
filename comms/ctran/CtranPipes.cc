@@ -4,12 +4,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <set>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
-#include "comms/ctran/algos/ReduceScatter/ReduceScatterDirectIbConfig.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -28,7 +28,7 @@ bool ctranPipesTraceEnabled() {
 }
 
 int ctranPipesNvlMaxNumChannels() {
-  return std::max(1, NCCL_CTRAN_MAX_NBLOCKS);
+  return std::max(1, MCCL_MAX_NBLOCKS);
 }
 
 size_t roundDownToMultiple(size_t value, size_t multiple) {
@@ -108,6 +108,61 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     const size_t nvlDataBufferSize =
         nvlMaxNumChannels * config.nvlConfig.perChannelSize;
 
+    // The multimem staging window is decoupled from the P2P shared devbuf: a
+    // larger window means fewer staging rounds, which is the dominant cnvlmm
+    // throughput lever at large sizes. Falls back to the P2P size when the
+    // dedicated cvar is 0. Computed before the enable guard so setting only the
+    // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the
+    // path.
+    const size_t multimemDevbufSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
+        ? static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE)
+        : nvlSharedDevbufSize;
+    if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
+      const uint32_t multimemPipelineDepth = static_cast<uint32_t>(
+          std::max<size_t>(1, config.nvlConfig.pipelineDepth));
+      // Reuse the already-computed channel count (== std::max(1,
+      // MCCL_MAX_NBLOCKS)) as the group count so the signal sizing cannot drift
+      // from the transport's actual channel count.
+      const uint32_t multimemMaxGroups =
+          static_cast<uint32_t>(config.nvlConfig.maxNumChannels);
+      // Per-lane signal region, sized from the shared source of truth
+      // `multimem_staging_signals_per_lane` (MultimemNvlTransportDevice.cuh).
+      // The device-side `make_stage_layout` (MultimemNvlStageLayout.cuh, added
+      // by the ReduceScatter copy prereq stacked on this diff) is updated to
+      // call the same helper, so the host sizing here and the device layout
+      // stay in lockstep off one definition rather than duplicated literals.
+      const uint32_t multimemSignalsPerLane =
+          comms::prims::multimem_staging_signals_per_lane(
+              comm->statex_->nLocalRanks());
+      // Evaluate the product in u64 (all three factors are hardware-bounded to
+      // small values, so it cannot realistically overflow u64) and bound it
+      // against the transport's signal-count limit (INT_MAX; see
+      // MultimemNvlTransport's ctor) before narrowing into the u32 field, so a
+      // future large maxGroups/pipelineDepth/nLocalRanks fails loudly here with
+      // context rather than silently wrapping or throwing deeper in the ctor.
+      const uint64_t multimemInternalSignalCount =
+          static_cast<uint64_t>(multimemMaxGroups) * multimemPipelineDepth *
+          multimemSignalsPerLane;
+      if (multimemInternalSignalCount >
+          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        CLOGF(
+            ERR,
+            "CTRAN-PRIMS: multimem internalSignalCount {} exceeds the transport signal-count limit (INT_MAX); maxGroups={} pipelineDepth={} signalsPerLane={}",
+            multimemInternalSignalCount,
+            multimemMaxGroups,
+            multimemPipelineDepth,
+            multimemSignalsPerLane);
+        return commInvalidArgument;
+      }
+      config.nvlConfig.enableMultimem = true;
+      config.nvlConfig.multimem = comms::prims::MultimemNvlTransportConfig{
+          .dataBufferSize = multimemDevbufSize,
+          .userSignalCount = 1,
+          .internalSignalCount =
+              static_cast<uint32_t>(multimemInternalSignalCount),
+      };
+    }
+
     // LL128 buffer allocation for DeviceAllToAllv
     if (NCCL_CTRAN_DA2A_LL128_THRESHOLD > 0) {
       if (NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE > 0) {
@@ -144,15 +199,44 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       }
       config.ibConfig.ibHca = std::move(hcaStr);
     }
-    uint64_t ibgdaDataBufferSize = (pc.ibgdaDataBufferSize > 0)
-        ? static_cast<size_t>(pc.ibgdaDataBufferSize)
-        : static_cast<size_t>(NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE);
-    if (hierAgOverlapEnabled && NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE > 0) {
-      ibgdaDataBufferSize = std::max(
-          ibgdaDataBufferSize, NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE);
+    if (MCCL_MAX_NCHANNELS <= 0) {
+      CLOGF(
+          ERR,
+          "MCCL_MAX_NCHANNELS must be positive, got {}",
+          MCCL_MAX_NCHANNELS);
+      return commInvalidArgument;
     }
-    config.ibConfig.dataBufferSize = static_cast<size_t>(ibgdaDataBufferSize);
-    config.ibConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
+    const int maxChannels = static_cast<int>(MCCL_MAX_NCHANNELS);
+    const int channelPipelineDepth =
+        static_cast<int>(MCCL_CHANNEL_PIPELINE_DEPTH);
+    if (channelPipelineDepth <= 0) {
+      CLOGF(
+          ERR,
+          "MCCL_CHANNEL_PIPELINE_DEPTH must be positive, got {}",
+          channelPipelineDepth);
+      return commInvalidArgument;
+    }
+
+    size_t ibgdaDataBufferSize = 0;
+    if (pc.ibgdaDataBufferSize > 0) {
+      ibgdaDataBufferSize = static_cast<size_t>(pc.ibgdaDataBufferSize);
+    } else {
+      const auto perDirectionChannelBuffer =
+          static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
+      if (perDirectionChannelBuffer > std::numeric_limits<size_t>::max() /
+              static_cast<size_t>(maxChannels)) {
+        CLOGF(
+            ERR,
+            "MCCL_CHANNEL_BUFFER_SIZE={} overflows total size for {} channels",
+            perDirectionChannelBuffer,
+            maxChannels);
+        return commInvalidArgument;
+      }
+      ibgdaDataBufferSize =
+          perDirectionChannelBuffer * static_cast<size_t>(maxChannels);
+    }
+    config.ibConfig.dataBufferSize = ibgdaDataBufferSize;
+    config.ibConfig.qpDepth = MCCL_IB_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
     }
@@ -178,13 +262,6 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.ibLazyConnect = pc.ibLazyConnect;
     config.ibConfig.materializePeerTimeoutMs =
         NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS;
-    if (NCCL_CTRAN_IB_MAX_GROUPS <= 0) {
-      CLOGF(
-          ERR,
-          "NCCL_CTRAN_IB_MAX_GROUPS must be positive, got {}",
-          NCCL_CTRAN_IB_MAX_GROUPS);
-      return commInvalidArgument;
-    }
     if (NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC <= 0) {
       CLOGF(
           ERR,
@@ -192,81 +269,52 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
       return commInvalidArgument;
     }
-    config.ibConfig.maxGroups = static_cast<int>(NCCL_CTRAN_IB_MAX_GROUPS);
+    config.ibConfig.maxGroups = maxChannels;
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
 
-    const bool directIbReduceScatter =
-        NCCL_REDUCESCATTER_ALGO == NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
-    if (directIbReduceScatter) {
-      config.ibConfig.perChannelSize =
-          ctran::reducescatter::direct_ib::kPerChannelSize;
-      config.ibConfig.max_num_channels =
-          ctran::reducescatter::direct_ib::kMaxNumBlocks;
-      config.ibConfig.pipelineDepth =
-          ctran::reducescatter::direct_ib::kPipelineDepth;
-      config.ibConfig.qpsPerConnection =
-          ctran::reducescatter::direct_ib::kQpsPerConnection;
-      config.ibConfig.maxGroups =
-          ctran::reducescatter::direct_ib::kMaxNumBlocks;
-      config.ibConfig.dataBufferSize =
-          config.ibConfig.fixedChannelDataBufferSize();
+    if (config.ibConfig.dataBufferSize == 0) {
       CLOGF(
-          INFO,
-          "Direct IB ReduceScatter pins IB config: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, qpsPerConnection={}, maxGroups={}, dataBufferSize={}",
-          config.ibConfig.perChannelSize,
-          config.ibConfig.max_num_channels,
-          config.ibConfig.pipelineDepth,
-          config.ibConfig.qpsPerConnection,
-          config.ibConfig.maxGroups,
-          config.ibConfig.dataBufferSize);
+          ERR,
+          "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or pipesIbgdaDataBufferSize");
+      return commInvalidArgument;
     }
-
-    if (NCCL_CTRAN_IBGDA_SENDRECV_ENABLE || directIbReduceScatter) {
-      if (config.ibConfig.dataBufferSize == 0) {
-        CLOGF(
-            ERR,
-            "NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1 requires a positive "
-            "IBGDA data-buffer size via NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE "
-            "or the per-communicator IBGDA data-buffer override");
-        return commInvalidArgument;
-      }
-      if (!directIbReduceScatter &&
-          NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH <= 0) {
-        CLOGF(
-            ERR,
-            "NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH must be positive, got {}",
-            NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
-        return commInvalidArgument;
-      }
-      if (!directIbReduceScatter) {
-        if (config.ibConfig.dataBufferSize %
-                static_cast<std::size_t>(config.ibConfig.maxGroups) !=
-            0) {
-          CLOGF(
-              ERR,
-              "IBGDA data-buffer size {} must be divisible by maxGroups {}",
-              config.ibConfig.dataBufferSize,
-              config.ibConfig.maxGroups);
-          return commInvalidArgument;
-        }
-        config.ibConfig.perChannelSize = config.ibConfig.dataBufferSize /
-            static_cast<std::size_t>(config.ibConfig.maxGroups);
-        config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
-        config.ibConfig.pipelineDepth =
-            static_cast<int>(NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH);
-      }
+    if (config.ibConfig.dataBufferSize % static_cast<size_t>(maxChannels) !=
+        0) {
       CLOGF(
-          INFO,
-          "Prims IBGDA sendRecv configured: perChannelSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}, directIbReduceScatter={}",
-          config.ibConfig.perChannelSize,
-          config.ibConfig.max_num_channels,
-          config.ibConfig.pipelineDepth,
+          ERR,
+          "IB data-buffer size {} must be divisible by channel count {}",
           config.ibConfig.dataBufferSize,
-          directIbReduceScatter);
+          maxChannels);
+      return commInvalidArgument;
+    }
+    const size_t perDirectionChannelBuffer =
+        config.ibConfig.dataBufferSize / static_cast<size_t>(maxChannels);
+    const auto pipelineDepth = static_cast<size_t>(channelPipelineDepth);
+    if (perDirectionChannelBuffer % pipelineDepth != 0) {
+      CLOGF(
+          ERR,
+          "IB per-direction channel buffer {} must be divisible by pipeline depth {}",
+          perDirectionChannelBuffer,
+          channelPipelineDepth);
+      return commInvalidArgument;
     }
 
-    if (NCCL_CTRAN_PIPES_IB_MODE == NCCL_CTRAN_PIPES_IB_MODE::ibrc) {
+    config.ibConfig.perChannelSize = perDirectionChannelBuffer;
+    config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
+    config.ibConfig.pipelineDepth = channelPipelineDepth;
+    const size_t channelChunkSize = config.ibConfig.perChannelSize /
+        static_cast<size_t>(config.ibConfig.pipelineDepth);
+    CLOGF(
+        INFO,
+        "Prims IB sendRecv configured: perChannelSize={}, channelChunkSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}",
+        config.ibConfig.perChannelSize,
+        channelChunkSize,
+        config.ibConfig.max_num_channels,
+        config.ibConfig.pipelineDepth,
+        config.ibConfig.dataBufferSize);
+
+    if (MCCL_IB_MODE == MCCL_IB_MODE::ibrc) {
       config.ibMode = comms::prims::IbBackendMode::kIbrc;
     }
     config.disableIb = NCCL_CTRAN_PIPES_DISABLE_IB;
@@ -280,13 +328,17 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemSignals={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} materializePeerTimeoutMs={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
         nvlDataBufferSize,
         config.nvlConfig.maxNumChannels,
         config.nvlConfig.perChannelSize,
+        config.nvlConfig.enableMultimem,
+        config.nvlConfig.enableMultimem
+            ? config.nvlConfig.multimem.internalSignalCount
+            : 0,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,

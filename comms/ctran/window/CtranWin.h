@@ -2,10 +2,18 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <cuda_runtime.h>
 #include <folly/Synchronized.h>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
@@ -14,6 +22,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
 #if defined(ENABLE_PRIMS)
@@ -27,6 +36,8 @@ class HostWindow;
 struct WindowConfig;
 } // namespace comms::prims
 #endif
+
+class CtranPersistentRequest;
 
 namespace ctran {
 struct CtranWin {
@@ -53,6 +64,10 @@ struct CtranWin {
   void* dataSegHdl{nullptr};
   // The ctran mapper handles for caching the data registration
   void* dataRegHdl{nullptr};
+  // WinCache/AVL handle for this window's cached data range; used to erase the
+  // entry directly at free (avoids range lookup resolving to a different
+  // overlapping window).
+  void* winCacheHdl{nullptr};
   // Scoped registration owning the user-provided data buffer's local
   // registration ref (SW refcnt only). dataRegHdl aliases its borrowed
   // RegElem* for the export ctrl path.
@@ -168,12 +183,36 @@ struct CtranWin {
     ipcOnly_ = val;
   }
 
+  inline bool isIpcOnly() const {
+    return ipcOnly_;
+  }
+
   inline void setEnableSignal(bool val) {
     enableSignal_ = val;
   }
 
   inline bool isSignalEnabled() const {
     return enableSignal_;
+  }
+
+  inline void setSymmetric(bool val) {
+    symmetric_ = val;
+  }
+
+  inline bool isSymmetric() const {
+    return symmetric_;
+  }
+
+  // Multicast write base for a user pointer in this window's data buffer, or
+  // std::nullopt when there is no multicast object (unicast). Computed from the
+  // multicast object alone -- no CtranIpc involvement -- so ctwin AllGather
+  // fans out via a single NVSwitch write.
+  inline std::optional<void*> multicastWriteBase(const void* userPtr) const {
+    return mc_ ? mc_->writeBase(userPtr) : std::nullopt;
+  }
+
+  inline uint64_t id() const {
+    return id_;
   }
 
   // Check whether persistent allgather (allgatherP) is supported.
@@ -183,6 +222,26 @@ struct CtranWin {
   bool allGatherPSupported() const {
     return allGatherPSupported(comm);
   }
+
+  // Window-based persistent-request cache, keyed by <byteOffset, byteLen,
+  // stream> of the recvbuf sub-range. Creates the request via `factory` on a
+  // miss, otherwise reuses the cached one; returns nullptr if the factory
+  // fails. The request is per-stream, so two collectives sharing the same key
+  // are always serialized.
+  //
+  // LIFETIME CONTRACT: the returned request is WINDOW-owned and freed by the
+  // window's free(). The caller must ensure every collective that uses a
+  // returned request has completed (e.g. cudaStreamSynchronize) before freeing
+  // the window -- freeing while a ctwin collective is still in flight is
+  // undefined behavior.
+  CtranPersistentRequest* getOrCreatePersistentRequest(
+      size_t offset,
+      size_t len,
+      cudaStream_t stream,
+      const std::function<CtranPersistentRequest*()>& factory);
+
+  // Number of cached ctwin persistent requests (test/introspection helper).
+  size_t numPersistentRequests() const;
 
  private:
   DevMemType bufType_{DevMemType::kCumem};
@@ -199,12 +258,29 @@ struct CtranWin {
   // rejected. Used by data-only collective windows (e.g. window-based
   // allgather) that never issue signals.
   bool enableSignal_{true};
+  // When true, every rank registers a buffer of identical size at an identical
+  // offset from the window base, so a peer address can be computed as
+  // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
+  // hint; consumed by a later window-based allgather. Cached only for now.
+  bool symmetric_{false};
+  // The standalone NVL CE-multicast object for this window's data buffer, set
+  // in exchange() and read via multicastWriteBase(). Self-owning; released with
+  // the window. null unless multicast engaged.
+  std::unique_ptr<ctran::utils::CtranMulticast> mc_;
+  // Per-comm unique id assigned at exchange() (see CtranComm::assignWindowId).
+  uint64_t id_{0};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>
       opCountMap_;
   // Actual size allocated for the total buffer per rank in this window
   size_t range_{0};
+  // Window-based persistent-request cache; see getOrCreatePersistentRequest.
+  // Key is <byteOffset, byteLen, stream> of the recvbuf sub-range.
+  folly::Synchronized<std::map<
+      std::tuple<size_t, size_t, cudaStream_t>,
+      CtranPersistentRequest*>>
+      persistentReqs_;
 
 #if defined(ENABLE_PRIMS)
   std::unique_ptr<comms::prims::HostWindow> hostWindow_;

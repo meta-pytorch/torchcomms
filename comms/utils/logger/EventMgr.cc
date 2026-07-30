@@ -24,6 +24,7 @@ NcclScubaSample CommEvent::toSample() {
   sample.addDouble("timerDeltaMs", timerDeltaMs);
   sample.addNormal("timestamp", timestamp);
 
+  sample.addInt("iteration", iteration);
   return sample;
 }
 
@@ -109,7 +110,6 @@ NcclScubaSample CtranProfilerAlgoEvent::toSample() {
   auto sample = CtranProfilerEvent::toSample();
   sample.addNormal("type", "CtranProfilerAlgoEvent");
   sample.addNormal("direction", direction);
-  sample.addInt("iteration", iteration);
   sample.addInt("opCount", opCount);
   sample.addInt("readyTs", readyTs);
   sample.addInt("controlTs", controlTs);
@@ -133,7 +133,6 @@ NcclScubaSample CtranProfilerGpeEvent::toSample() {
   sample.addInt("durationUs", durationUs_);
   sample.addInt("aborted", aborted_ ? 1 : 0);
   sample.addNormal("message", message_);
-  sample.addInt("iteration", iteration_);
   return sample;
 }
 

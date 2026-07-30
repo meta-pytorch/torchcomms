@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "comms/ctran/transport/ib/HostCbTransport.h"
 #include "comms/ctran/transport/ib/HostZcTransport.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranIpc.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -822,8 +824,8 @@ commResult_t CtranMapper::searchRegHandle(
 
   if (!regHdl_) {
     if (!allowDynamic) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInvalidUsage,
           "CTRAN-MAPPER: buffer {} len {} is not pre-registered by user. ",
           buf,
           len);
@@ -1335,6 +1337,39 @@ commResult_t CtranMapper::allGatherCtrlImpl(
     FB_COMMCHECK(waitRequest(req.get()));
   }
 
+  return commSuccess;
+}
+
+commResult_t CtranMapper::intraNvlDomainAllGather(
+    const void* sendData,
+    void* recvData,
+    size_t elemSize) {
+  const auto& statex = comm->statex_;
+  const int nLocalRanks = statex->nLocalRanks();
+  const int selfIdx = statex->localRank(); // our own NVL-domain rank
+  auto* recvBytes = static_cast<char*>(recvData);
+  std::memcpy(recvBytes + selfIdx * elemSize, sendData, elemSize);
+
+  // One round: post an irecv from + isend to every other domain member, then
+  // wait all. recvData is indexed by domain rank (localRankToRank order), so it
+  // matches the exec/IPC layout. unique_ptr keeps request addresses stable
+  // across vector growth (the IB layer holds references into them).
+  std::vector<std::unique_ptr<CtranMapperRequest>> reqs;
+  for (int i = 0; i < nLocalRanks; i++) {
+    if (i == selfIdx) {
+      continue;
+    }
+    const int peer = statex->localRankToRank(i);
+    reqs.push_back(std::make_unique<CtranMapperRequest>());
+    FB_COMMCHECK(this->irecvCtrlMsg(
+        recvBytes + i * elemSize, elemSize, peer, reqs.back().get()));
+    reqs.push_back(std::make_unique<CtranMapperRequest>());
+    FB_COMMCHECK(
+        this->isendCtrlMsg(sendData, elemSize, peer, reqs.back().get()));
+  }
+  for (auto& req : reqs) {
+    FB_COMMCHECK(this->waitRequest(req.get()));
+  }
   return commSuccess;
 }
 

@@ -25,6 +25,42 @@ createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr) {
   return ibvPd->createQp(&initAttr);
 }
 
+folly::Expected<IbvQp, Error> createRcQpWithOooDp(
+    const IbvPd* ibvPd,
+    ibv_cq* cq,
+    int maxSendWr,
+    int maxRecvWr,
+    bool oooDp) {
+  // Fast path: when OOO_DP isn't needed, use the plain libibverbs create-QP
+  // path. Some deployments dynamically load libmlx5 (dlopen); if that failed
+  // silently the mlx5dv symbols are null, and forcing them through the
+  // mlx5dv_create_qp path would break every data-QP creation. Only opt in
+  // to the mlx5dv path when the caller actually needs OOO_DP.
+  if (!oooDp) {
+    return createRcQp(ibvPd, cq, maxSendWr, maxRecvWr);
+  }
+
+  ibv_qp_init_attr_ex initAttrEx;
+  memset(&initAttrEx, 0, sizeof(initAttrEx));
+  initAttrEx.send_cq = cq;
+  initAttrEx.recv_cq = cq;
+  initAttrEx.qp_type = IBV_QPT_RC;
+  initAttrEx.sq_sig_all = 0;
+  initAttrEx.cap.max_send_wr = maxSendWr;
+  initAttrEx.cap.max_recv_wr = maxRecvWr;
+  initAttrEx.cap.max_send_sge = 1;
+  initAttrEx.cap.max_recv_sge = 1;
+  initAttrEx.cap.max_inline_data = 16;
+  initAttrEx.comp_mask = IBV_QP_INIT_ATTR_PD;
+
+  mlx5dv_qp_init_attr mlx5InitAttr;
+  memset(&mlx5InitAttr, 0, sizeof(mlx5InitAttr));
+  mlx5InitAttr.comp_mask |= MLX5DV_QP_INIT_ATTR_MASK_QP_CREATE_FLAGS;
+  mlx5InitAttr.create_flags |= MLX5DV_QP_CREATE_OOO_DP;
+
+  return ibvPd->createExtRcQpMlx5(&initAttrEx, &mlx5InitAttr);
+}
+
 folly::Expected<folly::Unit, Error>
 initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
   ibv_qp_attr qpAttr;

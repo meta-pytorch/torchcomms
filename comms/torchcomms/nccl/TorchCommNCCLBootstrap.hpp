@@ -39,9 +39,8 @@ class TorchCommNCCLBootstrap {
   ncclComm_t createNcclComm(
       const std::string& name,
       const CommOptions& options = {});
-  static std::string getNCCLStoreKey();
+  static std::string getNCCLStoreKey(std::string_view name);
   static std::string getNCCLStoreKeyPrefix();
-  static int getNCCLStoreKeyCounter();
 
   int getRank() {
     return rank_;
@@ -55,14 +54,13 @@ class TorchCommNCCLBootstrap {
 
  private:
   ncclUniqueId exchangeUniqueId(std::string_view name);
-  ncclUniqueId exchangeUniqueIdStore();
+  ncclUniqueId exchangeUniqueIdStore(std::string_view name);
   ncclUniqueId exchangeUniqueIdTCPStore(std::string_view name);
   bool isTCPStoreEnabled();
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:
   const std::chrono::milliseconds timeout_;
-  static int counter_;
 
   c10::intrusive_ptr<c10d::Store> store_;
   bool created_internal_store_;

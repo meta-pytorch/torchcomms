@@ -72,6 +72,21 @@ void checkAlgoStrToVal(enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctgraph_rd:
       str = "ctgraph_rd";
       break;
+    case NCCL_ALLGATHER_ALGO::ctwin:
+      str = "ctwin";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_ring:
+      str = "ctwin_ring";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_srd:
+      str = "ctwin_srd";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_pipeline:
+      str = "ctwin_pipeline";
+      break;
+    case NCCL_ALLGATHER_ALGO::ctwin_rdpipeline:
+      str = "ctwin_rdpipeline";
+      break;
   }
   enum NCCL_ALLGATHER_ALGO result;
   algoStrToVal(str, result);
@@ -132,6 +147,29 @@ void checkAlgoStrToVal(enum NCCL_ALLTOALLV_ALGO algo) {
   EXPECT_EQ(algoValToStr(algo), str) << "algoValToStr round-trip failed";
 }
 
+void checkAlgoStrToVal(enum NCCL_ALLTOALL_ALGO algo) {
+  std::string str = "UNHANDLED_ENUM_VALUE";
+  switch (algo) {
+    case NCCL_ALLTOALL_ALGO::orig:
+      str = "orig";
+      break;
+    case NCCL_ALLTOALL_ALGO::ctran:
+      str = "ctran";
+      break;
+    case NCCL_ALLTOALL_ALGO::ctgraph:
+      str = "ctgraph";
+      break;
+    case NCCL_ALLTOALL_ALGO::ctwin:
+      str = "ctwin";
+      break;
+  }
+  enum NCCL_ALLTOALL_ALGO result;
+  algoStrToVal(str, result);
+  EXPECT_EQ(result, algo) << "algoStrToVal(\"" << str
+                          << "\") returned wrong value";
+  EXPECT_EQ(algoValToStr(algo), str) << "algoValToStr round-trip failed";
+}
+
 void checkAlgoStrToVal(enum NCCL_RMA_ALGO algo) {
   std::string str = "UNHANDLED_ENUM_VALUE";
   switch (algo) {
@@ -170,6 +208,11 @@ TEST(AlgoStrConvTest, AllGatherCompleteness) {
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_rdpipeline);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_ring);
   checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctgraph_rd);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_ring);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_srd);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_pipeline);
+  checkAlgoStrToVal(NCCL_ALLGATHER_ALGO::ctwin_rdpipeline);
 }
 
 TEST(AlgoStrConvTest, AllReduceCompleteness) {
@@ -186,6 +229,12 @@ TEST(AlgoStrConvTest, AllToAllVCompleteness) {
   checkAlgoStrToVal(NCCL_ALLTOALLV_ALGO::ctran);
   checkAlgoStrToVal(NCCL_ALLTOALLV_ALGO::compCtran);
   checkAlgoStrToVal(NCCL_ALLTOALLV_ALGO::bsCompCtran);
+}
+
+TEST(AlgoStrConvTest, AllToAllCompleteness) {
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::orig);
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::ctran);
+  checkAlgoStrToVal(NCCL_ALLTOALL_ALGO::ctgraph);
 }
 
 TEST(AlgoStrConvTest, RmaCompleteness) {
@@ -209,6 +258,10 @@ TEST(AlgoStrConvTest, UnknownStringFallback) {
   enum NCCL_ALLTOALLV_ALGO alltoallv;
   algoStrToVal("nonexistent", alltoallv);
   EXPECT_EQ(alltoallv, NCCL_ALLTOALLV_ALGO::orig);
+
+  enum NCCL_ALLTOALL_ALGO alltoall;
+  algoStrToVal("nonexistent", alltoall);
+  EXPECT_EQ(alltoall, NCCL_ALLTOALL_ALGO::orig);
 
   enum NCCL_RMA_ALGO rma;
   algoStrToVal("nonexistent", rma);

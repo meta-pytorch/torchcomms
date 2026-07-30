@@ -62,7 +62,7 @@ class CtranIbRequest {
   inline commResult_t complete() {
     this->refCount_--;
     if (this->refCount_ < 0) {
-      CLOGF(ERR, "CTRAN-IB: req {} refCount_ < 0", (void*)this);
+      CERR(commInternalError, "CTRAN-IB: req {} refCount_ < 0", (void*)this);
       return commInternalError;
     }
     if (this->refCount_ == 0) {

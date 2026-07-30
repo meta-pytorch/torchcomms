@@ -7,8 +7,8 @@
 #include <fmt/format.h>
 #include <glog/logging.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/profiler/GpeProfilerReport.h"
-#include "comms/ctran/utils/Abort.h"
 
 namespace ctran {
 
@@ -18,7 +18,7 @@ GpeProfiler::GpeProfiler(
     uint64_t commHash,
     int samplingWeight,
     std::unique_ptr<IGpeProfilerReporter> reporter,
-    std::shared_ptr<::ctran::utils::Abort> abort)
+    std::shared_ptr<::comms::fault_tolerance::Abort> abort)
     : logMetaData_(logMetaData),
       rank_(rank),
       commHash_(commHash),
@@ -65,7 +65,7 @@ void GpeProfiler::mark(GpeTracePoint p, std::string_view message) {
   //   - shouldTrace_: per-iter sampling verdict from injectMetadata
   const bool isAlwaysOn =
       (p == GpeTracePoint::ALGO_ABORTED) || (p == GpeTracePoint::TERMINATE_CMD);
-  const bool liveAborted = (abort_ != nullptr) && abort_->Test();
+  const bool liveAborted = (abort_ != nullptr) && abort_->isAborted();
   const bool shouldEmit = isAlwaysOn || liveAborted || shouldTrace_;
   if (!shouldEmit) {
     return;

@@ -79,7 +79,7 @@ commResult_t getGpuArch(ctran::allreduce::ring::GpuArch* arch) {
   FB_CUDACHECK(cudaGetDevice(&cudaDev));
   auto cudaArch = ctran::utils::getCudaArch(cudaDev);
   if (!cudaArch.hasValue()) {
-    CLOGF(ERR, "{}", cudaArch.error());
+    CERR(commUnhandledCudaError, "{}", cudaArch.error());
     return commUnhandledCudaError;
   }
   if (cudaArch.value() < 1000) {
@@ -1030,17 +1030,17 @@ inline commResult_t completeHostResourceSetup(
 
 } // namespace
 
-#define HOST_ABORT(desc)                                                     \
-  if (comm->testAbort()) {                                                   \
-    auto _abort = comm->getAbort();                                          \
-    std::string _ctx =                                                       \
-        _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
-    throw ctran::utils::Exception(                                           \
-        _ctx,                                                                \
-        commRemoteError,                                                     \
-        comm->logMetaData_.rank,                                             \
-        comm->logMetaData_.commHash,                                         \
-        std::string(desc));                                                  \
+#define HOST_ABORT(desc)                                                       \
+  if (comm->testAbort()) {                                                     \
+    auto _abort = comm->getAbort();                                            \
+    std::string _ctx =                                                         \
+        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
+    throw ctran::utils::Exception(                                             \
+        _ctx,                                                                  \
+        commRemoteError,                                                       \
+        comm->logMetaData_.rank,                                               \
+        comm->logMetaData_.commHash,                                           \
+        std::string(desc));                                                    \
   }
 
 static commResult_t impl(
@@ -1319,7 +1319,7 @@ commResult_t ctranAllReduceRing(
         count,
         count * typeSize,
         typeSize);
-    CLOGF(ERR, "{}", errorMsg);
+    CERR(commInvalidArgument, "{}", errorMsg);
     throw ctran::utils::Exception(errorMsg, commInvalidArgument);
   }
 

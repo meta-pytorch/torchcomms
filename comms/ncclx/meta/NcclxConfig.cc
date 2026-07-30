@@ -31,6 +31,7 @@ Config::Config(const ncclConfig_t* config) {
   sendrecvAlgo = NCCL_SENDRECV_ALGO;
   allgatherAlgo = NCCL_ALLGATHER_ALGO;
   allreduceAlgo = NCCL_ALLREDUCE_ALGO;
+  alltoallAlgo = NCCL_ALLTOALL_ALGO;
   alltoallvAlgo = NCCL_ALLTOALLV_ALGO;
   rmaAlgo = NCCL_RMA_ALGO;
 
@@ -272,6 +273,7 @@ Config::Config(const ncclConfig_t* config) {
   noLocal = parseHintBool("noLocal", false);
   winRegisterIpcOnly = parseHintBool("win_register_ipc_only", false);
   winRegisterEnableSignal = parseHintBool("win_register_enable_signal", true);
+  winRegisterSymmetric = parseHintBool("win_register_symmetric", false);
 
   auto parseAlgoHint = [&](const char* key, auto& field) {
     auto val = getHintStr(key);
@@ -282,6 +284,7 @@ Config::Config(const ncclConfig_t* config) {
   parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallAlgo", alltoallAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
   parseAlgoHint("rmaAlgo", rmaAlgo);
 }
@@ -316,6 +319,7 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   parseAlgoHint("sendrecvAlgo", sendrecvAlgo);
   parseAlgoHint("allgatherAlgo", allgatherAlgo);
   parseAlgoHint("allreduceAlgo", allreduceAlgo);
+  parseAlgoHint("alltoallAlgo", alltoallAlgo);
   parseAlgoHint("alltoallvAlgo", alltoallvAlgo);
   parseAlgoHint("rmaAlgo", rmaAlgo);
 
@@ -329,6 +333,7 @@ ncclResult_t Config::update(const ncclx::Hints* hints) {
   };
   parseBoolHint("win_register_ipc_only", winRegisterIpcOnly);
   parseBoolHint("win_register_enable_signal", winRegisterEnableSignal);
+  parseBoolHint("win_register_symmetric", winRegisterSymmetric);
 
   return ncclSuccess;
 }
@@ -394,10 +399,12 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     append(
         fmt::format(
             "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
+    append(fmt::format("winRegisterSymmetric={}", xCfg->winRegisterSymmetric));
     append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
     appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);
+    appendAlgo("alltoallAlgo", xCfg->alltoallAlgo);
     appendAlgo("alltoallvAlgo", xCfg->alltoallvAlgo);
     appendAlgo("rmaAlgo", xCfg->rmaAlgo);
     auto appendIfSet = [&](const char* name, const auto& opt) {
@@ -505,20 +512,25 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
   NCCLCHECK(cfg->update(hints));
 
   std::string updated;
-  auto appendIfSet = [&](const char* key, const auto& field) {
+  auto appendIfSet = [&](const char* key, const std::string& value) {
     std::string val;
     if (hints->get(key, val) == ncclSuccess) {
       if (!updated.empty()) {
         updated += ' ';
       }
-      updated += fmt::format("{}={}", key, algoValToStr(field));
+      updated += fmt::format("{}={}", key, value);
     }
   };
-  appendIfSet("sendrecvAlgo", cfg->sendrecvAlgo);
-  appendIfSet("allgatherAlgo", cfg->allgatherAlgo);
-  appendIfSet("allreduceAlgo", cfg->allreduceAlgo);
-  appendIfSet("alltoallvAlgo", cfg->alltoallvAlgo);
-  appendIfSet("rmaAlgo", cfg->rmaAlgo);
+  appendIfSet("sendrecvAlgo", algoValToStr(cfg->sendrecvAlgo));
+  appendIfSet("allgatherAlgo", algoValToStr(cfg->allgatherAlgo));
+  appendIfSet("allreduceAlgo", algoValToStr(cfg->allreduceAlgo));
+  appendIfSet("alltoallAlgo", algoValToStr(cfg->alltoallAlgo));
+  appendIfSet("alltoallvAlgo", algoValToStr(cfg->alltoallvAlgo));
+  appendIfSet("rmaAlgo", algoValToStr(cfg->rmaAlgo));
+  appendIfSet("win_register_ipc_only", cfg->winRegisterIpcOnly ? "1" : "0");
+  appendIfSet(
+      "win_register_enable_signal", cfg->winRegisterEnableSignal ? "1" : "0");
+  appendIfSet("win_register_symmetric", cfg->winRegisterSymmetric ? "1" : "0");
 
   if (!updated.empty()) {
     INFO(

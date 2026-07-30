@@ -6,6 +6,8 @@ import os
 import unittest
 
 import torch
+from torch.distributed import BarrierOptions
+from torchcomms.device_mesh import _create_torchcomm_process_group
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     TorchCommTestWrapper,
 )
@@ -96,6 +98,56 @@ class BarrierTest(unittest.TestCase):
                 graph.replay()
 
                 # No explicit verification needed for barrier, just ensure it completes
+
+    def _sync_barrier_blocks_host_on_stream(self):
+        """A synchronous c10d barrier must block the host until prior work on the
+        current stream has completed.
+
+        This mirrors stock ProcessGroupNCCL, whose barrier host-blocks the CPU
+        thread. It is a regression test for a trtllm flashinfer one-shot Lamport
+        all_reduce deadlock: that code clears its IPC buffers asynchronously on
+        the stream and then issues a synchronous barrier before the first
+        all_reduce, relying on the barrier to flush that clear. If the barrier
+        only inserts a stream-ordered wait (no host sync), the first all_reduce
+        races the clear and both ranks spin forever. The host block is applied by
+        BackendWrapper (the c10d layer), so the barrier is driven through a c10d
+        ProcessGroup rather than the native torchcomm.barrier().
+        """
+        pg = _create_torchcomm_process_group(self.torchcomm, "barrier_host_block_pg")
+        with torch.cuda.device(self.device):
+            stream = torch.cuda.current_stream()
+
+            # Enqueue a long-running kernel on the current stream so the host
+            # would observe an unfinished stream if the barrier did not
+            # synchronize it.
+            torch.cuda._sleep(1_000_000_000)
+            self.assertFalse(
+                stream.query(),
+                "precondition: enqueued work should leave the stream busy",
+            )
+
+            # Synchronous c10d barrier + wait() must block the host until the
+            # stream is drained.
+            opts = BarrierOptions()
+            opts.asyncOp = False
+            opts.device = self.device
+            work = pg.barrier(opts=opts)
+            work.wait()
+
+            self.assertTrue(
+                stream.query(),
+                "synchronous barrier must block the host until prior stream work completes",
+            )
+        print(f"[Rank {self.rank}] sync barrier blocked host until stream drained")
+
+    @unittest.skipIf(
+        os.getenv("TEST_BACKEND") not in ("nccl", "ncclx"),
+        "Host-blocking synchronous barrier is validated for the GPU backends "
+        "(nccl, ncclx)",
+    )
+    def test_sync_barrier_blocks_host_on_stream(self):
+        """Synchronous barrier + wait() must block the host until prior stream work done."""
+        self._sync_barrier_blocks_host_on_stream()
 
     def test_sync_barrier(self):
         """Test synchronous barrier with work object."""

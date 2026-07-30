@@ -35,6 +35,7 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
       {"allgatherAlgo", "ctring"},
       {"allreduceAlgo", "ctdirect"},
       {"sendrecvAlgo", "ctran"},
+      {"alltoallAlgo", "ctran"},
       {"alltoallvAlgo", "ctran"},
       {"rmaAlgo", "ctran"},
   });
@@ -50,6 +51,9 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
   EXPECT_EQ(
       NCCL_SENDRECV_ALGO::ctran,
       NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo));
+  EXPECT_EQ(
+      NCCL_ALLTOALL_ALGO::ctran,
+      NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo));
   EXPECT_EQ(
       NCCL_ALLTOALLV_ALGO::ctran,
       NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo));
@@ -352,6 +356,52 @@ TEST_F(CommSetConfigTest, WinRegisterEnableSignalNotResetByUnrelatedUpdate) {
     newConfig.hints = &hints;
     EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
     EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal));
+  }
+}
+
+TEST_F(CommSetConfigTest, SetWinRegisterSymmetric) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "0"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+}
+
+TEST_F(CommSetConfigTest, WinRegisterSymmetricNotResetByUnrelatedUpdate) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  // Enable symmetric first.
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"win_register_symmetric", "1"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
+  }
+
+  // An unrelated update must not reset it (key absent and not pre-seeded).
+  {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{"allgatherAlgo", "ctdirect"}});
+    newConfig.hints = &hints;
+    EXPECT_EQ(ncclSuccess, ncclx::commSetConfig(comm, &newConfig));
+    EXPECT_TRUE(NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric));
   }
 }
 

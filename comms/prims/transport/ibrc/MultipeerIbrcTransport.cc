@@ -945,14 +945,43 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
       peer.cmdQueueDevices.host,
       deviceCmdQueues.data(),
       deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice));
-  peer.channelState = allocateMapped(
+  const std::size_t channelBytes =
       static_cast<std::size_t>(config_.max_num_channels) *
-          sizeof(IbLocalChannel),
-      "per-peer channel state");
-  auto* channels = static_cast<IbLocalChannel*>(peer.channelState.host);
+      sizeof(IbLocalChannel);
+  const std::size_t completionSlotsOffset =
+      alignUp(channelBytes, alignof(IbSendCompletionSlot));
   const IbChannelLayout channelLayout = channelLayoutForPeer(peerIndex);
+  CHECK_GE(channelLayout.pipelineDepth, 0);
+  const std::size_t completionSlotCount = checkedMul(
+      static_cast<std::size_t>(config_.max_num_channels),
+      static_cast<std::size_t>(channelLayout.pipelineDepth),
+      "per-peer send completion slots");
+  const std::size_t completionSlotBytes = checkedMul(
+      completionSlotCount,
+      sizeof(IbSendCompletionSlot),
+      "per-peer send completion slots");
+  const std::size_t channelStateBytes = completionSlotBytes == 0
+      ? channelBytes
+      : checkedAdd(
+            completionSlotsOffset,
+            completionSlotBytes,
+            "per-peer channel state");
+  peer.channelState =
+      allocateMapped(channelStateBytes, "per-peer channel state");
+  auto* channels = static_cast<IbLocalChannel*>(peer.channelState.host);
+  auto* completionSlots = completionSlotBytes == 0
+      ? nullptr
+      : reinterpret_cast<IbSendCompletionSlot*>(
+            static_cast<std::byte*>(peer.channelState.device) +
+            completionSlotsOffset);
+  const uint32_t pipelineDepth =
+      static_cast<uint32_t>(channelLayout.pipelineDepth);
   for (int channel = 0; channel < config_.max_num_channels; ++channel) {
-    channels[channel] = makeIbLocalChannel(channelLayout, channel);
+    IbSendCompletionSlot* channelCompletionSlots = pipelineDepth == 0
+        ? nullptr
+        : completionSlots + static_cast<std::size_t>(channel) * pipelineDepth;
+    channels[channel] =
+        makeIbLocalChannel(channelLayout, channel, channelCompletionSlots);
   }
   peer.cmdQueues = std::move(cmdQueues);
   peer.cmdQueuesAllocated = true;

@@ -35,11 +35,6 @@ class TorchCommNCCLXBootstrapTest : public ::testing::Test {
     // Create fresh mocks for each test
     nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
     cuda_mock_ = std::make_shared<NiceMock<CudaMock>>();
-
-    // Reset the static counter to a known state
-    // We'll access it through the public interface
-    TorchCommNCCLXBootstrap::getNCCLXStoreKey(); // This increments counter
-    initial_counter_ = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
   }
 
   void TearDown() override {
@@ -68,28 +63,25 @@ class TorchCommNCCLXBootstrapTest : public ::testing::Test {
   at::Device device_{at::DeviceType::CPU, 0};
   std::shared_ptr<NiceMock<NcclxMock>> nccl_mock_;
   std::shared_ptr<NiceMock<CudaMock>> cuda_mock_;
-  int initial_counter_{-1};
 };
 
+// The bedrock contract: the store key is a *pure function of the comm name*.
+// Feed it the same name and you always get the same key back; feed it two
+// different names and the keys never alias. No hidden per-call or per-rank
+// state (the old process-wide counter) is allowed to leak in -- killing that
+// leak is the entire reason this change exists.
 TEST_F(TorchCommNCCLXBootstrapTest, StaticMethodsStoreKeyGeneration) {
-  // Test that store key generation works correctly with counter
-  std::string prefix = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix();
-  EXPECT_EQ(prefix, "ncclx_storekey_");
+  EXPECT_EQ(
+      TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix(), "ncclx_storekey_");
 
-  int counter_before = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
-  std::string key1 = TorchCommNCCLXBootstrap::getNCCLXStoreKey();
-  int counter_after = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
+  const std::string key_a1 = TorchCommNCCLXBootstrap::getNCCLXStoreKey("tp");
+  const std::string key_a2 = TorchCommNCCLXBootstrap::getNCCLXStoreKey("tp");
+  EXPECT_EQ(key_a1, key_a2);
+  EXPECT_EQ(key_a1, "ncclx_storekey_tp");
 
-  EXPECT_EQ(counter_after, counter_before + 1);
-  EXPECT_EQ(key1, prefix + std::to_string(counter_before));
-
-  // Test that subsequent calls increment the counter
-  std::string key2 = TorchCommNCCLXBootstrap::getNCCLXStoreKey();
-  int final_counter = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
-
-  EXPECT_EQ(final_counter, counter_after + 1);
-  EXPECT_EQ(key2, prefix + std::to_string(counter_after));
-  EXPECT_NE(key1, key2);
+  EXPECT_NE(
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("tp"),
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("dp"));
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeFromEnvironment) {
@@ -104,8 +96,8 @@ TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeFromEnvironment) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
+  std::string store_key =
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_comm");
   store_->set(store_key, id_vec);
 
   // Set up mock expectations
@@ -144,8 +136,8 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdRank0) {
   EXPECT_NE(comm, nullptr);
 
   // Verify the unique ID was stored
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(initial_counter_);
+  std::string store_key =
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_comm");
   auto stored_vec = store_->get(store_key);
   ncclUniqueId stored_id;
   memcpy(&stored_id, stored_vec.data(), sizeof(stored_id));
@@ -163,8 +155,8 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdNonRank0) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
+  std::string store_key =
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_comm");
   store_->set(store_key, id_vec);
 
   auto bootstrap = createBootstrap();
@@ -176,6 +168,42 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdNonRank0) {
 
   ncclComm_t comm = bootstrap->createNcclComm("test_comm");
   EXPECT_NE(comm, nullptr);
+}
+
+// The headline test -- a direct reenactment of the bug this change fixes.
+// Picture two ranks that lived different lives: rank 0 joined a couple of
+// earlier members-only groups, rank 1 sat those out. Later they meet in a
+// shared comm. The store key for that shared comm must not remember any of that
+// history -- both ranks derive it purely from the name and rendezvous cleanly.
+// Under the old process-wide counter their keys drifted apart and the bootstrap
+// deadlocked; keyed on the name, it just works.
+TEST_F(TorchCommNCCLXBootstrapTest, RanksWithDivergentCommHistoryAgreeOnKey) {
+  ncclUniqueId id{};
+  // NOLINTNEXTLINE(facebook-hte-BadMemset)
+  memset(&id, 0x42, sizeof(id));
+
+  EXPECT_CALL(*nccl_mock_, getUniqueId(_))
+      .WillRepeatedly(DoAll(SetArgPointee<0>(id), Return(ncclSuccess)));
+  EXPECT_CALL(*nccl_mock_, commInitRankConfig(_, _, _, _, _))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
+          Return(ncclSuccess)));
+
+  // Rank 0 participates in two earlier comms and the later shared "pp" comm.
+  setupRankAndSize(0, 2);
+  auto rank0 = createBootstrap();
+  EXPECT_NO_THROW(rank0->createNcclComm("dp"));
+  EXPECT_NO_THROW(rank0->createNcclComm("tp"));
+  EXPECT_NO_THROW(rank0->createNcclComm("pp"));
+
+  // Rank 1 skipped the earlier comms and only joins "pp"; it must read the key
+  // rank 0 wrote for "pp", which is name-scoped and independent of comm count.
+  setupRankAndSize(1, 2);
+  auto rank1 = createBootstrap();
+  EXPECT_NO_THROW(rank1->createNcclComm("pp"));
+
+  auto stored = store_->get(TorchCommNCCLXBootstrap::getNCCLXStoreKey("pp"));
+  EXPECT_EQ(stored.size(), sizeof(ncclUniqueId));
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommGetUniqueIdFailure) {
@@ -245,8 +273,8 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdInvalidStoreData) {
   // Store invalid data (wrong size)
   std::vector<uint8_t> invalid_vec(
       10); // Wrong size, should be sizeof(ncclUniqueId)
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
+  std::string store_key =
+      TorchCommNCCLXBootstrap::getNCCLXStoreKey("test_comm");
   store_->set(store_key, invalid_vec);
 
   auto bootstrap = createBootstrap();

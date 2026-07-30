@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include <stdint.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
@@ -15,7 +16,6 @@
 #include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/commSpecs.h"
 
 // Used for ngroups value checking only. For H100, >128 is not possible.
@@ -155,7 +155,9 @@ struct alignas(16) KernelElem {
   // need make progress. It can be safely called only when algorithm ensures no
   // network progress is needed.
   void wait(int groupId = -1);
-  void wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId = -1);
+  void wait(
+      std::shared_ptr<comms::fault_tolerance::Abort> abort,
+      int groupId = -1);
 };
 
 template <>

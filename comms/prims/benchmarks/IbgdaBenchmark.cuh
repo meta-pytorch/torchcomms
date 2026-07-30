@@ -42,6 +42,14 @@ __global__ void ibgdaPutWaitCounterBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
+__global__ void ibgdaPutWaitLocalBatchKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int numIters,
+    unsigned long long* totalCycles);
+
 __global__ void ibgdaPutFlushBatchKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,

@@ -15,9 +15,12 @@
 #include <gtest/gtest.h>
 #include <nccl.h> // @manual
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,6 +54,108 @@ constexpr int kMeasureIters = 100;
 constexpr size_t KB = 1024;
 constexpr size_t MB = 1024 * 1024;
 constexpr size_t GB = 1024UL * 1024 * 1024;
+constexpr size_t kMismatchCopyChunkBytes = 4 * MB;
+
+bool expect_cuda_success(cudaError_t result, const char* expr) {
+  if (result == cudaSuccess) {
+    return true;
+  }
+  ADD_FAILURE() << expr << " failed: " << cudaGetErrorString(result);
+  return false;
+}
+
+#define CUDA_EXPECT_SUCCESS(cmd)            \
+  do {                                      \
+    (void)expect_cuda_success((cmd), #cmd); \
+  } while (0)
+
+namespace ib_bench = comms::prims::ib::benchmark;
+
+template <typename T>
+class DeviceScratch {
+ public:
+  explicit DeviceScratch(size_t count) {
+    CUDA_EXPECT_SUCCESS(cudaMalloc(&ptr_, count * sizeof(T)));
+  }
+
+  ~DeviceScratch() {
+    if (ptr_ != nullptr) {
+      CUDA_EXPECT_SUCCESS(cudaFree(ptr_));
+    }
+  }
+
+  DeviceScratch(const DeviceScratch&) = delete;
+  DeviceScratch& operator=(const DeviceScratch&) = delete;
+
+  T* get() const {
+    return ptr_;
+  }
+
+  T* at(size_t index) const {
+    return ptr_ + index;
+  }
+
+ private:
+  T* ptr_{nullptr};
+};
+
+class IterationEvents {
+ public:
+  explicit IterationEvents(int iterations)
+      : starts_(iterations), stops_(iterations) {
+    for (int i = 0; i < iterations; ++i) {
+      CUDA_EXPECT_SUCCESS(cudaEventCreate(&starts_[i]));
+      CUDA_EXPECT_SUCCESS(cudaEventCreate(&stops_[i]));
+    }
+  }
+
+  ~IterationEvents() {
+    for (auto event : starts_) {
+      if (event != nullptr) {
+        CUDA_EXPECT_SUCCESS(cudaEventDestroy(event));
+      }
+    }
+    for (auto event : stops_) {
+      if (event != nullptr) {
+        CUDA_EXPECT_SUCCESS(cudaEventDestroy(event));
+      }
+    }
+  }
+
+  IterationEvents(const IterationEvents&) = delete;
+  IterationEvents& operator=(const IterationEvents&) = delete;
+
+  cudaEvent_t start(int iteration) const {
+    return starts_[iteration];
+  }
+
+  cudaEvent_t stop(int iteration) const {
+    return stops_[iteration];
+  }
+
+  int iterations() const {
+    return static_cast<int>(starts_.size());
+  }
+
+ private:
+  std::vector<cudaEvent_t> starts_;
+  std::vector<cudaEvent_t> stops_;
+};
+
+void poison_destination(void* data, size_t nbytes, cudaStream_t stream) {
+  CUDA_EXPECT_SUCCESS(cudaMemsetAsync(data, 0xa5, nbytes, stream));
+}
+
+float sum_elapsed_ms(const IterationEvents& events) {
+  float elapsed_ms = 0;
+  for (int i = 0; i < events.iterations(); ++i) {
+    float iteration_ms = 0;
+    CUDA_EXPECT_SUCCESS(
+        cudaEventElapsedTime(&iteration_ms, events.start(i), events.stop(i)));
+    elapsed_ms += iteration_ms;
+  }
+  return elapsed_ms;
+}
 
 std::string format_size(size_t bytes) {
   if (bytes >= GB) {
@@ -63,6 +168,127 @@ std::string format_size(size_t bytes) {
     return std::to_string(bytes / KB) + "KB";
   }
   return std::to_string(bytes) + "B";
+}
+
+struct ByteMismatch {
+  size_t byte_index;
+  std::uint8_t observed;
+  std::uint8_t expected;
+};
+
+std::optional<ByteMismatch> find_first_rank_pattern_mismatch(
+    const void* data,
+    size_t nbytes,
+    int expected_rank,
+    cudaStream_t stream) {
+  if (nbytes == 0) {
+    return std::nullopt;
+  }
+
+  const auto* bytes = static_cast<const std::uint8_t*>(data);
+  std::vector<std::uint8_t> host(std::min(kMismatchCopyChunkBytes, nbytes));
+  for (size_t offset = 0; offset < nbytes; offset += host.size()) {
+    const size_t chunk_bytes = std::min(host.size(), nbytes - offset);
+    if (!expect_cuda_success(
+            cudaMemcpyAsync(
+                host.data(),
+                bytes + offset,
+                chunk_bytes,
+                cudaMemcpyDeviceToHost,
+                stream),
+            "cudaMemcpyAsync(mismatch chunk)")) {
+      return std::nullopt;
+    }
+    if (!expect_cuda_success(
+            cudaStreamSynchronize(stream),
+            "cudaStreamSynchronize(mismatch chunk)")) {
+      return std::nullopt;
+    }
+    for (size_t i = 0; i < chunk_bytes; ++i) {
+      const size_t byte_index = offset + i;
+      const std::uint8_t expected =
+          comms::prims::ib::benchmark::expected_rank_pattern_byte(
+              expected_rank, byte_index);
+      if (host[i] != expected) {
+        return ByteMismatch{
+            .byte_index = byte_index,
+            .observed = host[i],
+            .expected = expected,
+        };
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::string describe_first_mismatch(
+    const std::optional<ByteMismatch>& mismatch) {
+  if (!mismatch.has_value()) {
+    return " firstMismatchByte=not-found";
+  }
+  return " firstMismatchByte=" + std::to_string(mismatch->byte_index) +
+      " observed=" + std::to_string(static_cast<int>(mismatch->observed)) +
+      " expected=" + std::to_string(static_cast<int>(mismatch->expected));
+}
+
+std::optional<ByteMismatch> find_first_mismatch_from_records(
+    const std::vector<ib_bench::MismatchRecord>& mismatch_partials,
+    int iteration) {
+  const size_t offset =
+      static_cast<size_t>(iteration) * ib_bench::kChecksumPartialBlocks;
+  uint64_t index = ib_bench::kNoMismatchIndex;
+  uint32_t observed = 0;
+  uint32_t expected = 0;
+  for (int i = 0; i < ib_bench::kChecksumPartialBlocks; ++i) {
+    const auto& record = mismatch_partials[offset + i];
+    if (record.index < index) {
+      index = record.index;
+      observed = record.observed;
+      expected = record.expected;
+    }
+  }
+
+  if (index == ib_bench::kNoMismatchIndex) {
+    return std::nullopt;
+  }
+  return ByteMismatch{
+      .byte_index = static_cast<size_t>(index),
+      .observed = static_cast<uint8_t>(observed),
+      .expected = static_cast<uint8_t>(expected),
+  };
+}
+
+struct ChecksumVerification {
+  int wrong{0};
+  int first_wrong_iteration{-1};
+  uint64_t observed_checksum{0};
+  uint64_t expected_checksum{0};
+  std::optional<ByteMismatch> mismatch;
+};
+
+ChecksumVerification verify_checksums(
+    const std::vector<uint64_t>& observed_checksums,
+    uint64_t expected_checksum,
+    const std::vector<ib_bench::MismatchRecord>& mismatch_partials) {
+  ChecksumVerification result;
+  result.expected_checksum = expected_checksum;
+  if (!observed_checksums.empty()) {
+    result.observed_checksum = observed_checksums.front();
+  }
+
+  for (int i = 0; i < static_cast<int>(observed_checksums.size()); ++i) {
+    if (observed_checksums[i] != expected_checksum) {
+      ++result.wrong;
+      if (result.first_wrong_iteration < 0) {
+        result.first_wrong_iteration = i;
+        result.observed_checksum = observed_checksums[i];
+        result.mismatch =
+            find_first_mismatch_from_records(mismatch_partials, i);
+      }
+    }
+  }
+  return result;
 }
 
 struct WindowSetup {
@@ -188,6 +414,9 @@ class IbSendRecvBenchmark : public ::testing::Test {
     int iterations;
     float elapsed_ms;
     double bw_gbps;
+    int wrong;
+    uint64_t observed_checksum;
+    uint64_t expected_checksum;
   };
 
   BenchResult run_put_benchmark(size_t total_bytes, int num_blocks) {
@@ -249,7 +478,7 @@ class IbSendRecvBenchmark : public ::testing::Test {
     cudaEventDestroy(stop);
     teardown_window(s, torchcomm_);
 
-    return {total_bytes, num_blocks, kMeasureIters, elapsed_ms, bw};
+    return {total_bytes, num_blocks, kMeasureIters, elapsed_ms, bw, 0, 0, 0};
   }
 
   BenchResult run_send_recv_benchmark(
@@ -307,15 +536,20 @@ class IbSendRecvBenchmark : public ::testing::Test {
     float* win_ptr = win_tensor.data_ptr<float>();
     float* dst_ptr = dst_tensor.data_ptr<float>();
 
-    // Persistent step state: 2 * num_blocks (senders + receivers).
-    int64_t* step_state = nullptr;
-    cudaMalloc(&step_state, 2 * num_blocks * sizeof(int64_t));
-    cudaMemset(step_state, 0, 2 * num_blocks * sizeof(int64_t));
-
-    // Warmup
     {
       c10::cuda::CUDAStreamGuard guard(stream);
-      for (int i = 0; i < kWarmupIters; i++) {
+      comms::prims::ib::benchmark::launch_init_rank_pattern_kernel(
+          src_ptr, total_bytes, rank_, stream.stream());
+    }
+
+    // Persistent step state: 2 * num_blocks (senders + receivers).
+    DeviceScratch<int64_t> step_state(2 * num_blocks);
+    CUDA_EXPECT_SUCCESS(
+        cudaMemset(step_state.get(), 0, 2 * num_blocks * sizeof(int64_t)));
+
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      for (int i = 0; i < kWarmupIters; ++i) {
         comms::prims::ib::launch_send_recv_kernel(
             dev_win,
             staging_buf,
@@ -329,22 +563,43 @@ class IbSendRecvBenchmark : public ::testing::Test {
             dst_rank,
             src_rank,
             num_blocks,
-            step_state,
+            step_state.get(),
             stream.stream());
       }
     }
     stream.synchronize();
     torchcomm_->barrier(false);
 
-    // Timed run
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    DeviceScratch<uint64_t> expected_checksum_device(1);
+    DeviceScratch<uint64_t> expected_partials_device(
+        ib_bench::kChecksumPartialBlocks);
+    DeviceScratch<uint64_t> observed_checksums_device(kMeasureIters);
+    DeviceScratch<uint64_t> observed_partials_device(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
+    DeviceScratch<ib_bench::MismatchRecord> mismatch_partials_device(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
 
     {
       c10::cuda::CUDAStreamGuard guard(stream);
-      cudaEventRecord(start, stream.stream());
-      for (int i = 0; i < kMeasureIters; i++) {
+      ib_bench::launch_rank_pattern_checksum(
+          total_bytes,
+          src_rank,
+          expected_checksum_device.get(),
+          expected_partials_device.get(),
+          stream.stream());
+    }
+
+    IterationEvents events(kMeasureIters);
+    std::vector<uint64_t> observed_checksums(kMeasureIters);
+    std::vector<ib_bench::MismatchRecord> mismatch_partials(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
+    uint64_t expectedChecksum = 0;
+
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      for (int i = 0; i < kMeasureIters; ++i) {
+        poison_destination(dst_ptr, total_bytes, stream.stream());
+        CUDA_EXPECT_SUCCESS(cudaEventRecord(events.start(i), stream.stream()));
         comms::prims::ib::launch_send_recv_kernel(
             dev_win,
             staging_buf,
@@ -358,22 +613,55 @@ class IbSendRecvBenchmark : public ::testing::Test {
             dst_rank,
             src_rank,
             num_blocks,
-            step_state,
+            step_state.get(),
             stream.stream());
+        CUDA_EXPECT_SUCCESS(cudaEventRecord(events.stop(i), stream.stream()));
+        ib_bench::launch_buffer_checksum(
+            dst_ptr,
+            total_bytes,
+            src_rank,
+            observed_checksums_device.at(i),
+            observed_partials_device.at(
+                static_cast<size_t>(i) * ib_bench::kChecksumPartialBlocks),
+            mismatch_partials_device.at(
+                static_cast<size_t>(i) * ib_bench::kChecksumPartialBlocks),
+            stream.stream());
+        poison_destination(dst_ptr, total_bytes, stream.stream());
       }
-      cudaEventRecord(stop, stream.stream());
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          observed_checksums.data(),
+          observed_checksums_device.get(),
+          observed_checksums.size() * sizeof(uint64_t),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          &expectedChecksum,
+          expected_checksum_device.get(),
+          sizeof(uint64_t),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          mismatch_partials.data(),
+          mismatch_partials_device.get(),
+          mismatch_partials.size() * sizeof(ib_bench::MismatchRecord),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
     }
-    cudaEventSynchronize(stop);
+    stream.synchronize();
 
-    float elapsed_ms = 0;
-    cudaEventElapsedTime(&elapsed_ms, start, stop);
-
+    float elapsed_ms = sum_elapsed_ms(events);
     double total_data = static_cast<double>(total_bytes) * kMeasureIters;
     double bw = total_data / (elapsed_ms / 1000.0) / 1e9;
-
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    cudaFree(step_state);
+    const auto verification = verify_checksums(
+        observed_checksums, expectedChecksum, mismatch_partials);
+    EXPECT_EQ(verification.wrong, 0)
+        << "SendRecv checksum mismatch for total=" << format_size(total_bytes)
+        << " section=" << format_size(section_bytes) << " pd=" << pipeline_depth
+        << " nblk=" << num_blocks << " wrong=" << verification.wrong
+        << " firstWrongIteration=" << verification.first_wrong_iteration
+        << " observedChecksum=" << verification.observed_checksum
+        << " expectedChecksum=" << verification.expected_checksum
+        << describe_first_mismatch(verification.mismatch);
 
     // Teardown
     win->deregister_local_buffer(staging_buf);
@@ -382,7 +670,15 @@ class IbSendRecvBenchmark : public ::testing::Test {
     mem_pool.reset();
     torchcomm_->barrier(false);
 
-    return {total_bytes, num_blocks, kMeasureIters, elapsed_ms, bw};
+    return {
+        total_bytes,
+        num_blocks,
+        kMeasureIters,
+        elapsed_ms,
+        bw,
+        verification.wrong,
+        verification.observed_checksum,
+        verification.expected_checksum};
   }
 
   BenchResult run_nccl_baseline(size_t total_bytes) {
@@ -396,66 +692,140 @@ class IbSendRecvBenchmark : public ::testing::Test {
     auto recv_tensor = at::zeros({static_cast<int64_t>(total_count)}, options);
 
     auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      comms::prims::ib::benchmark::launch_init_rank_pattern_kernel(
+          send_tensor.data_ptr(), total_bytes, rank_, stream.stream());
+    }
 
-    // Warmup
-    for (int i = 0; i < kWarmupIters; i++) {
-      ncclGroupStart();
-      ncclSend(
-          send_tensor.data_ptr(),
-          total_bytes,
-          ncclChar,
-          peer_rank,
-          nccl_comm_,
-          stream.stream());
-      ncclRecv(
-          recv_tensor.data_ptr(),
-          total_bytes,
-          ncclChar,
-          peer_rank,
-          nccl_comm_,
-          stream.stream());
-      ncclGroupEnd();
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      for (int i = 0; i < kWarmupIters; ++i) {
+        ncclGroupStart();
+        ncclSend(
+            send_tensor.data_ptr(),
+            total_bytes,
+            ncclChar,
+            peer_rank,
+            nccl_comm_,
+            stream.stream());
+        ncclRecv(
+            recv_tensor.data_ptr(),
+            total_bytes,
+            ncclChar,
+            peer_rank,
+            nccl_comm_,
+            stream.stream());
+        ncclGroupEnd();
+      }
     }
     stream.synchronize();
     torchcomm_->barrier(false);
 
-    // Timed run
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    DeviceScratch<uint64_t> expected_checksum_device(1);
+    DeviceScratch<uint64_t> expected_partials_device(
+        ib_bench::kChecksumPartialBlocks);
+    DeviceScratch<uint64_t> observed_checksums_device(kMeasureIters);
+    DeviceScratch<uint64_t> observed_partials_device(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
+    DeviceScratch<ib_bench::MismatchRecord> mismatch_partials_device(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
 
-    cudaEventRecord(start, stream.stream());
-    for (int i = 0; i < kMeasureIters; i++) {
-      ncclGroupStart();
-      ncclSend(
-          send_tensor.data_ptr(),
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      ib_bench::launch_rank_pattern_checksum(
           total_bytes,
-          ncclChar,
           peer_rank,
-          nccl_comm_,
+          expected_checksum_device.get(),
+          expected_partials_device.get(),
           stream.stream());
-      ncclRecv(
-          recv_tensor.data_ptr(),
-          total_bytes,
-          ncclChar,
-          peer_rank,
-          nccl_comm_,
-          stream.stream());
-      ncclGroupEnd();
     }
-    cudaEventRecord(stop, stream.stream());
-    cudaEventSynchronize(stop);
 
-    float elapsed_ms = 0;
-    cudaEventElapsedTime(&elapsed_ms, start, stop);
+    IterationEvents events(kMeasureIters);
+    std::vector<uint64_t> observed_checksums(kMeasureIters);
+    std::vector<ib_bench::MismatchRecord> mismatch_partials(
+        kMeasureIters * ib_bench::kChecksumPartialBlocks);
+    uint64_t expectedChecksum = 0;
 
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      for (int i = 0; i < kMeasureIters; ++i) {
+        poison_destination(
+            recv_tensor.data_ptr(), total_bytes, stream.stream());
+        CUDA_EXPECT_SUCCESS(cudaEventRecord(events.start(i), stream.stream()));
+        ncclGroupStart();
+        ncclSend(
+            send_tensor.data_ptr(),
+            total_bytes,
+            ncclChar,
+            peer_rank,
+            nccl_comm_,
+            stream.stream());
+        ncclRecv(
+            recv_tensor.data_ptr(),
+            total_bytes,
+            ncclChar,
+            peer_rank,
+            nccl_comm_,
+            stream.stream());
+        ncclGroupEnd();
+        CUDA_EXPECT_SUCCESS(cudaEventRecord(events.stop(i), stream.stream()));
+        ib_bench::launch_buffer_checksum(
+            recv_tensor.data_ptr(),
+            total_bytes,
+            peer_rank,
+            observed_checksums_device.at(i),
+            observed_partials_device.at(
+                static_cast<size_t>(i) * ib_bench::kChecksumPartialBlocks),
+            mismatch_partials_device.at(
+                static_cast<size_t>(i) * ib_bench::kChecksumPartialBlocks),
+            stream.stream());
+        poison_destination(
+            recv_tensor.data_ptr(), total_bytes, stream.stream());
+      }
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          observed_checksums.data(),
+          observed_checksums_device.get(),
+          observed_checksums.size() * sizeof(uint64_t),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          &expectedChecksum,
+          expected_checksum_device.get(),
+          sizeof(uint64_t),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
+      CUDA_EXPECT_SUCCESS(cudaMemcpyAsync(
+          mismatch_partials.data(),
+          mismatch_partials_device.get(),
+          mismatch_partials.size() * sizeof(ib_bench::MismatchRecord),
+          cudaMemcpyDeviceToHost,
+          stream.stream()));
+    }
+    stream.synchronize();
+
+    float elapsed_ms = sum_elapsed_ms(events);
     double total_data = static_cast<double>(total_bytes) * kMeasureIters;
     double bw = total_data / (elapsed_ms / 1000.0) / 1e9;
+    const auto verification = verify_checksums(
+        observed_checksums, expectedChecksum, mismatch_partials);
+    EXPECT_EQ(verification.wrong, 0)
+        << "NCCL SendRecv checksum mismatch for total="
+        << format_size(total_bytes) << " wrong=" << verification.wrong
+        << " firstWrongIteration=" << verification.first_wrong_iteration
+        << " observedChecksum=" << verification.observed_checksum
+        << " expectedChecksum=" << verification.expected_checksum
+        << describe_first_mismatch(verification.mismatch);
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
-    return {total_bytes, 0, kMeasureIters, elapsed_ms, bw};
+    return {
+        total_bytes,
+        0,
+        kMeasureIters,
+        elapsed_ms,
+        bw,
+        verification.wrong,
+        verification.observed_checksum,
+        verification.expected_checksum};
   }
 
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
@@ -827,11 +1197,7 @@ TEST_F(IbSendRecvBenchmark, SendRecvCorrectness) {
     c10::cuda::CUDACachingAllocator::endAllocateToPool(
         mem_pool->device(), mem_pool->id());
 
-    // Fill src with rank-specific pattern: src[i] = rank * 1000000 + i
-    auto src_tensor =
-        at::arange(
-            static_cast<int64_t>(total_count), options.dtype(at::kFloat)) +
-        static_cast<float>(rank_) * 1000000.0f;
+    auto src_tensor = at::zeros({static_cast<int64_t>(total_count)}, options);
     auto staging_tensor =
         at::zeros({static_cast<int64_t>(ring_count)}, options);
     auto dst_tensor = at::zeros({static_cast<int64_t>(total_count)}, options);
@@ -849,6 +1215,11 @@ TEST_F(IbSendRecvBenchmark, SendRecvCorrectness) {
     cudaDeviceSynchronize();
 
     auto stream = at::cuda::getStreamFromPool(false, device_index_);
+    {
+      c10::cuda::CUDAStreamGuard guard(stream);
+      comms::prims::ib::benchmark::launch_init_rank_pattern_kernel(
+          src_tensor.data_ptr<float>(), cfg.total, rank_, stream.stream());
+    }
 
     // Persistent step state for correctness test (single launch).
     int64_t* step_state = nullptr;
@@ -877,40 +1248,38 @@ TEST_F(IbSendRecvBenchmark, SendRecvCorrectness) {
     torchcomm_->barrier(false);
     cudaFree(step_state);
 
-    // Verify: dst should contain src_rank's pattern
-    auto expected =
-        at::arange(
-            static_cast<int64_t>(total_count), options.dtype(at::kFloat)) +
-        static_cast<float>(src_rank) * 1000000.0f;
-    auto dst_cpu = dst_tensor.cpu();
-    auto exp_cpu = expected.cpu();
-
-    bool match = at::allclose(dst_cpu, exp_cpu);
+    const uint64_t observedChecksum =
+        comms::prims::ib::benchmark::compute_buffer_checksum(
+            dst_tensor.data_ptr<float>(), cfg.total, stream.stream());
+    const uint64_t expectedChecksum =
+        comms::prims::ib::benchmark::compute_rank_pattern_checksum(
+            cfg.total, src_rank, stream.stream());
+    const bool match = observedChecksum == expectedChecksum;
+    const auto mismatch = match ? std::optional<ByteMismatch>{}
+                                : find_first_rank_pattern_mismatch(
+                                      dst_tensor.data_ptr<float>(),
+                                      cfg.total,
+                                      src_rank,
+                                      stream.stream());
     EXPECT_TRUE(match) << "Correctness FAILED for total="
                        << format_size(cfg.total)
                        << " section=" << format_size(cfg.section)
-                       << " pd=" << cfg.pd << " nblk=" << cfg.nblk;
+                       << " pd=" << cfg.pd << " nblk=" << cfg.nblk
+                       << " observedChecksum=" << observedChecksum
+                       << " expectedChecksum=" << expectedChecksum
+                       << describe_first_mismatch(mismatch);
     if (rank_ == 0) {
+      const std::string mismatch_details =
+          match ? "" : describe_first_mismatch(mismatch);
       printf(
-          "Correctness: total=%-8s section=%-8s pd=%d nblk=%-4d %s\n",
+          "Correctness: total=%-8s section=%-8s pd=%d nblk=%-4d wrong=%d %s%s\n",
           format_size(cfg.total).c_str(),
           format_size(cfg.section).c_str(),
           cfg.pd,
           cfg.nblk,
-          match ? "PASS" : "FAIL");
-    }
-    if (!match) {
-      auto diff = (dst_cpu - exp_cpu).abs();
-      auto max_diff = diff.max().item<float>();
-      auto mismatch_idx = diff.argmax().item<int64_t>();
-      if (rank_ == 0) {
-        printf(
-            "  max_diff=%.1f at idx=%ld got=%.1f expected=%.1f\n",
-            max_diff,
-            mismatch_idx,
-            dst_cpu[mismatch_idx].item<float>(),
-            exp_cpu[mismatch_idx].item<float>());
-      }
+          match ? 0 : 1,
+          match ? "PASS" : "FAIL",
+          mismatch_details.c_str());
     }
 
     win->deregister_local_buffer(staging_buf);
@@ -919,6 +1288,15 @@ TEST_F(IbSendRecvBenchmark, SendRecvCorrectness) {
     mem_pool.reset();
     torchcomm_->barrier(false);
   }
+}
+
+TEST_F(IbSendRecvBenchmark, NcclSendRecvMeasuredLoopCorrectnessSmall) {
+  constexpr size_t total = 64 * KB;
+
+  auto nccl_r = run_nccl_baseline(total);
+
+  EXPECT_EQ(nccl_r.wrong, 0);
+  EXPECT_GT(nccl_r.elapsed_ms, 0);
 }
 
 TEST_F(IbSendRecvBenchmark, SendRecvVsNccl) {

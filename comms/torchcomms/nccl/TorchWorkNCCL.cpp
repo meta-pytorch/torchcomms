@@ -196,4 +196,8 @@ void TorchWorkNCCL::wait() {
 
   runWaitPostHooks();
 }
+
+void TorchWorkNCCL::hostSynchronize() {
+  syncCurrentStreamIfNotCapturing(comm_->getCudaApi(), comm_->device_.index());
+}
 } // namespace torch::comms

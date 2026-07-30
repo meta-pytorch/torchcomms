@@ -37,9 +37,6 @@ class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
   void SetUp() override {
     ctran::CtranDistTestFixture::SetUp();
     ctranComm = makeCtranComm();
-    if (!ctranReduceScatterSupport(ctranComm.get(), NCCL_REDUCESCATTER_ALGO)) {
-      GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
-    }
   }
 
   void TearDown() override {

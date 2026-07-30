@@ -3,8 +3,8 @@
 #pragma once
 
 #include <memory>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/bootstrap/ISocket.h"
-#include "comms/ctran/utils/Abort.h"
 
 namespace ctran::bootstrap {
 
@@ -16,16 +16,16 @@ class ISocketFactory {
   virtual ~ISocketFactory() = default;
 
   virtual std::unique_ptr<ISocket> createClientSocket(
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) = 0;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) = 0;
 
   virtual std::unique_ptr<ISocket> createClientSocket(
       int sockFd,
       const folly::SocketAddress& peerAddr,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) = 0;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) = 0;
 
   virtual std::unique_ptr<IServerSocket> createServerSocket(
       int acceptRetryCnt,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) = 0;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) = 0;
 };
 
 } // namespace ctran::bootstrap

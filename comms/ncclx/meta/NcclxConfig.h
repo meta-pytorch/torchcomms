@@ -42,9 +42,16 @@ class Config {
   // via commSetConfig.
   bool winRegisterEnableSignal = true;
 
+  // When true, all ranks register a buffer of identical size at an identical
+  // offset from the window base (upstream NCCL_WIN_COLL_SYMMETRIC semantics),
+  // so a peer address is peerBase + (buf - localBase). Mutable via
+  // commSetConfig.
+  bool winRegisterSymmetric = false;
+
   enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
+  enum NCCL_ALLTOALL_ALGO alltoallAlgo = NCCL_ALLTOALL_ALGO::orig;
   enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
   enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
@@ -83,6 +90,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "allgatherAlgo",
       "allreduceAlgo",
       "pipesIbgdaDataBufferSize",
+      "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
       "pipesNvlChunkSize",
@@ -93,6 +101,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ibLazyConnect",
       "win_register_ipc_only",
       "win_register_enable_signal",
+      "win_register_symmetric",
   };
   return keys;
 }
@@ -103,10 +112,12 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "sendrecvAlgo",
       "allgatherAlgo",
       "allreduceAlgo",
+      "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
       "win_register_ipc_only",
       "win_register_enable_signal",
+      "win_register_symmetric",
   };
   return keys;
 }

@@ -20,10 +20,10 @@ const auto myAlgo = NCCL_ALLGATHER_P_ALGO::ctpipeline;
 
 // Get the index of the chunk in recvBuff to receive from the internode Ring
 // neighbor in the rail. E.g., for nRanks = 8, nLocalRanks = 2, rank = 2, it
-// would receive chunkIdx 0, 6, 4 of the recvBuff in a 3-step Ring.
+// would receive chunkIdx 2, 0, 6 of the recvBuff in a 3-step Ring.
 inline size_t
 getRecvChunkIdxInRail(int rank, int step, int nLocalRanks, int nRanks) {
-  return (rank - step * nLocalRanks + nRanks) & (nRanks - 1);
+  return (rank - step * nLocalRanks + nRanks) % nRanks;
 }
 
 commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
@@ -172,7 +172,7 @@ extern __global__ void ncclKernelAllGatherPPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args);
-extern __global__ void ncclKernelAllGatherPPipe(
+extern __global__ void ncclKernelAllGatherPRing(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 
@@ -263,32 +263,37 @@ commResult_t AlgoImpl::execPipeline(
 
     if (nLocalRanks > 1) {
       // - For nLocalRanks > 1 case, use ncclKernelAllGatherPPipeStart to hold
-      //   GPE thread till allgather starts. ncclKernelAllGatherPStart returns
-      //   immediately after started GPE, thus the inter-node pipeline can be
-      //   overlapped with the following intra-node copies.
+      //   GPE thread till allgather starts. ncclKernelAllGatherPPipeStart
+      //   returns immediately after started GPE, thus the inter-node pipeline
+      //   can be overlapped with the following intra-node copies.
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
           reinterpret_cast<void*>(ncclKernelAllGatherPPipeStart)));
     } else {
-      // - For nLocalRanks == 1 case, ncclKernelAllGatherPPipe holds the stream
+      // - For nLocalRanks == 1 case, ncclKernelAllGatherPRing holds the stream
       //   till GPE thread finishes entire transfer.
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
-          reinterpret_cast<void*>(ncclKernelAllGatherPPipe)));
+          reinterpret_cast<void*>(ncclKernelAllGatherPRing)));
     }
   }
 
-  // Copy data to self for out-of-place allgather
-  FB_COMMCHECK(copyToSelf(
-      comm_,
-      sendbuff,
-      getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
-      sendSize,
-      stream_));
+  // Copy data to self for out-of-place allgather. Skipped when multicast is
+  // engaged: the step-0 CE-multicast broadcast fans out to self too, so
+  // recvbuff[myRank] is already written (the GPE inter-node ring sources its
+  // step-0 chunk from sendbuff, not recvbuff, so there is no early reader).
+  if (!pArgs.mcWrite) {
+    FB_COMMCHECK(copyToSelf(
+        comm_,
+        sendbuff,
+        getPtr(pArgs.recvbuff, comm_->statex_->rank() * sendSize),
+        sendSize,
+        stream_));
+  }
 
   // Submit intra-node copies in the pipeline
   if (nLocalRanks > 1) {
@@ -301,9 +306,11 @@ commResult_t AlgoImpl::execPipeline(
         myRank * sendSize,
         pArgs.remoteRecvBuffs,
         pArgs.remoteAccessKeys,
-        stream_));
+        stream_,
+        /*barrier=*/true,
+        pArgs.mcWrite));
 
-    const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
+    const int upPeer = (nRanks + myRank - nLocalRanks) % nRanks;
 
     // -  Remaining steps: broadcast received chunk from internode upPeer
     for (int step = 0; step < nNodes - 1; step++) {
@@ -332,7 +339,9 @@ commResult_t AlgoImpl::execPipeline(
           offset,
           pArgs.remoteRecvBuffs,
           pArgs.remoteAccessKeys,
-          stream_));
+          stream_,
+          /*barrier=*/true,
+          pArgs.mcWrite));
     }
 
     PipeEndKernArgs kernArgs = {

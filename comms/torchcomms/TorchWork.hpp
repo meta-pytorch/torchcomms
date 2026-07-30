@@ -52,6 +52,13 @@ class TorchWork : public c10::intrusive_ptr_target {
     return std::chrono::milliseconds::max();
   }
 
+  // Block the calling CPU thread until the device work behind this object has
+  // completed (in addition to the stream-ordered wait()). Invoked by the c10d
+  // WorkWrapper for synchronous barriers to mirror stock ProcessGroupNCCL,
+  // whose barrier host-blocks the CPU thread. No-op by default; backends whose
+  // wait() is already host-blocking (e.g. CPU/gloo) need not override it.
+  virtual void hostSynchronize() {}
+
   // Fault Tolerance API
 
   /**

@@ -32,9 +32,7 @@
           wc.qp_num,                                                                                  \
           wc.status,                                                                                  \
           ibv_wc_status_str(wc.status));                                                              \
-      ProcessGlobalErrorsUtil::setNic(                                                                \
-          devices[device].devName, wc.qp_num, errMsg);                                                \
-      CLOGF(ERR, "{}", errMsg);                                                                       \
+      CERR(commRemoteError, "{}", errMsg);                                                            \
       return commRemoteError;                                                                         \
     }                                                                                                 \
   } while (0)
