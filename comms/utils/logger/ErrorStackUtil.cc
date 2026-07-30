@@ -17,16 +17,15 @@ namespace {
 // stack until the first frame that does NOT match any of these markers, so the
 // recorded stack starts near where the error was actually reported. A
 // name-based filter is used (instead of a fixed skip count) because setError()
-// is reached through several different call chains (direct CTRAN
-// ErrorStackTraceUtil, the NcclLogFormatter CTRAN hook, and the NCCL debug
+// is reached through several different call chains (the CTRAN CERR / NCCL ERR
+// logErrorToScuba path, the NcclLogFormatter CTRAN hook, and the NCCL debug
 // path), each with a different amount of plumbing on top.
-constexpr std::array<std::string_view, 12> kInternalFrameMarkers = {
+constexpr std::array<std::string_view, 11> kInternalFrameMarkers = {
     "folly::symbolizer",
     "getStackTraceStr",
     "NcclScubaSample",
     "EventsScubaUtil",
     "logErrorToScuba",
-    "ErrorStackTraceUtil",
     "NcclLogFormatter",
     "folly::LogStreamProcessor",
     "folly::LogStreamVoidify",

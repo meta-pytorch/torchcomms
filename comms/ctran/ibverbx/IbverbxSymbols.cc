@@ -280,6 +280,14 @@ struct ibv_qp* linked_mlx5dv_create_qp(
       reinterpret_cast<::mlx5dv_qp_init_attr*>(mlx5_qp_attr)));
 }
 
+int linked_mlx5dv_query_device(
+    struct ibv_context* ctx_in,
+    struct mlx5dv_context* attrs_out) {
+  return mlx5dv_query_device(
+      reinterpret_cast<::ibv_context*>(ctx_in),
+      reinterpret_cast<::mlx5dv_context*>(attrs_out));
+}
+
 struct mlx5dv_qp_ex* linked_mlx5dv_qp_ex_from_ibv_qp_ex(struct ibv_qp_ex* qp) {
   return reinterpret_cast<struct mlx5dv_qp_ex*>(
       mlx5dv_qp_ex_from_ibv_qp_ex(reinterpret_cast<::ibv_qp_ex*>(qp)));
@@ -501,6 +509,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   symbols.mlx5dv_internal_create_qp = &linked_mlx5dv_create_qp;
   symbols.mlx5dv_internal_qp_ex_from_ibv_qp_ex =
       &linked_mlx5dv_qp_ex_from_ibv_qp_ex;
+  symbols.mlx5dv_internal_query_device = &linked_mlx5dv_query_device;
 
   // SRQ symbols
   symbols.ibv_internal_create_srq = &linked_create_srq;
@@ -594,6 +603,26 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     *cast = tmp;                                             \
   }
 
+// dlsym-based (unversioned) loader. Use when the vendored libmlx5's actual
+// symbol version tag differs from any known upstream MLX5_X.Y label — dlsym
+// picks whatever version the library exports without a strict version match.
+// Necessary for some fbcode-vendored libmlx5 builds that repackage symbol
+// versions (empirically observed on GB300 fleet hosts).
+#define LOAD_SYM_UNVERSIONED_WARN(handle, symbol, funcptr) \
+  {                                                        \
+    cast = (void**)&funcptr;                               \
+    (void)dlerror(); /* clear any stale error state */     \
+    tmp = dlsym(handle, symbol);                           \
+    if (tmp == nullptr) {                                  \
+      const char* dlErr = dlerror();                       \
+      XLOG(WARN) << fmt::format(                           \
+          "dlsym failed on {} - {}, set null",             \
+          symbol,                                          \
+          dlErr ? dlErr : "unknown");                      \
+    }                                                      \
+    *cast = tmp;                                           \
+  }
+
 #define LOAD_IBVERBS_SYM(symbol, funcptr) \
   LOAD_SYM(ibvhandle, symbol, funcptr, IBVERBS_VERSION)
 
@@ -607,6 +636,11 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
 #define LOAD_MLX5DV_SYM(symbol, funcptr)                              \
   if (mlx5dvhandle != nullptr) {                                      \
     LOAD_SYM_WARN_ONLY(mlx5dvhandle, symbol, funcptr, MLX5DV_VERSION) \
+  }
+
+#define LOAD_MLX5DV_SYM_UNVERSIONED(symbol, funcptr)         \
+  if (mlx5dvhandle != nullptr) {                             \
+    LOAD_SYM_UNVERSIONED_WARN(mlx5dvhandle, symbol, funcptr) \
   }
 
 #define LOAD_MLX5DV_SYM_VERSION(symbol, funcptr, version)      \
@@ -671,6 +705,11 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   // Cherry-pick the mlx5dv_get_data_direct_sysfs_path API from MLX5 1.2
   LOAD_MLX5DV_SYM_VERSION(
       "mlx5dv_init_obj", symbols.mlx5dv_internal_init_obj, "MLX5_1.2");
+  // mlx5dv_query_device — fbcode-vendored libmlx5 exports this at a
+  // non-upstream version tag on the fleet, so dlvsym on MLX5_1.X fails.
+  // Use unversioned dlsym; callers must null-guard.
+  LOAD_MLX5DV_SYM_UNVERSIONED(
+      "mlx5dv_query_device", symbols.mlx5dv_internal_query_device);
   // Cherry-pick the mlx5dv_get_data_direct_sysfs_path API from MLX5 1.25
   LOAD_MLX5DV_SYM_VERSION(
       "mlx5dv_get_data_direct_sysfs_path",
@@ -686,6 +725,11 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
       "mlx5dv_dci_stream_id_reset",
       symbols.mlx5dv_internal_dci_stream_id_reset,
       "MLX5_1.21");
+  // mlx5dv_create_qp — needed for MLX5DV_QP_CREATE_OOO_DP and DC QP creation.
+  // Same fbcode-vendored version-tag mismatch as mlx5dv_query_device — use
+  // unversioned dlsym; callers must null-guard.
+  LOAD_MLX5DV_SYM_UNVERSIONED(
+      "mlx5dv_create_qp", symbols.mlx5dv_internal_create_qp);
 
   // all symbols were loaded successfully, dismiss guard
   guard.dismiss();

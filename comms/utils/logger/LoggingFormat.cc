@@ -47,6 +47,9 @@ struct LastErrorInfo {
   std::string lastErrorMessage;
   // Legacy per-frame error chain, still appended by v2_27/v2_29's debug.cc via
   // appendErrorToStack(). Kept for backward compatibility.
+  // TODO: remove once ncclx v2_29 is retired -- only v2_29 populates this;
+  // v2_30 is native-stack-only (lastErrorNativeStack), so this field and the
+  // getLastCommsError() fallback that reads it become dead.
   std::vector<std::string> lastErrorStack;
   // Native symbolized stack captured at the error site by logErrorToScuba().
   // Preferred by getLastCommsError() when present.
@@ -388,6 +391,8 @@ std::string getLastCommsError() {
     ss << lastCommsErrorRLocked->lastErrorMessage << "\nNCCL Stack trace:";
     // Prefer the native captured stack; fall back to the legacy per-frame
     // chain (still populated by v2_27/v2_29) when no native stack is present.
+    // TODO: remove the lastErrorStack fallback once ncclx v2_29 is retired --
+    // v2_30 is native-only, so this can collapse to lastErrorNativeStack.
     const auto& stackTrace =
         !lastCommsErrorRLocked->lastErrorNativeStack.empty()
         ? lastCommsErrorRLocked->lastErrorNativeStack
@@ -399,6 +404,9 @@ std::string getLastCommsError() {
   return ss.str();
 }
 
+// TODO: remove once ncclx v2_29 is retired (see appendErrorToStack decl in
+// LoggingFormat.h) -- v2_30/ctran use captureNativeErrorStack() +
+// setLastError().
 void appendErrorToStack(std::string error) {
   lastCommsError.wlock()->lastErrorStack.push_back(std::move(error));
 }

@@ -842,11 +842,8 @@ struct AnsCompress {
     }
 #endif
 
-    // No per-thread release fence here: the transport
-    // (`P2pIbgdaTransportDevice::send`) already calls
-    // `__threadfence_system()` from every cooperating thread
-    // immediately after `CopyOp::send` returns and before the
-    // leader-issued RDMA put.
+    // The transport synchronizes all cooperating writers before the leader's
+    // system fence and RDMA put.
     return writeOffset;
   }
 

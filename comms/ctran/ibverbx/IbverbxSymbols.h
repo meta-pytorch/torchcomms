@@ -110,6 +110,9 @@ struct IbvSymbols {
       struct ibv_context* context,
       char* buf,
       size_t buf_len) = nullptr;
+  int (*mlx5dv_internal_query_device)(
+      struct ibv_context* ctx_in,
+      struct mlx5dv_context* attrs_out) = nullptr;
   /* DMA-BUF support */
   struct ibv_mr* (*mlx5dv_internal_reg_dmabuf_mr)(
       struct ibv_pd* pd,

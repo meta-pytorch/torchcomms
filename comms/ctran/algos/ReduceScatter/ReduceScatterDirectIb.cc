@@ -17,6 +17,7 @@
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 static const auto myAlgo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
@@ -236,7 +237,8 @@ commResult_t ctranReduceScatterDirectIb(
     mpt->materializePeers(peers);
 
     const int numBlocks =
-        ctran::reducescatter::direct_ib::numBlocksForTotalBytes(totalBytes);
+        ctran::reducescatter::direct_ib::numBlocksForTotalBytes(
+            totalBytes, MCCL_MAX_NCHANNELS);
 
     comms::prims::DirectReduceScatterIbLaunchParams params{};
     params.my_rank = statex->rank();
@@ -252,7 +254,7 @@ commResult_t ctranReduceScatterDirectIb(
         recvBytes,
         statex->rank());
     params.num_blocks = numBlocks;
-    params.timeout_ms = ctran::reducescatter::direct_ib::kTimeoutMs;
+    params.timeout_ms = MCCL_ABORT_TIMEOUT_MS;
     params.stream = stream;
 
     for (int peer : peers) {

@@ -74,6 +74,10 @@ fmt::memory_buffer getLogPrefix(LogLevel level);
 
 std::string getLastCommsError();
 
+// TODO: remove once ncclx v2_29 is retired. The only remaining producer is
+// v2_29's ncclMetaDebugLogWithScuba (via ERR_WITH_SCUBA/WARN_WITH_SCUBA);
+// v2_30 and ctran record the last-error stack via captureNativeErrorStack() +
+// setLastError() instead (native-stack-only).
 void appendErrorToStack(std::string error);
 
 // Record an ERROR-level log to the nccl_structured_logging Scuba table as a

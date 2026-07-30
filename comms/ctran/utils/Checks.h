@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <folly/Format.h>
 
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/Conversion.h"
 #include "comms/utils/commSpecs.h"
@@ -29,20 +28,18 @@
  *     macro that ignores
  */
 
-#define FB_CUDACHECK_RETURN(cmd, ret)            \
-  do {                                           \
-    cudaError_t err = cmd;                       \
-    if (err != cudaSuccess) {                    \
-      auto errStr = cudaGetErrorString(err);     \
-      CERR(                                      \
-          commUnhandledCudaError,                \
-          "Cuda failure {} '{}'",                \
-          static_cast<int>(err),                 \
-          errStr);                               \
-      ErrorStackTraceUtil::logErrorMessage(      \
-          "Cuda Error: " + std::string(errStr)); \
-      return ret;                                \
-    }                                            \
+#define FB_CUDACHECK_RETURN(cmd, ret)        \
+  do {                                       \
+    cudaError_t err = cmd;                   \
+    if (err != cudaSuccess) {                \
+      auto errStr = cudaGetErrorString(err); \
+      CERR(                                  \
+          commUnhandledCudaError,            \
+          "Cuda failure {} '{}'",            \
+          static_cast<int>(err),             \
+          errStr);                           \
+      return ret;                            \
+    }                                        \
   } while (false)
 
 #define FB_CUDACHECK(cmd) FB_CUDACHECK_RETURN(cmd, commUnhandledCudaError)
@@ -350,8 +347,8 @@
 #define FOLLY_EXPECTED_CHECK(RES) \
   do {                            \
     if (RES.hasError()) {         \
-      CLOGF(                      \
-          ERR,                    \
+      CERR(                       \
+          commSystemError,        \
           "{}:{} -> {}, {}",      \
           __FILE__,               \
           __LINE__,               \
@@ -602,31 +599,29 @@
 #define FB_CUDACHECKTHREAD(a)             \
   do {                                    \
     if ((a) != cudaSuccess) {             \
-      CLOGF_SUBSYS(                       \
-          ERR,                            \
-          INIT,                           \
-          "{}:{}} -> {}} [Async thread]", \
+      args->ret = commUnhandledCudaError; \
+      CERR(                               \
+          commUnhandledCudaError,         \
+          "{}:{} -> {} [Async thread]",   \
           __FILE__,                       \
           __LINE__,                       \
           args->ret);                     \
-      args->ret = commUnhandledCudaError; \
       return args;                        \
     }                                     \
   } while (0)
 
-#define FB_COMMARGCHECK(statement, ...)                     \
-  do {                                                      \
-    if (!(statement)) {                                     \
-      CERR(commInvalidArgument, ##__VA_ARGS__);             \
-      return ErrorStackTraceUtil::log(commInvalidArgument); \
-    }                                                       \
+#define FB_COMMARGCHECK(statement, ...)         \
+  do {                                          \
+    if (!(statement)) {                         \
+      CERR(commInvalidArgument, ##__VA_ARGS__); \
+      return commInvalidArgument;               \
+    }                                           \
   } while (0);
 
-#define FB_ERRORRETURN(error, ...)                                  \
-  do {                                                              \
-    CLOGF(ERR, ##__VA_ARGS__);                                      \
-    ErrorStackTraceUtil::logErrorMessage(fmt::format(__VA_ARGS__)); \
-    return error;                                                   \
+#define FB_ERRORRETURN(error, ...) \
+  do {                             \
+    CERR(error, ##__VA_ARGS__);    \
+    return error;                  \
   } while (0)
 
 #define FB_ERRORTHROW_EX(error, logData, ...)       \
