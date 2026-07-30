@@ -2,6 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <stdexcept>
+#include <thread>
+
 #include <c10/util/intrusive_ptr.h>
 #include "comms/torchcomms/TorchWork.hpp"
 
@@ -124,6 +128,27 @@ TEST(TorchWorkTest, MultipleHooksFireInOrder) {
   EXPECT_EQ(order, expected);
 }
 
+TEST(TorchWorkTest, MultipleHookFailuresRunAllHooksAndRethrowFirst) {
+  auto work = c10::make_intrusive<TestWork>();
+  std::vector<int> order;
+
+  work->registerWorkStartHook([&order]() {
+    order.push_back(1);
+    throw std::logic_error("first failure");
+  });
+  work->registerWorkStartHook([&order]() {
+    order.push_back(2);
+    throw std::runtime_error("second failure");
+  });
+  work->registerWorkStartHook([&order]() { order.push_back(3); });
+
+  EXPECT_THROW(
+      work->setStatus(TorchWork::WorkStatus::INPROGRESS), std::logic_error);
+
+  const std::vector<int> expected{1, 2, 3};
+  EXPECT_EQ(order, expected);
+}
+
 TEST(TorchWorkTest, StartHookNotFiredOnTerminalStatus) {
   auto work = c10::make_intrusive<TestWork>();
   int start_count = 0;
@@ -181,6 +206,107 @@ TEST(TorchWorkTest, EndHooksFiredAtMostOnce) {
   // Second terminal status should not fire end hooks again
   work->setStatus(TorchWork::WorkStatus::ERROR);
   EXPECT_EQ(end_count, 1);
+  EXPECT_EQ(work->status(), TorchWork::WorkStatus::COMPLETED);
+}
+
+TEST(TorchWorkTest, ConcurrentTerminalTransitionsLatchFirstResult) {
+  constexpr int kIterations = 1000;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    auto work = c10::make_intrusive<TestWork>();
+    work->setStatus(TorchWork::WorkStatus::INPROGRESS);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::atomic<int> endCount{0};
+    work->registerWorkEndHook([&]() { endCount.fetch_add(1); });
+    auto terminalize = [&](TorchWork::WorkStatus status) {
+      ready.fetch_add(1);
+      while (!go.load()) {
+        std::this_thread::yield();
+      }
+      work->setStatus(status);
+    };
+    std::thread completeThread(terminalize, TorchWork::WorkStatus::COMPLETED);
+    std::thread timeoutThread(terminalize, TorchWork::WorkStatus::TIMEDOUT);
+    while (ready.load() != 2) {
+      std::this_thread::yield();
+    }
+    go.store(true);
+    completeThread.join();
+    timeoutThread.join();
+
+    const auto latched = work->status();
+    EXPECT_TRUE(
+        latched == TorchWork::WorkStatus::COMPLETED ||
+        latched == TorchWork::WorkStatus::TIMEDOUT);
+    EXPECT_EQ(endCount.load(), 1);
+    work->setStatus(TorchWork::WorkStatus::ERROR);
+    EXPECT_EQ(work->status(), latched);
+  }
+}
+
+TEST(TorchWorkTest, EndHooksContinueAfterFailureAndRethrowFirstError) {
+  auto work = c10::make_intrusive<TestWork>();
+  std::vector<int> order;
+  work->registerWorkEndHook([&order]() {
+    order.push_back(1);
+    throw std::runtime_error("first hook failed");
+  });
+  work->registerWorkEndHook([&order]() {
+    order.push_back(2);
+    throw std::logic_error("second hook failed");
+  });
+  work->registerWorkEndHook([&order]() { order.push_back(3); });
+
+  try {
+    work->setStatus(TorchWork::WorkStatus::COMPLETED);
+    FAIL() << "Expected the first hook error";
+  } catch (const std::runtime_error& error) {
+    EXPECT_STREQ(error.what(), "first hook failed");
+  }
+
+  const std::vector<int> expected{1, 2, 3};
+  EXPECT_EQ(order, expected);
+}
+
+TEST(TorchWorkTest, StartHooksContinueAfterFailureAndRethrowFirstErrorOnce) {
+  auto work = c10::make_intrusive<TestWork>();
+  std::vector<int> order;
+  work->registerWorkStartHook([&order]() {
+    order.push_back(1);
+    throw std::runtime_error("first hook failed");
+  });
+  work->registerWorkStartHook([&order]() {
+    order.push_back(2);
+    throw std::logic_error("second hook failed");
+  });
+  work->registerWorkStartHook([&order]() { order.push_back(3); });
+
+  try {
+    work->setStatus(TorchWork::WorkStatus::INPROGRESS);
+    FAIL() << "Expected the first hook error";
+  } catch (const std::runtime_error& error) {
+    EXPECT_STREQ(error.what(), "first hook failed");
+  }
+
+  work->setStatus(TorchWork::WorkStatus::INPROGRESS);
+  const std::vector<int> expected{1, 2, 3};
+  EXPECT_EQ(order, expected);
+}
+
+TEST(TorchWorkTest, ConcurrentEndHookRegistrationDoesNotLoseCompletion) {
+  constexpr int kIterations = 1000;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    auto work = c10::make_intrusive<TestWork>();
+    std::atomic<int> endCount{0};
+    std::thread registerThread(
+        [&]() { work->registerWorkEndHook([&]() { endCount.fetch_add(1); }); });
+    std::thread completeThread(
+        [&]() { work->setStatus(TorchWork::WorkStatus::COMPLETED); });
+
+    registerThread.join();
+    completeThread.join();
+    EXPECT_EQ(endCount.load(), 1);
+  }
 }
 
 // -- Release resources / weak-ref cycle tests --

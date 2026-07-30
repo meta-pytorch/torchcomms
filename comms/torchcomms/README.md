@@ -383,14 +383,15 @@ method in the API reference.
 #### Split
 
 ```python
-split(ranks)
+split(ranks, name)
 ```
 
 Split the communicator into a subgroup.
 
-- **ranks** (list of int): List of ranks to include in the new subgroup. If the list is empty, `None` will be returned. If the list is non-empty but does not include the current rank, an exception will be thrown.
-  communicator
-- **Returns**: New TorchComm object
+- **ranks** (list of int): Parent-local ranks to include. A backend may require
+  either the same membership list on every parent rank or an empty list on
+  nonmembers; consult that backend's split contract.
+- **Returns**: A new TorchComm object for members, or `None` for nonmembers.
 
 ### Work Object
 

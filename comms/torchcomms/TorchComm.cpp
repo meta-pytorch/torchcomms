@@ -492,13 +492,12 @@ InitHandle TorchComm::getInitHandle() const {
 
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
+  ranks_.clear();
   auto work = impl_->reconfigure(opts);
   work->waitBlocking();
 
   if (work->isCompleted()) {
     initRanks();
-  } else {
-    ranks_.clear();
   }
 
   return work;
@@ -545,6 +544,7 @@ std::shared_ptr<TorchComm> TorchComm::split(
   preHook(op_id, SplitPreHookArgs(ranks, name));
   auto new_impl = impl_->split(ranks, name, options);
   if (new_impl == nullptr) {
+    postHook(op_id, SplitPostHookArgs(std::weak_ptr<TorchComm>{}));
     return nullptr;
   }
   // Map the local ranks to global ranks from this communicator

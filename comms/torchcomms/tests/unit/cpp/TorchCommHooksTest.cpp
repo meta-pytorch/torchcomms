@@ -4,6 +4,7 @@
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <comms/torchcomms/hooks/common/OpNameHelper.hpp>
+#include <comms/torchcomms/tests/unit/cpp/TorchCommTestPeer.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <vector>
@@ -13,6 +14,16 @@ namespace torch::comms {
 namespace {
 constexpr const char* kBackendName = "fake_test";
 constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
+
+class NullSplitBackend final : public TorchCommFake {
+ public:
+  std::shared_ptr<TorchCommBackend> split(
+      const std::vector<int>&,
+      const std::string&,
+      const CommOptions&) override {
+    return nullptr;
+  }
+};
 } // namespace
 
 class TorchCommHooksTest : public ::testing::Test {
@@ -52,6 +63,38 @@ TEST_F(TorchCommHooksTest, PreAndPostHookCalledAfterRegistration) {
   ASSERT_EQ(preHookCalls.size(), 1);
   EXPECT_EQ(preHookCalls[0], OpName::all_reduce);
   EXPECT_EQ(postHookCallCount, 1);
+}
+
+TEST_F(TorchCommHooksTest, NullSplitEmitsMatchedPreAndPostHooks) {
+  auto torchcomm = test::TorchCommTestPeer::create(
+      std::make_shared<NullSplitBackend>(), {0}, "null_split");
+  bool preCalled = false;
+  bool postCalled = false;
+  size_t preOpId = 0;
+  size_t postOpId = 0;
+
+  auto preHandle =
+      torchcomm->registerPreHook([&](size_t opId, const PreHookArgs& args) {
+        const auto* split = std::get_if<SplitPreHookArgs>(&args);
+        ASSERT_NE(split, nullptr);
+        EXPECT_TRUE(split->ranks.empty());
+        EXPECT_EQ(split->name, "excluded");
+        preCalled = true;
+        preOpId = opId;
+      });
+  auto postHandle =
+      torchcomm->registerPostHook([&](size_t opId, const PostHookArgs& args) {
+        const auto* split = std::get_if<SplitPostHookArgs>(&args);
+        ASSERT_NE(split, nullptr);
+        EXPECT_TRUE(split->new_comm.expired());
+        postCalled = true;
+        postOpId = opId;
+      });
+
+  EXPECT_EQ(torchcomm->split({}, "excluded"), nullptr);
+  EXPECT_TRUE(preCalled);
+  EXPECT_TRUE(postCalled);
+  EXPECT_EQ(preOpId, postOpId);
 }
 
 TEST_F(TorchCommHooksTest, PreAndPostHookOpIdIncreases) {

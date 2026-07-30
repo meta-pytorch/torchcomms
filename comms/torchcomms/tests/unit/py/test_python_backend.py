@@ -270,6 +270,8 @@ class TestPythonBackend(unittest.TestCase):
     def test_split(self) -> None:
         comm = torchcomms.new_comm("dummy_py", torch.device("cpu"), name="test_split")
         sub = comm.split(ranks=[0], name="sub_comm")
+        self.assertIsNotNone(sub)
+        assert sub is not None
         self.assertEqual(sub.get_rank(), 0)
         self.assertEqual(sub.get_size(), 1)
         sub.finalize()
