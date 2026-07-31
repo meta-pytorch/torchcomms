@@ -9,6 +9,7 @@
 #include <folly/dynamic.h>
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms::colltrace {
@@ -36,6 +37,23 @@ class ICollTraceHandle {
       folly::dynamic params) noexcept = 0;
   virtual CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept = 0;
   virtual CommsMaybeVoid invalidate() noexcept = 0;
+
+  // In-kernel colltrace: expose the graph ring device handle + collId so the
+  // GPE can point the collective kernel at where to write its own start/end
+  // timestamps, instead of the host-launched timestamp kernels. Returns a
+  // non-capable handle for cases that don't support it (eager, dummy); only the
+  // graph handle overrides this.
+  virtual ColltraceDeviceHandle getColltraceDeviceHandle() noexcept {
+    return {};
+  }
+
+  // Mark that this collective's kernel is armed to publish its own start/end
+  // timestamps from inside the kernel, so the host-launched timestamp path is
+  // skipped (they must never both write the ring). No-op except on the graph
+  // handle. Called by the GPE / baseline arming code during submit, before the
+  // launch triggers beforeCollKernelScheduled(). TEMPORARY: removed together
+  // with the host-launched path at the in-kernel cutover.
+  virtual void markInKernelEmit() noexcept {}
 };
 
 // Handle to be returned to the user for triggering stages for the collective.
