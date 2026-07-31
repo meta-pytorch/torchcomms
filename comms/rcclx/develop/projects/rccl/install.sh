@@ -86,6 +86,7 @@ function display_help()
     echo "    -q|--quiet-warnings        Suppress majority of compiler warnings (not recommended)"
     echo "       --rocshmem              Build with rocSHMEM support"
     echo "       --enable-prims          Compile comms/prims (pipes) into RCCLX (default: off)"
+    echo "       --disable-warp-speed    Build without WARP_SPEED kernels"
 }
 
 # #################################################

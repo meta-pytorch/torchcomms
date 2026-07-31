@@ -43,6 +43,23 @@ commResult_t ctranReduceScatterDirectIb(
     CtranComm* comm,
     cudaStream_t stream);
 
+#if defined(ENABLE_PRIMS)
+bool ctranReduceScatterDirectIbSupport(
+    CtranComm* comm,
+    int* unsupportedPeer = nullptr);
+#endif
+
+commResult_t ctranReduceScatterQuantizeDirectIb(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t inputType,
+    commDataType_t transportType,
+    commRedOp_t redOp,
+    const uint64_t* seedPtr,
+    CtranComm* comm,
+    cudaStream_t stream);
+
 static inline commResult_t reduceScatterSingleRankImpl(
     const void* sendbuff,
     void* recvbuff,

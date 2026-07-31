@@ -197,7 +197,8 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
-  ibLazyConnect = parseHintBool("ibLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
+  deviceIbLazyConnect =
+      parseHintBool("deviceIbLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
 
   // vCliqueSize: hint only (no flat ncclConfig_t field)
   {
@@ -400,7 +401,7 @@ void ncclxLogCommConfig(ncclComm_t comm) {
         fmt::format(
             "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
     append(fmt::format("winRegisterSymmetric={}", xCfg->winRegisterSymmetric));
-    append(fmt::format("ibLazyConnect={}", xCfg->ibLazyConnect));
+    append(fmt::format("deviceIbLazyConnect={}", xCfg->deviceIbLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
     appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);

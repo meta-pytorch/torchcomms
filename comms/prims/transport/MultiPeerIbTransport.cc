@@ -3,7 +3,6 @@
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 
 #include <cerrno>
-#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -281,6 +280,10 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
   }
   if (nRanks_ < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
+  }
+  if (auto isolatedBootstrap = bootstrap_->duplicate()) {
+    bootstrap_ =
+        std::shared_ptr<meta::comms::IBootstrap>(std::move(isolatedBootstrap));
   }
   // RoCE GID index: config override, else the RoCEv2 default. Read by
   // openNics() (query_gid) and by backends when building address handles.
@@ -1855,16 +1858,12 @@ bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
             myRank_,
             nRanks_));
   }
-  if (!config_.ibLazyConnect) {
-    return true;
-  }
+  const std::lock_guard<std::mutex> lock(materializationMutex_);
   return peerMaterialized_[rankToPeerIndex(peerRank)];
 }
 
 void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
-  if (!config_.ibLazyConnect) {
-    return;
-  }
+  const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     throw std::runtime_error(
         "MultiPeerIbTransport: lazy peer materialization previously failed; "
@@ -1879,7 +1878,7 @@ void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
             myRank_,
             nRanks_));
   }
-  if (isPeerMaterialized(peerRank)) {
+  if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
     return;
   }
   for (int p : pendingPeers_) {
@@ -1961,29 +1960,22 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     const void* localPayload,
     void* remotePayload,
     std::size_t bytes,
-    int tag) {
-  auto timeoutUs = std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::milliseconds(config_.materializePeerTimeoutMs));
-  auto waitFuture = [&](auto&& future, const char* op) -> int {
-    try {
-      return std::move(future).get(timeoutUs);
-    } catch (const std::exception&) {
-      throw std::runtime_error(
-          fmt::format(
-              "materializePeer: rank {} {} with peer {} timed out ({}ms)",
-              myRank_,
-              op,
-              peerRank,
-              config_.materializePeerTimeoutMs));
-    }
-  };
-
+    int phase) {
+  constexpr int64_t kPrimsPeerTagBase = 1 << 16;
+  const int lowRank = std::min(myRank_, peerRank);
+  const int highRank = std::max(myRank_, peerRank);
+  const int64_t pairIndex = static_cast<int64_t>(lowRank) * nRanks_ + highRank;
+  const int64_t tagValue = kPrimsPeerTagBase + pairIndex * 2 + phase;
+  if (tagValue > std::numeric_limits<int>::max()) {
+    throw std::runtime_error("materializePeer: bootstrap tag overflow");
+  }
+  const int tag = static_cast<int>(tagValue);
   // Lower rank recvs first to avoid deadlock with blocking bootstrap
   // implementations (e.g. MpiBootstrap uses blocking MPI_Send/MPI_Recv).
   if (myRank_ < peerRank) {
     auto recvFuture =
         bootstrap_->recv(remotePayload, bytes, peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
+    int recvResult = std::move(recvFuture).get();
     if (recvResult != 0) {
       throw std::runtime_error(
           fmt::format(
@@ -1994,7 +1986,7 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     }
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
+    int sendResult = std::move(sendFuture).get();
     if (sendResult != 0) {
       throw std::runtime_error(
           fmt::format(
@@ -2006,7 +1998,7 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
   } else {
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
-    int sendResult = waitFuture(std::move(sendFuture), "send");
+    int sendResult = std::move(sendFuture).get();
     if (sendResult != 0) {
       throw std::runtime_error(
           fmt::format(
@@ -2017,7 +2009,7 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     }
     auto recvFuture =
         bootstrap_->recv(remotePayload, bytes, peerRank, /*tag=*/tag);
-    int recvResult = waitFuture(std::move(recvFuture), "recv");
+    int recvResult = std::move(recvFuture).get();
     if (recvResult != 0) {
       throw std::runtime_error(
           fmt::format(

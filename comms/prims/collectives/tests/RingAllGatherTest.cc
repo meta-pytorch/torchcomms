@@ -19,7 +19,7 @@ struct RingAllGatherTestParams {
   int num_rings;
   std::size_t data_buffer_size;
   int pipeline_depth;
-  bool ibLazyConnect{false};
+  bool ibLazyConnect{true};
 };
 
 std::string param_name(

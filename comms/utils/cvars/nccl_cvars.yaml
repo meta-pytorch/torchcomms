@@ -1781,7 +1781,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IB_QP_CONFIG_ALGO
    type        : dictlist
-   default     : alltoall:1048576,16,dqplb,128,224
+   default     : alltoall:1048576,4,spray,128,224
    description : |-
      Specify the vc config for each collective. The format is
      <ALGO0: VAL0>,<ALGO1: VAL1>,<ALGO2: VAL2>,<ALGO3: VAL3>
@@ -1962,20 +1962,11 @@ cvars:
 
  - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
    type        : bool
-   default     : false
+   default     : true
    description : |-
-     When true, MultipeerIbgdaTransport defers per-peer state allocation to
-     first use (lazy mode). When false (default), all per-peer state is
-     allocated eagerly at construction. Per-comm override via
-     CommOptions.hints["ncclx::ibLazyConnect"].
-
- - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
-   type        : uint32_t
-   default     : 30000
-   description : |-
-     Timeout (in milliseconds) for materializePeer bilateral exchange.
-     On timeout, materializePeer throws rather than hanging.
-     No per-comm override.
+     Deprecated compatibility knob. Per-peer transport state is always
+     initialized on demand; setting this false no longer enables eager
+     all-peer allocation.
 
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
@@ -2230,6 +2221,15 @@ cvars:
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctring_ib - Prims-native IBGDA ring algorithm
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
+
+ - name        : NCCL_REDUCESCATTER_QUANTIZED_ALGO
+   type        : enum
+   default     : pat
+   choices     : pat, ctdirect_ib
+   description : |-
+     The algorithm to use for quantized ReduceScatter communication
+     pat - Parallel Aggregation Tree algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
 
  - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
    type        : bool
@@ -2709,7 +2709,7 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring, ctmdirect
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
@@ -2718,6 +2718,7 @@ cvars:
      ctring - ctran-based ring algorithm
      ctree - Ctran-based tree algorithm (Pipes-native)
      cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
+     ctmdirect - MCCL-native direct algorithm (Prims-native): NVL ReduceScatter + flat rail-based inter-node IB + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
@@ -3309,6 +3310,18 @@ cvars:
      table with mcclop="GPE_PROFILING". Set to false to disable both
      reporters from the MCCL level (CTRAN-side defaults for the GPE
      profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
+
+ - name        : MCCL_FORCE_SMALL_MSG_AR_RING
+   type        : bool
+   default     : false
+   description : |-
+     Force the ctran ring AllReduce algorithm for small messages whose element
+     count is smaller than nRanks. The ring requires at least one element per
+     rank; when this is enabled, Ctran pads the input up to nRanks elements in a
+     temporary buffer (tail zero-filled), runs ctring, and copies the original
+     count of elements back to the receive buffer. The padded element positions
+     are reduced independently across ranks and discarded. Default: false
+     (small messages fall back to ctdirect as before).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist

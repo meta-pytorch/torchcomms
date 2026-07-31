@@ -63,7 +63,6 @@ MultiPeerTransport::MultiPeerTransport(
     : myRank_(myRank),
       nRanks_(nRanks),
       deviceId_(deviceId),
-      ibLazyConnect_(config.ibConfig.ibLazyConnect),
       bootstrap_(std::move(bootstrap)) {
   if (!topo.has_value()) {
     TopologyDiscovery topoDiscovery;
@@ -193,6 +192,13 @@ MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
 }
 
+std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
+  if (!ibgdaTransport_) {
+    return std::nullopt;
+  }
+  return ibgdaTransport_->maxGroups();
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {
@@ -272,33 +278,15 @@ P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()
   return P2pSelfTransportDevice{};
 }
 
-MultiPeerDeviceHandle MultiPeerTransport::get_device_handle() const {
-  if (!deviceHandleBuilt_) {
-    throw std::runtime_error(
-        "MultiPeerTransport::get_device_handle() called before exchange()");
-  }
-  if (ibLazyConnect_) {
-    throw std::runtime_error(
-        "get_device_handle() cannot be used with lazy mode (ibLazyConnect=true). "
-        "Use get_device_handle(peers) or getP2pTransportDevice(peerRank).");
-  }
-
-  return MultiPeerDeviceHandle{
-      myRank_,
-      nRanks_,
-      {transportsGpu_, static_cast<uint32_t>(nRanks_)},
-      static_cast<int>(nvlPeerRanks_.size()),
-      static_cast<int>(ibPeerRanks_.size()),
-  };
-}
-
 MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
     const std::vector<int>& peers) {
   if (!deviceHandleBuilt_) {
     throw std::runtime_error(
         "MultiPeerTransport::get_device_handle(peers) called before exchange()");
   }
-  materializePeers(peers);
+  if (!peers.empty()) {
+    materializePeers(peers);
+  }
   return MultiPeerDeviceHandle{
       myRank_,
       nRanks_,
@@ -309,7 +297,7 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
 }
 
 bool MultiPeerTransport::is_lazy_mode() const {
-  return ibLazyConnect_;
+  return true;
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {

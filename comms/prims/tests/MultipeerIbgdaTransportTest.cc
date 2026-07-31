@@ -127,7 +127,7 @@ class TestIbTransport {
     if (ibgda_) {
       return P2pIbTransportDevice(ibgda_->getP2pTransportDevice(peerRank));
     }
-    if (config_.ibLazyConnect && !ibrc_->isPeerMaterialized(peerRank)) {
+    if (!ibrc_->isPeerMaterialized(peerRank)) {
       ibrc_->materializePeer(peerRank);
     }
     return P2pIbTransportDevice(ibrc_->getP2pTransportDeviceSlot(peerRank));
@@ -2748,7 +2748,6 @@ class LazyModeTestFixture
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
-        .materializePeerTimeoutMs = 10000,
     };
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     return std::make_unique<TestIbTransport>(
@@ -2800,7 +2799,7 @@ TEST_P(LazyModeTestFixture, QueueThenConnect) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_P(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
+TEST_P(LazyModeTestFixture, DefaultModeDefersAllPeers) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires at least 2 ranks";
   }
@@ -2812,7 +2811,7 @@ TEST_P(LazyModeTestFixture, EagerModeAllPeersMaterialized) {
       if (peer == globalRank) {
         continue;
       }
-      EXPECT_TRUE(transport->isPeerMaterialized(peer));
+      EXPECT_FALSE(transport->isPeerMaterialized(peer));
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();

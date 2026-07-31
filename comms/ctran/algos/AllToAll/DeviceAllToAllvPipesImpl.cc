@@ -158,7 +158,7 @@ commResult_t setupKernelConfig(
   }
 
   // Set transport array from MultiPeerTransport
-  kernArgs.transports = comm->getMultiPeerTransportsPtr();
+  kernArgs.transports = comm->getMultiPeerTransportsPtr({});
 
   // LL128 threshold from pre-resolved config
   kernArgs.ll128ThresholdBytes = collConfig.ll128ThresholdBytes;

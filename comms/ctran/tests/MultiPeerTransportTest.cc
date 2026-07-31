@@ -3,6 +3,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
+
 #include <folly/init/Init.h>
 
 #include "comms/ctran/Ctran.h"
@@ -96,10 +98,32 @@ TEST_F(MultiPeerTransportTest, DeviceHandle) {
 
   ASSERT_NE(comm->multiPeerTransport_, nullptr);
 
-  // Get device handle - this should work after exchange()
-  auto deviceHandle = comm->multiPeerTransport_->get_device_handle();
+  const auto& ibPeers = comm->multiPeerTransport_->ib_peer_ranks();
+  auto addIbPeer = [&ibPeers](std::vector<int>& peers, int peer) {
+    if (std::find(ibPeers.begin(), ibPeers.end(), peer) != ibPeers.end() &&
+        std::find(peers.begin(), peers.end(), peer) == peers.end()) {
+      peers.push_back(peer);
+    }
+  };
+
+  std::vector<int> ringPeers;
+  if (numRanks > 1) {
+    addIbPeer(ringPeers, (globalRank + numRanks - 1) % numRanks);
+    addIbPeer(ringPeers, (globalRank + 1) % numRanks);
+  }
+  auto ringHandle = comm->multiPeerTransport_->get_device_handle(ringPeers);
+
+  std::vector<int> treePeers;
+  if (globalRank > 0) {
+    addIbPeer(treePeers, (globalRank - 1) / 2);
+  }
+  addIbPeer(treePeers, globalRank * 2 + 1);
+  addIbPeer(treePeers, globalRank * 2 + 2);
+  std::reverse(treePeers.begin(), treePeers.end());
+  auto deviceHandle = comm->multiPeerTransport_->get_device_handle(treePeers);
 
   // Verify device handle has valid data
+  EXPECT_EQ(ringHandle.transports.data(), deviceHandle.transports.data());
   EXPECT_EQ(deviceHandle.myRank, globalRank);
   EXPECT_EQ(deviceHandle.nRanks, numRanks);
   EXPECT_NE(deviceHandle.transports.data(), nullptr)

@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -216,13 +217,9 @@ struct MultipeerIbTransportConfig {
   // RNR retry count (ibv_qp_attr.rnr_retry); 7 means infinite.
   uint8_t rnrRetry{7};
 
-  // When true, defer per-peer state (QPs, staging, signal buffers) to first
-  // use via materializePeer(). When false (default), allocate eagerly at
-  // exchange() time.
-  bool ibLazyConnect{false};
-
-  // Timeout (ms) for the bilateral exchange in materializePeer().
-  uint32_t materializePeerTimeoutMs{30000};
+  // Deprecated compatibility setting. Per-peer state is always materialized
+  // on demand; false no longer enables eager all-peer allocation.
+  bool ibLazyConnect{true};
 };
 
 // Whether Data-Direct MR registration applies for a NIC: Data-Direct is
@@ -326,7 +323,8 @@ struct IbTransportExchInfoAll {
   int qpsPerBlockPerNic{1};
 };
 
-// Bootstrap tags for the two-phase bilateral exchange in lazy materialization.
+// Phases within the peer-pair-specific bootstrap tag computed by
+// exchangeRawWithPeer().
 constexpr int kIbPeerQpExchangeTag = 0;
 constexpr int kIbPeerBufferExchangeTag = 1;
 
@@ -449,7 +447,7 @@ class MultiPeerIbTransportBase {
   /** Queue a peer for lazy materialization (no network I/O). */
   void queuePeerForMaterialization(int peerRank);
 
-  /** @return true if the peer is ready for kernel use (always true eager). */
+  /** @return true if the peer is materialized and ready for kernel use. */
   bool isPeerMaterialized(int peerRank) const;
 
  protected:
@@ -498,8 +496,10 @@ class MultiPeerIbTransportBase {
 
   // Bilateral bootstrap exchange of a fixed-size payload with one peer. The
   // typed wrapper is header-only (so it can instantiate with backend-private
-  // payload types); the heavy logic (lower-rank-recvs-first to avoid deadlock,
-  // honoring materializePeerTimeoutMs) lives in exchangeRawWithPeer in the .cc.
+  // payload types); the heavy logic (lower-rank-recvs-first to avoid deadlock)
+  // lives in exchangeRawWithPeer in the .cc. The bootstrap implementation owns
+  // timeout and cancellation so caller-owned payloads remain live until the
+  // exchange completes.
   template <typename T>
   T exchangeWithPeer(int peerRank, const T& localPayload, int tag) {
     T remotePayload{};
@@ -655,6 +655,9 @@ class MultiPeerIbTransportBase {
   IbCounterStorage sendRecvCounterStorage_{IbCounterStorage::Device};
 
   // Lazy materialization state machine.
+  // connectPeers() holds this lock through the backend/bootstrap exchange so
+  // fixed bootstrap tags cannot be reused concurrently on one communicator.
+  mutable std::mutex materializationMutex_;
   std::vector<int> pendingPeers_;
   std::vector<bool> peerMaterialized_;
   bool materializationFailed_{false};
@@ -763,7 +766,7 @@ class MultiPeerIbTransportBase {
 template <typename Backend>
 class MultiPeerIbTransport : public MultiPeerIbTransportBase {
  public:
-  /** Materialize one peer (queue + connect). No-op in eager mode. */
+  /** Materialize one peer (queue + connect). */
   void materializePeer(int peerRank) {
     queuePeerForMaterialization(peerRank);
     connectPeers();
@@ -797,6 +800,9 @@ class MultiPeerIbTransport : public MultiPeerIbTransportBase {
 
 template <typename Backend>
 void MultiPeerIbTransport<Backend>::connectPeers() {
+  // queuePeerForMaterialization() releases this mutex before entering here;
+  // backend hooks must not recursively call materializePeer()/connectPeers().
+  const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     pendingPeers_.clear();
     throw std::runtime_error(
@@ -806,8 +812,8 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
   if (pendingPeers_.empty()) {
     return;
   }
-  // Sorted order avoids deadlock for >2 ranks (both sides connect in the same
-  // global order).
+  // For a symmetric request graph, ascending local order is deadlock-free: the
+  // lowest remaining rank and its lowest pending neighbor select each other.
   std::sort(pendingPeers_.begin(), pendingPeers_.end());
 
   std::vector<int> peers;
@@ -817,7 +823,7 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
 
   try {
     for (int peerRank : peers) {
-      if (isPeerMaterialized(peerRank)) {
+      if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
         continue;
       }
       touchedPeerIndexes.push_back(rankToPeerIndex(peerRank));

@@ -164,10 +164,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
       std::move(commBootstrap));
 
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
-  // Set lazy IB connect on the per-comm config BEFORE ctranInit, which builds
-  // the Pipes transport from pipesConfig. The NCCL_CTRAN_IBGDA_LAZY_CONNECT env
-  // only feeds lazy via NcclxConfig, which this default-ctranConfig path does
-  // not go through, so tests must set it here explicitly.
+  // Preserve the compatibility setting through the standalone Ctran path.
+  // Peer materialization remains on demand for either value.
   comm->config_.pipesConfig.ibLazyConnect = ibLazyConnect;
 
   COMMCHECK_TEST(ctranInit(comm.get()));

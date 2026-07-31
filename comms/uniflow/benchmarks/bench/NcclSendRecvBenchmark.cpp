@@ -7,7 +7,7 @@
 #include <cstring>
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
-#include "nccl.h" // @manual
+#include "nccl.h" // @manual=//comms/ncclx:nccl
 
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/logging/Logger.h"
