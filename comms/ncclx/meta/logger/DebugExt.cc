@@ -8,7 +8,6 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -79,6 +78,50 @@ void ncclSetMyThreadLoggingName(std::string_view name) {
   meta::comms::logger::initThreadMetaData(name);
 }
 
+// Shared terminal folly-logging sink for both the forked upstream ncclDebugLog
+// (debug.cc) and ncclMetaDebugLog below: maps the NCCL level to a folly level,
+// formats the printf message, and emits one line under the caller-provided
+// category. See DebugExtInternal.h for the contract.
+void ncclMetaEmitFollyLog(
+    const folly::LogCategory* category,
+    ncclDebugLogLevel level,
+    const char* file,
+    int line,
+    const char* func,
+    const char* fmt,
+    va_list vargs) {
+  auto logLevel = folly::LogLevel::INFO;
+  if (level == NCCL_LOG_WARN) {
+    logLevel = folly::LogLevel::WARN;
+  } else if (level == NCCL_LOG_INFO || level == NCCL_LOG_VERSION) {
+    logLevel = folly::LogLevel::INFO;
+  } else if (level == NCCL_LOG_TRACE) {
+    logLevel = folly::LogLevel::DBG;
+  } else if (level == NCCL_LOG_ERROR) {
+    logLevel = folly::LogLevel::ERR;
+  }
+
+  va_list vargsLen;
+  va_copy(vargsLen, vargs);
+  const size_t logLen = std::vsnprintf(nullptr, 0, fmt, vargsLen);
+  va_end(vargsLen);
+
+  std::vector<char> buffer(logLen + 1); // +1 for null terminator
+  // vsnprintf copies at most buffer.size() - 1 characters, then
+  // null-terminates.
+  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
+
+  folly::LogStreamProcessor(
+      category,
+      logLevel,
+      file,
+      line,
+      func,
+      folly::LogStreamProcessor::AppendType::APPEND)
+          .stream()
+      << buffer.data();
+}
+
 /* Meta's logging function with separate file and func parameters.
  * Used by the VERSION, WARN, ERR, INFO, TRACE_CALL, and TRACE macros.
  * Unlike ncclDebugLog (which combines file/func into filefunc for OFI plugin
@@ -126,42 +169,11 @@ void ncclMetaDebugLog(
     }
   }
 
-  std::stringstream logStream;
-  auto logLevel = folly::LogLevel::INFO;
-  if (level == NCCL_LOG_WARN) {
-    logLevel = folly::LogLevel::WARN;
-  } else if (level == NCCL_LOG_INFO || level == NCCL_LOG_VERSION) {
-    logLevel = folly::LogLevel::INFO;
-  } else if (level == NCCL_LOG_TRACE) {
-    logLevel = folly::LogLevel::DBG;
-  } else if (level == NCCL_LOG_ERROR) {
-    logLevel = folly::LogLevel::ERR;
-  }
-
-  size_t logLen = 0;
   va_list vargs;
   va_start(vargs, fmt);
-  logLen += std::vsnprintf(nullptr, 0, fmt, vargs);
+  ncclMetaEmitFollyLog(
+      XLOG_GET_CATEGORY(), level, file, line, func, fmt, vargs);
   va_end(vargs);
-
-  std::vector<char> buffer(logLen + 1); // +1 for null terminator
-  va_start(vargs, fmt);
-  // vsnprintf copy at most buf_size - 1 characters
-  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
-  va_end(vargs);
-  logStream << buffer.data();
-
-  auto logStr = logStream.str();
-  // logging to specified stdout/stderr/file
-  folly::LogStreamProcessor(
-      XLOG_GET_CATEGORY(),
-      logLevel,
-      file,
-      line,
-      func,
-      folly::LogStreamProcessor::AppendType::APPEND)
-          .stream()
-      << logStr;
 }
 
 #endif
