@@ -40,6 +40,16 @@ function clean_third_party {
   fi
 }
 
+# The /tmp/third-party clones are cached across builds, but /tmp auto-cleanup
+# (tmpreaper/systemd-tmpfiles) can evict the less-recently-accessed source tree
+# while keeping frequently-touched build artifacts (e.g. boost's b2). A bare
+# existence check then skips re-cloning and the build fails on a missing entry
+# point (bootstrap.sh/configure/CMakeLists.txt). A valid git checkout always has
+# a .git dir, so treat its absence as "incomplete" and force a fresh clone.
+function needs_clone() {
+  [ ! -d "$1/.git" ]
+}
+
 function build_fb_oss_library() {
   local repo_url="$1"
   local repo_tag="$2"
@@ -48,7 +58,8 @@ function build_fb_oss_library() {
 
   clean_third_party "$library_name"
 
-  if [ ! -e "$library_name" ]; then
+  if needs_clone "$library_name"; then
+    rm -rf "$library_name"
     git clone --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
@@ -79,7 +90,8 @@ function build_automake_library() {
 
   clean_third_party "$library_name"
 
-  if [ ! -e "$library_name" ]; then
+  if needs_clone "$library_name"; then
+    rm -rf "$library_name"
     git clone --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
@@ -101,7 +113,8 @@ function build_boost() {
   # clean up existing boost
   clean_third_party "$library_name"
 
-  if [ ! -e "$library_name" ]; then
+  if needs_clone "$library_name"; then
+    rm -rf "$library_name"
     git clone -j 10 --recurse-submodules --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
@@ -121,7 +134,8 @@ function build_openssl() {
   # clean up existing boost
   clean_third_party "$library_name"
 
-  if [ ! -e "$library_name" ]; then
+  if needs_clone "$library_name"; then
+    rm -rf "$library_name"
     git clone -j 10 --recurse-submodules --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
@@ -210,7 +224,8 @@ function build_third_party {
   if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
     build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
     # Clone mvfst and disable the xsk subdirectory (requires linux/if_xdp.h not available on all systems)
-    if [ ! -e "quic" ]; then
+    if needs_clone "quic"; then
+      rm -rf quic
       git clone --depth 1 -b "$third_party_tag" "https://github.com/facebook/mvfst" quic
     fi
     sed -i 's|^add_subdirectory(xsk)|# add_subdirectory(xsk) # disabled: requires linux/if_xdp.h|' quic/quic/CMakeLists.txt
