@@ -48,7 +48,6 @@
 #include "env.h"
 #include "rma/rma.h"
 
-#include "comms/ctran/Ctran.h"
 #include "meta/commstate/FactoryCommStateX.h"
 
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -67,6 +66,7 @@
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
+#include "meta/wrapper/CtranHooks.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "meta/transport/transportExt.h"
 
@@ -3682,15 +3682,9 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError) {
   //   comm->groupJob = NULL;
   // }
 
-  // Check Ctran asyncError if no error happens in the baseline path
-  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
-      (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
-    auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
-    // Overwrite if ctranAsyncError is inProgress or error
-    if (ctranAsyncError != ncclSuccess) {
-      *asyncError = ctranAsyncError;
-    }
-  }
+  // Fold any CTRAN async error into *asyncError (no-op unless CTRAN is enabled
+  // and initialized, and the baseline path reported success/in-progress).
+  ncclx::ctranUpdateAsyncError(comm, asyncError);
   return ncclSuccess;
 }
 
