@@ -20,6 +20,128 @@
 #include <string>
 #include <unordered_map>
 
+// NCCLX-added extern-C collective entry points, moved out of the forked
+// nccl.h.in. Wrapped in extern "C" so the exported symbols keep the unmangled
+// C linkage that libnccl.map exports and that the NCCL_API definitions use.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * All-Reduce-Sparse-block (out-place)
+ *
+ * Reduces data arrays of variable length count in sendbuff using op operation, and
+ * leaves identical copies of result on each recvbuff.
+ *
+ * Arguments:
+ *    IN  sendbuff      - Pointer to sendbuf containing data with block_count * block_length number of elements.
+ *                        Only out-place is supported at this time. Thus sendbuff must be different from recvbuff.
+ *    IN  recvIndices   - List of indices for data blocks in sendbuff. Each index corresponds to the element-wise relative offset of a data block in the recvbuff
+ *    IN  blockCount    - Number of blocks in sendbuff
+ *    IN  blockLength   - Length of each block in sendbuff
+ *    OUT recvbuff      - Pointer to recvbuf that will receive recvcount number of elements
+ *    IN  recvCount     - Number of elements in recvbuff. recvcount must be equal or larger than blockcount * blocklength
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclRedOp_t op - Reduce operation. Only ncclSum is supported at this time.
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ *
+ * Example:
+ * INPUT:
+ *    rank0: sendbuff = [1,1,  2,2,  3,3               6,6,    7,7], recv_indices= [0,2,4,10,12], block_count=5, block_length=2, recv_count=14
+ *    rank1: sendbuff = [      2,2,  3,3,        5,5,  6,6],         recv_indices= [2,4,8,10], block_count=4, block_length=2, recv_count=14
+ *    rank2: sendbuff = [1,1,        3,3   4,4,        6,6],         recv_indices= [0,4,6,10], block_count=4, block_length=2, recv_count=14
+ *    rank3: sendbuff = [1,1,  2,2,  3,3,  4,4,  5,5,  6,6,    7,7], recv_indices= [0,2,4,6,8,10,12], block_count=7, block_length=2, recv_count=14
+ * OUTPUT:
+ *    rank0: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank1: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank2: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank3: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ */
+ncclResult_t  ncclAllReduceSparseBlock(const void* sendbuff, const int64_t* recvIndices, size_t blockCount,
+    size_t blockLength, void* recvbuff, size_t recvCount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t  pncclAllReduceSparseBlock(const void* sendbuff, const int64_t* recvIndices, size_t blockCount,
+    size_t blockLength, void* recvbuff, size_t recvCount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Reduce-Scatter with stochastic rounding.
+ *
+ * See ncclReduceScatter for how reduce scatter works in general. Data would
+ * be rounded using stochastic rounding to BF16, transported to a peer, reduce
+ * with the peer's existing data in FP32, repeat, until the algorithm finishes
+ * execution.
+ *
+ * More generically, the flow is:
+ * I = InputType, T = Transport Type
+ * ----> I (---> T ---------> T -----> FP32)repeat -----> I
+ * Input   SR     Transport    Reduce            SR? + Output
+ *
+ * Notes:
+ * The PAT algorithm may do multiple rounds of rounding. The
+ * random number used for the rounding of each element would be
+ * Philox(seed, element_id + num_elements * current_round_number), so we will
+ * not be reusing the same random numbers.
+ *
+ * Limitations:
+ * inputType: must be FP32, this will be the type of input/output
+ * transportType: must be BF16, provided to make extension easier.
+ * op: Only supports ncclSum and ncclAvg operations.
+ * seedPtr: must be a GPU MEMORY pointer. The pointer must outlive the collective.
+ * algo: Set NCCL_REDUCESCATTER_QUANTIZED_ALGO=ctdirect_ib to use DirectIB
+ *       for ncclSum when supported. The default and fallback algorithm is PAT.
+ */
+ncclResult_t  ncclReduceScatterQuantize(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t inputType, ncclDataType_t transportType,
+    ncclRedOp_t op, uint64_t* seedPtr, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * [NCCLX] All-To-Allv
+ * Device (i) sends sendcounts[j] of data from offset sdispls[j] to device (j).
+ * At the same time, device (i) receives recvcounts[j] of data from device (j)
+ * to be placed at rdispls[j]. sendcounts, sdispls, recvcounts and rdispls are
+ * all measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sendbuff != recvbuff).
+ * Arguments:
+ *    IN  sendbuff    - Data array to send (contains blocks for each other rank)
+ *    IN  sendcounts  - Length of each block in sendbuff
+ *    IN  sdispls     - Offsets into sendbuff for each participating rank
+ *    OUT recvbuff    - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  recvcounts  - Length of each block in recvbuff
+ *    IN  rdispls     - Offsets into recvbuff for each participating rank
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ */
+ncclResult_t  ncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * [NCCLX] All-To-All
+ * Device (i) sends count of data from offset sendbuff+count*j to device (j).
+ * At the same time, device (i) receives count of data from device (j)
+ * to be placed at recvbuff+count*j. Only out-of-place operation is allowed
+ * (i.e., sendbuff != recvbuff).
+ * Arguments:
+ *    IN  sendbuff    - Pointer to sendbuf
+ *    OUT recvbuff    - Pointer to recvbuf
+ *    IN  count       - count of elements to send to (receive from) each rank
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ */
+ncclResult_t  ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t  pncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
 #define NCCL_COMM_DUMP
 #define NCCL_COMM_DUMP_ALL
 
