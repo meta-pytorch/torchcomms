@@ -519,8 +519,9 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     // number of channels need to be setup later in ncclCollPreconnectFunc for
     // collectives. Otherwise, fallback to baseline runtime connection logic
     if (comm->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
-      *needConnect = ncclx::algoNeedConnect(comm, task);
-      algoNeedConnect[task->algorithm] |= *needConnect;
+      const bool taskNeedConnect = ncclx::algoNeedConnect(comm, task);
+      *needConnect |= taskNeedConnect;
+      algoNeedConnect[task->algorithm] |= taskNeedConnect;
     } else if (
         comm->runtimeConn && comm->initAlgoChannels[task->algorithm] == false) {
       if (task->algorithm == NCCL_ALGO_NVLS_TREE && comm->initAlgoChannels[NCCL_ALGO_NVLS] == false && regNeedConnect == true) {
