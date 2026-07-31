@@ -28,6 +28,10 @@ inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
 // exchange() is deferred to ctranInitPipesResources().
 commResult_t ctranInitializePipes(CtranComm* comm);
 
+// Resolve the per-communicator override, falling back to the legacy CTRAN
+// CVAR for NCCLX and standalone Ctran callers.
+bool ctranPrimsEnabled(const CtranComm* comm);
+
 // Wire SharedResource staging buffers as external data buffers to
 // MultiPeerTransport and exchange handles. Must be called after both
 // CtranAlgo (SharedResource) and MultiPeerTransport have been created.
