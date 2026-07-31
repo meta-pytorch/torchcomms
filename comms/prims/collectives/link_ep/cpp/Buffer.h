@@ -17,7 +17,9 @@
 #include <cuda_runtime.h>
 #endif
 
+#ifndef LINK_EP_OSS_INTRANODE
 #include "comms/common/bootstrap/IBootstrap.h"
+#endif
 #include "comms/prims/collectives/link_ep/cpp/shared/Config.h"
 #include "comms/prims/collectives/link_ep/cpp/shared/EventHandle.h"
 
@@ -30,7 +32,7 @@ class IntranodeRuntime;
  * `comms.prims.collectives.link_ep.link_ep.Buffer`.
  *
  * Provides intranode dispatch / combine over NVLink, low-latency
- * dispatch / combine, and internode dispatch / combine.
+ * dispatch / combine.
  *
  * The Python `Buffer.__init__` constructs this with cosmetic args, then
  * gathers `device_ids` + `ipc_handles` Python-side and feeds them back
@@ -145,6 +147,7 @@ class Buffer {
       bool asyncFinish,
       bool allocateOnCommStream);
 
+#ifndef LINK_EP_OSS_INTRANODE
   // ---- Low-latency ----
   /**
    * `low_latency_dispatch` — RDMA-direct send of (BF16/FP8) tokens to peer's
@@ -209,15 +212,14 @@ class Buffer {
       int numExperts,
       pybind11::object allGatherCallback);
 
-  // ---- Internode ----
-  // These are bound through the same pybind module (so the Python `Buffer`
-  // class's full method surface stays addressable); unsupported
-  // configurations throw at runtime. Concrete signatures + bindings live
-  // in PyBindings.cpp.
+#endif // LINK_EP_OSS_INTRANODE — low_latency_* declarations
+
   [[noreturn]] void notImplemented(const char* methodName) const;
 
  private:
+#ifndef LINK_EP_OSS_INTRANODE
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+#endif
   const int rank_;
   const int numRanks_;
   const std::int64_t numNvlBytes_;
@@ -255,11 +257,13 @@ class Buffer {
 
   // Owned only after `sync()` (intranode-only).
   std::unique_ptr<IntranodeRuntime> intranode_;
+#ifndef LINK_EP_OSS_INTRANODE
   // LowLatencyRuntime owned when `low_latency_mode=true`.
   // Forward-declared in this header; concrete type defined in
   // `cpp/LowLatencyRuntime.h`. Lives behind unique_ptr so the heavy
   // include stays inside Buffer.cc.
   std::unique_ptr<class LowLatencyRuntime> lowLatency_;
+#endif
 };
 
 } // namespace comms::prims::link_ep
