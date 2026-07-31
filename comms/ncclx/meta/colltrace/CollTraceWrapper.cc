@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/colltrace/CollTraceWrapper.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include <algorithm>
 
@@ -202,7 +203,7 @@ getP2PMetadataFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
   };
 
   return colltrace::makeCollMetadata(
-      plan.comm->logMetaData,
+      ncclCommLogData(plan.comm),
       std::move(baselineMetadata),
       std::move(p2pMetadata));
 }
@@ -224,7 +225,7 @@ getCollMetadataFromNcclKernelPlan(
   };
   auto collMetadata = getCollectiveComponent(collTask, plan.comm->opCount);
   return colltrace::makeCollMetadata(
-      plan.comm->logMetaData,
+      ncclCommLogData(plan.comm),
       std::move(baselineMetadata),
       std::move(collMetadata));
 }
@@ -255,7 +256,7 @@ getGroupedCollP2PMetadataFromNcclKernelPlan(
   };
 
   return colltrace::makeCollMetadata(
-      plan.comm->logMetaData,
+      ncclCommLogData(plan.comm),
       std::move(baselineMetadata),
       colltrace::GroupedCollP2PMetaData{
           .colls = std::move(collMetadataList),
@@ -281,7 +282,7 @@ getEmptyKernelTaskMetadata(
       .algoName = "EmptyKernelTask",
   };
   return colltrace::makeCollMetadata(
-      plan.comm->logMetaData,
+      ncclCommLogData(plan.comm),
       std::move(baselineMetadata),
       std::move(collMetadata));
 }
@@ -313,7 +314,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   // This is independent of which colltrace implementation is used
   if (algoStatEnabled) {
     ncclCommAlgoStats(comm) = meta::comms::colltrace::AlgoStats::getOrCreate(
-        comm->logMetaData.commHash, comm->logMetaData.commDesc);
+        ncclCommLogData(comm).commHash, ncclCommLogData(comm).commDesc);
   }
 
   // Check if full colltrace is needed (verbose or trace modes)
@@ -370,8 +371,8 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
           .maxCheckCancelInterval =
               std::chrono::milliseconds{NCCL_COLLTRACE_WAKEUP_INTERVAL_MS},
       },
-      comm->logMetaData,
-      [metadata = comm->logMetaData,
+      ncclCommLogData(comm),
+      [metadata = ncclCommLogData(comm),
        cudaDev = comm->cudaDev]() -> CommsMaybeVoid {
         NCCL_NAMED_THREAD_START_EXT(
             "CollTrace", metadata.rank, metadata.commHash, metadata.commDesc);
