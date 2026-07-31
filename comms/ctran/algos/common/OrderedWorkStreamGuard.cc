@@ -23,18 +23,17 @@ void OrderedWorkStreamGuard::init(
       logMetaData);
 
   // Publish the initialized state only after every resource is ready.
-  logMetaData_ = &logMetaData;
   synchronizeEagerAfterCapturedWork_ = synchronizeEagerAfterCapturedWork;
   execModeSyncEvent_ = execModeSyncEvent;
   sideStream_ = std::move(sideStream);
   initialized_ = true;
 }
 
-OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
+OrderedWorkStreamGuard::~OrderedWorkStreamGuard() noexcept {
   if (!initialized_) {
     return;
   }
-  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execModeSyncEvent_), *logMetaData_);
+  FB_CUDACHECKIGNORE(cudaEventDestroy(execModeSyncEvent_));
 }
 
 OrderedWorkStreamGuard::Scope::Scope(

@@ -12,9 +12,20 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
+namespace ctran::algos {
+
+struct OrderedWorkStreamGuardTestPeer {
+  static void destroyEvent(OrderedWorkStreamGuard& guard) {
+    CUDACHECK_TEST(cudaEventDestroy(guard.execModeSyncEvent_));
+  }
+};
+
+} // namespace ctran::algos
+
 namespace {
 
 using ctran::algos::OrderedWorkStreamGuard;
+using ctran::algos::OrderedWorkStreamGuardTestPeer;
 using ctran::utils::cudagraph::StreamCaptureInfo;
 
 void delayCallback(void* data) {
@@ -122,6 +133,15 @@ TEST_P(OrderedWorkStreamGuardTest, PropagatesPoisonedError) {
 TEST_P(OrderedWorkStreamGuardTest, DoubleInitAborts) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_DEATH(guard_.init(logMetaData_, GetParam()), "initialized twice");
+}
+
+TEST_P(OrderedWorkStreamGuardTest, DestructorContainsCudaCleanupFailure) {
+  {
+    OrderedWorkStreamGuard guard;
+    guard.init(logMetaData_, GetParam());
+    OrderedWorkStreamGuardTestPeer::destroyEvent(guard);
+  }
+  EXPECT_EQ(cudaPeekAtLastError(), cudaSuccess);
 }
 
 INSTANTIATE_TEST_SUITE_P(

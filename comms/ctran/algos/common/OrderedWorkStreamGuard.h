@@ -15,9 +15,11 @@ struct CommLogData;
 
 namespace ctran::algos {
 
+struct OrderedWorkStreamGuardTestPeer;
+
 class OrderedWorkStreamGuard {
  public:
-  ~OrderedWorkStreamGuard();
+  ~OrderedWorkStreamGuard() noexcept;
 
   // Captured graphs that reference this guard must be destroyed first.
   void init(
@@ -58,6 +60,8 @@ class OrderedWorkStreamGuard {
       const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
 
  private:
+  friend struct OrderedWorkStreamGuardTestPeer;
+
   commResult_t doAcquire(
       cudaStream_t userStream,
       const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
@@ -75,7 +79,6 @@ class OrderedWorkStreamGuard {
   cudaStream_t lastUserStream_{nullptr};
   cudaGraphNode_t lastRecordNode_{};
   std::unique_ptr<meta::comms::GraphSideStream> sideStream_;
-  const CommLogData* logMetaData_{nullptr};
 };
 
 } // namespace ctran::algos
