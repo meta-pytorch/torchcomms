@@ -81,7 +81,7 @@ IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Backend defaults flip automatically based on whether the installed torch is ROCm.
 USE_NCCL = flag_enabled("USE_NCCL", not IS_ROCM)
 USE_NCCLX = flag_enabled("USE_NCCLX", not IS_ROCM)
-USE_GLOO = flag_enabled("USE_GLOO", not IS_ROCM)
+USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", IS_ROCM)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
 USE_XCCL = flag_enabled("USE_XCCL", False)
