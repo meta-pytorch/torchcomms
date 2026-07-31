@@ -233,13 +233,9 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
     sendbuff, recvbuff, recvcount, datatype, op, 0, comm, stream, /* Args */
     REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS };
 
-  // [META:PAT_AVG] Set up infoExt for per-comm PAT AVG control
-  // Only for types with enough exponent range (bf16, f32, f64, integers)
-  if (comm->usePatAvg_ && op == ncclAvg &&
-      ncclx::isPatAvgSupportedType(datatype)) {
-    size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
-    info.ext = ncclx::setupPatAvgInfoExt(comm, nBytes, datatype);
-  }
+  // [META:PAT_AVG] Force the deterministic PAT AVG path when applicable
+  // (applicability + setup live in meta/collectives/PatAvgHelper.h).
+  info.ext = ncclx::maybePatAvgInfoExt(comm, recvcount, datatype, op);
 
   return ncclEnqueueCheck(&info);
 }
