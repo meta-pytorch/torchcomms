@@ -420,6 +420,7 @@ function build_rccl {
     --amdgpu_targets "$AMDGPU_TARGETS" \
     --disable-colltrace \
     --disable-msccl-kernel \
+    --disable-warp-speed \
     ${prims_flag}
 }
 
