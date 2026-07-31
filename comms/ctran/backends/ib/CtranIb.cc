@@ -42,6 +42,7 @@ namespace {
 #define CTRAN_IB_ANY_PORT -1
 constexpr int kH100CudaArch = 900;
 constexpr int kGb300CudaArch = 1030;
+constexpr int kMaxTrafficClass = 255;
 }; // namespace
 
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
@@ -431,7 +432,7 @@ void CtranIb::init(
   FB_CHECKTHROW_EX_LOGDATA(this->numNics > 0, ncclLogData, "numNics > 0");
   this->devices.resize(this->numNics);
   this->cqs.reserve(this->numNics);
-  FB_COMMCHECKTHROW_EX(this->setPgToTrafficClassMap(), this->ncclLogData);
+  FB_COMMCHECKTHROW_EX(this->resolveTrafficClass(), this->ncclLogData);
 
   auto s = CtranIbSingleton::getInstance();
   CHECK_VALID_IB_SINGLETON(s);
@@ -1086,7 +1087,36 @@ const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {
   }
 }
 
-commResult_t CtranIb::setPgToTrafficClassMap() {
+commResult_t CtranIb::resolveTrafficClass() {
+  // Precedence:
+  //   1. per-comm NcclConfig.traffic_class hint (int in [0, kMaxTrafficClass])
+  //   2. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map matched on commDesc prefix
+  //   3. NCCL_IB_TC global fallback
+  // Called once from CtranIb::init(); result stored in trafficClass_.
+
+  // 1. Per-comm hint. ncclConfig_t.trafficClass defaults to
+  // NCCL_CONFIG_UNDEF_INT (INT_MIN); reject any out-of-range value so we
+  // never program a bogus DSCP on the wire.
+  if (comm && comm->config_.trafficClass >= 0 &&
+      comm->config_.trafficClass <= kMaxTrafficClass) {
+    trafficClass_ = static_cast<uint32_t>(comm->config_.trafficClass);
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from per-comm hint)",
+        commHash,
+        commDesc,
+        trafficClass_);
+    return commSuccess;
+  }
+
+  // 2. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map. Only the entry whose PG
+  // prefix matches this comm's commDesc applies; the map itself is a
+  // global cvar shared across all comms.
+  std::vector<std::string> pgCommDescPair;
+  folly::split(":", commDesc, pgCommDescPair);
+  const std::string& pgPrefix = pgCommDescPair[0];
+
   for (const auto& pgTrafficClassPairStr : NCCL_CTRAN_IB_PG_TRAFFIC_CLASS) {
     std::vector<std::string> pgTrafficClassPair;
     folly::split(":", pgTrafficClassPairStr, pgTrafficClassPair);
@@ -1100,38 +1130,41 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
           commDesc);
       return commInternalError;
     }
-    std::string tcStr = pgTrafficClassPair[1];
-    auto tc = folly::tryTo<uint32_t>(tcStr);
+    if (pgTrafficClassPair[0] != pgPrefix) {
+      continue;
+    }
+    auto tc = folly::tryTo<uint32_t>(pgTrafficClassPair[1]);
     if (!tc.hasValue()) {
       CERR(
           commInternalError,
           "CTRAN-IB: Invalid Traffic Class value provided {} in pimpl {} commHash {:x}, commDesc {}.",
-          tcStr,
+          pgTrafficClassPair[1],
           (void*)this,
           commHash,
           commDesc);
       return commInternalError;
     }
+    trafficClass_ = tc.value();
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "CTRAN-IB: commHash {:x}, commDesc {} override traffic class to {}",
+        "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map)",
         commHash,
         commDesc,
-        tc.value());
-    pgToTrafficClassMap_[pgTrafficClassPair[0]] = tc.value();
+        trafficClass_);
+    return commSuccess;
   }
-  return commSuccess;
-}
 
-uint32_t CtranIb::getPgToTrafficClassValue() const {
-  std::vector<std::string> pgCommDescPair;
-  folly::split(":", commDesc, pgCommDescPair);
-  auto it = pgToTrafficClassMap_.find(pgCommDescPair[0]);
-  if (it != pgToTrafficClassMap_.end()) {
-    return it->second;
-  }
-  return NCCL_IB_TC;
+  // 3. Global fallback.
+  trafficClass_ = static_cast<uint32_t>(NCCL_IB_TC);
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from NCCL_IB_TC global fallback)",
+      commHash,
+      commDesc,
+      trafficClass_);
+  return commSuccess;
 }
 
 // ============================================================
