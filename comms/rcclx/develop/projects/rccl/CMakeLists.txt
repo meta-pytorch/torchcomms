@@ -1012,6 +1012,8 @@ set(COMMON_FILES
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
   comms/common/bootstrap/IBootstrap.h
+  comms/common/fault_tolerance/Abort.cc
+  comms/common/fault_tolerance/Abort.h
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
