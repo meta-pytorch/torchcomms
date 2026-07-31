@@ -54,26 +54,12 @@ extern "C" {
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
 typedef struct ncclWindow_vidmem* ncclWindow_t;
-// TODO: ncclWin_t is needed only for old code path before the NCCLX PG is deprecated,
-// we will remove it once the PG is deprecated.
-typedef ncclWindow_t ncclWin_t;
 #define NCCL_COMM_NULL NULL
 extern ncclComm_t ncclCommWorld;
 #define NCCL_COMM_WORLD ncclCommWorld
 
 #define NCCL_UNIQUE_ID_BYTES 128
 typedef struct ncclUniqueId { char internal[NCCL_UNIQUE_ID_BYTES] = {0};} ncclUniqueId;
-
-#define NCCL_RMA_SUPPORTED
-typedef enum {
-  ncclWinAccessUnified = 0,
-  ncclWinAccessSeparate = 1,
-} ncclWinAccessType;
-typedef struct {
-  // attributes of the window
-  ncclWinAccessType accessType;
-} ncclWinAttr;
-typedef ncclWinAttr* ncclWinAttr_t;
 
 /* Error type */
 typedef enum { ncclSuccess                 =  0,
@@ -819,166 +805,6 @@ ncclResult_t pncclGroupEnd();
  */
 ncclResult_t  ncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
 ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
-
-#ifdef __cplusplus
-namespace ncclx {
-typedef std::unordered_map<std::string, std::string> kvType;
-/*
-* NCCL hints object - Allows us to set hints (key, value) in the form
-* of strings, to be used by other operations.
-*/
-class Hints {
-    public:
-        Hints();
-        explicit Hints(std::initializer_list<std::pair<std::string, std::string>> init);
-        ncclResult_t set(const std::string& key, const std::string& val);
-        ncclResult_t get(const std::string& key, std::string& val) const;
-
-    private:
-        kvType kv;
-};
-
-} // namespace ncclx
-
-#endif
-
-/*
- * Window Allocattion
- *
- * Create a window object for one-sided communication
- * and shared memory access for GPUs on the same NVLink
- * domain. It allocates memory at each rank in the
- * communicator
-* Accepted hints:
- *   window_buffer_location: {cpu, gpu} (default: gpu)
- *   --- indicating the location of the allocated window buffers.
- */
-// TODO: ncclWinAllocate APIs are needed only before the NCCLX PG is deprecated,
-// we will remove them once the PG is deprecated.
-__attribute__((deprecated("Use ncclCommWindowRegister instead")))
-ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
-__attribute__((deprecated("Use ncclCommWindowRegister instead")))
-ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
-
-
-/*
- * Query the address of the shared memory on remote peer
- */
-/*
- * Query the address of the shared memory on remote peer
- */
-ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
-ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
-
-
-/*
- * Query the window attributes
- */
-ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
-
-#if defined(ENABLE_PRIMS)
-/*
- * Create a DeviceWindow in device memory from a ctran-registered ncclWindow_t.
- * COLLECTIVE on first call — all ranks must call together.
- * Subsequent calls return cached results (config parameters ignored).
- *
- * The returned device pointer must be freed via ncclWinDestroyDeviceWin().
- */
-ncclResult_t ncclWinCreateDeviceWin(
-    ncclWindow_t win,
-    int signal_count,
-    int counter_count,
-    int barrier_count,
-    void** outDevicePtr);
-
-/*
- * Free device memory allocated by ncclWinCreateDeviceWin.
- */
-ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr);
-
-/*
- * Get the MultiPeerDeviceHandle components from the communicator's
- * pipes transport. NON-COLLECTIVE — reads already-exchanged state.
- *
- * Returns the device pointer to the Transport[] array and metadata.
- * The caller assembles a MultiPeerDeviceHandle from these fields.
- *
- * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
- * Returns ncclInternalError if pipes transport is not initialized.
- */
-ncclResult_t ncclGetMultiPeerDeviceHandle(
-    ncclComm_t comm,
-    void** outTransportsPtr,
-    int* outMyRank,
-    int* outNRanks,
-    int* outNumNvlPeers,
-    int* outNumIbPeers);
-
-/*
- * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
- * ncclWinLocalRegisterBuffer. Must match comms::prims::kMaxNicsPerGpu and
- * torch::comms::kMaxNicsPerGpu (verified by static_assert in
- * PipesDeviceBackend.cpp). Increase only if a future platform supports
- * > 2 NICs per GPU; update all three constants in lockstep.
- */
-#define NCCLX_MAX_NICS_PER_GPU 2
-
-/*
- * Per-NIC lkey result for ncclWinLocalRegisterBuffer.
- *
- *   values[0..size) — per-NIC RDMA local keys in network byte order.
- *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
- *                     0 indicates no IBGDA peers (NVL-only topology); the
- *                     caller must NOT index into values[] in that case.
- *
- * The device-side put selects values[nic] based on the slot it dispatches
- * on, so consumers MUST forward all `size` per-NIC keys to
- * LocalBufferRegistration. Populating only values[0] would corrupt WQEs
- * for any slot landing on NIC[1..size-1] on multi-NIC hardware
- * (GB200/GB300).
- */
-typedef struct {
-  uint32_t values[NCCLX_MAX_NICS_PER_GPU];
-  int size;
-} ncclLkeyPerDevice;
-
-/*
- * Register a local buffer for use as source in device-side RDMA put operations.
- * NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only, no
- * rkey exchange).
- *
- * Fills *outLkeys with per-NIC lkeys + populated NIC count. See
- * ncclLkeyPerDevice for layout.
- *
- * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
- *
- * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
- * Returns ncclInternalError if pipes transport is not initialized.
- */
-ncclResult_t ncclWinLocalRegisterBuffer(
-    ncclComm_t comm,
-    void* ptr,
-    size_t size,
-    ncclLkeyPerDevice* outLkeys);
-
-/*
- * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
- * NON-COLLECTIVE.
- */
-ncclResult_t ncclWinLocalDeregisterBuffer(
-    ncclComm_t comm,
-    void* ptr);
-#endif // ENABLE_PRIMS
-
-/*
- * Free the window object and free the allocated memory
- */
-// TODO: ncclWinFree APIs are needed only before the NCCLX PG is deprecated,
-// we will remove them once the PG is deprecated.
-__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
-ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWindow_t win);
-__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
-ncclResult_t pncclWinFree(ncclComm_t comm, ncclWindow_t win);
 
 #ifdef __cplusplus
 } // end extern "C"
