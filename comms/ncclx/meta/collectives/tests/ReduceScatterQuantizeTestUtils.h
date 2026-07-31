@@ -10,6 +10,9 @@
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#ifdef TEST_RSQ_DIRECT_IB
+#include "comms/ncclx/meta/tests/VerifyAlgoStatsUtil.h"
+#endif
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 
@@ -60,23 +63,48 @@ static float varianceTestExpectedSum(
       static_cast<float>(chunk) * (ulp * 2.0f) * static_cast<float>(numRanks);
 }
 
-// Test fixture for ReduceScatterQuantize tests.
-// Sets NCCL_PAT_ENABLE=1 and NCCL_ALGO=PAT, creates an NCCL communicator
-// and a CUDA stream.
+// Test fixture for ReduceScatterQuantize tests. The default build uses PAT;
+// the DirectIB numerical target enables its CTran configuration at compile
+// time so both targets can exercise the same test bodies.
 class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterQuantizeTest() = default;
   void SetUp() override {
+#ifdef TEST_RSQ_DIRECT_IB
+    NcclxBaseTestFixture::SetUp({
+        {"NCCL_PAT_ENABLE", "1"},
+        {"NCCL_ALGO", "PAT"},
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_CTRAN_USE_PIPES", "1"},
+        {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
+        {"NCCL_MNNVL_ENABLE", "0"},
+        {"NCCL_P2P_DISABLE", "1"},
+        {"NCCL_SHM_DISABLE", "1"},
+        {"NCCL_REDUCESCATTER_ALGO", "orig"},
+        {"NCCL_REDUCESCATTER_QUANTIZED_ALGO", "ctdirect_ib"},
+    });
+    algoStats_.enable();
+    ncclx::Hints hints{{"useCtran", "1"}};
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    config.hints = &hints;
+    commRAII_.emplace(
+        globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+#else
     NcclxBaseTestFixture::SetUp({
         {"NCCL_PAT_ENABLE", "1"},
         {"NCCL_ALGO", "PAT"},
     });
     commRAII_.emplace(globalRank, numRanks, localRank, bootstrap_.get());
+#endif
     comm = commRAII_->get();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
+#ifdef TEST_RSQ_DIRECT_IB
+    algoStats_.verify(
+        commRAII_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
+#endif
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     commRAII_.reset();
     NcclxBaseTestFixture::TearDown();
@@ -85,4 +113,7 @@ class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
  protected:
   std::optional<ncclx::test::NcclCommRAII> commRAII_;
   cudaStream_t stream;
+#ifdef TEST_RSQ_DIRECT_IB
+  ncclx::test::VerifyAlgoStatsHelper algoStats_;
+#endif
 };
