@@ -22,6 +22,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
+#include "meta/wrapper/NcclCommPatAvg.h"
 
 /**
  * Test suite for ReduceScatter PAT algorithm selection logic.
@@ -136,7 +137,7 @@ TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   // Create user-defined PreMulSum with scalar = 0.25
   // This is different from ncclAvg which uses 1/nRanks (0.5 for 2 ranks)
@@ -194,7 +195,7 @@ TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -293,7 +294,7 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
-  ASSERT_EQ(comm->usePatAvg_, patAvgEnable);
+  ASSERT_EQ(meta::comms::ncclx::ncclCommUsePatAvg(comm), patAvgEnable);
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -358,7 +359,7 @@ TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   constexpr int kNumOpsInGroup = 3;
   const size_t count = 8000;
@@ -416,7 +417,7 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgCvarControl) {
   ncclComm_t comm = commGuard.get();
 
   // Verify CVAR enabled usePatAvg_
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -472,7 +473,7 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgOnlyAffectsReduceScatterAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -644,12 +645,12 @@ TEST_F(ReduceScatterPatSelectTest, MaybePatAvgInfoExtGatesAndEncodes) {
   constexpr size_t kRecvCount = 1024;
 
   // Feature disabled -> no override even for an otherwise-eligible call.
-  comm->usePatAvg_ = false;
+  meta::comms::ncclx::ncclCommUsePatAvg(comm) = false;
   EXPECT_FALSE(
       ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclFloat32, ncclAvg)
           .has_value());
 
-  comm->usePatAvg_ = true;
+  meta::comms::ncclx::ncclCommUsePatAvg(comm) = true;
 
   // Wrong op (not ncclAvg) -> no override.
   EXPECT_FALSE(

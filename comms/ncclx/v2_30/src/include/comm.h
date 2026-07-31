@@ -835,10 +835,6 @@ struct ncclComm {
   // This is the only bridge between ctran and baseline code
   std::unique_ptr<CtranComm> ctranComm_;
 
-  // [META:PAT_AVG] per-communicator control; set at init entry functions
-  // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
-  bool usePatAvg_{false};
-
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> resumeTaskQueue;
