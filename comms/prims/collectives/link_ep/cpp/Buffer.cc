@@ -2,13 +2,22 @@
 
 #include "comms/prims/collectives/link_ep/cpp/Buffer.h"
 
-#include <cstring>
+#include <pybind11/stl.h> // std::vector<int> <-> Python list casting
+#include <torch/csrc/utils/pybind.h> // at::Tensor <-> py runtime .cast<>
+
+#include <unistd.h> // usleep (combine debug poll)
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring> // std::memset (combine debug buffer)
 #include <stdexcept>
 #include <string>
+#include <vector> // std::vector (notify prefix-matrix debug dump)
 
 #include <ATen/cuda/CUDAContext.h>
+#ifndef LINK_EP_OSS_INTRANODE
 #include <folly/futures/Future.h>
-#include <torch/csrc/utils/pybind.h>
+#endif
 
 // `meta::comms::DeviceBuffer` is referenced by `MultiPeerNvlTransport.h`
 // private members. Bring it into scope before that header (transitively
@@ -19,22 +28,22 @@
 #include "comms/utils/CudaRAII.h"
 #endif
 
-#ifndef LINK_EP_OSS_INTRANODE
-// internode + bootstrap closure — not staged in the OSS intranode build.
-#include "comms/common/bootstrap/IBootstrap.h"
-#endif
 #include "comms/prims/collectives/link_ep/cpp/intranode/Runtime.h"
 #include "comms/prims/collectives/link_ep/cpp/intranode/kernels/Combine.cuh"
 #include "comms/prims/collectives/link_ep/cpp/intranode/kernels/Dispatch.cuh"
 #include "comms/prims/collectives/link_ep/cpp/intranode/kernels/Layout.cuh"
 #include "comms/prims/collectives/link_ep/cpp/intranode/kernels/Notify.cuh"
+#include "comms/prims/collectives/link_ep/cpp/shared/kernels/KernelConfigs.cuh"
+#ifndef LINK_EP_OSS_INTRANODE
+// folly/comms + LL closure — compiled out of the OSS intranode build.
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/collectives/link_ep/cpp/low_latency/Runtime.h"
 #include "comms/prims/collectives/link_ep/cpp/low_latency/kernels/Clean.cuh"
 #include "comms/prims/collectives/link_ep/cpp/low_latency/kernels/Combine.cuh"
 #include "comms/prims/collectives/link_ep/cpp/low_latency/kernels/Dispatch.cuh"
-#include "comms/prims/collectives/link_ep/cpp/shared/kernels/KernelConfigs.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "secure_lib/secure_string.h"
+#endif
 
 namespace comms::prims::link_ep {
 
@@ -48,6 +57,7 @@ void checkCuda(cudaError_t err, const char* msg) {
   }
 }
 
+#ifndef LINK_EP_OSS_INTRANODE
 /**
  * Trivial bootstrap that just remembers the rank and group size; collective
  * operations are no-ops (return 0). Sufficient for the local-rank-only path
@@ -170,6 +180,7 @@ class PyAllGatherBootstrap : public meta::comms::IBootstrap {
   const int nRanks_;
   py::object allGatherCb_;
 };
+#endif // LINK_EP_OSS_INTRANODE — folly bootstrap helpers (Stub/PyAllGather)
 
 } // namespace
 
@@ -196,16 +207,17 @@ Buffer::Buffer(
   if (numRanks_ <= 0) {
     throw std::invalid_argument("Buffer: numRanks must be > 0");
   }
-  // For non-low-latency intranode mode, only one NVL node is supported
-  // (the intranode kernel addresses peers via the per-rank `buffer_ptrs`
-  // table sized at NUM_MAX_NVL_PEERS). Low-latency mode supports
-  // cross-node via the hybrid IPC+IBGDA path — same-node peers go via
-  // NVLink IPC, cross-node peers via `MultipeerIbgdaTransport` (wired
-  // up by `setup_low_latency_ibgda()` post-sync).
-  if (!lowLatencyMode_ && numRanks_ > NUM_MAX_NVL_PEERS) {
+  // Internode (hybrid) mode accepts multi-node configs up to
+  // NUM_MAX_NVL_PEERS * 16 = 128 ranks (matches upstream's
+  // SWITCH_RDMA_RANKS bound). Low-latency mode bypasses this entirely —
+  // it supports cross-node via the hybrid IPC+IBGDA path with its own
+  // routing (same-node peers go via NVLink IPC, cross-node peers via
+  // `MultipeerIbgdaTransport` wired up by `setup_low_latency_ibgda()`
+  // post-sync). The intranode-only assertion lives at the dispatch /
+  // combine call site, not here.
+  if (!lowLatencyMode_ && numRanks_ > NUM_MAX_NVL_PEERS * 16) {
     throw std::invalid_argument(
-        "Buffer: numRanks > NUM_MAX_NVL_PEERS requires low_latency_mode=True "
-        "(internode intranode_dispatch/combine kernel is not yet implemented)");
+        "Buffer: numRanks > NUM_MAX_NVL_PEERS * 16 (max 128)");
   }
 
   checkCuda(cudaGetDevice(&deviceId_), "Buffer: cudaGetDevice failed");
@@ -288,23 +300,33 @@ Buffer::~Buffer() {
 }
 
 int Buffer::get_num_rdma_ranks() const noexcept {
-  // Intranode-only → exactly 1 RDMA rank (this node).
-  return 1;
+  // The number of RDMA ranks is the number of nodes:
+  //   numRanks_ = numRdmaRanks * NUM_MAX_NVL_PEERS  (== 8 GPUs/node)
+  // For a single node (≤ 8 ranks) this is 1; for multi-node it's > 1.
+  return (numRanks_ + NUM_MAX_NVL_PEERS - 1) / NUM_MAX_NVL_PEERS;
 }
 
 int Buffer::get_rdma_rank() const noexcept {
-  return 0;
+  return rank_ / NUM_MAX_NVL_PEERS;
 }
 
-int Buffer::get_root_rdma_rank(bool /*global*/) const noexcept {
-  return 0;
+int Buffer::get_root_rdma_rank(bool global) const noexcept {
+  // `global=true` → return this rank's NVL local index, used as the
+  // root for the per-NVL-domain RDMA exchange. `global=false` → 0
+  // (single global root).
+  return global ? rank_ % NUM_MAX_NVL_PEERS : 0;
 }
 
 py::bytearray Buffer::get_local_ipc_handle() const {
-  // Lazily compute the IPC handle on first access — see Buffer ctor for why
-  // we don't do this eagerly. The handle is cached after the first call
-  // because `cudaIpcGetMemHandle` is not idempotent across all HIP versions
-  // and the Python wrapper calls this once anyway.
+  // Lazily derive the IPC handle from the ctor-allocated `localIpcBuffer_`.
+  // Python's `Buffer.__init__` gathers this handle via `all_gather_object`
+  // and feeds it to `sync()`, so it is fetched BEFORE `sync()` runs — when
+  // `intranode_`/`memHandler_` do not exist yet. It must therefore derive
+  // from `localIpcBuffer_` (allocated in the ctor), never from the runtime;
+  // returning a placeholder here makes every peer's `cudaIpcOpenMemHandle`
+  // fail with `invalid device pointer`. Cached after the first call because
+  // `cudaIpcGetMemHandle` is not idempotent across all HIP versions and the
+  // Python wrapper only calls this once.
   if (!localIpcHandleReady_) {
     if (localIpcBuffer_ == nullptr) {
       throw std::runtime_error(
@@ -391,10 +413,11 @@ void Buffer::sync(
     cudaError_t ipcErr = cudaIpcOpenMemHandle(
         &peerPtr, peerHandle, cudaIpcMemLazyEnablePeerAccess);
     if (ipcErr != cudaSuccess) {
-      if (lowLatencyMode_) {
-        // Cross-node peer: clear the sticky CUDA error so subsequent
-        // cudaMalloc / kernel launches don't fail with the stale error,
-        // then leave peerIpcBuffers_[i] = nullptr — kernel routes via IBGDA.
+      // LL multi-node AND internode (numRanks > NUM_MAX_NVL_PEERS) route all
+      // (or cross-node) peers via IBGDA, so a failed same-node IPC open is
+      // non-fatal: clear the sticky CUDA error and leave peerIpcBuffers_[i]
+      // = nullptr. Only single-node intranode strictly needs IPC.
+      if (lowLatencyMode_ || numRanks_ > NUM_MAX_NVL_PEERS) {
         (void)cudaGetLastError();
         continue;
       }
@@ -409,11 +432,15 @@ void Buffer::sync(
   // GpuMemHandler/transport entirely since Python already gathered IPC
   // handles for us.
   //
-  // Skip when low_latency_mode + numRanks > NUM_MAX_NVL_PEERS —
-  // IntranodeRuntime itself checks numRanks <= NUM_MAX_NVL_PEERS, and LL
-  // kernels don't use the intranode runtime at all (they use LowLatencyRuntime,
-  // constructed lazily on first low_latency_dispatch call).
-  if (!lowLatencyMode_ || numRanks_ <= NUM_MAX_NVL_PEERS) {
+  // Only for single-node configs (numRanks <= NUM_MAX_NVL_PEERS):
+  //   - IntranodeRuntime itself asserts numRanks <= NUM_MAX_NVL_PEERS, so
+  //     constructing it for an internode (numRanks > 8) config would throw
+  //     here, before the test can even finish sync().
+  //   - Multi-node LL (numRanks > 8): uses LowLatencyRuntime, built lazily on
+  //     first low_latency_dispatch.
+  //   - Multi-node internode (numRanks > 8, non-LL): uses InternodeRuntime,
+  //     built lazily on first internode_dispatch (shapes known only then).
+  if (numRanks_ <= NUM_MAX_NVL_PEERS) {
     intranode_ = std::make_unique<IntranodeRuntime>(
         rank_,
         numRanks_,
@@ -446,7 +473,9 @@ void Buffer::destroy() {
   if (destroyed_) {
     return;
   }
+#ifndef LINK_EP_OSS_INTRANODE
   lowLatency_.reset();
+#endif
   intranode_.reset();
   destroyed_ = true;
   available_ = false;
@@ -483,15 +512,24 @@ Buffer::get_dispatch_layout(
       {numTokens, numRanks_},
       torch::TensorOptions().dtype(torch::kBool).device(topkIdx.device()));
 
-  // Intranode → no per-RDMA-rank tensor.
+  // Internode (numRanks > NUM_MAX_NVL_PEERS) → also emit the per-RDMA-rank
+  // token counts (one per node). The device kernel asserts
+  // numRanks % NUM_MAX_NVL_PEERS == 0 && numRanks > NUM_MAX_NVL_PEERS when the
+  // pointer is non-null, so it stays nullptr for the single-node path.
   std::optional<torch::Tensor> numTokensPerRdmaRank = std::nullopt;
+  int* numTokensPerRdmaRankPtr = nullptr;
+  if (numRanks_ > NUM_MAX_NVL_PEERS) {
+    const int numRdmaRanks = numRanks_ / NUM_MAX_NVL_PEERS;
+    numTokensPerRdmaRank = torch::empty({numRdmaRanks}, opts);
+    numTokensPerRdmaRankPtr = numTokensPerRdmaRank->data_ptr<int>();
+  }
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   kernels::get_dispatch_layout(
       topkIdx.data_ptr<std::int64_t>(),
       numTokensPerRank.data_ptr<int>(),
-      /*num_tokens_per_rdma_rank=*/nullptr,
+      numTokensPerRdmaRankPtr,
       numTokensPerExpert.data_ptr<int>(),
       isTokenInRank.data_ptr<bool>(),
       numTokens,
@@ -528,6 +566,14 @@ py::tuple Buffer::intranode_dispatch(
     bool /*allocateOnCommStream*/) {
   if (!available_) {
     throw std::runtime_error("Buffer::intranode_dispatch: not synced yet");
+  }
+  // `sync()` builds `intranode_` only for single-node configs but sets
+  // `available_` unconditionally, so `available_` alone does not imply the
+  // intranode runtime exists.
+  if (intranode_ == nullptr) {
+    throw std::runtime_error(
+        "Buffer::intranode_dispatch: intranode runtime unavailable for "
+        "numRanks > NUM_MAX_NVL_PEERS (internode path not implemented)");
   }
   // Cached-dispatch path is selected when the caller passes a non-None handle
   // (a dict from a prior dispatch). The handle holds the cached prefix
@@ -880,6 +926,12 @@ Buffer::intranode_combine(
   if (!available_) {
     throw std::runtime_error("Buffer::intranode_combine: not synced yet");
   }
+  // See intranode_dispatch: `available_` does not imply `intranode_` exists.
+  if (intranode_ == nullptr) {
+    throw std::runtime_error(
+        "Buffer::intranode_combine: intranode runtime unavailable for "
+        "numRanks > NUM_MAX_NVL_PEERS (internode path not implemented)");
+  }
   TORCH_CHECK(
       x.dim() == 2 && x.is_contiguous() && x.scalar_type() == torch::kBFloat16,
       "intranode combine requires bf16 contiguous 2D x");
@@ -999,6 +1051,7 @@ Buffer::intranode_combine(
 // runtime, allocate the output tensors, and call into the low-latency
 // kernels.
 
+#ifndef LINK_EP_OSS_INTRANODE
 py::tuple Buffer::low_latency_dispatch(
     const torch::Tensor& x,
     const torch::Tensor& topkIdx,
@@ -1364,6 +1417,8 @@ void Buffer::setup_low_latency_ibgda(
   py::gil_scoped_release release;
   lowLatency_->setupIbgda(std::move(bootstrap));
 }
+
+#endif // LINK_EP_OSS_INTRANODE — low_latency_* definitions
 
 void Buffer::notImplemented(const char* methodName) const {
   throw std::runtime_error(

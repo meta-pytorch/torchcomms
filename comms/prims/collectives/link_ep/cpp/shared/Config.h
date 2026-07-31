@@ -2,10 +2,23 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace comms::prims::link_ep {
+
+/**
+ * NUM_MAX_NVL_PEERS — ≤8 NVL peers per node (typical 8-GPU MI300X / H100
+ * NVL8 layout).
+ */
+inline constexpr int NUM_MAX_NVL_PEERS = 8;
+
+/**
+ * NUM_BUFFER_ALIGNMENT_BYTES — all buffer offsets are aligned to this.
+ */
+inline constexpr std::size_t NUM_BUFFER_ALIGNMENT_BYTES = 128;
 
 /**
  * Config — tuning knobs for the dispatch / combine kernels.
@@ -74,12 +87,45 @@ struct Config {
     return n;
   }
 
-  /** RDMA staging-buffer size hint for `Buffer.__init__` `num_rdma_bytes`. */
-  std::size_t getRdmaBufferSizeHint() const noexcept {
-    constexpr std::size_t kMaxHiddenBytes = 8UL * 1024UL * 2UL;
-    return static_cast<std::size_t>(num_max_rdma_chunked_recv_tokens) *
-        kMaxHiddenBytes * 8UL +
-        (32UL * 1024UL * 1024UL);
+  /** RDMA staging-buffer size hint for `Buffer.__init__` `num_rdma_bytes`.
+   *
+   *  Pure
+   *  intranode groups (num_ranks <= NUM_MAX_NVL_PEERS) need no RDMA staging
+   *  and return 0. For multi-node groups, sizes the per-channel ×
+   *  per-RDMA-rank send+recv stripes (×2). NOTE: the internode (>1 node) path
+   *  is not exercised by single-node runs — validate this sizing against the
+   *  BNXT/IBGDA transport before relying on it cross-node.
+   *
+   *  @param hidden_bytes per-token hidden size in bytes
+   *  @param num_ranks    total ranks in the expert-parallel group
+   *  @return suggested `num_rdma_bytes`, padded to NUM_BUFFER_ALIGNMENT_BYTES
+   */
+  std::size_t getRdmaBufferSizeHint(std::size_t hidden_bytes, int num_ranks)
+      const noexcept {
+    if (num_ranks <= NUM_MAX_NVL_PEERS) {
+      return 0;
+    }
+    constexpr int kNumMaxTopK = 128;
+    constexpr int kNumMaxScales = 128;
+    const std::size_t num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
+    const std::size_t num_channels = static_cast<std::size_t>(num_sms) / 2;
+
+    std::size_t num_bytes = 0;
+    num_bytes += num_channels * num_rdma_ranks * (NUM_MAX_NVL_PEERS * 2 + 2) *
+        2 * sizeof(int);
+    num_bytes += num_channels * num_rdma_ranks *
+        num_max_rdma_chunked_recv_tokens * hidden_bytes * 2;
+    num_bytes += num_channels * num_rdma_ranks *
+        num_max_rdma_chunked_recv_tokens * kNumMaxTopK * sizeof(std::int64_t) *
+        2;
+    num_bytes += num_channels * num_rdma_ranks *
+        num_max_rdma_chunked_recv_tokens * kNumMaxTopK * sizeof(float) * 2;
+    num_bytes += num_channels * num_rdma_ranks *
+        num_max_rdma_chunked_recv_tokens * kNumMaxScales * sizeof(float) * 2;
+    num_bytes = ((num_bytes + NUM_BUFFER_ALIGNMENT_BYTES - 1) /
+                 NUM_BUFFER_ALIGNMENT_BYTES) *
+        NUM_BUFFER_ALIGNMENT_BYTES;
+    return num_bytes;
   }
 };
 
@@ -88,16 +134,5 @@ struct Config {
  * counters and per-expert state.
  */
 inline constexpr std::size_t NUM_WORKSPACE_BYTES = 32UL * 1024UL * 1024UL;
-
-/**
- * NUM_MAX_NVL_PEERS — ≤8 NVL peers per node (typical 8-GPU MI300X / H100
- * NVL8 layout).
- */
-inline constexpr int NUM_MAX_NVL_PEERS = 8;
-
-/**
- * NUM_BUFFER_ALIGNMENT_BYTES — all buffer offsets are aligned to this.
- */
-inline constexpr std::size_t NUM_BUFFER_ALIGNMENT_BYTES = 128;
 
 } // namespace comms::prims::link_ep

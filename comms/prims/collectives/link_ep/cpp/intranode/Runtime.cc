@@ -15,11 +15,16 @@
 
 #include <vector>
 
-#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/collectives/link_ep/cpp/shared/Config.h"
 #include "comms/prims/collectives/link_ep/cpp/shared/kernels/KernelConfigs.cuh"
+#ifndef LINK_EP_OSS_INTRANODE
+// folly/comms closure — only needed by the bootstrap ctor (steps 1+2). The
+// self-contained OSS intranode build uses the pre-allocated-buffer ctor and
+// compiles these out.
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#endif
 
 namespace comms::prims::link_ep {
 
@@ -33,6 +38,7 @@ void checkCuda(cudaError_t err, const char* msg) {
 
 } // namespace
 
+#ifndef LINK_EP_OSS_INTRANODE
 IntranodeRuntime::IntranodeRuntime(
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     int rank,
@@ -182,6 +188,8 @@ IntranodeRuntime::IntranodeRuntime(
       "IntranodeRuntime: cudaHostGetDevicePointer(moeRecvExpertCounter) failed");
   moeRecvExpertCounterDevice_ = static_cast<int*>(devicePtr);
 }
+
+#endif // LINK_EP_OSS_INTRANODE — bootstrap ctor (GpuMemHandler/transport path)
 
 IntranodeRuntime::IntranodeRuntime(
     int rank,
@@ -342,23 +350,28 @@ void IntranodeRuntime::moveFifoSlots(int n) {
 }
 
 void* IntranodeRuntime::getLocalDataPtr() const {
-  if (memHandler_ == nullptr) {
-    return localBufferPtr_;
+#ifndef LINK_EP_OSS_INTRANODE
+  if (memHandler_ != nullptr) {
+    return memHandler_->getLocalDeviceMemPtr();
   }
-  return memHandler_->getLocalDeviceMemPtr();
+#endif
+  return localBufferPtr_;
 }
 
 void* IntranodeRuntime::getPeerDataPtr(int peerRank) const {
-  if (memHandler_ == nullptr) {
-    if (peerRank < 0 || peerRank >= numRanks_) {
-      throw std::out_of_range(
-          "IntranodeRuntime::getPeerDataPtr: peerRank out of bounds");
-    }
-    return peerDataPtrsHost_[peerRank];
+#ifndef LINK_EP_OSS_INTRANODE
+  if (memHandler_ != nullptr) {
+    return memHandler_->getPeerDeviceMemPtr(peerRank);
   }
-  return memHandler_->getPeerDeviceMemPtr(peerRank);
+#endif
+  if (peerRank < 0 || peerRank >= numRanks_) {
+    throw std::out_of_range(
+        "IntranodeRuntime::getPeerDataPtr: peerRank out of bounds");
+  }
+  return peerDataPtrsHost_[peerRank];
 }
 
+#ifndef LINK_EP_OSS_INTRANODE
 comms::prims::MultiPeerNvlTransport& IntranodeRuntime::transport() {
   return *transport_;
 }
@@ -370,5 +383,6 @@ const comms::prims::MultiPeerNvlTransport& IntranodeRuntime::transport() const {
 comms::prims::GpuMemHandler& IntranodeRuntime::memHandler() {
   return *memHandler_;
 }
+#endif
 
 } // namespace comms::prims::link_ep
