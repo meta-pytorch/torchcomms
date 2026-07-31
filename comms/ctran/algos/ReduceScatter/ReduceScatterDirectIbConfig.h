@@ -10,17 +10,22 @@ namespace ctran::reducescatter::direct_ib {
 constexpr std::size_t kSignalChunkThreshold = 4ULL * 1024 * 1024;
 constexpr std::size_t kSignalingDataSize = 256ULL * 1024;
 
-inline int numBlocksForTotalBytes(std::size_t totalBytes, int maxChannels) {
+inline int
+numBlocksForTotalBytes(std::size_t totalBytes, int maxChannels, int maxBlocks) {
+  const int blockLimit = std::max(1, std::min(maxChannels, maxBlocks));
   if (totalBytes <= 32ULL * 1024) {
-    return std::min(1, maxChannels);
+    return std::min(1, blockLimit);
   }
   if (totalBytes <= 64ULL * 1024) {
-    return std::min(2, maxChannels);
+    return std::min(2, blockLimit);
   }
   if (totalBytes <= 128ULL * 1024) {
-    return std::min(4, maxChannels);
+    return std::min(4, blockLimit);
   }
-  return std::min(8, maxChannels);
+  if (totalBytes <= 256ULL * 1024) {
+    return std::min(8, blockLimit);
+  }
+  return blockLimit;
 }
 
 inline std::size_t signalingDataSize(std::size_t chunkBytes) {
