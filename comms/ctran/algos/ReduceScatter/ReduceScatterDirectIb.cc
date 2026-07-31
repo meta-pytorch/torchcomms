@@ -13,6 +13,8 @@
 #include "comms/ctran/algos/CollUtils.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterDirectIbConfig.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/prims/collectives/ReduceScatterDirectIbLauncher.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
@@ -149,6 +151,13 @@ commResult_t validateDirectIbReduceScatter(
         "ReduceScatter {} requires MultiPeerTransport (NCCL_CTRAN_USE_PIPES=1)",
         reduceScatterAlgoName(myAlgo));
     return commInvalidArgument;
+  }
+  if (!comm->primsOrderedWorkStreamGuard_) {
+    CLOGF(
+        ERR,
+        "ReduceScatter {} requires the PRIMS ordered work stream guard",
+        reduceScatterAlgoName(myAlgo));
+    return commInternalError;
   }
 
   size_t recvBytes = 0;
@@ -304,14 +313,42 @@ static commResult_t ctranReduceScatterDirectIbImpl(
 
     comm->recordAlgoStats(
         "ReduceScatter", reduceScatterAlgoName(myAlgo), recvBytes);
-    comms::prims::launch_direct_reduce_scatter_ib(params);
-    FB_CUDACHECK(cudaGetLastError());
+
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo;
+    FB_CUDACHECK(
+        ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo));
+    auto orderedScope =
+        comm->primsOrderedWorkStreamGuard_->acquire(stream, captureInfo);
+    FB_COMMCHECK(orderedScope.status());
+
+    try {
+      comms::prims::launch_direct_reduce_scatter_ib(params);
+    } catch (...) {
+      const auto releaseResult = orderedScope.release();
+      if (releaseResult != commSuccess) {
+        CLOGF(
+            ERR,
+            "ReduceScatter {} ordering release also failed: {}",
+            reduceScatterAlgoName(myAlgo),
+            releaseResult);
+      }
+      throw;
+    }
+    const auto launchError = cudaGetLastError();
+    FB_COMMCHECK(orderedScope.release());
+    FB_CUDACHECK(launchError);
   } catch (const std::exception& e) {
     CLOGF(
         ERR,
         "ReduceScatter {} failed: {}",
         reduceScatterAlgoName(myAlgo),
         e.what());
+    return commInternalError;
+  } catch (...) {
+    CLOGF(
+        ERR,
+        "ReduceScatter {} failed with an unknown exception",
+        reduceScatterAlgoName(myAlgo));
     return commInternalError;
   }
 
