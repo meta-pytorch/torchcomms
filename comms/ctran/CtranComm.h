@@ -7,17 +7,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/Synchronized.h>
 #include <folly/container/F14Set.h>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
@@ -36,12 +38,16 @@ using meta::comms::CommBackend;
 // Per-communicator Prims transport overrides.
 // -1 means use CVAR default.
 struct ctranPipesConfig {
+  // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
+  // policy does not affect NCCLX or standalone Ctran communicators.
+  int64_t enablePrims{-1};
   int64_t nvlChunkSize{-1};
-  bool ibLazyConnect{false};
+  bool ibLazyConnect{true};
   int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
-    return nvlChunkSize == other.nvlChunkSize &&
+    return enablePrims == other.enablePrims &&
+        nvlChunkSize == other.nvlChunkSize &&
         ibLazyConnect == other.ibLazyConnect &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
@@ -75,7 +81,7 @@ namespace ctran {
 struct CtranWin;
 }
 
-using ctran::utils::Abort;
+using comms::fault_tolerance::Abort;
 using ctran::utils::AsyncError;
 using ctran::utils::Exception;
 
@@ -85,7 +91,7 @@ class CtranComm {
   // For real communicationator we should use factory method to create.
   explicit CtranComm(
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/false),
+          comms::fault_tolerance::createAbort(/*enabled=*/false),
       ctranConfig commConfig = ctranConfig{});
 
   // The MemCache allocator is destroyed in a different time than all
@@ -125,23 +131,23 @@ class CtranComm {
   }
 
   inline bool abortEnabled() const {
-    return abort_->Enabled();
+    return abort_->isEnabled();
   }
 
   inline void setAbort() {
-    abort_->Set();
+    abort_->setAbort();
   }
 
   inline bool testAbort() const {
-    return abort_->Test();
+    return abort_->isAborted();
   }
 
   inline void setTimeout(const std::chrono::milliseconds& timeout) {
-    return abort_->SetTimeout(timeout);
+    return abort_->startTimeout(timeout);
   }
 
   inline void cancelTimeout() {
-    return abort_->CancelTimeout();
+    return abort_->cancelTimeout();
   }
 
   inline bool useNativeOpCount() const {
@@ -180,16 +186,8 @@ class CtranComm {
     return parentRanks_;
   }
 
-  // Get a pointer to the Transport array from MultiPeerTransport,
-  // indexed by global rank. Returns nullptr if MultiPeerTransport is not
-  // initialized.
-  comms::prims::Transport* getMultiPeerTransportsPtr() const;
-
-  // Lazy-safe overload: materializes `peers` (via get_device_handle(peers))
-  // and returns the Transport array pointer. Required in lazy-connect mode,
-  // where the no-arg overload throws. Non-const because materialization
-  // mutates transport state. An empty `peers` list materializes nothing and
-  // still returns a valid pointer (for ranks that use no IB slots).
+  // Materializes `peers` and returns the Transport array indexed by global
+  // rank. An empty peer list initializes no IB transport slots.
   comms::prims::Transport* getMultiPeerTransportsPtr(
       const std::vector<int>& peers);
 
@@ -243,6 +241,16 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+
+  // Persistent staging buffers for the small-message AllReduce-ring padding
+  // path (opt-in via MCCL_FORCE_SMALL_MSG_AR_RING, driven by
+  // ctranAllReduceRingSmallMsg). Lazily allocated on first use, grown on
+  // demand, and reused across collectives; freed in destroy(). Remain nullptr
+  // when the feature is unused.
+  void* smallMsgStageSrc_{nullptr};
+  void* smallMsgStageDst_{nullptr};
+  size_t smallMsgStageBytes_{0};
+
   // AMD carve-out only: ENABLE_PRIMS is on for every non-AMD build (see
   // comms/ctran/def_build.bzl), so these members exist everywhere except AMD.
   // The guard changes CtranComm's layout, so consumers must compile with a

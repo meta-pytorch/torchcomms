@@ -35,6 +35,17 @@ DEFINE_string(
     mem_type,
     "cudaMalloc",
     "Memory allocation type: 'cuMem' or 'cudamalloc' (default: cudamalloc)");
+DEFINE_int32(
+    graph_ops,
+    0,
+    "If >0, capture a CUDA graph with this many back-to-back AllGatherP ops and "
+    "measure cudaGraphLaunch submit time + replay bandwidth (default: 0, off). "
+    "Toggle NCCL_CTRAN_ALLGATHER_P_NVL_MULTICAST between runs to compare unicast "
+    "vs CE-multicast.");
+DEFINE_int32(
+    graph_iters,
+    20,
+    "Graph replay iterations for graph-mode timing (default: 20)");
 
 #define NCCLCHECK_TEST(cmd)                  \
   do {                                       \
@@ -58,6 +69,19 @@ struct BenchmarkResult {
   double avgTimeMs;
   double algoBwGBps;
   double busBwGBps;
+  std::string algoName;
+};
+
+// Graph-mode result: submit (cudaGraphLaunch) time for a graph of graphOps
+// AllGatherP ops, plus replay bandwidth.
+struct GraphBenchmarkResult {
+  size_t sizeBytes;
+  size_t count;
+  int graphOps;
+  double submitMsAvg;
+  double submitMsMax;
+  double replayMsAvg;
+  double algoBwGBps;
   std::string algoName;
 };
 
@@ -245,6 +269,111 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     return result;
   }
 
+  // Capture a CUDA graph of FLAGS_graph_ops back-to-back AllGatherP execs and
+  // measure (a) the cudaGraphLaunch submit time -- the CPU-side cost that the
+  // driver lock-convoy inflates when the graph holds many per-peer Memcpy PtoP
+  // nodes, which CE-multicast collapses -- and (b) the replay bandwidth. The
+  // unicast-vs-multicast comparison comes from toggling
+  // NCCL_CTRAN_ALLGATHER_P_NVL_MULTICAST between runs (read once at init).
+  GraphBenchmarkResult benchmarkAllgatherPGraph(
+      size_t count,
+      const std::string& algoName,
+      CtranPersistentRequest* request,
+      void* sendbuf,
+      void* recvbuf) {
+    const size_t sendBytes = count * typeSize_;
+    void* usedSendBuf = FLAGS_in_place
+        ? static_cast<char*>(recvbuf) + globalRank * sendBytes
+        : sendbuf;
+    const int nOps = FLAGS_graph_ops;
+
+    // Warmup eager execs first: the first exec performs the (non-capturable)
+    // inter-node IB rkey exchange, so capture below records only steady-state
+    // execs.
+    for (int i = 0; i < std::max(FLAGS_warmup_iters, 2); ++i) {
+      COMMCHECK_TEST(ctran::allGatherPExec(usedSendBuf, count, dt_, request));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    }
+
+    // Capture nOps execs into one graph.
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t graphExec = nullptr;
+    CUDACHECK_TEST(
+        cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal));
+    for (int i = 0; i < nOps; ++i) {
+      COMMCHECK_TEST(ctran::allGatherPExec(usedSendBuf, count, dt_, request));
+    }
+    CUDACHECK_TEST(cudaStreamEndCapture(stream_, &graph));
+    CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, 0));
+
+    // Warmup replays (also amortizes any first-launch driver setup).
+    for (int i = 0; i < 3; ++i) {
+      CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream_));
+    }
+    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+
+    // Time each cudaGraphLaunch (CPU submit) with a sync after, mirroring the
+    // fwd/bwd launch-then-wait pattern where the convoy shows up.
+    ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
+    double submitMsSum = 0.0;
+    auto replayStart = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < FLAGS_graph_iters; ++i) {
+      auto s = std::chrono::high_resolution_clock::now();
+      CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream_));
+      auto e = std::chrono::high_resolution_clock::now();
+      submitMsSum += std::chrono::duration<double, std::milli>(e - s).count();
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    }
+    auto replayEnd = std::chrono::high_resolution_clock::now();
+
+    const double submitMs = submitMsSum / FLAGS_graph_iters;
+    const double replayMs =
+        std::chrono::duration<double, std::milli>(replayEnd - replayStart)
+            .count() /
+        FLAGS_graph_iters;
+
+    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+    CUDACHECK_TEST(cudaGraphDestroy(graph));
+
+    // Reduce submit time across ranks (max = worst launcher; convoy is
+    // per-rank on its own context).
+    double submitMax = submitMs, submitAvg = submitMs;
+    {
+      std::vector<char> buf(numRanks * sizeof(double));
+      memcpy(
+          buf.data() + globalRank * sizeof(double), &submitMs, sizeof(double));
+      auto rc =
+          ctranComm_->bootstrap_
+              ->allGather(buf.data(), sizeof(double), globalRank, numRanks)
+              .get();
+      EXPECT_EQ(rc, 0) << "Bootstrap allGather for graph timing failed";
+      double sum = 0.0, mx = 0.0;
+      for (int i = 0; i < numRanks; ++i) {
+        double v = 0.0;
+        memcpy(&v, buf.data() + i * sizeof(double), sizeof(double));
+        sum += v;
+        mx = std::max(mx, v);
+      }
+      submitAvg = sum / numRanks;
+      submitMax = mx;
+    }
+
+    // Replay BW: each of the nOps execs produces sendBytes*numRanks of output.
+    const double algoBw =
+        (double)sendBytes * numRanks * nOps / (replayMs / 1000.0) / 1e9;
+
+    GraphBenchmarkResult result;
+    result.sizeBytes = sendBytes;
+    result.count = count;
+    result.graphOps = nOps;
+    result.submitMsAvg = submitAvg;
+    result.submitMsMax = submitMax;
+    result.replayMsAvg = replayMs;
+    result.algoBwGBps = algoBw;
+    result.algoName = algoName;
+    return result;
+  }
+
   // Run NCCL baseline allgather benchmark using standard NCCL APIs
   BenchmarkResult benchmarkNcclAllgather(size_t count) {
     const size_t sendBytes = count * typeSize_;
@@ -385,10 +514,40 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     }
   }
 
+  // Print graph-mode table header
+  void printGraphTableHeader() {
+    if (globalRank == 0) {
+      std::cout << "\nGraph mode: " << FLAGS_graph_ops
+                << " AllGatherP ops/graph, " << FLAGS_graph_iters
+                << " replay iters. Submit = cudaGraphLaunch CPU time.\n";
+      std::cout << std::left << std::setw(25) << "Algorithm" << std::right
+                << std::setw(12) << "Size(B)" << std::setw(14) << "Submit(ms)"
+                << std::setw(14) << "SubmitMax(ms)" << std::setw(14)
+                << "Replay(ms)" << std::setw(14) << "AlgoBW(GB/s)" << std::endl;
+      std::cout << std::string(93, '-') << std::endl;
+    }
+  }
+
+  // Print graph-mode result row
+  void printGraphResult(const GraphBenchmarkResult& result) {
+    if (globalRank == 0) {
+      std::cout << std::left << std::setw(25) << result.algoName << std::right
+                << std::setw(12) << result.sizeBytes << std::fixed
+                << std::setprecision(4) << std::setw(14) << result.submitMsAvg
+                << std::setw(14) << result.submitMsMax << std::setw(14)
+                << result.replayMsAvg << std::setprecision(2) << std::setw(14)
+                << result.algoBwGBps << std::endl;
+    }
+  }
+
   // Run full benchmark suite
   void runBenchmark() {
     printHeader();
-    printTableHeader();
+    if (FLAGS_graph_ops > 0) {
+      printGraphTableHeader();
+    } else {
+      printTableHeader();
+    }
 
     // pipelineSupported is decided after init by probing the algo once (below).
     const auto statex = ctranComm_->statex_.get();
@@ -505,9 +664,13 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       // Benchmark AllgatherP Direct (reuses same request)
       if (FLAGS_algo == "ctdirect" || FLAGS_algo == "all") {
         EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
-        BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Direct", requestDirect, sendbuf, recvbuf);
-        printResult(result);
+        if (FLAGS_graph_ops > 0) {
+          printGraphResult(benchmarkAllgatherPGraph(
+              count, "AllGatherP_Direct", requestDirect, sendbuf, recvbuf));
+        } else {
+          printResult(benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_Direct", requestDirect, sendbuf, recvbuf));
+        }
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
@@ -516,14 +679,19 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
           pipelineSupported) {
         EnvRAII algoEnv(
             NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctpipeline);
-        BenchmarkResult result = benchmarkAllgatherPWithRequest(
-            count, "AllGatherP_Pipeline", requestPipeline, sendbuf, recvbuf);
-        printResult(result);
+        if (FLAGS_graph_ops > 0) {
+          printGraphResult(benchmarkAllgatherPGraph(
+              count, "AllGatherP_Pipeline", requestPipeline, sendbuf, recvbuf));
+        } else {
+          printResult(benchmarkAllgatherPWithRequest(
+              count, "AllGatherP_Pipeline", requestPipeline, sendbuf, recvbuf));
+        }
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
-      // Benchmark NCCL baseline
-      if (FLAGS_algo == "nccl" || FLAGS_algo == "all") {
+      // Benchmark NCCL baseline (eager only; graph mode targets AllGatherP).
+      if ((FLAGS_algo == "nccl" || FLAGS_algo == "all") &&
+          FLAGS_graph_ops == 0) {
         BenchmarkResult result = benchmarkNcclAllgather(count);
         printResult(result);
         ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();

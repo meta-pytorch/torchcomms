@@ -82,8 +82,8 @@ commResult_t BootstrapExternal::connectVc(
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = pendingVcs_.find(peerRank);
     if (it == pendingVcs_.end()) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB: BootstrapExternal::connectVc called for peerRank {} before "
           "getLocalVcId. commHash {:x}, commDesc {}",
           peerRank,

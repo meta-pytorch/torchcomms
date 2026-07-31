@@ -63,7 +63,7 @@ TEST_F(MultiPeerIntegrationTestFixture, DeviceHandleTypeMap) {
   }
 
   auto states = create_and_exchange();
-  auto handle = states->get_device_handle();
+  auto handle = states->get_device_handle(states->ib_peer_ranks());
 
   // Allocate output array on GPU
   int* output_d = nullptr;
@@ -102,7 +102,7 @@ TEST_F(MultiPeerIntegrationTestFixture, SelfTransportPut) {
 
   ASSERT_EQ(states->get_transport_type(globalRank), TransportType::SELF);
 
-  auto handle = states->get_device_handle();
+  auto handle = states->get_device_handle(states->ib_peer_ranks());
 
   const size_t nbytes = 4096;
   void* src_d = nullptr;

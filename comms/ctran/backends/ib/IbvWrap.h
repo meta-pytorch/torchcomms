@@ -117,7 +117,7 @@ static inline commResult_t wrap_ibv_poll_cq(
       cq, num_entries, wc); /*returns the number of wcs or 0 on success, a
                                negative number otherwise*/
   if (done < 0) {
-    CLOGF(WARN, "Call to ibv_poll_cq() returned {}", done);
+    CERR(commSystemError, "Call to ibv_poll_cq() returned {}", done);
     return commSystemError;
   }
   *num_done = done;
@@ -145,8 +145,8 @@ static inline commResult_t wrap_ibv_post_send(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
   if (ret != IBV_SUCCESS) {
-    CLOGF(
-        WARN,
+    CERR(
+        commSystemError,
         "ibv_post_send() failed with error {}, Bad WR {}, First WR {}",
         strerror(ret),
         (void*)wr,
@@ -164,7 +164,8 @@ static inline commResult_t wrap_ibv_post_recv(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
   if (ret != IBV_SUCCESS) {
-    CLOGF(WARN, "ibv_post_recv() failed with error {}", strerror(ret));
+    CERR(
+        commSystemError, "ibv_post_recv() failed with error {}", strerror(ret));
     return commSystemError;
   }
   return commSuccess;

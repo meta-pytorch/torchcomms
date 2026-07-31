@@ -3,6 +3,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include <gtest/gtest.h>
 #include "comms/ctran/profiler/tests/MockProfilerReporter.h"
+#include "comms/ctran/profiler/tests/ProfilerHarness.h"
 
 using namespace ::testing;
 
@@ -11,11 +12,7 @@ namespace ctran {
 class ProfilerTest : public ::testing::Test {
  public:
   void SetUp() override {
-    // Allocate a zero-initialized CtranComm-sized buffer to avoid pulling in
-    // the heavy ctran_lib dependency. The Profiler only accesses
-    // comm_->logMetaData_ which is a trivial POD struct, so zero-init is safe.
-    commBuf_.resize(sizeof(CtranComm), 0);
-    comm_ = reinterpret_cast<CtranComm*>(commBuf_.data());
+    comm_ = fakeComm_.get();
     profiler_ = std::make_unique<ctran::Profiler>(comm_);
   }
   void TearDown() override {
@@ -27,7 +24,7 @@ class ProfilerTest : public ::testing::Test {
   }
 
  protected:
-  std::vector<char> commBuf_;
+  ctran::test::FakeProfilerComm fakeComm_;
   CtranComm* comm_{nullptr};
   std::unique_ptr<ctran::Profiler> profiler_{nullptr};
 };
@@ -85,14 +82,7 @@ TEST_F(ProfilerTest, testForceTraceOverridesSamplingWeight) {
 TEST_F(ProfilerTest, testDefaultReporterType) {
   // Default constructor should use default reporter (no crash on reportToScuba)
   auto profiler = std::make_unique<ctran::Profiler>(comm_);
-  profiler->initForEachColl(100, 1);
-  profiler->startEvent(ctran::ProfilerEvent::BUF_REG);
-  profiler->endEvent(ctran::ProfilerEvent::BUF_REG);
-  profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL);
-  profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL);
-  profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA);
-  profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA);
-  EXPECT_NO_THROW(profiler->reportToScuba());
+  EXPECT_NO_THROW(ctran::test::runOneCollective(*profiler, 100, 1));
 }
 
 TEST_F(ProfilerTest, testReportToScubaCallsReporter) {

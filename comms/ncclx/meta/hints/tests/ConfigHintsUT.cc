@@ -29,6 +29,7 @@ TEST(ConfigHintsUT, NoHintsCreatesDefaults) {
   EXPECT_EQ(ncclxCfg->sendrecvAlgo, NCCL_SENDRECV_ALGO::orig);
   EXPECT_EQ(ncclxCfg->allgatherAlgo, NCCL_ALLGATHER_ALGO::orig);
   EXPECT_EQ(ncclxCfg->allreduceAlgo, NCCL_ALLREDUCE_ALGO::orig);
+  EXPECT_EQ(ncclxCfg->alltoallAlgo, NCCL_ALLTOALL_ALGO::orig);
   EXPECT_EQ(ncclxCfg->alltoallvAlgo, NCCL_ALLTOALLV_ALGO::orig);
   EXPECT_EQ(ncclxCfg->rmaAlgo, NCCL_RMA_ALGO::ctran);
 
@@ -344,24 +345,24 @@ TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
   delete ncclxCfg;
 }
 
-// ----- ibLazyConnect tests -----
+// ----- deviceIbLazyConnect tests -----
 
-TEST(ConfigHintsUT, LazyPeerInit_DefaultIsFalse) {
+TEST(ConfigHintsUT, LazyPeerInit_DefaultIsTrue) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
   ASSERT_NE(config.ncclxConfig, nullptr);
-  EXPECT_FALSE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, deviceIbLazyConnect));
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
 TEST(ConfigHintsUT, LazyPeerInit_HintOverrides) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
-  hints.set("ibLazyConnect", "true");
+  hints.set("deviceIbLazyConnect", "true");
   config.hints = &hints;
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
   ASSERT_NE(config.ncclxConfig, nullptr);
-  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, ibLazyConnect));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, deviceIbLazyConnect));
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
@@ -443,6 +444,18 @@ TEST(ConfigHintsUT, AlltoallvAlgoHint) {
   ASSERT_NE(config.ncclxConfig, nullptr);
   EXPECT_EQ(
       NCCLX_CONFIG_FIELD(config, alltoallvAlgo), NCCL_ALLTOALLV_ALGO::ctran);
+  delete static_cast<ncclx::Config*>(config.ncclxConfig);
+}
+
+TEST(ConfigHintsUT, AlltoallAlgoHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("alltoallAlgo", "ctran");
+  config.hints = &hints;
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+  ASSERT_NE(config.ncclxConfig, nullptr);
+  EXPECT_EQ(
+      NCCLX_CONFIG_FIELD(config, alltoallAlgo), NCCL_ALLTOALL_ALGO::ctran);
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 

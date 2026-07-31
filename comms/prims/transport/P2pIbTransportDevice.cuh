@@ -30,7 +30,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::signal(
   }
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::put(
+__device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     ThreadGroup& group,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
@@ -40,7 +40,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
     int counterId,
     uint64_t counterVal) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->put(
+    return ibrc->put(
         group,
         localBuf,
         remoteBuf,
@@ -50,7 +50,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         counterId,
         counterVal);
   } else {
-    ibgda->put(
+    return ibgda->put(
         group,
         localBuf,
         remoteBuf,
@@ -62,7 +62,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
   }
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::put(
+__device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -71,7 +71,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
     int counterId,
     uint64_t counterVal) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->put(
+    return ibrc->put(
         localBuf,
         remoteBuf,
         nbytes,
@@ -80,7 +80,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         counterId,
         counterVal);
   } else {
-    ibgda->put(
+    return ibgda->put(
         localBuf,
         remoteBuf,
         nbytes,
@@ -169,6 +169,17 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
   }
 }
 
+__device__ __forceinline__ void P2pIbTransportDevice::wait_local(
+    ThreadGroup& group,
+    const IbLocalCompletionTicket& ticket,
+    const Timeout& timeout) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->wait_local(group, ticket, timeout);
+  } else {
+    ibgda->wait_local(group, ticket, timeout);
+  }
+}
+
 __device__ __forceinline__ void P2pIbTransportDevice::reset_signal(
     ThreadGroup& group,
     int signalId) {
@@ -244,7 +255,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::signal(
   }
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::put(
+__device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     ThreadGroup& group,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
@@ -255,7 +266,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
     uint64_t counterVal,
     bool signalPerLane) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->put(
+    return ibrc->put(
         group,
         localBuf,
         remoteBuf,
@@ -266,7 +277,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         counterVal,
         signalPerLane);
   } else {
-    ibgda->put(
+    return ibgda->put(
         group,
         localBuf,
         remoteBuf,
@@ -279,7 +290,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
   }
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::put(
+__device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
@@ -288,7 +299,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
     const IbgdaLocalBuffer& counterBuf,
     uint64_t counterVal) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->put(
+    return ibrc->put(
         localBuf,
         remoteBuf,
         nbytes,
@@ -297,7 +308,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::put(
         counterBuf,
         counterVal);
   } else {
-    ibgda->put(
+    return ibgda->put(
         localBuf,
         remoteBuf,
         nbytes,

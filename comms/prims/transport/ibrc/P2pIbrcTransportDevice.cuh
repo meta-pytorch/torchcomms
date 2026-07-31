@@ -63,6 +63,8 @@ inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
  * ordering. The CPU progress thread consumes descriptors, posts the verbs work
  * requests on the matching QP, and advances ci after polling the CQE. Optional
  * local counters are updated by the CPU proxy after polling that CQE.
+ * Group-scope put() returns a completion ticket in the leader thread; a later
+ * group-scope wait_local() consumes that leader's ticket collectively.
  */
 class P2pIbrcTransportDevice {
  public:
@@ -106,8 +108,8 @@ class P2pIbrcTransportDevice {
   // detail::wait_recv_data_ready), which removes the cross-lane hazard where a
   // fast lane's later chunk masks a slow lane's not-yet-landed data.
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -119,7 +121,8 @@ class P2pIbrcTransportDevice {
         (signalId >= 0) ? remote_signal_slot(signalId) : IbgdaRemoteBuffer{};
     IbgdaLocalBuffer ctrSlot =
         (counterId >= 0) ? counter_host_slot(counterId) : IbgdaLocalBuffer{};
-    put(group,
+    return put(
+        group,
         localBuf,
         remoteBuf,
         nbytes,
@@ -129,8 +132,8 @@ class P2pIbrcTransportDevice {
         counterVal);
   }
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       int signalId = -1,
@@ -138,7 +141,8 @@ class P2pIbrcTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1) {
     ThreadGroup solo = make_thread_solo();
-    put(solo,
+    return put(
+        solo,
         localBuf,
         remoteBuf,
         nbytes,
@@ -270,8 +274,8 @@ class P2pIbrcTransportDevice {
     signal(solo, signalBuf, signalVal, direction);
   }
 
-  __device__ void put(
-      ThreadGroup& group,
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
@@ -291,6 +295,7 @@ class P2pIbrcTransportDevice {
     }
     group.sync();
 
+    IbLocalCompletionTicket completion;
     if (group.is_leader()) {
       validate_group_scope(group);
       const uint32_t queueId = select_put_queue_id(group, IbDirection::Send);
@@ -335,13 +340,18 @@ class P2pIbrcTransportDevice {
         desc.flags |= IBRC_HAS_COUNTER;
       }
 
-      enqueue(queueId, desc);
+      const uint64_t seq = enqueue(queueId, desc);
+      completion = IbLocalCompletionTicket{
+          .completionId = laneOrdinal,
+          .value = seq + 1,
+      };
     }
     group.sync();
+    return completion;
   }
 
-  __device__ void put(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbLocalCompletionTicket
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
@@ -349,7 +359,8 @@ class P2pIbrcTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1) {
     ThreadGroup solo = make_thread_solo();
-    put(solo,
+    return put(
+        solo,
         localBuf,
         remoteBuf,
         nbytes,
@@ -357,6 +368,63 @@ class P2pIbrcTransportDevice {
         signalVal,
         counterBuf,
         counterVal);
+  }
+
+  __device__ void wait_local(
+      ThreadGroup& group,
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout = Timeout()) const {
+    if (group.is_leader()) {
+      const auto& queue = cmdQueues[queue_for_lane(
+          group.group_id, IbDirection::Send, ticket.completionId)];
+      while (static_cast<int64_t>(
+                 load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
+        check_status(queue);
+        if (timeout.checkExpired()) {
+          printf(
+              "P2pIbrcTransportDevice: wait_local timed out lane=%u "
+              "expected=%llu\n",
+              ticket.completionId,
+              static_cast<unsigned long long>(ticket.value));
+          PIPES_DEVICE_TRAP();
+        }
+      }
+    }
+    group.sync();
+  }
+
+  __device__ __forceinline__ bool is_local_completion_ready(
+      uint32_t channelId,
+      const IbLocalCompletionTicket& ticket) const {
+    const auto& queue = cmdQueues[queue_for_lane(
+        channelId, IbDirection::Send, ticket.completionId)];
+    check_status(queue);
+    return static_cast<int64_t>(
+               load_acquire_system_u64(queue.ci) - ticket.value) >= 0;
+  }
+
+  __device__ __forceinline__ void wait_local_completion(
+      uint32_t channelId,
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout) const {
+    const auto& queue = cmdQueues[queue_for_lane(
+        channelId, IbDirection::Send, ticket.completionId)];
+    while (static_cast<int64_t>(
+               load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
+      check_status(queue);
+      if (timeout.checkExpired()) {
+        printf(
+            "P2pIbrcTransportDevice: local completion timed out lane=%u "
+            "expected=%llu\n",
+            ticket.completionId,
+            static_cast<unsigned long long>(ticket.value));
+        PIPES_DEVICE_TRAP();
+      }
+    }
+  }
+
+  __device__ __forceinline__ uint32_t send_completion_lane_count() const {
+    return num_qp_lanes();
   }
 
   __device__ void put_cooperative(
@@ -775,15 +843,15 @@ class P2pIbrcTransportDevice {
     return seq;
   }
 
-  __device__ __forceinline__ void enqueue(
-      uint32_t queueId,
-      const IbrcDesc& desc) const {
+  __device__ __forceinline__ uint64_t
+  enqueue(uint32_t queueId, const IbrcDesc& desc) const {
     IbrcCmdQueueDevice& queue = cmdQueues[queueId];
     check_status(queue);
     const uint64_t seq = reserve(queue);
     IbrcDesc& slot = queue.descs[seq & queue.mask];
     slot = desc;
     store_release_system_u64(&slot.ready_seq, seq);
+    return seq;
   }
 
   __device__ __forceinline__ void check_status(

@@ -33,6 +33,8 @@ class AlgoImpl {
         return "CtranAllToAllP";
       case NCCL_ALLTOALL_ALGO::ctgraph:
         return "CtranAllToAllPCtgraph";
+      case NCCL_ALLTOALL_ALGO::ctwin:
+        return "CtranAllToAllPCtwin";
       default:
         return "Unknown";
     }

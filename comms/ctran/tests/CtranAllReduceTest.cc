@@ -26,6 +26,9 @@ using AllReduceMinMsgSizeTestParam = std::tuple<size_t, commDataType_t>;
 enum class CtranAllReduceRingMinSizeTestOpt {
   expect_sufficient,
   expect_insufficient,
+  // count < nRanks, but routed through the small-message padding path
+  // (ctranAllReduceRingSmallMsg), which must succeed instead of throwing.
+  expect_padded_small_msg,
 };
 
 class CtranAllReduceTest
@@ -46,10 +49,10 @@ class CtranAllReduceTest
     CtranIntraProcessFixture::SetUp();
   }
   void startWorkers(bool abortEnabled) {
-    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
     if (abortEnabled) {
       for (int i = 0; i < kNRanks; ++i) {
-        aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+        aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
       }
     }
     CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
@@ -350,10 +353,10 @@ class CtranAllReduceRingMinSizeTest
   }
 
   void startWorkers(int numRanks = kDefaultNumRanks) {
-    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>> aborts;
     aborts.reserve(numRanks);
     for (int i = 0; i < numRanks; ++i) {
-      aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+      aborts.push_back(comms::fault_tolerance::createAbort(/*enabled=*/true));
     }
     CtranIntraProcessFixture::startWorkers(numRanks, /*aborts=*/aborts);
   }
@@ -389,6 +392,22 @@ class CtranAllReduceRingMinSizeTest
           // Should not throw when count >= nRanks
           EXPECT_NO_THROW({
             auto res = ctranAllReduceRing(
+                state.srcBuffer,
+                state.dstBuffer,
+                count,
+                dt,
+                kReduceOpType,
+                state.ctranComm.get(),
+                state.stream);
+            EXPECT_EQ(res, commSuccess);
+          });
+        } else if (
+            testOpt ==
+            CtranAllReduceRingMinSizeTestOpt::expect_padded_small_msg) {
+          // count < nRanks is padded up to nRanks internally, so the ring
+          // runs successfully instead of throwing.
+          EXPECT_NO_THROW({
+            auto res = ctranAllReduceRingSmallMsg(
                 state.srcBuffer,
                 state.dstBuffer,
                 count,
@@ -455,6 +474,18 @@ TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_NRanksPlus1) {
       numRanks);
 }
 
+// count < nRanks succeeds through the small-message padding path instead of
+// throwing (see ctranAllReduceRingSmallMsg / MCCL_FORCE_SMALL_MSG_AR_RING).
+TEST_P(CtranAllReduceRingMinSizeTest, PaddedSmallMsg_NRanksMinus1) {
+  auto [numRanks, dt] = GetParam();
+  ASSERT_GT(numRanks, 1) << "Need at least 2 ranks for this test";
+  runTest(
+      numRanks - 1,
+      dt,
+      CtranAllReduceRingMinSizeTestOpt::expect_padded_small_msg,
+      numRanks);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllDataTypes,
     CtranAllReduceRingMinSizeTest,
@@ -478,7 +509,8 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
 
   void runAllReduce(size_t nElem) {
     CtranIntraProcessFixture::startWorkers(
-        kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
+        kNRanks,
+        /*aborts=*/{comms::fault_tolerance::createAbort(/*enabled=*/true)});
 
     run(/*rank=*/0, [this, nElem](PerRankState& state) {
       // set up src buffer to hold magic values, and zero out dst buffers

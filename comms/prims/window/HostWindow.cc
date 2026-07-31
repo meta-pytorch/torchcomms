@@ -488,7 +488,7 @@ DeviceWindow HostWindow::buildDeviceWindowImpl(
 }
 
 DeviceWindow HostWindow::getDeviceWindow() const {
-  return buildDeviceWindowImpl(transport_.get_device_handle());
+  return buildDeviceWindowImpl(transport_.get_device_handle(ibgdaPeerRanks_));
 }
 
 DeviceWindow HostWindow::getDeviceWindow(const std::vector<int>& peers) {

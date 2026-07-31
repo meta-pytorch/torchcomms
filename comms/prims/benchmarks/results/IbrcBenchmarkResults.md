@@ -1,10 +1,18 @@
 # IBRC Benchmark Results
 
-Run date: 2026-06-16
+## Hardware and Configuration
 
-Hosts used: `rtptest2330.nha6`, `rtptest2334.nha6`
+| Field | Value |
+| --- | --- |
+| Run date | 2026-06-16 |
+| Hosts | `rtptest2330.nha6`, `rtptest2334.nha6` |
+| GPU | NVIDIA GB200 |
+| Nodes | 2 |
+| Ranks per node | 1 |
+| Network interface | `eth1` |
+| Backends | IBGDA and IBRC |
 
-Launcher:
+## Command
 
 ```bash
 python3 comms/testinfra/ncclx_test_launcher.py \
@@ -17,21 +25,15 @@ python3 comms/testinfra/ncclx_test_launcher.py \
   --testname /home/zhiyongww/worktrees/IBRC/buck-out/v2/art/fbcode/065941cadf27ce30/comms/prims/benchmarks/__ibgda_benchmark_binary__/ibgda_benchmark_binary
 ```
 
-The initially suggested hosts, `rtptest2347.nha6` and `rtptest2346.nha6`, were not usable for this run because CUDA context creation failed with `CUDA-capable device(s) is/are busy or unavailable`. The results below use the clean GB200 pair listed above.
+The initially suggested hosts, `rtptest2347.nha6` and `rtptest2346.nha6`, were
+not usable because CUDA context creation failed with `CUDA-capable device(s)
+is/are busy or unavailable`. The results below use the GB200 pair listed above.
 
 ## Current Counter-Slot Results
 
 These results are after switching the counter benchmarks from explicit counter buffers to the transport-owned counter-slot API. IBRC `PutWaitCounter`, `PutSignalWaitCounter`, and `PutSignalComparison` pass with this path.
 
-Current logs:
-
-| Run | Log |
-| --- | --- |
-| Expanded sweep through 1GB | `/tmp/ibrc_1gb_sweep.log` |
-| IBRC counter-slot retest | `/tmp/ibrc_counter_slot_tests.log` |
-| IBGDA counter-slot retest | `/tmp/ibgda_counter_slot_tests.log` |
-
-Summary:
+### Summary
 
 | Benchmark | IBGDA | IBRC |
 | --- | ---: | ---: |

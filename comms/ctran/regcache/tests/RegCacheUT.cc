@@ -1752,7 +1752,7 @@ TEST_F(RegCacheTest, ScopedRegisterSingleAcquireRelease) {
     ctran::ScopedRegHdl scopedRegHdl;
     EXPECT_EQ(
         regCache->acquireScopedRegister(
-            buf, bufSize, cudaDev, backends, scopedRegHdl),
+            buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
         commSuccess);
     EXPECT_TRUE(static_cast<bool>(scopedRegHdl));
     EXPECT_NE(scopedRegHdl.get(), nullptr);
@@ -1787,7 +1787,8 @@ TEST_F(RegCacheTest, ScopedRegisterNestedAcquire) {
 
   auto outer = std::make_unique<ctran::ScopedRegHdl>();
   EXPECT_EQ(
-      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, *outer),
+      regCache->acquireScopedRegister(
+          buf, bufSize, cudaDev, backends, CommLogData{}, *outer),
       commSuccess);
   auto* regElem = outer->get();
   ASSERT_NE(regElem, nullptr);
@@ -1797,7 +1798,8 @@ TEST_F(RegCacheTest, ScopedRegisterNestedAcquire) {
   {
     ctran::ScopedRegHdl inner;
     EXPECT_EQ(
-        regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, inner),
+        regCache->acquireScopedRegister(
+            buf, bufSize, cudaDev, backends, CommLogData{}, inner),
         commSuccess);
     // Both handles refer to the same reused registration; inUseCnt 1 + 1 = 2.
     EXPECT_EQ(inner.get(), regElem);
@@ -1838,7 +1840,7 @@ TEST_F(RegCacheTest, ScopedRegisterSequentialAcquire) {
       ctran::ScopedRegHdl scopedRegHdl;
       EXPECT_EQ(
           regCache->acquireScopedRegister(
-              buf, bufSize, cudaDev, backends, scopedRegHdl),
+              buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
           commSuccess);
       auto* regElem = scopedRegHdl.get();
       ASSERT_NE(regElem, nullptr);
@@ -1873,7 +1875,7 @@ TEST_F(RegCacheTest, ScopedRegisterPreservesGlobalRegistration) {
     ctran::ScopedRegHdl scopedRegHdl;
     EXPECT_EQ(
         regCache->acquireScopedRegister(
-            buf, bufSize, cudaDev, backends, scopedRegHdl),
+            buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
         commSuccess);
     EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
   }
@@ -1903,7 +1905,7 @@ TEST_F(RegCacheTest, ScopedRegisterUncachedSegmentReturnsError) {
   ctran::ScopedRegHdl scopedRegHdl;
   EXPECT_EQ(
       regCache->acquireScopedRegister(
-          buf, bufSize, cudaDev, backends, scopedRegHdl),
+          buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
       commInvalidUsage);
 
   // The handle must stay empty since nothing was acquired.
@@ -1931,7 +1933,7 @@ TEST_F(RegCacheTest, GlobalDeregisterWhileScopedAliveReportsError) {
     ctran::ScopedRegHdl scopedRegHdl;
     EXPECT_EQ(
         regCache->acquireScopedRegister(
-            buf, bufSize, cudaDev, backends, scopedRegHdl),
+            buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
         commSuccess);
     EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
 
@@ -1975,7 +1977,7 @@ TEST_F(RegCacheTest, FreeSegmentWhileScopedAliveReturnsError) {
     ctran::ScopedRegHdl scopedRegHdl;
     EXPECT_EQ(
         regCache->acquireScopedRegister(
-            buf, bufSize, cudaDev, backends, scopedRegHdl),
+            buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
         commSuccess);
     auto* regElem = scopedRegHdl.get();
     ASSERT_NE(regElem, nullptr);
@@ -2070,7 +2072,7 @@ TEST_F(RegCacheTest, ScopedRegisterFirstAcquireCreatesRegElem) {
     // Scoped acquire is the first to register: it creates the RegElem.
     EXPECT_EQ(
         regCache->acquireScopedRegister(
-            buf, bufSize, cudaDev, backends, scopedRegHdl),
+            buf, bufSize, cudaDev, backends, CommLogData{}, scopedRegHdl),
         commSuccess);
     auto* regElem = scopedRegHdl.get();
     ASSERT_NE(regElem, nullptr);
@@ -2104,7 +2106,8 @@ TEST_F(RegCacheTest, ScopedRegisterMoveSemantics) {
 
   ctran::ScopedRegHdl a;
   EXPECT_EQ(
-      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, a),
+      regCache->acquireScopedRegister(
+          buf, bufSize, cudaDev, backends, CommLogData{}, a),
       commSuccess);
   auto* regElem = a.get();
   ASSERT_NE(regElem, nullptr);
@@ -2126,7 +2129,8 @@ TEST_F(RegCacheTest, ScopedRegisterMoveSemantics) {
   // Acquire a second independent use into c (inUseCnt 1 -> 2).
   ctran::ScopedRegHdl c;
   EXPECT_EQ(
-      regCache->acquireScopedRegister(buf, bufSize, cudaDev, backends, c),
+      regCache->acquireScopedRegister(
+          buf, bufSize, cudaDev, backends, CommLogData{}, c),
       commSuccess);
   EXPECT_EQ(regElem->inUseCnt.load(), 2);
 

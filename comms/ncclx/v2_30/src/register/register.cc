@@ -14,7 +14,6 @@
 #include "group.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
@@ -152,8 +151,8 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
   // FIXME: we should eventually support hybrid registration.
   // Disable it for now to avoid undefined behavior due to handle conflict.
   if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
-    ERR("Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(commInvalidUsage);
   }
 
   if (ctranInitialized(comm->ctranComm_.get()) &&
@@ -211,7 +210,7 @@ static ncclResult_t commDeregister(struct ncclComm *comm, bool isGraph, struct n
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   for (slot = 0; slot < cache->population && cache->slots[slot] != reg; slot++);
   if (slot == cache->population) {
-    WARN("Deregister: Could not find handle");
+    ERR(ncclInvalidUsage, "Deregister: Could not find handle");
     return ncclInvalidUsage;
   }
   if (isGraph) --reg->graphRefs;
@@ -233,8 +232,8 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
   // FIXME: we should eventually support hybrid registration.
   // Disable it for now to avoid undefined behavior due to handle conflict.
   if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
-    ERR("Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(commInvalidUsage);
   }
 
   /* handles are only valid if either ctran registration or baseline

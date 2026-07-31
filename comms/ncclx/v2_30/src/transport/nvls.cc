@@ -355,7 +355,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
     const char *errStr;                                                 \
     (void) pfn_cuGetErrorString(err, &errStr);                          \
     // Fail the job as NVLS support is not functional
-    WARN("Failed to bind NVLink SHARP (NVLS) Multicast memory of size %ld : CUDA error %d '%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\nDisable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.", ucsize, err, errStr );
+    ERR(ncclUnhandledCudaError, "Failed to bind NVLink SHARP (NVLS) Multicast memory of size %ld : CUDA error %d '%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\nDisable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.", ucsize, err, errStr );
     ret = ncclUnhandledCudaError;
     goto fail3;
   }

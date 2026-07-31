@@ -446,7 +446,7 @@ static void* ionicPdAllocDeviceUncached(
   // default (host) allocator if the zero-init fails rather than hand back a
   // dirty buffer.
   if (hipMemset(p, 0, size) != hipSuccess) {
-    hipFree(p);
+    (void)hipFree(p);
     return IBV_ALLOCATOR_USE_DEFAULT;
   }
   return p;
@@ -458,7 +458,7 @@ static void ionicPdReleaseMem(
     void* ptr,
     uint64_t /*resource_type*/) {
   if (ptr && ptr != IBV_ALLOCATOR_USE_DEFAULT) {
-    hipFree(ptr);
+    (void)hipFree(ptr);
   }
 }
 
@@ -1280,7 +1280,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
 
   auto unwind = [&]() {
     if (dbRegion && dbrRegistered) {
-      hipHostUnregister(dbRegion->dbr);
+      (void)hipHostUnregister(dbRegion->dbr);
     }
     if (qp && dv->destroy_qp) {
       dv->destroy_qp(qp);
@@ -1301,13 +1301,13 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
       dv->umem_dereg(cqUmem);
     }
     if (cqBuf) {
-      hipFree(cqBuf);
+      (void)hipFree(cqBuf);
     }
     if (sqBuf) {
-      hipFree(sqBuf);
+      (void)hipFree(sqBuf);
     }
     if (rqBuf) {
-      hipFree(rqBuf);
+      (void)hipFree(rqBuf);
     }
   };
 
@@ -1341,7 +1341,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
-  hipMemset(cqBuf, 0, cqBufSize);
+  (void)hipMemset(cqBuf, 0, cqBufSize);
 
   // ---- Step 2: Register CQ buffer with bnxt_re_dv (umem_reg) ----
   int cqDmabufFd = -1;
@@ -1450,7 +1450,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
-  hipMemset(sqBuf, 0, sqBufSize);
+  (void)hipMemset(sqBuf, 0, sqBufSize);
 
   if (rqBufSize > 0) {
     herr = hipExtMallocWithFlags(&rqBuf, rqBufSize, hipDeviceMallocFinegrained);
@@ -1463,7 +1463,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
       unwind();
       return PIPES_GDA_ERROR_NO_MEMORY;
     }
-    hipMemset(rqBuf, 0, rqBufSize);
+    (void)hipMemset(rqBuf, 0, rqBufSize);
   }
 
   // bnxt_re_dv treats `qp_mem_alloc` as a size-negotiator; the caller is
@@ -1712,7 +1712,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
           &hostQp,
           sizeof(pipes_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_DRIVER;
   }
@@ -1720,7 +1720,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   // ---- Step 12: Assemble the public handle ----
   auto* internal = new (std::nothrow) AmdBnxtQpInternal();
   if (!internal) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -1739,7 +1739,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -1874,16 +1874,16 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
 
   auto unwindOnError = [&]() {
     if (cqDbrecReg) {
-      hipHostUnregister(cqDbrecPage);
+      (void)hipHostUnregister(cqDbrecPage);
     }
     if (sqDbrecReg) {
-      hipHostUnregister(sqDbrecPage);
+      (void)hipHostUnregister(sqDbrecPage);
     }
     if (cqBufReg) {
-      hipHostUnregister(dvCq.buf);
+      (void)hipHostUnregister(dvCq.buf);
     }
     if (sqBufReg) {
-      hipHostUnregister(dvQp.sq.buf);
+      (void)hipHostUnregister(dvQp.sq.buf);
     }
     hsa_amd_memory_unlock(uarBfHost);
     ibv_destroy_qp(qp);
@@ -1980,7 +1980,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
           &hostQp,
           sizeof(pipes_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwindOnError();
     return PIPES_GDA_ERROR_DRIVER;
   }
@@ -1988,7 +1988,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   // ---- Step 7: assemble the public handle ----
   auto* internal = new (std::nothrow) AmdQpInternal();
   if (!internal) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwindOnError();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -2003,7 +2003,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwindOnError();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -2280,7 +2280,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
           &hostQp,
           sizeof(pipes_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_DRIVER;
   }
@@ -2288,7 +2288,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   // ---- Step 7: assemble the public handle ----
   auto* internal = new (std::nothrow) AmdIonicQpInternal();
   if (!internal) {
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -2297,7 +2297,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
-    hipFree(gpuQp);
+    (void)hipFree(gpuQp);
     unwind();
     return PIPES_GDA_ERROR_NO_MEMORY;
   }
@@ -2351,7 +2351,7 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
     // Unregister the GPU mapping of the MMIO doorbell page BEFORE freeing
     // the bnxt_re DB region (the DB region owns the underlying mmap).
     if (internal->dbr_host_registered && internal->db_region) {
-      hipHostUnregister(internal->db_region->dbr);
+      (void)hipHostUnregister(internal->db_region->dbr);
     }
     if (internal->db_region && dv && dv->free_db_region && ctx) {
       dv->free_db_region(ctx, internal->db_region);
@@ -2369,13 +2369,13 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
       dv->umem_dereg(internal->cq_umem);
     }
     if (internal->cq_buf) {
-      hipFree(internal->cq_buf);
+      (void)hipFree(internal->cq_buf);
     }
     if (internal->sq_buf) {
-      hipFree(internal->sq_buf);
+      (void)hipFree(internal->sq_buf);
     }
     if (internal->rq_buf) {
-      hipFree(internal->rq_buf);
+      (void)hipFree(internal->rq_buf);
     }
     delete internal;
   }
@@ -2401,16 +2401,16 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
   auto* internal = static_cast<AmdQpInternal*>(qp->amd_internal);
   if (internal) {
     if (internal->registered_cq_dbrec_page) {
-      hipHostUnregister(internal->registered_cq_dbrec_page);
+      (void)hipHostUnregister(internal->registered_cq_dbrec_page);
     }
     if (internal->registered_sq_dbrec_page) {
-      hipHostUnregister(internal->registered_sq_dbrec_page);
+      (void)hipHostUnregister(internal->registered_sq_dbrec_page);
     }
     if (internal->registered_cq_buf) {
-      hipHostUnregister(internal->registered_cq_buf);
+      (void)hipHostUnregister(internal->registered_cq_buf);
     }
     if (internal->registered_sq_buf) {
-      hipHostUnregister(internal->registered_sq_buf);
+      (void)hipHostUnregister(internal->registered_sq_buf);
     }
     if (internal->uar_bf_host) {
       hsa_amd_memory_unlock(internal->uar_bf_host);
@@ -2425,7 +2425,7 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
   }
 #endif
   if (qp->gpu_qp) {
-    hipFree(qp->gpu_qp);
+    (void)hipFree(qp->gpu_qp);
   }
 }
 

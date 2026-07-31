@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -312,6 +313,9 @@ struct RdmaRemoteBuffer {
  *
  *   commInternalError — IB / transport-level failure:
  *     write(), read(), waitForWrite()
+ *     Any such failure permanently marks the transport as broken: all
+ *     subsequent async API calls fail immediately with commInternalError
+ *     without issuing IB operations. The owner should destroy the transport.
  *
  *   commUserAbort — transport was destroyed while operations were pending:
  *     write(), read(), waitForWrite()
@@ -447,6 +451,12 @@ class __attribute__((visibility("default"))) RdmaTransport {
    */
   void abort();
 
+  /*
+   * Force the transport into the broken state, as if an IB-level failure
+   * had occurred. Test-only.
+   */
+  void markBrokenForTest();
+
  private:
   /*
    * Drive the IB progress loop and drive completion of pending requests.
@@ -459,7 +469,20 @@ class __attribute__((visibility("default"))) RdmaTransport {
 
   struct Work;
   folly::Synchronized<std::deque<std::unique_ptr<Work>>> pendingWorks_;
+  // Works whose promise has already been fulfilled (timeout, IB error, or
+  // teardown) but whose IB operation is still outstanding. CtranIb's VC
+  // queues hold a raw pointer to the Work's embedded CtranIbRequest and
+  // write to it when the operation's CQEs arrive, so such Works must stay
+  // alive until the request completes or ib_ is destroyed. Lock order:
+  // pendingWorks_ before retiredWorks_.
+  folly::Synchronized<std::deque<std::unique_ptr<Work>>> retiredWorks_;
   std::unique_ptr<folly::AsyncTimeout> progressTimeout_;
+  // Set permanently once the transport hits an IB-level failure (progress
+  // error or a failed iput/iget). All subsequent write/read/waitForWrite
+  // calls fail fast with commInternalError without issuing IB operations,
+  // so the owner can promptly destroy the transport — which also frees any
+  // retired works whose operations will never complete.
+  std::atomic<bool> broken_{false};
   // Mock configuration for testing; updated by setMockForTest
   folly::Synchronized<MockContext> mockContext_;
 };

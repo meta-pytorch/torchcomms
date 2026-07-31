@@ -52,21 +52,21 @@ static const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctdirect;
  *         registers and reduces them into the receive buffer.
  */
 
-#define THROW_IF_ABORTED(code, ...)                                            \
-  do {                                                                         \
-    code;                                                                      \
-    if (comm->testAbort()) {                                                   \
-      auto _abort = comm->getAbort();                                          \
-      std::string _ctx =                                                       \
-          _abort->TimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
-      std::string _desc{__VA_ARGS__};                                          \
-      throw ctran::utils::Exception(                                           \
-          _ctx,                                                                \
-          commRemoteError,                                                     \
-          comm->logMetaData_.rank,                                             \
-          comm->logMetaData_.commHash,                                         \
-          _desc.empty() ? std::nullopt : std::make_optional(_desc));           \
-    }                                                                          \
+#define THROW_IF_ABORTED(code, ...)                                           \
+  do {                                                                        \
+    code;                                                                     \
+    if (comm->testAbort()) {                                                  \
+      auto _abort = comm->getAbort();                                         \
+      std::string _ctx = _abort->isTimedOut() ? "comm aborted due to timeout" \
+                                              : "comm aborted";               \
+      std::string _desc{__VA_ARGS__};                                         \
+      throw ctran::utils::Exception(                                          \
+          _ctx,                                                               \
+          commRemoteError,                                                    \
+          comm->logMetaData_.rank,                                            \
+          comm->logMetaData_.commHash,                                        \
+          _desc.empty() ? std::nullopt : std::make_optional(_desc));          \
+    }                                                                         \
   } while (0)
 
 static commResult_t impl(
@@ -199,8 +199,8 @@ static commResult_t impl(
           intraNodeLocalRecvbuffReq[lr].get()));
       if (intraNodeRemoteRecvAccessKeys[lr].backend !=
           CtranMapperBackend::NVL) {
-        CLOGF(
-            ERR,
+        CERR(
+            commInternalError,
             "NVLink backend not available between rank {} and {}",
             rank,
             statex->localRankToRank(lr));
@@ -576,8 +576,8 @@ commResult_t ctranAllReduceDirect(
 
   // Prevent buffer overflow in localReduce.srcs array
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidUsage,
         "nLocalRanks ({}) exceeds CTRAN_MAX_NVL_PEERS ({}). This will cause buffer overflow in localReduce.srcs array! ",
         nLocalRanks,
         CTRAN_MAX_NVL_PEERS);

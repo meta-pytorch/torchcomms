@@ -197,16 +197,16 @@ class SocketFactory : public ISocketFactory {
   explicit SocketFactory() {};
 
   std::unique_ptr<ISocket> createClientSocket(
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override;
 
   std::unique_ptr<ISocket> createClientSocket(
       int sockFd,
       const folly::SocketAddress& peerAddr,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override;
 
   std::unique_ptr<IServerSocket> createServerSocket(
       int acceptRetryCnt,
-      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) override;
 };
 
 } // namespace ctran::bootstrap

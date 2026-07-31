@@ -205,8 +205,8 @@ cdef class UniqueId:
 cdef _get_config_dtype_offsets():
     cdef ncclConfig_t pod = ncclConfig_t()
     return _numpy.dtype({
-        'names': ['size_', 'magic', 'version', 'blocking', 'cga_cluster_size', 'min_ctas', 'max_ctas', 'net_name', 'split_share', 'traffic_class', 'comm_name', 'collnet_enable', 'cta_policy', 'shrink_share', 'nvls_ctas', 'n_channels_per_net_peer', 'nvlink_centric_sched', 'graph_usage_mode', 'num_rma_ctx', 'max_p2p_peers'],
-        'formats': [_numpy.uint64, _numpy.uint32, _numpy.uint32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32],
+        'names': ['size_', 'magic', 'version', 'blocking', 'cga_cluster_size', 'min_ctas', 'max_ctas', 'net_name', 'split_share', 'traffic_class', 'comm_name', 'collnet_enable', 'cta_policy', 'shrink_share', 'nvls_ctas', 'n_channels_per_net_peer', 'nvlink_centric_sched', 'graph_usage_mode', 'num_rma_ctx', 'max_p2p_peers', 'comm_desc', 'split_group_ranks', 'split_group_size', 'fast_init_mode', 'hints', 'ncclx_config'],
+        'formats': [_numpy.uint64, _numpy.uint32, _numpy.uint32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.intp],
         'offsets': [
             (<intptr_t>&(pod.size)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.magic)) - (<intptr_t>&pod),
@@ -228,14 +228,25 @@ cdef _get_config_dtype_offsets():
             (<intptr_t>&(pod.graphUsageMode)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.numRmaCtx)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.maxP2pPeers)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.commDesc)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.splitGroupRanks)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.splitGroupSize)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.fastInitMode)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.hints)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.ncclxConfig)) - (<intptr_t>&pod),
         ],
         'itemsize': sizeof(ncclConfig_t),
     })
 
 config_dtype = _get_config_dtype_offsets()
 
+NCCL_API_MAGIC = 0xcafebeef
+NCCL_CONFIG_UNDEF_INT = -2147483648  # INT_MIN
+cdef void* NCCL_CONFIG_UNDEF_PTR = NULL
+
+
 cdef class Config:
-    """Empty-initialize an instance of `ncclConfig_t`.
+    """Initialize an instance of `ncclConfig_t` with NCCL_CONFIG_INITIALIZER defaults.
 
 
     .. seealso:: `ncclConfig_t`
@@ -255,6 +266,34 @@ cdef class Config:
         self._owned = True
         self._readonly = False
         self._refs = {}
+        cdef int ver
+        ncclGetVersion(&ver)
+        self._ptr.size = sizeof(ncclConfig_t)
+        self._ptr.magic = NCCL_API_MAGIC
+        self._ptr.version = ver
+        self._ptr.blocking = NCCL_CONFIG_UNDEF_INT
+        self._ptr.cgaClusterSize = NCCL_CONFIG_UNDEF_INT
+        self._ptr.minCTAs = NCCL_CONFIG_UNDEF_INT
+        self._ptr.maxCTAs = NCCL_CONFIG_UNDEF_INT
+        self._ptr.netName = NULL
+        self._ptr.splitShare = NCCL_CONFIG_UNDEF_INT
+        self._ptr.trafficClass = NCCL_CONFIG_UNDEF_INT
+        self._ptr.commName = NULL
+        self._ptr.collnetEnable = NCCL_CONFIG_UNDEF_INT
+        self._ptr.CTAPolicy = NCCL_CONFIG_UNDEF_INT
+        self._ptr.shrinkShare = NCCL_CONFIG_UNDEF_INT
+        self._ptr.nvlsCTAs = NCCL_CONFIG_UNDEF_INT
+        self._ptr.nChannelsPerNetPeer = NCCL_CONFIG_UNDEF_INT
+        self._ptr.nvlinkCentricSched = NCCL_CONFIG_UNDEF_INT
+        self._ptr.graphUsageMode = NCCL_CONFIG_UNDEF_INT
+        self._ptr.numRmaCtx = NCCL_CONFIG_UNDEF_INT
+        self._ptr.maxP2pPeers = NCCL_CONFIG_UNDEF_INT
+        self._ptr.commDesc = <char*>NCCL_CONFIG_UNDEF_PTR
+        self._ptr.splitGroupRanks = <int*>NCCL_CONFIG_UNDEF_PTR
+        self._ptr.splitGroupSize = NCCL_CONFIG_UNDEF_INT
+        self._ptr.fastInitMode = NCCL_CONFIG_UNDEF_INT
+        self._ptr.hints = NCCL_CONFIG_UNDEF_PTR
+        self._ptr.ncclxConfig = NCCL_CONFIG_UNDEF_PTR
 
     def __dealloc__(self):
         cdef ncclConfig_t *ptr
@@ -524,6 +563,13 @@ cdef class Config:
         if self._readonly:
             raise ValueError("This Config instance is read-only")
         self._ptr[0].numRmaCtx = val
+
+    def set_hints(self, hints_ptr: int, hints_obj=None) -> None:
+        if self._readonly:
+            raise ValueError("This Config instance is read-only")
+        self._ptr[0].hints = <void*><intptr_t>hints_ptr
+        if hints_obj is not None:
+            self._refs["_ncclx_hints"] = hints_obj
 
     @property
     def max_p2p_peers(self):

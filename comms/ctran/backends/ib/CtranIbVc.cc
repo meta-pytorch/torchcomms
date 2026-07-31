@@ -539,8 +539,8 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
 
   // Validate that QPs have been initialized via getLocalBusCard()
   if (!areQpsInitialized()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IB-VC: setupVc called before getLocalBusCard(). "
         "QPs not initialized: controlQp={}, notifyQp={}, atomicQp={}, dataQps={}. "
         "peerRank={}",
@@ -562,14 +562,28 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     QpUniqueId qpId =
         std::make_pair(this->ibvDataQps_.at(i).qp()->qp_num, ibDevice);
     if (qpNumToIdx_.find(qpId) != qpNumToIdx_.end()) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "CTRAN-IB-VC: QP {} on device {} already exists",
           this->ibvDataQps_.at(i).qp()->qp_num,
           ibDevice);
       return commInternalError;
     }
     qpNumToIdx_.emplace(qpId, i);
+  }
+
+  /* Post receive WQEs before making the QPs reachable. */
+  for (int i = 0; i < MAX_RECV_WR; i++) {
+    FB_COMMCHECK(this->postRecvCtrlMsg(this->recvCtrl_.packets_.at(i)));
+    this->recvCtrl_.postedPkts_.push_back(this->recvCtrl_.packets_.at(i));
+
+    // Pre populate recv on notifyQp
+    this->postRecvNotifyMsg(kNotifyQpIdx);
+
+    // In case dqplb is used, pre populate recv on dataQps
+    for (int j = 0; j < maxNumQps_; j++) {
+      FB_COMMCHECK(this->postRecvNotifyMsg(j));
+    }
   }
 
   /* set QP to RTR state for control and notify QP first*/
@@ -641,20 +655,6 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   for (int i = 0; i < maxNumQps_; i++) {
     FOLLY_EXPECTED_CHECK(
         rtsQp(ibvDataQps_.at(i), NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
-  }
-
-  /* post control WQEs */
-  for (int i = 0; i < MAX_RECV_WR; i++) {
-    FB_COMMCHECK(this->postRecvCtrlMsg(this->recvCtrl_.packets_.at(i)));
-    this->recvCtrl_.postedPkts_.push_back(this->recvCtrl_.packets_.at(i));
-
-    // Pre populate recv on notifyQp
-    this->postRecvNotifyMsg(kNotifyQpIdx);
-
-    // In case dqplb is used, pre populate recv on dataQps
-    for (int j = 0; j < maxNumQps_; j++) {
-      FB_COMMCHECK(this->postRecvNotifyMsg(j));
-    }
   }
 
   isReady_ = true;

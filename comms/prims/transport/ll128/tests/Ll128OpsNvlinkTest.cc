@@ -53,7 +53,7 @@ class Ll128OpsNvlinkTestFixture : public ::testing::Test {
     CUDACHECK_TEST(cudaSetDevice(kGpu0));
     auto err0 = cudaDeviceEnablePeerAccess(kGpu1, 0);
     if (err0 == cudaErrorPeerAccessAlreadyEnabled) {
-      cudaGetLastError();
+      (void)cudaGetLastError();
     } else if (err0 != cudaSuccess) {
       CUDACHECK_TEST(err0);
     }
@@ -61,17 +61,17 @@ class Ll128OpsNvlinkTestFixture : public ::testing::Test {
     CUDACHECK_TEST(cudaSetDevice(kGpu1));
     auto err1 = cudaDeviceEnablePeerAccess(kGpu0, 0);
     if (err1 == cudaErrorPeerAccessAlreadyEnabled) {
-      cudaGetLastError();
+      (void)cudaGetLastError();
     } else if (err1 != cudaSuccess) {
       CUDACHECK_TEST(err1);
     }
   }
 
   void TearDown() override {
-    cudaSetDevice(kGpu0);
-    cudaDeviceSynchronize();
-    cudaSetDevice(kGpu1);
-    cudaDeviceSynchronize();
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
   std::vector<char> make_pattern(size_t nbytes, int seed = 0) {

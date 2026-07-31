@@ -85,12 +85,61 @@ static inline CUmemAllocationHandleType getCuMemExportHandleType(
   return exportHandleType;
 }
 
+// Export/import of a single VMM allocation handle -- FABRIC (the multicast
+// object, or MNNVL buffers) or POSIX-fd -- selected by isFabric. Shared by the
+// regular per-segment registration and the multicast rendezvous. Defined
+// unqualified inside the file's `namespace ctran::utils` (opened at the top).
+commResult_t exportShareableHandle(
+    CUmemGenericAllocationHandle handle,
+    CtranIpcHandle& out,
+    bool isFabric) {
+  if (isFabric) {
+#if CUDART_VERSION >= 12040
+    FB_CUCHECK(cuMemExportToShareableHandle(
+        &out.handle, handle, CU_MEM_HANDLE_TYPE_FABRIC, 0));
+    return commSuccess;
+#else
+    (void)handle;
+    (void)out;
+    FB_ERRORRETURN(
+        commInternalError, "CTRAN-IPC: fabric export requires CUDA 12.4+");
+#endif
+  }
+  FB_CUCHECK(cuMemExportToShareableHandle(
+      &out.fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  return commSuccess;
+}
+
+commResult_t importShareableHandle(
+    const CtranIpcHandle& in,
+    CUmemGenericAllocationHandle& out,
+    bool isFabric) {
+  CtranIpcHandle tmp = in;
+  if (isFabric) {
+#if CUDART_VERSION >= 12040
+    FB_CUCHECK(cuMemImportFromShareableHandle(
+        &out, (void*)&tmp.handle, CU_MEM_HANDLE_TYPE_FABRIC));
+    return commSuccess;
+#else
+    (void)in;
+    (void)out;
+    FB_ERRORRETURN(
+        commInternalError, "CTRAN-IPC: fabric import requires CUDA 12.4+");
+#endif
+  }
+  FB_CUCHECK(cuMemImportFromShareableHandle(
+      &out,
+      reinterpret_cast<void*>(tmp.fd),
+      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+  return commSuccess;
+}
+
 commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
   std::vector<CtranIpcSegDesc> extraSegments;
   FB_COMMCHECK(ipcExport(ipcDesc, extraSegments));
   if (!extraSegments.empty()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations. [{}]",
         this->toString());
     return commInternalError;
@@ -110,19 +159,8 @@ inline commResult_t ctran::utils::CtranIpcMem::exportSegmentSharedHandle(
 #if CUDART_VERSION >= 12040
     isCumemFabric = (exportHandleType == CU_MEM_HANDLE_TYPE_FABRIC);
 #endif
-    if (isCumemFabric) {
-      FB_CUCHECK(cuMemExportToShareableHandle(
-          &sharedHandles_[segIdx].handle,
-          allocHandles_[segIdx],
-          exportHandleType,
-          0));
-    } else {
-      FB_CUCHECK(cuMemExportToShareableHandle(
-          &sharedHandles_[segIdx].fd,
-          allocHandles_[segIdx],
-          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
-          0));
-    }
+    FB_COMMCHECK(exportShareableHandle(
+        allocHandles_[segIdx], sharedHandles_[segIdx], isCumemFabric));
   } else if (memType_ == DevMemType::kCudaMalloc) {
     void* p = (void*)pbase_;
     FB_CUDACHECK(cudaIpcGetMemHandle(&sharedHandles_[segIdx].cudaIpcHandle, p));
@@ -238,16 +276,16 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
     bool shouldSupportCudaMalloc) {
   // Should never call load from an instance with allocation mode
   if (this->mode_ != CtranIpcMem::Mode::LOAD) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: try to load a memory range to an instance with allocation mode. It indicates a COMM internal bug.");
     return commInternalError;
   }
 
   // A load instance should manage only one memory range at lifetime
   if (this->pbase_) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: CtranIpcMem already manages an existing memory range: {}. It indicates a COMM internal bug.",
         this->toString().c_str());
     return commInternalError;
@@ -302,25 +340,23 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
   //   the allocation's handle type. Used in LOAD mode to validate that
   //   user-provided memory can be exported.
 
-  // temp linear loop through physical allocations, could be faster to get
-  // from pytorch level
-  size_t cur_offset = 0;
-  while (cur_offset < len) {
-    const void* cur_ptr = (char*)ptr + cur_offset;
-    allocHandles_.emplace_back();
+  // Enumerate the physical cuMem segments backing [ptr, ptr+len). The shared
+  // helper retains one allocation handle per segment; take ownership of every
+  // handle into allocHandles_ up front (even on a partial failure) so
+  // freeCuMem() releases them all -- including when the IPC-export validation
+  // below rejects the buffer partway through.
+  std::vector<CuMemSegment> segs;
+  const commResult_t enumRes = enumerateCuMemSegments(ptr, len, segs);
+  for (const auto& seg : segs) {
+    allocHandles_.push_back(seg.handle);
     sharedHandles_.emplace_back();
     sharedHandlesInitialized_.emplace_back(false);
-    FB_CUCHECK(cuMemRetainAllocationHandle(
-        &allocHandles_.back(), const_cast<void*>(cur_ptr)));
+  }
+  FB_COMMCHECK(enumRes);
 
-    size_t cur_range;
-    CUdeviceptr cur_pbase;
-    FB_CUCHECK(
-        cuMemGetAddressRange(&cur_pbase, &cur_range, (CUdeviceptr)cur_ptr));
-
+  for (size_t i = 0; i < segs.size(); ++i) {
     CUmemAllocationProp prop;
-    FB_CUCHECK(
-        cuMemGetAllocationPropertiesFromHandle(&prop, allocHandles_.back()));
+    FB_CUCHECK(cuMemGetAllocationPropertiesFromHandle(&prop, segs[i].handle));
 
     // Set cuMemHandleType_ from first segment's allocation properties
     if (cuMemHandleType_ == CU_MEM_HANDLE_TYPE_NONE) {
@@ -342,14 +378,14 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
         (segmentHandleType != cuMemHandleType_);
 
     if (isUnsupportedType) {
-      CLOGF(
-          ERR,
-          "CTRAN-IPC: [pbase {:x} range {}] associated with [ptr {} len {}] "
+      CERR(
+          commInvalidUsage,
+          "CTRAN-IPC: [pbase {} range {}] associated with [ptr {} len {}] "
           "has unsupported allocation properties for IPC export: "
           "handleType = {} ({}), supportedExportType = {} ({}), gpuDirectRDMACapable = {}, "
           "segmentHandleType = {} ({})",
-          cur_pbase,
-          cur_range,
+          reinterpret_cast<void*>(segs[i].base),
+          segs[i].size,
           (void*)ptr,
           len,
           cuMemHandleTypeStr(cuMemHandleType_),
@@ -362,14 +398,11 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
       return commInvalidUsage;
     }
 
-    if (cur_offset == 0) {
-      pbase_ = cur_pbase;
+    if (i == 0) {
+      pbase_ = segs[i].base;
     }
-    segmentRanges_.emplace_back(cur_range);
-    range_ += cur_range;
-
-    CUdeviceptr cur_end = ctran::utils::addDevicePtr(cur_pbase, cur_range);
-    cur_offset = (size_t)ctran::utils::subDevicePtr(cur_end, ptr);
+    segmentRanges_.emplace_back(segs[i].size);
+    range_ += segs[i].size;
   }
   supported = true;
   return commSuccess;
@@ -548,14 +581,12 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
           ipcDesc.pid,
           remHandles_[i].fd,
           reinterpret_cast<int*>(&importedHandle.fd)));
-      FB_CUCHECK(cuMemImportFromShareableHandle(
-          &allocHandles_[i],
-          reinterpret_cast<void*>(importedHandle.fd),
-          cuMemHandleType_));
+      FB_COMMCHECK(importShareableHandle(
+          importedHandle, allocHandles_[i], /*isFabric=*/false));
 #if CUDART_VERSION >= 12040
     } else if (cuMemHandleType_ == CU_MEM_HANDLE_TYPE_FABRIC) {
-      FB_CUCHECK(cuMemImportFromShareableHandle(
-          &allocHandles_[i], (void*)&importedHandle.handle, cuMemHandleType_));
+      FB_COMMCHECK(importShareableHandle(
+          importedHandle, allocHandles_[i], /*isFabric=*/true));
 #endif
     } else {
       FB_ERRORRETURN(
@@ -591,8 +622,8 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
 
 commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
   if (ipcDesc.totalSegments != 1) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-IPC: Number of segments is expected to be 1, but got {}",
         ipcDesc.totalSegments);
     return commInternalError;

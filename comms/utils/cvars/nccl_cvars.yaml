@@ -242,12 +242,15 @@ cvars:
       comm - proxy thread is created for each communicator.
       shared - proxy thread is shared with the parent communicator.
 
+ # DEPRECATED / no-op: the process-global-errors comm-dump feature was removed.
+ # This cvar is retained only so that fleet launcher scripts that still set it
+ # do not trigger unknown-cvar warnings. Safe to delete once those scripts stop
+ # setting it.
  - name        : NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES
    type        : int
    default     : 20
    description : |-
      Prefix for all scuba log files that will be piped to scuba.
-
 
  - name        : NCCL_SCUBA_LOG_FILE_PREFIX
    type        : string
@@ -266,6 +269,12 @@ cvars:
    default     : False
    description : |-
      Enable logging of backend topology information to scuba.
+ - name        : NCCL_SCUBA_LOG_ERROR_ENABLED
+   type        : bool
+   default     : True
+   description : |-
+     Enable recording ERROR-level logs to the nccl_structured_logging Scuba
+     table.
 
 
  - name        : NCCL_SET_THREAD_NAME
@@ -1214,15 +1223,6 @@ cvars:
      and NVLink fanout scheduling. When zero, ctran selects a chunk size from
      {512KiB, 1MiB, 2MiB, 4MiB, 8MiB} based on the send message size.
 
- - name        : NCCL_CTRAN_HIER_AG_IBGDA_DATA_BUFFER_SIZE
-   type        : uint64_t
-   default     : 33554432
-   description : |-
-     Minimum IBGDA send/recv data-buffer size to use when the experimental
-     overlapped cthierarchical_ring AllGather kernel is enabled. 0 disables
-     this algorithm-specific minimum and uses NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE
-     or the per-communicator pipesIbgdaDataBufferSize directly.
-
  - name        : NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t
    default     : 67108864
@@ -1543,6 +1543,18 @@ cvars:
     each is used with a dedicated NVLink peer. It serves as a bi-directional
     point-to-point staged data copy channel between every two peers.
 
+ - name        : MCCL_NVL_MULTIMEM_BUFSIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+    Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
+    Decoupled from NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE so the multimem path can
+    use a larger window without growing the P2P staging buffers. A larger window
+    means fewer staging rounds, which is the dominant cnvlmm throughput lever at
+    large message sizes. 0 falls back to the effective P2P NVL shared devbuf
+    size (the larger of the P2P and hier-AG NVL devbuf sizes when hier-AG
+    overlap is enabled). Default 32 MiB.
+
 
  - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
    type        : uint64_t
@@ -1769,7 +1781,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IB_QP_CONFIG_ALGO
    type        : dictlist
-   default     : alltoall:1048576,16,dqplb,128,224
+   default     : alltoall:1048576,4,spray,128,224
    description : |-
      Specify the vc config for each collective. The format is
      <ALGO0: VAL0>,<ALGO1: VAL1>,<ALGO2: VAL2>,<ALGO3: VAL3>
@@ -1883,19 +1895,6 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
- - name        : NCCL_CTRAN_MAX_NBLOCKS
-   type        : int
-   default     : 16
-   description : |-
-     Maximum number of logical CUDA blocks used by CTRAN collectives that support message-size-based block tuning.
-
- - name        : NCCL_CTRAN_TREE_FANOUT
-   type        : int
-   default     : 2
-   description : |-
-     Fanout used when building CTREE tree topologies for experimental benchmarking.
-     Valid values are 1 through the compile-time maximum tree children.
-
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -1921,13 +1920,6 @@ cvars:
      the chance of losing events to ring wraparound on high-rate kernels at the
      cost of more frequent polling; a final drain always runs on teardown.
 
- - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
-   type        : uint64_t
-   default     : 524288
-   description : |-
-     Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
-     Controls the granularity of parallel copy operations over NVLink.
-
  - name        : NCCL_CTRAN_PIPES_DISABLE_IB
    type        : bool
    default     : false
@@ -1936,33 +1928,6 @@ cvars:
      IBGDA transport is never constructed and all non-self peers are assumed
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
-
- - name        : NCCL_CTRAN_PIPES_IB_MODE
-   type        : enum
-   default     : ibgda
-   choices     : ibgda, ibrc
-   description : |-
-     Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
-     ibgda - use GPU-posted IBGDA.
-     ibrc - use CPU-posted IBRC.
-
- - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
-   type        : uint64_t
-   default     : 1024
-   description : |-
-     Queue pair depth (number of outstanding WQEs per peer) for IBGDA
-     transport in Pipes MultiPeerTransport. Must be >= the largest
-     ThreadGroup size used in group-scope put operations (e.g., 256 for
-     block-scope). Higher values allow more pipelining but use more
-     memory.
-
- - name        : NCCL_CTRAN_IB_MAX_GROUPS
-   type        : int
-   default     : 64
-   description : |-
-     Maximum number of physical CUDA block groups that may own IB QP
-     resources. Device-side IB QP selection uses ThreadGroup::block_id
-     and requires block_id < NCCL_CTRAN_IB_MAX_GROUPS.
 
  - name        : NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC
    type        : int
@@ -1978,15 +1943,6 @@ cvars:
      Number of signal slots per peer for IBGDA transport in Pipes
      MultiPeerTransport. Each slot is a 64-bit counter used for
      signaling between peers.
-
- - name        : NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE
-   type        : uint64_t
-   default     : 0
-   description : |-
-     Per-peer data buffer size in bytes for IBGDA transport in Pipes
-     MultiPeerTransport. This determines the maximum transfer size per
-     put_signal call. A value of 0 means no transport-managed data
-     buffer (users must register their own via registerBuffer).
 
  - name        : NCCL_CTRAN_IBGDA_MIN_RNR_TIMER
    type        : uint64_t
@@ -2006,38 +1962,11 @@ cvars:
 
  - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
    type        : bool
-   default     : false
+   default     : true
    description : |-
-     When true, MultipeerIbgdaTransport defers per-peer state allocation to
-     first use (lazy mode). When false (default), all per-peer state is
-     allocated eagerly at construction. Per-comm override via
-     CommOptions.hints["ncclx::ibLazyConnect"].
-
- - name        : NCCL_CTRAN_IBGDA_MATERIALIZE_PEER_TIMEOUT_MS
-   type        : uint32_t
-   default     : 30000
-   description : |-
-     Timeout (in milliseconds) for materializePeer bilateral exchange.
-     On timeout, materializePeer throws rather than hanging.
-     No per-comm override.
-
- - name        : NCCL_CTRAN_IBGDA_SENDRECV_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable send/recv staging buffers for IBGDA transport in Pipes
-     MultiPeerTransport. Required for cthierarchical_ring. When enabled,
-     allocates additional GPU memory for pipelined send/recv staging per
-     IBGDA peer. The effective IBGDA data-buffer size must be positive via
-     NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE or the per-communicator
-     pipesIbgdaDataBufferSize hint.
-
- - name        : NCCL_CTRAN_IBGDA_SENDRECV_PIPELINE_DEPTH
-   type        : int
-   default     : 2
-   description : |-
-     Pipeline depth (number of staging ring slots) for IBGDA send/recv.
-     Only used when NCCL_CTRAN_IBGDA_SENDRECV_ENABLE=1.
+     Deprecated compatibility knob. Per-peer transport state is always
+     initialized on demand; setting this false no longer enables eager
+     all-peer allocation.
 
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
@@ -2282,7 +2211,7 @@ cvars:
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctrhd
+   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctring_ib, ctrhd
    description : |-
      The algorithm to use for ReduceScatter communication
      orig - Copy-based ring algorithm
@@ -2290,7 +2219,17 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctdirect_ib - Ctran-based direct IB algorithm
      ctring - Ctran-based rail ring algorithm for inter-node only case
+     ctring_ib - Prims-native IBGDA ring algorithm
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
+
+ - name        : NCCL_REDUCESCATTER_QUANTIZED_ALGO
+   type        : enum
+   default     : pat
+   choices     : pat, ctdirect_ib
+   description : |-
+     The algorithm to use for quantized ReduceScatter communication
+     pat - Parallel Aggregation Tree algorithm
+     ctdirect_ib - Ctran-based direct IB algorithm
 
  - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
    type        : bool
@@ -2303,12 +2242,13 @@ cvars:
  - name        : NCCL_ALLTOALL_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctgraph
+   choices     : orig, ctran, ctgraph, ctwin
    description : |-
      The algorithm to use for alltoall communication
      orig - Copy-based communication
      ctran - Ctran-based communication
      ctgraph - Cudagraph-aware Ctran-based communication (captured into a CUDA graph)
+     ctwin - Ctran window-aware: detects whether the recvbuf is in a registered symmetric window and dispatches to the persistent AllToAllP algorithm, similar to ctgraph but capture-safe via a window-cached persistent request.
 
  - name        : NCCL_ALLTOALLV_ALGO
    type        : enum
@@ -2357,6 +2297,17 @@ cvars:
    description : |-
      Enable CTRAN backends to pre-connect to peers at
      the beginning of the collective call.
+
+ - name        : NCCL_CTRAN_WIN_ENABLE_MULTICAST
+   type        : bool
+   default     : true
+   description : |-
+     Enable NVL CE-multicast for window registration. When true (default), a
+     symmetric, ipc_only, cuMem-backed window on multicast-capable HW sets up an
+     NVL CE-multicast object at registration so window collectives (e.g. ctwin
+     AllGather) fan out via a single NVSwitch write; falls back to unicast
+     otherwise. Set false to disable multicast (killswitch) without a code/conda
+     change.
 
  - name        : NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS
    type        : bool
@@ -2758,7 +2709,7 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring
+   choices     : orig, ctran, ctdirect, ctring, ctree, cthierarchical_ring, ctmdirect
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
@@ -2767,6 +2718,7 @@ cvars:
      ctring - ctran-based ring algorithm
      ctree - Ctran-based tree algorithm (Pipes-native)
      cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
+     ctmdirect - MCCL-native direct algorithm (Prims-native): NVL ReduceScatter + flat rail-based inter-node IB + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
@@ -2816,12 +2768,15 @@ cvars:
      Thread block size to use for ncclAllReduceSparse.  -1 means
      automatically pick the thread block size to use.
 
+ # DEPRECATED / no-op: the process-global-errors comm-dump feature was removed.
+ # This cvar is retained only so that fleet launcher scripts that still set it
+ # do not trigger unknown-cvar warnings. Safe to delete once those scripts stop
+ # setting it.
  - name        : NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS
    type        : bool
    default     : false
    description : |-
      If true, logs all process global errors in comm dumps
-
  - name        : NCCL_COMMSMONITOR_ENABLE
    type        : bool
    default     : true
@@ -3214,6 +3169,81 @@ cvars:
    default     : ""
    description : Used to bind NCCL's network proxy threads to specific CPU cores.
 
+ - name        : MCCL_MAX_NBLOCKS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of logical CUDA blocks used by MCCL collectives that
+     support message-size-based block tuning.
+
+ - name        : MCCL_ABORT_TIMEOUT_MS
+   type        : float
+   default     : 30000.0
+   description : Timeout in milliseconds for MCCL device-side abort polling.
+
+ - name        : MCCL_TREE_FANOUT
+   type        : int
+   default     : 2
+   description : |-
+     Fanout used when building CTREE tree topologies for experimental
+     benchmarking. Valid values are 1 through the compile-time maximum tree
+     children.
+
+ - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Maximum bytes per signaled sub-chunk for MCCL fused AllReduce IB phases.
+     Applies to ctree and cthierarchical_ring. 0 preserves the transport
+     default signaling cadence.
+
+ - name        : MCCL_MAX_NCHANNELS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of fixed prims IB channels per peer. Channels index
+     staging, signal, and QP resources through ThreadGroup::group_id and do
+     not necessarily map one-to-one to CUDA blocks; for example, ctree uses
+     two channels per block.
+
+ - name        : MCCL_IB_MODE
+   type        : enum
+   default     : ibgda
+   choices     : ibgda, ibrc
+   description : |-
+     Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
+     ibgda - use GPU-posted IBGDA.
+     ibrc - use CPU-posted IBRC.
+
+ - name        : MCCL_IB_QP_DEPTH
+   type        : uint64_t
+   default     : 1024
+   description : |-
+     Queue pair depth (number of outstanding WQEs per peer) for prims IB
+     transports, shared by the IBGDA and IBRC backends. For IBGDA group-scope
+     puts, it must be >= the largest ThreadGroup size (e.g., 256 for
+     block-scope). Higher values allow more pipelining but use more memory.
+
+ - name        : MCCL_CHANNEL_BUFFER_SIZE
+   type        : uint64_t
+   default     : 2097152
+   description : |-
+     Per-channel, per-direction prims IB send/recv staging size in bytes,
+     shared by the IBGDA and IBRC backends. Total staging per peer and
+     direction is this value multiplied by MCCL_MAX_NCHANNELS. Combined with
+     MCCL_CHANNEL_PIPELINE_DEPTH: channel chunk size = this / depth.
+     The default is 2MiB per channel per direction; with the default pipeline
+     depth of 4 this yields 512KiB chunks, or 4MiB combined send+recv staging
+     per channel.
+
+ - name        : MCCL_CHANNEL_PIPELINE_DEPTH
+   type        : int
+   default     : 4
+   description : |-
+     Number of staging slots per prims IB channel, shared by the IBGDA and
+     IBRC backends. Each slot carries one channel chunk. Channel chunk size is
+     MCCL_CHANNEL_BUFFER_SIZE divided by this depth.
+
  - name        : MCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : not_set
@@ -3280,6 +3310,18 @@ cvars:
      table with mcclop="GPE_PROFILING". Set to false to disable both
      reporters from the MCCL level (CTRAN-side defaults for the GPE
      profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
+
+ - name        : MCCL_FORCE_SMALL_MSG_AR_RING
+   type        : bool
+   default     : false
+   description : |-
+     Force the ctran ring AllReduce algorithm for small messages whose element
+     count is smaller than nRanks. The ring requires at least one element per
+     rank; when this is enabled, Ctran pads the input up to nRanks elements in a
+     temporary buffer (tail zero-filled), runs ctring, and copies the original
+     count of elements back to the receive buffer. The padded element positions
+     are reduced independently across ranks and discarded. Default: false
+     (small messages fall back to ctdirect as before).
 
  - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
    type        : stringlist

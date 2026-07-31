@@ -35,6 +35,7 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
       {"allgatherAlgo", "ctring"},
       {"allreduceAlgo", "ctdirect"},
       {"sendrecvAlgo", "ctran"},
+      {"alltoallAlgo", "ctran"},
       {"alltoallvAlgo", "ctran"},
       {"rmaAlgo", "ctran"},
   });
@@ -50,6 +51,9 @@ TEST_F(CommSetConfigTest, SetAllAlgoHints) {
   EXPECT_EQ(
       NCCL_SENDRECV_ALGO::ctran,
       NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo));
+  EXPECT_EQ(
+      NCCL_ALLTOALL_ALGO::ctran,
+      NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo));
   EXPECT_EQ(
       NCCL_ALLTOALLV_ALGO::ctran,
       NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo));

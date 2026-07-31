@@ -51,6 +51,7 @@ class Config {
   enum NCCL_SENDRECV_ALGO sendrecvAlgo = NCCL_SENDRECV_ALGO::orig;
   enum NCCL_ALLGATHER_ALGO allgatherAlgo = NCCL_ALLGATHER_ALGO::orig;
   enum NCCL_ALLREDUCE_ALGO allreduceAlgo = NCCL_ALLREDUCE_ALGO::orig;
+  enum NCCL_ALLTOALL_ALGO alltoallAlgo = NCCL_ALLTOALL_ALGO::orig;
   enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
   enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
@@ -69,8 +70,9 @@ class Config {
   std::optional<int> ibSplitDataOnQps;
   std::optional<int> ibQpsPerConnection;
 
-  // Defer per-peer IBGDA state to first use (hint > CVAR).
-  bool ibLazyConnect = false;
+  // Deprecated compatibility hint. Peer IB state is always initialized on
+  // demand; false no longer restores eager initialization.
+  bool deviceIbLazyConnect = true;
   // Update mutable hint fields (algo config only).  Rejects immutable keys.
   ncclResult_t update(const ncclx::Hints* hints);
 };
@@ -89,6 +91,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "allgatherAlgo",
       "allreduceAlgo",
       "pipesIbgdaDataBufferSize",
+      "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
       "pipesNvlChunkSize",
@@ -96,7 +99,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ncclBuffSize",
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
-      "ibLazyConnect",
+      "deviceIbLazyConnect",
       "win_register_ipc_only",
       "win_register_enable_signal",
       "win_register_symmetric",
@@ -110,6 +113,7 @@ inline const std::vector<std::string>& mutableHintKeys() {
       "sendrecvAlgo",
       "allgatherAlgo",
       "allreduceAlgo",
+      "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
       "win_register_ipc_only",

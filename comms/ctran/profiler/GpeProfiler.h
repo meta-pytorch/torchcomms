@@ -10,14 +10,12 @@
 #include <string>
 #include <string_view>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/profiler/GpeProfilerReport.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/StopWatch.h"
 
 struct CommLogData;
-namespace ctran::utils {
-class Abort;
-} // namespace ctran::utils
 
 namespace ctran {
 
@@ -52,7 +50,7 @@ struct GpeIterMetadata {
 //      verdict.
 //   3. mark(WAIT_KERNEL / HOST_ALGO / TERMINATE_KERNEL / CMD_DEQUEUE):
 //      emits iff (a) the iter was sampled by injectMetadata, OR
-//      (b) `abort->Test()` is true at mark time (live-abort bypass),
+//      (b) `abort->isAborted()` is true at mark time (live-abort bypass),
 //      OR (c) this is the ALGO_ABORTED marker. The per-iter timeline
 //      is stamped on every mark regardless of sampling so
 //      debugString() and the backfill walk see the full waterfall.
@@ -94,7 +92,7 @@ class GpeProfiler {
       uint64_t commHash,
       int samplingWeight,
       std::unique_ptr<IGpeProfilerReporter> reporter = nullptr,
-      std::shared_ptr<::ctran::utils::Abort> abort = nullptr);
+      std::shared_ptr<::comms::fault_tolerance::Abort> abort = nullptr);
 
   ~GpeProfiler() = default;
 
@@ -145,7 +143,7 @@ class GpeProfiler {
   // Source of the live abort flag for the per-mark "is the comm
   // aborted right now?" check that bypasses the sampling gate.
   // nullptr disables the bypass (only sampled / marker rows emit).
-  const std::shared_ptr<::ctran::utils::Abort> abort_;
+  const std::shared_ptr<::comms::fault_tolerance::Abort> abort_;
 
   Watch watch_; // Reset on mark(ITER_START) to set iter t0.
 

@@ -63,7 +63,9 @@ commResult_t Ctran::commRegister(void* buff, size_t size, void** handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CLOGF(ERR, "Ctran mapper is not initialized, skip commRegister");
+    CERR(
+        commInternalError,
+        "Ctran mapper is not initialized, skip commRegister");
     return commInternalError;
   } else if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
     return this->mapper->regMem(buff, size, handle);
@@ -76,7 +78,9 @@ commResult_t Ctran::commDeregister(void* handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CLOGF(ERR, "Ctran mapper is not initialized, skip commDeregister");
+    CERR(
+        commInternalError,
+        "Ctran mapper is not initialized, skip commDeregister");
     return commInternalError;
   } else if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
     return this->mapper->deregMem(handle);
@@ -114,12 +118,6 @@ uint64_t Ctran::getCtranOpCount() const {
 }
 
 #if defined(ENABLE_PRIMS)
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
-  if (!multiPeerTransport_) {
-    return nullptr;
-  }
-  return multiPeerTransport_->get_device_handle().transports.data();
-}
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
     const std::vector<int>& peers) {
   if (!multiPeerTransport_) {
@@ -128,9 +126,6 @@ comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
   return multiPeerTransport_->get_device_handle(peers).transports.data();
 }
 #else
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr() const {
-  return nullptr;
-}
 comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
     const std::vector<int>& /*peers*/) {
   return nullptr;
@@ -228,6 +223,17 @@ CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
 void CtranComm::destroy() {
   cudagraphDeferredCleanup.runAll();
 
+  // Free the lazily-allocated small-message AllReduce-ring staging buffers.
+  if (smallMsgStageSrc_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageSrc_));
+    smallMsgStageSrc_ = nullptr;
+  }
+  if (smallMsgStageDst_ != nullptr) {
+    FB_CUDACHECKIGNORE(cudaFree(smallMsgStageDst_));
+    smallMsgStageDst_ = nullptr;
+  }
+  smallMsgStageBytes_ = 0;
+
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
@@ -283,7 +289,7 @@ commResult_t globalRegisterWithPtr(
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "globalRegisterWithPtr: RegCache not available");
+    CERR(commInternalError, "globalRegisterWithPtr: RegCache not available");
     return commInternalError;
   }
 
@@ -299,7 +305,7 @@ globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease) {
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CLOGF(ERR, "globalDeregisterWithPtr: RegCache not available");
+    CERR(commInternalError, "globalDeregisterWithPtr: RegCache not available");
     return commInternalError;
   }
 

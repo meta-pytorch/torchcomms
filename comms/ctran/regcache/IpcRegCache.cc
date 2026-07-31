@@ -242,13 +242,13 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
         ipcDesc.desc, cudaDev, logMetaData, extraSegments);
   } catch (std::exception& e) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: failed to import IPC remote registration from peer {} ipcDesc {}, error {}",
         peerId,
         ipcDesc.toString(),
         e.what());
-    return ErrorStackTraceUtil::log(commInternalError);
+    return commInternalError;
   }
 
   CLOGF_TRACE(
@@ -280,13 +280,13 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   auto peerIt = lockedMap->find(peerId);
   if (peerIt == lockedMap->end() ||
       peerIt->second.find(key) == peerIt->second.end()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
         peerId,
         basePtr,
         uid);
-    return ErrorStackTraceUtil::log(commInternalError);
+    return commInternalError;
   }
 
   auto keyIt = peerIt->second.find(key);
@@ -392,8 +392,8 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
     int32_t exportCount) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote release");
     return commInternalError;
   }
@@ -441,8 +441,8 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
     ctran::regcache::IpcReqCb* reqCb) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CLOGF(
-        WARN,
+    CERR(
+        commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote export");
     return commInternalError;
   }
@@ -492,7 +492,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   // Initialize local peer ID (hostname:pid) for IPC communications
   char hostname[256];
   if (gethostname(hostname, sizeof(hostname)) != 0) {
-    CLOGF(ERR, "CTRAN-REGCACHE: Failed to get hostname");
+    CERR(commInternalError, "CTRAN-REGCACHE: Failed to get hostname");
     return commInternalError;
   }
   hostname[sizeof(hostname) - 1] = '\0';

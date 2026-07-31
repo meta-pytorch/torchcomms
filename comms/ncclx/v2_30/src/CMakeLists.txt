@@ -214,6 +214,15 @@ target_link_libraries(nccl
     ${EXTRA_LIBS}
 )
 
+# ncclx core uses 16-byte (128-bit) atomics -- the COMPILER_ATOMIC_* helpers in
+# utils.h -- which the compiler lowers to __atomic_{load,store}_16 libcalls that
+# live in libatomic. Link it explicitly so the references are satisfied on
+# libnccl.so itself rather than surfacing as an unsatisfiable NEEDED on downstream
+# consumers (the OSS wheel extension link otherwise fails with "undefined
+# reference to __atomic_store_16"). In the fbcode Buck build libatomic is pulled
+# in transitively, so this only matters for the standalone CMake/OSS build.
+target_link_libraries(nccl PRIVATE atomic)
+
 # Add version script for symbol visibility control
 target_link_options(nccl PRIVATE
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libnccl.map"

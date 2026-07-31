@@ -5,6 +5,7 @@
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/LogUtils.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -145,6 +146,11 @@ commResult_t setupKernelConfig(
 
   // Build local rank -> global rank mapping
   if (kernArgs.nLocalRanks > CTRAN_MAX_NVL_PEERS) {
+    CERR(
+        commInternalError,
+        "DeviceAllToAllvPipes: nLocalRanks {} exceeds CTRAN_MAX_NVL_PEERS {}",
+        kernArgs.nLocalRanks,
+        CTRAN_MAX_NVL_PEERS);
     return commInternalError;
   }
   for (int lr = 0; lr < kernArgs.nLocalRanks; lr++) {
@@ -152,7 +158,7 @@ commResult_t setupKernelConfig(
   }
 
   // Set transport array from MultiPeerTransport
-  kernArgs.transports = comm->getMultiPeerTransportsPtr();
+  kernArgs.transports = comm->getMultiPeerTransportsPtr({});
 
   // LL128 threshold from pre-resolved config
   kernArgs.ll128ThresholdBytes = collConfig.ll128ThresholdBytes;

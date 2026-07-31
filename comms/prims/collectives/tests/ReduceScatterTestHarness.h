@@ -43,7 +43,8 @@ class ReduceScatterTestBase : public meta::comms::BenchmarkTestFixture {
 
   void verify_reduce_scatter(
       const float* output_d,
-      std::size_t chunk_elements) {
+      std::size_t chunk_elements,
+      float tolerance = 1e-2f) {
     std::vector<float> h_output(chunk_elements);
     CUDACHECK_TEST(cudaMemcpy(
         h_output.data(),
@@ -59,9 +60,9 @@ class ReduceScatterTestBase : public meta::comms::BenchmarkTestFixture {
         expected += static_cast<float>((rank * 7 + global_idx) % 100) * 0.01f;
       }
       float actual = h_output[i];
-      if (std::abs(actual - expected) > 1e-2f) {
+      if (std::abs(actual - expected) > tolerance) {
         if (errors < 10) {
-          EXPECT_NEAR(actual, expected, 1e-2f)
+          EXPECT_NEAR(actual, expected, tolerance)
               << "Mismatch at offset=" << i << " (my_rank=" << globalRank
               << ")";
         }

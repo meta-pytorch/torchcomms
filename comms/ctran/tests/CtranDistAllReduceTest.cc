@@ -339,14 +339,20 @@ INSTANTIATE_TEST_SUITE_P(
 
 // TODO: enable ctring test for nLocalRanks > 1 case, currently CtranIB connect
 // to localRanks does not seem to work.
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-
 // TODO: enable tiny message sizes and ops other than commSum. This is a
 // separate class because Ring does not support some sizes & ops yet
 class CtranAllReduceRingTestParamUInt64
     : public CtranAllReduceTest<uint64_t>,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {};
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
 TEST_P(CtranAllReduceRingTestParamUInt64, AllReduceRingUInt64) {
   const auto& [count, inplace, op, memType] = GetParam();
   beginTest(
@@ -363,7 +369,15 @@ TEST_P(CtranAllReduceRingTestParamUInt64, AllReduceRingUInt64) {
 class CtranAllReduceRingTestParamFp32
     : public CtranAllReduceTest<float>,
       public ::testing::WithParamInterface<
-          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {};
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
 TEST_P(CtranAllReduceRingTestParamFp32, AllReduceRingFp32) {
   const auto& [count, inplace, op, memType] = GetParam();
   beginTest(
@@ -445,6 +459,9 @@ class CtranAllReduceRingBidirAgDisabledTestFp32
           std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
  public:
   void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
     // Disable bi-directional AG optimization
     setenv("NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE", "0", 1);
     ncclCvarInit();
@@ -470,6 +487,9 @@ class CtranAllReduceRingBidirAgEnabledTestFp32
           std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
  public:
   void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
     // Enable bi-directional AG optimization for all message sizes
     setenv("NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE", "-1", 1);
     ncclCvarInit();
@@ -516,8 +536,6 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllReduceRingBidirAgEnabledTestFp32,
     testingValuesBidirAg,
     getTestName);
-
-#endif
 
 // =============================================================================
 // TCPDM backend tests for AllReduceRing

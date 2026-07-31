@@ -11,9 +11,9 @@
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/utils/CudaWrap.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 class KernelElemPoolTest : public ::testing::Test {
@@ -441,9 +441,9 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
   ASSERT_NE(elem, nullptr);
 
   // Enable abortCtrl
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
-  EXPECT_TRUE(abortCtrl->Enabled());
-  EXPECT_FALSE(abortCtrl->Test());
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  EXPECT_TRUE(abortCtrl->isEnabled());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   // Set elem status to simulate ongoing work
   for (int i = 0; i < ngroups; i++) {
@@ -458,7 +458,7 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
   });
   elem->wait(abortCtrl);
   EXPECT_TRUE(elem->isComplete());
-  EXPECT_FALSE(abortCtrl->Test());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   completer.join();
 
@@ -477,9 +477,9 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
   ASSERT_NE(elem, nullptr);
 
   // Enable abortCtrl
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
-  EXPECT_TRUE(abortCtrl->Enabled());
-  EXPECT_FALSE(abortCtrl->Test());
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  EXPECT_TRUE(abortCtrl->isEnabled());
+  EXPECT_FALSE(abortCtrl->isAborted());
 
   // Set elem status to simulate ongoing work that won't complete
   for (int i = 0; i < ngroups; i++) {
@@ -488,11 +488,11 @@ TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
 
   std::thread aborter([abortCtrl]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    abortCtrl->Set();
+    abortCtrl->setAbort();
   });
   elem->wait(abortCtrl);
   EXPECT_FALSE(elem->isComplete());
-  EXPECT_TRUE(abortCtrl->Test());
+  EXPECT_TRUE(abortCtrl->isAborted());
 
   aborter.join();
 

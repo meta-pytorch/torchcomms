@@ -11,6 +11,8 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/CtranWin.h"
@@ -21,7 +23,9 @@
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/prims/window/HostWindow.h"
 #endif
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/ScubaLogger.h"
 
 using ctran::window::RemWinInfo;
 
@@ -149,6 +153,162 @@ commResult_t windowBarrier(CtranComm* comm, CtranMapper* mapper) {
   return commSuccess;
 }
 
+// Set up a standalone NVL CE-multicast object over the caller's NVL domain for
+// the buffer registered under `dataRegHdl` (a RegElem*), returned via
+// `outMulticast`. The group is the comm's NVL domain
+// (statex->localRankToRanks()) -- the same membership the ipc_only handle
+// exchange (intraAllGatherCtrl) uses -- so the multicast group, the
+// IPC-exchange group, and the exec broadcast group all agree by construction.
+// The mapper supplies the generic intraNvlDomainAllGather ctrl exchange; the
+// multicast-specific logic lives here. Per-buffer eligibility (cuMem/fabric) is
+// decided by the unanimous retainSegments/isSupported vote, not by filtering
+// the group. No-op / unicast fallback (outMulticast stays null) if the group
+// declines, multicast is unsupported, or the buffer is not cuMem-backed.
+commResult_t setupMulticast(
+    CtranComm* comm,
+    CtranMapper* mapper,
+    void* dataRegHdl,
+    std::unique_ptr<ctran::utils::CtranMulticast>& outMulticast) {
+  outMulticast = nullptr;
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12040
+  // Multicast is fabric-only; fabric handles require CUDA 12.4+ and are not
+  // available on AMD.
+  (void)comm;
+  (void)mapper;
+  (void)dataRegHdl;
+  return commSuccess;
+#else
+  const auto& statex = comm->statex_;
+  const int rank = statex->rank();
+  const int cudaDev = statex->cudaDev();
+
+  // NVL rendezvous over the comm's NVL domain (spans hosts on MNNVL) -- exactly
+  // the membership intraAllGatherCtrl exchanges IPC handles over and that the
+  // exec broadcasts to, so all three agree by construction with no separate
+  // group derivation. Root is domain rank 0 (identical across all domain
+  // ranks); nvlLocalRank is our own domain rank. intraNvlDomainAllGather
+  // indexes recvData by domain rank, so allRzv[0] is the root's entry.
+  const int nLocalRanks = statex->nLocalRanks();
+  if (nLocalRanks <= 1) {
+    return commSuccess; // no NVL peers to multicast to (rank-uniform)
+  }
+  const int nvlLocalRank = statex->localRank();
+  const int rootRank = statex->localRankToRank(0);
+  const bool isRoot = (rank == rootRank);
+
+  auto mc = std::make_unique<ctran::utils::CtranMulticast>(
+      nvlLocalRank, nLocalRanks, cudaDev);
+
+  // Local eligibility, folded into localOk -- do NOT early-return past the
+  // rank-uniform nLocalRanks gate above. Whether the buffer carries an NVL/IPC
+  // registration (regElem/ipcRegElem) is LOCAL state that can differ across
+  // ranks in rare cases (e.g. IPC registration declined an unsupported memory
+  // type on one rank), so a rank that bailed here while its peers proceed to
+  // the all-gather would hang. A missing registration or any failed check just
+  // clears localOk; the group then falls back to unicast unanimously.
+  // retainSegments() also self-detects a non-cuMem/VMM buffer and declines.
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(dataRegHdl);
+  const bool hasNvlReg = (regElem != nullptr && regElem->ipcRegElem != nullptr);
+  bool localOk = hasNvlReg &&
+      (mc->retainSegments(regElem->buf, regElem->len) == commSuccess);
+  const size_t mcSize = localOk ? mc->retainedSize() : 0;
+  size_t gran = 0;
+  localOk = localOk && ctran::utils::CtranMulticast::isSupported(cudaDev) &&
+      ctran::utils::CtranMulticast::granularity(cudaDev, nLocalRanks, gran) ==
+          commSuccess &&
+      gran != 0 && (mcSize % gran) == 0 && mc->segmentsAlignedTo(gran);
+
+  // Single-round rendezvous: the root creates + exports its fabric handle up
+  // front if its own validation passed; one all-gather of {ok, handle} then
+  // lets every rank decide unanimously (all must pass) and pick up the root's
+  // handle.
+  struct McRzv {
+    int ok{0};
+    ctran::utils::CtranIpcHandle handle{};
+  };
+  McRzv myRzv{}; // value-init: zeroes any padding, since the whole struct is
+                 // shipped over the wire by intraNvlDomainAllGather
+  myRzv.ok = localOk ? 1 : 0;
+  if (isRoot && localOk) {
+    CUmemGenericAllocationHandle mcHandle = 0;
+    if (mc->createRoot(mcSize, CU_MEM_HANDLE_TYPE_FABRIC, mcHandle) !=
+            commSuccess ||
+        ctran::utils::exportShareableHandle(
+            mcHandle, myRzv.handle, /*isFabric=*/true) != commSuccess) {
+      myRzv.ok = 0; // root couldn't create/export -> whole group -> unicast
+    }
+  }
+
+  std::vector<McRzv> allRzv(nLocalRanks);
+  FB_COMMCHECK(
+      mapper->intraNvlDomainAllGather(&myRzv, allRzv.data(), sizeof(McRzv)));
+
+  // Proceed only if every rank validated (root's handle is in allRzv[0]:
+  // intraNvlDomainAllGather indexes by domain rank, and root == domain rank 0).
+  bool allOk = true;
+  for (const auto& r : allRzv) {
+    allOk = allOk && (r.ok != 0);
+  }
+  if (!allOk) {
+    int declined = 0;
+    for (const auto& r : allRzv) {
+      if (r.ok == 0) {
+        declined++;
+      }
+    }
+    CLOGF(
+        WARN,
+        "CTRAN-MC: rank {} falling back to unicast -- {} of {} NVL-domain ranks declined multicast (unsupported HW/IMEX, or a non-cuMem / unregistered buffer)",
+        rank,
+        declined,
+        nLocalRanks);
+    // `mc` (incl. the root's just-created object, if any) is released by its
+    // dtor at scope exit; no leak.
+    return commSuccess;
+  }
+
+  // Non-root: import the root's fabric handle.
+  if (!isRoot) {
+    CUmemGenericAllocationHandle mcHandle = 0;
+    // Abort (not return) on failure: post-vote, every domain rank proceeds to
+    // the second windowBarrier below, so a one-rank error return here would
+    // hang its peers there. The regular NVL buffer import earlier in this same
+    // registration already proved fabric/IMEX works, so a failure now is a
+    // genuine anomaly -- fail loudly rather than deadlock.
+    FB_CHECKABORT(
+        ctran::utils::importShareableHandle(
+            allRzv[0].handle, mcHandle, /*isFabric=*/true) == commSuccess,
+        "CTRAN-MC: rank {} failed to import the root multicast handle post-vote",
+        rank);
+    mc->adoptImported(mcHandle);
+  }
+
+  // Every rank: add local device, bind each segment, map the multicast VA.
+  // Abort (not return) on failure for the same reason as the import above --
+  // these are post-vote local ops on the substrate the regular NVL import
+  // already exercised, and all ranks are past the vote heading to the second
+  // windowBarrier, so a one-rank error return would hang the peers (and a
+  // per-rank unicast fallback would leave divergent multicast membership).
+  FB_CHECKABORT(
+      mc->addDeviceAndBind() == commSuccess,
+      "CTRAN-MC: rank {} failed addDeviceAndBind post-vote",
+      rank);
+  FB_CHECKABORT(
+      mc->mapVA(mcSize, gran) == commSuccess,
+      "CTRAN-MC: rank {} failed mapVA post-vote",
+      rank);
+  outMulticast = std::move(mc);
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-MC: rank {} bound multicast over {} NVL ranks ({} bytes)",
+      rank,
+      nLocalRanks,
+      mcSize);
+  return commSuccess;
+#endif
+}
+
 } // namespace
 
 // Defined here (not in header) so that unique_ptr<HostWindow> destructor
@@ -176,6 +336,7 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
 }
 
 commResult_t CtranWin::exchange() {
+  CtranMapperTimer exchangeTotalTimer;
   auto statex = comm->statex_.get();
   const auto nRanks = statex->nRanks();
   const auto myRank = statex->rank();
@@ -196,6 +357,13 @@ commResult_t CtranWin::exchange() {
   FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
 
+  const auto recordWinStage = [&](const std::string& stage, double us) {
+    NcclScubaEvent(
+        std::make_unique<CommEvent>(
+            &comm->logMetaData_, stage, std::string(), us / 1000.0))
+        .record();
+  };
+
   // The base buffer holds the signal buffer (register path) or the combined
   // data+signal buffer (allocate path). On the register path with signals
   // disabled there is no base buffer, so its registration and control exchange
@@ -204,6 +372,7 @@ commResult_t CtranWin::exchange() {
 
   // Registration via ctran mapper.
   if (exchangeBaseBuffer) {
+    CtranMapperTimer baseRegTimer;
     FB_COMMCHECK(mapper->regMem(
         winBasePtr,
         range_,
@@ -211,6 +380,7 @@ commResult_t CtranWin::exchange() {
         true,
         true, /* NCCL managed buffer */
         &baseRegHdl));
+    recordWinStage("WinExchange/BaseReg", baseRegTimer.durationUs());
   }
 
   if (allocDataBuf_) {
@@ -225,22 +395,36 @@ commResult_t CtranWin::exchange() {
     // RegElem* for the allGatherCtrl handle exchange.
     auto regCache = ctran::RegCache::getInstance();
     ctran::CHECK_VALID_REGCACHE(regCache);
+    CtranMapperTimer userRegTimer;
     FB_COMMCHECK(regCache->acquireScopedRegister(
         winDataPtr,
         dataBytes,
         comm->statex_->cudaDev(),
         mapper->getBackends(),
+        comm->logMetaData_,
         dataScopedReg));
     dataRegHdl = dataScopedReg.get();
+    recordWinStage("WinExchange/UserReg", userRegTimer.durationUs());
   }
 
-  // Exchange each rank's data buffer size via bootstrap allGather
-  // This populates remWinInfo[r].dataBytes for all ranks
-  std::vector<size_t> allRankSizes(nRanks);
-  allRankSizes[myRank] = dataBytes;
-  auto resFuture = comm->bootstrap_->allGather(
-      allRankSizes.data(), sizeof(size_t), myRank, nRanks);
-  FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+  // Populate each rank's data buffer size. A symmetric window guarantees every
+  // rank registered the same size, so fill locally and skip the bootstrap
+  // allGather round-trip; otherwise gather each rank's size.
+  // FIXME(ctwin): confirm whether this size allGather is needed at all for the
+  // non-symmetric path (added in D87390033).
+  std::vector<size_t> allRankSizes;
+  if (isSymmetric()) {
+    allRankSizes.assign(nRanks, dataBytes);
+  } else {
+    CtranMapperTimer sizeAllGatherTimer;
+    allRankSizes.resize(nRanks);
+    allRankSizes[myRank] = dataBytes;
+    auto resFuture = comm->bootstrap_->allGather(
+        allRankSizes.data(), sizeof(size_t), myRank, nRanks);
+    FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+    recordWinStage(
+        "WinExchange/SizeAllGather", sizeAllGatherTimer.durationUs());
+  }
 
   // Handshake with other peers for registration exchange and network
   // connection setup
@@ -293,22 +477,26 @@ commResult_t CtranWin::exchange() {
   };
 
   if (exchangeBaseBuffer) {
+    CtranMapperTimer baseExchangeTimer;
     FB_COMMCHECK(exchangeBuffer(
         winBasePtr,
         baseRegHdl,
         remoteBaseBufs,
         remoteBaseBufAccessKeys,
         /*outIpcHdls=*/nullptr));
+    recordWinStage("WinExchange/BaseExchange", baseExchangeTimer.durationUs());
   }
 
   if (!allocDataBuf_) {
     // User-provided data buffer needs its own handle exchange round.
+    CtranMapperTimer userExchangeTimer;
     FB_COMMCHECK(exchangeBuffer(
         winDataPtr,
         dataRegHdl,
         remoteUserBufs,
         remoteUserBufAccessKeys,
         &dataScopedIpcRegHdls));
+    recordWinStage("WinExchange/UserExchange", userExchangeTimer.durationUs());
   }
 
   for (auto r = 0; r < nRanks; r++) {
@@ -357,7 +545,37 @@ commResult_t CtranWin::exchange() {
 
   // A barrier among ranks after importing handles to prevent accessing window
   // memory space while other ranks are still importing.
+  CtranMapperTimer barrierTimer;
   FB_COMMCHECK(windowBarrier(comm, mapper));
+  recordWinStage("WinExchange/Barrier", barrierTimer.durationUs());
+
+  // NVL CE-multicast setup (killswitch cvar NCCL_CTRAN_WIN_ENABLE_MULTICAST).
+  // Gated on ipc_only because that path exchanged handles over the whole NVL
+  // domain and is rejected on splitShare, so the domain equals the window's
+  // ranks -- the group setupMulticast builds the multicast over. Rank-uniform,
+  // so all ranks enter together and fall back to unicast unanimously.
+  if (NCCL_CTRAN_WIN_ENABLE_MULTICAST && ipcOnly_ && isSymmetric() &&
+      winDataPtr != nullptr) {
+    std::unique_ptr<ctran::utils::CtranMulticast> mc;
+    FB_COMMCHECK(setupMulticast(comm, mapper, dataRegHdl, mc));
+    const bool mcEngaged = (mc != nullptr);
+    if (mcEngaged) {
+      // exchange() is a CtranWin member; store the window's multicast object
+      // directly (the window owns its lifetime, torn down in free()).
+      mc_ = std::move(mc);
+    }
+    FB_COMMCHECK(windowBarrier(comm, mapper));
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-WINDOW: Rank {} {} NVL CE-multicast on win {} comm {} commHash {:x} ({} bytes)",
+        myRank,
+        mcEngaged ? "engaged" : "did not engage (unicast fallback)",
+        (void*)this,
+        (void*)comm,
+        statex->commHash(),
+        dataBytes);
+  }
 
   // Cache only symmetric windows: ctwin collective algos needs all ranks
   // locally compute peerAddr = peerBase + offset, meaning same offset from base
@@ -366,6 +584,7 @@ commResult_t CtranWin::exchange() {
     FB_COMMCHECK(
         comm->winCache_.insert(winDataPtr, dataBytes, this, &winCacheHdl));
   }
+  recordWinStage("WinExchange", exchangeTotalTimer.durationUs());
   return commSuccess;
 }
 
@@ -448,7 +667,8 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
-      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
+      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}] "
+      "ipcOnly={} enableSignal={} symmetric={}",
       myRank,
       allocDataBuf_ ? "Allocated" : "User Provided",
       winDataPtr,
@@ -460,7 +680,10 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
       statex->commHash(),
       statex->nNodes(),
       statex->nRanks(),
-      statex->nLocalRanks());
+      statex->nLocalRanks(),
+      ipcOnly_,
+      enableSignal_,
+      symmetric_);
   return commSuccess;
 }
 
@@ -501,6 +724,11 @@ commResult_t CtranWin::free(bool skipBarrier) {
     }
     reqs->clear();
   }
+
+  // Release the multicast object after the persistent requests that cached its
+  // write base are gone. Self-owning (its own segment handles + VA), so this is
+  // independent of the data-registration teardown below.
+  mc_.reset();
 
   // Drop this window's entry from the comm cache before tearing down buffers so
   // a later lookup cannot resolve to a freed window.
@@ -713,8 +941,8 @@ commResult_t checkUserBufType(const DevMemType bufType) {
         devMemTypeStr(bufType));
     return commSuccess;
   }
-  CLOGF(
-      ERR,
+  CERR(
+      commInvalidUsage,
       "CTRAN-WINDOW: Unsupported buffer type {} provided when registering window. Supported buffer types are kCumem, kHostPinned, kHostUnregistered, kCudaMalloc",
       devMemTypeStr(bufType));
 
@@ -786,8 +1014,8 @@ commResult_t ctranWinSharedQuery(int rank, CtranWin* win, void** addr) {
 
   // Validate rank is within valid bounds
   if (rank < 0 || rank >= comm->statex_->nRanks()) {
-    CLOGF(
-        ERR,
+    CERR(
+        commInvalidArgument,
         "CTRAN-WINDOW: Invalid rank {} for sharedQuery (valid range: [0, {}))",
         rank,
         comm->statex_->nRanks());

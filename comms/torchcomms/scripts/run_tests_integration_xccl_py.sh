@@ -35,6 +35,7 @@ run_tests () {
         FSDPCommTest.py
         FullgraphCompileAutogradTest.py
         FullgraphCompileTest.py
+        GatherSingleTest.py
         GatherTest.py
         MemPoolTest.py
         MultiCommTest.py

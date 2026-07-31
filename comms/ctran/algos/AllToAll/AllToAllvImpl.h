@@ -17,6 +17,8 @@ static inline const std::string allToAllAlgoName(enum NCCL_ALLTOALL_ALGO algo) {
       return "CtranAllToAll";
     case NCCL_ALLTOALL_ALGO::ctgraph:
       return "CtranCudagraphAware";
+    case NCCL_ALLTOALL_ALGO::ctwin:
+      return "CtranAllToAllCtwin";
     case NCCL_ALLTOALL_ALGO::orig:
       return "Baseline";
     default:
@@ -81,7 +83,7 @@ commResult_t ctranAllToAllvIbImpl(
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(nRanks);
 
   std::vector<void*> sendMemHdl(nRanks);
-  std::vector<void*> recvMemHdl(nRanks);
+  void* recvMemHdl = nullptr;
   std::vector<void*> tmpRegHdls;
 
   std::vector<int> ibRecvPeers, ibSendPeers;
@@ -160,7 +162,7 @@ commResult_t ctranAllToAllvIbImpl(
         comm,
         recvbuff,
         contigRecvBufSize * commTypeSize(datatype),
-        tmpHdl,
+        recvMemHdl,
         tmpRegHdls));
 
     CTRAN_PROFILER_IF(
@@ -171,7 +173,11 @@ commResult_t ctranAllToAllvIbImpl(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   FB_COMMCHECK(comm->ctran_->mapper->isendCtrlBatch<PerfConfig>(
-      recvBuffs, tmpHdl, ibRecvPeers, ibSendCtrlReqs, CtranMapperBackend::IB));
+      recvBuffs,
+      recvMemHdl,
+      ibRecvPeers,
+      ibSendCtrlReqs,
+      CtranMapperBackend::IB));
   FB_COMMCHECK(comm->ctran_->mapper->initNotifyBatchIB(ibRecvPeers, notifyVec));
 
   tmpHdl = nullptr;
@@ -259,6 +265,12 @@ commResult_t ctranAllToAllvIbImpl(
       ibPutReqs, useProfiler ? (&timestamp->putComplete) : nullptr));
   // Wait for all receives (i.e., remote IB puts) to complete
   FB_COMMCHECK(comm->ctran_->mapper->waitAllNotifies<PerfConfig>(notifyVec));
+  // Flush received RDMA writes into recvbuff once all peers' data has arrived,
+  // so GPU copy engines/kernels observe it. No-op unless local flush is enabled
+  // (e.g. GB300, pre-H100 arch, or NCCL_CTRAN_NET_FORCE_FLUSH).
+  if (!ibRecvPeers.empty()) {
+    FB_COMMCHECK(comm->ctran_->mapper->flush<PerfConfig>(recvbuff, recvMemHdl));
+  }
 
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));

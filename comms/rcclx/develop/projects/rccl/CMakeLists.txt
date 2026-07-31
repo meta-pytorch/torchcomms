@@ -1012,6 +1012,8 @@ set(COMMON_FILES
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
   comms/common/bootstrap/IBootstrap.h
+  comms/common/fault_tolerance/Abort.cc
+  comms/common/fault_tolerance/Abort.h
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
@@ -1084,6 +1086,8 @@ set(COMMON_FILES
   comms/utils/logger/DataTable.h
   comms/utils/logger/DataTableWrapper.cc
   comms/utils/logger/DataTableWrapper.h
+  comms/utils/logger/ErrorStackUtil.cc
+  comms/utils/logger/ErrorStackUtil.h
   comms/utils/logger/EventMgr.cc
   comms/utils/logger/EventMgr.h
   comms/utils/logger/EventMgrHelperTypes.cc
@@ -1100,8 +1104,6 @@ set(COMMON_FILES
   comms/utils/logger/NcclScubaSample.h
   comms/utils/logger/NcclWriterWrapper.cc
   comms/utils/logger/NcclWriterWrapper.h
-  comms/utils/logger/ProcessGlobalErrorsUtil.cc
-  comms/utils/logger/ProcessGlobalErrorsUtil.h
   comms/utils/logger/ScubaFileUtils.cc
   comms/utils/logger/ScubaFileUtils.h
   comms/utils/logger/ScubaLogger.cc

@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/BootstrapInternal.h"
@@ -22,13 +23,11 @@
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
-#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 
 class CtranIb;
 class CtranIbVirtualConn;
@@ -89,7 +88,7 @@ class CtranIb {
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
-          ::ctran::utils::createAbort(/*enabled=*/false),
+          ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt,
       std::optional<int> maxNumNic = std::nullopt);
@@ -583,7 +582,7 @@ class CtranIb {
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
-          ::ctran::utils::createAbort(/*enabled=*/false),
+          ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
       std::optional<int> maxNumCqe = std::nullopt,
       std::optional<int> maxNumNic = std::nullopt);
@@ -600,8 +599,8 @@ class CtranIb {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,
           comm ? comm->statex_->nRanks() : -1);
@@ -614,8 +613,8 @@ class CtranIb {
       std::shared_ptr<CtranIbVirtualConn>& vc,
       int peerRank) {
     if (vc == nullptr) {
-      CLOGF(
-          ERR,
+      CERR(
+          commInternalError,
           "No valid VirtualConnection (VC) found for peerRank {}",
           peerRank);
       return commInternalError;
@@ -634,8 +633,11 @@ class CtranIb {
     deviceEnd = numNics;
     if (device.has_value()) {
       if (*device < 0 || *device >= numNics) {
-        CLOGF(
-            ERR, "CTRAN-IB: invalid device {} (numNics={})", *device, numNics);
+        CERR(
+            commInternalError,
+            "CTRAN-IB: invalid device {} (numNics={})",
+            *device,
+            numNics);
         return commInternalError;
       }
       deviceBegin = *device;
@@ -999,19 +1001,19 @@ class CtranIb {
     // VC may not be established yet, e.g., if the connection is established
     // by listenThread. Continue check till it is established.
     if (!PerfConfig::skipVcConnectionCheck) {
-      while (vc == nullptr && !abortCtrl_->Test()) {
+      while (vc == nullptr && !abortCtrl_->isAborted()) {
         vc = vcState_.getVc<PerfConfig>(peerRank);
       }
     }
 
-    while (notifyCnt != 0 && !abortCtrl_->Test()) {
+    while (notifyCnt != 0 && !abortCtrl_->isAborted()) {
       FB_COMMCHECK(this->progressInternal<PerfConfig>());
 
       CTRAN_IB_PER_OBJ_LOCK_GUARD(
           vc->mutex, { FB_COMMCHECK(vc->checkNotifies(notifyCnt)); });
     }
 
-    if (abortCtrl_->Test()) {
+    if (abortCtrl_->isAborted()) {
       // TODO(T238821628): re-evaluate error code
       throw ctran::utils::Exception("comm aborted", commRemoteError);
     }
@@ -1044,8 +1046,8 @@ class CtranIb {
         CTRAN_IB_PER_OBJ_LOCK_GUARD(cqMutex, {
           auto maybeWcsVector = devices[device].ibvCq->pollCq(1);
           if (maybeWcsVector.hasError()) {
-            CLOGF(
-                WARN,
+            CERR(
+                commSystemError,
                 "Call to pollCq() on device {} failed with error {}",
                 device,
                 maybeWcsVector.error().errStr);
@@ -1081,8 +1083,8 @@ class CtranIb {
         std::shared_ptr<CtranIbVirtualConn> vc =
             vcState_.getVcByQp<PerfConfig>(std::make_pair(wc.qp_num, device));
         if (vc == nullptr) {
-          CLOGF(
-              ERR,
+          CERR(
+              commInternalError,
               "No valid VirtualConnection (VC) found for qpn {}",
               wc.qp_num);
           return commInternalError;
@@ -1164,7 +1166,7 @@ class CtranIb {
 
   std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
 
-  std::shared_ptr<::ctran::utils::Abort> abortCtrl_{nullptr};
+  std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl_{nullptr};
 };
 
 // Convenient RAII class to guard CtranIb epoch lock.

@@ -126,5 +126,10 @@ TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingDisabledNeverActive) {
       relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/false));
 }
 
+TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_TRUE(config.ibLazyConnect);
+}
+
 } // namespace
 } // namespace comms::prims

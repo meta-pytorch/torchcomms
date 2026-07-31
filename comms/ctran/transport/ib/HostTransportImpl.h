@@ -62,7 +62,7 @@ inline commResult_t importRemoteInfo(
     const ControlMsg& msg,
     RemotePeerInfo* out) {
   if (out == nullptr) {
-    CLOGF(ERR, "CTRAN-IB: importRemoteInfo: out is null");
+    CERR(commInvalidArgument, "CTRAN-IB: importRemoteInfo: out is null");
     return commInvalidArgument;
   }
   if (msg.type == ControlMsgType::IB_EXPORT_MEM) {
@@ -76,7 +76,10 @@ inline commResult_t importRemoteInfo(
     out->remoteKey = CtranIbRemoteAccessKey{};
     return commSuccess;
   }
-  CLOGF(ERR, "CTRAN-IB: importRemoteInfo unhandled msg type {}", msg.type);
+  CERR(
+      commInternalError,
+      "CTRAN-IB: importRemoteInfo unhandled msg type {}",
+      msg.type);
   return commInternalError;
 }
 

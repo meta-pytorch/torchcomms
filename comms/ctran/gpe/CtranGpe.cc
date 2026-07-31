@@ -383,14 +383,14 @@ commResult_t CtranGpe::allocKernelElems(
     this->pimpl->kernelElemPool->reclaim();
 
     if (numElems > this->pimpl->kernelElemPool->size()) {
-      CLOGF(
-          WARN,
+      CERR(
+          commInternalError,
           "CTRAN-GPE: Internal KernelElem pool has unexpected high usage (capacity: {}, available: {}, current request: {}). "
           "It is likely that some COMM kernels are not released properly",
           this->pimpl->kernelElemPool->capacity(),
           this->pimpl->kernelElemPool->size(),
           numElems);
-      return ErrorStackTraceUtil::log(commInternalError);
+      return commInternalError;
     }
   }
 
@@ -398,14 +398,20 @@ commResult_t CtranGpe::allocKernelElems(
   if (numElems > 0) {
     *elemsList = this->pimpl->kernelElemPool->pop(ngroups);
     if (!*elemsList) {
-      return ErrorStackTraceUtil::log(commInternalError);
+      CERR(
+          commInternalError,
+          "CTRAN-GPE: failed to allocate KernelElem from pool (pop returned null)");
+      return commInternalError;
     }
   }
   auto elem = *elemsList;
   for (int i = 1; i < numElems; i++) {
     elem->next = this->pimpl->kernelElemPool->pop(ngroups);
     if (!elem->next) {
-      return ErrorStackTraceUtil::log(commInternalError);
+      CERR(
+          commInternalError,
+          "CTRAN-GPE: failed to allocate chained KernelElem from pool (pop returned null)");
+      return commInternalError;
     }
     elem = elem->next;
   }

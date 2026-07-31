@@ -82,7 +82,15 @@ bool ctranReduceScatterSupport(
       }
       break;
     case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-      return true;
+#if defined(ENABLE_PRIMS)
+      return ctranReduceScatterDirectIbSupport(comm);
+#else
+      return false;
+#endif
+    case NCCL_REDUCESCATTER_ALGO::ctring_ib:
+      // Hosted by MCCL; CTRAN reports unsupported so non-MCCL callers fall
+      // back.
+      return false;
     case NCCL_REDUCESCATTER_ALGO::orig: // invalid query
       return false;
   }
@@ -138,11 +146,37 @@ commResult_t ctranReduceScatter(
       return ctranReduceScatterDirectIb(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
     default:
-      CLOGF(
-          WARN,
+      CERR(
+          commInternalError,
           "ctranReduceScatter: no valid algorithm to support nLocalRanks {} nNodes {}",
           nLocalRanks,
           nNodes);
-      return ErrorStackTraceUtil::log(commInternalError);
+      return commInternalError;
   }
+}
+
+commResult_t ctranReduceScatterQuantize(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t recvcount,
+    commDataType_t inputType,
+    commDataType_t transportType,
+    commRedOp_t redOp,
+    const uint64_t* seedPtr,
+    CtranComm* comm,
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo) {
+  if (algo != NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
+    return commInvalidArgument;
+  }
+  return ctranReduceScatterQuantizeDirectIb(
+      sendbuff,
+      recvbuff,
+      recvcount,
+      inputType,
+      transportType,
+      redOp,
+      seedPtr,
+      comm,
+      stream);
 }

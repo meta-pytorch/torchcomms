@@ -657,16 +657,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
             config_.qpsPerConnection,
             mainQpsPerPeerPerNic));
   }
-  if (!config_.ibLazyConnect &&
-      mainQpsPerPeerPerNic > kMaxEagerExchangeQpsPerPeerPerNic) {
-    throw std::invalid_argument(
-        fmt::format(
-            "eager IBGDA allGather exchange supports at most {} QPs per "
-            "(peer,NIC); got {}. Enable ibLazyConnect for larger "
-            "max_num_channels * direction_count * qpsPerConnection shapes.",
-            kMaxEagerExchangeQpsPerPeerPerNic,
-            mainQpsPerPeerPerNic));
-  }
   if (numNics_ * config_.qpsPerConnection > kIbMaxQpLanesPerChannelDirection) {
     throw std::invalid_argument(
         fmt::format(
@@ -697,38 +687,24 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     // Open IB device and create PD
     openIbDevice();
 
-    if (!config_.ibLazyConnect) {
-      // Create QP groups (main + loopback) for all peers
-      createQpGroups();
-    } else {
-      const int numPeers = nRanks - 1;
-      const int companionSlots =
-          config_.fixedChannelCompanionQpsPerPeerPerNic();
-      for (auto& nic : nicDoca_) {
-        nic.blockQpGroups.resize(
-            static_cast<size_t>(numPeers) * companionSlots);
-        nic.extraMainQps.clear();
-        nic.loopbackCompanionQps.resize(
-            static_cast<size_t>(numPeers) * companionSlots);
-      }
-      peerMaterialized_.resize(numPeers, false);
+    const int numPeers = nRanks - 1;
+    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
+    for (auto& nic : nicDoca_) {
+      nic.blockQpGroups.resize(static_cast<size_t>(numPeers) * companionSlots);
+      nic.extraMainQps.clear();
+      nic.loopbackCompanionQps.resize(
+          static_cast<size_t>(numPeers) * companionSlots);
     }
+    peerMaterialized_.resize(numPeers, false);
 
     // Allocate and register sink buffer for atomic return values
     allocateResources();
     registerMemory();
 
     // Allocate send/recv staging buffers when fixed channels are configured.
-    // Eager mode delegates to the shared base (Device counter: NIC loopback
-    // atomic); lazy mode only sizes the inherited per-peer view vector — the
-    // shared base allocateSendRecvBufferForPeer() fills it per peer at
-    // materialization.
+    // The shared base fills each entry when that peer is materialized.
     if (sendRecvBuffersEnabled()) {
-      if (!config_.ibLazyConnect) {
-        allocateSendRecvBuffersEager(IbCounterStorage::Device);
-      } else {
-        sendRecvPeerBuffers_.resize(nRanks_ - 1);
-      }
+      sendRecvPeerBuffers_.resize(nRanks_ - 1);
     }
   } catch (const std::exception&) {
     // Destructor won't run for a partially-constructed object, so clean up
@@ -819,7 +795,7 @@ void MultipeerIbgdaTransport::cleanup() {
   // freed after all per-NIC MRs.
   if (sinkBuffer_ != nullptr) {
 #ifdef __HIP_PLATFORM_AMD__
-    hipHostFree(sinkBuffer_);
+    (void)hipHostFree(sinkBuffer_);
 #else
     auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
     pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
@@ -867,154 +843,21 @@ void MultipeerIbgdaTransport::cleanup() {
 
 void MultipeerIbgdaTransport::exchange() {
   const int numPeers = nRanks_ - 1;
-  const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
-  const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-  auto& symbols = ibverbx::ibvSymbols;
-
-  if (config_.ibLazyConnect) {
-    peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
-    std::size_t totalBytes = numPeers * peerTransportSize_;
-    cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
-    if (err != cudaSuccess) {
-      throw std::runtime_error(
-          "Failed to allocate lazy device transport array: " +
-          std::string(cudaGetErrorString(err)));
-    }
-    gpuAllocations_.push_back(peerTransportsGpu_);
-    err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
-    if (err != cudaSuccess) {
-      throw std::runtime_error("Failed to zero lazy device transport array");
-    }
-    VLOG(1)
-        << "MultipeerIbgdaTransport: rank " << myRank_
-        << " lazy exchange complete (per-peer state deferred to materializePeer)";
-    return;
-  }
-
-  // Build this rank's exchange info. Per-NIC GID/LID land in nicInfo[n];
-  // gidIndex + MTU are common across NICs (same fabric/HCA generation in
-  // multi-NIC platforms). The rank-count guard, allGather, and per-peer
-  // topology validation are owned by the base (MultiPeerIbTransport).
-  IbgdaTransportExchInfoAll myInfo{};
-  myInfo.gidIndex = gidIndex_;
-  myInfo.mtu = localMtu_;
-  myInfo.numNics = numNics_;
-  myInfo.numQpsPerPeerPerNic = mainQpsPerPeerPerNic;
-  myInfo.maxGroups = config_.max_num_channels;
-  myInfo.qpsPerBlockPerNic = config_.qpsPerConnection;
-  for (int n = 0; n < numNics_; ++n) {
-    memcpy(
-        myInfo.nicInfo[n].gid,
-        nics_[n].localGid.raw,
-        sizeof(myInfo.nicInfo[n].gid));
-    // Query NIC n's port for LID (IB only — RoCE leaves LID as 0).
-    ibverbx::ibv_port_attr exchPortAttr{};
-    if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &exchPortAttr) !=
-        0) {
-      LOG(WARNING) << "Failed to query port for LID on NIC " << n;
-    } else {
-      myInfo.nicInfo[n].lid = exchPortAttr.lid;
-    }
-  }
-
-  const int totalQpsPerPeer = numNics_ * mainQpsPerPeerPerNic;
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    const int peerRank = peerIndexToRank(peerIndex);
-    for (int nic = 0; nic < numNics_; nic++) {
-      const auto& nicQps = nicDoca_[nic].blockQpGroups;
-      for (int slot = 0; slot < companionSlots; slot++) {
-        const int slotIdx = peerIndex * companionSlots + slot;
-        myInfo.nicInfo[nic].qpnForRank[peerRank][slot] =
-            doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_main.qp);
-      }
-    }
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " performing allGather exchange (" << totalQpsPerPeer
-          << " main QPs/peer = " << numNics_ << " NICs × "
-          << mainQpsPerPeerPerNic << " main QPs)";
-
-  // allGather (rank-count guarded) + per-peer topology validation (numNics +
-  // numQpsPerPeerPerNic) are owned by the base.
-  std::vector<IbgdaTransportExchInfoAll> allInfo = allGatherExchInfo(myInfo);
-  validatePeerTopology(allInfo);
-
-  // Stash per-peer summary info (slot 0 / NIC 0) for retrospect/debug.
-  // Per-slot connection info is computed inline in the connect loop below.
-  peerExchInfo_.resize(numPeers);
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    int peerRank = peerIndexToRank(peerIndex);
-    const IbgdaTransportExchInfoAll& peerInfo = allInfo[peerRank];
-
-    CHECK_EQ(peerInfo.maxGroups, config_.max_num_channels)
-        << "Rank " << peerRank << " has maxGroups=" << peerInfo.maxGroups
-        << " but local rank " << myRank_ << " has " << config_.max_num_channels
-        << ". All ranks must use the same maxGroups.";
-    CHECK_EQ(peerInfo.qpsPerBlockPerNic, config_.qpsPerConnection)
-        << "Rank " << peerRank
-        << " has qpsPerBlockPerNic=" << peerInfo.qpsPerBlockPerNic
-        << " but local rank " << myRank_ << " has " << config_.qpsPerConnection
-        << ". All ranks must use the same qpsPerBlockPerNic.";
-
-    // Store common connection info (from QP 0 — same GID/LID for all QPs)
-    peerExchInfo_[peerIndex].qpn = peerInfo.nicInfo[0].qpnForRank[myRank_][0];
-    memcpy(
-        peerExchInfo_[peerIndex].gid,
-        peerInfo.nicInfo[0].gid,
-        sizeof(peerInfo.nicInfo[0].gid));
-    peerExchInfo_[peerIndex].gidIndex = peerInfo.gidIndex;
-    peerExchInfo_[peerIndex].lid = peerInfo.nicInfo[0].lid;
-    peerExchInfo_[peerIndex].mtu = peerInfo.mtu;
-
-    VLOG(1) << "MultipeerIbgdaTransport: received from peer " << peerRank
-            << " numNics=" << peerInfo.numNics
-            << " maxGroups=" << peerInfo.maxGroups
-            << " qpsPerBlockPerNic=" << peerInfo.qpsPerBlockPerNic
-            << " slot0_qpn=" << peerExchInfo_[peerIndex].qpn;
-  }
-
-  // Connect main QPs + loopback companions for all peers
-  for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    const IbgdaTransportExchInfoAll& peerInfo =
-        allInfo[peerIndexToRank(peerIndex)];
-
-    for (int nic = 0; nic < numNics_; nic++) {
-      auto& nicQps = nicDoca_[nic].blockQpGroups;
-      for (int slot = 0; slot < companionSlots; slot++) {
-        const int slotIdx = peerIndex * companionSlots + slot;
-        IbgdaTransportExchInfo qpPeerInfo;
-        qpPeerInfo.qpn = peerInfo.nicInfo[nic].qpnForRank[myRank_][slot];
-        memcpy(
-            qpPeerInfo.gid, peerInfo.nicInfo[nic].gid, sizeof(qpPeerInfo.gid));
-        qpPeerInfo.gidIndex = peerInfo.gidIndex;
-        qpPeerInfo.lid = peerInfo.nicInfo[nic].lid;
-        qpPeerInfo.mtu = peerInfo.mtu;
-        connectQp(&nicQps[slotIdx]->qp_main, qpPeerInfo, nic);
-      }
-    }
-    connectPeerLoopback(peerIndex);
-  }
-  allocateSignalCounterResources(
-      IbCounterStorage::Device, /*allocateDiscardSignal=*/true);
-
-  exchangeSendRecvBuffersEager();
-
-  // Build device transports on GPU
-  std::vector<P2pIbgdaTransportBuildParams> buildParams;
-  buildParams.reserve(numPeers);
-  for (int peer = 0; peer < numPeers; peer++) {
-    buildParams.emplace_back(buildPeerTransportParams(peer));
-  }
-
-  peerTransportsGpu_ =
-      buildDeviceTransportsOnGpu(buildParams, numPeers, gpuAllocations_);
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
-
+  const std::size_t totalBytes = numPeers * peerTransportSize_;
+  cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        "Failed to allocate on-demand device transport array: " +
+        std::string(cudaGetErrorString(err)));
+  }
+  gpuAllocations_.push_back(peerTransportsGpu_);
+  err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
+  if (err != cudaSuccess) {
+    throw std::runtime_error("Failed to zero on-demand device transport array");
+  }
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " exchange complete, connected to " << numPeers << " peers"
-          << " (" << mainQpsPerPeerPerNic << " main QPs/(peer,NIC) × "
-          << numNics_ << " NICs)";
+          << " exchange complete (per-peer state deferred to materializePeer)";
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
@@ -1027,7 +870,7 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
     int peerRank) {
-  if (config_.ibLazyConnect && !isPeerMaterialized(peerRank)) {
+  if (!isPeerMaterialized(peerRank)) {
     materializePeer(peerRank);
   }
   int peerIndex = rankToPeerIndex(peerRank);
@@ -1043,15 +886,10 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getDeviceTransportPtr()
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
-  if (config_.ibLazyConnect) {
-    LOG_FIRST_N(WARNING, 1)
-        << "MultipeerIbgdaTransport: lazy mode is enabled but "
-        << "Transport[] array is being built with unmaterialized IBGDA "
-        << "slots. Algorithms using Transport[] directly (DeviceWindow, "
-        << "AllToAllv) should disable lazy mode (ibLazyConnect=false). "
-        << "Algorithms using getP2pTransportDevice() per peer (Ring, "
-        << "SendRecv) are unaffected.";
-  }
+  LOG_FIRST_N(WARNING, 1)
+      << "MultipeerIbgdaTransport: Transport[] array is being built with "
+      << "possibly unmaterialized IBGDA slots. Call get_device_handle(peers) "
+      << "before kernels access those peers.";
   int peerIndex = rankToPeerIndex(peerRank);
   return reinterpret_cast<P2pIbgdaTransportDevice*>(
       reinterpret_cast<char*>(peerTransportsGpu_) +

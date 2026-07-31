@@ -166,18 +166,18 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 } // namespace
 
 namespace ctran::allgatherp {
-extern __global__ void ncclKernelAllGatherPPipeStart(
+extern __global__ void ncclKernelAllGatherPSrdPipeStart(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
-extern __global__ void ncclKernelAllGatherPPipeSync(
+extern __global__ void ncclKernelAllGatherPSrdPipeSync(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeSyncKernArgs args);
-extern __global__ void ncclKernelAllGatherPPipeEnd(
+extern __global__ void ncclKernelAllGatherPSrdPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args);
-extern __global__ void ncclKernelAllGatherPPipe(
+extern __global__ void ncclKernelAllGatherPStreamedRd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState);
 
@@ -271,13 +271,13 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
           std::move(opGroup),
           gpeFn,
           config,
-          reinterpret_cast<void*>(ncclKernelAllGatherPPipeStart)));
+          reinterpret_cast<void*>(ncclKernelAllGatherPSrdPipeStart)));
     } else {
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
-          reinterpret_cast<void*>(ncclKernelAllGatherPPipe)));
+          reinterpret_cast<void*>(ncclKernelAllGatherPStreamedRd)));
     }
   }
 
@@ -289,7 +289,9 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         myRank * sendSize,
         pArgs.remoteRecvBuffs,
         pArgs.remoteAccessKeys,
-        stream_));
+        stream_,
+        /*barrier=*/true,
+        pArgs.mcWrite));
 
     for (int step = 0; step < recvPlan.nSteps(); step++) {
       PipeSyncKernArgs syncArgs = {
@@ -301,7 +303,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
           {},
           nullptr,
           config,
-          reinterpret_cast<void*>(ncclKernelAllGatherPPipeSync)));
+          reinterpret_cast<void*>(ncclKernelAllGatherPSrdPipeSync)));
 
       int chunkIndex = 0;
       for (const auto node : recvPlan.chunks(step)) {
@@ -316,7 +318,8 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
             pArgs.remoteRecvBuffs,
             pArgs.remoteAccessKeys,
             stream_,
-            chunkIndex++ == 0));
+            chunkIndex++ == 0,
+            pArgs.mcWrite));
       }
     }
 
@@ -328,7 +331,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         {},
         nullptr,
         config,
-        reinterpret_cast<void*>(ncclKernelAllGatherPPipeEnd)));
+        reinterpret_cast<void*>(ncclKernelAllGatherPSrdPipeEnd)));
   }
 
   return commSuccess;

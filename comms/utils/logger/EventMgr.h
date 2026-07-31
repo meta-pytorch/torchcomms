@@ -60,7 +60,9 @@ class CommEvent : public LoggerEvent {
         nRanks(logMetaData ? logMetaData->nRanks : 0),
         stage(stage),
         split(split),
-        timerDeltaMs(delta) {}
+        timerDeltaMs(delta) {
+    iteration = ncclxGetIteration();
+  }
 
   CommEvent(
       const CommLogData* logMetaData,
@@ -74,7 +76,9 @@ class CommEvent : public LoggerEvent {
         nRanks(logMetaData ? logMetaData->nRanks : 0),
         localRank(localRank),
         localRanks(localRanks),
-        stage(stage) {}
+        stage(stage) {
+    iteration = ncclxGetIteration();
+  }
 
   ~CommEvent() override = default;
 
@@ -113,6 +117,9 @@ class CommEvent : public LoggerEvent {
   const std::string split;
   double timerDeltaMs = 0.0;
   std::string timestamp;
+  // training step. If not set by trainer, it is always -1. Also see
+  // ncclxGetIteration().
+  int64_t iteration = -1;
 };
 
 class MemoryEvent : public LoggerEvent {
@@ -319,9 +326,7 @@ class CtranProfilerAlgoEvent : public CtranProfilerEvent {
         readyTs(readyTs),
         controlTs(controlTs),
         timeFromDataToCollEndUs(timeFromDataToCollEndUs),
-        collectiveDurationUs(collectiveDurationUs) {
-    iteration = ncclxGetIteration();
-  }
+        collectiveDurationUs(collectiveDurationUs) {}
 
   ~CtranProfilerAlgoEvent() override = default;
 
@@ -338,9 +343,6 @@ class CtranProfilerAlgoEvent : public CtranProfilerEvent {
   uint64_t bufferRegistrationTimeUs;
   uint64_t controlSyncTimeUs;
   uint64_t dataTransferTimeUs;
-  // training step. If not set by trainer, it is always -1. Also see
-  // ncclxGetIteration().
-  int64_t iteration = -1;
   uint64_t opCount;
   uint64_t readyTs;
   uint64_t controlTs;
@@ -377,9 +379,7 @@ class CtranProfilerGpeEvent : public CommEvent {
         iterUs_(iterUs),
         durationUs_(durationUs),
         aborted_(aborted),
-        message_(message) {
-    iteration_ = ncclxGetIteration();
-  }
+        message_(message) {}
 
   ~CtranProfilerGpeEvent() override = default;
 
@@ -398,9 +398,6 @@ class CtranProfilerGpeEvent : public CommEvent {
   const uint64_t durationUs_;
   const bool aborted_;
   const std::string message_;
-  // training step. If not set by trainer, it is always -1. Also see
-  // ncclxGetIteration().
-  int64_t iteration_{-1};
 };
 
 class NetworkPerfMonitorEvent : public CommEvent {

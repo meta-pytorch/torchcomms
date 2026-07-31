@@ -654,7 +654,7 @@ ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
  * Input   SR     Transport    Reduce            SR? + Output
  *
  * Notes:
- * Due to how PAT algorithm works, We will do multiple rounds of rounding. The
+ * The PAT algorithm may do multiple rounds of rounding. The
  * random number used for the rounding of each element would be
  * Philox(seed, element_id + num_elements * current_round_number), so we will
  * not be reusing the same random numbers.
@@ -664,7 +664,8 @@ ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
  * transportType: must be BF16, provided to make extension easier.
  * op: Only supports ncclSum and ncclAvg operations.
  * seedPtr: must be a GPU MEMORY pointer. The pointer must outlive the collective.
- * algo: Uses PAT algorithm exclusively via InfoExt override.
+ * algo: Set NCCL_REDUCESCATTER_QUANTIZED_ALGO=ctdirect_ib to use DirectIB
+ *       for ncclSum when supported. The default and fallback algorithm is PAT.
  */
 ncclResult_t  ncclReduceScatterQuantize(const void* sendbuff, void* recvbuff,
     size_t recvcount, ncclDataType_t inputType, ncclDataType_t transportType,

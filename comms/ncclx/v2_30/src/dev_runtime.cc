@@ -419,7 +419,7 @@ static ncclResult_t symTeamObtain(
 
   if (multimem) {
     if (!comm->nvlsSupport) {
-      WARN("Multicast support requested for team but none available on system.");
+      ERR(ncclInvalidArgument, "Multicast support requested for team but none available on system.");
       ret = ncclInvalidArgument;
       goto fail;
     } else {
@@ -512,7 +512,7 @@ static void symTeamDestroyAll(struct ncclComm* comm) {
 
 static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrMemory* mem) {
   if (mem->hasSysmemSegment) {
-    WARN("Window registration of addresses that contain CPU-backed physical segments is currently not supported with GIN.");
+    ERR(ncclInvalidArgument, "Window registration of addresses that contain CPU-backed physical segments is currently not supported with GIN.");
     return ncclInvalidArgument;
   }
   NCCLCHECK(ncclGinRegister(comm, mem->primaryAddr, mem->size, mem->ginHostWins, mem->ginDevWins, mem->winFlags,
@@ -993,7 +993,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
 
     // GIN must already be connected via a prior collective window registration.
     if (!devr->ginEnabled) {
-      WARN("NCCL_WIN_LOCAL_ONLY requires GIN to be enabled. Register a collective window first.");
+      ERR(ncclInvalidUsage, "NCCL_WIN_LOCAL_ONLY requires GIN to be enabled. Register a collective window first.");
       ret = ncclInvalidUsage;
       goto fail_locReg;
     }
@@ -1026,7 +1026,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
 
   if (hasSysmemSegment) {
     if (!ncclParamElasticBufferRegister()) {
-      WARN("VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but NCCL_ELASTIC_BUFFER_REGISTER is set to 0. Please set NCCL_ELASTIC_BUFFER_REGISTER=1 and retry window registration", userPtr, userSize);
+      ERR(ncclInvalidArgument, "VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but NCCL_ELASTIC_BUFFER_REGISTER is set to 0. Please set NCCL_ELASTIC_BUFFER_REGISTER=1 and retry window registration", userPtr, userSize);
       ret = ncclInvalidArgument;
       goto fail_locReg;
     }
@@ -1035,7 +1035,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
         int multiNodeLsaSupported = 0;
         CUCHECKGOTO(cuDeviceGetAttribute(&multiNodeLsaSupported, CU_DEVICE_ATTRIBUTE_HOST_NUMA_MULTINODE_IPC_SUPPORTED, comm->cudaDev), ret, fail_locReg);
         if (!multiNodeLsaSupported) {
-          WARN("VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but the LSA team does not support multi-node IPC on CPU-backed buffers. Please retry by setting NCCL_MNNVL_ENABLE=0", userPtr, userSize);
+          ERR(ncclInvalidArgument, "VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but the LSA team does not support multi-node IPC on CPU-backed buffers. Please retry by setting NCCL_MNNVL_ENABLE=0", userPtr, userSize);
           ret = ncclInvalidArgument;
           goto fail_locReg;
         }
@@ -1045,7 +1045,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
 
   memOffset = reinterpret_cast<CUdeviceptr>(userPtr) - memAddr;
   if (memOffset%NCCL_WIN_REQUIRED_ALIGNMENT != 0) {
-    WARN("Window address must be suitably aligned.");
+    ERR(ncclInvalidArgument, "Window address must be suitably aligned.");
     ret = ncclInvalidArgument;
     goto fail_locReg;
   }
@@ -1282,18 +1282,18 @@ ncclResult_t ncclDevrCommCreateInternal(
 
   bool requestedGinResources = ncclGinResourcesRequested(reqs);
   if (requestedGinResources && requestedConnectionType == NCCL_GIN_CONNECTION_NONE) {
-    WARN("User requested GIN resources but did not request GIN to be enabled!");
+    ERR(ncclInvalidArgument, "User requested GIN resources but did not request GIN to be enabled!");
     return ncclInvalidArgument;
   }
 
   if (requestedConnectionType != NCCL_GIN_CONNECTION_NONE) {
     if (comm->globalGinSupport == NCCL_GIN_CONNECTION_NONE) {
-      WARN("User requested GIN but not all ranks in the communicator support GIN");
+      ERR(ncclInvalidArgument, "User requested GIN but not all ranks in the communicator support GIN");
       return ncclInvalidArgument;
     }
     if (requestedConnectionType == NCCL_GIN_CONNECTION_FULL) {
       if (comm->globalGinSupport == NCCL_GIN_CONNECTION_RAIL) {
-        WARN("User requested GIN connection type NCCL_GIN_CONNECTION_FULL but the communicator supports only NCCL_GIN_CONNECTION_RAIL");
+        ERR(ncclInvalidArgument, "User requested GIN connection type NCCL_GIN_CONNECTION_FULL but the communicator supports only NCCL_GIN_CONNECTION_RAIL");
         return ncclInvalidArgument;
       }
     }
@@ -1472,12 +1472,14 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
     if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
       if (!ncclGetCuMemSysSupported()) {
-        FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
+        ERR(ncclInternalError, "ncclWin requires CUMEM support.");
+        return ncclInternalError;
       }
       if (buff == nullptr) {
-        FB_ERRORRETURN(
+        ERR(
             ncclInvalidUsage,
             "Invalid baseptr to create shared buffer in ncclWinRegister.");
+        return ncclInvalidUsage;
       }
 
       ncclWin* win_ = new ncclWin();
@@ -1516,7 +1518,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
   NCCLCHECK(PtrCheck(win, __func__, "win"));
   *win = nullptr;
   if (buff == nullptr || size <= 0) {
-    WARN("%s: invalid pointer %p / size %zu", __func__, buff, size);
+    ERR(ncclInvalidArgument, "%s: invalid pointer %p / size %zu", __func__, buff, size);
     return ncclInvalidArgument;
   }
 
@@ -1564,7 +1566,8 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
     if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
       auto statex = comm->ctranComm_->statex_.get();
       if (statex == nullptr) {
-        FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+        ERR(ncclInternalError, "Empty communicator statex.");
+        return ncclInternalError;
       }
 
       // Remove from map first, then cleanup resources
@@ -1646,7 +1649,7 @@ static ncclResult_t getNcclVersionCompat(int compiledVersion, struct ncclDevComm
 
   if (compiledVersion > NCCL_VERSION_CODE && ncclParamEnableVersionCheck()) {
     char compiledBuf[16], runtimeBuf[16];
-    WARN("NCCL library is too old. This application was compiled with NCCL version %s, but is running with NCCL library version %s.",
+    ERR(ncclInvalidUsage, "NCCL library is too old. This application was compiled with NCCL version %s, but is running with NCCL library version %s.",
          ncclVersionToString(compiledVersion, compiledBuf, sizeof(compiledBuf)),
          ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
     return ncclInvalidUsage;
@@ -1661,7 +1664,7 @@ static ncclResult_t getNcclVersionCompat(int compiledVersion, struct ncclDevComm
   }
   if (devCompat == nullptr) {
     char compiledBuf[16], runtimeBuf[16];
-    WARN("NCCL library is not backwards compatible. This application was compiled with NCCL version %s, but is running with NCCL library version %s.",
+    ERR(ncclInvalidUsage, "NCCL library is not backwards compatible. This application was compiled with NCCL version %s, but is running with NCCL library version %s.",
          ncclVersionToString(compiledVersion, compiledBuf, sizeof(compiledBuf)),
          ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
     return ncclInvalidUsage;
@@ -1683,7 +1686,7 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
   NCCLCHECK(ncclCommEnsureReady(comm));
 
   if (props->magic != NCCL_API_MAGIC) {
-    WARN("Cannot get communicator properties: ncclCommProperties_t argument must be initialized via NCCL_COMM_PROPERTIES_INITIALIZER");
+    ERR(ncclInvalidUsage, "Cannot get communicator properties: ncclCommProperties_t argument must be initialized via NCCL_COMM_PROPERTIES_INITIALIZER");
     return ncclInvalidUsage;
   }
 
@@ -1723,7 +1726,7 @@ ncclResult_t ncclDevCommCreate(
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
   NCCLCHECK(PtrCheck(reqs, __func__, "reqs"));
   if (reqs->magic != NCCL_API_MAGIC) {
-    WARN("Cannot create device communicator: ncclDevCommRequirements_t argument must be initialized via NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER");
+    ERR(ncclInvalidUsage, "Cannot create device communicator: ncclDevCommRequirements_t argument must be initialized via NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER");
     return ncclInvalidUsage;
   }
 
@@ -1738,7 +1741,7 @@ ncclResult_t ncclDevCommCreate(
   NCCLCHECK(ncclGroupStartInternal());
 
   if (!comm->symmetricSupport) {
-    WARN("Communicator does not support symmetric memory!");
+    ERR(ncclInvalidUsage, "Communicator does not support symmetric memory!");
     ret = ncclInvalidUsage;
     goto fail;
   }
@@ -1828,7 +1831,7 @@ ncclResult_t ncclWinGetUserPtr(struct ncclComm* comm, struct ncclWindow_vidmem* 
 
   winHost = (struct ncclDevrWindow*)winDevHost->winHost;
   if (winHost == nullptr) {
-    WARN("window has a NULL user pointer");
+    ERR(ncclInternalError, "window has a NULL user pointer");
     return ncclInternalError;
   }
 
@@ -1840,7 +1843,7 @@ ncclResult_t ncclDevrWorldToLsaRank(struct ncclComm* comm, int peerWorldRank, in
   ncclTeam_t worldTeam = ncclTeamWorld(comm);
   ncclTeam_t lsaTeam = ncclTeamLsa(comm);
   if (!ncclTeamRankIsMember(lsaTeam, worldTeam, peerWorldRank)) {
-    WARN("ncclDevrWorldToLsaRank: world rank %d is not a member of the LSA team", peerWorldRank);
+    ERR(ncclInternalError, "ncclDevrWorldToLsaRank: world rank %d is not a member of the LSA team", peerWorldRank);
     return ncclInternalError;
   }
   *peerLsaRank = ncclTeamRankToTeam(lsaTeam, worldTeam, peerWorldRank);
@@ -1885,7 +1888,7 @@ ncclResult_t ncclDevrGetLsaTeamPtrMC(struct ncclComm* comm, struct ncclDevrWindo
   if (winHost == nullptr || outPtr == nullptr) return ncclInternalError;
 
   if (!comm->nvlsSupport) {
-    WARN("Multimem pointer requested but system does not support multimem.");
+    ERR(ncclInvalidUsage, "Multimem pointer requested but system does not support multimem.");
     return ncclInvalidUsage;
   }
 
@@ -1903,7 +1906,7 @@ static ncclResult_t findCommAndHostWindowFromDeviceWindow(ncclWindow_t devWindow
   std::lock_guard<std::mutex> lock(ncclWindowMapMutex);
   NCCLCHECK(ncclIntruAddressMapFind(&ncclWindowMap, devWindow, &winHost));
   if (winHost == nullptr) {
-    WARN("Could not find communicator matching window %p (map hbits=%d count=%d)",
+    ERR(ncclInvalidArgument, "Could not find communicator matching window %p (map hbits=%d count=%d)",
          devWindow, ncclWindowMap.base.hbits, ncclWindowMap.base.count);
     return ncclInvalidArgument;
   }
@@ -1919,7 +1922,7 @@ ncclResult_t ncclGetMultimemDevicePointer (ncclWindow_t window, size_t offset, n
   NCCLCHECK(PtrCheck(window, __func__, "window"));
   NCCLCHECK(PtrCheck(outPtr, __func__, "outPtr"));
   if (multimem.mcBasePtr == nullptr) {
-    WARN("MCBasePtr %p needs to be valid.", multimem.mcBasePtr);
+    ERR(ncclInvalidArgument, "MCBasePtr %p needs to be valid.", multimem.mcBasePtr);
     return ncclInvalidArgument;
   }
 
@@ -1970,7 +1973,7 @@ ncclResult_t ncclGetLsaDevicePointer(ncclWindow_t window, size_t offset, int lsa
 
   devr = &comm->devrState;
   if (lsaRank < 0 || lsaRank >= devr->lsaSize) {
-    WARN("The provided lsaRank %d is not in the valid lsaSize of [0,%d] for the provided window %p.",
+    ERR(ncclInvalidArgument, "The provided lsaRank %d is not in the valid lsaSize of [0,%d] for the provided window %p.",
          lsaRank, devr->lsaSize, window);
     return ncclInvalidArgument; // In this case the user should know what the lsa size is.
   }
@@ -1996,7 +1999,7 @@ ncclResult_t ncclGetPeerDevicePointer(ncclWindow_t window, size_t offset, int pe
   NCCLCHECK(findCommAndHostWindowFromDeviceWindow(window, &comm, &winHost));
   // Validate peer rank is within bounds
   if (peer < 0 || peer >= comm->nRanks) {
-    WARN("peer %d is not within valid range of ranks %d.", peer, comm->nRanks);
+    ERR(ncclInvalidArgument, "peer %d is not within valid range of ranks %d.", peer, comm->nRanks);
     return ncclInvalidArgument;
   }
 

@@ -424,16 +424,18 @@ template <
     MemoryCoherenceScope C = MemoryCoherenceScope::System,
     WritePolicy W = WritePolicy::Overwrite>
 struct HRDWRingBufferDeviceHandle {
-  HRDWEntry<DataT, C>* ring{};
-  uint64_t* writeIndex{};
-  uint32_t mask{};
-  uint32_t shift{};
+  // No default member initializers: keeps this trivially default-constructible
+  // (enforced by HRDWRingBufferDeviceHandleTest).
+  HRDWEntry<DataT, C>* ring;
+  uint64_t* writeIndex;
+  uint32_t mask;
+  uint32_t shift;
   [[no_unique_address]] detail::
-      define_if<W == WritePolicy::Blocking, const uint64_t*> readIndex{};
+      define_if<W == WritePolicy::Blocking, const uint64_t*> readIndex;
   [[no_unique_address]] detail::
-      define_if<W == WritePolicy::Blocking, const uint32_t*> abort{};
+      define_if<W == WritePolicy::Blocking, const uint32_t*> abort;
   [[no_unique_address]] detail::define_if<W == WritePolicy::Blocking, uint32_t>
-      spinBackoffNanos{};
+      spinBackoffNanos;
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
   __device__ __forceinline__ void write(DataT data) {

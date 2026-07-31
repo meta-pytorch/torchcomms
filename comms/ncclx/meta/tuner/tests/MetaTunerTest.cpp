@@ -771,6 +771,35 @@ TEST_F(MetaTunerTest, ChunkSizeAlgoProtoKey) {
 
   kMetaTuner.finalize(context);
 }
+
+// Case 10b: getChunkSize's nBytes is the PER-RANK shard, so a size-scoped
+// bytesPerRank rule must be matched against the per-rank shard (nBytes scaled
+// back to the total), NOT nBytes/nRanks. Regression for the total/nRanks^2
+// double-divide that made nolocal AllGather/ReduceScatter chunk rules silently
+// no-op at scale.
+TEST_F(MetaTunerTest, ChunkSizePerRankShardScaling) {
+  // Rule fires only for a per-rank shard in [400K, 600K].
+  const TunerConfigFile config(
+      ".csv", "allgather,[409600,614400],pat,simple,-1,(7,),1,524288\n");
+  // 64 nolocal ranks: nNodes=64, nLocalRanks=64/64=1 (pure-IB PAT comm).
+  void* context = initTuner(/* nRanks */ 64, /* nNodes */ 64);
+
+  // getChunkSize receives the per-rank shard (512K). Under the old
+  // double-divide this resolved to 512K/64 = 8K and missed the [400K,600K]
+  // rule.
+  size_t chunk = 65536;
+  kMetaTuner.getChunkSize(
+      context,
+      ncclFuncAllGather,
+      /* nBytes (per-rank shard) */ 524288,
+      NCCL_ALGO_PAT,
+      NCCL_PROTO_SIMPLE,
+      8,
+      &chunk);
+  EXPECT_EQ(chunk, 524288);
+
+  kMetaTuner.finalize(context);
+}
 #endif // META_TUNER_UT_HAS_GETCHUNKSIZE
 
 // Case 1: CSV parsing with comments, blank lines and omitted optional columns.

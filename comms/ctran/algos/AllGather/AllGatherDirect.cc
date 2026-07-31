@@ -110,8 +110,8 @@ static commResult_t impl(
       // Wait for receiving remote recv buffer from a local peer
       comm->ctran_->mapper->waitRequest(irecvReq[pRank].get());
       if (remoteAccessKeys[pRank].backend != CtranMapperBackend::NVL) {
-        CLOGF(
-            ERR,
+        CERR(
+            commInternalError,
             "NVLink backend not available between rank {} and {}",
             rank,
             pRank);

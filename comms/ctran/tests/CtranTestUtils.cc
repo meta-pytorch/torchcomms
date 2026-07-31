@@ -13,7 +13,6 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/mccl/utils/Utils.h"
@@ -94,16 +93,16 @@ commResult_t commMemAllocDisjoint(
   int cudaDev;
 
   if (ptr == NULL || size == 0) {
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   // Still allow cumem based allocation if cumem is supported.
   if (!ctran::utils::getCuMemSysSupported()) {
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));
   FB_CUCHECK(cuDeviceGet(&currentDev, cudaDev));
@@ -139,7 +138,7 @@ commResult_t commMemAllocDisjoint(
   if (vaSize < mappedSize) {
     LOG(ERROR) << "reservedVASize " << reservedVASize
                << " is smaller than mapped size " << mappedSize;
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   for (int i = 0; i < numSegments; i++) {
@@ -186,17 +185,17 @@ commResult_t commMemFreeDisjoint(
 
   if (ptr == NULL) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commInvalidArgument);
+    return commInvalidArgument;
   }
 
   if (ctran::utils::commCudaLibraryInit() != commSuccess) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   if (!ctran::utils::getCuMemSysSupported()) {
     FB_CUDACHECKIGNORE(cudaSetDevice(saveDevice));
-    return ErrorStackTraceUtil::log(commSystemError);
+    return commSystemError;
   }
 
   FB_CUCHECK(cuPointerGetAttribute(
@@ -489,7 +488,7 @@ void CtranStandaloneFixture::TearDown() {
 }
 
 std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
-    std::shared_ptr<::ctran::utils::Abort> abort) {
+    std::shared_ptr<::comms::fault_tolerance::Abort> abort) {
   auto ctranComm = std::make_unique<CtranComm>(abort);
 
   ctranComm->bootstrap_ = std::make_unique<testing::MockBootstrap>();
@@ -654,7 +653,8 @@ void CtranIntraProcessFixture::SetUp() {
 
 void CtranIntraProcessFixture::startWorkers(
     int nRanks,
-    const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts) {
+    const std::vector<std::shared_ptr<::comms::fault_tolerance::Abort>>&
+        aborts) {
   ASSERT_TRUE(aborts.size() == 0 || aborts.size() == nRanks)
       << "must supply either 0 or nRanks number of abort controls";
 
@@ -670,8 +670,9 @@ void CtranIntraProcessFixture::startWorkers(
     auto& state = perRankStates_.back();
     state.sharedBootstrapState = sharedBootstrapState;
     state.ctranComm = std::make_unique<CtranComm>(
-        aborts.size() == 0 ? ::ctran::utils::createAbort(/*enabled=*/false)
-                           : folly::copy(aborts[i]));
+        aborts.size() == 0
+            ? ::comms::fault_tolerance::createAbort(/*enabled=*/false)
+            : folly::copy(aborts[i]));
     state.nRanks = nRanks;
     state.rank = i;
     state.cudaDev = i;
