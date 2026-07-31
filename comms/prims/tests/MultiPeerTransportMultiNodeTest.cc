@@ -37,6 +37,8 @@ namespace comms::prims::tests {
  */
 class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
  protected:
+  static constexpr int kIbgdaMaxGroups = 17;
+
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
@@ -118,6 +120,7 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
         .ibConfig =
             {
                 .cudaDevice = localRank,
+                .max_num_channels = kIbgdaMaxGroups,
             },
         .topoConfig =
             {
@@ -274,6 +277,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   }
 
   auto states = create_transport_states();
+  EXPECT_EQ(states->ibgda_max_groups(), kIbgdaMaxGroups);
   states->exchange();
 
   // NVL peer accessor — always has at least same-node peers.

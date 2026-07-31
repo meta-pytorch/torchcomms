@@ -192,6 +192,13 @@ MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
 }
 
+std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
+  if (!ibgdaTransport_) {
+    return std::nullopt;
+  }
+  return ibgdaTransport_->maxGroups();
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {

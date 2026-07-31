@@ -209,8 +209,15 @@ class MultiPeerTransport {
 
   bool is_lazy_mode() const;
 
-  // Every requested edge must be requested by both endpoint ranks in the same
-  // connect round. Peer-vector order may differ between ranks.
+  /*
+   * Actual channel capacity of the configured IBGDA transport.
+   */
+  std::optional<int> ibgda_max_groups() const;
+
+  /*
+   * Every requested edge must be requested by both endpoint ranks in the same
+   * connect round. Peer-vector order may differ between ranks.
+   */
   void materializePeers(const std::vector<int>& peers);
 
   void connectPeers();
