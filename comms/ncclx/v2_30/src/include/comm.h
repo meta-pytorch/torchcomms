@@ -856,9 +856,6 @@ struct ncclComm {
   // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
   bool usePatAvg_{false};
 
-  // Disable local transports (P2P and SHM); forces NET for all connections
-  bool noLocal_{false};
-
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> resumeTaskQueue;
