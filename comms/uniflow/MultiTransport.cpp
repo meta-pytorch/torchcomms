@@ -10,6 +10,8 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
+#else
+#include "comms/uniflow/transport/p2p/P2pTransport.h"
 #endif
 
 #include <cstring>
@@ -76,7 +78,9 @@ Status MultiTransportFactory::supported(TransportType type) {
       return NVLinkTransportFactory::supported();
 #else
     case TransportType::NVLink:
-      return Err(ErrCode::NotImplemented, "nvlink is not supported on AMD");
+      // On AMD the NVLink tier is served by the P2P (XGMI) transport, whose
+      // supported() encodes the all-XGMI arch gate.
+      return P2pTransportFactory::supported();
 #endif
     case TransportType::TCP:
       return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
@@ -145,6 +149,22 @@ MultiTransportFactory::MultiTransportFactory(
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
+  }
+#else
+  // AMD: the NVLink tier is served by the P2P (XGMI) transport. Its supported()
+  // owns the all-XGMI arch gate (selectTransport is presence-driven; see §5.6).
+  if (deviceId_ >= 0) {
+    auto p2pSupported = P2pTransportFactory::supported();
+    if (!p2pSupported.hasError()) {
+      auto p2p = std::make_shared<P2pTransportFactory>(
+          deviceId, eventBaseThread_->getEventBase());
+      factories_.emplace_back(std::move(p2p));
+    } else {
+      UNIFLOW_LOG_INFO(
+          "P2P transport disabled for device {}: {}",
+          deviceId_,
+          p2pSupported.error().message());
+    }
   }
 #endif
 

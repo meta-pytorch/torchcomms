@@ -242,6 +242,7 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
     friend class MultiTransport;
     friend class NVLinkTransport;
     friend class RdmaTransport;
+    friend class P2pTransport;
 
    private:
     std::span<const std::unique_ptr<RemoteRegistrationHandle>> handles_;
