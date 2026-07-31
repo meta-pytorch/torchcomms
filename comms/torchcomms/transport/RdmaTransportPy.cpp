@@ -23,6 +23,16 @@ folly::ScopedEventBaseThread& getScopedEventBaseThread() {
   return scopedEventBaseThread;
 }
 
+int getTransportCudaDeviceIndex(const at::Device& device) {
+  const int cudaDevice = device.index();
+  TORCH_CHECK(
+      device.is_cuda() && cudaDevice >= 0,
+      "RdmaTransport requires an indexed CUDA device, for example "
+      "torch.device(\"cuda:0\"). This error happens if you pass a CPU device "
+      "or an unindexed CUDA device such as torch.device(\"cuda\").");
+  return cudaDevice;
+}
+
 py::tuple getRdmaRemoteBufferState(const RdmaRemoteBuffer& buffer) {
   return py::make_tuple(
       reinterpret_cast<uintptr_t>(buffer.ptr), buffer.len, buffer.accessKey);
@@ -68,8 +78,7 @@ PYBIND11_MODULE(_transport, m, py::mod_gil_not_used()) {
   py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
       // initialize a new RDMATransport using a custom init fn
       .def(py::init([](at::Device device) {
-        TORCH_INTERNAL_ASSERT(device.is_cuda());
-        int cuda_device = device.index();
+        int cuda_device = getTransportCudaDeviceIndex(device);
         return std::make_shared<RdmaTransport>(
             cuda_device, getScopedEventBaseThread().getEventBase());
       }))
