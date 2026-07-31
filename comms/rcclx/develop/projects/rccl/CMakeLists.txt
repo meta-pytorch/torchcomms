@@ -1086,6 +1086,8 @@ set(COMMON_FILES
   comms/utils/logger/DataTable.h
   comms/utils/logger/DataTableWrapper.cc
   comms/utils/logger/DataTableWrapper.h
+  comms/utils/logger/ErrorStackUtil.cc
+  comms/utils/logger/ErrorStackUtil.h
   comms/utils/logger/EventMgr.cc
   comms/utils/logger/EventMgr.h
   comms/utils/logger/EventMgrHelperTypes.cc
