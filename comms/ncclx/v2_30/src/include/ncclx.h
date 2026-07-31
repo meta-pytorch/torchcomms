@@ -138,6 +138,29 @@ ncclResult_t  ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
 ncclResult_t  pncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
 
+/* Pointer-based registration for all buffer types - no handle returned.
+ * Supports both single-segment and multi-segment (expandable) buffers.
+ * Use ncclGlobalDeregisterWithPtr(buf, len) to deregister.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm.
+ * cudaDev is auto-detected from the buffer pointer. */
+ncclResult_t  ncclGlobalRegisterWithPtr(void* buff, size_t size);
+ncclResult_t pncclGlobalRegisterWithPtr(void* buff, size_t size);
+
+/* Pointer-based deregistration for all buffer types.
+ * Uses pinRange to discover all physical segments and frees each.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm.
+ * cudaDev is auto-detected from the buffer pointer. */
+ncclResult_t  ncclGlobalDeregisterWithPtr(void* buff, size_t size);
+ncclResult_t pncclGlobalDeregisterWithPtr(void* buff, size_t size);
+
+/* Return the unique hash of the communicator.
+ * For all ranks in a given communicator, this hash will be the same.
+ */
+ncclResult_t  ncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
+ncclResult_t  pncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
