@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
@@ -197,7 +198,7 @@ class CommWithNoLocalCollTest
       ncclComm_t comm,
       bool expectNoLocal,
       CollectiveOp collectiveOp) {
-    if (!ctranInitialized(comm->ctranComm_.get())) {
+    if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
       return;
     }
 
@@ -205,18 +206,21 @@ class CommWithNoLocalCollTest
     switch (collectiveOp) {
       case CollectiveOp::kAllGather:
         supported = ctranAllGatherSupport(
-            comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO::ctran);
+            meta::comms::ncclx::ncclCommCtran(comm).get(),
+            NCCL_ALLGATHER_ALGO::ctran);
         break;
       case CollectiveOp::kReduceScatter:
         supported = ctranReduceScatterSupport(
-            comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO::ctran);
+            meta::comms::ncclx::ncclCommCtran(comm).get(),
+            NCCL_REDUCESCATTER_ALGO::ctran);
         break;
     }
     if (!supported) {
       return;
     }
 
-    auto* mapper = comm->ctranComm_->ctran_->mapper.get();
+    auto* mapper =
+        meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper.get();
     const int totalPuts = mapper->iPutCount[CtranMapperBackend::IB] +
         mapper->iPutCount[CtranMapperBackend::NVL];
     if (totalPuts == 0) {
@@ -229,7 +233,7 @@ class CommWithNoLocalCollTest
       EXPECT_GT(mapper->iPutCount[CtranMapperBackend::IB], 0)
           << "noLocal: expected IB puts";
     } else {
-      if (comm->ctranComm_->statex_->nLocalRanks() > 1) {
+      if (meta::comms::ncclx::ncclCommCtran(comm)->statex_->nLocalRanks() > 1) {
         EXPECT_GT(mapper->iPutCount[CtranMapperBackend::NVL], 0)
             << "default: expected NVL puts for local peers";
       }

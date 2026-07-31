@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <unistd.h>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -441,10 +442,13 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
   void *buf = nullptr, *segHdl = nullptr;
   constexpr size_t kBufferSize = 1024 * 1024;
   CUDACHECK_TEST(cudaMalloc(&buf, kBufferSize));
-  COMMCHECK_TEST(comm->ctranComm_->ctran_->mapper->regMem(
-      buf, kBufferSize, &segHdl, true /* forceRegist */));
+  COMMCHECK_TEST(
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->regMem(
+          buf, kBufferSize, &segHdl, true /* forceRegist */));
 
-  COMMCHECK_TEST(comm->ctranComm_->ctran_->mapper->deregMem(segHdl));
+  COMMCHECK_TEST(
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->deregMem(
+          segHdl));
   CUDACHECK_TEST(cudaFree(buf));
 
   void *userBuf = nullptr, *userSegHdl = nullptr;

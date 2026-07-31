@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <memory>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <fmt/format.h>
 #include <folly/init/Init.h>
@@ -50,8 +51,8 @@ TEST_F(CommWithCtranTest, CtranEnable) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
-  ASSERT_NE(comm->ctranComm_.get(), nullptr);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_NE(meta::comms::ncclx::ncclCommCtran(comm).get(), nullptr);
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 }
 
 TEST_F(CommWithCtranTest, CtranDisable) {
@@ -60,7 +61,7 @@ TEST_F(CommWithCtranTest, CtranDisable) {
       globalRank, numRanks, localRank, bootstrap_.get()};
 
   ASSERT_NE(nullptr, comm.get());
-  EXPECT_EQ(nullptr, comm->ctranComm_);
+  EXPECT_EQ(nullptr, meta::comms::ncclx::ncclCommCtran(comm));
   EXPECT_FALSE(ctranInitialized(nullptr));
 
   // All CTran collective support functions should return false with nullptr
@@ -81,15 +82,22 @@ TEST_F(CommWithCtranTest, CtranCommInitialized) {
 
   const auto ncclComm = static_cast<ncclComm_t>(comm);
   ASSERT_NE(nullptr, ncclComm);
-  ASSERT_NE(nullptr, ncclComm->ctranComm_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(ncclComm));
 
-  EXPECT_EQ(comm->ctranComm_->opCount_, &ncclComm->opCount);
-  EXPECT_EQ(comm->ctranComm_->config_.blocking, ncclComm->config.blocking);
   EXPECT_EQ(
-      comm->ctranComm_->config_.commDesc,
+      meta::comms::ncclx::ncclCommCtran(comm)->opCount_, &ncclComm->opCount);
+  EXPECT_EQ(
+      meta::comms::ncclx::ncclCommCtran(comm)->config_.blocking,
+      ncclComm->config.blocking);
+  EXPECT_EQ(
+      meta::comms::ncclx::ncclCommCtran(comm)->config_.commDesc,
       NCCLX_CONFIG_FIELD(ncclComm->config, commDesc));
-  EXPECT_EQ(comm->ctranComm_->logMetaData_, ncclCommLogData(ncclComm));
-  EXPECT_EQ(comm->ctranComm_->runtimeConn_, ncclComm->runtimeConn);
+  EXPECT_EQ(
+      meta::comms::ncclx::ncclCommCtran(comm)->logMetaData_,
+      ncclCommLogData(ncclComm));
+  EXPECT_EQ(
+      meta::comms::ncclx::ncclCommCtran(comm)->runtimeConn_,
+      ncclComm->runtimeConn);
 }
 
 TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
@@ -103,8 +111,8 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfig) {
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
   ASSERT_NE(nullptr, comm.get());
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
-  EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
+  EXPECT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
   EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
@@ -125,8 +133,8 @@ TEST_F(CommWithCtranTest, CTranAllGatherOverrideConfigSplitComm) {
   ASSERT_NE(nullptr, childComm.get());
 
   ASSERT_NE(nullptr, comm.get());
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
-  EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
+  EXPECT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
   EXPECT_EQ(algo, NCCL_ALLGATHER_ALGO::ctring);
@@ -141,11 +149,11 @@ TEST_F(CommWithCtranTest, PostCommDestroy) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 
-  ASSERT_FALSE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_FALSE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
   // Do not check ctran->isInitialized() as it is already destroyed
 }
 
@@ -157,10 +165,11 @@ TEST_F(CommWithCtranTest, RegMemReuseInMultiComms) {
   ncclx::test::NcclCommRAII firstComm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(nullptr, firstComm.get());
-  ASSERT_NE(nullptr, firstComm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(firstComm)->ctran_);
 
   if (!ctranAllGatherSupport(
-          firstComm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
+          meta::comms::ncclx::ncclCommCtran(firstComm).get(),
+          NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP() << "ctranAllGather is not supported. Skip test";
   }
 
@@ -232,7 +241,7 @@ TEST_F(CommWithCtranTest, RegMemReuseInMultiComms) {
         recvBufs[c],
         count,
         commInt,
-        comms[c]->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comms[c]).get(),
         streams[c],
         NCCL_ALLGATHER_ALGO));
   }
@@ -279,7 +288,7 @@ TEST_F(CommWithCtranTest, CommAbort) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
 
   // Expect shared resource has been released properly
   ncclResult_t res = ncclCommAbort(comm);
@@ -293,7 +302,7 @@ TEST_F(CommWithCtranTest, CommAbortWithRegMem) {
   ncclComm_t comm = ncclx::test::createNcclComm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
 
   ctran::RegCache* regCache = ctran::RegCache::getInstance().get();
   ASSERT_NE(regCache, nullptr);
@@ -311,7 +320,8 @@ TEST_F(CommWithCtranTest, CommAbortWithRegMem) {
   ncclCommRegister(comm, buf, bufSize, &hdl);
   ASSERT_NE(hdl, nullptr);
 
-  if (!ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
+  if (!ctranAllGatherSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), NCCL_ALLGATHER_ALGO)) {
     ncclCommAbort(comm);
     GTEST_SKIP() << "ctranAllGather is not supported. Skip test";
   }
@@ -321,7 +331,7 @@ TEST_F(CommWithCtranTest, CommAbortWithRegMem) {
       buf,
       count,
       commInt,
-      comm->ctranComm_.get(),
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
       0,
       NCCL_ALLGATHER_ALGO));
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -401,7 +411,7 @@ TEST_F(CommWithCtranTest, CtranOpCount) {
 
   // Update opCount mimic Ctran collectives
   constexpr int kNumOps = 10;
-  auto ctranComm = comm->ctranComm_.get();
+  auto ctranComm = meta::comms::ncclx::ncclCommCtran(comm).get();
   for (int i = 0; i < kNumOps; ++i) {
     ctranComm->ctran_->updateOpCount();
   }
@@ -435,7 +445,8 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
   ncclComm_t comm1 = ncclx::test::createNcclComm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm1, nullptr);
-  ASSERT_FALSE(ctranInitialized(comm1->ctranComm_.get()));
+  ASSERT_FALSE(
+      ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm1).get()));
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
@@ -464,13 +475,14 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
     } while (commStatus == ncclInProgress);
   }
 
-  ASSERT_TRUE(ctranInitialized(comm2->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm2).get()));
 
   // Now it should be disabled again after no hint
   ncclComm_t comm3 = ncclx::test::createNcclComm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(comm3, nullptr);
-  ASSERT_FALSE(ctranInitialized(comm3->ctranComm_.get()));
+  ASSERT_FALSE(
+      ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm3).get()));
 
   ASSERT_EQ(ncclCommDestroy(comm3), ncclSuccess);
   ASSERT_EQ(ncclCommDestroy(comm2), ncclSuccess);

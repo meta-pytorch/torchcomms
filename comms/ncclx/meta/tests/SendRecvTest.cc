@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <gtest/gtest.h>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/init/Init.h>
 
@@ -75,7 +76,8 @@ class SendRecvTest : public NcclxBaseTestFixture {
     // isCtranAlgo is true
     if (expectCtranAlgo_) {
       // Use Ctran-only opCount to track Ctran sendrecv is called
-      return ncclComm->ctranComm_->ctran_->getCtranOpCount();
+      return meta::comms::ncclx::ncclCommCtran(ncclComm)
+          ->ctran_->getCtranOpCount();
     } else {
       return ncclComm->opCount;
     }
@@ -400,10 +402,12 @@ TEST_F(SendRecvTest, CtgraphGroupedSendRecv) {
 
   if (meta::comms::ncclx::ncclCommNoLocal(comm)) {
     // nolocal: IB backend → ctgraph routes to ctran
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "SendRecv", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "SendRecv", "Ctran");
   } else {
     // default: NVL peers → ctgraph falls back to baseline
-    ctranAlgoStats_.verifyNot(comm->ctranComm_.get(), "SendRecv", "Ctran");
+    ctranAlgoStats_.verifyNot(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "SendRecv", "Ctran");
   }
 
   CUDACHECK_TEST(cudaGraphExecDestroy(exec));
