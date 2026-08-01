@@ -22,11 +22,9 @@ MANIFEST := $(OBJDIR)/manifest
 DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
-INCFLAGS += -I../../
-INCFLAGS += -I${SHAREDDIR}/
-
-INCFLAGS  += -I$(BASE_DIR)
-INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
+# NCCLX device include-path additions (repo roots, BASE_DIR, conda); see
+# ncclx_incflags.mk. Seam so the forked device makefile carries only this.
+include ncclx_incflags.mk
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 CXXFLAGS  := $(INCFLAGS) $(CXXFLAGS)
 
@@ -39,15 +37,9 @@ NVCUFLAGS_SYM += -DNCCL_OS_LINUX -DDOCA_VERBS_USE_CUDA_WRAPPER -DDOCA_VERBS_USE_
 endif
 #NVCUFLAGS_SYM += --ptx
 
-ifneq ($(ENABLE_TCPDM),1)
-NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
-NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"
-endif
-
-ifeq ($(ENABLE_PRIMS),1)
-NVCUFLAGS += --compiler-options "-DENABLE_PRIMS"
-NVCUFLAGS_SYM += --compiler-options "-DENABLE_PRIMS"
-endif
+# NCCLX device NVCC flag customizations (TCPDM / prims defines); see
+# ncclx_flags.mk. Seam so the forked device makefile carries only this.
+include ncclx_flags.mk
 
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY
 
