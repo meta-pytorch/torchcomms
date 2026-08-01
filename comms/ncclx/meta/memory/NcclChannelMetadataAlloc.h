@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -32,7 +34,10 @@ template <typename T>
 inline ncclResult_t allocChannelMetadata(
     ncclComm* comm,
     T** ptr,
-    size_t numElems,
+    // Qualified: this header lives in namespace `meta`, where an unqualified
+    // `size_t` resolves to range-v3's `meta::size_t` alias template in any
+    // translation unit that pulls it in.
+    std::size_t numElems,
     cudaStream_t stream,
     const char* callsite,
     bool pushFree) {
@@ -53,6 +58,22 @@ inline ncclResult_t allocChannelMetadata(
           comm->ncclxExt->slabAllocator.get())));
   if (pushFree && !NCCL_MEM_USE_SLAB_ALLOCATOR) {
     ncclCommPushCudaFree(comm, *ptr);
+  }
+  return ncclSuccess;
+}
+
+// Releases a shared-resource channel-metadata buffer, i.e. one allocated by
+// `allocChannelMetadata` with `pushFree=false`. Per-channel buffers are not
+// freed here: they register their free at allocation time and are released
+// through the communicator's push-free list.
+//
+// This mirrors the allocation-side ownership rule, which is why it lives next
+// to it: slab-owned device memory is released with the slab, so it is never
+// freed individually.
+template <typename T>
+inline ncclResult_t freeChannelMetadata(ncclComm* comm, T* ptr) {
+  if (comm->ncclxExt->channelMetadataOnHost || !NCCL_MEM_USE_SLAB_ALLOCATOR) {
+    return ncclCudaFree(ptr, comm->memManager);
   }
   return ncclSuccess;
 }
