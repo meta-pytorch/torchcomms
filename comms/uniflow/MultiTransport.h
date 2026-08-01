@@ -24,6 +24,13 @@ struct MultiTransportFactoryOptions {
   CpuNicSelectionPolicy cpuNicSelectionPolicy{
       CpuNicSelectionPolicy::kNumaLocalBounded};
   size_t maxCpuNics{2};
+  // Kill-switch for the intra-node GPU interconnect tier (NVLink on NVIDIA,
+  // P2P/XGMI on AMD). Default false = tier enabled; set true to skip
+  // registering it so intra-node VRAM->VRAM falls back to RDMA without a code
+  // revert (selectTransport is presence-driven). Caller-owned so the transport
+  // takes no runtime-config-system dependency; the rollout owner may wire it to
+  // an env var / JustKnob / config at its own layer.
+  bool disableIntraNode{false};
 };
 
 class MultiTransport {

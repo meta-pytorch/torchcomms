@@ -144,16 +144,25 @@ MultiTransportFactory::MultiTransportFactory(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
 
+  // Kill-switch: when set, skip registering the intra-node interconnect tier so
+  // intra-node VRAM->VRAM falls back to RDMA. Caller-owned via
+  // MultiTransportFactoryOptions (no transport-internal config dependency),
+  // mirroring preferredTransport / netdevPrefix.
+  const bool intraNodeDisabled = options_.disableIntraNode;
 #ifndef __HIP_PLATFORM_AMD__
-  if (deviceId_ >= 0 && isNvlinkAvailable()) {
+  if (!intraNodeDisabled && deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
+  } else if (intraNodeDisabled && deviceId_ >= 0) {
+    UNIFLOW_LOG_INFO(
+        "intra-node NVLink tier disabled via MultiTransportFactoryOptions; "
+        "falling back to RDMA");
   }
 #else
   // AMD: the NVLink tier is served by the P2P (XGMI) transport. Its supported()
   // owns the all-XGMI arch gate (selectTransport is presence-driven; see §5.6).
-  if (deviceId_ >= 0) {
+  if (!intraNodeDisabled && deviceId_ >= 0) {
     auto p2pSupported = P2pTransportFactory::supported();
     if (!p2pSupported.hasError()) {
       auto p2p = std::make_shared<P2pTransportFactory>(
@@ -165,6 +174,10 @@ MultiTransportFactory::MultiTransportFactory(
           deviceId_,
           p2pSupported.error().message());
     }
+  } else if (intraNodeDisabled && deviceId_ >= 0) {
+    UNIFLOW_LOG_INFO(
+        "intra-node P2P/XGMI tier disabled via MultiTransportFactoryOptions; "
+        "falling back to RDMA");
   }
 #endif
 
