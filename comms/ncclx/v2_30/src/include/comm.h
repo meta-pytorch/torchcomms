@@ -31,9 +31,9 @@
 #endif
 
 #include <optional>
+#include <sstream>
 
 #include "meta/algoconf/InfoExt.h"
-#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/utils/commSpecs.h"
 
 // Forward declarations of ncclx classes to avoid circular dependencies
@@ -823,7 +823,6 @@ struct ncclComm {
   // Opaque NCCLX-only per-comm state; see meta/comm/NcclxCommExt.h.
   ncclxCommExt* ncclxExt{nullptr};
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
-  std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
   std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
 
