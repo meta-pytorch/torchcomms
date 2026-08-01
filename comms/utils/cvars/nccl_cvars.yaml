@@ -2472,6 +2472,16 @@ cvars:
      still haven't fully tested the performance impact of this feature. So
      it is disabled by default. In the future, we will enable it by default.
 
+ - name        : NCCLX_COLLTRACE_DEVICE_WRITE
+   type        : bool
+   default     : false
+   description : |-
+     When graph colltrace tracing is enabled (NCCL_COLLTRACE_TRACE_CUDA_GRAPH),
+     have collective kernels publish their own start/end timestamps into the
+     graph ring from inside the kernel (in-kernel "device write"). Off by
+     default until the in-kernel cutover diff lands; set true to hand collective
+     kernels the device ring handle and enable in-kernel emission.
+
  - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
    type        : bool
    default     : true
