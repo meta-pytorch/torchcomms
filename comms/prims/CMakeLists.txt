@@ -14,9 +14,9 @@ list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/benchmarks/.*")
 # so the transport/amd tree is excluded (it needs mlx5dv/bnxt direct-verbs
 # headers unavailable here).
 list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/transport/amd/.*")
-# moe_ep is a self-contained Python `_cpp` extension (needs torch + pybind11),
+# link_ep is a self-contained Python `_cpp` extension (needs torch + pybind11),
 # not consumed by MCCL/ctran — build it separately if OSS ever needs MoE EP.
-list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/collectives/moe_ep/.*")
+list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/collectives/link_ep/.*")
 # triton is Python-only.
 list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/triton/.*")
 
@@ -107,4 +107,4 @@ file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}" _PRIMS_SRC_DIR)
 install(DIRECTORY ${_PRIMS_SRC_DIR}/ DESTINATION include/comms/prims
     FILES_MATCHING PATTERN "*.h" PATTERN "*.cuh"
     PATTERN "tests" EXCLUDE PATTERN "benchmarks" EXCLUDE
-    PATTERN "amd" EXCLUDE PATTERN "moe_ep" EXCLUDE PATTERN "triton" EXCLUDE)
+    PATTERN "amd" EXCLUDE PATTERN "link_ep" EXCLUDE PATTERN "triton" EXCLUDE)
