@@ -187,6 +187,34 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndRdma) {
 #endif
 }
 
+TEST_F(MultiTransportFactoryTest, ConstructorGpuOmitsIntraNodeWhenDisabled) {
+  if (topo_->gpuCount() == 0) {
+    GTEST_SKIP() << "No GPUs available";
+  }
+  // Only meaningful where the intra-node interconnect tier would normally be
+  // registered (NVLink on NVIDIA; P2P/XGMI on all-XGMI AMD nodes). Otherwise
+  // there is nothing to disable.
+  if (MultiTransportFactory::supported(TransportType::NVLink).hasError()) {
+    GTEST_SKIP() << "Intra-node interconnect tier not available on this host";
+  }
+
+  // Kill-switch (D114457575): with disableIntraNode, the intra-node
+  // interconnect factory is not registered. Since selectTransport is
+  // presence-driven, an intra-node VRAM->VRAM batch then has no NVLink-tier
+  // handle to match and falls back to RDMA. Assert the tier is absent from the
+  // registered factories (the observable cause of that fallback); the default
+  // case is covered by ConstructorGpuCreatesNvlinkAndRdma above.
+  MultiTransportFactoryOptions opts;
+  opts.disableIntraNode = true;
+  MultiTransportFactory factory(0, opts);
+
+  for (size_t i = 0; i < factoryCount(factory); ++i) {
+    EXPECT_NE(factoryTransportType(factory, i), TransportType::NVLink)
+        << "intra-node interconnect tier must be omitted when "
+           "disableIntraNode=true so intra-node traffic falls back to RDMA";
+  }
+}
+
 TEST_F(MultiTransportFactoryTest, ConstructorRejectsInvalidDeviceId) {
   int gpuCount = static_cast<int>(topo_->gpuCount());
   EXPECT_THROW(MultiTransportFactory factory(gpuCount), std::runtime_error);
