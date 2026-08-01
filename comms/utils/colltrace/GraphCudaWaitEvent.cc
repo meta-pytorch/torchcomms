@@ -12,14 +12,21 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
 
+bool colltraceDeviceWriteEnabled() noexcept {
+  return NCCLX_COLLTRACE_DEVICE_WRITE;
+}
+
 GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
     : stream_(stream), collId_(collId), enqueueTime_(precisionNow()) {
-  // Create per-collective CUDA resources using relaxed capture mode so
-  // they don't interfere with the graph capture in progress.
+  // Per-collective CUDA resources for the host-launched timestamp fallback,
+  // created in relaxed capture mode so they don't disturb the in-progress graph
+  // capture. TEMPORARY: removed together with the host path at the in-kernel
+  // cutover.
   StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};
   CUDA_CHECK(cudaStreamCreate(&timestampStream_));
   CUDA_CHECK(cudaEventCreateWithFlags(&depEvent_, cudaEventDisableTiming));
@@ -47,10 +54,15 @@ void GraphCudaWaitEvent::attachRingBuffer(
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
-  // Fork: collective stream -> timestamp stream so the start kernel is
-  // captured into the graph. We use cudaStreamWaitEvent to bring the
-  // timestamp stream into the capture with a dependency on the main
-  // stream's current position (right before the collective launches).
+  if (inKernelEmit_) {
+    // The collective kernel publishes its own start timestamp into the ring
+    // from inside the kernel, so there is nothing to schedule on the host.
+    return folly::unit;
+  }
+  // Host-launched fallback (kernel not armed to self-emit, e.g. pre-sm90 or a
+  // not-yet-migrated collective). Fork: collective stream -> timestamp stream
+  // so the start kernel is captured into the graph, with a dependency on the
+  // main stream's current position (right before the collective launches).
   CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, stream_));
   CUDA_CHECK_EXPECTED(cudaStreamWaitEvent(timestampStream_, depEvent_));
 
@@ -63,8 +75,14 @@ CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::afterCollKernelScheduled() noexcept {
-  // Fork: collective stream -> timestamp stream. This DAG edge ensures the
-  // end timestamp kernel fires only after the collective completes.
+  if (inKernelEmit_) {
+    // The collective kernel publishes its own end timestamp into the ring from
+    // inside the kernel, so there is nothing to schedule on the host.
+    return folly::unit;
+  }
+  // Host-launched fallback. Fork: collective stream -> timestamp stream. This
+  // DAG edge ensures the end timestamp kernel fires only after the collective
+  // completes.
   CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, stream_));
   CUDA_CHECK_EXPECTED(cudaStreamWaitEvent(timestampStream_, depEvent_));
 
