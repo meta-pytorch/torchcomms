@@ -79,7 +79,11 @@ PYBIND11_MODULE(_cpp, m) {
           &Config::getNvlBufferSizeHint,
           py::arg("hidden_bytes"),
           py::arg("num_ranks"))
-      .def("get_rdma_buffer_size_hint", &Config::getRdmaBufferSizeHint);
+      .def(
+          "get_rdma_buffer_size_hint",
+          &Config::getRdmaBufferSizeHint,
+          py::arg("hidden_bytes"),
+          py::arg("num_ranks"));
 
   // ---------------------------------------------------------------------------
   // EventHandle — RAII shared_ptr cudaEvent_t, exposes current_stream_wait()
@@ -91,7 +95,7 @@ PYBIND11_MODULE(_cpp, m) {
 
   // ---------------------------------------------------------------------------
   // Buffer — pybind-facing class. Constructor + topology + IPC bootstrap +
-  // layout/dispatch/combine. Low-latency and internode entry points are
+  // layout/dispatch/combine. Low-latency entry points are
   // bound below but throw `notImplemented` where their kernels aren't wired.
   // ---------------------------------------------------------------------------
   py::class_<Buffer>(m, "Buffer")
@@ -167,6 +171,9 @@ PYBIND11_MODULE(_cpp, m) {
           py::arg("previous_event") = std::nullopt,
           py::arg("async_finish") = false,
           py::arg("allocate_on_comm_stream") = false)
+#ifdef LINK_EP_OSS_INTRANODE
+      ; // OSS intranode build: binding chain ends after intranode_combine
+#else
       // ---- Low-latency dispatch / combine over IBGDA ----
       .def(
           "low_latency_dispatch",
@@ -207,4 +214,5 @@ PYBIND11_MODULE(_cpp, m) {
           py::arg("hidden"),
           py::arg("num_experts"),
           py::arg("all_gather_callback"));
+#endif // LINK_EP_OSS_INTRANODE — low_latency_* bindings
 }

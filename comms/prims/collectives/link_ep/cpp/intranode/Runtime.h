@@ -45,11 +45,16 @@ namespace comms::prims::link_ep {
  */
 class IntranodeRuntime {
  public:
+#ifndef LINK_EP_OSS_INTRANODE
+  // Bootstrap-driven ctor (allocates GpuMemHandler + MultiPeerNvlTransport).
+  // Compiled out of the self-contained OSS intranode build, which only uses
+  // the pre-allocated-buffer ctor below (Python gathers the IPC handles).
   IntranodeRuntime(
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       int rank,
       int numRanks,
       std::size_t numNvlBytes);
+#endif
 
   /**
    * Pre-allocated-buffer ctor — used by `Buffer::sync` when the local NVL
@@ -119,6 +124,7 @@ class IntranodeRuntime {
     return commStream_;
   }
 
+#ifndef LINK_EP_OSS_INTRANODE
   /** Underlying NVLink multi-peer transport (per-peer signal/barrier slots
    *  + state buffers). Defined in the .cc to keep the heavy include out of
    *  consumers' translation units. */
@@ -127,6 +133,7 @@ class IntranodeRuntime {
 
   /** GpuMemHandler that owns the kCudaIpcUncached data buffer. */
   comms::prims::GpuMemHandler& memHandler();
+#endif
 
   /** `void**` device array of size `numRanks` with peer-mapped NVL data
    *  buffer pointers (entry `i` = `getPeerDataPtr(i)`; entry == self points
@@ -171,8 +178,10 @@ class IntranodeRuntime {
   const int numRanks_;
   const std::size_t numNvlBytes_;
 
+#ifndef LINK_EP_OSS_INTRANODE
   std::unique_ptr<comms::prims::MultiPeerNvlTransport> transport_;
   std::unique_ptr<comms::prims::GpuMemHandler> memHandler_;
+#endif
 
   // Persistent workspace — NUM_WORKSPACE_BYTES (see KernelConfigs.cuh).
   void* workspace_{nullptr};
