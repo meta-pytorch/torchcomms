@@ -6,7 +6,7 @@
  *************************************************************************/
 
 #include "dev_runtime.h"
-#include "meta/wrapper/NcclCommCtran.h"
+#include "meta/wrapper/CtranRma.h"
 #include "comm.h"
 #include "nccl_device/core.h"
 #include "nccl_device/gin_barrier.h"
@@ -17,10 +17,6 @@
 #include "transport.h"
 #include "group.h"
 #include "gin/gin_host.h"
-#include "meta/rma/ncclWin.h"
-#include "meta/NcclxConfig.h"
-#include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/wrapper/MetaFactory.h"
 #include "nccl_device.h"
 #include "utils.h"
 #if defined(NCCL_OS_WINDOWS)
@@ -1468,53 +1464,12 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
-    // NCCL_WIN_DEVICE_API flag bypasses CTRAN and forces NCCL orig path.
-    // This is needed for device API (GIN support) which only exists in the orig path.
-    bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
-    if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())){
-      if (!ncclGetCuMemSysSupported()) {
-        ERR(ncclInternalError, "ncclWin requires CUMEM support.");
-        return ncclInternalError;
-      }
-      if (buff == nullptr) {
-        ERR(
-            ncclInvalidUsage,
-            "Invalid baseptr to create shared buffer in ncclWinRegister.");
-        return ncclInvalidUsage;
-      }
-
-      ncclWin* win_ = new ncclWin();
-      win_->comm = comm;
-
-      auto guard = folly::makeGuard([win_] { delete win_; });
-      // Bridge the comm-level ncclx::win_register_ipc_only hint into the ctran
-      // window hints, as there is no per-window config path from Python today.
-      meta::comms::Hints winHints;
-      NCCLCHECK(metaCommToNccl(winHints.set(
-          "win_register_ipc_only",
-          NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly) ? "1" : "0")));
-      NCCLCHECK(metaCommToNccl(winHints.set(
-          "win_register_enable_signal",
-          NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal) ? "1"
-                                                                    : "0")));
-      NCCLCHECK(metaCommToNccl(winHints.set(
-          "win_register_symmetric",
-          NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric) ? "1" : "0")));
-      NCCLCHECK(metaCommToNccl(
-          ctran::ctranWinRegister(
-              buff,
-              size,
-              meta::comms::ncclx::ncclCommCtran(comm).get(),
-              &win_->ctranWindow,
-              winHints)));
-
-      // Create empty ncclWindow as handle and register mapping
-      ncclWindow_t handle = new ncclWindow_vidmem();
-      ncclWinMap().insert(handle, win_);
-      *win = handle;
-      guard.dismiss();
-      return ncclSuccess;
-    }
+  bool handled = false;
+  NCCLCHECK(
+      ncclx::ctranWinRegisterIfOwned(comm, buff, size, win, winFlags, &handled));
+  if (handled) {
+    return ncclSuccess;
+  }
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
   NCCLCHECK(PtrCheck(win, __func__, "win"));
   *win = nullptr;
@@ -1559,29 +1514,10 @@ fail:
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_vidmem* winDev) {
 
-  if(NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())){
-    ncclWin* ncclWinPtr = ncclWinMap().find(winDev);
-    // If window is found in CTRAN map, deregister via CTRAN path.
-    // If not found (e.g., registered with NCCL_WIN_DEVICE_API), fall through
-    // to symmetric/orig path deregistration below.
-    if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
-      auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
-      if (statex == nullptr) {
-        ERR(ncclInternalError, "Empty communicator statex.");
-        return ncclInternalError;
-      }
-
-      // Remove from map first, then cleanup resources
-      ncclWinMap().erase(winDev);
-      auto guard = folly::makeGuard([winDev, ncclWinPtr] {
-        delete ncclWinPtr;
-        delete winDev;
-      });
-
-      NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
-      return ncclSuccess;
-    }
-    // Window not in CTRAN map - fall through to orig path deregistration
+  bool handled = false;
+  NCCLCHECK(ncclx::ctranWinDeregisterIfOwned(comm, winDev, &handled));
+  if (handled) {
+    return ncclSuccess;
   }
 
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
