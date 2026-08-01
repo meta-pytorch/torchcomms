@@ -592,10 +592,6 @@ struct ncclComm {
   bool directMode; // if any process manages more than one local rank
   int cuMemSupport;
 
-  // NCCLX supports storing channel metadata on the pinned host memory
-  // See the description of NCCL_CHANNEL_METADATA_LOCATION for details
-  bool channelMetadataOnHost{false};
-
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect mismatches.
 
   uint64_t commHash;

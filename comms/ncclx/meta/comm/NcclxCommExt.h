@@ -90,4 +90,10 @@ struct ncclxCommExt {
   // sync-buffer path (reserve/release). Relocated off the forked upstream
   // ncclComm to keep that struct pristine.
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache;
+
+  // NCCLX supports storing channel metadata in pinned host memory instead of
+  // device memory; see the description of NCCL_CHANNEL_METADATA_LOCATION.
+  // Drives the channel-metadata allocation strategy in
+  // meta/memory/NcclChannelMetadataAlloc.h.
+  bool channelMetadataOnHost{false};
 };
