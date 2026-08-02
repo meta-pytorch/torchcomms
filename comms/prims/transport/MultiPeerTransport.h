@@ -188,6 +188,43 @@ class MultiPeerTransport {
   Transport* /*nullable*/ get_nvl_transports_array() const;
 
   /**
+   * @return True when this rank has multimem (NVLS) NVL transport CONFIGURED
+   * and eligible.
+   *
+   * Cheap local check: it reflects configuration + hardware eligibility
+   * (`enableMultimem` set at transport construction && `isEligible`) and that
+   * no prior exchange/eligibility failure has latched the transport
+   * unavailable. It does NOT itself run the collective multicast exchange -
+   * that happens lazily on the first get_multimem_nvl_transport_device() call -
+   * but it does flip back to false if that exchange later fails. Used by cnvlmm
+   * collective support predicates to gate on multimem availability.
+   */
+  bool has_multimem_nvl_transport() const;
+
+  /**
+   * Return the device handle for the copy-based (staging) multimem NVL
+   * transport, lazily performing the collective multicast exchange on the first
+   * call for a configured transport. Delegates to
+   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the cnvlmm
+   * staging path (and the no-copy path's arrival-barrier signals).
+   *
+   * The eligibility guard and the lazy first-call exchange are consistent:
+   * has_multimem_nvl_transport() reflects configuration/eligibility (true
+   * BEFORE the exchange), so a configured, eligible transport passes the guard
+   * and its first call runs the exchange. It throws when there is no NVL
+   * transport, when multimem was never configured / not eligible, or when a
+   * prior exchange failed and latched the transport unavailable.
+   *
+   * PRECONDITION: COLLECTIVE - all NVL ranks that may use a multimem collective
+   * must call this in lockstep; the first call performs the multicast exchange.
+   *
+   * @throws std::runtime_error if no NVL transport, multimem NVL is not
+   * configured / not eligible on all ranks, or a prior exchange latched it
+   * unavailable.
+   */
+  MultimemNvlTransportDevice get_multimem_nvl_transport_device() const;
+
+  /**
    * @param globalPeerRank Global rank of the IBGDA peer.
    * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
    */
