@@ -1895,6 +1895,15 @@ cvars:
      initialize MultiPeerTransport which provides unified NVLink and IBGDA
      transport for P2P communication.
 
+ - name        : MCCL_PRIMS_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Enable Prims transports for MCCL communicators. This is independent of
+     NCCL_CTRAN_USE_PIPES so enabling Prims in MCCL does not enable Pipes for
+     NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
+     to the legacy transport policy.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false

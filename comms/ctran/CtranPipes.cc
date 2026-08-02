@@ -15,6 +15,11 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
+bool ctranPrimsEnabled(const CtranComm* comm) {
+  const auto enablePrims = comm->config_.pipesConfig.enablePrims;
+  return enablePrims < 0 ? NCCL_CTRAN_USE_PIPES : enablePrims != 0;
+}
+
 #if defined(ENABLE_PRIMS)
 
 #include "comms/prims/trace/PipesTrace.h"
@@ -61,7 +66,7 @@ commResult_t ctran::ctranPreparePipesTrace(
 }
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
-  if (!NCCL_CTRAN_USE_PIPES) {
+  if (!ctranPrimsEnabled(comm)) {
     CLOGF(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
     return commSuccess;
   }
@@ -518,11 +523,12 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
       nvlNRanks - 1,
       comm->multiPeerTransport_->ib_peer_ranks().size());
 
-  // Wire staging buffers only when there are NVL peers. When P2P is disabled
-  // (NCCL_P2P_DISABLE=1), nvlNRanks == 1 (self only) while nLocalRanks may
-  // be larger. No NVL peers means no staging buffers to wire; communication
-  // falls back to IBGDA for all peers including intra-node.
-  if (nvlNRanks > 1) {
+  // External staging buffers are indexed by Ctran's host-local rank. A
+  // physical NVLink clique can be smaller than that group, in which case the
+  // transport must retain its internally allocated buffers.
+  const bool canUseExternalNvlBuffers =
+      nvlNRanks > 1 && nvlNRanks == statex->nLocalRanks();
+  if (canUseExternalNvlBuffers) {
     CLOGF(
         INFO,
         "CTRAN-PRIMS: validating ctran/prims consistency rank={}",
@@ -585,10 +591,17 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
         INFO,
         "CTRAN-PRIMS: external NVL data buffers set rank={}",
         statex->rank());
-  } else {
+  } else if (nvlNRanks <= 1) {
     CLOGF(
         INFO,
         "CTRAN-PRIMS: no NVL peers; skipping external staging buffer wiring rank={}",
+        statex->rank());
+  } else {
+    CLOGF(
+        INFO,
+        "CTRAN-PRIMS: physical NVLink group size {} differs from Ctran local group size {}; using internal staging buffers rank={}",
+        nvlNRanks,
+        statex->nLocalRanks(),
         statex->rank());
   }
 
