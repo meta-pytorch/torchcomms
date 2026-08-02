@@ -30,9 +30,12 @@ inline enum NCCL_CHANNEL_METADATA_LOCATION getChannelMetadataLoc() {
       INFO, ENV, "NCCL_CHANNEL_METADATA_LOCATION={}", static_cast<int>(val));
   return val;
 }
+inline bool channelMetadataOnHost() {
+  return getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+}
 inline bool useTransportExt() {
   return NCCL_USE_TRANSPORT_EXT || NCCL_USE_MEM_CACHE ||
-      getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+      channelMetadataOnHost();
 }
 } // namespace ncclx
 
