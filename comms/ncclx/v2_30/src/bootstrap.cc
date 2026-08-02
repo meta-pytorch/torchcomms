@@ -7,7 +7,6 @@
 
 #include "meta/wrapper/NcclCommLogData.h"
 #include "nccl.h"
-#include "meta/NcclxConfig.h" // @manual
 #include "core.h"
 #include "utils.h"
 #include "bootstrap.h"
@@ -19,12 +18,8 @@
 #include "os.h"
 #include <thread>
 
-#include <folly/SocketAddress.h>
-#include <folly/stop_watch.h>
-
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/Logger.h"
 #include "meta/tcpstore/TCPStore.h"
 
@@ -482,6 +477,55 @@ ncclResult_t bcastGrowHandle(struct ncclBootstrapHandle* handle, struct ncclComm
 
   return ncclSuccess;
 }
+
+struct unexConn {
+  int peer;
+  int tag;
+  struct ncclSocket sock;
+  struct unexConn* next;
+};
+
+struct bootstrapRing_t {
+  union {
+    struct {
+      void *sendComm, *recvComm;
+      ncclNetDeviceHandle_t *sendDevHandle, *recvDevHandle;
+    } net;
+    struct {
+      struct ncclSocket recv;
+      struct ncclSocket send;
+    } socket;
+  };
+};
+struct bootstrapListen_t {
+  struct ncclSocket peerSocket; // socket for peers to contact me in P2P
+  union {
+    struct {
+      int dev;
+      void* comm;
+      char handle[NCCL_NET_HANDLE_MAXSIZE];
+    } net;
+    struct ncclSocket socket; // socket to be used for the ring
+  };
+};
+
+struct bootstrapState {
+  struct bootstrapRing_t ring;
+  struct bootstrapListen_t listen;
+  ncclNet_t* net;
+  uint64_t* peerProxyAddressesUDS;
+  union ncclSocketAddress* peerProxyAddresses;
+  union ncclSocketAddress* peerP2pAddresses;
+  struct unexConn* unexpectedConnections;
+  int cudaDev;
+  int rank;
+  int nranks;
+  uint64_t magic;
+  volatile uint32_t* abortFlag;
+
+  // Reference to CommLogData to object to facilicate logging
+  struct CommLogData *logMetaDataPtr{nullptr};
+};
 
 #define STATE_RING(s, f) (s->ring.f)
 #define STATE_LISTEN(s, f) (s->listen.f)
