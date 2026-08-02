@@ -846,9 +846,8 @@ void CtranGpe::Impl::gpeThreadFn() {
             kernelFlag->reset();
           }
         } else {
-          // In case of aborted comm, wait for kernel to start
-          while (comm->testAbort() &&
-                 !kernelFlag->testFlagAllGroups(KERNEL_STARTED)) {
+          // A late block must not overwrite the terminal state with STARTED.
+          while (!kernelFlag->testFlagAllGroups(KERNEL_STARTED)) {
             std::this_thread::yield();
           }
           // Stop kernel and kernel will free up the flag after confirmed the
