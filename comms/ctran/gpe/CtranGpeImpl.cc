@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 
@@ -12,6 +14,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/gpe/CtranGpeColltrace.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -22,6 +25,7 @@
 #include "comms/ctran/utils/ExtUtils.h"
 
 #include "comms/utils/colltrace/CollRecord.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -146,6 +150,20 @@ commResult_t CtranGpe::Impl::submit(
           kernelConfig.stream, streamCaptureInfo));
   bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
 
+  // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
+  const bool useInKernelColltrace = ctran::gpe::inKernelColltraceSupported() &&
+      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
+  // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
+  // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
+  const bool colltraceEmitStart =
+      useInKernelColltrace && kernelConfig.colltraceEmitStart;
+  const bool colltraceEmitEnd =
+      useInKernelColltrace && kernelConfig.colltraceEmitEnd;
+  // Multi-kernel graph collectives create one record at their start boundary.
+  const bool colltraceCreatesRecord = !isCapturing || colltraceEmitStart;
+  // Boundary-only kernels still need a flag to carry colltraceHdr.
+  const bool colltraceNeedsFlag = colltraceEmitStart || colltraceEmitEnd;
+
   // For eager (non-capture) submits with empty opGroup but a
   // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
   // can synchronize with the kernel before running cleanup. During graph
@@ -153,7 +171,13 @@ commResult_t CtranGpe::Impl::submit(
   // retainUserObject, avoiding host-node overhead.
   bool needsKernelFlag = !opGroup.empty() ||
       kernelConfig.unpackPool != nullptr ||
-      (kernelConfig.postKernelCleanup && !isCapturing);
+      (kernelConfig.postKernelCleanup && !isCapturing) || colltraceNeedsFlag;
+
+  // A boundary-only kernel never signals KERNEL_STARTED; retain its flag on
+  // the graph instead of routing it through the GPE worker.
+  const bool colltraceOnlyFlag = isCapturing && needsKernelFlag &&
+      opGroup.empty() && func == nullptr &&
+      kernelConfig.unpackPool == nullptr && !kernelConfig.postKernelCleanup;
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   ctran::gpe::KernelFlagDev* flagDev = nullptr;
@@ -196,8 +220,23 @@ commResult_t CtranGpe::Impl::submit(
   }
 
   // Record CollTrace event. Must be called before moving opGroup to cmd
-  auto colltraceHandle = meta::comms::colltrace::getCollTraceHandle(
-      comm, opGroup, kernelConfig, ifchecksum);
+  std::shared_ptr<meta::comms::colltrace::ICollTraceHandle> colltraceHandle =
+      colltraceCreatesRecord ? meta::comms::colltrace::getCollTraceHandle(
+                                   comm, opGroup, kernelConfig, ifchecksum)
+                             : nullptr;
+
+  // Arm the collective kernel to publish its own start/end timestamps into the
+  // colltrace ring, replacing the host-launched timestamp kernels for the
+  // grouped/self-timing pipeline collective. The header defaults to disabled
+  // (cleared on flag recycle), so kernels that emit nothing fall through.
+  if (useInKernelColltrace && kernelFlag != nullptr) {
+    ctran::gpe::armInKernelColltrace(
+        pendingColltraceGroup_,
+        kernelFlag->dev,
+        colltraceHandle.get(),
+        colltraceEmitStart,
+        colltraceEmitEnd);
+  }
 
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<ctran::algos::OrderedWorkStreamGuard::Scope> wsScope;
@@ -221,7 +260,7 @@ commResult_t CtranGpe::Impl::submit(
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended, or if there is a
   // postKernelCleanup that needs to run after the kernel completes.
-  if (needsKernelFlag) {
+  if (needsKernelFlag && !colltraceOnlyFlag) {
     // record opGroup size before moving the object
     opGroupSize = opGroup.size();
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
@@ -286,6 +325,26 @@ commResult_t CtranGpe::Impl::submit(
     }
   } else {
     FB_COMMCHECK(maybeAcquireWorkStreamScope());
+  }
+
+  // Colltrace-only graph flag: no GPE cmd is created (the kernel does no GPE
+  // work and never signals the flag), so retain the armed flag on the graph and
+  // reclaim it on destroy — clearPersistent()+reset() makes it reclaimable by
+  // the pool, mirroring what ~CtranGpeCmd does for the cmd path.
+  if (colltraceOnlyFlag) {
+    kernelFlag->setPersistent();
+    FB_COMMCHECKGOTO(
+        utils::cudagraph::retainUserObject(
+            /*obj=*/kernelFlag,
+            /*destroyCallback=*/
+            [](void* p) {
+              auto* f = static_cast<KernelFlagItem*>(p);
+              f->clearPersistent();
+              f->reset();
+            },
+            streamCaptureInfo),
+        res,
+        fail);
   }
 
   // For the no-cmd path during graph capture, retain cleanup on the graph.
@@ -474,6 +533,10 @@ fail:
   if (kernelFlag != nullptr) {
     kernelFlag->reset();
   }
+  // A failure after arming a Begin would leave an open colltrace group whose
+  // End never submits; clear it so a later collective's End can't consume this
+  // collective's stale collId.
+  pendingColltraceGroup_ = {};
   return res;
 }
 
@@ -574,6 +637,9 @@ void CtranGpe::Impl::start() {
 }
 
 void CtranGpe::Impl::terminate() {
+  // Let the worker's kernel-start waits (gpeThreadFn) bail out so a cmd whose
+  // kernel never launches cannot block join() forever.
+  terminating_.store(true, std::memory_order_relaxed);
   class CtranGpeCmd* cmd = new class CtranGpeCmd;
   cmd->type = CtranGpeCmd::TypeEnum::TERMINATE;
 
@@ -733,9 +799,11 @@ void CtranGpe::Impl::gpeThreadFn() {
         volatile int* flag_d = kernelFlag->dev.flag_;
         // Here we check just flag_d[0]. This is ok because Kernel Start signal
         // is only used for tracing purposes. Before the flags are freed below
-        // with reset, all block flags are checked.
+        // with reset, all block flags are checked. Bail out on terminate() so a
+        // cmd whose kernel never launches cannot wedge teardown.
         while (flag_d[0] != KERNEL_STARTED &&
-               flag_d[0] != KERNEL_STARTED_AND_EXIT) {
+               flag_d[0] != KERNEL_STARTED_AND_EXIT &&
+               !terminating_.load(std::memory_order_relaxed)) {
           std::this_thread::yield();
         }
       }

@@ -5,6 +5,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevShmState.cuh"
+#include "comms/ctran/algos/common/ColltraceEventScope.cuh"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevUtils.cuh"
@@ -28,15 +29,22 @@ static inline __device__ void devLoadAbortFlags(
 }
 
 // Publish this launch's cmd id to the device ring in GPU execution order.
-// Single-writer election (block 0, thread 0); no-op when not armed
-// (hdr.enabled == 0). The GPE worker consumes the ring to order started cmds.
-// The ring write is the HRDWRingBuffer System-scope 128b atomic path.
+// Single-writer election (the one thread with all block and thread indices zero
+// across x/y/z, so a 2D/3D launch still elects exactly one writer); no-op when
+// not armed (hdr.enabled == 0). The GPE worker consumes the ring to order
+// started cmds. The ring write is the HRDWRingBuffer System-scope 128b atomic
+// path.
 static __forceinline__ __device__ void KernelPublishGpeRing(
     ctran::gpe::GpeKernelFlagHeader hdr) {
-  if (blockIdx.x == 0 && threadIdx.x == 0 && hdr.enabled) {
+  if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 &&
+      threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && hdr.enabled) {
     hdr.ring.write(hdr.cmdId);
   }
 }
+
+// ColltraceEmitEvent / ColltraceEventScope moved to ColltraceEventScope.cuh
+// (included above); kept accessible here since kernels include
+// GpeKernelDev.cuh.
 
 // Kernel start prologue: publish this cmd's id to the ring (block 0 only, no-op
 // when not armed), then signal the GPE worker that block `bId` has started. The
