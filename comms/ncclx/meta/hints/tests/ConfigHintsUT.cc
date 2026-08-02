@@ -93,7 +93,11 @@ TEST(ConfigHintsUT, OldFormatFlatFields) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   // Set fields via old format (directly on ncclConfig_t)
   config.commDesc = "old_desc";
+  // TODO T279903668: Cleanup version check after v2_29 removal
+  // Fast Init is removed in NCCLX v2.30+ (use ncclCommInitRankScalable).
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   config.fastInitMode = 2;
+#endif
 
   EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
 
@@ -101,7 +105,10 @@ TEST(ConfigHintsUT, OldFormatFlatFields) {
   ASSERT_NE(config.ncclxConfig, nullptr);
 
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, commDesc), "old_desc");
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   EXPECT_TRUE(NCCLX_CONFIG_FIELD(config, fastInitMode));
+#endif
 
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
