@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -56,6 +57,10 @@ struct ctranPipesConfig {
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
+  // Per-comm traffic class hint sourced from ncclConfig_t.trafficClass.
+  // Default INT_MIN matches NCCL_CONFIG_UNDEF_INT (nccl.h). Consumers should
+  // treat any negative value as "hint not set" and fall back to env/default.
+  int trafficClass{INT_MIN};
   std::vector<enum CommBackend> backends = {};
   ctranPipesConfig pipesConfig;
   bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
@@ -63,7 +68,8 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        backends == other.backends && pipesConfig == other.pipesConfig &&
+        trafficClass == other.trafficClass && backends == other.backends &&
+        pipesConfig == other.pipesConfig &&
         enableProfiler == other.enableProfiler);
   }
 };
