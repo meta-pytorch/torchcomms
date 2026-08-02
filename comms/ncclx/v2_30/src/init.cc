@@ -58,7 +58,7 @@
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/wrapper/NcclxCvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/logger/ScubaCommSampleScope.h"
@@ -795,11 +795,11 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
       }
       memcpy(&uuid0, info->fabricInfo.clusterUuid, sizeof(uuid0));
       memcpy(&uuid1, info->fabricInfo.clusterUuid + sizeof(uuid0), sizeof(uuid1));
-      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE <= 0) {
+      if (meta::comms::ncclx::mnnvlDeterministicCollectiveEnabled() && meta::comms::ncclx::mnnvlCliqueSize() <= 0) {
         WARN("NCCL_MNNVL_CLIQUE_SIZE must be set to a positive integer when NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE is set");
         return ncclInvalidArgument;
       }
-      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE > 0) {
+      if (meta::comms::ncclx::mnnvlDeterministicCollectiveEnabled() && meta::comms::ncclx::mnnvlCliqueSize() > 0) {
         int cliqueId = -1;
         ncclx::assignMnnvlCliqueIdBasedOnCliqueSize(&cliqueId);
         info->fabricInfo.cliqueId = cliqueId;
@@ -819,8 +819,8 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
            uuid0, uuid1,
            info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
       // [META] Load rack serial for MNNVL trunk disable (string-based, supports alphanumeric serials)
-      if(NCCL_MNNVL_TRUNK_DISABLE) {
-        if (ncclx::loadRackSerial(NCCL_TOPO_FILE_PATH, info->rackSerial, sizeof(info->rackSerial))) {
+      if(meta::comms::ncclx::mnnvlTrunkDisabled()) {
+        if (ncclx::loadRackSerial(meta::comms::ncclx::topoFilePath(), info->rackSerial, sizeof(info->rackSerial))) {
           INFO(NCCL_INIT, "Loaded rack serial: %s", info->rackSerial);
         } else {
           WARN("No rack serial information available, skipping rack serial check");
@@ -1113,7 +1113,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->ncclxExt->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
+  comm->ncclxExt->lazySetupChannels =
+      comm->cuMemSupport && meta::comms::ncclx::lazySetupChannelsEnabled();
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1975,12 +1976,11 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
 
 
   // NCCLX - NCCL_MEM_USE_SLAB_ALLOCATOR
-  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
+  if (meta::comms::ncclx::slabAllocatorEnabled()) {
     comm->ncclxExt->slabAllocator =
         std::make_unique<ncclx::memory::SlabAllocator>();
   }
-  comm->ncclxExt->channelMetadataOnHost =
-      ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+  comm->ncclxExt->channelMetadataOnHost = ncclx::channelMetadataOnHost();
 
   // Set communicator attributes (overrides)
   sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
@@ -2498,7 +2498,7 @@ static void ncclCommInitJobFree(void* _job) {
 
 static std::mutex ncclxCommWorldMutex; // used by meta-ncclx to set NCCL_FIRST_COMM_AS_WORLD
 static void ncclxSetFirstCommAsWorld(ncclComm_t* newcomm) {
-  if (NCCL_FIRST_COMM_AS_WORLD) {
+  if (meta::comms::ncclx::firstCommAsWorldEnabled()) {
     ncclxCommWorldMutex.lock();
     if (NCCL_COMM_WORLD == nullptr && newcomm != nullptr) {
       NCCL_COMM_WORLD = *newcomm;
@@ -2727,7 +2727,7 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
+  if (!uniqueIdIsInitialized && !meta::comms::ncclx::commIdIsSet()) {
     ERR(ncclInvalidUsage, "No ncclUniqueId provided in nccl baseline init mode, please set TORCH_NCCL_BCAST_UNIQUEID=1 or set NCCL_COMM_ID env variable");
     return ncclInvalidUsage;
   }
@@ -3146,14 +3146,14 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
 
   // NCCLX - Force abort logic.
-  if (NCCL_COMM_ABORT_SCOPE != NCCL_COMM_ABORT_SCOPE::comm) {
+  if (!meta::comms::ncclx::commAbortScopeIsComm()) {
     skipDestroyFlag = true;
     ctran::utils::setSkipDestroyCtran(skipDestroyFlag);
   }
-  if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::none) {
+  if (meta::comms::ncclx::commAbortScopeIsNone()) {
     commAbortLog(comm, "SKIP");
     return ncclSuccess;
-  } else if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::job) {
+  } else if (meta::comms::ncclx::commAbortScopeIsJob()) {
     commAbortLog(comm, "EXIT");
     exit(1);
   }
