@@ -402,6 +402,16 @@ getMetadataFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
       planInfo.p2pType == KernelPlanType::none) {
     XLOG_FIRST_N(
         ERR, 3, "CollTrace: No coll or p2p task in the NCCL Kenrel Plan!");
+    if (isCapturingStream(stream)) {
+      // Deadlock safety: a graph-captured plan with no coll/p2p task has no
+      // kernel that will publish a start/end timestamp into the graph ring, so
+      // registering a graph colltrace record for it would never complete and
+      // would hang the poll thread on drain. Skip it --
+      // getHandleFromNcclKernelPlan falls back to a DummyCollTraceHandle.
+      // (Eager empty-task tracing, which completes normally on the stream, is
+      // unaffected.)
+      return nullptr;
+    }
     return getEmptyKernelTaskMetadata(plan, planInfo, stream);
   }
 
@@ -445,7 +455,7 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
 
   if (res.hasError()) {
     XLOG_FIRST_N(
-        ERR, 5, "Failed to get colltrace handle due to: ", res.error().message);
+        ERR, 1, "Failed to get colltrace handle due to: ", res.error().message);
     return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
   return res.value();
@@ -551,10 +561,47 @@ std::optional<AlgoInfo> parseAlgoInfoFromNcclKernelPlan(ncclKernelPlan& plan) {
   };
 }
 
+void armNcclInKernelColltrace(
+    [[maybe_unused]] ncclKernelPlan& plan,
+    [[maybe_unused]] const std::shared_ptr<
+        meta::comms::colltrace::ICollTraceHandle>& handle,
+    [[maybe_unused]] int compCap) {
+  // `colltraceHdr` only exists when the in-kernel colltrace gate in device.h
+  // is on; arming is a no-op otherwise.
+#ifdef NCCLX_INKERNEL_COLLTRACE
+  // Symmetric-memory kernels use a different arg layout; skip them.
+  if (plan.isSymColl || plan.kernelArgs == nullptr || handle == nullptr) {
+    return;
+  }
+  // Default to unarmed so the in-kernel scope is a no-op off the graph path.
+  plan.kernelArgs->colltraceHdr = {};
+  // The ring's 128b atomic write requires sm_90+; getColltraceDeviceHandle()
+  // returns a ring-backed handle only while capturing a CUDA graph.
+  if (compCap < 90) {
+    return;
+  }
+  auto devHandle = handle->getColltraceDeviceHandle();
+  if (!devHandle.valid()) {
+    return;
+  }
+  // Single-kernel baseline collective: emit both boundaries on this kernel.
+  devHandle.emitStart = true;
+  devHandle.emitEnd = true;
+  plan.kernelArgs->colltraceHdr = devHandle;
+  // Tell the graph wait event this collective self-emits so it skips the
+  // host-launched timestamp path (they must never both write the ring).
+  // TEMPORARY: the host path is deleted at the in-kernel cutover.
+  handle->markInKernelEmit();
+#endif
+}
+
 } // namespace
 
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
-collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
+prepareNcclKernelColltrace(
+    ncclKernelPlan* plan,
+    cudaStream_t stream,
+    int compCap) {
   if (plan->comm->algoStats) {
     auto algoInfo = parseAlgoInfoFromNcclKernelPlan(*plan);
     if (algoInfo.has_value()) {
@@ -563,9 +610,12 @@ collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream) {
     }
   }
 
-  if (NCCL_COLLTRACE.empty()) {
-    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
-  }
-  return meta::comms::ncclx::getHandleFromNcclKernelPlan(*plan, stream);
+  auto handle = NCCL_COLLTRACE.empty()
+      ? std::shared_ptr<
+            meta::comms::colltrace::ICollTraceHandle>{std::make_unique<
+            meta::comms::colltrace::DummyCollTraceHandle>()}
+      : meta::comms::ncclx::getHandleFromNcclKernelPlan(*plan, stream);
+  armNcclInKernelColltrace(*plan, handle, compCap);
+  return handle;
 }
 } // namespace ncclx::colltrace

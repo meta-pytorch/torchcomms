@@ -13,6 +13,11 @@
 #include "op128.h"
 #include "reduce_kernel.h"
 #include "network/unpack/unpack_defs.h"
+// [META] in-kernel colltrace emit in ncclKernelMain below; gate defined in
+// device.h, included above.
+#ifdef NCCLX_INKERNEL_COLLTRACE
+#include "comms/utils/colltrace/ColltraceDeviceEventScope.cuh"
+#endif
 
 #define COLL_UNROLL (ncclCollUnroll())
 
@@ -395,6 +400,15 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     } break;
   }
   __syncthreads(); // publish ncclShmem
+
+  // [META] in-kernel colltrace: emit a graph-ring kStart now and a kEnd when
+  // this scope leaves at kernel exit. Unarmed (non-graph / pre-sm_90) handles
+  // make this a no-op. One scope here covers every baseline collective, since
+  // they all funnel through ncclKernelMain.
+#ifdef NCCLX_INKERNEL_COLLTRACE
+  meta::comms::colltrace::ColltraceDeviceEventScope colltraceScope(
+      ncclShmem.args.colltraceHdr);
+#endif
 
   while (ncclShmem.aborted == 0) {
     profiler(START);
