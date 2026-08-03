@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/ScopeGuard.h>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comm.h"
 #include "nccl.h"
@@ -19,7 +20,8 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
     ncclComm_t comm,
     cudaStream_t stream,
     void** request) {
-  if (!ctran::allGatherPSupport(comm->ctranComm_.get())) {
+  if (!ctran::allGatherPSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get())) {
     FB_ERRORTHROW(
         commInvalidUsage,
         "Persistent AllGather is not supported. Check whether CTRAN is enabled.");
@@ -33,7 +35,7 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
           maxRecvCount,
           ncclToMetaComm(hints),
           ncclToMetaComm(datatype),
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           stream,
           pReq)));
   *request = reinterpret_cast<void*>(pReq);
@@ -142,7 +144,7 @@ __attribute__((visibility("default"))) ncclResult_t AllToAllInit(
     ncclComm_t comm,
     cudaStream_t stream,
     void*& request) {
-  if (!ctran::AllToAllPSupport(comm->ctranComm_.get())) {
+  if (!ctran::AllToAllPSupport(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     ERR(ncclInvalidUsage,
         "Persistent AllToAll is not supported. Check whether CTRAN is enabled.");
     return ncclInvalidUsage;
@@ -156,7 +158,7 @@ __attribute__((visibility("default"))) ncclResult_t AllToAllInit(
           maxRecvCount,
           ncclToMetaComm(hints),
           ncclToMetaComm(datatype),
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           stream,
           pReq)));
   request = reinterpret_cast<void*>(pReq);
