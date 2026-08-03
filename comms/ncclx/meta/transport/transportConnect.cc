@@ -4,6 +4,7 @@
 #include "channel.h"
 #include "group.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/wrapper/NcclCommLogData.h"
 #include "p2p.h"
 #include "transport.h"
 
@@ -309,7 +310,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
       lazyChannelState(comm).nChannelsReady);
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
   sampleGuardBegin.sample().setCommunicatorMetadata(
-      comm ? &comm->logMetaData : nullptr);
+      comm ? &ncclCommLogData(comm) : nullptr);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
   struct ncclKernelCommAndChannels tmpCommAndChans;
@@ -386,7 +387,7 @@ ncclResult_t setupChannels(struct ncclComm* comm, int maxNchannels) {
       (maxNchannels - lazyChannelState(comm).nChannelsReady),
       lazyChannelState(comm).nChannelsReady,
       maxNchannels - 1);
-  NcclScubaEvent initEvent(&comm->logMetaData);
+  NcclScubaEvent initEvent(&ncclCommLogData(comm));
   initEvent.lapAndRecord("setupChannels START");
   for (int c = lazyChannelState(comm).nChannelsReady; c < maxNchannels; c++) {
     if (c < comm->nChannels) {
@@ -543,7 +544,7 @@ ncclResult_t transportReConnect(
   std::array<bool, NCCL_NUM_ALGORITHMS> algoNeedReConnect{false};
   int reconnBoostrapTagBase = static_cast<int>(comm->commHash + opCount);
 
-  NcclScubaEvent initEvent(&comm->logMetaData);
+  NcclScubaEvent initEvent(&ncclCommLogData(comm));
   initEvent.lapAndRecord("transportReConnect START");
   auto exitGuard = folly::makeGuard([&] {
     peerInfoMap->clear();
@@ -803,7 +804,7 @@ ncclResult_t p2pPreconnect(struct ncclComm* comm) {
         ncclx::setupChannels(
             comm, lazyChannelPlanState(comm).nMaxChannelsNeedInit));
   }
-  NcclScubaEvent initEvent(&comm->logMetaData);
+  NcclScubaEvent initEvent(&ncclCommLogData(comm));
   initEvent.lapAndRecord("p2pPreconnectFunc START");
   auto exitGuard = folly::makeGuard(
       [&] { initEvent.lapAndRecord("p2pPreconnectFunc COMPLETE"); });
@@ -839,7 +840,7 @@ ncclResult_t collPreconnect(
 
   for (int i = 0; i < NCCL_NUM_ALGORITHMS; ++i) {
     if (algoNeedConnect[i]) {
-      NcclScubaEvent initEvent(&comm->logMetaData);
+      NcclScubaEvent initEvent(&ncclCommLogData(comm));
       const auto collpreStage =
           std::string("CollPreconnectFunc ") + std::string(ncclAlgoToString(i));
       initEvent.lapAndRecord(collpreStage + " START");

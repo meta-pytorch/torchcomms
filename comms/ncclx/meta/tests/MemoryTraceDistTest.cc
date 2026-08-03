@@ -25,6 +25,7 @@
 #include "comm.h" // @manual
 #include "comms/ncclx/meta/logger/tests/LoggerUtil.h"
 #include "debug.h" // @manual
+#include "meta/wrapper/NcclCommLogData.h" // @manual
 #include "meta/wrapper/NcclxRuntime.h"
 #include "nccl.h" // @manual
 
@@ -527,7 +528,7 @@ void MemoryTraceTestFixture::runScopedRegisterLoggingTest() {
   EXPECT_NE(output, "");
 
   verifyScopedRegisterEvent(
-      output, comm->commHash, comm->logMetaData.commDesc, comm->rank);
+      output, comm->commHash, ncclCommLogData(comm).commDesc, comm->rank);
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
