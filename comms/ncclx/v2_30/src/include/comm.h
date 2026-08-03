@@ -33,8 +33,6 @@
 #include <optional>
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/utils/colltrace/AlgoStats.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "meta/algoconf/InfoExt.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
@@ -42,6 +40,7 @@
 
 // Forward declarations of ncclx classes to avoid circular dependencies
 class ICtran;
+struct ncclxCommExt;
 namespace meta::comms {
 class IBootstrap;
 } // namespace meta::comms
@@ -533,10 +532,6 @@ struct ncclKernelPlanner {
   struct ncclIntruQueue<struct ncclKernelPlan, &ncclKernelPlan::next> planQueue;
   // First of the unlaunched kernels in `planQueue`
   struct ncclKernelPlan* unlaunchedPlansHead;
-  // track number of channels that need to be initialized in current plann
-  int nMaxChannelsNeedInit{0};
-  // track number of channels each algorithm needs to connect in current plan
-  std::array<int, NCCL_NUM_ALGORITHMS> algoMaxChannelsNeedConnect{0};
 };
 
 #define NCCL_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
@@ -602,15 +597,6 @@ struct ncclComm {
   // NCCLX supports storing channel metadata on the pinned host memory
   // See the description of NCCL_CHANNEL_METADATA_LOCATION for details
   bool channelMetadataOnHost{false};
-  // if channels can/will be setup lazily for this communicator
-  bool lazySetupChannels{false};
-  // number of channels that are initialized and ready for use
-  int nChannelsReady{0};
-  // number of channels that are connected for each algorithm
-  std::array<int, NCCL_NUM_ALGORITHMS> algoConnectedChannels{0};
-  // metadata to be used for initializing channels lazily if enabled
-  std::optional<struct ncclKernelCommAndChannels*> devCommAndChans{std::nullopt};
-  std::optional<std::vector<int>> rings{std::nullopt};
   // Slab Allocator for baseline initChannel metadata allocation
   std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator{nullptr};
 
@@ -838,24 +824,15 @@ struct ncclComm {
   /**
    * NCCLX specific state
    */
-  struct CommLogData logMetaData;
-  std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
-  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
+  // Opaque NCCLX-only per-comm state; see meta/comm/NcclxCommExt.h.
+  ncclxCommExt* ncclxExt{nullptr};
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
   std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
 
   // This is the only bridge between ctran and baseline code
-  bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
   std::unique_ptr<CtranComm> ctranComm_;
-
-  // [META:PAT_AVG] per-communicator control; set at init entry functions
-  // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
-  bool usePatAvg_{false};
-
-  // Disable local transports (P2P and SHM); forces NET for all connections
-  bool noLocal_{false};
 
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
