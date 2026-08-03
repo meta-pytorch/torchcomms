@@ -18,4 +18,8 @@ struct ncclxCommExt {
   // Ctran per-communicator control; populated from the parsed ncclx::Config at
   // communicator init and gates creation of the per-comm CtranComm.
   bool useCtran{false};
+
+  // Disable local transports (P2P and SHM); forces NET for all connections.
+  // Populated from the parsed ncclx::Config at communicator init.
+  bool noLocal{false};
 };
