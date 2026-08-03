@@ -8,6 +8,7 @@
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/transport/transportExt.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 namespace ncclx::transport {
 
@@ -675,7 +676,7 @@ ncclResult_t getP2pSyncBufPtr(
           ipcDesc,
           ptr,
           kP2pSyncBufKey,
-          comm->memCache,
+          meta::comms::ncclx::ncclCommMemCache(comm),
           &ncclCommLogData(comm)));
 
   *offset = getP2pSyncBufSlot(
