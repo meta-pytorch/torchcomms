@@ -20,11 +20,6 @@
 #include "env.h"
 #include <cinttypes>
 
-#include <cstdio>
-#include <vector>
-#include <sstream>
-#include <folly/logging/LogLevel.h>
-#include <folly/logging/LogStreamProcessor.h>
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/logger/LogUtils.h"
@@ -379,42 +374,12 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
     }
   }
 
-  std::stringstream logStream;
-  auto logLevel = folly::LogLevel::INFO;
-  if (level == NCCL_LOG_WARN) {
-    logLevel = folly::LogLevel::WARN;
-  } else if (level == NCCL_LOG_INFO || level == NCCL_LOG_VERSION) {
-    logLevel = folly::LogLevel::INFO;
-  } else if (level == NCCL_LOG_TRACE) {
-    logLevel = folly::LogLevel::DBG;
-  } else if (level == NCCL_LOG_ERROR) {
-    logLevel = folly::LogLevel::ERR;
-  }
-
-  size_t logLen = 0;
+  // ncclDebugLog folds file and func into `filefunc` for OFI-plugin ABI
+  // compatibility, so emit with filefunc as the file and an empty func.
   va_list vargs;
   va_start(vargs, fmt);
-  logLen += std::vsnprintf(nullptr, 0, fmt, vargs);
+  ncclMetaEmitFollyLog(XLOG_GET_CATEGORY(), level, filefunc, line, "", fmt, vargs);
   va_end(vargs);
-
-  std::vector<char> buffer(logLen + 1); // +1 for null terminator
-  va_start(vargs, fmt);
-  // vsnprintf copy at most buf_size - 1 characters
-  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
-  va_end(vargs);
-  logStream << buffer.data();
-
-  auto logStr = logStream.str();
-  // logging to specified stdout/stderr/file
-  folly::LogStreamProcessor(
-    XLOG_GET_CATEGORY(),
-    logLevel,
-    filefunc,
-    line,
-    "",
-    folly::LogStreamProcessor::AppendType::APPEND)
-        .stream()
-    << logStr;
 }
 
 // Non-deprecated version for internal use.

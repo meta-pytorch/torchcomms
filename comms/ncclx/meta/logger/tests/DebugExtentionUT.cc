@@ -152,6 +152,28 @@ TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   finishLogging();
 }
 
+TEST_F(DebugExtTest, TestNcclDebugLogShimEmitsFormattedMessage) {
+  initEnv();
+  NCCL_DEBUG = "INFO";
+  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  initLogging();
+  CAPTURE_STDOUT_WITH_FAIL_SAFE()
+  // ncclDebugLog is the OFI-plugin ABI entry point and now routes its output
+  // through the shared folly sink; exercise it directly (the WARN tests above
+  // only cover the ncclMetaDebugLog entry point).
+  ncclDebugLog(
+      NCCL_LOG_INFO,
+      NCCL_ALL,
+      "DebugExtentionUT.cc:TestNcclDebugLogShim",
+      __LINE__,
+      "shim log value=%d",
+      42);
+  sleep(1); // Wait for the xlog to actually log content
+  std::string output = testing::internal::GetCapturedStdout();
+  EXPECT_THAT(output, testing::HasSubstr("shim log value=42"));
+  finishLogging();
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   testing::AddGlobalTestEnvironment(new NcclLoggerTestEnv);
