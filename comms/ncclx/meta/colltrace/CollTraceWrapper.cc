@@ -588,7 +588,7 @@ void armNcclInKernelColltrace(
   devHandle.emitStart = true;
   devHandle.emitEnd = true;
   plan.kernelArgs->colltraceHdr = devHandle;
-#endif
+#endif // in-kernel colltrace gate
 }
 
 } // namespace
