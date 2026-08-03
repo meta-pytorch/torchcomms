@@ -306,26 +306,4 @@ inline commResult_t progressSteps(AlgoContext& ctx, int localChunk) {
   return commSuccess;
 }
 
-template <typename AlgoContext>
-inline commResult_t runExchangeAndProgress(
-    AlgoContext& ctx,
-    int localChunk,
-    ctran::Profiler* profiler) {
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
-  FB_COMMCHECK(exchangeCtrl(ctx));
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
-
-  // Data transfer: step-ordered event loop.
-  CTRAN_PROFILER_IF(
-      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
-  FB_COMMCHECK(progressSteps(ctx, localChunk));
-  CTRAN_PROFILER_IF(
-      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
-
-  FB_COMMCHECK(waitCtrl(ctx));
-  return commSuccess;
-}
-
 } // namespace ctran::allgather::ctsrd::common
