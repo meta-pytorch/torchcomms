@@ -7,6 +7,7 @@
 #include <folly/init/Init.h>
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
+#include "comms/ncclx/meta/transport/transportConnect.h"
 #include "comms/testinfra/TestUtils.h"
 
 #include "comm.h"
@@ -149,6 +150,26 @@ class NcclxLazyConnectTestFixture
     }
   }
 };
+
+TEST(
+    NcclxLazyConnectTest,
+    GroupedCollectiveNeedsAlgoConnectAfterChannelsReady) {
+  ncclComm comm{};
+  comm.nChannels = 32;
+  comm.nChannelsReady = comm.nChannels;
+  comm.planner.nTasksColl = 2;
+  comm.algoConnectedChannels[NCCL_ALGO_RING] = comm.nChannels;
+  comm.algoConnectedChannels[NCCL_ALGO_TREE] = 0;
+
+  ncclTaskColl task{};
+  task.algorithm = NCCL_ALGO_TREE;
+
+  EXPECT_TRUE(ncclx::algoNeedConnect(&comm, &task));
+  EXPECT_EQ(comm.planner.nMaxChannelsNeedInit, comm.nChannels);
+  EXPECT_EQ(
+      comm.planner.algoMaxChannelsNeedConnect.at(NCCL_ALGO_TREE),
+      comm.nChannels);
+}
 
 TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
   rootComm = createRootComm();
