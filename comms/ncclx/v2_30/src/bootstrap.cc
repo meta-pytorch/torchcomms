@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "nccl.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "core.h"
@@ -639,8 +640,8 @@ static constexpr std::string_view kTcpStoreAddrKeyPrefix = "bootstrapAddr-"; /* 
 
 ncclResult_t formRingViaTcpStore(bootstrapState* state, ncclComm* comm) {
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
-  NcclScubaEvent scubaEvent(&comm->logMetaData);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NcclScubaEvent scubaEvent(&ncclCommLogData(comm));
   const int rank = comm->rank;
   const int nRanks = comm->nRanks;
   INFO(NCCL_INIT, "rank %d formRingViaTcpStore start ...", rank);
