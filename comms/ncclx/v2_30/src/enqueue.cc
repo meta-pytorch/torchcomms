@@ -30,7 +30,6 @@
 #include "meta/comm/NcclxCommExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/InfoExtOverride.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/colltrace/ProxyTraceFunc.h"

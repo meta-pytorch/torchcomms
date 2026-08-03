@@ -20,7 +20,6 @@
 #include "shm.h"
 #include "register_inline.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ctran/utils/Utils.h"
 

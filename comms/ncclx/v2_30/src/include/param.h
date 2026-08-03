@@ -10,7 +10,6 @@
 
 #include <stdint.h>
 #include "compiler.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 
 const char* userHomeDir();
 void setEnvFile(const char* fileName);

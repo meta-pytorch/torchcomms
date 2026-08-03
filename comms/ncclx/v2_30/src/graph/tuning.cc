@@ -10,7 +10,6 @@
 #include "comm.h"
 #include "topo.h"
 #include "nccl_tuner.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 
 NCCL_PARAM(Nthreads, "NTHREADS", -2);
 NCCL_PARAM(Ll128Nthreads, "LL128_NTHREADS", -2);
