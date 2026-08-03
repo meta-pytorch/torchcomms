@@ -77,7 +77,7 @@ buck2 run @fbcode//mode/opt \
   -c fbcode.enable_gpu_sections=true \
   -c fbcode.nvcc_arch=b300 \
   -c fbcode.platform010-aarch64_clang=17 \
-  -c fbcode.platform010_cuda_version=13.0 \
+  -m ovr_config//third-party/cuda/constraints:13.0 \
   -m ovr_config//third-party/cuda/constraints:13.0 \
   -c comms.hosts=twshared0104.33.nlh2.facebook.com \
   -c comms.ifname=lo \

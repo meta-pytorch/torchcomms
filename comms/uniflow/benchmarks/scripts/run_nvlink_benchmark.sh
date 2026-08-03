@@ -114,13 +114,13 @@ if [[ -n "${HOSTS}" ]]; then
       -c fbcode.arch=aarch64 \
       -c fbcode.enable_gpu_sections=true \
       -c fbcode.nvcc_arch=b200 \
-      -c fbcode.platform010_cuda_version=12.8 \
+      -m ovr_config//third-party/cuda/constraints:12.8 \
       fbcode//comms/uniflow/benchmarks:uniflow_bench \
       --show-full-output 2>/dev/null | awk '{print $2}')
   elif [[ "${GPU_LOWER}" == "h100" ]]; then
     echo "Building uniflow_bench for x86_64 (H100)..."
     BENCH_BIN=$(buck2 build @fbcode//mode/opt \
-      -c fbcode.platform010_cuda_version=12.8 \
+      -m ovr_config//third-party/cuda/constraints:12.8 \
       fbcode//comms/uniflow/benchmarks:uniflow_bench \
       --show-full-output 2>/dev/null | awk '{print $2}')
   else
