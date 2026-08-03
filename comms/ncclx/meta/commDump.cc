@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
@@ -22,6 +23,7 @@
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 using meta::comms::colltrace::CommDumpPlugin;
 using meta::comms::ncclx::DumpFieldSet;
@@ -337,15 +339,17 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
         NCCLX_CONFIG_FIELD(comm->config, commDesc));
 
     dumpCommInfo(comm, map);
-    if (comm->newCollTrace != nullptr) {
-      map.merge(dumpNewCollTrace(*comm->newCollTrace));
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr) {
+      map.merge(
+          dumpNewCollTrace(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
       XLOGF(DBG2, "CommDump: Dumped from colltrace");
     }
     if (comm->proxyState != nullptr) {
       dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);
     }
 
-    auto mapperTrace = ncclx::colltrace::getMapperTrace(comm->ctranComm_.get());
+    auto mapperTrace = ncclx::colltrace::getMapperTrace(
+        meta::comms::ncclx::ncclCommCtran(comm).get());
     if (mapperTrace != nullptr) {
       dumpMapperTrace(*mapperTrace, map);
     } else {

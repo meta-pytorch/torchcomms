@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "all_reduce_sparse_block.cuh"
 #include "argcheck.h"
 #include "enqueue.h"
+#include "meta/device/all_reduce_sparse_block.cuh"
 #include "nccl.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
