@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "mnnvl.h"
 #include "transport.h"
 #include <cuda.h>
@@ -67,7 +68,7 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
     CUresult err;
 
     // Allocate FABRIC handle compatible memory
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     ncclResult_t ret = ncclCuMemAlloc(&ptr, &handle, CU_MEM_HANDLE_TYPE_FABRIC, CUDA_IPC_MIN,
                                       comm->memManager, "ncclMnnvlCheck", ncclMemOffload);
     if (ret != ncclSuccess) {
