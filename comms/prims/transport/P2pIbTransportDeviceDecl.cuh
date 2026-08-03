@@ -96,8 +96,8 @@ namespace detail {
 /**
  * Physical staging range for the next resumable progress step.
  *
- * `stagingOff` is an offset into the transport-owned send/recv staging
- * buffers. `dataOff` is the matching protocol offset into the caller's user
+ * `stagingOff` is an offset into the selected channel's send/recv staging
+ * views. `dataOff` is the matching protocol offset into the caller's user
  * buffer. `bytes` never crosses a per-block staging partition or the
  * reserved protocol byte count. `streamEnd` is the absolute protocol byte
  * value after this chunk and is used as the DATA_READY and SLOT_FREE readiness
@@ -211,10 +211,8 @@ __device__ __forceinline__ void transition_progress_stage(
     IbChannelProgress& state,
     detail::IbSendRecvProgressStage next);
 
-__device__ __forceinline__ ProgressChunk next_chunk(
-    const IbChannelLayout& channelLayout,
-    const IbChannelProgress& state,
-    const ProgressGeometry& geometry);
+__device__ __forceinline__ ProgressChunk
+next_chunk(const IbChannelProgress& state, const ProgressGeometry& geometry);
 
 template <typename Transport>
 __device__ __forceinline__ bool try_prepare_send_slot(
@@ -439,16 +437,13 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   const std::size_t initialNextByte = state.activeNextByte;
   const std::size_t pipelineBytes = progress_params.perBlockSlot *
       static_cast<std::size_t>(channelLayout.pipelineDepth);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
-  const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, progress_params.groupId);
+  IbChannel& channel =
+      transport.channel(static_cast<uint32_t>(progress_params.groupId));
+  const IbgdaLocalBuffer localSlotFree = channel.slotFree;
 
   if (state.activeStage ==
       detail::IbSendRecvProgressStage::WaitLocalCompletion) {
-    const ProgressChunk chunk =
-        next_chunk(channelLayout, state, progress_params);
+    const ProgressChunk chunk = next_chunk(state, progress_params);
     if (!try_prepare_send_slot(
             transport,
             group,
@@ -462,7 +457,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
         chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
     if (validBytes > 0) {
       CopyOp::send(
-          channelLayout.sendStagingPtr + chunk.stagingOff,
+          static_cast<char*>(channel.sendStaging.ptr) + chunk.stagingOff,
           static_cast<const char*>(src) + chunk.dataOff,
           validBytes,
           group,
@@ -475,8 +470,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   }
 
   if (state.activeStage == detail::IbSendRecvProgressStage::WaitSlotFree) {
-    const ProgressChunk chunk =
-        next_chunk(channelLayout, state, progress_params);
+    const ProgressChunk chunk = next_chunk(state, progress_params);
     const bool isFinalChunk =
         chunk.dataOff + chunk.bytes >= progress_params.protocolBytes;
     const uint64_t protocolStreamEnd =
@@ -518,10 +512,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
       const auto completion = transport.put(
           solo,
-          channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
-          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+          channel.sendStaging.subBuffer(chunk.stagingOff),
+          channel.remoteRecvStaging.subBuffer(chunk.stagingOff),
           chunk.bytes,
-          remoteChannel.dataReady,
+          channel.remoteDataReady,
           protocolBytesThis,
           /*counterBuf=*/{},
           /*counterVal=*/0,
@@ -572,7 +566,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
  * Both IB backends round-robin each chunk's RDMA_WRITE + DATA_READY fetch-add
  * across `numLanes` single-writer slots. Chunk i rides lane `i % numLanes`,
  * driven by the sender's free-running per-(channel, Send) cursor, which the
- * receiver mirrors in `localChannel.recvDataReadyLaneCursor`. Waiting on that
+ * receiver mirrors in `channel.recvDataReadyLaneCursor`. Waiting on that
  * lane's own slot (not the summed cumulative) guarantees chunk i's RDMA_WRITE
  * has landed, because the lane's single RC QP delivers the DATA_READY fetch-add
  * only after its data write. This removes the cross-lane out-of-order hazard
@@ -586,7 +580,7 @@ template <typename Transport>
 __device__ __forceinline__ void wait_recv_data_ready(
     Transport& transport,
     ThreadGroup& group,
-    IbLocalChannel& localChannel,
+    IbChannel& channel,
     const IbgdaLocalBuffer& localDataReady,
     std::size_t chunkBytes,
     const Timeout& timeout) {
@@ -599,21 +593,21 @@ __device__ __forceinline__ void wait_recv_data_ready(
     // matches the sender's uint32 Send cursor once it wraps at 2^32; otherwise
     // a non-power-of-two numLanes would desync the lane after wrap.
     const uint32_t lane =
-        static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
-    const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+        static_cast<uint32_t>(channel.recvDataReadyLaneCursor) % lanes;
+    const uint64_t expected = channel.recvLaneExpected[lane] + chunkBytes;
     const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
         sendRecvSignalSlotOffset(static_cast<int>(lane)));
     ThreadGroup solo{
         0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
     transport.wait_signal(solo, laneBuf, expected, timeout);
-    localChannel.recvLaneExpected[lane] = expected;
-    ++localChannel.recvDataReadyLaneCursor;
+    channel.recvLaneExpected[lane] = expected;
+    ++channel.recvDataReadyLaneCursor;
   }
   group.sync();
 #else
   (void)transport;
   (void)group;
-  (void)localChannel;
+  (void)channel;
   (void)localDataReady;
   (void)chunkBytes;
   (void)timeout;
@@ -633,7 +627,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
 template <typename Transport>
 __device__ __forceinline__ bool poll_recv_data_ready(
     Transport& transport,
-    IbLocalChannel& localChannel,
+    IbChannel& channel,
     const IbgdaLocalBuffer& localDataReady,
     std::size_t chunkBytes,
     unsigned long long& currentOut,
@@ -645,8 +639,8 @@ __device__ __forceinline__ bool poll_recv_data_ready(
   // Truncate to 32 bits before the modulo to match the sender's uint32 cursor
   // wrap (see wait_recv_data_ready).
   const uint32_t lane =
-      static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
-  const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+      static_cast<uint32_t>(channel.recvDataReadyLaneCursor) % lanes;
+  const uint64_t expected = channel.recvLaneExpected[lane] + chunkBytes;
   const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
       sendRecvSignalSlotOffset(static_cast<int>(lane)));
   const uint64_t current = transport.read_signal(laneBuf);
@@ -655,12 +649,12 @@ __device__ __forceinline__ bool poll_recv_data_ready(
   if (current < expected) {
     return false;
   }
-  localChannel.recvLaneExpected[lane] = expected;
-  ++localChannel.recvDataReadyLaneCursor;
+  channel.recvLaneExpected[lane] = expected;
+  ++channel.recvDataReadyLaneCursor;
   return true;
 #else
   (void)transport;
-  (void)localChannel;
+  (void)channel;
   (void)localDataReady;
   (void)chunkBytes;
   currentOut = 0;
@@ -731,16 +725,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   }
   validate_recv_progress_stage(group, state);
 
-  const ProgressChunk chunk = next_chunk(channelLayout, state, progress_params);
+  const ProgressChunk chunk = next_chunk(state, progress_params);
   const bool isFinalChunk =
       chunk.dataOff + chunk.bytes >= progress_params.protocolBytes;
   const std::size_t protocolBytesThis =
       chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
-  const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, progress_params.groupId);
+  IbChannel& channel =
+      transport.channel(static_cast<uint32_t>(progress_params.groupId));
+  const IbgdaLocalBuffer localDataReady = channel.dataReady;
   uint32_t ready = 1;
   if (group.is_leader()) {
     // Poll the specific round-robin lane that carried this chunk and commit
@@ -749,7 +741,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     unsigned long long expected = 0;
     ready = poll_recv_data_ready(
                 transport,
-                localChannel,
+                channel,
                 localDataReady,
                 protocolBytesThis,
                 current,
@@ -775,7 +767,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   if (validBytes > 0) {
     CopyOp::recv(
         static_cast<char*>(dst) + chunk.dataOff,
-        channelLayout.recvStagingPtr + chunk.stagingOff,
+        channel.recvStaging + chunk.stagingOff,
         validBytes,
         group,
         chunk.dataOff,
@@ -784,7 +776,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   group.sync();
 
   transport.signal(
-      group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+      group, channel.remoteSlotFree, protocolBytesThis, IbDirection::Recv);
 
   state.activeNextByte += chunk.bytes;
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -952,11 +944,8 @@ __device__ __forceinline__ void send(
   const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
 
   auto& state = progress_send_slot(transport, group);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(groupId));
-  const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, groupId);
+  IbChannel& channel = transport.channel(static_cast<uint32_t>(groupId));
+  const IbgdaLocalBuffer localSlotFree = channel.slotFree;
   assert_progress_slot_idle(group, state, "send");
   const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
   const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
@@ -996,7 +985,6 @@ __device__ __forceinline__ void send(
     const std::size_t protocolBytesThis =
         bytesThis + (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
     const std::size_t stagingOff =
-        static_cast<std::size_t>(groupId) * pipelineBytesWire +
         static_cast<std::size_t>(slot) * perBlockSlotWire +
         Proto::wire_bytes(chunkOff);
     const uint64_t streamWire = Proto::wire_bytes(streamPayload);
@@ -1011,7 +999,7 @@ __device__ __forceinline__ void send(
         valid_payload_bytes(dataOff, payloadBytes, nbytes);
     if (validBytes > 0) {
       CopyOp::send(
-          channelLayout.sendStagingPtr + stagingOff,
+          static_cast<char*>(channel.sendStaging.ptr) + stagingOff,
           static_cast<const char*>(src) + dataOff,
           validBytes,
           group,
@@ -1035,10 +1023,10 @@ __device__ __forceinline__ void send(
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = transport.put(
           solo,
-          channelLayout.sendStagingBuf.subBuffer(stagingOff),
-          remoteChannel.recvStaging.subBuffer(stagingOff),
+          channel.sendStaging.subBuffer(stagingOff),
+          channel.remoteRecvStaging.subBuffer(stagingOff),
           bytesThis,
-          remoteChannel.dataReady,
+          channel.remoteDataReady,
           protocolBytesThis,
           /*counterBuf=*/{},
           /*counterVal=*/0,
@@ -1124,15 +1112,11 @@ __device__ __forceinline__ void recv(
   const std::size_t perBlockSlotPayload = geometry.perBlockSlotPayload;
   const std::size_t chunkPayload = geometry.chunkPayload;
   const std::size_t pipelineBytesPayload = geometry.pipelineBytesPayload;
-  const std::size_t pipelineBytesWire = geometry.pipelineBytesWire;
   const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
 
   auto& state = progress_recv_slot(transport, group);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(groupId));
-  const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, groupId);
+  IbChannel& channel = transport.channel(static_cast<uint32_t>(groupId));
+  const IbgdaLocalBuffer localDataReady = channel.dataReady;
   assert_progress_slot_idle(group, state, "recv");
   const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
   const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
@@ -1169,19 +1153,13 @@ __device__ __forceinline__ void recv(
     const std::size_t protocolBytesThis =
         bytesThis + (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
     const std::size_t stagingOff =
-        static_cast<std::size_t>(groupId) * pipelineBytesWire +
         static_cast<std::size_t>(slot) * perBlockSlotWire +
         Proto::wire_bytes(chunkOff);
 
     // (1) Wait for sender's DATA_READY on the specific round-robin lane that
     //     carried this chunk (mirrors the sender's per-channel Send cursor).
     wait_recv_data_ready(
-        transport,
-        group,
-        localChannel,
-        localDataReady,
-        protocolBytesThis,
-        timeout);
+        transport, group, channel, localDataReady, protocolBytesThis, timeout);
 
     // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
     const std::size_t validBytes =
@@ -1189,7 +1167,7 @@ __device__ __forceinline__ void recv(
     if (validBytes > 0) {
       CopyOp::recv(
           static_cast<char*>(dst) + dataOff,
-          channelLayout.recvStagingPtr + stagingOff,
+          channel.recvStaging + stagingOff,
           validBytes,
           group,
           dataOff,
@@ -1198,7 +1176,7 @@ __device__ __forceinline__ void recv(
     group.sync();
 
     transport.signal(
-        group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+        group, channel.remoteSlotFree, protocolBytesThis, IbDirection::Recv);
     dataOff += payloadBytes;
   }
 
@@ -1305,11 +1283,8 @@ __device__ __forceinline__ void forward(
 
   // --- recv side (this transport) ---
   auto& recvSlotState = progress_recv_slot(transport, group);
-  IbLocalChannel& recvLocalChannel =
-      transport.local_channel(static_cast<uint32_t>(groupId));
-  const IbgdaLocalBuffer recvDataReady = recvLocalChannel.dataReady;
-  const IbRemoteChannel recvRemoteChannel =
-      makeIbRemoteChannel(channelLayout, groupId);
+  IbChannel& recvChannel = transport.channel(static_cast<uint32_t>(groupId));
+  const IbgdaLocalBuffer recvDataReady = recvChannel.dataReady;
   assert_progress_slot_idle(group, recvSlotState, "forward recv");
   const uint64_t recvBaseByte = static_cast<uint64_t>(recvSlotState.nextStep);
   const std::size_t recvProtocolTailPadding =
@@ -1321,11 +1296,8 @@ __device__ __forceinline__ void forward(
 
   // --- fwd side (fwd transport) ---
   auto& fwdSlotState = progress_send_slot(fwdTransport, group);
-  IbLocalChannel& fwdLocalChannel =
-      fwdTransport.local_channel(static_cast<uint32_t>(groupId));
-  const IbgdaLocalBuffer fwdSlotFree = fwdLocalChannel.slotFree;
-  const IbRemoteChannel fwdRemoteChannel =
-      makeIbRemoteChannel(fwdChannelLayout, groupId);
+  IbChannel& fwdChannel = fwdTransport.channel(static_cast<uint32_t>(groupId));
+  const IbgdaLocalBuffer fwdSlotFree = fwdChannel.slotFree;
   assert_progress_slot_idle(group, fwdSlotState, "forward send");
   const uint64_t fwdBaseByte = static_cast<uint64_t>(fwdSlotState.nextStep);
   const std::size_t fwdProtocolTailPadding =
@@ -1355,7 +1327,6 @@ __device__ __forceinline__ void forward(
     const std::size_t recvChunkOff =
         recvPipelineOff - recvSlot * recvGeo.perBlockSlotPayload;
     const std::size_t recvStagingOff =
-        static_cast<std::size_t>(groupId) * recvGeo.pipelineBytesWire +
         static_cast<std::size_t>(recvSlot) * recvGeo.perBlockSlotWire +
         Proto::wire_bytes(recvChunkOff);
     const std::size_t recvSlotRemaining =
@@ -1370,7 +1341,6 @@ __device__ __forceinline__ void forward(
     const std::size_t fwdChunkOff =
         fwdPipelineOff - fwdSlot * fwdGeo.perBlockSlotPayload;
     const std::size_t fwdStagingOff =
-        static_cast<std::size_t>(groupId) * fwdGeo.pipelineBytesWire +
         static_cast<std::size_t>(fwdSlot) * fwdGeo.perBlockSlotWire +
         Proto::wire_bytes(fwdChunkOff);
     const std::size_t fwdSlotRemaining =
@@ -1399,11 +1369,11 @@ __device__ __forceinline__ void forward(
 
     // (1) Wait for the upstream sender's DATA_READY on the specific round-robin
     //     lane that carried this chunk (mirrors the upstream sender's Send
-    //     cursor via recvLocalChannel.recvDataReadyLaneCursor).
+    //     cursor via recvChannel.recvDataReadyLaneCursor).
     wait_recv_data_ready(
         transport,
         group,
-        recvLocalChannel,
+        recvChannel,
         recvDataReady,
         recvProtocolBytesThis,
         timeout);
@@ -1417,8 +1387,8 @@ __device__ __forceinline__ void forward(
     if (validBytes > 0) {
       CopyOp::forward(
           dst ? static_cast<char*>(dst) + dataOff : nullptr,
-          fwdChannelLayout.sendStagingPtr + fwdStagingOff,
-          channelLayout.recvStagingPtr + recvStagingOff,
+          static_cast<char*>(fwdChannel.sendStaging.ptr) + fwdStagingOff,
+          recvChannel.recvStaging + recvStagingOff,
           validBytes,
           group,
           dataOff,
@@ -1428,7 +1398,7 @@ __device__ __forceinline__ void forward(
 
     transport.signal(
         group,
-        recvRemoteChannel.slotFree,
+        recvChannel.remoteSlotFree,
         recvProtocolBytesThis,
         IbDirection::Recv);
 
@@ -1450,10 +1420,10 @@ __device__ __forceinline__ void forward(
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = fwdTransport.put(
           solo,
-          fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
-          fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
+          fwdChannel.sendStaging.subBuffer(fwdStagingOff),
+          fwdChannel.remoteRecvStaging.subBuffer(fwdStagingOff),
           bytesThis,
-          fwdRemoteChannel.dataReady,
+          fwdChannel.remoteDataReady,
           fwdProtocolBytesThis,
           /*counterBuf=*/{},
           /*counterVal=*/0,
@@ -1501,9 +1471,7 @@ __device__ __forceinline__ void forward(
  */
 __device__ __forceinline__ std::size_t pipeline_window(
     const IbChannelLayout& channelLayout) {
-  return channelLayout.perChannelBufferSize != 0
-      ? channelLayout.perChannelBufferSize
-      : channelLayout.perChannelSize;
+  return channelLayout.channelBufferSize();
 }
 
 __device__ __forceinline__ std::size_t pipeline_chunk(
@@ -1612,7 +1580,7 @@ __device__ __forceinline__ IbChannelProgress& progress_send_slot(
     Transport& transport,
     ThreadGroup& group) {
   validate_progress_group(transport.channel_layout(), group);
-  return transport.local_channel(group).sendProgress;
+  return transport.channel(group).sendProgress;
 }
 
 template <typename Transport>
@@ -1620,7 +1588,7 @@ __device__ __forceinline__ IbChannelProgress& progress_recv_slot(
     Transport& transport,
     ThreadGroup& group) {
   validate_progress_group(transport.channel_layout(), group);
-  return transport.local_channel(group).recvProgress;
+  return transport.channel(group).recvProgress;
 }
 
 /**
@@ -1928,13 +1896,10 @@ __device__ __forceinline__ void transition_progress_stage(
  * bounded and prevents a single RDMA put or recv copy from spanning two
  * staging slots.
  */
-__device__ __forceinline__ ProgressChunk next_chunk(
-    const IbChannelLayout& channelLayout,
-    const IbChannelProgress& state,
-    const ProgressGeometry& geometry) {
+__device__ __forceinline__ ProgressChunk
+next_chunk(const IbChannelProgress& state, const ProgressGeometry& geometry) {
   const uint64_t streamStart =
       static_cast<uint64_t>(state.activeBaseStep) + state.activeNextByte;
-  (void)channelLayout;
   const std::size_t pipelineBytes = geometry.perChannelBufferSize;
   const std::size_t pipelineOff =
       static_cast<std::size_t>(streamStart % pipelineBytes);
@@ -1950,8 +1915,7 @@ __device__ __forceinline__ ProgressChunk next_chunk(
       geometry.chunkSize < dataRemaining ? geometry.chunkSize : dataRemaining;
   bytes = bytes < slotRemaining ? bytes : slotRemaining;
   return ProgressChunk{
-      .stagingOff = static_cast<std::size_t>(geometry.groupId) * pipelineBytes +
-          slotOff + chunkOff,
+      .stagingOff = slotOff + chunkOff,
       .dataOff = payloadNextByte,
       .bytes = bytes,
       .streamEnd = streamStart + bytes,
@@ -1970,8 +1934,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
-    auto& slot =
-        transport.local_channel(group.group_id).sendCompletionSlots[slotId];
+    auto& slot = transport.channel(group.group_id).sendCompletionSlots[slotId];
     if (slot.generation != generation) {
       uint64_t pending = slot.laneMask;
       const uint32_t numLanes = transport.send_completion_lane_count();
@@ -2023,8 +1986,7 @@ __device__ __forceinline__ void prepare_send_slot(
     uint64_t generation,
     const Timeout& timeout) {
   if (group.is_leader()) {
-    auto& slot =
-        transport.local_channel(group.group_id).sendCompletionSlots[slotId];
+    auto& slot = transport.channel(group.group_id).sendCompletionSlots[slotId];
     if (slot.generation != generation) {
       const uint64_t pending = slot.laneMask;
       const uint32_t numLanes = transport.send_completion_lane_count();
@@ -2055,7 +2017,7 @@ __device__ __forceinline__ void record_send_completion(
     uint64_t generation,
     const IbLocalCompletionTicket& ticket) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  auto& slot = transport.local_channel(channelId).sendCompletionSlots[slotId];
+  auto& slot = transport.channel(channelId).sendCompletionSlots[slotId];
   slot.generation = generation;
   slot.values[ticket.completionId] = ticket.value;
   slot.laneMask |= 1ULL << ticket.completionId;

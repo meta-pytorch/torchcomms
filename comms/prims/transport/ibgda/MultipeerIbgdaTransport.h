@@ -33,6 +33,7 @@
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
+struct IbgdaFixedDeviceTables;
 struct MultipeerIbgdaDeviceTransport;
 struct P2pIbgdaTransportBuildParams;
 struct PeerQpPayload;
@@ -292,11 +293,11 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransportBase (set by openNics()); the backend reads them
   // (inherited) when building DOCA AH attrs and connecting QPs.
 
-  // Per-peer device transports (GPU accessible)
+  // Stable outer device transport table.
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
-  std::size_t peerTransportSize_{0};
 
-  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  // Host view of communicator-lifetime tables; gpuAllocations_ owns storage.
+  std::unique_ptr<IbgdaFixedDeviceTables> fixedDeviceTables_;
   std::vector<void*> gpuAllocations_;
 
   // Exchange info received from peers

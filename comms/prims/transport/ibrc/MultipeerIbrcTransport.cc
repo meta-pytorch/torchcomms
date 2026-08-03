@@ -273,6 +273,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
           nRanks,
           std::move(bootstrap),
           config) {
+  const int directionCount = config_.fixedChannelDirectionCount();
   const int numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   if (config_.max_num_channels < 1) {
     throw std::invalid_argument("max_num_channels must be >= 1");
@@ -297,9 +298,10 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   if (numQpsPerPeerPerNic > kMaxIbQpsPerPeerPerNic) {
     throw std::invalid_argument(
         fmt::format(
-            "max_num_channels * 2 * qpsPerConnection must be <= {}, got {} * 2 * {} = {}",
+            "max_num_channels * directionCount * qpsPerConnection must be <= {}, got {} * {} * {} = {}",
             kMaxIbQpsPerPeerPerNic,
             config_.max_num_channels,
+            directionCount,
             config_.qpsPerConnection,
             numQpsPerPeerPerNic));
   }
@@ -373,6 +375,8 @@ void MultipeerIbrcTransport::cleanup() {
   statusDeviceByNic_.clear();
   statusControl_.reset();
   p2pTransportDevices_.reset();
+  cmdQueueDevices_.reset();
+  channelStates_.reset();
 
   closeNics();
 }
@@ -831,9 +835,9 @@ void MultipeerIbrcTransport::cleanupPeerCmdQueues(int peerIndex) noexcept {
   // Unpublish before clearing so progressOnce can't walk a half-cleared vector.
   peerQueuesPublished_[peerIndex].store(false, std::memory_order_release);
   auto& peer = peerResources_[peerIndex];
+  clearPeerDeviceRange(peerIndex, 0, config_.max_num_channels);
   peer.cmdQueues.clear();
-  peer.cmdQueueDevices.reset();
-  peer.channelState.reset();
+  peer.completionSlots.reset();
   peer.cmdQueuesAllocated = false;
   if (p2pTransportDevices_.host != nullptr) {
     updatePeerDeviceTransport(peerIndex);
@@ -907,18 +911,7 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
     }
   }
 
-  peer.cmdQueueDevices = allocateMapped(
-      deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice),
-      "per-peer command queue device descriptors");
-  std::memcpy(
-      peer.cmdQueueDevices.host,
-      deviceCmdQueues.data(),
-      deviceCmdQueues.size() * sizeof(IbrcCmdQueueDevice));
-  const std::size_t channelBytes =
-      static_cast<std::size_t>(config_.max_num_channels) *
-      sizeof(IbLocalChannel);
-  const std::size_t completionSlotsOffset =
-      alignUp(channelBytes, alignof(IbSendCompletionSlot));
+  CHECK_EQ(deviceCmdQueues.size(), cmdQueuesPerPeer_);
   const IbChannelLayout channelLayout = channelLayoutForPeer(peerIndex);
   CHECK_GE(channelLayout.pipelineDepth, 0);
   const std::size_t completionSlotCount = checkedMul(
@@ -929,29 +922,26 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
       completionSlotCount,
       sizeof(IbSendCompletionSlot),
       "per-peer send completion slots");
-  const std::size_t channelStateBytes = completionSlotBytes == 0
-      ? channelBytes
-      : checkedAdd(
-            completionSlotsOffset,
-            completionSlotBytes,
-            "per-peer channel state");
-  peer.channelState =
-      allocateMapped(channelStateBytes, "per-peer channel state");
-  auto* channels = static_cast<IbLocalChannel*>(peer.channelState.host);
-  auto* completionSlots = completionSlotBytes == 0
+  if (completionSlotBytes != 0) {
+    peer.completionSlots =
+        allocateMapped(completionSlotBytes, "per-peer send completion slots");
+  }
+  auto* const completionSlots = completionSlotBytes == 0
       ? nullptr
-      : reinterpret_cast<IbSendCompletionSlot*>(
-            static_cast<std::byte*>(peer.channelState.device) +
-            completionSlotsOffset);
-  const uint32_t pipelineDepth =
-      static_cast<uint32_t>(channelLayout.pipelineDepth);
+      : static_cast<IbSendCompletionSlot*>(peer.completionSlots.device);
+  std::vector<IbChannel> channels;
+  channels.reserve(config_.max_num_channels);
+  const std::size_t pipelineDepth =
+      static_cast<std::size_t>(channelLayout.pipelineDepth);
   for (int channel = 0; channel < config_.max_num_channels; ++channel) {
     IbSendCompletionSlot* channelCompletionSlots = pipelineDepth == 0
         ? nullptr
         : completionSlots + static_cast<std::size_t>(channel) * pipelineDepth;
-    channels[channel] =
-        makeIbLocalChannel(channelLayout, channel, channelCompletionSlots);
+    channels.push_back(
+        makeIbChannel(channelLayout, channel, channelCompletionSlots));
   }
+  populatePeerDeviceRange(
+      peerIndex, 0, config_.max_num_channels, deviceCmdQueues, channels);
   peer.cmdQueues = std::move(cmdQueues);
   peer.cmdQueuesAllocated = true;
   updatePeerDeviceTransport(peerIndex);
@@ -961,10 +951,131 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
 
 void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
   const std::size_t numPeers = static_cast<std::size_t>(nRanks_ - 1);
+  const std::size_t qpsPerPeerPerNic =
+      static_cast<std::size_t>(config_.fixedChannelMainQpsPerPeerPerNic());
+  cmdQueuesPerPeer_ = checkedMul(
+      static_cast<std::size_t>(numNics_),
+      qpsPerPeerPerNic,
+      "fixed command queue descriptors per peer");
+  cmdQueueDevices_ = allocateMapped(
+      checkedMul(
+          checkedMul(
+              numPeers, cmdQueuesPerPeer_, "fixed command queue descriptors"),
+          sizeof(IbrcCmdQueueDevice),
+          "fixed command queue descriptors"),
+      "fixed command queue device descriptors");
+  channelStates_ = allocateMapped(
+      checkedMul(
+          checkedMul(
+              numPeers,
+              static_cast<std::size_t>(config_.max_num_channels),
+              "fixed channel states"),
+          sizeof(IbChannel),
+          "fixed channel states"),
+      "fixed channel states");
   p2pTransportDevices_ = allocateMapped(
       numPeers * ibrcDeviceSlotSize(), "P2pIbrcTransportDevice slots");
-  constructIbrcDeviceSlots(
-      p2pTransportDevices_.host, static_cast<int>(numPeers));
+  for (int peerIndex = 0; peerIndex < static_cast<int>(numPeers); ++peerIndex) {
+    updatePeerDeviceTransport(peerIndex);
+  }
+}
+
+void MultipeerIbrcTransport::populatePeerDeviceRange(
+    int peerIndex,
+    int channelBegin,
+    int channelEnd,
+    const std::vector<IbrcCmdQueueDevice>& rangeCmdQueues,
+    const std::vector<IbChannel>& rangeChannels) {
+  CHECK_GE(peerIndex, 0);
+  CHECK_LT(peerIndex, static_cast<int>(peerResources_.size()));
+  CHECK_GE(channelBegin, 0);
+  CHECK_LE(channelBegin, channelEnd);
+  CHECK_LE(channelEnd, config_.max_num_channels);
+  CHECK_EQ(
+      rangeChannels.size(),
+      static_cast<std::size_t>(channelEnd - channelBegin));
+  CHECK(cmdQueueDevices_.host != nullptr);
+  CHECK(channelStates_.host != nullptr);
+
+  const std::size_t queuesPerChannel = checkedMul(
+      checkedMul(
+          static_cast<std::size_t>(config_.fixedChannelDirectionCount()),
+          static_cast<std::size_t>(config_.qpsPerConnection),
+          "command queues per channel"),
+      static_cast<std::size_t>(numNics_),
+      "command queues per channel");
+  const std::size_t queueBegin = ibCommandQueueSlot(
+      static_cast<uint32_t>(channelBegin),
+      IbDirection::Send,
+      static_cast<uint32_t>(config_.fixedChannelDirectionCount()),
+      static_cast<uint32_t>(config_.qpsPerConnection),
+      0,
+      static_cast<uint32_t>(numNics_),
+      0);
+  const std::size_t queueCount = checkedMul(
+      static_cast<std::size_t>(channelEnd - channelBegin),
+      queuesPerChannel,
+      "command queue range");
+  CHECK_EQ(rangeCmdQueues.size(), queueCount);
+  auto* const peerCmdQueueDevices =
+      static_cast<IbrcCmdQueueDevice*>(cmdQueueDevices_.host) +
+      static_cast<std::size_t>(peerIndex) * cmdQueuesPerPeer_;
+  if (queueCount != 0) {
+    std::memcpy(
+        peerCmdQueueDevices + queueBegin,
+        rangeCmdQueues.data(),
+        queueCount * sizeof(IbrcCmdQueueDevice));
+  }
+
+  auto* const peerChannels = static_cast<IbChannel*>(channelStates_.host) +
+      static_cast<std::size_t>(peerIndex) * config_.max_num_channels;
+  if (channelBegin != channelEnd) {
+    std::memcpy(
+        peerChannels + channelBegin,
+        rangeChannels.data(),
+        rangeChannels.size() * sizeof(IbChannel));
+  }
+}
+
+void MultipeerIbrcTransport::clearPeerDeviceRange(
+    int peerIndex,
+    int channelBegin,
+    int channelEnd) noexcept {
+  if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size()) ||
+      channelBegin < 0 || channelBegin > channelEnd ||
+      channelEnd > config_.max_num_channels) {
+    return;
+  }
+  const std::size_t queuesPerChannel = static_cast<std::size_t>(numNics_) *
+      config_.fixedChannelDirectionCount() * config_.qpsPerConnection;
+  const std::size_t queueBegin = ibCommandQueueSlot(
+      static_cast<uint32_t>(channelBegin),
+      IbDirection::Send,
+      static_cast<uint32_t>(config_.fixedChannelDirectionCount()),
+      static_cast<uint32_t>(config_.qpsPerConnection),
+      0,
+      static_cast<uint32_t>(numNics_),
+      0);
+  const std::size_t queueCount =
+      static_cast<std::size_t>(channelEnd - channelBegin) * queuesPerChannel;
+  if (cmdQueueDevices_.host != nullptr && queueCount != 0) {
+    auto* const peerCmdQueueDevices =
+        static_cast<IbrcCmdQueueDevice*>(cmdQueueDevices_.host) +
+        static_cast<std::size_t>(peerIndex) * cmdQueuesPerPeer_;
+    std::memset(
+        peerCmdQueueDevices + queueBegin,
+        0,
+        queueCount * sizeof(IbrcCmdQueueDevice));
+  }
+  if (channelStates_.host != nullptr && channelBegin != channelEnd) {
+    auto* const peerChannels = static_cast<IbChannel*>(channelStates_.host) +
+        static_cast<std::size_t>(peerIndex) * config_.max_num_channels;
+    std::memset(
+        peerChannels + channelBegin,
+        0,
+        static_cast<std::size_t>(channelEnd - channelBegin) *
+            sizeof(IbChannel));
+  }
 }
 
 void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
@@ -974,46 +1085,52 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
   }
 
   auto& peer = peerResources_[peerIndex];
-  if (!peer.cmdQueuesAllocated || peer.cmdQueueDevices.device == nullptr) {
-    constructIbrcDeviceSlots(
-        static_cast<char*>(p2pTransportDevices_.host) +
-            peerIndex * ibrcDeviceSlotSize(),
-        1);
-    return;
-  }
-
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
-  if (config_.numSignalSlots > 0) {
+  if (peer.cmdQueuesAllocated && config_.numSignalSlots > 0) {
     remoteSignalBuf = slotRemoteSignalView(peerIndex);
     localSignalBuf = slotLocalSignalView(peerIndex);
   }
   IbgdaLocalBuffer counterDeviceBuf{};
   IbgdaLocalBuffer counterHostBuf{};
-  if (config_.numCounterSlots > 0) {
+  if (peer.cmdQueuesAllocated && config_.numCounterSlots > 0) {
     counterDeviceBuf = slotCounterDeviceView(peerIndex);
     counterHostBuf = slotCounterHostView(peerIndex);
   }
+  const IbChannelLayout channelLayout = peer.cmdQueuesAllocated
+      ? channelLayoutForPeer(peerIndex)
+      : IbChannelLayout{};
+  const int numSignalSlots =
+      peer.cmdQueuesAllocated ? config_.numSignalSlots : 0;
+  const int numCounterSlots =
+      peer.cmdQueuesAllocated ? config_.numCounterSlots : 0;
+  const uint32_t maxChannels = peer.cmdQueuesAllocated
+      ? static_cast<uint32_t>(config_.max_num_channels)
+      : 0;
+  auto* const peerCmdQueueDevices =
+      static_cast<IbrcCmdQueueDevice*>(cmdQueueDevices_.device) +
+      static_cast<std::size_t>(peerIndex) * cmdQueuesPerPeer_;
+  auto* const peerChannels = static_cast<IbChannel*>(channelStates_.device) +
+      static_cast<std::size_t>(peerIndex) * config_.max_num_channels;
 
   writeIbrcDeviceSlot(
       p2pTransportDevices_.host,
       peerIndex,
       DeviceSpan<IbrcCmdQueueDevice>(
-          static_cast<IbrcCmdQueueDevice*>(peer.cmdQueueDevices.device),
-          static_cast<uint32_t>(peer.cmdQueues.size())),
+          peerCmdQueueDevices, static_cast<uint32_t>(cmdQueuesPerPeer_)),
       static_cast<uint32_t>(numNics_),
-      static_cast<uint32_t>(config_.max_num_channels),
+      maxChannels,
       static_cast<uint32_t>(config_.qpsPerConnection),
-      DeviceSpan<IbLocalChannel>(
-          static_cast<IbLocalChannel*>(peer.channelState.device),
-          static_cast<uint32_t>(config_.max_num_channels)),
+      static_cast<uint32_t>(config_.fixedChannelDirectionCount()),
+      DeviceSpan<IbChannel>(
+          peerChannels, static_cast<uint32_t>(config_.max_num_channels)),
       remoteSignalBuf,
       localSignalBuf,
       counterDeviceBuf,
       counterHostBuf,
-      config_.numSignalSlots,
-      config_.numCounterSlots,
-      channelLayoutForPeer(peerIndex));
+      numSignalSlots,
+      numCounterSlots,
+      channelLayout);
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -1060,11 +1177,8 @@ MultipeerIbrcTransport::MappedAllocation MultipeerIbrcTransport::allocateMapped(
   return allocation;
 }
 
-// Send/recv staging allocation, exchange, cleanup, and IbChannelLayout
-// construction are provided by MultiPeerIbTransportBase. IBRC delegates via
-// allocateSendRecvBuffersEager(IbCounterStorage::HostPinned) /
-// exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers() /
-// channelLayoutForPeer().
+// Peer-lazy send/recv staging allocation, exchange, cleanup, and channel-layout
+// construction are provided by MultiPeerIbTransportBase.
 
 void MultipeerIbrcTransport::destroyPeerQps(
     std::vector<PeerQpResource>& qpResources) noexcept {

@@ -12,13 +12,6 @@ std::size_t ibrcDeviceSlotSize() {
   return sizeof(P2pIbrcTransportDevice);
 }
 
-void constructIbrcDeviceSlots(void* slotsHost, int numSlots) {
-  auto* slots = static_cast<P2pIbrcTransportDevice*>(slotsHost);
-  for (int i = 0; i < numSlots; ++i) {
-    new (&slots[i]) P2pIbrcTransportDevice();
-  }
-}
-
 void writeIbrcDeviceSlot(
     void* slotsHost,
     int peerIndex,
@@ -26,7 +19,8 @@ void writeIbrcDeviceSlot(
     uint32_t numNics,
     uint32_t maxChannels,
     uint32_t qpsPerConnection,
-    DeviceSpan<IbLocalChannel> localChannels,
+    uint32_t qpDirectionCount,
+    DeviceSpan<IbChannel> channels,
     IbgdaRemoteBuffer remoteSignalBuf,
     IbgdaLocalBuffer localSignalBuf,
     IbgdaLocalBuffer counterDeviceBuf,
@@ -40,7 +34,8 @@ void writeIbrcDeviceSlot(
       numNics,
       maxChannels,
       qpsPerConnection,
-      localChannels,
+      qpDirectionCount,
+      channels,
       remoteSignalBuf,
       localSignalBuf,
       counterDeviceBuf,

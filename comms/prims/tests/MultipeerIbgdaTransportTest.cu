@@ -470,7 +470,7 @@ __global__ void progressReservationKernel(
   transport->init_recv_progress(group, recvBytes);
 
   if (group.is_leader()) {
-    const auto& channel = transport->local_channel(group.group_id);
+    const auto& channel = transport->channel(group.group_id);
     output[0] = channel.sendProgress.nextStep;
     output[1] = channel.recvProgress.nextStep;
   }

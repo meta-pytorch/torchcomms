@@ -194,10 +194,9 @@ LowLatencyRuntime::~LowLatencyRuntime() {
   if (ibgdaLocalRdmaXBufDevice_ != nullptr) {
     (void)cudaFree(ibgdaLocalRdmaXBufDevice_);
   }
-  // ibgdaDeviceTransportPtr_ is the wrapper struct (small) allocated
-  // explicitly above; the per-peer P2pIbgdaTransportDevice array it points
-  // to is owned by the transport (allocated via buildDeviceTransportsOnGpu),
-  // freed by transport dtor.
+  // ibgdaDeviceTransportPtr_ is the wrapper struct allocated explicitly above;
+  // the transport owns the fixed per-peer P2pIbgdaTransportDevice table it
+  // references and frees that table during teardown.
   if (ibgdaDeviceTransportPtr_ != nullptr) {
     (void)cudaFree(ibgdaDeviceTransportPtr_);
   }

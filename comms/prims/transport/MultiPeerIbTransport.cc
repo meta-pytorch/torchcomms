@@ -425,7 +425,6 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
   return IbChannelLayout{
       .sendStagingBuf = pb.sendStaging,
       .recvStagingBuf = pb.remoteRecvStaging,
-      .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
       .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
       .localSignalBuf = pb.signal,
       .remoteSignalBuf = pb.remoteSignal,
