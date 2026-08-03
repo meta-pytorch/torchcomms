@@ -97,7 +97,8 @@ void launch_ibgda_recv(
 
 /**
  * Drain outstanding bidirectional send/recv transport work for benchmark
- * measurement and safe teardown.
+ * measurement and safe teardown. Reset the benchmark transport state before
+ * launching more send/recv work.
  */
 void launch_ibgda_drain_send_recv(
     P2pIbgdaTransportDevice* transport,

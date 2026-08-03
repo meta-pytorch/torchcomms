@@ -71,7 +71,7 @@ __global__ void putOnlyKernel(
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes);
 
-__global__ void pipelineGeometryKernel(
+__global__ void pipelineLimitsKernel(
     P2pIbTransportDevice transport,
     uint64_t* output);
 
