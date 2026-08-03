@@ -28,6 +28,9 @@ std::unordered_map<std::string, std::string> collTraceGetInfo();
 namespace ncclx::colltrace {
 
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
-collTraceBaselineGetHandle(ncclKernelPlan* plan, cudaStream_t stream);
+prepareNcclKernelColltrace(
+    ncclKernelPlan* plan,
+    cudaStream_t stream,
+    int compCap);
 
 } // namespace ncclx::colltrace

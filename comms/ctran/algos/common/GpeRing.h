@@ -3,9 +3,11 @@
 #ifndef CTRAN_GPE_RING_H_
 #define CTRAN_GPE_RING_H_
 
+#include <cstddef>
 #include <cstdint>
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace ctran::gpe {
@@ -41,19 +43,39 @@ using GpeRingHandle = hrdw_ring_buffer::
 // KernelStartGpe prologue reads it via KernelFlagDev::gpeHdr and publishes
 // cmdId to the ring.
 struct GpeKernelFlagHeader {
-  GpeRingHandle ring{};
+  // NOTE: the scalar fields are intentionally placed BEFORE the embedded ring
+  // handle. That handle uses [[no_unique_address]] empty members; when it is
+  // the first member, nvcc computes a different device offset for a following
+  // scalar than the host does (placing it past the end of the object), so a
+  // kernel reads cmdId/enabled back as garbage -- e.g. a nonzero `enabled` on
+  // an unarmed header, which drives KernelPublishGpeRing to write to a null
+  // ring and hang/crash the kernel. Keeping the scalars in the head bytes keeps
+  // the host and device offsets in agreement. Same workaround as
+  // meta::comms::colltrace::ColltraceDeviceHandle.
   GpeCmdId cmdId{0};
   uint32_t enabled{0};
+  GpeRingHandle ring{};
 };
+static_assert(
+    offsetof(GpeKernelFlagHeader, cmdId) <
+            offsetof(GpeKernelFlagHeader, ring) &&
+        offsetof(GpeKernelFlagHeader, enabled) <
+            offsetof(GpeKernelFlagHeader, ring),
+    "GpeKernelFlagHeader scalars (cmdId/enabled) must precede the ring handle "
+    "to keep host/device offsetof in agreement; see the note above.");
 
 // Device-facing view of a per-cmd kernel flag object: the per-block start/stop
-// flags plus the ring header, laid out in pinned host memory. Every GPE kernel
-// takes a KernelFlagDev* as its first argument and reads gpeHdr directly — no
-// pointer-offset recovery. KernelFlagItem (host) embeds this as its first
-// member, so &kernelFlag->dev is the pointer handed to the kernel.
+// flags plus the ring headers, laid out in pinned host memory. Every GPE kernel
+// takes a KernelFlagDev* as its first argument and reads gpeHdr/colltraceHdr
+// directly — no pointer-offset recovery. KernelFlagItem (host) embeds this as
+// its first member, so &kernelFlag->dev is the pointer handed to the kernel.
+// colltraceHdr is armed host-side at submit() for the kernels that bound a
+// logical collective; a default (null-ring) handle means unarmed, so the
+// in-kernel emit no-ops. See meta::comms::colltrace::ColltraceDeviceHandle.
 struct KernelFlagDev {
   volatile int flag_[CTRAN_ALGO_MAX_THREAD_BLOCKS];
   GpeKernelFlagHeader gpeHdr{};
+  meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr{};
 };
 
 } // namespace ctran::gpe
