@@ -22,15 +22,21 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
+#include "comms/utils/colltrace/GraphCollTraceEvent.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 using meta::comms::colltrace::CollTrace;
 using meta::comms::colltrace::CollTraceConfig;
+using meta::comms::colltrace::ColltraceDeviceHandle;
 using meta::comms::colltrace::CollTraceEvent;
 using meta::comms::colltrace::CollTraceHandleTriggerState;
+using meta::comms::colltrace::GraphCollTraceEvent;
+using meta::comms::colltrace::GraphCollTracePhase;
 using meta::comms::colltrace::GraphCudaWaitEvent;
 using meta::comms::colltrace::ICollMetadata;
 using meta::comms::colltrace::ICollTracePlugin;
@@ -153,6 +159,11 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     }
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaSetDevice(0);
+    if (!meta::comms::colltrace::graphColltraceSupported(
+            "GraphColltraceProgressingTest")) {
+      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
+                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+    }
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaStreamCreate(&stream_);
 
@@ -240,8 +251,13 @@ class GraphColltraceProgressingTest : public ::testing::Test {
       if (collRecord.hasValue() && collRecord.value() != nullptr) {
         cg.collIds.push_back(collRecord.value()->getCollId());
       }
+      auto devHandle = handle->getColltraceDeviceHandle();
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+      // The collective kernel emits its own start/end in-kernel; mirror that
+      // with ring writes bracketing the host-sleep "work".
+      writeColltraceRing(devHandle, GraphCollTracePhase::kStart);
       launchHostSleep(sleepMs);
+      writeColltraceRing(devHandle, GraphCollTracePhase::kEnd);
       handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     }
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
@@ -250,6 +266,25 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaGraphInstantiate(&cg.instance, cg.graph, nullptr, nullptr, 0);
     return cg;
+  }
+
+  // Write a colltrace event into the ring via the device handle colltrace hands
+  // to a kernel — the same write a collective kernel does in-kernel (e.g.
+  // AllGatherP PipeStart/PipeEnd). Enqueued on `stream` (defaulting to the
+  // capture stream) so it is captured/replayed like the real kernel write;
+  // concurrent-collective tests pass a per-collective stream.
+  void writeColltraceRing(
+      const ColltraceDeviceHandle& devHandle,
+      GraphCollTracePhase phase,
+      cudaStream_t stream = nullptr) {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    hrdw_ring_buffer::launchRingBufferWrite<GraphCollTraceEvent>(
+        stream ? stream : stream_,
+        devHandle.ring.ring,
+        devHandle.ring.writeIndex,
+        devHandle.ring.mask,
+        devHandle.ring.shift,
+        GraphCollTraceEvent{devHandle.collId, phase});
   }
 
   cudaStream_t stream_{nullptr};
@@ -338,13 +373,18 @@ TEST_F(GraphColltraceProgressingTest, DetectsMultipleInFlightCollectives) {
     if (collRecord.hasValue() && collRecord.value() != nullptr) {
       cg.collIds.push_back(collRecord.value()->getCollId());
     }
+    auto devHandle = handle->getColltraceDeviceHandle();
     handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+    // Emit the in-kernel start/end on the collective's own stream so all
+    // starts fire (concurrently) before any end.
+    writeColltraceRing(devHandle, GraphCollTracePhase::kStart, collStreams[c]);
     // Host sleep on the collective's stream — all sleeps run concurrently.
     cudaLaunchHostFunc(
         collStreams[c],
         hostSleepCallback,
         // NOLINTNEXTLINE(performance-no-int-to-ptr)
         reinterpret_cast<void*>(static_cast<uintptr_t>(kSleepMs)));
+    writeColltraceRing(devHandle, GraphCollTracePhase::kEnd, collStreams[c]);
     handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     handles.push_back(std::move(handle));
   }
@@ -421,7 +461,10 @@ TEST_F(GraphColltraceProgressingTest, EagerAndGraphMergedByTimestamp) {
           ->recordCollective(
               std::move(graphMetadata), std::move(graphWaitEvent))
           .value();
+  auto graphDevHandle = graphHandle->getColltraceDeviceHandle();
   graphHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+  // The kernel emits its own start/end in-kernel; mirror that here.
+  writeColltraceRing(graphDevHandle, GraphCollTracePhase::kStart);
   // Short host sleep as the "work".
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaLaunchHostFunc(
@@ -429,6 +472,7 @@ TEST_F(GraphColltraceProgressingTest, EagerAndGraphMergedByTimestamp) {
       hostSleepCallback,
       // NOLINTNEXTLINE(performance-no-int-to-ptr)
       reinterpret_cast<void*>(static_cast<uintptr_t>(10)));
+  writeColltraceRing(graphDevHandle, GraphCollTracePhase::kEnd);
   graphHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaStreamEndCapture(stream_, &graph);
@@ -484,4 +528,137 @@ TEST_F(GraphColltraceProgressingTest, EagerAndGraphMergedByTimestamp) {
   cudaGraphExecDestroy(instance);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaGraphDestroy(graph);
+}
+
+// ---------------------------------------------------------------------------
+// In-kernel colltrace: the collective kernel writes its own start/end into the
+// ring via the ColltraceDeviceHandle colltrace exposes, replacing the separate
+// inter-kernel timestamp kernels. These validate the colltrace-layer contract
+// the GPE relies on when arming AllGatherP's PipeStart/PipeEnd (and Solo)
+// kernels. The AllGatherP grouping/arming itself is covered at the ctran layer.
+// ---------------------------------------------------------------------------
+
+// getColltraceDeviceHandle() is capable only for the graph path; eager wait
+// events (no ring) report not-capable so the GPE keeps the host path.
+TEST_F(GraphColltraceProgressingTest, DeviceHandleCapableOnlyForGraphPath) {
+  // A graph collective must be recorded while the stream is capturing —
+  // recordCollective binds it to the capturing stream's graph state.
+  cudaGraph_t graph = nullptr;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
+  auto graphWaitEvent = std::make_unique<GraphCudaWaitEvent>(stream_);
+  auto graphHandle =
+      colltrace_
+          ->recordCollective(
+              std::make_unique<SimpleMetadata>(), std::move(graphWaitEvent))
+          .value();
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamEndCapture(stream_, &graph);
+  if (graph != nullptr) {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaGraphDestroy(graph);
+  }
+
+  auto devHandle = graphHandle->getColltraceDeviceHandle();
+  EXPECT_TRUE(devHandle.valid())
+      << "graph wait event with an attached ring must be in-kernel capable";
+  auto record = graphHandle->getCollRecord();
+  ASSERT_TRUE(record.hasValue() && record.value() != nullptr);
+  EXPECT_EQ(devHandle.collId, record.value()->getCollId())
+      << "device handle collId must match the record's collId";
+
+  // An eager wait event (recorded outside capture) has no ring and must not be
+  // in-kernel capable, so the GPE keeps the host-launched timestamp path.
+  auto eagerHandle =
+      colltrace_
+          ->recordCollective(
+              std::make_unique<SimpleMetadata>(),
+              std::make_unique<meta::comms::colltrace::CudaWaitEvent>(stream_))
+          .value();
+  EXPECT_FALSE(eagerHandle->getColltraceDeviceHandle().valid())
+      << "eager wait event has no ring and must not be in-kernel capable";
+}
+
+// The kernel-style writes through the ColltraceDeviceHandle drive the
+// poll-thread pairing: one start, one completion for the logical collective.
+TEST_F(GraphColltraceProgressingTest, InKernelWritesPairStartAndEnd) {
+  CapturedGraph cg;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
+  auto metadata = std::make_unique<SimpleMetadata>();
+  auto waitEvent = std::make_unique<GraphCudaWaitEvent>(stream_);
+  auto handle =
+      colltrace_->recordCollective(std::move(metadata), std::move(waitEvent))
+          .value();
+  auto devHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(devHandle.valid());
+
+  // The kernel writes its own start/end into the ring.
+  handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+  writeColltraceRing(devHandle, GraphCollTracePhase::kStart);
+  launchHostSleep(10);
+  writeColltraceRing(devHandle, GraphCollTracePhase::kEnd);
+  handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamEndCapture(stream_, &cg.graph);
+  ASSERT_NE(cg.graph, nullptr);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphInstantiate(&cg.instance, cg.graph, nullptr, nullptr, 0);
+
+  ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  EXPECT_EQ(progressPlugin_->getStartedCollIds().size(), 1u)
+      << "in-kernel start write should be observed for the collective";
+  EXPECT_EQ(progressPlugin_->getCompletedCollIds().size(), 1u)
+      << "in-kernel start+end writes should pair into one completion";
+}
+
+// Timeout/hang detection must survive the grouped in-kernel path: a collective
+// that wrote its in-kernel start (PipeStart ran) but never its end (stalled
+// before PipeEnd) must still be flagged in-flight so the watchdog — which
+// consumes collEventProgressing — can time it out. Writes only kStart via the
+// device handle, then stalls with no kEnd, and asserts progressing fires while
+// completion never does.
+TEST_F(GraphColltraceProgressingTest, InKernelStartWithoutEndDetectedInFlight) {
+  constexpr uint64_t kStallMs = 100;
+  CapturedGraph cg;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
+  auto metadata = std::make_unique<SimpleMetadata>();
+  auto waitEvent = std::make_unique<GraphCudaWaitEvent>(stream_);
+  auto handle =
+      colltrace_->recordCollective(std::move(metadata), std::move(waitEvent))
+          .value();
+  auto devHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(devHandle.valid());
+
+  // PipeStart wrote the start; the pipeline then stalls (host sleep) and the
+  // end is never written — the collect stays in-flight the whole time.
+  handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+  writeColltraceRing(devHandle, GraphCollTracePhase::kStart);
+  launchHostSleep(kStallMs);
+  // No kEnd — simulates a hang between PipeStart and PipeEnd.
+  handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaStreamEndCapture(stream_, &cg.graph);
+  ASSERT_NE(cg.graph, nullptr);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaGraphInstantiate(&cg.instance, cg.graph, nullptr, nullptr, 0);
+
+  // While the start sits in the ring with no end for ~kStallMs, the 1ms poll
+  // thread must observe the collective as in-flight and fire progressing.
+  ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  EXPECT_FALSE(progressPlugin_->getProgressedCollIds().empty())
+      << "a started-but-not-ended collective must be detected in-flight so the "
+         "watchdog can time it out";
+  EXPECT_GT(progressPlugin_->progressCount(), 0);
+  EXPECT_TRUE(progressPlugin_->getCompletedCollIds().empty())
+      << "a collective whose end never fired must never be marked completed";
 }

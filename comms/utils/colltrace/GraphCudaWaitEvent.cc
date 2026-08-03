@@ -2,50 +2,21 @@
 
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 
-#include <cstring>
-
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include <folly/Unit.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/utils/CudaRAII.h"
 #include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
 
-bool colltraceDeviceWriteEnabled() noexcept {
-  return NCCLX_COLLTRACE_DEVICE_WRITE;
-}
-
 GraphCudaWaitEvent::GraphCudaWaitEvent(cudaStream_t stream, uint32_t collId)
-    : stream_(stream), collId_(collId), enqueueTime_(precisionNow()) {
-  // Per-collective CUDA resources for the host-launched timestamp fallback,
-  // created in relaxed capture mode so they don't disturb the in-progress graph
-  // capture. TEMPORARY: removed together with the host path at the in-kernel
-  // cutover.
-  StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};
-  CUDA_CHECK(cudaStreamCreate(&timestampStream_));
-  CUDA_CHECK(cudaEventCreateWithFlags(&depEvent_, cudaEventDisableTiming));
-}
+    : stream_(stream), collId_(collId), enqueueTime_(precisionNow()) {}
 
-GraphCudaWaitEvent::~GraphCudaWaitEvent() {
-  if (timestampStream_) {
-    CUDA_CHECK_WITH_IGNORE(
-        cudaStreamDestroy(timestampStream_),
-        cudaErrorCudartUnloading,
-        cudaErrorContextIsDestroyed);
-  }
-  if (depEvent_) {
-    CUDA_CHECK_WITH_IGNORE(
-        cudaEventDestroy(depEvent_),
-        cudaErrorCudartUnloading,
-        cudaErrorContextIsDestroyed);
-  }
-}
+GraphCudaWaitEvent::~GraphCudaWaitEvent() = default;
 
 void GraphCudaWaitEvent::attachRingBuffer(
     ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>*
@@ -54,91 +25,24 @@ void GraphCudaWaitEvent::attachRingBuffer(
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
-  if (inKernelEmit_) {
-    // The collective kernel publishes its own start timestamp into the ring
-    // from inside the kernel, so there is nothing to schedule on the host.
-    return folly::unit;
+  // The collective kernel publishes its own start timestamp into the ring from
+  // inside the kernel, so there is nothing to schedule on the host. If no ring
+  // was attached, the kernel emits nothing and there is no host-launched
+  // fallback (removed at the in-kernel cutover), so this graph-captured
+  // collective goes untimed. Warn a few times so that silent timing loss is
+  // detectable rather than invisible, without spamming the log per collective.
+  if (ringBuffer_ == nullptr) {
+    XLOG_FIRST_N(WARNING, 8)
+        << "GraphCudaWaitEvent: no in-kernel colltrace ring attached (collId="
+        << collId_
+        << "); graph-captured collective timing is unavailable on this device.";
   }
-  // Host-launched fallback (kernel not armed to self-emit, e.g. pre-sm90 or a
-  // not-yet-migrated collective). Fork: collective stream -> timestamp stream
-  // so the start kernel is captured into the graph, with a dependency on the
-  // main stream's current position (right before the collective launches).
-  CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, stream_));
-  CUDA_CHECK_EXPECTED(cudaStreamWaitEvent(timestampStream_, depEvent_));
-
-  // Launch the start timestamp kernel on this collective's timestamp stream.
-  CUDA_CHECK_EXPECTED(ringBuffer_->write(
-      timestampStream_,
-      GraphCollTraceEvent{collId_, GraphCollTracePhase::kStart}));
-
   return folly::unit;
 }
 
 CommsMaybeVoid GraphCudaWaitEvent::afterCollKernelScheduled() noexcept {
-  if (inKernelEmit_) {
-    // The collective kernel publishes its own end timestamp into the ring from
-    // inside the kernel, so there is nothing to schedule on the host.
-    return folly::unit;
-  }
-  // Host-launched fallback. Fork: collective stream -> timestamp stream. This
-  // DAG edge ensures the end timestamp kernel fires only after the collective
-  // completes.
-  CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, stream_));
-  CUDA_CHECK_EXPECTED(cudaStreamWaitEvent(timestampStream_, depEvent_));
-
-  // Launch the end timestamp kernel on this collective's timestamp stream.
-  CUDA_CHECK_EXPECTED(ringBuffer_->write(
-      timestampStream_,
-      GraphCollTraceEvent{collId_, GraphCollTracePhase::kEnd}));
-
-  // Save the collective stream's capture deps before the rejoin.
-  cudaStreamCaptureStatus status;
-  const cudaGraphNode_t* preRejoinDeps = nullptr;
-  const cudaGraphEdgeData* preRejoinEdgeData = nullptr;
-  size_t numPreRejoinDeps = 0;
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
-  CUDA_CHECK_EXPECTED(hipStreamGetCaptureInfo_v2(
-      stream_, &status, nullptr, nullptr, &preRejoinDeps, &numPreRejoinDeps));
-#elif CUDART_VERSION >= 13000
-  CUDA_CHECK_EXPECTED(cudaStreamGetCaptureInfo(
-      stream_,
-      &status,
-      nullptr,
-      nullptr,
-      &preRejoinDeps,
-      &preRejoinEdgeData,
-      &numPreRejoinDeps));
-#else
-  CUDA_CHECK_EXPECTED(cudaStreamGetCaptureInfo_v2(
-      stream_, &status, nullptr, nullptr, &preRejoinDeps, &numPreRejoinDeps));
-#endif
-  std::vector<cudaGraphNode_t> savedDeps(
-      preRejoinDeps, preRejoinDeps + numPreRejoinDeps);
-  std::vector<cudaGraphEdgeData> savedEdgeData(
-      preRejoinEdgeData,
-      preRejoinEdgeData ? preRejoinEdgeData + numPreRejoinDeps
-                        : preRejoinEdgeData);
-
-  // Rejoin: timestamp stream -> collective stream. Required by
-  // cudaStreamEndCapture (all forked streams must rejoin). We immediately
-  // restore the pre-rejoin deps afterward so the rejoin node exists in
-  // the graph DAG but is NOT a dependency of subsequent ops on the
-  // collective stream. This means non-traced ops between collectives
-  // won't be serialized behind the end kernel.
-  CUDA_CHECK_EXPECTED(cudaEventRecord(depEvent_, timestampStream_));
-  CUDA_CHECK_EXPECTED(cudaStreamWaitEvent(stream_, depEvent_));
-
-  // Immediately undo: restore pre-rejoin deps so the main stream
-  // doesn't carry the endK dependency forward.
-  CUDA_CHECK_EXPECTED(cudaStreamUpdateCaptureDependencies(
-      stream_,
-      savedDeps.data(),
-#if CUDART_VERSION >= 13000
-      savedEdgeData.empty() ? nullptr : savedEdgeData.data(),
-#endif
-      savedDeps.size(),
-      cudaStreamSetCaptureDependencies));
-
+  // The collective kernel publishes its own end timestamp into the ring from
+  // inside the kernel, so there is nothing to schedule on the host.
   return folly::unit;
 }
 

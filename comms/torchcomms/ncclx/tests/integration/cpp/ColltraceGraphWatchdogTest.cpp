@@ -25,6 +25,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
+#include "comms/utils/colltrace/CollTrace.h"
 
 class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                                    public ::testing::Test {
@@ -56,6 +57,14 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                         (tmpDir_.path() / "logfile%p").string()),
                 },
         });
+    // The watchdog observes graph-captured collectives through colltrace's
+    // in-kernel timestamps. Where that is unavailable no graph record is ever
+    // created, so no replay can time out and there is nothing to assert.
+    if (!meta::comms::colltrace::graphColltraceSupported(
+            "ColltraceGraphWatchdogTest")) {
+      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
+                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+    }
   }
 
   folly::test::TemporaryDirectory tmpDir_{
