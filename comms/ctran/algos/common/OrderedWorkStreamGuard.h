@@ -69,6 +69,7 @@ class OrderedWorkStreamGuard {
   cudaEvent_t execModeSyncEvent_{};
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
+  bool graphMixingSupport_{true};
   bool synchronizeEagerAfterCapturedWork_{false};
   bool initialized_{false};
   commResult_t error_{commSuccess};

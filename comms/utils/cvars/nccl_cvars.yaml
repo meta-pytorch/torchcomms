@@ -97,6 +97,25 @@ cvars:
      consolidated abort ERR line on stderr (gpeProfiler_->debugString())
      keeps producing per-phase latencies. Set true to enable Scuba flush.
 
+ - name        : NCCL_CTRAN_GRAPH_MIXING_SUPPORT
+   type        : int
+   default     : 1
+   description : |-
+     CTRAN GPE analog of NCCL_GRAPH_MIXING_SUPPORT, controlling the
+     OrderedWorkStreamGuard ordering fence inserted during CUDA graph capture.
+     When 1 (default), each captured CTRAN GPE submission records its ordering
+     event via cudaGraphAddEventRecordNode on a dedicated side stream and the
+     next submission waits on it with cudaEventWaitExternal, so the fence can
+     order across graphs (mixed capture/replay) without serializing unrelated
+     work on the user stream. When 0, the fence is instead a plain
+     cudaEventRecord on the user stream, awaited with a non-external
+     cudaStreamWaitEvent: under capture it folds into the graph as a dependency
+     edge rather than a standalone EVENT_RECORD node, so cudaGraphInstantiate
+     has no floating fence to mis-place onto a busy hardware channel — the cause
+     of an observed multi-ms collective park. The trade-off is no cross-graph
+     ordering. The eager (non-capture) path is unchanged regardless of this
+     setting.
+
  - name        : NCCL_CTRAN_GPE_DEVICE_RING
    type        : bool
    default     : false

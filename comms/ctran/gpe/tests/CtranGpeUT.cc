@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -693,6 +694,165 @@ TEST_F(CtranGpeTest, GraphCaptureGuardWaitRecordPerKernel) {
   CUDACHECK_TEST(cudaFree(buf));
   CUDACHECK_TEST(cudaFreeHost(valPtr));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Result of capturing a single-user-stream graph with a non-GPE memset
+// interposed between two GPE submits, under a given
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT setting.
+struct ReleaseFencePlacement {
+  size_t recordNodeCount{0};
+  bool kernelsOrdered{false};
+};
+
+// Capture: submit(kernelA) -> cudaMemsetAsync (non-GPE work) ->
+// submit(kernelB), all on one user stream, with
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT=`mixingMode`. With mixing on (=1) the guard
+// emits one explicit EVENT_RECORD node per submit (on the side stream); with
+// mixing off (=0) the ordering fence is a plain captured event that folds into
+// the graph as an edge, so no EVENT_RECORD node appears. Either way the two GPE
+// kernels must stay ordered. The graph is also instantiated and launched to
+// confirm correctness in both modes. The cvar is latched in
+// OrderedWorkStreamGuard::init() at CtranGpe construction, so it must be set
+// before `new CtranGpe`.
+static ReleaseFencePlacement captureReleaseFencePlacement(
+    int cudaDev,
+    CtranComm* dummyComm,
+    CtranAlgoDeviceState* dummyDevState_d,
+    const char* mixingMode) {
+  setenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT", mixingMode, 1);
+  ncclCvarInit();
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* bufA = nullptr;
+  int* bufB = nullptr;
+  int* nonGpeBuf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&bufA, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&bufB, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&nonGpeBuf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufA, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufB, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(nonGpeBuf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = 42;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", 0);
+    ctranKernelSetAllGatherArgs(
+        bufA, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    EXPECT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Non-GPE work on the user stream between the two submits. It inherits the
+  // release fence as a dependency only when that fence is anchored inline.
+  CUDACHECK_TEST(cudaMemsetAsync(nonGpeBuf, 0xFF, sizeof(int) * count, stream));
+
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", 0);
+    ctranKernelSetAllGatherArgs(
+        bufB, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    EXPECT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  EXPECT_NE(graph, nullptr);
+
+  ReleaseFencePlacement out;
+  {
+    auto topo = getGraphTopology(graph);
+    auto recordNodes = topo.nodesOfType(cudaGraphNodeTypeEventRecord);
+    auto memsetNodes = topo.nodesOfType(cudaGraphNodeTypeMemset);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+    out.recordNodeCount = recordNodes.size();
+    // The interposed cudaMemsetAsync is the only Memset node captured here
+    // (the setup cudaMemsets run before capture begins).
+    EXPECT_EQ(memsetNodes.size(), 1u);
+    EXPECT_EQ(kernelNodes.size(), 2u);
+    if (kernelNodes.size() == 2) {
+      // cudaGraphGetNodes order is unspecified, so check both directions: the
+      // two same-stream GPE submits must be ordered relative to each other.
+      out.kernelsOrdered = topo.hasPath(kernelNodes[0], kernelNodes[1]) ||
+          topo.hasPath(kernelNodes[1], kernelNodes[0]);
+    }
+  }
+
+  // Instantiate + launch: both placements must produce correct results.
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  std::vector<int> hostA(count, 0);
+  std::vector<int> hostB(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostA.data(), bufA, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      hostB.data(), bufB, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostA, testing::Each(42));
+  EXPECT_THAT(hostB, testing::Each(42));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(bufA));
+  CUDACHECK_TEST(cudaFree(bufB));
+  CUDACHECK_TEST(cudaFree(nonGpeBuf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+
+  // Restore the default so this cvar doesn't leak into other tests via the
+  // fixture's ncclCvarInit().
+  unsetenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT");
+  ncclCvarInit();
+  return out;
+}
+
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT=1 (default): the guard emits an explicit
+// EVENT_RECORD node per submit (on the side stream) so the fence can order
+// across graphs. Cross-submit ordering is still enforced (kernelB depends on
+// kernelA).
+TEST_F(CtranGpeTest, GraphCaptureGraphMixingSupportSideStream) {
+  auto placement =
+      captureReleaseFencePlacement(cudaDev, dummyComm, dummyDevState_d, "1");
+  EXPECT_EQ(placement.recordNodeCount, 2u)
+      << "one explicit release EVENT_RECORD node per submit";
+  EXPECT_TRUE(placement.kernelsOrdered)
+      << "cross-submit ordering must be preserved";
+}
+
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT=0: the ordering fence is a plain captured
+// event that folds into the graph as a dependency edge, so no standalone
+// EVENT_RECORD node is emitted — cudaGraphInstantiate has no floating fence to
+// mis-place onto a busy channel. Cross-submit ordering is still preserved via
+// the edge.
+TEST_F(CtranGpeTest, GraphCaptureGraphMixingSupportEdge) {
+  auto placement =
+      captureReleaseFencePlacement(cudaDev, dummyComm, dummyDevState_d, "0");
+  EXPECT_EQ(placement.recordNodeCount, 0u)
+      << "mixing off must not emit any explicit EVENT_RECORD node; the fence is "
+         "a dependency edge";
+  EXPECT_TRUE(placement.kernelsOrdered)
+      << "cross-submit ordering must be preserved";
 }
 
 // Verify that consecutive same-stream submits followed by a cross-stream
