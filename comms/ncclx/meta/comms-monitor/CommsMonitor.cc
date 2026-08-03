@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include <folly/Singleton.h>
 
@@ -10,6 +11,7 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 constexpr static auto kGlobalInfoDumpMapKey = "GlobalInfo";
 
@@ -35,7 +37,7 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
     proxyTrace = comm->proxyState->trace;
   }
   return NcclCommMonitorInfo{
-      .logMetaData = comm->logMetaData,
+      .logMetaData = ncclCommLogData(comm),
       .stateInfo =
           CommStateInfo{
               .localRank = comm->localRank,
@@ -45,10 +47,10 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .cliqueSize = comm->clique.size},
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
-      .newCollTrace = comm->newCollTrace,
+      .newCollTrace = meta::comms::ncclx::ncclCommNewCollTrace(comm),
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
-          comm->logMetaData.commHash),
-      .algoStats = comm->algoStats};
+          ncclCommLogData(comm).commHash),
+      .algoStats = meta::comms::ncclx::ncclCommAlgoStats(comm)};
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {

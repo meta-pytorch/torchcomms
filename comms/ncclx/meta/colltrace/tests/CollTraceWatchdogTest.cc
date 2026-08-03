@@ -14,6 +14,8 @@
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 
+#include "meta/wrapper/NcclCommCollTrace.h"
+
 namespace {
 struct GpuBuffer {
   explicit GpuBuffer(size_t size) : size_(size) {
@@ -223,7 +225,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Allocate memory on the CPU. A buffer size smaller than 4097 shall trigger
   // error from Ctran when NCCL_CTRAN_REGISTRATION_SIZE_CHECK=1. This is just a
@@ -276,7 +278,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   NcclAllReduce allReduce(comm.raw(), stream, 32);
 
@@ -317,7 +319,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
@@ -368,7 +370,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
@@ -417,7 +419,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
@@ -465,7 +467,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   mccl::cuda::CudaStream stream;
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Need a have an allReduce here to trigger pre-connect
   NcclAllReduce initAllReduce(comm.raw(), stream, 32);
