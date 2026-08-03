@@ -161,6 +161,8 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
       recvPlan,
       sendPlan);
 
+  resetPipeEnd(*resource, comm);
+
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   FB_COMMCHECK(exchangeCtrl(ctx));
@@ -170,6 +172,7 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   FB_COMMCHECK(progressSteps(ctx, nodeId));
+  waitPipeEnd(*resource, comm);
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 

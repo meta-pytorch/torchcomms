@@ -78,6 +78,8 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 
   CtranMapperRequest syncSreq, syncRreq;
 
+  resetPipeEnd(*resource, comm);
+
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
   // Ready-to-receive handshake with the rail neighbors. On the first replay it
@@ -148,6 +150,7 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& putReq : putReqs) {
     FB_COMMCHECK(mapper->waitRequest(&putReq));
   }
+  waitPipeEnd(*resource, comm);
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 
