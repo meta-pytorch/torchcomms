@@ -1,9 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
-// Integration tests for TorchComms colltrace-based timeout watchdog.
-// Validates that when NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1, TorchCommNCCLX::init()
-// automatically enables the colltrace watchdog plugin via
-// tryEnableColltraceTimeoutWatchdog(), and that it correctly detects timeouts.
+// Integration tests for the colltrace-based timeout watchdog fallback.
+// Validates that when GraphEventTracker monitoring is disabled
+// (TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING=0) and colltrace is tracing
+// graph-captured collectives, TorchCommNCCLX::init() falls back to the
+// colltrace watchdog plugin via tryEnableColltraceTimeoutWatchdog() and detects
+// timeouts.
 
 #include <folly/Conv.h>
 #include <folly/FileUtil.h>
@@ -47,7 +49,9 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                     "NCCL_COMMSMONITOR_ENABLE=1",
                     "NCCL_COLLTRACE=trace",
                     "NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1",
-                    "TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING=1",
+                    // Disable GraphEventTracker so init() falls back to the
+                    // colltrace watchdog — the path this test exercises.
+                    "TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING=0",
                     "NCCL_CTRAN_ENABLE=1",
                     "NCCL_CTRAN_REGISTRATION_SIZE_CHECK=1",
                     "NCCL_CTRAN_BACKENDS=ib,socket,nvl",
@@ -135,10 +139,9 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
   }
 };
 
-// Creates a TorchComm via new_comm("ncclx", ...) with
-// NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1, verifying that init() automatically
-// enables the colltrace watchdog and it detects a timeout when a collective
-// hangs.
+// Creates a TorchComm via new_comm("ncclx", ...) with GraphEventTracker
+// monitoring disabled, verifying that init() falls back to the colltrace
+// watchdog and it detects a timeout when a collective hangs.
 TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
   if (isTestDriverProcess()) {
     testDriverCheckCrashedWithWatchdog();
@@ -149,10 +152,10 @@ TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  // Create TorchComm via the full init path.
-  // NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1 is set in the env, so
-  // initNcclxResources() will call tryEnableColltraceTimeoutWatchdog(timeout)
-  // which sets crashOnAsyncError, crashOnTimeout, and timeoutMs hints.
+  // Create TorchComm via the full init path. GraphEventTracker monitoring is
+  // disabled and colltrace graph tracing is on, so init() falls back to
+  // tryEnableColltraceTimeoutWatchdog(timeout), which sets crashOnAsyncError,
+  // crashOnTimeout, and timeoutMs hints.
   auto torchcomm = createTorchComm(
       rank,
       worldSize,
@@ -184,6 +187,14 @@ TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
 // Captures an AllReduce into a CUDA graph via TorchComms, replays it, and
 // verifies the colltrace watchdog detects a timeout during graph replay.
 TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
+#if CUDART_VERSION >= 13000 && CUDART_VERSION < 13030
+  // The in-kernel colltrace graph path this exercises is compiled out on CUDA
+  // 13.0-13.2 (nvcc [[no_unique_address]] layout bug, fixed in 13.3; see the
+  // colltraceHdr gate in comms/ncclx/v2_30/src/include/device.h). With the
+  // primary GraphEventTracker also disabled in SetUp, there is no graph-replay
+  // timeout detector left to test here.
+  GTEST_SKIP() << "in-kernel colltrace graph path disabled on CUDA 13.0-13.2";
+#endif
   if (isTestDriverProcess()) {
     testDriverCheckCrashedWithWatchdog();
     return;
@@ -255,6 +266,12 @@ TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
 TEST_F(
     ColltraceGraphWatchdogTest,
     TestGraphReplayTimeoutAfterSuccessfulReplays) {
+#if CUDART_VERSION >= 13000 && CUDART_VERSION < 13030
+  // In-kernel colltrace graph path is compiled out on CUDA 13.0-13.2 (nvcc
+  // [[no_unique_address]] layout bug, fixed in 13.3); nothing to test here with
+  // GraphEventTracker also disabled in SetUp. See device.h colltraceHdr gate.
+  GTEST_SKIP() << "in-kernel colltrace graph path disabled on CUDA 13.0-13.2";
+#endif
   if (isTestDriverProcess()) {
     testDriverCheckCrashedWithWatchdog();
     return;

@@ -88,8 +88,8 @@ bool colltraceCudaGraphTracingRequested() {
 // The colltrace cudagraph watchdog only fires when BOTH the cudagraph tracing
 // flag is set AND colltrace itself is in trace/verbose mode — otherwise
 // CollTraceWrapper::newCollTraceInit short-circuits before installing the
-// WatchdogPlugin. Both conditions must hold before we hand graph-timeout
-// monitoring over to colltrace and disable GraphEventTracker.
+// WatchdogPlugin. Both conditions must hold before the colltrace watchdog can
+// serve as the fallback when GraphEventTracker monitoring is disabled.
 bool isColltraceGraphTracingEnabled() {
   return colltraceCudaGraphTracingRequested() && colltraceTraceModeEnabled();
 }
@@ -105,32 +105,6 @@ bool isGraphTimeoutMonitoringEnabled() {
       std::string val(env);
       enabled = (val != "0" && val != "false");
     }
-    // Misconfiguration guard: the operator asked for colltrace cudagraph
-    // tracing, but colltrace is not in trace/verbose mode, so
-    // CollTraceWrapper::newCollTraceInit will never install the timeout
-    // WatchdogPlugin. Warn loudly — otherwise both watchdogs can end up
-    // silently disabled (the failure mode that let a hang go undetected).
-    if (colltraceCudaGraphTracingRequested() && !colltraceTraceModeEnabled()) {
-      const char* colltraceEnv = std::getenv("NCCL_COLLTRACE");
-      LOG(WARNING)
-          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled but NCCL_COLLTRACE='"
-          << (colltraceEnv != nullptr ? colltraceEnv : "<unset>")
-          << "' does not enable a 'trace'/'verbose' mode — the colltrace timeout "
-          << "watchdog will NOT be installed. "
-          << (enabled
-                  ? "Keeping GraphEventTracker as the graph-collective watchdog."
-                  : "TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is also disabled, so "
-                    "NO graph-collective watchdog will be active.")
-          << " Set NCCL_COLLTRACE=trace to enable the colltrace watchdog.";
-    }
-
-    if (enabled && isColltraceGraphTracingEnabled()) {
-      LOG(WARNING)
-          << "[TC] NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled — "
-          << "disabling GraphEventTracker timeout monitoring in favor of "
-          << "colltrace watchdog plugin";
-      enabled = false;
-    }
     state = enabled ? 1 : 0;
     g_graphTimeoutMonitoringState.store(state, std::memory_order_relaxed);
   }
@@ -142,14 +116,9 @@ void resetGraphTimeoutMonitoringCacheForTest() {
 }
 
 bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout) {
-  const char* monitoringEnv =
-      std::getenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
-  if (monitoringEnv != nullptr) {
-    std::string val(monitoringEnv);
-    if (val == "0" || val == "false") {
-      return false;
-    }
-  }
+  // Fallback watchdog (used when GraphEventTracker monitoring is disabled):
+  // only the colltrace WatchdogPlugin can be configured, and only when
+  // colltrace is actually tracing graph-captured collectives.
   if (!isColltraceGraphTracingEnabled()) {
     return false;
   }
@@ -261,12 +230,18 @@ void TorchCommNCCLX::init(
     return;
   }
 
-  // When TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is enabled (default) and
-  // NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1, set colltrace watchdog hints before
-  // creating the NCCL communicator — the colltrace plugin is configured
-  // during ncclCommInitRank and must see the hints at that point.
-  if (!isGraphTimeoutMonitoringEnabled()) {
-    tryEnableColltraceTimeoutWatchdog(options_.timeout);
+  // GraphEventTracker is the default graph-collective watchdog (and feeds
+  // clog). When it is disabled (TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING=0),
+  // fall back to the colltrace watchdog so graph-captured hangs are still
+  // detected — its hints must be set before ncclCommInitRank, where the
+  // colltrace plugin is configured. Warn if neither watchdog ends up active.
+  if (!isGraphTimeoutMonitoringEnabled() &&
+      !tryEnableColltraceTimeoutWatchdog(options_.timeout)) {
+    LOG(WARNING)
+        << "[TC] GraphEventTracker timeout monitoring is disabled and the "
+        << "colltrace watchdog is unavailable (needs NCCL_COLLTRACE in a "
+        << "'trace'/'verbose' mode with NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1) — no "
+        << "graph-collective timeout watchdog will be active.";
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
