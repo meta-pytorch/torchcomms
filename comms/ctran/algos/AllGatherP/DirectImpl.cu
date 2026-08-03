@@ -9,6 +9,7 @@ namespace ctran::allgatherp {
 __global__ void ncclKernelAllGatherPDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);

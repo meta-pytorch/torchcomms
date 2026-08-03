@@ -324,6 +324,12 @@ commResult_t ctranDeviceAllToAllv(
       ? ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>
       : ncclKernelDeviceAllToAllvPipes<PipeProtocol::Simple>;
 
+  // This NVLink-only device kernel does not use the GPE flag mechanism and does
+  // not construct a ColltraceEventScope, so do not arm an in-kernel colltrace
+  // record for it — otherwise the reused config's default emit flags would
+  // create a record that never receives its start/end and stays in-flight.
+  config.colltraceEmitStart = false;
+  config.colltraceEmitEnd = false;
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), nullptr, config, reinterpret_cast<void*>(kernel)));
 

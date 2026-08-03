@@ -3,6 +3,7 @@
 #ifndef CTRAN_GPE_IMPL_H_
 #define CTRAN_GPE_IMPL_H_
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -41,9 +42,10 @@ struct alignas(128) KernelFlagItem {
     for (int i = 0; i < numGroups_; i++) {
       dev.flag_[i] = KERNEL_UNSET;
     }
-    // Clear the full ring header so enabled==1 always implies ring/cmdId are
-    // current; submit() re-arms it per-cmd on the ring path.
+    // Clear the full ring + colltrace headers (not just enabled) so a stale
+    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
     dev.gpeHdr = {};
+    dev.colltraceHdr = {};
   }
 
   bool inUse() {
@@ -63,9 +65,10 @@ struct alignas(128) KernelFlagItem {
       dev.flag_[i] = KERNEL_SCHEDULED;
     }
     numGroups_ = 1;
-    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
-    // never be published; submit() re-arms it per-cmd on the ring path.
+    // Clear the full ring + colltrace headers (not just enabled) so a stale
+    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
     dev.gpeHdr = {};
+    dev.colltraceHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
@@ -282,6 +285,9 @@ class CtranGpe::Impl {
   folly::Synchronized<CmdQueue, std::mutex> cmdQueue_;
   std::condition_variable cmdQueueCv_;
   std::thread thread_;
+  // Set by terminate() so the worker's kernel-start waits bail out during
+  // teardown instead of blocking forever on a cmd whose kernel never launches.
+  std::atomic<bool> terminating_{false};
   ctran::algos::OrderedWorkStreamGuard ws_;
 
   // Device-ring dispatch state (NCCL_CTRAN_GPE_DEVICE_RING). Ring + reader are
@@ -291,6 +297,16 @@ class CtranGpe::Impl {
   std::unique_ptr<ctran::gpe::GpeRingReader> deviceRingReader_;
   std::queue<CtranGpeCmd*> ringPending_;
   GpeDeviceRingCmdRegistry deviceRingCmdRegistry_;
+
+  // In-kernel colltrace grouping: a multi-submit collective (e.g. AllGatherP's
+  // PipeStart..PipeSync..PipeEnd) records one CollTrace event whose start is
+  // written by the group's Begin kernel and end by its End kernel. Begin
+  // stashes the device handle (ring + collId) here so the following End submit
+  // arms its kernel with the same collId. A default (null-ring, !valid())
+  // handle means no group is open. Written and read only on the submit
+  // (capture) thread, and a group's submits are always contiguous, so a single
+  // pending slot suffices.
+  meta::comms::colltrace::ColltraceDeviceHandle pendingColltraceGroup_{};
 
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.

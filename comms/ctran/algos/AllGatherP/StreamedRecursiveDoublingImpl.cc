@@ -245,6 +245,12 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
   config.numThreads = 1;
   config.args.devState_d = ctran->algo->getDevState();
 
+  // In-kernel colltrace grouping across the Srd multi-kernel collective
+  // (SrdPipeStart..SrdPipeSync..SrdPipeEnd): the begin kernel emits the start
+  // boundary and opens the group; the end kernel emits the end. Set explicitly
+  // per submit because the reused KernelConfig defaults its emit flags to true.
+  bool colltraceGroupOpen = false;
+
   // The streamed GPE path sources every outgoing chunk from recvbuff, including
   // the local rank's own chunk. Keep the copy stream-ordered before PipeStart.
   FB_COMMCHECK(copyToSelf(
@@ -267,12 +273,21 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
     opGroup.push_back(std::move(op));
 
     if (nLocalRanks > 1) {
+      // Multi-kernel begin: emit the start boundary and open the group; the
+      // SrdPipeEnd kernel below reuses this record and emits the end.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = false;
+      colltraceGroupOpen = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
           config,
           reinterpret_cast<void*>(ncclKernelAllGatherPSrdPipeStart)));
     } else {
+      // Single-kernel collective: emit both boundaries explicitly rather than
+      // relying on the reused config's KernelConfig defaults.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
@@ -299,6 +314,10 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
           .pipeSync = resource_.pipeSync,
       };
       config.algoArgs = reinterpret_cast<void*>(&syncArgs);
+      // Interior kernel: emits neither boundary and reuses the begin kernel's
+      // record. Overwrite the values leaked from the reused `config`.
+      config.colltraceEmitStart = false;
+      config.colltraceEmitEnd = false;
       FB_COMMCHECK(ctran->gpe->submit(
           {},
           nullptr,
@@ -327,6 +346,17 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         .pipeSync = resource_.pipeSync,
     };
     config.algoArgs = reinterpret_cast<void*>(&endArgs);
+    if (colltraceGroupOpen) {
+      // Multi-kernel end: close the group opened by SrdPipeStart and emit only
+      // the end boundary.
+      config.colltraceEmitStart = false;
+      config.colltraceEmitEnd = true;
+    } else {
+      // No inter-node begin ran (nNodes == 1), so this end kernel represents
+      // the whole intra-node collective: emit both boundaries.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
+    }
     FB_COMMCHECK(ctran->gpe->submit(
         {},
         nullptr,

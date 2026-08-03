@@ -20,6 +20,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::broadcast::KernelArgs args) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
