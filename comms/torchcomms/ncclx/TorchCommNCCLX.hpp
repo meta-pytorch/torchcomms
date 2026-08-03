@@ -316,6 +316,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
+  void abortNcclCommNoThrow() noexcept;
   void revokeNcclComm();
 
   enum class CommState {
@@ -332,6 +333,11 @@ class TorchCommNCCLX : public TorchCommBackend,
   // once per communicator generation, even when both the timeout watchdog and a
   // synchronous collective observe the same failure. Reset on reconfigure.
   std::atomic<bool> revoked_{false};
+  // Set once a non-reconfigurable communicator abort has been claimed for the
+  // current communicator generation. Prevents the timeout watchdog and a
+  // synchronous collective from both calling ncclCommAbort on the same comm.
+  // Reset on init/reconfigure.
+  std::atomic<bool> comm_abort_requested_{false};
 
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
@@ -488,6 +494,10 @@ class TorchCommNCCLX : public TorchCommBackend,
       const ncclComm_t comm,
       const ncclDataType_t dataType);
   void timeoutWatchdog() noexcept;
+  CommState handleFatalTransitionFromWatchdog(
+      CommState state_before,
+      CommState state_after);
+  void maybeAbortProcessFromWatchdog(CommState state);
   void checkInitialized() const;
   void initNcclxResources();
   void checkAndAbortIfTimedOutOrError();
