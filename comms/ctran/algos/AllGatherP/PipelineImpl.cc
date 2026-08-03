@@ -244,8 +244,7 @@ commResult_t AlgoImpl::execPipeline(
   config.numThreads = 1;
   config.args.devState_d = ctran->algo->getDevState();
 
-  // TODO: ensure colltrace can capture the group of operations as single
-  // allgather
+  bool colltraceGroupOpen = false;
 
   if (nNodes > 1) {
     // Submit inter-node Ring pipeline for GPE thread to execute. Skip if single
@@ -266,6 +265,11 @@ commResult_t AlgoImpl::execPipeline(
       //   GPE thread till allgather starts. ncclKernelAllGatherPPipeStart
       //   returns immediately after started GPE, thus the inter-node pipeline
       //   can be overlapped with the following intra-node copies.
+      // Multi-kernel begin: emit the start boundary and open the group; the
+      // PipeEnd kernel below reuses this record and emits the end.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = false;
+      colltraceGroupOpen = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
@@ -274,6 +278,10 @@ commResult_t AlgoImpl::execPipeline(
     } else {
       // - For nLocalRanks == 1 case, ncclKernelAllGatherPRing holds the stream
       //   till GPE thread finishes entire transfer.
+      // Single-kernel collective: emit both boundaries explicitly rather than
+      // relying on the reused `config`'s KernelConfig defaults.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
       FB_COMMCHECK(ctran->gpe->submit(
           std::move(opGroup),
           gpeFn,
@@ -321,6 +329,11 @@ commResult_t AlgoImpl::execPipeline(
           .pipeSync = resource_.pipeSync,
       };
       config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+      // Interior kernel: emits neither boundary and reuses the begin kernel's
+      // record. Overwrite the values leaked from the reused `config` (set on
+      // the PipeStart submit above).
+      config.colltraceEmitStart = false;
+      config.colltraceEmitEnd = false;
       FB_COMMCHECK(ctran->gpe->submit(
           {},
           nullptr,
@@ -349,6 +362,15 @@ commResult_t AlgoImpl::execPipeline(
         .pipeSync = resource_.pipeSync,
     };
     config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+    if (colltraceGroupOpen) {
+      // Close the record opened by PipeStart.
+      config.colltraceEmitStart = false;
+      config.colltraceEmitEnd = true;
+    } else {
+      // With no PipeStart, PipeEnd bounds the whole collective.
+      config.colltraceEmitStart = true;
+      config.colltraceEmitEnd = true;
+    }
     FB_COMMCHECK(ctran->gpe->submit(
         {},
         nullptr,

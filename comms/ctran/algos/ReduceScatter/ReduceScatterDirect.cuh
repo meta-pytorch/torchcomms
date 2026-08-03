@@ -131,6 +131,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::reducescatter::KernelArgs args) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
   // channels.

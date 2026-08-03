@@ -396,6 +396,7 @@ __global__ void ncclKernelAllReduceCtranRing(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
     ctran::allreduce::ring::KernArgs args) {
+  ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;

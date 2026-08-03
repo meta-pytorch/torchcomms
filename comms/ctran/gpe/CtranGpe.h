@@ -315,6 +315,18 @@ struct KernelConfig {
   // launched on a single GPE thread.
   bool canConcurrent{false};
 
+  // In-kernel colltrace: on the graph-capture path (sm_90+), the collective
+  // kernel writes its own start/end timestamps into the colltrace ring so one
+  // logical collective maps to one CollTrace record. A single-kernel collective
+  // emits both boundaries (the defaults). A multi-kernel collective (e.g. the
+  // AllGatherP pipeline) sets these per kernel: the begin kernel emits the
+  // start and opens the record, interior kernels emit neither (and reuse the
+  // record), and the end kernel emits the end. A kernel owns the record iff it
+  // emits the start; interior/end kernels reuse the begin kernel's. Off the
+  // in-kernel path (eager, pre-sm_90, HIP) these are ignored.
+  bool colltraceEmitStart{true};
+  bool colltraceEmitEnd{true};
+
  public:
   KernelConfig(
       enum KernelType type,
