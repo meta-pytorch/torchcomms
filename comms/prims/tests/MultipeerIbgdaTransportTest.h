@@ -18,6 +18,13 @@ class P2pIbgdaTransportDevice;
 
 namespace comms::prims::test {
 
+enum class SendForwardRecvRole : uint8_t {
+  Send,
+  Forward,
+  Recv,
+  SendRecv,
+};
+
 /**
  * Test kernel: Put data + signal remote (thread-scope, slot-index)
  *
@@ -123,10 +130,10 @@ void testPutOnly(
 bool supportsProgressSendRecv();
 
 /**
- * Test kernel: snapshot send/recv pipeline geometry through the unified IB
+ * Test kernel: snapshot send/recv pipeline limits through the unified IB
  * transport wrapper. Output: pipelineDepth, pipelineWindow, pipelineChunk.
  */
-void testPipelineGeometry(
+void testPipelineLimits(
     P2pIbTransportDevice transport,
     uint64_t* output,
     int numBlocks,
@@ -145,15 +152,28 @@ void testSendRecv(
     int blockSize);
 
 /**
- * Test kernel: two sequential bidirectional blocking send/recv calls.
+ * Test kernel: one initial bidirectional call followed by repeated calls.
  */
-void testTwoCallSendThenRecv(
+void testSendThenRecvSequence(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
     void* recvBuffer,
     std::size_t firstBytes,
     std::size_t secondBytes,
+    int repeatCount,
     std::size_t maxSignalBytes,
+    int numBlocks,
+    int blockSize);
+
+/** Test kernel: one role in a send -> forward -> recv chain. */
+void testSendForwardRecv(
+    P2pIbTransportDevice prev,
+    P2pIbTransportDevice next,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    SendForwardRecvRole role,
     int numBlocks,
     int blockSize);
 

@@ -580,9 +580,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return channelLayout_.perChannelBufferSize != 0
-        ? channelLayout_.perChannelBufferSize
-        : channelLayout_.perChannelSize;
+    return detail::physical_pipeline_window(channelLayout_);
   }
 
   __device__ __forceinline__ std::size_t pipeline_window(
@@ -599,8 +597,12 @@ class P2pIbrcTransportDevice {
     if (channelLayout_.pipelineDepth <= 0) {
       return 0;
     }
-    return pipeline_window() /
+    return detail::physical_pipeline_window(channelLayout_) /
         static_cast<std::size_t>(channelLayout_.pipelineDepth);
+  }
+
+  __device__ __forceinline__ bool batches_slot_free() const {
+    return false;
   }
 
   __device__ __forceinline__ void init_send_progress(

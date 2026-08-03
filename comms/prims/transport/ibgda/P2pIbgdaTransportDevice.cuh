@@ -1960,9 +1960,9 @@ class P2pIbgdaTransportDevice {
   //                        chunkSize = floor16(min(perBlockSlot,
   //                                             max_signal_bytes))
   //   channel progress   = persistent 16-byte-aligned protocol cursor.
-  //                        DATA_READY, SLOT_FREE, and NIC_DONE counters also
-  //                        advance by protocol bytes, which keeps cursor state
-  //                        independent of max_signal_bytes.
+  //                        DATA_READY advances per chunk; with pipeline depth
+  //                        greater than one, SLOT_FREE advances at physical
+  //                        slot boundaries.
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
@@ -2007,12 +2007,10 @@ class P2pIbgdaTransportDevice {
    *        |
    *        | DATA_READY reached streamEnd; copy recvStaging -> user dst
    *        v
-   *   Signal SLOT_FREE, then either WaitDataReady for next chunk or Done
+   *   Publish SLOT_FREE credit, then either WaitDataReady or Done
    *
-   * Compatibility follows from using the same cumulative byte counters:
-   * DATA_READY advances by bytesThis/chunk.bytes on each put, SLOT_FREE
-   * advances by the same amount after recv copies out of staging, and NIC_DONE
-   * advances by the same amount after the NIC completes the sender's WQE.
+   * DATA_READY advances per chunk. SLOT_FREE tracks the same consumed byte
+   * stream, but may defer publication to a physical slot boundary.
    * Blocking send()/recv() and async init share one transport-owned byte
    * cursor. Blocking calls advance it when the call completes; progress init
    * reserves that cursor range before returning so later blocking calls cannot
@@ -2166,7 +2164,7 @@ class P2pIbgdaTransportDevice {
    *
    * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
    * transport-owned recv-staging into the caller's destination through
-   * `CopyOp::recv`, then signals SLOT_FREE back to the sender. Returning `Done`
+   * `CopyOp::recv`, then publishes SLOT_FREE credit. Returning `Done`
    * means the reserved protocol byte range has completed. For unaligned
    * payload sizes, the final WQE may include transport-private padding;
    * `CopyOp` is invoked only for valid payload bytes.
@@ -2209,8 +2207,8 @@ class P2pIbgdaTransportDevice {
    * Signaling protocol (per group):
    *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
    *                send waits on this before overwriting local sendStaging.
-   *   SLOT_FREE  — receiver increments by bytesThis for each signaled byte
-   *                range. send waits before overwriting recvStaging.
+   *   SLOT_FREE  — receiver publishes consumed staging credit. With more than
+   *                one pipeline slot, publication occurs at slot boundaries.
    *   DATA_READY — sender increments by bytesThis, piggybacked on put.
    *                recv waits on this before reading recvStaging.
    *
@@ -2302,8 +2300,8 @@ class P2pIbgdaTransportDevice {
    * Signaling protocol (per group, symmetric with send):
    *   DATA_READY — sender increments by bytesThis after RDMA put completes.
    *                recv waits on this before copying from recvStaging.
-   *   SLOT_FREE  — recv increments by bytesThis (symmetric with DATA_READY)
-   *                to release backpressure on sender.
+   *   SLOT_FREE  — recv publishes consumed staging credit to release sender
+   *                backpressure.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does signal ops).
@@ -2381,16 +2379,10 @@ class P2pIbgdaTransportDevice {
    * and staging (this transport's recv staging). This enables fused
    * receive-reduce-forward patterns.
    *
-   * Signal ordering invariant (critical for ring deadlock avoidance):
-   *   1. Wait DATA_READY from sender (this transport)
-   *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
-   *   3. CopyOp::forward(dst, fwd_staging, staging, ...)
-   *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
-   *   5. Wait SLOT_FREE from fwd transport's receiver
-   *   6. threadfence_system + RDMA put via fwd transport
-   *
-   * Step 4 before step 5 breaks the circular dependency in rings: each rank
-   * releases its predecessor's staging before waiting on its successor.
+   * Incoming and outgoing links track native DATA_READY chunks independently.
+   * Ready outgoing chunks may post while a receive-credit epoch is filling;
+   * an interior post that would wait is deferred until predecessor credit is
+   * published. A bounded final partial epoch may then block.
    *
    * Protocol compatibility with send() and recv():
    *
@@ -2400,14 +2392,14 @@ class P2pIbgdaTransportDevice {
    *   Recv side (this transport):
    *     - Uses this channel's recv progress cursor.
    *     - Waits DATA_READY on this channel's local data-ready signal.
-   *     - Signals SLOT_FREE on the remote channel's slot-free signal.
+   *     - Publishes SLOT_FREE on the remote channel's slot-free signal.
    *
    *   Fwd side (fwd transport):
    *     - Uses the forward channel's send progress cursor.
-   *     - Waits NIC_DONE on the forward channel's local completion counter.
+   *     - Waits on the forward channel's local-completion ticket.
    *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
-   *     - RDMA puts with DATA_READY on the forward remote channel and
-   *       posts NIC_DONE credit per chunk to the local completion counter.
+   *     - RDMA puts each native outgoing chunk with DATA_READY and records a
+   *       ticket covering local completion.
    *
    * Any chain of send → forward* → recv is therefore valid: each
    * forward consumes exactly the signals its predecessor produces
@@ -2491,16 +2483,16 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Total send/recv staging buffer bytes for one channel.
-   *
-   * The channel window is split into pipelineDepth fixed chunks. Public
-   * geometry follows:
-   *   pipeline_chunk() = pipeline_window() / pipeline_depth()
+   * Guaranteed bytes a pipeline step can send before receive progress after
+   * prior matched traffic has been consumed.
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return channelLayout_.perChannelBufferSize != 0
-        ? channelLayout_.perChannelBufferSize
-        : channelLayout_.perChannelSize;
+    const std::size_t physicalWindow =
+        detail::physical_pipeline_window(channelLayout_);
+    if (!batches_slot_free()) {
+      return physicalWindow;
+    }
+    return physicalWindow - pipeline_chunk();
   }
 
   __device__ __forceinline__ std::size_t pipeline_window(
@@ -2517,8 +2509,12 @@ class P2pIbgdaTransportDevice {
     if (channelLayout_.pipelineDepth <= 0) {
       return 0;
     }
-    return pipeline_window() /
+    return detail::physical_pipeline_window(channelLayout_) /
         static_cast<std::size_t>(channelLayout_.pipelineDepth);
+  }
+
+  __device__ __forceinline__ bool batches_slot_free() const {
+    return channelLayout_.pipelineDepth > 1;
   }
 
  private:

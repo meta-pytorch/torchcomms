@@ -311,10 +311,10 @@ void testPutOnly(
 }
 
 // =============================================================================
-// Kernel: Pipeline geometry snapshot
+// Kernel: Pipeline limits snapshot
 // =============================================================================
 
-__global__ void pipelineGeometryKernel(
+__global__ void pipelineLimitsKernel(
     P2pIbTransportDevice transport,
     uint64_t* output) {
   if (threadIdx.x == 0 && blockIdx.x == 0) {
@@ -324,12 +324,12 @@ __global__ void pipelineGeometryKernel(
   }
 }
 
-void testPipelineGeometry(
+void testPipelineLimits(
     P2pIbTransportDevice transport,
     uint64_t* output,
     int numBlocks,
     int blockSize) {
-  pipelineGeometryKernel<<<numBlocks, blockSize>>>(transport, output);
+  pipelineLimitsKernel<<<numBlocks, blockSize>>>(transport, output);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -365,12 +365,13 @@ __global__ void sendRecvKernel(
   }
 }
 
-__global__ void twoCallSendThenRecvKernel(
+__global__ void sendThenRecvSequenceKernel(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
     void* recvBuffer,
     std::size_t firstBytes,
     std::size_t secondBytes,
+    int repeatCount,
     std::size_t maxSignalBytes) {
   auto group = make_block_group();
   Timeout timeout(kDefaultDeviceTimeoutCycles);
@@ -380,10 +381,13 @@ __global__ void twoCallSendThenRecvKernel(
 
   transport.send(group, sendBytes, firstBytes, maxSignalBytes, timeout);
   transport.recv(group, recvBytes, firstBytes, maxSignalBytes, timeout);
-  transport.send(
-      group, sendBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
-  transport.recv(
-      group, recvBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+  for (int call = 0; call < repeatCount; ++call) {
+    const std::size_t offset = firstBytes + call * secondBytes;
+    transport.send(
+        group, sendBytes + offset, secondBytes, maxSignalBytes, timeout);
+    transport.recv(
+        group, recvBytes + offset, secondBytes, maxSignalBytes, timeout);
+  }
 }
 
 void testSendRecv(
@@ -403,22 +407,71 @@ void testSendRecv(
   }
 }
 
-void testTwoCallSendThenRecv(
+void testSendThenRecvSequence(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
     void* recvBuffer,
     std::size_t firstBytes,
     std::size_t secondBytes,
+    int repeatCount,
     std::size_t maxSignalBytes,
     int numBlocks,
     int blockSize) {
-  twoCallSendThenRecvKernel<<<numBlocks, blockSize>>>(
+  sendThenRecvSequenceKernel<<<numBlocks, blockSize>>>(
       transport,
       sendBuffer,
       recvBuffer,
       firstBytes,
       secondBytes,
+      repeatCount,
       maxSignalBytes);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+__global__ void sendForwardRecvKernel(
+    P2pIbTransportDevice prev,
+    P2pIbTransportDevice next,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    SendForwardRecvRole role) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+  switch (role) {
+    case SendForwardRecvRole::Send:
+      next.send(group, sendBuffer, nbytes, maxSignalBytes, timeout);
+      return;
+    case SendForwardRecvRole::Forward:
+      prev.forward(group, recvBuffer, next, nbytes, maxSignalBytes, timeout);
+      return;
+    case SendForwardRecvRole::Recv:
+      prev.recv(group, recvBuffer, nbytes, maxSignalBytes, timeout);
+      return;
+    case SendForwardRecvRole::SendRecv:
+      next.send(group, sendBuffer, nbytes, maxSignalBytes, timeout);
+      prev.recv(group, recvBuffer, nbytes, maxSignalBytes, timeout);
+      return;
+  }
+}
+
+void testSendForwardRecv(
+    P2pIbTransportDevice prev,
+    P2pIbTransportDevice next,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    SendForwardRecvRole role,
+    int numBlocks,
+    int blockSize) {
+  sendForwardRecvKernel<<<numBlocks, blockSize>>>(
+      prev, next, sendBuffer, recvBuffer, nbytes, maxSignalBytes, role);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

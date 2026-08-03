@@ -320,6 +320,22 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
     return;
   }
   auto& channel = transport->local_channel(static_cast<uint32_t>(groupId));
+  if (transport->batches_slot_free()) {
+    detail::assert_progress_slot_idle(
+        group, channel.recvProgress, "drain recv");
+    const IbRemoteChannel remoteChannel = makeIbRemoteChannel(layout, groupId);
+    const std::size_t slotPayload =
+        protocol::Simple::max_payload(detail::pipeline_chunk(layout));
+    const std::size_t trailingPayload =
+        static_cast<uint64_t>(channel.recvProgress.nextStep) % slotPayload;
+    if (trailingPayload != 0) {
+      transport->signal(
+          group,
+          remoteChannel.slotFree,
+          protocol::Simple::wire_bytes(trailingPayload),
+          IbDirection::Recv);
+    }
+  }
   transport->wait_counter(group, channel.nicDoneWait, expectedBytes, timeout);
   transport->wait_signal(group, channel.slotFree, expectedBytes, timeout);
 }
