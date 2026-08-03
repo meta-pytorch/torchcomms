@@ -14,7 +14,7 @@
 #include "transport.h"
 #include "group.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/wrapper/NcclxCvars.h"
 #include "meta/wrapper/CtranRegister.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
 
@@ -172,7 +172,7 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
       *handle,
       ncclCommLogData(comm).commHash,
       ncclCommLogData(comm).commDesc.c_str());
-  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+  if (meta::comms::ncclx::commRegisterLogEnabled()) {
       meta::comms::memtrace::recordReg(
           ncclCommLogData(comm),
           "",
@@ -252,7 +252,7 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
       handle,
       ncclCommLogData(comm).commHash,
       ncclCommLogData(comm).commDesc.c_str());
-  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+  if (meta::comms::ncclx::commRegisterLogEnabled()) {
     meta::comms::memtrace::recordReg(
         ncclCommLogData(comm),
         "",
