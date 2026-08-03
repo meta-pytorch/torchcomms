@@ -329,6 +329,15 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         const auto offset =
             (static_cast<size_t>(node) * nLocalRanks + localRank) * sendSize;
         auto srcPtr = ctran::allgatherp::getPtr(pArgs.recvbuff, offset);
+        // The per-step barrier fires once per step (first chunk) and only paces
+        // the N-1 unicast writes' incast, so it is always kept on that path.
+        // The multicast write is a single switch-fanned store with no incast to
+        // pace, so NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER can drop it there as a
+        // perf A/B. Correctness holds either way via the pre-loop own-chunk
+        // barrier (cross-iteration WAR) + PipeEnd, with disjoint per-rank rail
+        // columns.
+        const bool skipBarrier =
+            pArgs.mcWrite && NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER;
         FB_COMMCHECK(nvlCeBcast(
             comm_,
             srcPtr,
@@ -337,7 +346,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
             pArgs.remoteRecvBuffs,
             pArgs.remoteAccessKeys,
             stream_,
-            chunkIndex++ == 0,
+            chunkIndex++ == 0 && !skipBarrier,
             pArgs.mcWrite));
       }
     }

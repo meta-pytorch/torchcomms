@@ -15,6 +15,7 @@
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/CtranWin.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 
 using namespace ctran;
@@ -638,6 +639,85 @@ TEST_F(CtranAllgatherCtwinTest, ForceVariants) {
   oobBarrier();
   freeSymmetricWindow(win, winBase, windowBytes);
 }
+
+// A/B for NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER, both settings in one job so a
+// single launch covers the knob on and off.
+//
+// The knob gates only the per-step intra-node NVL broadcast barrier, and only
+// where the multicast write is engaged. Reaching that branch needs BOTH:
+//   - nLocalRanks > 1, else nvlCeBcast is never called at all; and
+//   - nNodes > 1, else the loops holding the gated call run zero iterations
+//     (ctpipeline is bounded by nNodes-1, ctsrdpipeline by log2(nNodes)).
+// A single-node config therefore cannot exercise it, so skip loudly rather than
+// pass vacuously. Reachable topologies include the vnode configs (which fake
+// nNodes>1 on one host) and real multinode runs.
+class CtranAllgatherCtwinMcBarrierTest
+    : public CtranAllgatherCtwinTest,
+      public ::testing::WithParamInterface<bool> {};
+
+TEST_P(CtranAllgatherCtwinMcBarrierTest, PerStepBarrierSkip) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skipping ctwin test";
+  }
+  if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  }
+  const auto nLocalRanks = ctranComm->statex_->nLocalRanks();
+  const auto nNodes = ctranComm->statex_->nNodes();
+  if (nLocalRanks < 2 || nNodes < 2) {
+    GTEST_SKIP() << "the gated per-step barrier needs nLocalRanks>1 and "
+                 << "nNodes>1 to be reached; got nLocalRanks=" << nLocalRanks
+                 << " nNodes=" << nNodes;
+  }
+
+  // Read fresh inside each exec, so flipping it here applies to the gathers
+  // below even though the window caches the AGP request across calls. Every
+  // rank runs the same parameterized case in the same order, so the local ranks
+  // agree on whether the device-side barrier is emitted -- they must, or a rank
+  // that still emits it would wait on peers that skipped it.
+  EnvRAII<bool> skipBarrier(NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER, GetParam());
+
+  const size_t typeSize = commTypeSize(dt);
+  const size_t sendCount = 8192;
+  const size_t regionBytes = sendCount * numRanks * typeSize;
+  const size_t windowBytes = 2 * regionBytes;
+
+  CtranWin* win = nullptr;
+  void* winBase = createSymmetricWindow(windowBytes, &win);
+  ASSERT_NE(win, nullptr);
+  EXPECT_TRUE(win->isSymmetric());
+
+  // Both variants that gate the barrier on this cvar, on disjoint sub-ranges so
+  // each gets its own cached persistent request.
+  runGatherOnStream(
+      win,
+      winBase,
+      /*byteOffset=*/0,
+      sendCount,
+      /*iter=*/0,
+      stream,
+      NCCL_ALLGATHER_ALGO::ctwin_pipeline);
+  runGatherOnStream(
+      win,
+      winBase,
+      /*byteOffset=*/regionBytes,
+      sendCount,
+      /*iter=*/1,
+      stream,
+      NCCL_ALLGATHER_ALGO::ctwin_rdpipeline);
+  EXPECT_EQ(win->numPersistentRequests(), 2u);
+
+  oobBarrier();
+  freeSymmetricWindow(win, winBase, windowBytes);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllgatherCtwinMcBarrierTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "SkipMcIntraBarrier" : "KeepMcIntraBarrier";
+    });
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
