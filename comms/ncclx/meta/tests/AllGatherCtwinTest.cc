@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
@@ -126,7 +127,8 @@ TEST_F(AllGatherCtwinTest, AllGatherCtwinUsedWhenWindowRegistered) {
   this->comm = commRaii.get();
   ASSERT_NE(this->comm, nullptr);
 
-  if (comm->ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+  if (meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->ctranIbPtr() ==
+      nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   }
 
@@ -203,7 +205,8 @@ TEST_F(AllGatherCtwinTest, AllGatherCtwinMulticastWhenWindowRegistered) {
   this->comm = commRaii.get();
   ASSERT_NE(this->comm, nullptr);
 
-  if (comm->ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+  if (meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->ctranIbPtr() ==
+      nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   }
 
@@ -296,7 +299,8 @@ TEST_F(AllGatherCtwinTest, AllGatherCtwinPerf) {
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
   this->comm = commRaii.get();
   ASSERT_NE(this->comm, nullptr);
-  if (comm->ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr) {
+  if (meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->ctranIbPtr() ==
+      nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   }
 
