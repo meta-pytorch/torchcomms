@@ -36,7 +36,7 @@ inline ncclResult_t allocChannelMetadata(
     cudaStream_t stream,
     const char* callsite,
     bool pushFree) {
-  if (comm->channelMetadataOnHost) {
+  if (comm->ncclxExt->channelMetadataOnHost) {
     NCCLCHECK(ncclCudaHostCalloc(ptr, numElems));
     if (pushFree) {
       ncclCommPushCudaHostFree(comm, *ptr);
