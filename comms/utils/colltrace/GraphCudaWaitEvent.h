@@ -16,13 +16,6 @@ namespace meta::comms::colltrace {
 inline constexpr uint32_t kDefaultRingSize =
     65536; // NOLINT(misc-unused-using-decls)
 
-// Reads the NCCLX_COLLTRACE_DEVICE_WRITE cvar (off by default until the
-// in-kernel cutover diff lands): whether collective kernels should publish
-// their own timestamps into the graph ring (in-kernel "device write"). Defined
-// out-of-line so this header (and the exported GraphCollTraceHandle.h that
-// gates on it) doesn't pull in nccl_cvars.h.
-bool colltraceDeviceWriteEnabled() noexcept;
-
 // Graph-aware wait event that uses device-side globaltimer reads and a
 // shared ring buffer for precise per-replay timing. All collectives across
 // ALL CUDA graphs share a single ring buffer (owned by CollTrace) and
@@ -80,15 +73,6 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
     return ringBuffer_ != nullptr;
   }
 
-  // Mark that this collective's kernel is armed to publish its own start/end
-  // timestamps from inside the kernel, so the host-launched timestamp path is
-  // skipped. Called by the GPE / baseline arming code during submit, before the
-  // launch triggers beforeCollKernelScheduled(). TEMPORARY: removed together
-  // with the host-launched path at the in-kernel cutover.
-  void markInKernelEmit() noexcept {
-    inKernelEmit_ = true;
-  }
-
   // Device-side write handle for the shared ring, handed to a collective kernel
   // so it can publish its own start/end timestamps from inside the kernel.
   // Returns a default (null-ring, invalid) handle if no ring is attached, so
@@ -105,17 +89,6 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
   cudaStream_t stream_;
   uint32_t collId_;
   system_clock_time_point enqueueTime_;
-
-  // Set by markInKernelEmit() when the collective kernel is armed to self-emit;
-  // when true the host-launched timestamp path is skipped so the two never
-  // double-write the ring. TEMPORARY: removed at the in-kernel cutover.
-  bool inKernelEmit_{false};
-
-  // Per-collective timestamp stream + dependency event for the host-launched
-  // fork/join timestamp path, used until the kernel self-emits (pre-sm90, or a
-  // not-yet-migrated collective). TEMPORARY: removed at the in-kernel cutover.
-  cudaStream_t timestampStream_{nullptr};
-  cudaEvent_t depEvent_{nullptr};
 
   // owned by CollTrace, shared across ALL graphs. set via attachRingBuffer().
   ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};

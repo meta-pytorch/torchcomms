@@ -17,6 +17,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
 
@@ -37,11 +38,15 @@ class BaselineCudaGraphColltraceTest : public NcclxBaseTestFixture {
         {"WORLD_SIZE", "4"},
         {"NCCL_COLLTRACE", "trace"},
         {"NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "true"},
-        // In-kernel device write is off by default until the cutover diff, so
-        // enable it explicitly to exercise the in-kernel colltrace path.
-        {"NCCLX_COLLTRACE_DEVICE_WRITE", "true"},
     });
+    // Create the stream before any skip: TearDown() destroys stream_
+    // unconditionally, and GTEST_SKIP() in SetUp() still runs TearDown().
     CUDACHECK_TEST(cudaStreamCreate(&stream_));
+    if (!meta::comms::colltrace::graphColltraceSupported(
+            "BaselineCudaGraphColltraceTest")) {
+      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
+                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+    }
   }
 
   void TearDown() override {

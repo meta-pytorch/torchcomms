@@ -6,6 +6,7 @@
 #include <latch>
 #include <mutex>
 #include <set>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -30,6 +31,20 @@ namespace meta::comms::colltrace {
 struct GraphCollTraceState;
 struct GraphCollectiveEntry;
 class GraphCudaWaitEvent;
+
+// Whether graph-captured collectives can be timed on the *current* device.
+// Requires both a compute capability of sm_90+ (the ring's 128b System-scope
+// atomic) and a CUDA driver outside [13.0, 13.2] (that range miscompiles the
+// device-side ColltraceDeviceHandle layout -- a [[no_unique_address]] bug fixed
+// in 13.3; cuda-compat's 13.3 driver on a 13.1 build is fine). When false the
+// collective kernel never publishes start/end timestamps, so graph colltrace is
+// disabled outright and the ring is never allocated -- that preserves the
+// deadlock-safety invariant that a graph colltrace record only exists when its
+// kernel will emit, since an unemitted record can never complete and would hang
+// the poll thread on drain. Both inputs are fixed for the process, so the
+// verdict is computed once and cached (this assumes a homogeneous-GPU host).
+// Exposed so tests can skip on hosts where graph timing cannot work.
+bool graphColltraceSupported(std::string_view logPrefix);
 
 struct CollTraceConfig {
   static constexpr ::size_t kDefaultMaxPendingQueueSize{1024};

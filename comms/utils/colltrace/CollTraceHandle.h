@@ -46,14 +46,6 @@ class ICollTraceHandle {
   virtual ColltraceDeviceHandle getColltraceDeviceHandle() noexcept {
     return {};
   }
-
-  // Mark that this collective's kernel is armed to publish its own start/end
-  // timestamps from inside the kernel, so the host-launched timestamp path is
-  // skipped (they must never both write the ring). No-op except on the graph
-  // handle. Called by the GPE / baseline arming code during submit, before the
-  // launch triggers beforeCollKernelScheduled(). TEMPORARY: removed together
-  // with the host-launched path at the in-kernel cutover.
-  virtual void markInKernelEmit() noexcept {}
 };
 
 // Handle to be returned to the user for triggering stages for the collective.
