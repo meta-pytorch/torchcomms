@@ -2,9 +2,13 @@
 
 #pragma once
 
+#include <optional>
+
+#include "collectives.h" // ncclTypeSize
 #include "comm.h"
 #include "device.h"
 #include "meta/algoconf/InfoExt.h"
+#include "meta/wrapper/NcclCommPatAvg.h"
 
 namespace ncclx {
 
@@ -46,7 +50,8 @@ inline void computePatAvgChannelsAndWarps(
 }
 
 // Set up ncclInfoExt for PAT AVG override.
-// Call at ncclReduceScatter entry when comm->usePatAvg_ && op == ncclAvg.
+// Call at ncclReduceScatter entry when PAT AVG is enabled for the comm &&
+// op == ncclAvg.
 // Returns a fully constructed ncclInfoExt so that algoInfoMayOverride() will
 // apply the override and skip algorithm selection.
 inline algoconf::ncclInfoExt setupPatAvgInfoExt(
@@ -69,6 +74,26 @@ inline algoconf::ncclInfoExt setupPatAvgInfoExt(
 
   return algoconf::ncclInfoExt(
       NCCL_ALGO_PAT, NCCL_PROTO_SIMPLE, nMaxChannels, nWarps, opDev);
+}
+
+// Consolidated host-side entry point for the deterministic PAT AVG override.
+// Returns the ncclInfoExt that forces the PAT algorithm with
+// ncclDevPatSumPostDiv for a ReduceScatter, or std::nullopt when PAT AVG does
+// not apply: the feature is disabled for this comm, the op is not ncclAvg, or
+// the datatype lacks the exponent range for safe intermediate accumulation.
+// Keeping this decision here lets the forked upstream ncclReduceScatter() carry
+// a single call site instead of the inlined guard, byte-count math, and setup.
+inline std::optional<algoconf::ncclInfoExt> maybePatAvgInfoExt(
+    struct ncclComm* comm,
+    size_t recvcount,
+    ncclDataType_t datatype,
+    ncclRedOp_t op) {
+  if (!meta::comms::ncclx::ncclCommUsePatAvg(comm) || op != ncclAvg ||
+      !isPatAvgSupportedType(datatype)) {
+    return std::nullopt;
+  }
+  const size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
+  return setupPatAvgInfoExt(comm, nBytes, datatype);
 }
 
 } // namespace ncclx
