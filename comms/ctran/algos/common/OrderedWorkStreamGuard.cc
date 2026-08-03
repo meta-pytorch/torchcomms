@@ -6,6 +6,7 @@
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::algos {
@@ -23,6 +24,7 @@ void OrderedWorkStreamGuard::init(
       logMetaData);
 
   // Publish the initialized state only after every resource is ready.
+  graphMixingSupport_ = (NCCL_CTRAN_GRAPH_MIXING_SUPPORT != 0);
   synchronizeEagerAfterCapturedWork_ = synchronizeEagerAfterCapturedWork;
   execModeSyncEvent_ = execModeSyncEvent;
   sideStream_ = std::move(sideStream);
@@ -108,12 +110,13 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
     FB_CUDACHECK(cudaStreamWaitEvent(
         userStream,
         execModeSyncEvent_,
-        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault));
+        (isCapturing && graphMixingSupport_) ? cudaEventWaitExternal
+                                             : cudaEventWaitDefault));
     return commSuccess;
   };
 
   if (lastUserStream_ == nullptr) {
-    if (isCapturing) {
+    if (isCapturing && graphMixingSupport_) {
       return doWait();
     }
     return commSuccess;
@@ -132,6 +135,9 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
   }
 
   if (!isNewCapture) {
+    if (!graphMixingSupport_) {
+      return doWait();
+    }
     // A later operation captured into the same graph must depend on the
     // prior record node even if CUDA cannot infer a dependency across streams.
 #if defined(__HIP_PLATFORM_AMD__)
@@ -150,6 +156,10 @@ commResult_t OrderedWorkStreamGuard::doAcquire(
 #endif
   }
 
+  if (!graphMixingSupport_) {
+    return commSuccess;
+  }
+
   return doWait();
 }
 
@@ -158,7 +168,7 @@ commResult_t OrderedWorkStreamGuard::doRelease(
     const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo) {
   const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
 
-  if (!isCapturing) {
+  if (!isCapturing || !graphMixingSupport_) {
     FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
   } else {
     // Record from a forked capture stream so the external event can order
