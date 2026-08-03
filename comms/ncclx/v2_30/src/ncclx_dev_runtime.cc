@@ -177,3 +177,57 @@ remove_winSorted:
 fail:
   return ret;
 }
+
+ncclResult_t symLocalWindowRegisterInGroup(
+    struct ncclComm* comm, void* userPtr, size_t userSize, int winFlags,
+    void* localRegHandle, struct ncclWindow_vidmem** outWinDev
+  ) {
+  ncclResult_t ret = ncclSuccess;
+  cudaStream_t stream = nullptr;
+
+  // GIN must already be connected via a prior collective window registration.
+  if (!comm->devrState.ginEnabled) {
+    ERR(ncclInvalidUsage, "NCCL_WIN_LOCAL_ONLY requires GIN to be enabled. Register a collective window first.");
+    return ncclInvalidUsage;
+  }
+
+  CUDACHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  NCCLCHECKGOTO(symLocalWindowCreate(
+      comm, userPtr, userSize, winFlags, localRegHandle, outWinDev, nullptr, stream
+    ), ret, fail_stream);
+
+  CUDACHECKGOTO(cudaStreamSynchronize(stream), ret, fail_stream_win);
+
+  // No barrier needed for local-only registration (it's non-collective).
+  cudaStreamDestroy(stream);
+  return ncclSuccess;
+
+fail_stream_win:
+  symLocalWindowDestroy(comm, *outWinDev, stream);
+  *outWinDev = nullptr;
+  cudaStreamSynchronize(stream);
+fail_stream:
+  cudaStreamDestroy(stream);
+  return ret;
+}
+
+ncclResult_t symLocalWindowDeregisterIfOwned(
+    struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream,
+    bool* handled
+  ) {
+  *handled = false;
+
+  struct ncclWindow_vidmem* winDevHost;
+  NCCLCHECK(ncclShadowPoolToHost(&comm->devrState.shadows, winDev, &winDevHost));
+
+  // winFlags sits at a matching offset in ncclDevrLocalWindow and ncclDevrWindow,
+  // so it can be read here to distinguish the window type without knowing which.
+  struct ncclDevrLocalWindow* localWin =
+      (struct ncclDevrLocalWindow*)winDevHost->winHost;
+  if (localWin->winFlags & NCCL_WIN_LOCAL_ONLY) {
+    NCCLCHECK(symLocalWindowDestroy(comm, winDev, stream));
+    *handled = true;
+  }
+  return ncclSuccess;
+}

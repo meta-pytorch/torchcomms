@@ -56,4 +56,20 @@ ncclResult_t symLocalWindowCreate(
 ncclResult_t symLocalWindowDestroy(
     struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream);
 
+// Register a local-only (NCCL_WIN_LOCAL_ONLY) window. Owns the CUDA stream and
+// the window lifecycle for this path; ncclDevrWindowRegisterInGroup dispatches
+// here after taking the shared local registration handle and, on failure, runs
+// its own localRegHandle cleanup. Extracted from the forked upstream
+// dev_runtime.cc so the local-only registration seam stays a single line there.
+ncclResult_t symLocalWindowRegisterInGroup(
+    struct ncclComm* comm, void* userPtr, size_t userSize, int winFlags,
+    void* localRegHandle, struct ncclWindow_vidmem** outWinDev);
+
+// Deregister a window iff it is a local-only (NCCL_WIN_LOCAL_ONLY) window,
+// setting *handled so ncclCommWindowDeregister falls back to the upstream
+// collective-window destroy path when it is not.
+ncclResult_t symLocalWindowDeregisterIfOwned(
+    struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream,
+    bool* handled);
+
 #endif
