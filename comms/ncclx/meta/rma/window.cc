@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <memory>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/ScopeGuard.h>
 
@@ -20,12 +21,12 @@ ncclResult_t CheckCommAndReturn(ncclComm_t comm) {
     return ncclInternalError;
   }
 
-  if (!ctranInitialized(comm->ctranComm_.get())) {
+  if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     ERR(ncclInternalError, "ncclWin requires Ctran support.");
     return ncclInternalError;
   }
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   if (statex == nullptr) {
     ERR(ncclInternalError, "Communicator does not have statex initialized.");
     return ncclInternalError;
@@ -55,7 +56,7 @@ ncclResult_t ncclWinAllocate(
   NCCLCHECK(metaCommToNccl(
       ctran::ctranWinAllocate(
           size,
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           baseptr,
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
@@ -96,7 +97,7 @@ ncclResult_t ncclWinRegister(
       ctran::ctranWinRegister(
           baseptr,
           size,
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
 
@@ -125,7 +126,7 @@ ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
     return ncclInvalidUsage;
   }
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   if (statex == nullptr) {
     ERR(ncclInternalError, "Empty communicator statex.");
     return ncclInternalError;
@@ -147,7 +148,7 @@ ncclResult_t ncclWinFree(ncclComm_t comm, ncclWindow_t win) {
     return ncclInvalidUsage;
   }
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   if (statex == nullptr) {
     ERR(ncclInternalError, "Empty communicator statex.");
     return ncclInternalError;
@@ -183,7 +184,8 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
     return ncclInvalidUsage;
   }
 
-  auto statex = ncclWinPtr->comm->ctranComm_->statex_.get();
+  auto statex =
+      meta::comms::ncclx::ncclCommCtran(ncclWinPtr->comm)->statex_.get();
   if (statex == nullptr) {
     ERR(ncclInternalError, "Empty communicator statex.");
     return ncclInternalError;
@@ -331,12 +333,13 @@ ncclResult_t ncclWinLocalRegisterBuffer(
   // (size=0) result rather than uninitialized data.
   *outLkeys = ncclLkeyPerDevice{};
 
-  if (!ctranInitialized(comm->ctranComm_.get())) {
+  if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     WARN("ncclWinLocalRegisterBuffer: ctran not initialized");
     return ncclInternalError;
   }
 
-  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
+  auto* mpt =
+      meta::comms::ncclx::ncclCommCtran(comm)->multiPeerTransport_.get();
   if (mpt == nullptr) {
     WARN(
         "ncclWinLocalRegisterBuffer: MultiPeerTransport not initialized. "
@@ -376,12 +379,13 @@ ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t comm, void* ptr) {
     return ncclInvalidArgument;
   }
 
-  if (!ctranInitialized(comm->ctranComm_.get())) {
+  if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     WARN("ncclWinLocalDeregisterBuffer: ctran not initialized");
     return ncclInternalError;
   }
 
-  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
+  auto* mpt =
+      meta::comms::ncclx::ncclCommCtran(comm)->multiPeerTransport_.get();
   if (mpt == nullptr) {
     WARN(
         "ncclWinLocalDeregisterBuffer: MultiPeerTransport not initialized. "
