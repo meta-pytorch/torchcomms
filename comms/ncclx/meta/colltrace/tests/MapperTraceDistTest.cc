@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
@@ -81,9 +82,10 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
   const int count = 1048576;
   const int nColl = 10;
 
-  auto backend = comm->ctranComm_->ctran_->mapper->getBackend(
-      (comm->ctranComm_->statex_->rank() + 1) %
-      comm->ctranComm_->statex_->nRanks());
+  auto backend =
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->getBackend(
+          (meta::comms::ncclx::ncclCommCtran(comm)->statex_->rank() + 1) %
+          meta::comms::ncclx::ncclCommCtran(comm)->statex_->nRanks());
   std::string backendStr = "Unknown";
   if (backend == CtranMapperBackend::IB) {
     backendStr = "IB";
@@ -92,13 +94,16 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
   }
   printf(
       "nNodes stateX: %d nNodes baseline: %d Backend: %s\n",
-      comm->ctranComm_->statex_->nNodes(),
+      meta::comms::ncclx::ncclCommCtran(comm)->statex_->nNodes(),
       comm->nNodes,
       backendStr.c_str());
 
   if (!ctranAllToAllSupport(
-          count, commInt8, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO) ||
-      comm->ctranComm_->statex_->nNodes() < 2) {
+          count,
+          commInt8,
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
+          NCCL_ALLTOALL_ALGO) ||
+      meta::comms::ncclx::ncclCommCtran(comm)->statex_->nNodes() < 2) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran All to All support or it is not a multi-node comm";
   }
@@ -115,7 +120,8 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
 
   folly::Baton dumpBaton;
   ncclx::colltrace::MapperTrace::Dump dump;
-  auto trace = ncclx::colltrace::getMapperTrace(comm->ctranComm_.get());
+  auto trace = ncclx::colltrace::getMapperTrace(
+      meta::comms::ncclx::ncclCommCtran(comm).get());
   trace->registerBeforeCollEndCallback([&]() {
     static int64_t counter = 0;
     if (counter == nColl - 1) {

@@ -8,6 +8,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "nccl.h"
 
@@ -33,12 +34,13 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     return ncclInvalidArgument;
   }
 
-  if (!ctranInitialized(comm->ctranComm_.get())) {
+  if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     WARN("ncclGetMultiPeerDeviceHandle: ctran not initialized");
     return ncclInternalError;
   }
 
-  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
+  auto* mpt =
+      meta::comms::ncclx::ncclCommCtran(comm)->multiPeerTransport_.get();
   if (mpt == nullptr) {
     WARN(
         "ncclGetMultiPeerDeviceHandle: MultiPeerTransport not initialized. "
