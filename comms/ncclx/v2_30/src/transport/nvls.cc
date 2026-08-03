@@ -7,6 +7,7 @@
 
 // Implementation of the NVLink SHARP (NVLS) transport
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "comm.h"
 #include "graph.h"
 #include "utils.h"
@@ -339,7 +340,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   // Track NVLS buffer as persistent memory
   NCCLCHECKGOTO(ncclMemTrack(comm->memManager, *ucptr, ucsize, *ucHandle, ncclCuMemHandleType, ncclMemPersist), ret, fail3);
   meta::comms::memtrace::recordAlloc(
-      comm->logMetaData,
+      ncclCommLogData(comm),
       "nvlsAllocateMem",
       "cuMemCreate",
       reinterpret_cast<uintptr_t>(*ucptr),

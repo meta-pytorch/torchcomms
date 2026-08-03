@@ -12,6 +12,7 @@
 #include "nccl.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "meta/wrapper/NcclCommPatAvg.h"
 
 class CommWithPatAvgTest : public NcclxBaseTestFixture {
  public:
@@ -31,7 +32,7 @@ TEST_F(CommWithPatAvgTest, PatAvgDisabledByDefault) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_FALSE(comm->usePatAvg_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommUsePatAvg(comm.get()));
 }
 
 TEST_F(CommWithPatAvgTest, PatAvgEnableByCvar) {
@@ -39,7 +40,7 @@ TEST_F(CommWithPatAvgTest, PatAvgEnableByCvar) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_TRUE(comm->usePatAvg_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm.get()));
 }
 
 TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByExplicitDisable) {
@@ -50,7 +51,7 @@ TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByExplicitDisable) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_FALSE(comm->usePatAvg_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommUsePatAvg(comm.get()));
 }
 
 TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByUnrelatedHint) {
@@ -61,7 +62,7 @@ TEST_F(CommWithPatAvgTest, PatAvgNotEnabledByUnrelatedHint) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_FALSE(comm->usePatAvg_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommUsePatAvg(comm.get()));
 }
 
 namespace {
@@ -81,7 +82,7 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   ncclx::test::NcclCommRAII comm1{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm1.get(), nullptr);
-  EXPECT_FALSE(comm1->usePatAvg_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommUsePatAvg(comm1.get()));
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
@@ -114,14 +115,14 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
     } while (commStatus == ncclInProgress);
   }
 
-  EXPECT_TRUE(comm2->usePatAvg_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm2));
 
   // Now disabled again
   {
     ncclx::test::NcclCommRAII comm3{
         globalRank, numRanks, localRank, bootstrap_.get()};
     ASSERT_NE(comm3.get(), nullptr);
-    EXPECT_FALSE(comm3->usePatAvg_);
+    EXPECT_FALSE(meta::comms::ncclx::ncclCommUsePatAvg(comm3.get()));
   }
 }
 
