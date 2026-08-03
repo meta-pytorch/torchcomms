@@ -24,8 +24,10 @@ using ctran::algos::PersistPlanKey;
 using ctran::allgather::ctsrd::createPersistPlan;
 using ctran::allgather::ctsrd::PersistPlan;
 using ctran::allgather::ctsrd::Plan;
+using ctran::allgather::ctsrd::common::exchangeCtrl;
+using ctran::allgather::ctsrd::common::progressSteps;
 using ctran::allgather::ctsrd::common::resolveFwdPeers;
-using ctran::allgather::ctsrd::common::runExchangeAndProgress;
+using ctran::allgather::ctsrd::common::waitCtrl;
 using ctran::allgatherp::AlgoImpl;
 using ctran::allgatherp::PersistArgs;
 using ctran::allgatherp::Resource;
@@ -159,7 +161,19 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
       recvPlan,
       sendPlan);
 
-  FB_COMMCHECK(runExchangeAndProgress(ctx, nodeId, profiler));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
+  FB_COMMCHECK(exchangeCtrl(ctx));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
+  FB_COMMCHECK(progressSteps(ctx, nodeId));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
+  FB_COMMCHECK(waitCtrl(ctx));
 
   return commSuccess;
 }
