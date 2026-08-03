@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "argcheck.h" // Need some checks here since we access comm
 #include "nccl.h"
 #include "comm.h"
@@ -13,9 +14,8 @@
 #include "transport.h"
 #include "group.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/wrapper/MetaFactory.h"
-#include "comms/ctran/Ctran.h"
+#include "meta/wrapper/NcclxCvars.h"
+#include "meta/wrapper/CtranRegister.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
 
 // conflict with ctran, disable for now.
@@ -150,14 +150,12 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
   auto timerBegin = std::chrono::steady_clock::now();
   // FIXME: we should eventually support hybrid registration.
   // Disable it for now to avoid undefined behavior due to handle conflict.
-  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
-    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(commInvalidUsage);
+  if (ncclx::ctranRegisterEnabled() && ncclParamLocalRegister()) {
+    return ncclx::logCtranRegisterConflict();
   }
 
-  if (ctranInitialized(comm->ctranComm_.get()) &&
-      NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
-    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commRegister(buff, size, handle)));
+  if (ncclx::ctranOwnsRegister(comm)) {
+    NCCLCHECK(ncclx::ctranCommRegister(comm, buff, size, handle));
   } else if (!ncclParamLocalRegister() || ncclP2pUsesMemcpy()) {
     *handle = NULL;
     INFO(NCCL_REG, "Skipping registration for buffer %p size %zi (LocalRegister=%ld, P2pUsesMemcpy=%d)",
@@ -172,11 +170,11 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
       buff,
       size,
       *handle,
-      comm->logMetaData.commHash,
-      comm->logMetaData.commDesc.c_str());
-  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+      ncclCommLogData(comm).commHash,
+      ncclCommLogData(comm).commDesc.c_str());
+  if (meta::comms::ncclx::commRegisterLogEnabled()) {
       meta::comms::memtrace::recordReg(
-          comm->logMetaData,
+          ncclCommLogData(comm),
           "",
           "ncclCommRegister",
           reinterpret_cast<uintptr_t>(*handle),
@@ -231,23 +229,19 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
 
   // FIXME: we should eventually support hybrid registration.
   // Disable it for now to avoid undefined behavior due to handle conflict.
-  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
-    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
-    return metaCommToNccl(commInvalidUsage);
+  if (ncclx::ctranRegisterEnabled() && ncclParamLocalRegister()) {
+    return ncclx::logCtranRegisterConflict();
   }
 
   /* handles are only valid if either ctran registration or baseline
    * registration are set */
-  if ((ctranInitialized(comm->ctranComm_.get()) &&
-       NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) ||
-      ncclParamLocalRegister()) {
+  if (ncclx::ctranOwnsRegister(comm) || ncclParamLocalRegister()) {
     NCCLCHECK(CommCheck(comm, "ncclCommRegister", "comm"));
     NCCLCHECK(PtrCheck(handle, "ncclCommDeregister", "handle"));
   }
 
-  if (ctranInitialized(comm->ctranComm_.get()) &&
-      NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
-    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commDeregister(handle)));
+  if (ncclx::ctranOwnsRegister(comm)) {
+    NCCLCHECK(ncclx::ctranCommDeregister(comm, handle));
   } else if (ncclParamLocalRegister()) {
   NCCLCHECK(commDeregister(comm, false, (struct ncclReg*)handle));
   }
@@ -256,11 +250,11 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
       NCCL_ALLOC,
       "REGISTER: user deregistered hdl %p with commHash %lx commDesc %s",
       handle,
-      comm->logMetaData.commHash,
-      comm->logMetaData.commDesc.c_str());
-  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+      ncclCommLogData(comm).commHash,
+      ncclCommLogData(comm).commDesc.c_str());
+  if (meta::comms::ncclx::commRegisterLogEnabled()) {
     meta::comms::memtrace::recordReg(
-        comm->logMetaData,
+        ncclCommLogData(comm),
         "",
         "ncclCommDeregister",
         reinterpret_cast<uintptr_t>(handle),
@@ -281,13 +275,11 @@ ncclResult_t ncclCommGraphDeregister(const ncclComm_t comm, struct ncclReg *hand
 // Global pointer-based registration (no handle, no comm required).
 NCCL_API(ncclResult_t, ncclGlobalRegisterWithPtr, void* buff, size_t size);
 ncclResult_t ncclGlobalRegisterWithPtr(void* buff, size_t size) {
-  auto res = ctran::globalRegisterWithPtr(buff, size);
-  return metaCommToNccl(res);
+  return ncclx::ctranGlobalRegisterWithPtr(buff, size);
 }
 
 // Global pointer-based deregistration (no handle, no comm required).
 NCCL_API(ncclResult_t, ncclGlobalDeregisterWithPtr, void* buff, size_t size);
 ncclResult_t ncclGlobalDeregisterWithPtr(void* buff, size_t size) {
-  auto res = ctran::globalDeregisterWithPtr(buff, size);
-  return metaCommToNccl(res);
+  return ncclx::ctranGlobalDeregisterWithPtr(buff, size);
 }

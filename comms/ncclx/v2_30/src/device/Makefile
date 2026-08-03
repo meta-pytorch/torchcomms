@@ -22,11 +22,9 @@ MANIFEST := $(OBJDIR)/manifest
 DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
-INCFLAGS += -I../../
-INCFLAGS += -I${SHAREDDIR}/
-
-INCFLAGS  += -I$(BASE_DIR)
-INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
+# NCCLX device include-path additions (repo roots, BASE_DIR, conda); see
+# ncclx_incflags.mk. Seam so the forked device makefile carries only this.
+include ncclx_incflags.mk
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 CXXFLAGS  := $(INCFLAGS) $(CXXFLAGS)
 
@@ -39,15 +37,9 @@ NVCUFLAGS_SYM += -DNCCL_OS_LINUX -DDOCA_VERBS_USE_CUDA_WRAPPER -DDOCA_VERBS_USE_
 endif
 #NVCUFLAGS_SYM += --ptx
 
-ifneq ($(ENABLE_TCPDM),1)
-NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
-NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"
-endif
-
-ifeq ($(ENABLE_PRIMS),1)
-NVCUFLAGS += --compiler-options "-DENABLE_PRIMS"
-NVCUFLAGS_SYM += --compiler-options "-DENABLE_PRIMS"
-endif
+# NCCLX device NVCC flag customizations (TCPDM / prims defines); see
+# ncclx_flags.mk. Seam so the forked device makefile carries only this.
+include ncclx_flags.mk
 
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY
 
@@ -120,26 +112,8 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/DeviceAllToAllvPipes.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/Impl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherBrucksFF.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
-SRCS += all_reduce_sparse_block.cu
-
--include $(OBJDIR)/gensrc/ctran_rules.mk
-SRCS += $(CTRAN_GEN_SRCS)
+# NCCLX device (.cu) sources -- see ncclx_sources.mk
+include ncclx_sources.mk
 
 # GIN symbol flow (how ncclGin_BackendMask<...> reaches the test):
 #   - common.cu uses ncclGin and is built with the default rule below (no -G).
