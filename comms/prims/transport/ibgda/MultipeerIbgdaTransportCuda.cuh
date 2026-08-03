@@ -25,7 +25,8 @@ struct doca_gpu_dev_verbs_qp;
 
 namespace comms::prims {
 
-// Forward declaration for return type
+// Forward declarations for device-table types.
+struct NicDeviceIbgdaResources;
 class P2pIbgdaTransportDevice;
 
 /**
@@ -45,11 +46,11 @@ struct NicDeviceIbgdaResourcesBuildSpec {
 };
 
 /**
- * Parameters for building a single P2pIbgdaTransportDevice.
+ * Host resources used to populate one peer's fixed device tables.
  *
- * The build function reads `nicResources` (one entry per NIC), copies QP
- * pointers to GPU memory, and constructs a DeviceSpan<NicDeviceIbgdaResources>
- * for the device transport.
+ * Range population reads the full-capacity per-NIC QP vectors and the exact
+ * channel descriptors supplied for that call. Slot publication installs the
+ * stable spans after the first prefix has been populated.
  *
  * Single-NIC callers populate `nicResources` with one element.
  * Multi-NIC callers populate `nicResources` with one element per NIC. qps and
@@ -65,7 +66,6 @@ struct P2pIbgdaTransportBuildParams {
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
   IbgdaLocalBuffer counterBuf{};
-  IbgdaRemoteBuffer discardSignalSlot{};
   int numSignalSlots{0};
   int numCounterSlots{0};
   int maxChannels{0};
@@ -75,36 +75,74 @@ struct P2pIbgdaTransportBuildParams {
 };
 
 /**
- * Build P2pIbgdaTransportDevice array on GPU.
- *
- * For each peer, allocates GPU arrays for QP pointers, copies them,
- * then constructs P2pIbgdaTransportDevice objects in GPU memory.
- * All GPU allocations are pushed into outGpuAllocations for cleanup.
- * If channelLayout is populated in the build params, it is passed through
- * the transport constructor before copying to GPU.
- *
- * @param params Build parameters (one per peer)
- * @param numPeers Number of peers
- * @param outGpuAllocations Output: all GPU allocations (caller frees)
- * @return Pointer to GPU array of transport objects (also in outGpuAllocations)
+ * Communicator-lifetime device publication tables. All pointers remain stable
+ * until transport teardown; range operations only update their contents.
  */
-P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
-    const std::vector<P2pIbgdaTransportBuildParams>& params,
+struct IbgdaFixedDeviceTables {
+  P2pIbgdaTransportDevice* transports{nullptr};
+  doca_gpu_dev_verbs_qp** qps{nullptr};
+  NicDeviceIbgdaResources* nicResources{nullptr};
+  IbChannel* channels{nullptr};
+  int numPeers{0};
+  int numNics{0};
+  int maxChannels{0};
+  int qpsPerConnection{0};
+  int qpDirectionCount{0};
+  int pipelineDepth{0};
+};
+
+/** Allocate and initialize every fixed-capacity device publication table. */
+IbgdaFixedDeviceTables allocateIbgdaFixedDeviceTables(
     int numPeers,
+    int numNics,
+    int maxChannels,
+    int qpsPerConnection,
+    int qpDirectionCount,
+    int pipelineDepth,
+    std::vector<void*>& outGpuAllocations);
+
+/** Return one slot from the stable outer transport table. */
+P2pIbgdaTransportDevice* ibgdaDeviceSlot(
+    P2pIbgdaTransportDevice* transports,
+    int peerIndex);
+
+/** Allocate zeroed physical completion state for a channel range. */
+IbSendCompletionSlot* allocateIbgdaCompletionSlots(
+    std::size_t numChannels,
+    int pipelineDepth,
     std::vector<void*>& outGpuAllocations);
 
 /**
- * Write a single P2pIbgdaTransportDevice into the pre-allocated array.
+ * Populate one peer's canonical channel range without allocating memory.
+ * QP vectors retain full-capacity indexing; `rangeChannels` contains exactly
+ * [beginChannel, endChannel). The outer slot is published separately once the
+ * first prefix is complete.
  */
-void writeDeviceTransportSlot(
-    P2pIbgdaTransportDevice* deviceArray,
+void populateIbgdaDeviceRange(
+    const IbgdaFixedDeviceTables& tables,
     int peerIndex,
+    int beginChannel,
+    int endChannel,
     const P2pIbgdaTransportBuildParams& params,
-    std::vector<void*>& outGpuAllocations);
+    const std::vector<IbChannel>& rangeChannels);
 
-/**
- * Get size of P2pIbgdaTransportDevice struct.
+/** Publish the stable outer and per-NIC spans after the first prefix exists. */
+void publishIbgdaDeviceSlot(
+    const IbgdaFixedDeviceTables& tables,
+    int peerIndex,
+    const P2pIbgdaTransportBuildParams& params);
+
+/** Clear one peer's canonical channel range without freeing table storage. */
+bool clearIbgdaDeviceRange(
+    const IbgdaFixedDeviceTables& tables,
+    int peerIndex,
+    int beginChannel,
+    int endChannel) noexcept;
+
+/** Restore one outer slot to an unpublished shape while retaining table bases.
  */
-std::size_t getP2pIbgdaTransportDeviceSize();
+bool resetIbgdaDeviceSlot(
+    const IbgdaFixedDeviceTables& tables,
+    int peerIndex) noexcept;
 
 } // namespace comms::prims

@@ -44,7 +44,8 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 //
 // `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
 // private shared helpers in P2pIbTransportDeviceDecl.cuh; backend-owned
-// `channelLayout_` carries the actual protocol state.
+// `channelLayout_` carries shared geometry while each `IbChannel` carries
+// channel-specific resources and mutable protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
@@ -153,9 +154,8 @@ struct NicDeviceIbgdaResources {
  */
 class P2pIbgdaTransportDevice {
  public:
-  // Default ctor required so an array of these can be cudaMemcpy'd from host
-  // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
-  // call methods on a default-constructed instance — nicDevices_ is empty.
+  // Default ctor supports unpublished entries in the fixed device table. Do
+  // not call methods on a default-constructed instance: nicDevices_ is empty.
   P2pIbgdaTransportDevice() = default;
 
   /**
@@ -202,7 +202,7 @@ class P2pIbgdaTransportDevice {
       int maxChannels = 0,
       int qpsPerConnection = 1,
       int qpDirectionCount = kIbDirections,
-      DeviceSpan<IbLocalChannel> localChannels = {},
+      DeviceSpan<IbChannel> channels = {},
       IbChannelLayout channelLayout = {})
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
@@ -213,7 +213,7 @@ class P2pIbgdaTransportDevice {
         maxChannels_(maxChannels),
         qpsPerConnection_(qpsPerConnection),
         qpDirectionCount_(qpDirectionCount),
-        localChannels_(localChannels),
+        channels_(channels),
         channelLayout_(channelLayout) {}
 
   // IBGDA round-robins each send/recv chunk's RDMA_WRITE + DATA_READY atomic-FA
@@ -889,8 +889,7 @@ class P2pIbgdaTransportDevice {
           blockDim.z);
       PIPES_DEVICE_TRAP();
     }
-    if (channelId >= static_cast<uint32_t>(maxChannels_) ||
-        localChannels_.empty()) {
+    if (channelId >= static_cast<uint32_t>(maxChannels_) || channels_.empty()) {
       printf(
           "[PIPES] FATAL: IBGDA channel_id=%u out of range [0, %d) "
           "or channel state missing\n",
@@ -915,7 +914,7 @@ class P2pIbgdaTransportDevice {
       uint32_t channelId,
       IbDirection direction) const {
     validate_channel_id(channelId);
-    auto& channel = localChannels_[channelId];
+    auto& channel = channels_[channelId];
     return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
   }
 
@@ -951,11 +950,12 @@ class P2pIbgdaTransportDevice {
           qpDirectionCount_);
       PIPES_DEVICE_TRAP();
     }
-    const uint32_t qpSlotPerNic =
-        ((channelId * static_cast<uint32_t>(qpDirectionCount_) +
-          directionIndex) *
-         static_cast<uint32_t>(qpsPerConnection_)) +
-        qpIndex;
+    const uint32_t qpSlotPerNic = ibQpSlotWithinNic(
+        channelId,
+        direction,
+        static_cast<uint32_t>(qpDirectionCount_),
+        static_cast<uint32_t>(qpsPerConnection_),
+        qpIndex);
     const uint32_t companionSlotPerNic = qpSlotPerNic;
     const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
     if (qpIndex >= static_cast<uint32_t>(qpsPerConnection_) ||
@@ -1985,7 +1985,7 @@ class P2pIbgdaTransportDevice {
    *   pipelineBytes = perChannelBufferSize
    *   pipelineOff   = streamStart % pipelineBytes
    *   slot          = pipelineOff / perBlockSlot
-   *   stagingOff    = groupId * pipelineBytes + slot * perBlockSlot +
+   *   stagingOff    = slot * perBlockSlot +
    *                   (pipelineOff - slot * perBlockSlot)
    *
    * Sender chunk state machine:
@@ -2473,13 +2473,13 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
-  __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {
+  __device__ __forceinline__ IbChannel& channel(uint32_t channelId) {
     validate_channel_id(channelId);
-    return localChannels_[channelId];
+    return channels_[channelId];
   }
 
-  __device__ __forceinline__ IbLocalChannel& local_channel(ThreadGroup& group) {
-    return local_channel(group.group_id);
+  __device__ __forceinline__ IbChannel& channel(ThreadGroup& group) {
+    return channel(group.group_id);
   }
 
   __host__ __device__ IbChannelLayout& channel_layout() {
@@ -2498,9 +2498,7 @@ class P2pIbgdaTransportDevice {
    *   pipeline_chunk() = pipeline_window() / pipeline_depth()
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return channelLayout_.perChannelBufferSize != 0
-        ? channelLayout_.perChannelBufferSize
-        : channelLayout_.perChannelSize;
+    return channelLayout_.channelBufferSize();
   }
 
   __device__ __forceinline__ std::size_t pipeline_window(
@@ -2536,7 +2534,7 @@ class P2pIbgdaTransportDevice {
   int maxChannels_{0};
   int qpsPerConnection_{1};
   int qpDirectionCount_{kIbDirections};
-  DeviceSpan<IbLocalChannel> localChannels_{};
+  DeviceSpan<IbChannel> channels_{};
 
   IbChannelLayout channelLayout_{};
 };

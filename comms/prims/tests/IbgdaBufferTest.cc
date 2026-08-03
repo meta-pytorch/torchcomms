@@ -155,4 +155,150 @@ TEST(IbgdaBufferTest, DefaultConstructorZeroInitsAllKeys) {
   }
 }
 
+TEST(IbgdaBufferTest, MakeChannelSlicesEveryChannelResource) {
+  constexpr int kMaxChannels = 3;
+  constexpr int kNumLanes = 2;
+  constexpr int kChannel = 2;
+  constexpr std::size_t kChannelBytes = 64;
+  constexpr int kPipelineDepth = 4;
+
+  char sendStaging[kMaxChannels * kChannelBytes]{};
+  char recvStaging[kMaxChannels * kChannelBytes]{};
+  char remoteRecvStaging[kMaxChannels * kChannelBytes]{};
+  char localSignals
+      [(kNumLanes * kMaxChannels + kMaxChannels) * kSendRecvSignalSlotStride]{};
+  char remoteSignals[sizeof(localSignals)]{};
+  char localCounters[kMaxChannels * kSendRecvSignalSlotStride]{};
+  char localCompletions[kMaxChannels * kSendRecvSignalSlotStride]{};
+  IbSendCompletionSlot completionSlots[kPipelineDepth]{};
+
+  NetworkLKeys localKeys(2);
+  localKeys[0] = NetworkLKey(0x1111);
+  localKeys[1] = NetworkLKey(0x2222);
+  NetworkRKeys remoteKeys(2);
+  remoteKeys[0] = NetworkRKey(0x3333);
+  remoteKeys[1] = NetworkRKey(0x4444);
+
+  const IbChannelLayout layout{
+      .sendStagingBuf = IbgdaLocalBuffer(sendStaging, localKeys),
+      .recvStagingBuf = IbgdaRemoteBuffer(remoteRecvStaging, remoteKeys),
+      .recvStagingPtr = recvStaging,
+      .localSignalBuf = IbgdaLocalBuffer(localSignals, localKeys),
+      .remoteSignalBuf = IbgdaRemoteBuffer(remoteSignals, remoteKeys),
+      .localCounterBuf = IbgdaLocalBuffer(localCounters, localKeys),
+      .localCounterCompletionBuf =
+          IbgdaLocalBuffer(localCompletions, localKeys),
+      .maxChannels = kMaxChannels,
+      .numLanes = kNumLanes,
+      .pipelineDepth = kPipelineDepth,
+      .perChannelBufferSize = kChannelBytes,
+  };
+
+  const IbChannel channel = makeIbChannel(layout, kChannel, completionSlots);
+  const IbChannel previousChannel = makeIbChannel(layout, kChannel - 1);
+  const std::size_t stagingOffset = kChannel * kChannelBytes;
+  const int dataReadySlot = kChannel * kNumLanes;
+  const int slotFreeSlot = kNumLanes * kMaxChannels + kChannel;
+
+  EXPECT_EQ(channel.sendStaging.ptr, sendStaging + stagingOffset);
+  EXPECT_EQ(channel.recvStaging, recvStaging + stagingOffset);
+  EXPECT_EQ(channel.remoteRecvStaging.ptr, remoteRecvStaging + stagingOffset);
+  EXPECT_EQ(
+      channel.dataReady.ptr,
+      localSignals + sendRecvSignalSlotOffset(dataReadySlot));
+  EXPECT_EQ(
+      channel.remoteDataReady.ptr,
+      remoteSignals + sendRecvSignalSlotOffset(dataReadySlot));
+  EXPECT_EQ(
+      channel.slotFree.ptr,
+      localSignals + sendRecvSignalSlotOffset(slotFreeSlot));
+  EXPECT_EQ(
+      channel.remoteSlotFree.ptr,
+      remoteSignals + sendRecvSignalSlotOffset(slotFreeSlot));
+  EXPECT_EQ(
+      channel.nicDoneWait.ptr,
+      localCounters + sendRecvSignalSlotOffset(kChannel));
+  EXPECT_EQ(
+      channel.nicDoneCompletion.ptr,
+      localCompletions + sendRecvSignalSlotOffset(kChannel));
+  EXPECT_EQ(channel.sendCompletionSlots, completionSlots);
+  EXPECT_EQ(
+      channel.sendStaging.ptr,
+      static_cast<char*>(previousChannel.sendStaging.ptr) + kChannelBytes);
+  EXPECT_EQ(channel.recvStaging, previousChannel.recvStaging + kChannelBytes);
+  EXPECT_NE(channel.dataReady.ptr, previousChannel.dataReady.ptr);
+  EXPECT_NE(channel.slotFree.ptr, previousChannel.slotFree.ptr);
+  EXPECT_NE(channel.nicDoneWait.ptr, previousChannel.nicDoneWait.ptr);
+
+  EXPECT_EQ(channel.sendStaging.lkey_per_device.size, 2);
+  EXPECT_EQ(channel.sendStaging.lkey_per_device[0], localKeys[0]);
+  EXPECT_EQ(channel.sendStaging.lkey_per_device[1], localKeys[1]);
+  EXPECT_EQ(channel.remoteRecvStaging.rkey_per_device.size, 2);
+  EXPECT_EQ(channel.remoteRecvStaging.rkey_per_device[0], remoteKeys[0]);
+  EXPECT_EQ(channel.remoteRecvStaging.rkey_per_device[1], remoteKeys[1]);
+  EXPECT_EQ(channel.remoteDataReady.rkey_per_device[0], remoteKeys[0]);
+  EXPECT_EQ(channel.remoteSlotFree.rkey_per_device[1], remoteKeys[1]);
+}
+
+TEST(IbgdaBufferTest, QpSlotWithinNicUsesChannelDirectionLaneOrder) {
+  constexpr uint32_t kDirectionCount = 2;
+  constexpr uint32_t kQpsPerConnection = 2;
+
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          0, IbDirection::Send, kDirectionCount, kQpsPerConnection, 0),
+      0);
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          0, IbDirection::Send, kDirectionCount, kQpsPerConnection, 1),
+      1);
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          0, IbDirection::Recv, kDirectionCount, kQpsPerConnection, 0),
+      2);
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          1, IbDirection::Send, kDirectionCount, kQpsPerConnection, 0),
+      4);
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          1, IbDirection::Recv, kDirectionCount, kQpsPerConnection, 1),
+      7);
+  EXPECT_EQ(
+      ibQpSlotWithinNic(
+          1,
+          IbDirection::Send,
+          /*directionCount=*/1,
+          kQpsPerConnection,
+          1),
+      3);
+
+  EXPECT_EQ(
+      ibCommandQueueSlot(
+          1,
+          IbDirection::Recv,
+          kDirectionCount,
+          kQpsPerConnection,
+          1,
+          /*numNics=*/3,
+          /*nicId=*/2),
+      23);
+}
+
+TEST(IbgdaBufferTest, MakeChannelAllowsDisabledSendRecvLayout) {
+  IbSendCompletionSlot completionSlots[2]{};
+
+  const IbChannel channel =
+      makeIbChannel(IbChannelLayout{}, 3, completionSlots);
+
+  EXPECT_EQ(channel.sendStaging.ptr, nullptr);
+  EXPECT_EQ(channel.recvStaging, nullptr);
+  EXPECT_EQ(channel.remoteRecvStaging.ptr, nullptr);
+  EXPECT_EQ(channel.dataReady.ptr, nullptr);
+  EXPECT_EQ(channel.remoteDataReady.ptr, nullptr);
+  EXPECT_EQ(channel.slotFree.ptr, nullptr);
+  EXPECT_EQ(channel.remoteSlotFree.ptr, nullptr);
+  EXPECT_EQ(channel.sendCompletionSlots, completionSlots);
+}
+
 } // namespace comms::prims::tests
