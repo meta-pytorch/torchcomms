@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include <optional>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -134,7 +135,8 @@ class AllReduceTest : public NcclxBaseTestFixture {
 
 #ifdef TEST_ENABLE_CTRAN
     if (algo.has_value() && *algo == NCCL_ALLREDUCE_ALGO::ctdirect) {
-      ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+      ctranAlgoStats_.verify(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), "AllReduce", "Ctran");
     }
 #endif
 

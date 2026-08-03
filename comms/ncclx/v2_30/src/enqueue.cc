@@ -27,13 +27,12 @@
 #include <cfloat> // FLT_MAX
 
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/InfoExtOverride.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/colltrace/ProxyTraceFunc.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
@@ -519,7 +518,7 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     // If NCCLX lazy channel setup is enabled and applicable, mark algos and
     // number of channels need to be setup later in ncclCollPreconnectFunc for
     // collectives. Otherwise, fallback to baseline runtime connection logic
-    if (comm->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
+    if (comm->ncclxExt->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
       *needConnect = ncclx::algoNeedConnect(comm, task);
       algoNeedConnect[task->algorithm] |= *needConnect;
     } else if (
@@ -2199,14 +2198,7 @@ static ncclResult_t calcCollChunking(
   // Buffer-based ceiling; plugins may increase chunk size up to this limit.
   int bufferMaxChunkSize = chunkSize;
 
-  // [NCCLX-Quantized]
-  // Quantized collectives (e.g., ReduceScatterQuantize) transport data in a
-  // smaller type (BF16, 2 bytes) than the input type (FP32, 4 bytes). The
-  // transport buffer step can hold 2x more elements, so double the chunk size
-  // to fully utilize the transport buffer and halve the number of PAT steps.
-  if (info->ext.has_value() && info->ext->quantizeRandomSeedPtr != nullptr) {
-    chunkSize *= 2;
-  }
+  chunkSize = ncclx::algoconf::adjustChunkSizeForExt(info->ext, chunkSize);
 
   if (info->algorithm == NCCL_ALGO_COLLNET_DIRECT) {
     // Optimize chunkSize / nSteps
@@ -2617,7 +2609,7 @@ static ncclResult_t p2pTaskAppend(
         int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, c);
         /* if lazy setup is enabled, mark the channel as needing setup if
           * peerInfo is not initilized on the assigned channelId */
-        if (comm->lazySetupChannels && !comm->channels[channelId].peers) {
+        if (comm->ncclxExt->lazySetupChannels && !comm->channels[channelId].peers) {
           ncclx::p2pNeedConnect(comm, peer, channelId, isSendNotRecv);
         } else {
         if (isSendNotRecv) {
