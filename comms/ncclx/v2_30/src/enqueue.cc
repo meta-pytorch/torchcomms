@@ -1744,9 +1744,9 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
     CU_LAUNCH_PARAM_BUFFER_SIZE, &plan->kernelArgsSize,
     CU_LAUNCH_PARAM_END
   };
-  // CollTrace Injected code here
-  auto colltraceHandle = ncclx::colltrace::collTraceBaselineGetHandle(plan, launchStream);
-
+  // [META] Colltrace handle creation and in-kernel graph timestamp arming.
+  auto colltraceHandle = ncclx::colltrace::prepareNcclKernelColltrace(
+      plan, launchStream, comm->compCap);
 
   int driverVersion;
   NCCLCHECKGOTO(ncclCudaDriverVersion(&driverVersion), ret, do_return);
