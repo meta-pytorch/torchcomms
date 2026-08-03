@@ -106,10 +106,6 @@ typedef enum { ncclSuccess                 =  0,
 /* ncclCommRevoke flags */
 #define NCCL_REVOKE_DEFAULT 0x00 /* reserved for future use; must be 0 */
 
-/* ncclConfig initMode */
-#define NCCL_FAST_INIT_MODE_DEFAULT 0x00
-#define NCCL_FAST_INIT_MODE_RING 0x01
-
 /* Communicator configuration. Users can assign value to attributes to specify the
  * behavior of a communicator. */
 typedef struct ncclConfig_v22800 {
@@ -146,9 +142,6 @@ typedef struct ncclConfig_v22800 {
   // commSplit group ranks information
   int* splitGroupRanks;
   int splitGroupSize;
-
-  // control the fast init features
-  int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 
   // Opaque pointer to an ncclx::Hints object.  When non-null, NCCLX
   // will read key-value pairs from this object and apply them to
@@ -187,7 +180,6 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_PTR,                    /* commDesc */              \
   NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
   NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
-  NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
   NCCL_CONFIG_UNDEF_PTR,                    /* hints */                 \
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */           \
 }
