@@ -73,13 +73,13 @@ _B200_FLAGS = (
     " -c fbcode.arch=aarch64"
     " -c fbcode.enable_gpu_sections=true"
     " -c fbcode.nvcc_arch=b200"
-    " -c fbcode.platform010_cuda_version=12.8"
+    " -m ovr_config//third-party/cuda/constraints:12.8"
 )
 _B300_FLAGS = (
     " -c fbcode.arch=aarch64"
     " -c fbcode.enable_gpu_sections=true"
     " -c fbcode.nvcc_arch=b200a"
-    " -c fbcode.platform010_cuda_version=13.0"
+    " -m ovr_config//third-party/cuda/constraints:13.0"
 )
 
 BUILD_SPECS = {
