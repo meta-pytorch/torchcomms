@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "comm.h"
 #include "meta/algoconf/InfoExt.h"
 
@@ -32,6 +34,19 @@ inline ncclResult_t infoExtOverride(
   }
 
   return ncclSuccess;
+}
+
+// Quantized collectives transport data in a smaller type (BF16, 2 bytes) than
+// the input type (FP32, 4 bytes), so a transport-buffer step holds 2x more
+// elements: doubling the chunk size fully utilizes the buffer and halves the
+// number of PAT steps. Collectives without a quantize seed are unchanged.
+inline int adjustChunkSizeForExt(
+    const std::optional<ncclInfoExt>& ext,
+    int chunkSize) {
+  if (ext.has_value() && ext->quantizeRandomSeedPtr != nullptr) {
+    return chunkSize * 2;
+  }
+  return chunkSize;
 }
 
 } // namespace ncclx::algoconf
