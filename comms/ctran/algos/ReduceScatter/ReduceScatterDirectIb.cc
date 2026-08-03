@@ -285,7 +285,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
 
     const int numBlocks =
         ctran::reducescatter::direct_ib::numBlocksForTotalBytes(
-            wireTotalBytes, MCCL_MAX_NCHANNELS);
+            wireTotalBytes, MCCL_MAX_NCHANNELS, MCCL_MAX_NBLOCKS);
 
     comms::prims::DirectReduceScatterIbLaunchParams params{};
     params.my_rank = statex->rank();
