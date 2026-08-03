@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 #include <thread>
 #include "comms/testinfra/TestUtils.h"
@@ -17,7 +18,7 @@ class SocketSetTosTest : public ::testing::Test {
     const ::testing::TestInfo* test_info =
         ::testing::UnitTest::GetInstance()->current_test_info();
     testName =
-        folly::sformat("{}.{}", test_info->test_case_name(), test_info->name());
+        fmt::format("{}.{}", test_info->test_case_name(), test_info->name());
   }
 };
 
