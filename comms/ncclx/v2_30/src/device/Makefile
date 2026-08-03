@@ -120,26 +120,8 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/DeviceAllToAllvPipes.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/Impl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherBrucksFF.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
-SRCS += all_reduce_sparse_block.cu
-
--include $(OBJDIR)/gensrc/ctran_rules.mk
-SRCS += $(CTRAN_GEN_SRCS)
+# NCCLX device (.cu) sources -- see ncclx_sources.mk
+include ncclx_sources.mk
 
 # GIN symbol flow (how ncclGin_BackendMask<...> reaches the test):
 #   - common.cu uses ncclGin and is built with the default rule below (no -G).

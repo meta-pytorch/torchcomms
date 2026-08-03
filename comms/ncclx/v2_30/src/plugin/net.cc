@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "net.h"
 #include "bootstrap.h"
 #include "checks.h"
@@ -462,7 +463,7 @@ ncclResult_t ncclGpuGdrSupport(struct ncclComm* comm, int* gdrSupport) {
 
       connected = (rComm != NULL) && (sComm != NULL);
     }
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECKGOTONOWARN(ncclCudaMalloc(&gpuPtr, GPU_BUF_SIZE, comm->memManager), ret, cleanup2, NCCL_NET);
     NOWARN(ret = comm->ncclNet->regMr(sComm, gpuPtr, GPU_BUF_SIZE, NCCL_PTR_CUDA, &mHandle), NCCL_NET);
     if (ret == ncclSuccess) {
