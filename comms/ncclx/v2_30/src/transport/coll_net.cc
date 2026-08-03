@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "comm.h"
 #include "coll_net.h"
 #include "graph.h"
@@ -410,7 +411,7 @@ static ncclResult_t sharedBuffersInit(struct ncclCollNetSharedRes* collNet, int 
   *size = collNet->size;
 
   if (cuda && collNet->cudaBuff == NULL) {
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCudaCalloc(&collNet->cudaBuff, *size, manager));
     cudaMemset(collNet->cudaBuff, 0x33, *size/2);
     cudaMemset((char*)collNet->cudaBuff + *size/2, 0x66, *size/2);
@@ -498,7 +499,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   if (ncclGdrCopy && ncclParamGdrCopySyncEnable()) {
     uint64_t *cpuPtr, *gpuPtr;
     NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 1, &resources->gdrDesc,
-                                proxyState->memManager, proxyState->owner->logMetaData));
+                                proxyState->memManager, ncclCommLogData(proxyState->owner)));
 
     resources->gdcSync = cpuPtr;
     struct connectMapMem* gdcMem = map->mems+NCCL_NET_MAP_GDCMEM;
@@ -578,7 +579,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     uint64_t *cpuPtr, *gpuPtr;
     uint32_t gdcFlag = ncclGdcPinFlag(resources->needFlush);
     NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc,
-                                proxyState->memManager, proxyState->owner->logMetaData, gdcFlag));
+                                proxyState->memManager, ncclCommLogData(proxyState->owner), gdcFlag));
 
     if (ncclParamGdrCopySyncEnable()) {
       // No flush needed if control flow is mapped on the PCIe instead of C2C

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/nvls/NvlsBindWatchdog.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -81,8 +82,8 @@ void fillWatchdogState(
     state->localRanks = comm->localRanks;
     state->cudaDev = comm->cudaDev;
     state->nvlsChannels = comm->nvlsChannels;
-    state->commHash = comm->logMetaData.commHash;
-    state->commDesc = comm->logMetaData.commDesc;
+    state->commHash = ncclCommLogData(comm).commHash;
+    state->commDesc = ncclCommLogData(comm).commDesc;
   }
 }
 
