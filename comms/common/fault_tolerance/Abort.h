@@ -4,9 +4,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 
 namespace comms::fault_tolerance {
 
@@ -16,26 +17,88 @@ enum class AbortReason : int {
   TIMED_OUT = 2,
 };
 
+/**
+ * Host-owned state shared with CUDA device code through mapped pinned memory.
+ *
+ * Both fields are read and written with system-scope atomic operations. The
+ * allocation is owned by `Abort`; `AbortDevice` stores only a non-owning mapped
+ * pointer to this same state.
+ */
+struct AbortState {
+  /**
+   * Encoded `AbortReason`.
+   *
+   * Starts as `AbortReason::NONE` and may transition once to a valid terminal
+   * reason. Host and device writers use compare-exchange from `NONE`, so the
+   * first valid terminal reason wins.
+   */
+  int abort;
+
+  /**
+   * Shared default timeout duration in milliseconds.
+   *
+   * `-1` means unset. Host code may update this value, and device handles read
+   * the latest value when starting a device-side timeout.
+   */
+  int64_t timeoutMs;
+};
+
+// Atomic operations require naturally aligned fields. Cacheline padding is a
+// performance choice, not a correctness requirement for this shared state.
+static_assert(offsetof(AbortState, abort) % alignof(int) == 0);
+static_assert(offsetof(AbortState, timeoutMs) % alignof(int64_t) == 0);
+
+struct AbortDevice;
+
+/**
+ * Shared abort state for communicator-scoped fault tolerance.
+ *
+ * `Abort` owns a single host-allocated, CUDA-mapped pinned state object that is
+ * visible to both CPU threads and CUDA device code. The host object owns that
+ * storage for its full lifetime; device handles returned by `getDeviceHandle()`
+ * are non-owning views and must not outlive the `Abort` object.
+ *
+ * Enabled `Abort` instances use shared state when CUDA pinned allocation and
+ * device mapping are available. Host-only environments fall back to ordinary
+ * host memory for the same `AbortState` fields so CPU callers can keep using
+ * the same API. Disabled instances do not allocate state and every
+ * mutating/query operation is a no-op or a non-aborted result. The disabled
+ * singleton returned by `createAbort(false)` is intended for code paths that
+ * must accept an abort object without enabling fault tolerance.
+ *
+ * `AbortState::abort` and `AbortState::timeoutMs` are mutable shared fields.
+ * Host code and device code access them with system-scope atomic operations so
+ * updates from either side become visible to the other side. The abort reason
+ * is first-writer-wins: an explicit abort records `AbortReason::ABORTED`; an
+ * expired timeout records `AbortReason::TIMED_OUT` only if no earlier valid
+ * terminal reason has been recorded. The default timeout duration is also
+ * stored in shared state for graph-mode device code; host active-deadline
+ * tracking remains host-only.
+ */
 class Abort final {
  public:
-  static constexpr int encode(AbortReason reason) {
-    return static_cast<int>(reason);
-  }
-
   /**
    * Constructs an abort controller.
    *
-   * Enabled controllers honor abort and timeout operations. Disabled
-   * controllers are no-op placeholders for callers that must pass an abort
-   * object while fault tolerance is disabled.
+   * Enabled controllers use a single `AbortState`. CUDA-capable environments
+   * allocate it as host-mapped pinned memory so host and device code can
+   * observe the same abort reason. Host-only or non-mappable runtime
+   * environments fall back to ordinary host memory while preserving the same
+   * host-side state semantics. Disabled controllers are no-op placeholders for
+   * callers that must pass an `Abort` object while fault tolerance is disabled.
    */
-  explicit Abort(bool enabled) : enabled_(enabled) {}
-  ~Abort() = default;
+  explicit Abort(bool enabled);
+  ~Abort();
+  Abort(const Abort&) = delete;
+  Abort& operator=(const Abort&) = delete;
+  Abort(Abort&&) = delete;
+  Abort& operator=(Abort&&) = delete;
 
   /**
    * Returns whether this controller is enabled.
    *
-   * Disabled controllers never report an abort or active timeout.
+   * Disabled controllers never report an abort, active timeout, or default
+   * timeout duration.
    */
   inline bool isEnabled() const {
     return enabled_;
@@ -47,56 +110,28 @@ class Abort final {
    * The abort state starts as `AbortReason::NONE` and can transition exactly
    * once to one valid terminal reason. The first writer wins. Later calls with
    * a different reason do not override the reason already visible to other host
-   * threads. Valid terminal reasons are `AbortReason::ABORTED` and
-   * `AbortReason::TIMED_OUT`; `AbortReason::NONE` and unknown enum values are
-   * invalid input and are rejected before attempting to update shared state.
+   * threads and device consumers. Valid terminal reasons are
+   * `AbortReason::ABORTED` and `AbortReason::TIMED_OUT`; `AbortReason::NONE`
+   * and unknown enum values are invalid input and are rejected before
+   * attempting to update shared state.
    */
-  inline void setAbort(AbortReason reason = AbortReason::ABORTED) {
-    if (!enabled_) {
-      return;
-    }
-    if (!isValidTerminalReason(reason)) {
-      throw std::invalid_argument("Abort reason must be ABORTED or TIMED_OUT");
-    }
-    int expected = encode(AbortReason::NONE);
-    abort_.compare_exchange_strong(
-        expected,
-        encode(reason),
-        std::memory_order_acq_rel,
-        std::memory_order_acquire);
-  }
+  void setAbort(AbortReason newReason = AbortReason::ABORTED);
 
   /**
    * Returns true when an explicit abort or expired active timeout has aborted
    * this controller.
    *
    * This also checks the active deadline and records `AbortReason::TIMED_OUT`
-   * if the timeout is the first abort reason.
+   * when the timeout is the first abort reason.
    */
-  inline bool isAborted() {
-    if (!enabled_) {
-      return false;
-    }
-
-    if (abort_.load(std::memory_order_acquire) != encode(AbortReason::NONE)) {
-      return true;
-    }
-
-    if (!hasTimeout_.load(std::memory_order_acquire)) {
-      return false;
-    }
-
-    return isTimedOut();
-  }
+  bool isAborted();
 
   /**
    * Returns whether a per-operation timeout deadline is currently active.
    *
    * This does not imply that the deadline has expired.
    */
-  inline bool isTimeoutActive() const {
-    return hasTimeout_.load(std::memory_order_acquire);
-  }
+  bool isTimeoutActive() const;
 
   /**
    * Returns true only when the recorded abort reason is timeout.
@@ -105,32 +140,7 @@ class Abort final {
    * `AbortReason::TIMED_OUT`. If an explicit abort already won the race, this
    * returns false.
    */
-  inline bool isTimedOut() {
-    if (abort_.load(std::memory_order_acquire) ==
-        encode(AbortReason::TIMED_OUT)) {
-      return true;
-    }
-
-    if (!hasTimeout_.load(std::memory_order_acquire)) {
-      return false;
-    }
-
-    // Check for timeout if timeout is set
-    auto now = std::chrono::steady_clock::now();
-    if (now >= deadline_.load(std::memory_order_acquire)) {
-      int expected = encode(AbortReason::NONE);
-      if (abort_.compare_exchange_strong(
-              expected,
-              encode(AbortReason::TIMED_OUT),
-              std::memory_order_acq_rel,
-              std::memory_order_acquire)) {
-        return true;
-      }
-      return expected == encode(AbortReason::TIMED_OUT);
-    }
-
-    return false;
-  }
+  bool isTimedOut();
 
   /**
    * Returns the time remaining before the active timeout deadline.
@@ -138,24 +148,7 @@ class Abort final {
    * Returns `-1ms` when no timeout is active and `0ms` after the active
    * deadline has expired.
    */
-  inline std::chrono::milliseconds getTimeRemaining() {
-    if (!enabled_) {
-      return std::chrono::milliseconds{-1};
-    }
-
-    if (!hasTimeout_.load(std::memory_order_acquire)) {
-      return std::chrono::milliseconds{-1};
-    }
-
-    auto now = std::chrono::steady_clock::now();
-    auto deadline = deadline_.load(std::memory_order_acquire);
-    if (now >= deadline) {
-      return std::chrono::milliseconds{0};
-    }
-
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - now);
-  }
+  std::chrono::milliseconds getTimeRemaining();
 
   /**
    * Starts or replaces the active per-operation timeout deadline.
@@ -163,28 +156,14 @@ class Abort final {
    * The deadline is computed from the current steady-clock time plus
    * `duration`.
    */
-  inline void startTimeout(std::chrono::milliseconds duration) {
-    if (!enabled_) {
-      return;
-    }
-
-    auto deadline = std::chrono::steady_clock::now() + duration;
-    deadline_.store(deadline, std::memory_order_release);
-    hasTimeout_.store(true, std::memory_order_release);
-  }
+  void startTimeout(std::chrono::milliseconds duration);
 
   /**
    * Cancels the active per-operation timeout deadline.
    *
    * This does not clear an abort reason that has already been recorded.
    */
-  inline void cancelTimeout() {
-    if (!enabled_) {
-      return;
-    }
-
-    hasTimeout_.store(false, std::memory_order_release);
-  }
+  void cancelTimeout();
 
   /**
    * Stores the default timeout duration.
@@ -192,13 +171,7 @@ class Abort final {
    * GPE applies this as a per-iteration deadline when no per-operation timeout
    * is supplied. This is only a stored duration; it does not start a deadline.
    */
-  inline void setDefaultTimeout(std::chrono::milliseconds duration) {
-    if (!enabled_) {
-      return;
-    }
-
-    timeoutMs_.store(duration.count(), std::memory_order_release);
-  }
+  void setDefaultTimeout(std::chrono::milliseconds duration);
 
   /**
    * Returns the default timeout duration when one has been configured.
@@ -206,19 +179,27 @@ class Abort final {
    * Returns `std::nullopt` for disabled controllers or before a default
    * timeout has been set.
    */
-  inline std::optional<std::chrono::milliseconds> getDefaultTimeout() const {
-    if (!enabled_) {
-      return std::nullopt;
-    }
+  std::optional<std::chrono::milliseconds> getDefaultTimeout() const;
 
-    auto v = timeoutMs_.load(std::memory_order_acquire);
-    if (v < 0) {
-      return std::nullopt;
-    }
-    return std::chrono::milliseconds{v};
-  }
+  /**
+   * Returns a non-owning device view over the shared abort state.
+   *
+   * The returned handle is valid only while this `Abort` instance remains
+   * alive. Disabled abort objects return a disabled no-op device handle.
+   * Enabled abort objects must be backed by CUDA-mapped pinned state; this
+   * throws `std::runtime_error` when the shared state is host-only or when CUDA
+   * cannot map the host state for the current device. The handle captures the
+   * current device mapping and clock rate, so kernels must consume it on the
+   * same CUDA device that was current when the handle was created. Create a new
+   * handle after switching devices.
+   */
+  AbortDevice getDeviceHandle() const;
 
  private:
+  static constexpr int encode(AbortReason reason) {
+    return static_cast<int>(reason);
+  }
+
   static constexpr bool isValidTerminalReason(AbortReason reason) {
     switch (reason) {
       case AbortReason::ABORTED:
@@ -230,20 +211,20 @@ class Abort final {
     return false;
   }
 
+  int loadAbortReason() const;
+  void markAbort(AbortReason newReason);
+
   const bool enabled_;
 
-  std::atomic<int> abort_{encode(AbortReason::NONE)};
+  AbortState* state_{nullptr};
+  bool stateMapped_{false};
   std::atomic<bool> hasTimeout_{false};
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
-  // -1 = unset.
-  std::atomic<int64_t> timeoutMs_{-1};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
-  static_assert(std::atomic<int>::is_always_lock_free);
   static_assert(
       std::atomic<std::chrono::steady_clock::time_point>::is_always_lock_free);
-  static_assert(std::atomic<int64_t>::is_always_lock_free);
 };
 
 /**
