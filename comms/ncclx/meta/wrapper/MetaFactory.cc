@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <stdexcept>
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
@@ -13,6 +14,7 @@
 #include "meta/commstate/FactoryCommStateX.h"
 #include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 using namespace ctran;
 
@@ -64,7 +66,7 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   const auto tconfig = makeCtranConfigFrom(ncclCommVal);
   ncclCommVal->ctranComm_->config_ = tconfig;
   ncclCommVal->ctranComm_->opCount_ = &ncclCommVal->opCount;
-  ncclCommVal->ctranComm_->logMetaData_ = ncclCommVal->logMetaData;
+  ncclCommVal->ctranComm_->logMetaData_ = ncclCommLogData(ncclCommVal);
   ncclCommVal->ctranComm_->runtimeConn_ = ncclCommVal->runtimeConn;
 
   return commSuccess;
@@ -85,7 +87,8 @@ ncclResult_t createCtranComm(ncclComm* comm) {
 
   NCCLCHECK(ncclx::initCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
 
-  comm->ctranComm_->colltraceNew_ = comm->newCollTrace;
+  comm->ctranComm_->colltraceNew_ =
+      meta::comms::ncclx::ncclCommNewCollTrace(comm);
 
   NCCLCHECK_COMM(ctranInit(comm->ctranComm_.get()));
 

@@ -18,6 +18,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/wrapper/NcclCommLogData.h" // @manual
 #include "nccl.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
@@ -87,7 +88,7 @@ TEST_F(CommWithCtranTest, CtranCommInitialized) {
   EXPECT_EQ(
       comm->ctranComm_->config_.commDesc,
       NCCLX_CONFIG_FIELD(ncclComm->config, commDesc));
-  EXPECT_EQ(comm->ctranComm_->logMetaData_, ncclComm->logMetaData);
+  EXPECT_EQ(comm->ctranComm_->logMetaData_, ncclCommLogData(ncclComm));
   EXPECT_EQ(comm->ctranComm_->runtimeConn_, ncclComm->runtimeConn);
 }
 

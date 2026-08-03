@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "argcheck.h" // Need some checks here since we access comm
 #include "nccl.h"
 #include "comm.h"
@@ -172,11 +173,11 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
       buff,
       size,
       *handle,
-      comm->logMetaData.commHash,
-      comm->logMetaData.commDesc.c_str());
+      ncclCommLogData(comm).commHash,
+      ncclCommLogData(comm).commDesc.c_str());
   if (NCCL_COMM_REGISTER_LOG_ENABLE) {
       meta::comms::memtrace::recordReg(
-          comm->logMetaData,
+          ncclCommLogData(comm),
           "",
           "ncclCommRegister",
           reinterpret_cast<uintptr_t>(*handle),
@@ -256,11 +257,11 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
       NCCL_ALLOC,
       "REGISTER: user deregistered hdl %p with commHash %lx commDesc %s",
       handle,
-      comm->logMetaData.commHash,
-      comm->logMetaData.commDesc.c_str());
+      ncclCommLogData(comm).commHash,
+      ncclCommLogData(comm).commDesc.c_str());
   if (NCCL_COMM_REGISTER_LOG_ENABLE) {
     meta::comms::memtrace::recordReg(
-        comm->logMetaData,
+        ncclCommLogData(comm),
         "",
         "ncclCommDeregister",
         reinterpret_cast<uintptr_t>(handle),
