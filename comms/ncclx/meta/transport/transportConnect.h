@@ -9,7 +9,37 @@
 #include <sstream>
 #include <string>
 
+// v2.30+ relocated the lazy-channel-setup per-communicator state into the
+// opaque ncclxCommExt handle; pre-2.30 keeps it inline on ncclComm /
+// ncclKernelPlanner, which does not define this header.
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+#include "meta/comm/NcclxCommExt.h"
+#endif
+
 namespace ncclx {
+
+// Version bridge returning the object that owns the lazy-channel-setup state --
+// the opaque ncclxCommExt handle in v2.30+, or the forked ncclComm /
+// ncclKernelPlanner pre-2.30. This lets the shared meta transport code
+// (compiled against both v2.29 and v2.30 comm.h) access the state uniformly.
+// Collapse both branches to the ncclxExt form once v2.29 is retired.
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+inline ncclxCommExt& lazyChannelState(struct ncclComm* comm) {
+  return *comm->ncclxExt;
+}
+inline ncclxCommExt& lazyChannelPlanState(struct ncclComm* comm) {
+  return *comm->ncclxExt;
+}
+#else
+inline struct ncclComm& lazyChannelState(struct ncclComm* comm) {
+  return *comm;
+}
+inline struct ncclKernelPlanner& lazyChannelPlanState(struct ncclComm* comm) {
+  return comm->planner;
+}
+#endif
 // masks to indicate which algorithms, channels, connectors are
 // required to be connected at runtime
 struct ncclxPeerReConnInfo {

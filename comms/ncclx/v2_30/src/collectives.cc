@@ -11,11 +11,10 @@
 #include "nccl.h"
 #include "nvtx_payload_schemas.h"
 
-#include "comms/ctran/Ctran.h"
-#include "meta/NcclxConfig.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
-#include "meta/wrapper/MetaFactory.h"
+#include "comms/ctran/utils/ExtUtils.h"
+#include "meta/wrapper/CtranDispatch.h"
 
 const char* ncclFuncToString(ncclFunc_t fn) {
   switch (fn) {
@@ -100,12 +99,9 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
 
-  auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
-
-  if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream,
-                                                  recvbuff, sendcount * comm->nRanks * ncclTypeSize(datatype))) {
-    return metaCommToNccl(ctranAllGather(
-        sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
+  if (auto res = ncclx::ctranTryAllGather(
+          comm, sendbuff, recvbuff, sendcount, datatype, stream)) {
+    return *res;
   }
 
   struct ncclInfo info = { ncclFuncAllGather, "AllGather",
@@ -132,12 +128,10 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
 ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
 
-  auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
-
   // [NCCLX] Redirect to CTRAN if enabled and applicable
-  if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
-    return metaCommToNccl(ctranAllReduce(
-        sendbuff, recvbuff, count, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream, algo));
+  if (auto res = ncclx::ctranTryAllReduce(
+          comm, sendbuff, recvbuff, count, datatype, op, stream)) {
+    return *res;
   }
 
   NVTX3_FUNC_WITH_PARAMS(AllReduce, NcclNvtxParamsAllReduce,
@@ -158,10 +152,9 @@ ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, n
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
-  if (NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig &&
-      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
-    return metaCommToNccl(ctranBroadcast(
-        sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream, NCCL_BROADCAST_ALGO));
+  if (auto res = ncclx::ctranTryBroadcast(
+          comm, sendbuff, recvbuff, count, datatype, root, stream)) {
+    return *res;
   }
 
   NVTX3_FUNC_WITH_PARAMS(Broadcast, NcclNvtxParamsBroadcast,
@@ -215,31 +208,18 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op));
 
-  if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
-      ctranReduceScatterSupport(
-          comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
-    return metaCommToNccl(ctranReduceScatter(
-        sendbuff,
-        recvbuff,
-        recvcount,
-        ncclToMetaComm(datatype),
-        ncclToMetaComm(op),
-        comm->ctranComm_.get(),
-        stream,
-        NCCL_REDUCESCATTER_ALGO));
+  if (auto res = ncclx::ctranTryReduceScatter(
+          comm, sendbuff, recvbuff, recvcount, datatype, op, stream)) {
+    return *res;
   }
 
   struct ncclInfo info = { ncclFuncReduceScatter, "ReduceScatter",
     sendbuff, recvbuff, recvcount, datatype, op, 0, comm, stream, /* Args */
     REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS };
 
-  // [META:PAT_AVG] Set up infoExt for per-comm PAT AVG control
-  // Only for types with enough exponent range (bf16, f32, f64, integers)
-  if (comm->usePatAvg_ && op == ncclAvg &&
-      ncclx::isPatAvgSupportedType(datatype)) {
-    size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
-    info.ext = ncclx::setupPatAvgInfoExt(comm, nBytes, datatype);
-  }
+  // [META:PAT_AVG] Force the deterministic PAT AVG path when applicable
+  // (applicability + setup live in meta/collectives/PatAvgHelper.h).
+  info.ext = ncclx::maybePatAvgInfoExt(comm, recvcount, datatype, op);
 
   return ncclEnqueueCheck(&info);
 }
@@ -259,7 +239,7 @@ ncclResult_t ncclScatter(const void* sendbuff, void* recvbuff, size_t count,
 
 static ncclResult_t baseSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer,
     ncclComm_t comm, cudaStream_t stream) {
-  ctranGroupTrackDefaultOp(comm->ctranComm_.get());
+  ncclx::ctranTrackDefaultSendRecv(comm);
 
   NVTX3_FUNC_WITH_PARAMS(Send, NcclNvtxParamsSendRecv,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), peer));
@@ -284,17 +264,9 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
-  if ((algo != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
-    // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
-    // are enqueued in the original queue. When reaching group end, these two
-    // groups of ops will be issued separately.
-    ncclResult_t ret;
-    NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
-    NCCLCHECK(ncclGroupEnd());
-    return ret;
+  if (auto res = ncclx::ctranTrySend(
+          comm, sendbuff, count, datatype, peer, stream)) {
+    return *res;
   }
 
   return baseSend(sendbuff, count, datatype, peer, comm, stream);
@@ -302,7 +274,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
 
 static ncclResult_t baseRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer,
     ncclComm_t comm, cudaStream_t stream) {
-  ctranGroupTrackDefaultOp(comm->ctranComm_.get());
+  ncclx::ctranTrackDefaultSendRecv(comm);
 
   NVTX3_FUNC_WITH_PARAMS(Recv, NcclNvtxParamsSendRecv,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), peer));
@@ -327,17 +299,9 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
-  if ((algo != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
-    // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
-    // are enqueued in the original queue. When reaching group end, these two
-    // groups of ops will be issued separately.
-    ncclResult_t ret;
-    NCCLCHECK(ncclGroupStart());
-    ret = metaCommToNccl(ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
-    NCCLCHECK(ncclGroupEnd());
-    return ret;
+  if (auto res = ncclx::ctranTryRecv(
+          comm, recvbuff, count, datatype, peer, stream)) {
+    return *res;
   }
 
   return baseRecv(recvbuff, count, datatype, peer, comm, stream);
@@ -376,10 +340,9 @@ ncclResult_t ncclAllToAll(
     return ncclInvalidArgument;
   }
 
-  auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
-  if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream, recvbuff)) {
-    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
+  if (auto res = ncclx::ctranTryAllToAll(
+          comm, sendbuff, recvbuff, count, datatype, stream)) {
+    return *res;
   }
 
   // fallback to baseline send/recv based alltoall
@@ -458,18 +421,17 @@ ncclResult_t ncclAllToAllv(
     return ncclInvalidArgument;
   }
 
-  if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) == NCCL_ALLTOALLV_ALGO::ctran) &&
-      ctranAllToAllvSupport(comm->ctranComm_.get())) {
-    return metaCommToNccl(ctranAllToAllv(
-        sendbuff,
-        sendcounts,
-        sdispls,
-        recvbuff,
-        recvcounts,
-        rdispls,
-        ncclToMetaComm(datatype),
-        comm->ctranComm_.get(),
-        stream));
+  if (auto res = ncclx::ctranTryAllToAllv(
+          comm,
+          sendbuff,
+          sendcounts,
+          sdispls,
+          recvbuff,
+          recvcounts,
+          rdispls,
+          datatype,
+          stream)) {
+    return *res;
   }
 
   // fallback to baseline send/recv based alltoallv
@@ -494,7 +456,6 @@ ncclResult_t ncclAllToAllv(
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PRIMS)
 __attribute__((visibility("default")))
 ncclResult_t ncclx::deviceAllToAllv(
     const void* sendbuff,
@@ -507,40 +468,18 @@ ncclResult_t ncclx::deviceAllToAllv(
     int64_t sendcountsMultiplier,
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
-  if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
-    ERR(
-        ncclInvalidUsage,
-        "deviceAllToAllv requires ctran with pipes transport support");
-    return ncclInvalidUsage;
-  }
-  return metaCommToNccl(ctranDeviceAllToAllv(
+  return ncclx::ctranRunDeviceAllToAllv(
+      comm,
       sendbuff,
       recvbuff,
       sendcounts_d,
       recvcounts_d,
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
+      datatype,
       stream,
       sendcountsMultiplier,
       recvcountsMultiplier,
-      hints));
+      hints);
 }
-#else
-__attribute__((visibility("default")))
-ncclResult_t ncclx::deviceAllToAllv(
-    const void* /*sendbuff*/,
-    void* /*recvbuff*/,
-    const int64_t* /*sendcounts_d*/,
-    const int64_t* /*recvcounts_d*/,
-    ncclDataType_t /*datatype*/,
-    ncclComm_t /*comm*/,
-    cudaStream_t /*stream*/,
-    int64_t /*sendcountsMultiplier*/,
-    int64_t /*recvcountsMultiplier*/,
-    const std::unordered_map<std::string, std::string>& /*hints*/) {
-  return ncclInvalidUsage;
-}
-#endif // ENABLE_PRIMS
 
 __attribute__((visibility("default")))
 ncclResult_t ncclx::alltoallvDynamic(

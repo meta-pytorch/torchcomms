@@ -53,7 +53,9 @@ class TorchCommNCCLXBootstrap {
  private:
   ncclUniqueId exchangeUniqueId(std::string_view name);
   void createStore(std::string_view name);
-#ifdef NCCLX_CONFIG_SUPPORTED
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if defined(NCCLX_CONFIG_SUPPORTED) && \
+    NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   bool useFastInit(const ncclx::Hints& hints);
 #endif
   void cleanupTCPStore(ncclComm_t nccl_comm);

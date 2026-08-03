@@ -14,7 +14,7 @@
 #include <time.h>
 #include <atomic>
 
-#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/socket_ext/socket_ext.h"
 
 NCCL_PARAM(RetryCnt, "SOCKET_RETRY_CNT", 34);
 NCCL_PARAM(RetryTimeOut, "SOCKET_RETRY_SLEEP_MSEC", 100);
@@ -40,8 +40,6 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
 }
 
 static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
-  // FIXME[max7255]: skipping ncclx patch, ensure ncclParamPollTimeOut > 0
-  // for NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::none
   while (*offset < size) {
     NCCLCHECK(socketProgress(op, sock, ptr, size, offset));
     // If we have more data to read or write, use the poll system call to wait
@@ -425,7 +423,7 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName) {
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
 #ifdef ENABLE_TRACE
   char line[SOCKET_NAME_MAXLEN+1];
 #endif
@@ -446,16 +444,7 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName)
   }
   TRACE(NCCL_INIT|NCCL_NET,"Connecting to socket %s", ncclSocketToString(&sock->addr, line));
 
-  if (!NCCL_CLIENT_SOCKET_IFNAME.empty() && localIfName == nullptr) {
-    localIfName = NCCL_CLIENT_SOCKET_IFNAME.c_str();
-  }
-  // bind client socket to specified interface
-  if (localIfName != nullptr) {
-    ifreq ifr;
-    strncpy(ifr.ifr_name, localIfName, sizeof(ifr.ifr_name));
-    SYSCHECK(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr.ifr_name, sizeof(ifr)), "setsockopt");
-    INFO(NCCL_INIT, "ncclSocketConnect bind to interface %s", localIfName);
-  }
+  NCCLCHECK(ncclSocketExtBindToDevice(sock));
 
   sock->state = ncclSocketStateConnecting;
   sock->finalizeCounter = 0;
@@ -558,25 +547,13 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
       char line[SOCKET_NAME_MAXLEN+1];
       ERR(ncclInternalError, "ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
           ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
-
-      WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.30 you will have ncclSocketInit errors. "
-           "We have deprecated NCCL_FASTINIT_MODE; set NCCL_FASTINIT_MODE=none and TORCH_NCCL_BCAST_UNIQUEID=1 to bootstrap NCCL");
       ret = ncclInternalError;
       goto exit;
     }
     sock->salen = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
     // in case of error, we close the descriptor before returning as it's unclear if the caller has to use ncclSocketClose for cleanup
     NCCLCHECKGOTO(ncclOsSocketResetFd(sock), ret, fail);
-    if (NCCL_SOCKET_TOS_CONFIG != -1) {
-    // referenced D77281608
-      if (family == AF_INET6) {
-        // For IPv6 set the traffic class field
-        SYSCHECK(setsockopt(sock->socketDescriptor, IPPROTO_IPV6, IPV6_TCLASS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)), "setsockopt");
-      } else {
-        // For IPv4 set the TOS field
-        SYSCHECK(setsockopt(sock->socketDescriptor, IPPROTO_IP, IP_TOS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)), "setsockopt");
-      }
-    }
+    NCCLCHECK(ncclSocketExtSetTos(sock, family));
   } else {
     memset(&sock->addr, 0, sizeof(union ncclSocketAddress));
   }
@@ -705,12 +682,4 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
     }
   }
   return ncclSuccess;
-}
-
-std::string ncclSocketToIPv6String(union ncclSocketAddress *addr) {
-  struct sockaddr *saddr = &addr->sa;
-  char host[NI_MAXHOST];
-  int flag = NI_NUMERICHOST;
-  (void) getnameinfo(saddr, sizeof(union ncclSocketAddress), host, NI_MAXHOST, NULL, 0, flag);
-  return {host};
 }
