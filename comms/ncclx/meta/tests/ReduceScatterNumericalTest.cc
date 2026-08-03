@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -150,7 +151,8 @@ class ReduceScatterNumericalTest
         globalRank, numRanks, localRank, bootstrap_.get()};
     if (param.algo == ReduceScatterNumericalAlgo::CtranDirect &&
         !ctranReduceScatterSupport(
-            comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO::ctdirect)) {
+            meta::comms::ncclx::ncclCommCtran(comm).get(),
+            NCCL_REDUCESCATTER_ALGO::ctdirect)) {
       NCCLCHECK_TEST(ncclMemFree(originalDevice));
       NCCLCHECK_TEST(ncclMemFree(actualDevice));
       GTEST_SKIP() << "Ctran ReduceScatter direct is not supported for this "

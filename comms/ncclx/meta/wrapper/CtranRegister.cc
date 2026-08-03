@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/wrapper/CtranRegister.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comm.h"
 #include "debug.h"
@@ -18,7 +19,8 @@ bool ctranRegisterEnabled() {
 }
 
 bool ctranOwnsRegister(ncclComm* comm) {
-  return ctranInitialized(comm->ctranComm_.get()) && ctranRegisterEnabled();
+  return ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()) &&
+      ctranRegisterEnabled();
 }
 
 ncclResult_t logCtranRegisterConflict() {
@@ -30,11 +32,13 @@ ncclResult_t logCtranRegisterConflict() {
 ncclResult_t
 ctranCommRegister(ncclComm* comm, void* buff, size_t size, void** handle) {
   return metaCommToNccl(
-      comm->ctranComm_->ctran_->commRegister(buff, size, handle));
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->commRegister(
+          buff, size, handle));
 }
 
 ncclResult_t ctranCommDeregister(ncclComm* comm, void* handle) {
-  return metaCommToNccl(comm->ctranComm_->ctran_->commDeregister(handle));
+  return metaCommToNccl(
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->commDeregister(handle));
 }
 
 ncclResult_t ctranGlobalRegisterWithPtr(void* buff, size_t size) {
