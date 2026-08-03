@@ -63,7 +63,6 @@
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/logger/ScubaCommSampleScope.h"
 #include "meta/logger/ScubaInitScope.h"
-#include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "meta/wrapper/CtranHooks.h"
@@ -2007,7 +2006,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
 
   // NCCLX - NCCL_MEM_USE_SLAB_ALLOCATOR
   if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
-    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
+    comm->ncclxExt->slabAllocator =
+        std::make_unique<ncclx::memory::SlabAllocator>();
   }
   comm->channelMetadataOnHost =
       ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
