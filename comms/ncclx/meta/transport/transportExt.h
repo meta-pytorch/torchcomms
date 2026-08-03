@@ -7,6 +7,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 #include "meta/NcclMemoryUtils.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 // [META]: Extension to store local/remote memory for synchronization, i.e.,
 // fifo information, used in p2p.cc
@@ -77,8 +78,9 @@ inline size_t getP2pSyncBufSlot(
 }
 
 inline ncclResult_t releaseP2pSyncBuf(struct ncclComm* comm) {
-  return metaCommToNccl(comm->memCache->release(
-      {fmt::format("{}:{:#x}", kP2pSyncBufKey, comm->commHash)}));
+  return metaCommToNccl(
+      meta::comms::ncclx::ncclCommMemCache(comm)->release(
+          {fmt::format("{}:{:#x}", kP2pSyncBufKey, comm->commHash)}));
 }
 /* Get a peer sharable buffer pointer from internal pool used for p2p
  * transport's synchronization between peers. Each p2p connection will get a
