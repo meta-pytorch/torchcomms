@@ -19,43 +19,11 @@ CXXSTD ?= -std=c++20
 include ../makefiles/common.mk
 include ../makefiles/version.mk
 
-##### Mock Scuba Data in CMake build
-CXXFLAGS += -DMOCK_SCUBA_DATA -DFOLLY_XLOG_STRIP_PREFIXES=\"${BASE_DIR}\"
-# Use header-only fmt to avoid runtime dependency on libfmt.so
-CXXFLAGS += -DFMT_HEADER_ONLY=1
-
-# Enable JSON parsing in the NCCLX built-in CSV/JSON tuner (meta/tuner) when
-# folly is available. The conda feedstock build sets NCCLX_TUNER_WITH_FOLLY_JSON=1
-# (folly is already linked there); a bare OSS `make` without folly leaves it off,
-# so meta/tuner compiles only its CSV parser -- matching def_build.bzl.
-NCCLX_TUNER_WITH_FOLLY_JSON ?= 0
-ifeq ($(NCCLX_TUNER_WITH_FOLLY_JSON),1)
-CXXFLAGS += -DNCCLX_TUNER_WITH_FOLLY_JSON
-endif
-
-# NCCLX v2.30 uses tuner API v6, which adds the getChunkSize hook. Gate the
-# v6-only getChunkSize callback in meta/tuner on this flag -- matching
-# def_build.bzl. The conda feedstock build sets NCCLX_TUNER_HAS_GETCHUNKSIZE=1;
-# a bare OSS `make` leaves it off so chunkSize overrides compile out (proto/algo
-# and channel rules still work).
-# TODO: Remove this flag once v2.29 is deleted (all remaining versions use tuner
-# API v6+, so getChunkSize can be enabled unconditionally).
-NCCLX_TUNER_HAS_GETCHUNKSIZE ?= 0
-ifeq ($(NCCLX_TUNER_HAS_GETCHUNKSIZE),1)
-CXXFLAGS += -DNCCLX_TUNER_HAS_GETCHUNKSIZE
-endif
-
-ifeq ($(ENABLE_TCPDM),0)
-CXXFLAGS += -DCTRAN_DISABLE_TCPDM
-endif
-
-ifeq ($(ENABLE_PRIMS),1)
-CXXFLAGS += -DENABLE_PRIMS
-NVCUFLAGS += -DENABLE_PRIMS
-endif
+# NCCLX compile-flag and include-path customizations (see makefiles/ncclx.mk).
+include ../makefiles/ncclx.mk
 
 ##### src files
-INCEXPORTS  := nccl.h nccl_device.h \
+INCEXPORTS  := nccl.h ncclx.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h)) \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/param/*.h))
 
@@ -98,6 +66,7 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/nvls/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/transport/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/socket_ext/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commstate/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/rma/*.cc)
@@ -192,17 +161,6 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIb.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIbLauncher.cu
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
 endif
-
-INCLUDES := -Iinclude
-INCLUDES += -Iinclude/plugin
-INCLUDES += -I${NCCLDIR}/
-INCLUDES += -I${SHAREDDIR}/
-INCLUDES += -I${NCCLDIR}/meta
-INCLUDES += -I${SHAREDDIR}/meta
-INCLUDES += -I${SHAREDDIR}/meta/wrapper
-INCLUDES += -Idevice
-INCLUDES += -I$(BASE_DIR)
-INCLUDES += -I$(CONDA_INCLUDE_DIR)
 
 ifeq ($(ENABLE_TCPDM),1)
 ## TCP DevMem transport
@@ -415,6 +373,11 @@ $(INCDIR)/nccl_%.h : include/nccl_%.h
 $(INCDIR)/param/%.h: include/param/%.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)/param
+	install -m 644 $< $@
+
+$(INCDIR)/ncclx.h : include/ncclx.h
+	@printf "Grabbing   %-35s > %s\n" $< $@
+	mkdir -p $(INCDIR)
 	install -m 644 $< $@
 
 $(INCDIR)/nccl_device/%.h: include/nccl_device/%.h
