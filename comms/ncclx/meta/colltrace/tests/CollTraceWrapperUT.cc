@@ -12,6 +12,7 @@
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTraceWrapper.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 using namespace meta::comms::ncclx;
 using namespace meta::comms::colltrace;
@@ -328,14 +329,14 @@ TEST_P(CollTraceInitConfigTest, ConfigCombinations) {
       });
 
   // Reset any existing state
-  comm_->algoStats.reset();
-  comm_->newCollTrace.reset();
+  ncclCommAlgoStats(comm_).reset();
+  ncclCommNewCollTrace(comm_).reset();
 
   auto result = newCollTraceInit(comm_);
 
   EXPECT_EQ(result, ncclSuccess);
-  EXPECT_EQ(comm_->algoStats != nullptr, expectAlgoStats);
-  EXPECT_EQ(comm_->newCollTrace != nullptr, expectNewCollTrace);
+  EXPECT_EQ(ncclCommAlgoStats(comm_) != nullptr, expectAlgoStats);
+  EXPECT_EQ(ncclCommNewCollTrace(comm_) != nullptr, expectNewCollTrace);
 }
 
 INSTANTIATE_TEST_SUITE_P(

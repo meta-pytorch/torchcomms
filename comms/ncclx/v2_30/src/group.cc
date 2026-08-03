@@ -24,6 +24,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/transport/transportExt.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -151,9 +152,9 @@ ncclResult_t ncclP2PPreconnectFunc(struct ncclAsyncJob* job_) {
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
   // setup channels if needed before setup transport
-  if (comm->lazySetupChannels &&
-      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
-    NCCLCHECK(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit));
+  if (comm->ncclxExt->lazySetupChannels &&
+      comm->ncclxExt->nChannelsReady < comm->ncclxExt->nMaxChannelsNeedInit) {
+    NCCLCHECK(ncclx::setupChannels(comm, comm->ncclxExt->nMaxChannelsNeedInit));
   }
   NCCLCHECK(ncclTransportP2pSetup(comm, NULL, 1));
   return ncclSuccess;
@@ -225,9 +226,9 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
   if (!job_->isThreadMain) CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
   // setup channels if needed before setup transport
-  if (comm->lazySetupChannels &&
-      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
-    NCCLCHECKGOTO(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit), ret, fail);
+  if (comm->ncclxExt->lazySetupChannels &&
+      comm->ncclxExt->nChannelsReady < comm->ncclxExt->nMaxChannelsNeedInit) {
+    NCCLCHECKGOTO(ncclx::setupChannels(comm, comm->ncclxExt->nMaxChannelsNeedInit), ret, fail);
   }
   NCCLCHECKGOTO(ncclCollPreconnect(comm, job->algoNeedConnect), ret, fail);
 
