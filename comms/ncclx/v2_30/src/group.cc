@@ -22,12 +22,11 @@
 #include <thread>
 #include "os.h"
 
-#include "comms/ctran/Ctran.h"
 #include "meta/transport/transportExt.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
-#include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/CtranHooks.h"
 
 #define GROUP_MAX_RECLAIM_STEPS 10
 
@@ -794,7 +793,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
 
   if ((--ncclGroupDepth) > 0) goto exit;
 
-  NCCLCHECKGOTO(metaCommToNccl(ctranGroupEndHook()), ret, fail);
+  NCCLCHECKGOTO(ncclx::runCtranGroupEndHook(), ret, fail);
 
   if ((ret = ncclGroupError) != ncclSuccess) goto fail;
 
