@@ -1131,6 +1131,10 @@ cvars:
    description : |-
       Use slab allocator to group small initChannel metadata calls to save GPU memory usage
 
+ # TODO T279903668: Remove NCCL_FASTINIT_MODE and NCCL_SKIP_TCPFORM_RING after
+ # v2_29 removal. Fast Init is removed in NCCLX v2.30+ (superseded by
+ # ncclCommInitRankScalable); these CVARs remain only for v2.29, and a YAML CVAR
+ # file cannot be version-guarded.
  - name        : NCCL_FASTINIT_MODE
    type        : enum
    default     : none
