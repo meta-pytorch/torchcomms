@@ -19,7 +19,7 @@
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
-#include <cupti.h> // @manual
+#include <cupti.h>
 #include "comms/utils/test_utils/CudaGraphTestUtils.h"
 #endif
 class CtranGpeTest : public ::testing::Test {

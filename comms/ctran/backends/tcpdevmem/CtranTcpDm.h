@@ -9,11 +9,11 @@
 #include <memory>
 #include <unordered_map>
 
-#include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
+#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
-#include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/tcp_devmem/transport.h"
 #include "comms/utils/commSpecs.h"
 

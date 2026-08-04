@@ -11,7 +11,7 @@
 #else
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
 #endif
-#include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/ExtUtils.h"

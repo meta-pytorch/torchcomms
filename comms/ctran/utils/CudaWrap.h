@@ -8,7 +8,7 @@
 #include "comms/utils/logger/LogUtils.h"
 
 #if CUDART_VERSION >= 11030
-#include <cudaTypedefs.h> // @manual
+#include <cudaTypedefs.h>
 
 #endif
 

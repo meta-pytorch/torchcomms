@@ -8,7 +8,7 @@
 
 #include <folly/Singleton.h>
 
-#include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
+#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/utils/Checks.h"
