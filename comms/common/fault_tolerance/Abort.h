@@ -98,10 +98,11 @@ class Abort final {
    * Returns whether this controller is enabled.
    *
    * Disabled controllers never report an abort, active timeout, or default
-   * timeout duration.
+   * timeout duration. Internally, disabled controllers are represented by a
+   * null `AbortState` pointer.
    */
   inline bool isEnabled() const {
-    return enabled_;
+    return state_ != nullptr;
   }
 
   /**
@@ -213,8 +214,6 @@ class Abort final {
 
   int loadAbortReason() const;
   void markAbort(AbortReason newReason);
-
-  const bool enabled_;
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};

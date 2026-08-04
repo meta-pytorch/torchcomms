@@ -307,10 +307,10 @@ struct AbortDevice final {
 };
 
 inline AbortDevice Abort::getDeviceHandle() const {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return AbortDevice{/*state=*/nullptr, /*cyclesPerMs=*/0};
   }
-  if (state_ == nullptr || !stateMapped_) {
+  if (!stateMapped_) {
     throw std::runtime_error(
         "Abort::getDeviceHandle() requires CUDA host-mapped Abort state");
   }
