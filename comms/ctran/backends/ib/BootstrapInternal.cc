@@ -15,7 +15,7 @@
 #include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
 
-#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/backends/ib/VcState.h"
 #include "comms/ctran/bootstrap/Socket.h"
