@@ -18,13 +18,16 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 
-# pyre-ignore[21]: cpp_python_extension at runtime
-from comms.prims.collectives.link_ep import _cpp  # @manual
-from comms.prims.collectives.link_ep.link_ep.utils import (
-    check_nvlink_connections,
-    EventHandle,
-    EventOverlap,
-)
+try:
+    # Installed egg: this package is top-level, so `_cpp` sits beside it.
+    # pyre-ignore[21]: only resolvable in the installed-egg layout
+    from . import _cpp
+except ModuleNotFoundError:
+    # Buck: this package is nested one level deeper than the extension.
+    # pyre-ignore[21]: cpp_python_extension at runtime
+    from comms.prims.collectives.link_ep import _cpp  # @manual
+
+from .utils import check_nvlink_connections, EventHandle, EventOverlap
 
 logger: logging.Logger = logging.getLogger(__name__)
 
