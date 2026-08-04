@@ -200,6 +200,8 @@ Config::Config(const ncclConfig_t* config) {
   deviceIbLazyConnect =
       parseHintBool("deviceIbLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
 
+  tmpbufEagerAlloc = parseHintBool("ctranTmpbufEagerAlloc", true);
+
   // vCliqueSize: hint only (no flat ncclConfig_t field)
   {
     auto val = getHintStr("vCliqueSize");

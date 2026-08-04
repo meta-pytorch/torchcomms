@@ -66,6 +66,11 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   ncclCommVal->ctranComm_->opCount_ = &ncclCommVal->opCount;
   ncclCommVal->ctranComm_->logMetaData_ = ncclCommVal->logMetaData;
   ncclCommVal->ctranComm_->runtimeConn_ = ncclCommVal->runtimeConn;
+  if (ncclCommVal->config.ncclxConfig != nullptr) {
+    const auto* ncclxCfg =
+        static_cast<ncclx::Config*>(ncclCommVal->config.ncclxConfig);
+    ncclCommVal->ctranComm_->tmpbufEagerAlloc_ = ncclxCfg->tmpbufEagerAlloc;
+  }
 
   return commSuccess;
 }

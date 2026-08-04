@@ -72,7 +72,8 @@ class CtranDistTestFixture : public CtranTestFixtureBase,
   // on demand regardless of its value.
   std::unique_ptr<CtranComm> makeCtranComm(
       bool noLocal = false,
-      bool ibLazyConnect = true);
+      bool ibLazyConnect = true,
+      bool tmpbufEagerAlloc = true);
 
   // Asserts the comm's runtime topology matches the NCCL_COMM_STATE_DEBUG_TOPO
   // env override (nolocal/vnode). Early-returns when the env is unset, so

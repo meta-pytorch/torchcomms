@@ -29,7 +29,11 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
   // getDevState() call.
   // TODO: Properly move some heavy allocation to on-demand.
   FB_COMMCHECKTHROW_EX(initKernelResources(), comm_->logMetaData_);
-  if (!comm->runtimeConn_) {
+  // FIXME: runtimeConn_ is not the proper flag to control tmpbuf allocation
+  // (tmpbuf is unrelated to peer connection). Kept ANDed here to preserve
+  // current behavior until the MCCL side updates the callsites of this config
+  // to use tmpbufEagerAlloc_.
+  if (!comm->runtimeConn_ && comm->tmpbufEagerAlloc_) {
     FB_COMMCHECKIGNORE(initTmpBufs());
   }
 
@@ -208,7 +212,13 @@ commResult_t CtranAlgo::initKernelResources() {
       ctranEffectiveP2pNvlSharedDevbufSize(nLocalRanks);
 
   // Initialize inter-process shared device buffer
-  if (!this->sharedRes_) {
+  // FIXME: (b) NVL per-peer staging + (c) bcast buffer have NO on-demand
+  // support yet. When tmpbufEagerAlloc_ is false we skip allocating them (and
+  // nvlTransports_) to save memory; devState_d_ is still allocated so kernels
+  // that don't touch NVL staging work. Collectives that DO need them will fail:
+  // SendRecv (nvlTransports_), AllToAll at ppn>1 (staging maps), ReduceScatter
+  // stage-copy (bcast). Making (b)/(c) on-demand is follow-up.
+  if (comm_->tmpbufEagerAlloc_ && !this->sharedRes_) {
     this->sharedRes_ = new SharedResource(comm_);
   }
 
@@ -314,82 +324,86 @@ commResult_t CtranAlgo::initKernelResources() {
       cudaMemcpyHostToDevice));
 
 #if defined(ENABLE_PRIMS)
-  // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
-  FB_COMMCHECK(
-      ctran::utils::commCudaMalloc(
-          &nvlTransports_,
-          nLocalRanks,
-          &this->comm_->logMetaData_,
-          "initKernelResources-nvlTransports"));
+  if (this->sharedRes_) {
+    // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
+    FB_COMMCHECK(
+        ctran::utils::commCudaMalloc(
+            &nvlTransports_,
+            nLocalRanks,
+            &this->comm_->logMetaData_,
+            "initKernelResources-nvlTransports"));
 
-  const size_t nvlPipelineDepth =
-      static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
-  const size_t nvlMaxNumChannels =
-      static_cast<size_t>(std::max(1, CTRAN_ALGO_MAX_THREAD_BLOCKS));
-  if (nvlPipelineDepth == 0) {
-    CERR(
-        commInvalidArgument,
-        "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
-    return commInvalidArgument;
-  }
-  const size_t nvlChannelAlign = 16ULL * nvlPipelineDepth;
-  const size_t nvlPerChannelBuffer =
-      alignDown(nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
-  if (nvlPerChannelBuffer == 0) {
-    CERR(
-        commInvalidArgument,
-        "CTRAN-ALGO: invalid NVL P2P config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned per-channel buffer",
-        nvlSharedDevbufSize,
-        nvlMaxNumChannels,
-        nvlPipelineDepth);
-    return commInvalidArgument;
-  }
-  comms::prims::P2pNvlTransportOptions options{
-      .dataBufferSize = nvlMaxNumChannels * nvlPerChannelBuffer,
-      .pipelineDepth = nvlPipelineDepth,
-      .per_channel_buffer = nvlPerChannelBuffer,
-      .per_channel_slot = nvlPerChannelBuffer / nvlPipelineDepth,
-      .max_num_channels = static_cast<int>(nvlMaxNumChannels)};
-
-  for (int peer = 0; peer < nLocalRanks; peer++) {
-    // Skip self - slot remains default-constructed (unused)
-    if (peer == localRank) {
-      continue;
+    const size_t nvlPipelineDepth =
+        static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
+    const size_t nvlMaxNumChannels =
+        static_cast<size_t>(std::max(1, CTRAN_ALGO_MAX_THREAD_BLOCKS));
+    if (nvlPipelineDepth == 0) {
+      CERR(
+          commInvalidArgument,
+          "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
+      return commInvalidArgument;
     }
+    const size_t nvlChannelAlign = 16ULL * nvlPipelineDepth;
+    const size_t nvlPerChannelBuffer =
+        alignDown(nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
+    if (nvlPerChannelBuffer == 0) {
+      CERR(
+          commInvalidArgument,
+          "CTRAN-ALGO: invalid NVL P2P config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned per-channel buffer",
+          nvlSharedDevbufSize,
+          nvlMaxNumChannels,
+          nvlPipelineDepth);
+      return commInvalidArgument;
+    }
+    comms::prims::P2pNvlTransportOptions options{
+        .dataBufferSize = nvlMaxNumChannels * nvlPerChannelBuffer,
+        .pipelineDepth = nvlPipelineDepth,
+        .per_channel_buffer = nvlPerChannelBuffer,
+        .per_channel_slot = nvlPerChannelBuffer / nvlPipelineDepth,
+        .max_num_channels = static_cast<int>(nvlMaxNumChannels)};
 
-    comms::prims::LocalState localState{
-        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer])};
+    for (int peer = 0; peer < nLocalRanks; peer++) {
+      // Skip self - slot remains default-constructed (unused)
+      if (peer == localRank) {
+        continue;
+      }
 
-    comms::prims::RemoteState remoteState{
-        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer])};
+      comms::prims::LocalState localState{
+          .dataBuffer =
+              static_cast<char*>(devState_.localStagingBufsMap[peer])};
 
-    int localPos = LOCAL_RANK_TO_DEV_REGION_POS(peer, localRank);
-    int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, peer);
-    NvlChannelState* localChannelState = partitionChannelStates(
-        this->sharedRes_->mappedDevShmPtrs[localRank],
-        nLocalRanks,
-        localPos,
-        nvlSharedDevbufSize);
-    NvlChannelState* remoteChannelState = partitionChannelStates(
-        this->sharedRes_->mappedDevShmPtrs[peer],
-        nLocalRanks,
-        remotePos,
-        nvlSharedDevbufSize);
+      comms::prims::RemoteState remoteState{
+          .dataBuffer =
+              static_cast<char*>(devState_.remoteStagingBufsMap[peer])};
 
-    // Construct the object on CPU and copy to device memory
-    comms::prims::P2pNvlTransportDevice transport(
-        localRank,
-        peer,
-        options,
-        localState,
-        remoteState,
-        localChannelState,
-        remoteChannelState);
-    FB_CUDACHECK(cudaMemcpy(
-        &nvlTransports_[peer],
-        &transport,
-        sizeof(comms::prims::P2pNvlTransportDevice),
-        cudaMemcpyHostToDevice));
+      int localPos = LOCAL_RANK_TO_DEV_REGION_POS(peer, localRank);
+      int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, peer);
+      NvlChannelState* localChannelState = partitionChannelStates(
+          this->sharedRes_->mappedDevShmPtrs[localRank],
+          nLocalRanks,
+          localPos,
+          nvlSharedDevbufSize);
+      NvlChannelState* remoteChannelState = partitionChannelStates(
+          this->sharedRes_->mappedDevShmPtrs[peer],
+          nLocalRanks,
+          remotePos,
+          nvlSharedDevbufSize);
+
+      // Construct the object on CPU and copy to device memory
+      comms::prims::P2pNvlTransportDevice transport(
+          localRank,
+          peer,
+          options,
+          localState,
+          remoteState,
+          localChannelState,
+          remoteChannelState);
+      FB_CUDACHECK(cudaMemcpy(
+          &nvlTransports_[peer],
+          &transport,
+          sizeof(comms::prims::P2pNvlTransportDevice),
+          cudaMemcpyHostToDevice));
+    }
   }
 #endif // defined(ENABLE_PRIMS)
 

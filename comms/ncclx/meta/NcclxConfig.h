@@ -73,6 +73,9 @@ class Config {
   // Deprecated compatibility hint. Peer IB state is always initialized on
   // demand; false no longer restores eager initialization.
   bool deviceIbLazyConnect = true;
+  // Eagerly allocate ctran tmpbuf/NVL staging/bcast buffers at init.
+  // When false, ctran skips those allocations to save memory (per-comm only).
+  bool tmpbufEagerAlloc = true;
   // Update mutable hint fields (algo config only).  Rejects immutable keys.
   ncclResult_t update(const ncclx::Hints* hints);
 };
@@ -100,6 +103,7 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
       "deviceIbLazyConnect",
+      "ctranTmpbufEagerAlloc",
       "win_register_ipc_only",
       "win_register_enable_signal",
       "win_register_symmetric",

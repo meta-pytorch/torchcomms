@@ -228,6 +228,13 @@ class CtranComm {
   // Depending on this flag CtranAlgo initialized resources differently
   bool runtimeConn_{}; // if dynamic connection is supported
 
+  // FIXME: runtimeConn_ is NOT the proper flag to gate tmpbuf allocation;
+  // tmpbuf is unrelated to whether a peer connection is created.
+  // tmpbufEagerAlloc_ is the correct control. The eager tmpbuf-slab gate below
+  // still ANDs with !runtimeConn_ to preserve current behavior until MCCL
+  // updates the callsites of this config.
+  bool tmpbufEagerAlloc_{true};
+
   // TODO: change shared_prt to unique_ptr after refactor all ctran code using
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
