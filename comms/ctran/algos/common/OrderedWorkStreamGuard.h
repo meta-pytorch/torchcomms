@@ -67,6 +67,10 @@ class OrderedWorkStreamGuard {
 
   std::mutex submissionMutex_;
   cudaEvent_t execModeSyncEvent_{};
+  // Fence recorded during capture. Separate from execModeSyncEvent_ so a
+  // capture-absorbed record never taints the event the eager path consumes
+  // live. Only ever waited on from within the same capture.
+  cudaEvent_t captureFenceEvent_{};
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
   bool graphMixingSupport_{true};

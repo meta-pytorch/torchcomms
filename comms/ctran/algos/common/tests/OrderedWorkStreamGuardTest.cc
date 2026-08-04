@@ -3,7 +3,9 @@
 #include <cuda_runtime.h>
 
 #include <chrono>
+#include <string>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 
 #include <gtest/gtest.h>
@@ -12,6 +14,7 @@
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
 
@@ -31,17 +34,42 @@ StreamCaptureInfo captureInfo(cudaStream_t stream) {
   return info;
 }
 
-class OrderedWorkStreamGuardTest : public ::testing::TestWithParam<bool> {
+// Parameterized over (synchronizeEagerAfterCapturedWork,
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT). The first is a per-consumer construction
+// argument (GPE passes true, Prims false); the second is a global perf cvar.
+// Both are covered explicitly because their interaction determines whether the
+// captured-to-eager barrier is effective.
+class OrderedWorkStreamGuardTest
+    : public ::testing::TestWithParam<std::tuple<bool, int>> {
  protected:
+  bool syncEagerAfterCaptured() const {
+    return std::get<0>(GetParam());
+  }
+  int mixingSupport() const {
+    return std::get<1>(GetParam());
+  }
+
   void SetUp() override {
+    // Without ncclCvarInit() the cvar globals keep their zero-initialized
+    // values, so NCCL_CTRAN_GRAPH_MIXING_SUPPORT would read 0 regardless of its
+    // documented default of 1 (the default is the env2num fallback applied
+    // during init, not a static initializer). Set it explicitly: the guard
+    // latches it in init() below, so this must happen first.
+    setenv(
+        "NCCL_CTRAN_GRAPH_MIXING_SUPPORT",
+        std::to_string(mixingSupport()).c_str(),
+        1);
+    ncclCvarInit();
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamA_, cudaStreamNonBlocking));
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamB_, cudaStreamNonBlocking));
-    guard_.init(logMetaData_, GetParam());
+    guard_.init(logMetaData_, syncEagerAfterCaptured());
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(streamA_));
     CUDACHECK_TEST(cudaStreamDestroy(streamB_));
+    unsetenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT");
+    ncclCvarInit();
   }
 
   CommLogData logMetaData_{};
@@ -74,6 +102,15 @@ TEST_P(OrderedWorkStreamGuardTest, OrdersEagerWorkAcrossStreams) {
   CUDACHECK_TEST(cudaFree(value));
 }
 
+// The guard's captured-to-eager policy, across both dimensions.
+//
+// synchronizeEagerAfterCapturedWork=true asks for a host barrier after captured
+// work; false asks only for GPU-side ordering. The barrier is effective only at
+// mixing=1, where a graph EVENT_RECORD node records execModeSyncEvent_ at
+// replay. At mixing=0 the captured fence is an absorbed plain record on a
+// separate event, so no node records execModeSyncEvent_ and the barrier has
+// nothing to wait on -- the documented mixing=0 caveat. Either way the eager
+// acquire must succeed rather than fail on a capture-bound event.
 TEST_P(OrderedWorkStreamGuardTest, AppliesCapturedToEagerPolicy) {
   cudaGraph_t graph{};
   cudaGraphExec_t graphExec{};
@@ -88,13 +125,17 @@ TEST_P(OrderedWorkStreamGuardTest, AppliesCapturedToEagerPolicy) {
   CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
   CUDACHECK_TEST(cudaGraphLaunch(graphExec, streamA_));
 
+  // The eager acquire must not fail on a capture-bound event, whichever policy
+  // is in force.
   auto eager = guard_.acquire(streamB_, captureInfo(streamB_));
   ASSERT_EQ(eager.status(), commSuccess);
   const cudaError_t replayStatus = cudaStreamQuery(streamA_);
-  if (GetParam()) {
-    EXPECT_EQ(replayStatus, cudaSuccess);
+  if (syncEagerAfterCaptured() && mixingSupport() != 0) {
+    EXPECT_EQ(replayStatus, cudaSuccess)
+        << "host sync must have waited for the replay to complete";
   } else {
-    EXPECT_EQ(replayStatus, cudaErrorNotReady);
+    EXPECT_EQ(replayStatus, cudaErrorNotReady)
+        << "without an effective host barrier the replay stays in flight";
   }
   ASSERT_EQ(eager.release(), commSuccess);
 
@@ -124,12 +165,18 @@ TEST_P(OrderedWorkStreamGuardTest, PropagatesPoisonedError) {
 
 TEST_P(OrderedWorkStreamGuardTest, DoubleInitAborts) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  EXPECT_DEATH(guard_.init(logMetaData_, GetParam()), "initialized twice");
+  EXPECT_DEATH(
+      guard_.init(logMetaData_, syncEagerAfterCaptured()), "initialized twice");
 }
 
 INSTANTIATE_TEST_SUITE_P(
     CapturedToEagerPolicy,
     OrderedWorkStreamGuardTest,
-    ::testing::Bool());
+    ::testing::Combine(::testing::Bool(), ::testing::Values(0, 1)),
+    [](const ::testing::TestParamInfo<std::tuple<bool, int>>& info) {
+      return std::string(
+                 std::get<0>(info.param) ? "SyncEager" : "NoSyncEager") +
+          "Mixing" + std::to_string(std::get<1>(info.param));
+    });
 
 } // namespace
