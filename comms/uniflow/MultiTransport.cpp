@@ -312,8 +312,7 @@ Result<Transport*> MultiTransport::selectTransport(
   // Intra-node (VRAM<->VRAM on this device): default to the interconnect tier
   // (NVLink/P2P). intraNodeTransport flips that choice (e.g. to RDMA) -- both
   // tiers are registered, so this is a per-transfer selection override, not a
-  // kill-switch. Falls through to the inter-node fallback if the chosen tier is
-  // not present on all requests.
+  // kill-switch.
   if (localMemType == MemoryType::VRAM && remoteMemType == MemoryType::VRAM &&
       localDeviceId == deviceId_) {
     // Try the intra-node override first (only if set and distinct from the
