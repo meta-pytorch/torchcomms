@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -70,15 +71,31 @@ class MemoryTrace {
  public:
   static std::shared_ptr<MemoryTrace> getOrCreate(uint64_t commHash);
 
-  void recordAlloc(uintptr_t addr, int64_t bytes);
-  void recordFree(uintptr_t addr, std::optional<int64_t> bytes);
+  void recordAlloc(uintptr_t addr, int64_t bytes, MemCallsite::Scope scope);
+  void recordFree(
+      uintptr_t addr,
+      std::optional<int64_t> bytes,
+      MemCallsite::Scope scope);
   MemoryStats getStats() const;
+  // Per-scope aggregate stats (nccl/ctran/mccl); queryable in-memory, and
+  // surfaced in dump().
+  MemoryStats getStats(MemCallsite::Scope scope) const;
   std::string dump() const;
 
  private:
+  static constexpr int kNumScopes = 3;
+  static_assert(
+      static_cast<int>(MemCallsite::Scope::kNccl) == 0 &&
+          static_cast<int>(MemCallsite::Scope::kCtran) == 1 &&
+          static_cast<int>(MemCallsite::Scope::kMccl) == kNumScopes - 1,
+      "statsByScope_ indexing assumes Scope is exactly {kNccl=0, kCtran=1, "
+      "kMccl=2}; bump kNumScopes and revisit the buckets if Scope gains values");
+
   mutable std::mutex mutex_;
   MemoryStats stats_;
   std::unordered_map<uintptr_t, int64_t> allocMap_;
+  // Per-scope breakdown of stats_, indexed by static_cast<int>(Scope).
+  std::array<MemoryStats, kNumScopes> statsByScope_{};
 };
 
 } // namespace meta::comms::memtrace
