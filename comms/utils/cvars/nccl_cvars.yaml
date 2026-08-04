@@ -3217,13 +3217,23 @@ cvars:
      benchmarking. Valid values are 1 through the compile-time maximum tree
      children.
 
+ - name        : MCCL_ALGO
+   type        : string
+   default     : none
+   description : |-
+     MCCL-native collective algorithm override. Use "none" or leave unset to
+     preserve the collective's existing selection. Prefer qualified selectors
+     such as allreduce:tree or allreduce:ring; unqualified tree, ring, and
+     direct are accepted as AllReduce aliases for compatibility with the
+     initial AllReduce-only rollout.
+
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t
    default     : 0
    description : |-
      Maximum bytes per signaled sub-chunk for MCCL fused AllReduce IB phases.
-     Applies to ctree and cthierarchical_ring. 0 preserves the transport
-     default signaling cadence.
+     Applies to tree and ring. 0 preserves the transport default signaling
+     cadence.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
