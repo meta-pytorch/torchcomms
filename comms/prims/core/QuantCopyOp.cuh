@@ -31,6 +31,81 @@ struct QuantizedReduceScatterCopyOp {
     return chunkSize;
   }
 
+  // Number of independent 8-element packets a send thread keeps in flight.
+  // The packets are strided by the group size, so none of them depends on
+  // another's loads.
+  static constexpr std::size_t kSendUnrollNC = 2;
+
+#if defined(__CUDA_ARCH__)
+  struct SendPacket {
+    float4 lo;
+    float4 hi;
+  };
+
+  struct SendQuantized {
+    __nv_bfloat162 r0;
+    __nv_bfloat162 r1;
+    __nv_bfloat162 r2;
+    __nv_bfloat162 r3;
+  };
+
+  __device__ __forceinline__ static SendPacket load_send_packet(
+      const float* src,
+      bool vector_aligned) {
+    SendPacket loaded;
+    loaded.lo = vector_aligned ? reinterpret_cast<const float4*>(src)[0]
+                               : make_float4(src[0], src[1], src[2], src[3]);
+    loaded.hi = vector_aligned ? reinterpret_cast<const float4*>(src + 4)[0]
+                               : make_float4(src[4], src[5], src[6], src[7]);
+    return loaded;
+  }
+
+  __device__ __forceinline__ static SendQuantized quantize_send_packet(
+      const SendPacket& loaded,
+      const PhiloxResult& random) {
+    SendQuantized quantized;
+    quantized.r0 = stochastic_round_bf16x2<kHasHardwareSR>(
+        make_float2(loaded.lo.x, loaded.lo.y), random.u32[0]);
+    quantized.r1 = stochastic_round_bf16x2<kHasHardwareSR>(
+        make_float2(loaded.lo.z, loaded.lo.w), random.u32[1]);
+    quantized.r2 = stochastic_round_bf16x2<kHasHardwareSR>(
+        make_float2(loaded.hi.x, loaded.hi.y), random.u32[2]);
+    quantized.r3 = stochastic_round_bf16x2<kHasHardwareSR>(
+        make_float2(loaded.hi.z, loaded.hi.w), random.u32[3]);
+    return quantized;
+  }
+
+  __device__ __forceinline__ static void store_send_packet(
+      __nv_bfloat16* dst,
+      const SendQuantized& quantized,
+      bool vector_aligned,
+      bool quad_aligned) {
+    if (quad_aligned) {
+      reinterpret_cast<uint4*>(dst)[0] = make_uint4(
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r0),
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r1),
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r2),
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r3));
+    } else if (vector_aligned) {
+      reinterpret_cast<uint2*>(dst)[0] = make_uint2(
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r0),
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r1));
+      reinterpret_cast<uint2*>(dst + 4)[0] = make_uint2(
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r2),
+          *reinterpret_cast<const std::uint32_t*>(&quantized.r3));
+    } else {
+      dst[0] = __low2bfloat16(quantized.r0);
+      dst[1] = __high2bfloat16(quantized.r0);
+      dst[2] = __low2bfloat16(quantized.r1);
+      dst[3] = __high2bfloat16(quantized.r1);
+      dst[4] = __low2bfloat16(quantized.r2);
+      dst[5] = __high2bfloat16(quantized.r2);
+      dst[6] = __low2bfloat16(quantized.r3);
+      dst[7] = __high2bfloat16(quantized.r3);
+    }
+  }
+#endif
+
   __device__ __forceinline__ static std::size_t send(
       char* staging,
       const char* /*src*/,
@@ -73,49 +148,45 @@ struct QuantizedReduceScatterCopyOp {
          alignof(uint4)) == 0;
 #if defined(__CUDA_ARCH__)
     // A Philox result supplies the entropy for one complete 8-element packet.
-    for (std::size_t packet = group.thread_id_in_group; packet < packetCount;
-         packet += group.group_size) {
-      const std::size_t base = prefixCount + packet * 8;
-      const PhiloxResult random = philox_randint4x(
-          args.seed, (logicalBegin + prefixCount + packet * 8) / 8);
-      const float* src = args.sender_input_base + elementOffset + base;
-      const float4 v0 = vectorAligned
-          ? reinterpret_cast<const float4*>(src)[0]
-          : make_float4(src[0], src[1], src[2], src[3]);
-      const float4 v1 = vectorAligned
-          ? reinterpret_cast<const float4*>(src + 4)[0]
-          : make_float4(src[4], src[5], src[6], src[7]);
-      const __nv_bfloat162 r0 = stochastic_round_bf16x2<kHasHardwareSR>(
-          make_float2(v0.x, v0.y), random.u32[0]);
-      const __nv_bfloat162 r1 = stochastic_round_bf16x2<kHasHardwareSR>(
-          make_float2(v0.z, v0.w), random.u32[1]);
-      const __nv_bfloat162 r2 = stochastic_round_bf16x2<kHasHardwareSR>(
-          make_float2(v1.x, v1.y), random.u32[2]);
-      const __nv_bfloat162 r3 = stochastic_round_bf16x2<kHasHardwareSR>(
-          make_float2(v1.z, v1.w), random.u32[3]);
-      if (sendQuadAligned) {
-        reinterpret_cast<uint4*>(stagingBf16 + base)[0] = make_uint4(
-            *reinterpret_cast<const std::uint32_t*>(&r0),
-            *reinterpret_cast<const std::uint32_t*>(&r1),
-            *reinterpret_cast<const std::uint32_t*>(&r2),
-            *reinterpret_cast<const std::uint32_t*>(&r3));
-      } else if (vectorAligned) {
-        reinterpret_cast<uint2*>(stagingBf16 + base)[0] = make_uint2(
-            *reinterpret_cast<const std::uint32_t*>(&r0),
-            *reinterpret_cast<const std::uint32_t*>(&r1));
-        reinterpret_cast<uint2*>(stagingBf16 + base + 4)[0] = make_uint2(
-            *reinterpret_cast<const std::uint32_t*>(&r2),
-            *reinterpret_cast<const std::uint32_t*>(&r3));
-      } else {
-        stagingBf16[base] = __low2bfloat16(r0);
-        stagingBf16[base + 1] = __high2bfloat16(r0);
-        stagingBf16[base + 2] = __low2bfloat16(r1);
-        stagingBf16[base + 3] = __high2bfloat16(r1);
-        stagingBf16[base + 4] = __low2bfloat16(r2);
-        stagingBf16[base + 5] = __high2bfloat16(r2);
-        stagingBf16[base + 6] = __low2bfloat16(r3);
-        stagingBf16[base + 7] = __high2bfloat16(r3);
+    const std::size_t sendStride = group.group_size;
+    std::size_t packet = group.thread_id_in_group;
+    for (; packet + (kSendUnrollNC - 1) * sendStride < packetCount;
+         packet += kSendUnrollNC * sendStride) {
+      SendPacket loaded[kSendUnrollNC];
+#pragma unroll
+      for (std::size_t u = 0; u < kSendUnrollNC; ++u) {
+        loaded[u] = load_send_packet(
+            args.sender_input_base + elementOffset + prefixCount +
+                (packet + u * sendStride) * 8,
+            vectorAligned);
       }
+      SendQuantized quantized[kSendUnrollNC];
+#pragma unroll
+      for (std::size_t u = 0; u < kSendUnrollNC; ++u) {
+        quantized[u] = quantize_send_packet(
+            loaded[u],
+            philox_randint4x(
+                args.seed,
+                (logicalBegin + prefixCount + (packet + u * sendStride) * 8) /
+                    8));
+      }
+#pragma unroll
+      for (std::size_t u = 0; u < kSendUnrollNC; ++u) {
+        store_send_packet(
+            stagingBf16 + prefixCount + (packet + u * sendStride) * 8,
+            quantized[u],
+            vectorAligned,
+            sendQuadAligned);
+      }
+    }
+    for (; packet < packetCount; packet += sendStride) {
+      const std::size_t base = prefixCount + packet * 8;
+      const SendPacket loaded = load_send_packet(
+          args.sender_input_base + elementOffset + base, vectorAligned);
+      const SendQuantized quantized = quantize_send_packet(
+          loaded, philox_randint4x(args.seed, (logicalBegin + base) / 8));
+      store_send_packet(
+          stagingBf16 + base, quantized, vectorAligned, sendQuadAligned);
     }
 #else
     for (std::size_t packet = group.thread_id_in_group; packet < packetCount;
@@ -195,20 +266,55 @@ struct QuantizedReduceScatterCopyOp {
              args.receiver_output_base + elementOffset) %
          alignof(uint4)) == 0;
     const std::uint32_t pairCount = quadAligned ? rpackCount / 2u : 0u;
-    for (std::uint32_t pr = rtid; pr < pairCount; pr += rstride) {
+    // Independent pairs kept in flight per thread. All loads of the group are
+    // issued before any store because receiver_input_base aliases
+    // receiver_output_base once accumulation is in place.
+    constexpr std::uint32_t kRecvUnroll = 5;
+    const std::uint32_t unrollSpan = rstride * kRecvUnroll;
+    std::uint32_t pr = rtid;
+    for (; kRecvUnroll > 1u && pr + (kRecvUnroll - 1u) * rstride < pairCount;
+         pr += unrollSpan) {
+      uint4 sq[kRecvUnroll];
+      float4 la[kRecvUnroll];
+      float4 lb[kRecvUnroll];
+#pragma unroll
+      for (std::uint32_t u = 0; u < kRecvUnroll; ++u) {
+        const std::uint32_t q = pr + u * rstride;
+        sq[u] = stagingQuads[q];
+        la[u] = localPacks[q * 2u];
+        lb[u] = localPacks[q * 2u + 1u];
+      }
+#pragma unroll
+      for (std::uint32_t u = 0; u < kRecvUnroll; ++u) {
+        const std::uint32_t q = pr + u * rstride;
+        const float2 rL0 = __bfloat1622float2(
+            *reinterpret_cast<const __nv_bfloat162*>(&sq[u].x));
+        const float2 rH0 = __bfloat1622float2(
+            *reinterpret_cast<const __nv_bfloat162*>(&sq[u].y));
+        const float2 rL1 = __bfloat1622float2(
+            *reinterpret_cast<const __nv_bfloat162*>(&sq[u].z));
+        const float2 rH1 = __bfloat1622float2(
+            *reinterpret_cast<const __nv_bfloat162*>(&sq[u].w));
+        outPacks[q * 2u] = make_float4(
+            rL0.x + la[u].x, rL0.y + la[u].y, rH0.x + la[u].z, rH0.y + la[u].w);
+        outPacks[q * 2u + 1u] = make_float4(
+            rL1.x + lb[u].x, rL1.y + lb[u].y, rH1.x + lb[u].z, rH1.y + lb[u].w);
+      }
+    }
+    for (; pr < pairCount; pr += rstride) {
       const std::uint32_t p0 = pr * 2u;
       const std::uint32_t p1 = p0 + 1u;
-      const uint4 sq = stagingQuads[pr];
+      const uint4 sq1 = stagingQuads[pr];
       const float4 l0 = localPacks[p0];
       const float4 l1 = localPacks[p1];
       const float2 rL0 =
-          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq.x));
+          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq1.x));
       const float2 rH0 =
-          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq.y));
+          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq1.y));
       const float2 rL1 =
-          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq.z));
+          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq1.z));
       const float2 rH1 =
-          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq.w));
+          __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&sq1.w));
       outPacks[p0] =
           make_float4(rL0.x + l0.x, rL0.y + l0.y, rH0.x + l0.z, rH0.y + l0.w);
       outPacks[p1] =

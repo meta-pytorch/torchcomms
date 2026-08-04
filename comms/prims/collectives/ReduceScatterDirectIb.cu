@@ -231,8 +231,8 @@ void launch_direct_reduce_scatter_ib_quantized_impl(
       true,
       float,
       SumOp,
-      352,
-      288,
+      480,
+      160,
       640,
       CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>;
   kernel<<<num_blocks, 640, 0, stream>>>(args, timeout);
