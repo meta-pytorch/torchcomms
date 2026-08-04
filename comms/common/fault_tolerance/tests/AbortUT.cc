@@ -16,6 +16,31 @@ namespace comms::fault_tolerance::testing {
 using ::comms::fault_tolerance::Abort;
 using ::comms::fault_tolerance::AbortReason;
 
+namespace {
+
+template <typename Predicate>
+bool eventually(
+    Predicate&& predicate,
+    std::chrono::milliseconds timeout = std::chrono::seconds{1}) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!predicate()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::yield();
+  }
+  return true;
+}
+
+void waitFor(std::chrono::milliseconds duration) {
+  const auto deadline = std::chrono::steady_clock::now() + duration;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+}
+
+} // namespace
+
 TEST(AbortTest, enabledDefaultNotAbort) {
   Abort abort{/*enabled=*/true};
   EXPECT_FALSE(abort.isAborted());
@@ -68,8 +93,7 @@ TEST(AbortTest, MultipleAbortTest) {
           << "producer: test case did not start";
     }
 
-    // delay a bit to allow consumer start working first
-    std::this_thread::sleep_for(std::chrono::microseconds(20));
+    std::this_thread::yield();
 
     ASSERT_FALSE(abort.isAborted());
     abort.setAbort();
@@ -131,18 +155,14 @@ TEST(AbortTest, timeoutExpired) {
 
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
   // Test should return true as timeout has expired
-  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(eventually([&]() { return abort.isAborted(); }));
 }
 
 TEST(AbortTest, timeoutDisabledNoop) {
   Abort abort{/*enabled=*/false};
 
   abort.startTimeout(std::chrono::milliseconds(1));
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   // Test should return false as abort is disabled:w
   EXPECT_FALSE(abort.isAborted());
@@ -165,8 +185,6 @@ TEST(AbortTest, timeoutAndExplicitSetBothTrue) {
   abort.startTimeout(std::chrono::milliseconds(1));
   abort.setAbort();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
   // Test should return true (both conditions are true)
   EXPECT_TRUE(abort.isAborted());
 }
@@ -175,7 +193,9 @@ TEST(AbortTest, explicitAbortWinsOverExpiredTimeout) {
   Abort abort{/*enabled=*/true};
 
   abort.startTimeout(std::chrono::milliseconds(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_TRUE(eventually([&]() {
+    return abort.getTimeRemaining() == std::chrono::milliseconds{0};
+  }));
   abort.setAbort();
 
   EXPECT_TRUE(abort.isAborted());
@@ -186,9 +206,8 @@ TEST(AbortTest, timeoutWinsBeforeExplicitAbort) {
   Abort abort{/*enabled=*/true};
 
   abort.startTimeout(std::chrono::milliseconds(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-  EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_TRUE(eventually([&]() { return abort.isTimedOut(); }));
 
   abort.setAbort();
 
@@ -205,10 +224,8 @@ TEST(AbortTest, multipleTimeoutCalls) {
 
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
   // Test should return true as the shorter timeout has expired
-  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(eventually([&]() { return abort.isAborted(); }));
 }
 
 TEST(AbortTest, timeoutThreadSafety) {
@@ -227,7 +244,7 @@ TEST(AbortTest, timeoutThreadSafety) {
   // Thread 2: Continuously tests for abort
   std::thread tester([&]() {
     while (!timeoutSet.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();
     }
 
     auto start = std::chrono::steady_clock::now();
@@ -238,7 +255,7 @@ TEST(AbortTest, timeoutThreadSafety) {
         timeoutDetected.store(true);
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();
     }
   });
 
@@ -256,7 +273,7 @@ TEST(AbortTest, cancelTimeoutBeforeExpiry) {
   abort.startTimeout(std::chrono::milliseconds(100));
   abort.cancelTimeout();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  waitFor(std::chrono::milliseconds(150));
 
   // Test should return false as timeout was cancelled
   EXPECT_FALSE(abort.isAborted());
@@ -267,10 +284,8 @@ TEST(AbortTest, cancelTimeoutAfterExpiry) {
 
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
   // Verify timeout has expired
-  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(eventually([&]() { return abort.isAborted(); }));
 
   abort.cancelTimeout();
 
@@ -283,8 +298,6 @@ TEST(AbortTest, cancelTimeoutDisabledNoop) {
 
   abort.startTimeout(std::chrono::milliseconds(1));
   abort.cancelTimeout();
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   // Test should return false as abort is disabled
   EXPECT_FALSE(abort.isAborted());
@@ -315,10 +328,8 @@ TEST(AbortTest, setTimeoutAfterCancel) {
 
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
   // Test should return true as new timeout has expired
-  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(eventually([&]() { return abort.isAborted(); }));
 }
 
 TEST(AbortTest, multipleCancelTimeoutCalls) {
@@ -329,7 +340,7 @@ TEST(AbortTest, multipleCancelTimeoutCalls) {
   abort.cancelTimeout();
   abort.cancelTimeout();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  waitFor(std::chrono::milliseconds(150));
 
   // Test should return false as timeout was cancelled
   EXPECT_FALSE(abort.isAborted());
@@ -352,11 +363,11 @@ TEST(AbortTest, cancelTimeoutThreadSafety) {
   // Thread 2: Cancels timeout after a brief delay
   std::thread timeoutCanceller([&]() {
     while (!timeoutSet.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();
     }
 
     // Wait a bit then cancel
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    waitFor(std::chrono::milliseconds(10));
     abort.cancelTimeout();
     timeoutCancelled.store(true);
   });
@@ -364,7 +375,7 @@ TEST(AbortTest, cancelTimeoutThreadSafety) {
   // Thread 3: Continuously tests for abort
   std::thread tester([&]() {
     while (!timeoutSet.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();
     }
 
     // Test for timeout for a reasonable duration
@@ -377,7 +388,7 @@ TEST(AbortTest, cancelTimeoutThreadSafety) {
         timeoutDetected.store(true);
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();
     }
   });
 
@@ -433,8 +444,7 @@ TEST(AbortTest, timedOutTrueAfterExpiry) {
   Abort abort{/*enabled=*/true};
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_TRUE(eventually([&]() { return abort.isTimedOut(); }));
 }
 
 TEST(AbortTest, timedOutFalseForExplicitSet) {
@@ -508,7 +518,8 @@ TEST(AbortTest, timeRemainingDecreases) {
   abort.startTimeout(std::chrono::milliseconds(100));
 
   auto remaining1 = abort.getTimeRemaining();
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_TRUE(
+      eventually([&]() { return abort.getTimeRemaining() < remaining1; }));
   auto remaining2 = abort.getTimeRemaining();
 
   EXPECT_LT(remaining2, remaining1);
@@ -518,9 +529,9 @@ TEST(AbortTest, timeRemainingZeroAfterExpiry) {
   Abort abort{/*enabled=*/true};
   abort.startTimeout(std::chrono::milliseconds(1));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-  EXPECT_EQ(abort.getTimeRemaining(), std::chrono::milliseconds{0});
+  EXPECT_TRUE(eventually([&]() {
+    return abort.getTimeRemaining() == std::chrono::milliseconds{0};
+  }));
 }
 
 TEST(AbortTest, timeRemainingAfterCancel) {

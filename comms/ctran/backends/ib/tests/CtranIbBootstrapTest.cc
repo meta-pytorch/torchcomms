@@ -595,12 +595,13 @@ class CtranIbAbortCtrlMsgTest
   }
 
   void TearDown() override {
-    CtranIbBootstrapTestBase::TearDown();
-
     acceptSocketBaton_.post();
+    ctranIb_.reset();
     mockServerSockets_.clear();
     mockSockets_.clear();
-    ctranIb_.reset();
+    abortCtrl_.reset();
+
+    CtranIbBootstrapTestBase::TearDown();
   }
 
   std::unique_ptr<StrictMock<ctran::bootstrap::testing::MockIServerSocket>>
