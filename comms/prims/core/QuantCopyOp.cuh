@@ -240,4 +240,50 @@ struct QuantizedReduceScatterCopyOp {
   }
 };
 
+struct QuantizedCopyOp : QuantizedReduceScatterCopyOp {
+  __device__ __forceinline__ static std::size_t recv(
+      char* /*dst*/,
+      const char* staging,
+      std::size_t nbytes,
+      ThreadGroup& group,
+      std::size_t byte_offset,
+      Args args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    PIPES_DEVICE_CHECK(byte_offset % sizeof(__nv_bfloat16) == 0);
+    PIPES_DEVICE_CHECK(nbytes % sizeof(__nv_bfloat16) == 0);
+    const auto* stagingBf16 = reinterpret_cast<const __nv_bfloat16*>(staging);
+    const std::size_t elementOffset = byte_offset / sizeof(__nv_bfloat16);
+    const std::size_t elementCount = nbytes / sizeof(__nv_bfloat16);
+
+    const bool vectorAligned =
+        (reinterpret_cast<std::uintptr_t>(stagingBf16) % alignof(uint2)) == 0 &&
+        (reinterpret_cast<std::uintptr_t>(
+             args.receiver_output_base + elementOffset) %
+         alignof(float4)) == 0;
+    const std::size_t packCount = vectorAligned ? elementCount / 4 : 0;
+    const auto* stagingPacks = reinterpret_cast<const uint2*>(stagingBf16);
+    auto* outputPacks =
+        reinterpret_cast<float4*>(args.receiver_output_base + elementOffset);
+    for (std::size_t pack = group.thread_id_in_group; pack < packCount;
+         pack += group.group_size) {
+      const uint2 values = stagingPacks[pack];
+      const float2 low = __bfloat1622float2(
+          *reinterpret_cast<const __nv_bfloat162*>(&values.x));
+      const float2 high = __bfloat1622float2(
+          *reinterpret_cast<const __nv_bfloat162*>(&values.y));
+      outputPacks[pack] = make_float4(low.x, low.y, high.x, high.y);
+    }
+
+    const std::size_t scalarBegin = packCount * 4;
+    for (std::size_t i = scalarBegin + group.thread_id_in_group;
+         i < elementCount;
+         i += group.group_size) {
+      args.receiver_output_base[elementOffset + i] =
+          __bfloat162float(stagingBf16[i]);
+    }
+#endif
+    return nbytes;
+  }
+};
+
 } // namespace comms::prims
