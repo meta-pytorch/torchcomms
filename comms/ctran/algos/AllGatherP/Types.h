@@ -74,6 +74,9 @@ struct Resource {
   GpeKernelSync* pipeSync{nullptr};
 };
 
+// Fixed completion step; resetPipeEnd clears the flag each op.
+constexpr int kPipeEndDone = 0;
+
 struct PipeEndKernArgs {
   GpeKernelSync* pipeSync;
 };
