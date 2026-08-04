@@ -61,12 +61,12 @@ Abort::~Abort() {
 #endif
 }
 
-void Abort::setAbort(AbortReason reason) {
+void Abort::setAbort(AbortReason newReason) {
   if (!enabled_) {
     return;
   }
 
-  markAbort(reason);
+  markAbort(newReason);
 }
 
 bool Abort::isAborted() {
@@ -173,14 +173,14 @@ int Abort::loadAbortReason() const {
   return std::atomic_ref<int>{state_->abort}.load(std::memory_order_acquire);
 }
 
-void Abort::markAbort(AbortReason reason) {
-  if (!isValidTerminalReason(reason)) {
+void Abort::markAbort(AbortReason newReason) {
+  if (!isValidTerminalReason(newReason)) {
     throw std::invalid_argument("Abort reason must be ABORTED or TIMED_OUT");
   }
   int expected = encode(AbortReason::NONE);
   std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
       expected,
-      encode(reason),
+      encode(newReason),
       std::memory_order_acq_rel,
       std::memory_order_acquire);
 }

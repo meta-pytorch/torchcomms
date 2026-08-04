@@ -17,8 +17,29 @@ enum class AbortReason : int {
   TIMED_OUT = 2,
 };
 
+/**
+ * Host-owned state shared with CUDA device code through mapped pinned memory.
+ *
+ * Both fields are read and written with system-scope atomic operations. The
+ * allocation is owned by `Abort`; `AbortDevice` stores only a non-owning mapped
+ * pointer to this same state.
+ */
 struct AbortState {
+  /**
+   * Encoded `AbortReason`.
+   *
+   * Starts as `AbortReason::NONE` and may transition once to a valid terminal
+   * reason. Host and device writers use compare-exchange from `NONE`, so the
+   * first valid terminal reason wins.
+   */
   int abort;
+
+  /**
+   * Shared default timeout duration in milliseconds.
+   *
+   * `-1` means unset. Host code may update this value, and device handles read
+   * the latest value when starting a device-side timeout.
+   */
   int64_t timeoutMs;
 };
 
@@ -27,6 +48,33 @@ struct AbortState {
 static_assert(offsetof(AbortState, abort) % alignof(int) == 0);
 static_assert(offsetof(AbortState, timeoutMs) % alignof(int64_t) == 0);
 
+struct AbortDevice;
+
+/**
+ * Shared abort state for communicator-scoped fault tolerance.
+ *
+ * `Abort` owns a single host-allocated, CUDA-mapped pinned state object that is
+ * visible to both CPU threads and CUDA device code. The host object owns that
+ * storage for its full lifetime; device handles returned by `getDeviceHandle()`
+ * are non-owning views and must not outlive the `Abort` object.
+ *
+ * Enabled `Abort` instances use shared state when CUDA pinned allocation and
+ * device mapping are available. Host-only environments fall back to ordinary
+ * host memory for the same `AbortState` fields so CPU callers can keep using
+ * the same API. Disabled instances do not allocate state and every
+ * mutating/query operation is a no-op or a non-aborted result. The disabled
+ * singleton returned by `createAbort(false)` is intended for code paths that
+ * must accept an abort object without enabling fault tolerance.
+ *
+ * `AbortState::abort` and `AbortState::timeoutMs` are mutable shared fields.
+ * Host code and device code access them with system-scope atomic operations so
+ * updates from either side become visible to the other side. The abort reason
+ * is first-writer-wins: an explicit abort records `AbortReason::ABORTED`; an
+ * expired timeout records `AbortReason::TIMED_OUT` only if no earlier valid
+ * terminal reason has been recorded. The default timeout duration is also
+ * stored in shared state for graph-mode device code; host active-deadline
+ * tracking remains host-only.
+ */
 class Abort final {
  public:
   /**
@@ -67,7 +115,7 @@ class Abort final {
    * and unknown enum values are invalid input and are rejected before
    * attempting to update shared state.
    */
-  void setAbort(AbortReason reason = AbortReason::ABORTED);
+  void setAbort(AbortReason newReason = AbortReason::ABORTED);
 
   /**
    * Returns true when an explicit abort or expired active timeout has aborted
@@ -133,6 +181,20 @@ class Abort final {
    */
   std::optional<std::chrono::milliseconds> getDefaultTimeout() const;
 
+  /**
+   * Returns a non-owning device view over the shared abort state.
+   *
+   * The returned handle is valid only while this `Abort` instance remains
+   * alive. Disabled abort objects return a disabled no-op device handle.
+   * Enabled abort objects must be backed by CUDA-mapped pinned state; this
+   * throws `std::runtime_error` when the shared state is host-only or when CUDA
+   * cannot map the host state for the current device. The handle captures the
+   * current device mapping and clock rate, so kernels must consume it on the
+   * same CUDA device that was current when the handle was created. Create a new
+   * handle after switching devices.
+   */
+  AbortDevice getDeviceHandle() const;
+
  private:
   static constexpr int encode(AbortReason reason) {
     return static_cast<int>(reason);
@@ -150,7 +212,7 @@ class Abort final {
   }
 
   int loadAbortReason() const;
-  void markAbort(AbortReason reason);
+  void markAbort(AbortReason newReason);
 
   const bool enabled_;
 
