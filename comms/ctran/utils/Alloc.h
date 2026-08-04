@@ -56,16 +56,19 @@ commResult_t commCuMemAlloc(
     CUmemAllocationHandleType type,
     size_t size,
     const CommLogData* logMetaData,
-    const char* callsite);
+    const meta::comms::memtrace::MemCallsite& callsite);
 
-commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData = nullptr);
+commResult_t commCuMemFree(
+    void* ptr,
+    const CommLogData* logMetaData = nullptr,
+    const meta::comms::memtrace::MemCallsite& callsite = "");
 
 template <typename T>
 commResult_t commCudaMallocDebug(
     T** ptr,
     size_t nelem,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     const char* filefunc,
     int line) {
   commResult_t result = commSuccess;
@@ -116,14 +119,18 @@ finish:
 #define commCudaMalloc(...) commCudaMallocDebug(__VA_ARGS__, __FILE__, __LINE__)
 
 template <typename T>
-commResult_t commCudaFree(T* ptr, const CommLogData* logMetaData = nullptr) {
+commResult_t commCudaFree(
+    T* ptr,
+    const CommLogData* logMetaData = nullptr,
+    const meta::comms::memtrace::MemCallsite& callsite = "") {
   commResult_t result = commSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   CLOGF_TRACE(ALLOC, "Cuda Free pointer {}", (void*)ptr);
 
   FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
   if (getCuMemSysSupported()) {
-    FB_COMMCHECKGOTO(commCuMemFree((void*)ptr, logMetaData), result, finish);
+    FB_COMMCHECKGOTO(
+        commCuMemFree((void*)ptr, logMetaData, callsite), result, finish);
   } else {
     FB_CUDACHECKGOTO(cudaFree(ptr), result, finish);
   }
@@ -131,7 +138,7 @@ finish:
   if (!getCuMemSysSupported()) {
     meta::comms::memtrace::recordFree(
         logMetaData ? *logMetaData : CommLogData{},
-        "",
+        callsite,
         "commCudaFree",
         reinterpret_cast<uintptr_t>(ptr));
   }
@@ -145,7 +152,7 @@ commResult_t commCudaHostAllocDebug(
     size_t nelem,
     unsigned int flags,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     const char* filefunc,
     int line) {
   commResult_t result = commSuccess;
@@ -184,7 +191,8 @@ finish:
 template <typename T>
 commResult_t commCudaFreeHost(
     T* ptr,
-    const CommLogData* logMetaData = nullptr) {
+    const CommLogData* logMetaData = nullptr,
+    const meta::comms::memtrace::MemCallsite& callsite = "") {
   commResult_t result = commSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   CLOGF_TRACE(ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
@@ -196,7 +204,7 @@ commResult_t commCudaFreeHost(
 finish:
   meta::comms::memtrace::recordFree(
       logMetaData ? *logMetaData : CommLogData{},
-      "",
+      callsite,
       "commCudaFreeHost",
       reinterpret_cast<uintptr_t>(ptr));
   CLOGF_SUBSYS(INFO, ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
@@ -210,7 +218,7 @@ commResult_t commCudaCallocAsync(
     size_t nelem,
     cudaStream_t stream,
     const CommLogData* logMetaData,
-    const char* callsite) {
+    const meta::comms::memtrace::MemCallsite& callsite) {
   static_assert(
       !std::is_same<T, void>::value,
       "void pointers must be casted to valid types when calloc-ing for 'nelem' objects");

@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -17,6 +18,7 @@
 #include <unordered_map>
 
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/Types.h"
 
 namespace meta::comms::memtrace {
 
@@ -24,7 +26,7 @@ namespace meta::comms::memtrace {
 
 void recordAlloc(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     int64_t bytes,
@@ -33,14 +35,14 @@ void recordAlloc(
 
 void recordFree(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes = std::nullopt);
 
 void recordReg(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes = std::nullopt,
@@ -69,17 +71,31 @@ class MemoryTrace {
  public:
   static std::shared_ptr<MemoryTrace> getOrCreate(uint64_t commHash);
 
-  void recordAlloc(uintptr_t addr, int64_t bytes);
-  void recordFree(uintptr_t addr, std::optional<int64_t> bytes);
+  void recordAlloc(uintptr_t addr, int64_t bytes, MemCallsite::Scope scope);
+  void recordFree(
+      uintptr_t addr,
+      std::optional<int64_t> bytes,
+      MemCallsite::Scope scope);
   MemoryStats getStats() const;
+  // Per-scope aggregate stats (nccl/ctran/mccl); queryable in-memory, and
+  // surfaced in dump().
+  MemoryStats getStats(MemCallsite::Scope scope) const;
   std::string dump() const;
 
  private:
+  static constexpr int kNumScopes = 3;
+  static_assert(
+      static_cast<int>(MemCallsite::Scope::kNccl) == 0 &&
+          static_cast<int>(MemCallsite::Scope::kCtran) == 1 &&
+          static_cast<int>(MemCallsite::Scope::kMccl) == kNumScopes - 1,
+      "statsByScope_ indexing assumes Scope is exactly {kNccl=0, kCtran=1, "
+      "kMccl=2}; bump kNumScopes and revisit the buckets if Scope gains values");
+
   mutable std::mutex mutex_;
   MemoryStats stats_;
-  // Caches addr→bytes from recordAlloc; needed because some free paths
-  // (e.g. ncclCudaFree) don't know the allocation size at free time.
   std::unordered_map<uintptr_t, int64_t> allocMap_;
+  // Per-scope breakdown of stats_, indexed by static_cast<int>(Scope).
+  std::array<MemoryStats, kNumScopes> statsByScope_{};
 };
 
 } // namespace meta::comms::memtrace

@@ -244,7 +244,9 @@ commResult_t ctran::utils::CtranIpcMem::alloc(const size_t size) {
             cuMemHandleType_,
             size,
             logMetaData_,
-            desc_));
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                desc_ != nullptr ? desc_ : "")));
     FB_CUCHECK(cuMemGetAddressRange(&pbase_, &range_, (CUdeviceptr)p));
     segmentRanges_.emplace_back(range_);
   } else if (memType_ == DevMemType::kCudaMalloc) {
@@ -478,7 +480,11 @@ inline commResult_t CtranIpcMem::freeCuMem() {
   if (mode_ == CtranIpcMem::Mode::ALLOC) {
     FB_COMMCHECK(
         ctran::utils::commCuMemFree(
-            reinterpret_cast<void*>(pbase_), logMetaData_));
+            reinterpret_cast<void*>(pbase_),
+            logMetaData_,
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                desc_ != nullptr ? desc_ : "")));
   }
 
   return commSuccess;

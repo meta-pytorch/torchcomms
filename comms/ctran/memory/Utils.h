@@ -10,6 +10,7 @@
 
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/memtrace/Types.h"
 
 namespace ncclx::memory {
 
@@ -38,7 +39,7 @@ commResult_t cudaCallocAsync(
     size_t nBytes,
     cudaStream_t stream,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     SlabAllocator* allocator);
 
 // Similar to ncclP2pAllocateShareableBuffer in p2p.cc, but customized for
@@ -50,7 +51,7 @@ commResult_t allocateShareableBuffer(
     void** ptr,
     std::shared_ptr<memCacheAllocator> memCache,
     const CommLogData* logMetaData,
-    const char* use);
+    const meta::comms::memtrace::MemCallsite& callsite);
 
 // wrapper function with a communicator to use slab allocator associated
 // with it, keep this function definition in header file to avoid explicit
@@ -61,7 +62,7 @@ commResult_t cudaCallocAsync(
     size_t numElems,
     cudaStream_t stream,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     SlabAllocator* allocator) {
   return ncclx::memory::cudaCallocAsync(
       (void**)ptr,
@@ -80,7 +81,7 @@ commResult_t cudaCallocAsync(
     size_t numElems,
     cudaStream_t stream,
     const CommLogData* logMetaData,
-    const char* callsite) {
+    const meta::comms::memtrace::MemCallsite& callsite) {
   return ncclx::memory::cudaCallocAsync(
       (void**)ptr,
       numElems * sizeof(T),

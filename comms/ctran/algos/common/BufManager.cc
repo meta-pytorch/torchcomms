@@ -19,7 +19,9 @@ commResult_t commitBase(
               /*cuHandle=*/nullptr,
               base.size,
               logMetaData,
-              __func__));
+              meta::comms::memtrace::MemCallsite(
+                  meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                  __func__)));
       break;
     case MemType::kHostPinned:
       FB_CUDACHECK(cudaHostAlloc(&base.ptr, base.size, cudaHostAllocDefault));

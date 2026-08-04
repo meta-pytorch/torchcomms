@@ -1112,6 +1112,7 @@ set(COMMON_FILES
   comms/utils/MemUtils.h
   comms/utils/memtrace/MemoryTrace.cc
   comms/utils/memtrace/MemoryTrace.h
+  comms/utils/memtrace/Types.h
   comms/utils/PrecisionClock.cc
   comms/utils/PrecisionClock.h
   comms/utils/RankUtils.cc

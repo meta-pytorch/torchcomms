@@ -18,7 +18,8 @@ void logMemoryEvent(
     std::optional<int> numSegments,
     std::optional<int64_t> durationUs,
     const std::optional<std::string>& memType,
-    bool isRegMemEvent) {
+    bool isRegMemEvent,
+    meta::comms::memtrace::MemCallsite::Scope scope) {
   auto memoryEvent = std::make_unique<MemoryEvent>(
       logMetaData,
       callsite,
@@ -28,7 +29,8 @@ void logMemoryEvent(
       numSegments,
       durationUs,
       memType,
-      isRegMemEvent);
+      isRegMemEvent,
+      scope);
   if (memoryEvent->shouldLog()) {
     NcclScubaEvent event(std::move(memoryEvent));
     event.record();

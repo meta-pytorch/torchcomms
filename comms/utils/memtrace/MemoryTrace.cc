@@ -33,28 +33,39 @@ std::shared_ptr<MemoryTrace> MemoryTrace::getOrCreate(uint64_t commHash) {
   return trace;
 }
 
-void MemoryTrace::recordAlloc(uintptr_t addr, int64_t bytes) {
+void MemoryTrace::recordAlloc(
+    uintptr_t addr,
+    int64_t bytes,
+    MemCallsite::Scope scope) {
   std::lock_guard<std::mutex> lock(mutex_);
   allocMap_[addr] = bytes;
   stats_.totalAllocated += bytes;
   stats_.currentUsage += bytes;
   stats_.peakUsage = std::max(stats_.peakUsage, stats_.currentUsage);
+  MemoryStats& byScope = statsByScope_[static_cast<int>(scope)];
+  byScope.totalAllocated += bytes;
+  byScope.currentUsage += bytes;
+  byScope.peakUsage = std::max(byScope.peakUsage, byScope.currentUsage);
 }
 
-void MemoryTrace::recordFree(uintptr_t addr, std::optional<int64_t> bytes) {
+void MemoryTrace::recordFree(
+    uintptr_t addr,
+    std::optional<int64_t> bytes,
+    MemCallsite::Scope scope) {
   std::lock_guard<std::mutex> lock(mutex_);
   int64_t freedBytes = 0;
-  if (bytes.has_value()) {
-    freedBytes = bytes.value();
+  auto it = allocMap_.find(addr);
+  if (it != allocMap_.end()) {
+    freedBytes = bytes.value_or(it->second);
+    allocMap_.erase(it);
   } else {
-    auto it = allocMap_.find(addr);
-    if (it != allocMap_.end()) {
-      freedBytes = it->second;
-    }
+    freedBytes = bytes.value_or(0);
   }
-  allocMap_.erase(addr);
   stats_.totalFreed += freedBytes;
   stats_.currentUsage -= freedBytes;
+  MemoryStats& byScope = statsByScope_[static_cast<int>(scope)];
+  byScope.totalFreed += freedBytes;
+  byScope.currentUsage -= freedBytes;
 }
 
 MemoryStats MemoryTrace::getStats() const {
@@ -62,11 +73,34 @@ MemoryStats MemoryTrace::getStats() const {
   return stats_;
 }
 
+MemoryStats MemoryTrace::getStats(MemCallsite::Scope scope) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return statsByScope_[static_cast<int>(scope)];
+}
+
+namespace {
+folly::dynamic memoryStatsToDynamic(const MemoryStats& stats) {
+  return folly::dynamic::object("totalAllocated", stats.totalAllocated)(
+      "totalFreed", stats.totalFreed)("currentUsage", stats.currentUsage)(
+      "peakUsage", stats.peakUsage);
+}
+} // namespace
+
 std::string MemoryTrace::dump() const {
   std::lock_guard<std::mutex> lock(mutex_);
   folly::dynamic obj = folly::dynamic::object(
       "totalAllocated", stats_.totalAllocated)("totalFreed", stats_.totalFreed)(
       "currentUsage", stats_.currentUsage)("peakUsage", stats_.peakUsage);
+  obj["byScope"] = folly::dynamic::object(
+      "nccl",
+      memoryStatsToDynamic(
+          statsByScope_[static_cast<int>(MemCallsite::Scope::kNccl)]))(
+      "ctran",
+      memoryStatsToDynamic(
+          statsByScope_[static_cast<int>(MemCallsite::Scope::kCtran)]))(
+      "mccl",
+      memoryStatsToDynamic(
+          statsByScope_[static_cast<int>(MemCallsite::Scope::kMccl)]));
   return folly::toJson(obj);
 }
 
@@ -74,7 +108,7 @@ std::string MemoryTrace::dump() const {
 
 void recordAlloc(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     int64_t bytes,
@@ -84,26 +118,49 @@ void recordAlloc(
     return;
   }
   logMemoryEvent(
-      logMetaData, callsite, use, addr, bytes, numSegments, durationUs);
-  MemoryTrace::getOrCreate(logMetaData.commHash)->recordAlloc(addr, bytes);
+      logMetaData,
+      callsite.function,
+      use,
+      addr,
+      bytes,
+      numSegments,
+      durationUs,
+      /*memType=*/std::nullopt,
+      /*isRegMemEvent=*/false,
+      callsite.scope);
+  MemoryTrace::getOrCreate(logMetaData.commHash)
+      ->recordAlloc(addr, bytes, callsite.scope);
 }
 
 void recordFree(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes) {
   if (!NCCL_MEMTRACE_ENABLE) {
     return;
   }
-  logMemoryEvent(logMetaData, callsite, use, addr, bytes);
-  MemoryTrace::getOrCreate(logMetaData.commHash)->recordFree(addr, bytes);
+  // The free callsite supplies its own scope directly (symmetric with alloc),
+  // so the scuba FREE row is tagged from callsite.scope.
+  logMemoryEvent(
+      logMetaData,
+      callsite.function,
+      use,
+      addr,
+      bytes,
+      /*numSegments=*/std::nullopt,
+      /*durationUs=*/std::nullopt,
+      /*memType=*/std::nullopt,
+      /*isRegMemEvent=*/false,
+      callsite.scope);
+  MemoryTrace::getOrCreate(logMetaData.commHash)
+      ->recordFree(addr, bytes, callsite.scope);
 }
 
 void recordReg(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes,
@@ -115,14 +172,15 @@ void recordReg(
   }
   logMemoryEvent(
       logMetaData,
-      callsite,
+      callsite.function,
       use,
       addr,
       bytes,
       numSegments,
       durationUs,
       memType,
-      /*isRegMemEvent=*/true);
+      /*isRegMemEvent=*/true,
+      callsite.scope);
 }
 
 } // namespace meta::comms::memtrace

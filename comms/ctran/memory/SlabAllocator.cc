@@ -23,7 +23,7 @@ commResult_t SlabAllocator::cuCallocAsync(
     void** ptr,
     size_t numBytes,
     cudaStream_t stream,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     const CommLogData* logMetaData) {
   // align allocation size to 16 bytes first, so we make sure startPtr_ is 16
   // bytes aligned
@@ -40,7 +40,7 @@ commResult_t SlabAllocator::cuCallocAsync(
 commResult_t SlabAllocator::cuMalloc(
     void** ptr,
     size_t numBytes,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     const CommLogData* logMetaData,
     CUmemGenericAllocationHandle* handlep,
     size_t* newSlabSize) {
@@ -56,10 +56,15 @@ commResult_t SlabAllocator::cuMalloc(
 commResult_t SlabAllocator::allocateMem(
     void** ptr,
     size_t numBytes,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     const CommLogData* logMetaData,
     CUmemGenericAllocationHandle* handlep,
     size_t* newSlabSize) {
+  // Retain the CommLogData so the destructor can attribute its free to the same
+  // communicator this allocation used.
+  if (logMetaData != nullptr) {
+    logMetaData_ = *logMetaData;
+  }
   if (freeSize_ < numBytes) {
     // No more free space on the last slab, allocate a new one
     // align size to CUMEM_GRANULARITY
@@ -124,8 +129,15 @@ commResult_t SlabAllocator::computeCumemGranualirity() {
 }
 
 SlabAllocator::~SlabAllocator() {
+  const CommLogData* logMetaData =
+      logMetaData_.has_value() ? &logMetaData_.value() : nullptr;
   for (auto slabPtr : slabPtrs_) {
-    ctran::utils::commCuMemFree(slabPtr);
+    ctran::utils::commCuMemFree(
+        slabPtr,
+        logMetaData,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran,
+            "SlabAllocator::~SlabAllocator"));
   }
 }
 } // namespace ncclx::memory

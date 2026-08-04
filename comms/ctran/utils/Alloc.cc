@@ -13,7 +13,7 @@ commResult_t commCuMemAlloc(
     CUmemAllocationHandleType type,
     size_t size,
     const CommLogData* logMetaData,
-    const char* callsite) {
+    const meta::comms::memtrace::MemCallsite& callsite) {
   size_t granularity = 0;
   CUdevice currentDev;
   CUmemAllocationProp prop = {};
@@ -61,7 +61,10 @@ commResult_t commCuMemAlloc(
   return commSuccess;
 }
 
-commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData) {
+commResult_t commCuMemFree(
+    void* ptr,
+    const CommLogData* logMetaData,
+    const meta::comms::memtrace::MemCallsite& callsite) {
   if (ptr == nullptr) {
     return commSuccess;
   }
@@ -98,7 +101,7 @@ commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData) {
       ctran::utils::toFormattableHandle(handle));
   meta::comms::memtrace::recordFree(
       logMetaData ? *logMetaData : CommLogData{},
-      "",
+      callsite,
       "commCuMemFree",
       reinterpret_cast<uintptr_t>(ptr));
   return commSuccess;
