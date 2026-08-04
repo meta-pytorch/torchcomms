@@ -11,7 +11,7 @@
 #include <unordered_map>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
-#include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranAvlTree.h"
 #include "comms/ctran/utils/CtranIpc.h"

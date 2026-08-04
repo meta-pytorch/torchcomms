@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include <cooperative_groups.h>
+#include <cooperative_groups.h> // @manual
 #include "comms/ctran/algos/common/MultiTbSyncDev.cuh"
 
 namespace cg = cooperative_groups;
