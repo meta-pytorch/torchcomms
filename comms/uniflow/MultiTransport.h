@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 
 namespace uniflow {
 
@@ -24,14 +25,24 @@ struct MultiTransportFactoryOptions {
   CpuNicSelectionPolicy cpuNicSelectionPolicy{
       CpuNicSelectionPolicy::kNumaLocalBounded};
   size_t maxCpuNics{2};
+  // Runtime intra-node transport selection. Intra-node VRAM<->VRAM defaults to
+  // the on-host interconnect tier (NVLink on NVIDIA, P2P/XGMI on AMD). Set this
+  // to flip that choice -- e.g. TransportType::RDMA to route intra-node traffic
+  // over RDMA instead. Both tiers stay registered, so this is a selection
+  // override, not a kill-switch; inter-node stays RDMA. Caller-owned (no
+  // transport-internal config-system dependency).
+  std::optional<TransportType> intraNodeTransport;
 };
 
 class MultiTransport {
  public:
   explicit MultiTransport(
       int deviceId,
-      std::shared_ptr<ScopedEventBaseThread> evbThread = nullptr)
-      : deviceId_(deviceId), evbThread_(std::move(evbThread)) {
+      std::shared_ptr<ScopedEventBaseThread> evbThread = nullptr,
+      std::optional<TransportType> intraNodeTransport = std::nullopt)
+      : deviceId_(deviceId),
+        intraNodeTransport_(intraNodeTransport),
+        evbThread_(std::move(evbThread)) {
     if (!evbThread_) {
       evbThread_ = std::make_shared<ScopedEventBaseThread>();
     }
@@ -97,6 +108,7 @@ class MultiTransport {
   Transport* findTransport(TransportType type) const;
 
   const int deviceId_;
+  std::optional<TransportType> intraNodeTransport_;
   // Prevents destruction of the shared EventBase while transports are live.
   // Transports hold raw EventBase* borrowed from the ScopedEventBaseThread
   // owned by MultiTransportFactory; this shared_ptr ensures the thread (and
