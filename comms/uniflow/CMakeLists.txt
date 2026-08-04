@@ -102,6 +102,7 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
     $<TARGET_OBJECTS:uniflow_transport>
     $<TARGET_OBJECTS:uniflow_nvlink_transport>
     $<TARGET_OBJECTS:uniflow_rdma_transport>
+    $<TARGET_OBJECTS:uniflow_tcp_transport>
     $<TARGET_OBJECTS:uniflow_cuda>
     $<TARGET_OBJECTS:uniflow_nvml>
     $<TARGET_OBJECTS:uniflow_ibv>
