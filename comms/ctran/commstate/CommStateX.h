@@ -87,11 +87,11 @@ class CommStateX {
 
   /* Setters */
   void setRankTopologies(std::vector<RankTopology> rankTopologies);
-  // fabricHwSupportedForTest: optional override for testing; when not provided,
-  // uses runtime detection via getCuMemAllocHandleType()
+  // A supplied fabricHwSupported value is the communicator-agreed result.
+  // When absent, use the legacy process-local runtime detection.
   void setNvlFabricTopos(
       std::vector<NvlFabricTopology> nvlFabricTopologies,
-      std::optional<bool> fabricHwSupportedForTest = std::nullopt);
+      std::optional<bool> fabricHwSupported = std::nullopt);
 
   /* Getters */
   const std::vector<ncclx::RankTopology>& rankTopologiesRef() const;

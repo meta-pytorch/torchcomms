@@ -57,7 +57,7 @@ TEST_F(CommAllocTest, CuMemAllocation) {
   // trustable info about if fabric handle is supported, so we use this
   // hardcoded GPU name to test. See:
   // https://forums.developer.nvidia.com/t/cudevicegetattribute-shows-i-can-use-fabric-handle-but-actually-i-cannot/336426/10
-  if (gpuName_.find("GB") == std::string::npos) {
+  if (gpuName_.find("NVIDIA GB") == std::string::npos) {
     // on non-GB (Grace Blackwell) platforms, fabric is not supported, we use
     // posix file descriptor for cuda allocation
     ensureDeviceMemNoLeak([this]() {
@@ -109,7 +109,7 @@ TEST_F(CommAllocTest, isCuMemFabricHandleSupported) {
   // since the CUDA allocator may retain internal memory pools after the probe
   // even though all allocations are freed.
   bool fabricSupported = isCuMemFabricEnabled();
-  if (gpuName_.find("GB") == std::string::npos) {
+  if (gpuName_.find("NVIDIA GB") == std::string::npos) {
     // on non-GB (Grace Blackwell) platforms, fabric handle should not be
     // supported
     EXPECT_FALSE(fabricSupported);
