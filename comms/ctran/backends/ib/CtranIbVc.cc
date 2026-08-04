@@ -415,7 +415,7 @@ CtranIbVirtualConn::CtranIbVirtualConn(
 
 CtranIbVirtualConn::~CtranIbVirtualConn() {
   // clean up control messages only if it gets initialized
-  if (isReady_) {
+  if (status_.load(std::memory_order_acquire) != Status::kNone) {
     recvCtrl_.packets_.clear();
     sendCtrl_.packets_.clear();
   }
@@ -657,7 +657,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
         rtsQp(ibvDataQps_.at(i), NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT));
   }
 
-  isReady_ = true;
+  markLocalReady();
 
   return commSuccess;
 }

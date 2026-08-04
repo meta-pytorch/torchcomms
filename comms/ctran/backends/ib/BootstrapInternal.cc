@@ -300,6 +300,12 @@ commResult_t Bootstrap::exchangeAndPublish(
     FB_SYSCHECKRETURN(sock->recv(&ack, sizeof(int)), commRemoteError);
     FB_SYSCHECKRETURN(sock->send(&ack, sizeof(int)), commRemoteError);
   }
+
+  // The ack above confirms the remote peer finished its own setupVc (recv
+  // WQEs posted, QPs in RTR/RTS). Only now is it safe for this rank to issue
+  // WQEs to the peer, so promote all its VCs to peer-ready.
+  vcState_.markPeerReady(peerRank);
+
   return commSuccess;
 }
 

@@ -133,12 +133,30 @@ commResult_t VcState::setupAndPublishVc(
   return commSuccess;
 }
 
+void VcState::markPeerReady(int peerRank) {
+  auto locked = vcStateMaps_.rlock();
+  auto it = locked->rankToVcs.find(peerRank);
+  if (it == locked->rankToVcs.end()) {
+    return;
+  }
+  for (auto& vc : it->second) {
+    vc->markPeerReady();
+  }
+}
+
 const std::vector<std::shared_ptr<CtranIbVirtualConn>>* VcState::tryGetVcs(
     int peerRank) {
   auto locked = vcStateMaps_.rlock();
   auto it = locked->rankToVcs.find(peerRank);
   if (it == locked->rankToVcs.end()) {
     return nullptr;
+  }
+  // Only expose the peer once every VC is peer-ready (safe to issue).
+  // markPeerReady() sets each VC individually, so check all of them.
+  for (const auto& vc : it->second) {
+    if (!vc->isPeerReady()) {
+      return nullptr;
+    }
   }
   // Value-reference stability via std::unordered_map: the pointer
   // remains valid until releaseAll() / rankToVcs.erase(peerRank).

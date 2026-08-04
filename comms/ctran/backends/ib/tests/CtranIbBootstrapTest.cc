@@ -1149,6 +1149,184 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
                             "bus card exchange";
 }
 
+// Verifies the two-layer readiness invariant that guards against the
+// server-side RNR race: a VC that has completed setupVc/publish
+// (markLocalReady) is routable for incoming CQEs, but is NOT yet safe to
+// issue on. getVc() must return nullptr until the bootstrap ack confirms the
+// remote peer also finished its setupVc (markPeerReady). Otherwise this rank
+// could issue a WQE before the peer preposted its recv WQEs, causing an IB
+// RNR NAK.
+//
+// The client (rank 0 -> peerRank 1) drives bootstrap connect() synchronously
+// inside isendCtrlMsg. We block the mock socket inside the ack recv, which is
+// the exact window after publish but before peer-ready, and assert getVc()
+// gates the VC there; then we release the ack and assert getVc() exposes it.
+TEST_F(CtranIbBootstrapCommonTest, GetVcGatedOnPeerReadyUntilAck) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  folly::Baton<> acceptSocketBaton;
+  // Posted when the sender enters the bootstrap ack recv (publish has run by
+  // then); released by the main thread once it has verified the gate.
+  folly::Baton<> ackEntered;
+  folly::Baton<> ackRelease;
+
+  std::string remoteBusCard = createValidRemoteBusCard();
+
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillRepeatedly([](const folly::SocketAddress& addr,
+                         const std::string& ifName,
+                         const std::chrono::milliseconds timeout,
+                         size_t numRetries,
+                         bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly([](const void* buf, const size_t len) { return 0; });
+
+  // The client recvs the remote bus card first (large), then the ack
+  // (sizeof(int)). Block inside the ack recv so the main thread observes the
+  // window where the VC is published (markLocalReady) but not yet peer-ready.
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly([&](void* buf, const size_t len) {
+        if (len == sizeof(int)) {
+          ackEntered.post();
+          ackRelease.wait();
+          return 0;
+        }
+        std::memcpy(
+            buf, remoteBusCard.data(), std::min(len, remoteBusCard.size()));
+        return 0;
+      });
+
+  auto mockServerSocket = std::make_unique<
+      StrictMock<ctran::bootstrap::testing::MockIServerSocket>>();
+
+  EXPECT_CALL(*mockServerSocket, bindAndListen(_, _))
+      .WillOnce([](const folly::SocketAddress& addr,
+                   const std::string& ifName) { return 0; });
+
+  EXPECT_CALL(*mockServerSocket, hasShutDown()).WillOnce([]() {
+    return false;
+  });
+
+  EXPECT_CALL(*mockServerSocket, acceptSocket()).WillOnce([&]() {
+    acceptSocketBaton.wait();
+    return folly::makeUnexpected(ECONNABORTED);
+  });
+
+  EXPECT_CALL(*mockServerSocket, shutdown()).WillOnce([&]() {
+    acceptSocketBaton.post();
+    return 0;
+  });
+
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>
+      mockSockets;
+  mockSockets.push_back(std::move(mockSocket));
+
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>>
+      mockServerSockets;
+  mockServerSockets.push_back(std::move(mockServerSocket));
+
+  auto socketFactory =
+      std::make_shared<ctran::bootstrap::testing::MockInjectorSocketFactory>(
+          std::move(mockSockets), std::move(mockServerSockets));
+
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto ctranIb = createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      abortCtrl,
+      &serverAddr,
+      socketFactory);
+
+  // isendCtrlMsg to a larger rank drives bootstrap connect() synchronously, so
+  // run it on a separate thread; it blocks inside the ack recv. There is no
+  // real remote QP, so the ctrl WQE never completes: drive progress until abort
+  // and swallow the resulting error instead of waiting for completion. The
+  // epoch lock is thread-local, so it must be acquired on this thread.
+  std::thread sender([&]() {
+    try {
+      CtranIbEpochRAII epochRAII(ctranIb.get());
+      SocketServerAddr peerServerAddr =
+          getSocketServerAddress(12348, "127.0.0.1", "lo");
+      ControlMsg msg;
+      CtranIbRequest req;
+      ctranIb->isendCtrlMsg(
+          msg.type, &msg, sizeof(msg), 1, req, &peerServerAddr);
+      while (!abortCtrl->isAborted()) {
+        ctranIb->progress();
+      }
+    } catch (const std::exception&) {
+      // Expected: issuing to a fake remote QP eventually errors during
+      // progress/teardown. The gate assertions below are what matter.
+    }
+  });
+
+  // Wait until we're blocked in the ack recv: publish/markLocalReady has run,
+  // but markPeerReady has NOT. getVc() must still gate the VC.
+  ackEntered.wait();
+  EXPECT_EQ(ctranIb->getVc(1), nullptr)
+      << "getVc must return nullptr while the VC is only published "
+         "(markLocalReady) but the bootstrap ack has not made it peer-ready";
+
+  // Let the ack complete; markPeerReady runs and getVc must expose the VC.
+  ackRelease.post();
+  EXPECT_TRUE(waitForVcEstablished(ctranIb.get(), 1, 5s));
+  EXPECT_NE(ctranIb->getVc(1), nullptr)
+      << "getVc must return the VC once the bootstrap ack confirmed peer-ready";
+
+  // Cleanup: unblock the sender's progress loop and join before teardown.
+  abortCtrl->setAbort();
+  sender.join();
+}
+
+// Verifies the larger-rank peer-ready wait unblocks on abort instead of
+// looping forever. rank 1 calls connectVcs(peerRank=0); since rank > peerRank
+// it skips the initiator and enters the spin waiting for the listen thread to
+// publish the peer's VCs. With no smaller-rank initiator, tryGetVcs() stays
+// empty, so the loop must exit via the abort check and return the empty vector.
+//
+// NOTE: this exercises the abort-during-peer-ready-wait contract on
+// connectVcs() rather than preConnect(). preConnect()'s wait loop only runs
+// once connectedPeerMap_ is sized, which requires nRanks > 0, and that in turn
+// requires a full CtranComm built via cross-rank bootstrap URL exchange --
+// not constructible in this single-process harness (the comm-less CtranIb
+// ctor used here always passes nRanks 0 to VcState::init). connectVcs()'s
+// spin shares the same abort-unblock contract and needs no connectedPeerMap_.
+TEST_F(CtranIbBootstrapCommonTest, AbortDuringConnectVcsPeerReadyWait) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto ctranIb = createCtranIb(
+      /*rank=*/1,
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      abortCtrl,
+      &serverAddr);
+
+  constexpr int kPeerRank = 0;
+
+  folly::Baton<> connectStarted;
+  bool returnedEmpty = false;
+  std::thread connectThread([&]() {
+    connectStarted.post();
+    const auto& vcs = ctranIb->connectVcs(kPeerRank);
+    returnedEmpty = vcs.empty();
+  });
+
+  // Ensure the spinner is running, then abort to unblock it.
+  connectStarted.wait();
+  std::this_thread::sleep_for(100ms);
+  auto start = std::chrono::steady_clock::now();
+  abortCtrl->setAbort();
+  connectThread.join();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(elapsed, 5s) << "connectVcs() should unblock quickly after abort";
+  EXPECT_TRUE(returnedEmpty)
+      << "connectVcs() must return an empty vector on abort, not hang";
+  EXPECT_TRUE(abortCtrl->isAborted());
+}
+
 // Test aborting waitNotify operation
 TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
   auto rank0Action = [this](

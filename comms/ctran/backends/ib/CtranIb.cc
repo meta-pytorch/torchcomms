@@ -1009,9 +1009,17 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
   // check if all requested peers are connected
   for (int peerRank : peerRanks) {
     if (!vcState_.isPeerConnected(peerRank)) {
+      // getVc() returns non-null only once the VC is published AND the
+      // bootstrap ack confirmed the peer finished setupVc, so this also
+      // waits for peer-readiness. On abort we return commUserAbort (not
+      // success), leaving markPeerConnected() uncalled, so callers do not
+      // proceed to use an unpublished/unready peer (mirrors connectVcs()'s
+      // teardown unblock).
       while (vcState_.getVc(peerRank) == nullptr) {
-        // wait listening thread to establish connections with rest of peers
-        // with smaller rank number
+        if (abortCtrl_ && abortCtrl_->isAborted()) {
+          return commUserAbort;
+        }
+        std::this_thread::yield();
       }
       vcState_.markPeerConnected(peerRank);
       newConnection = true;

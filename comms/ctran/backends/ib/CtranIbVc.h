@@ -3,6 +3,7 @@
 #ifndef CTRAN_IB_VC_H_
 #define CTRAN_IB_VC_H_
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -238,6 +239,26 @@ class CtranIbVirtualConn {
   // Get the size of local business card so that socket knows the bytes sent
   // to the other rank.
   std::size_t getBusCardSize();
+
+  // Connection readiness. Transitions monotonically:
+  //   kNone -> kLocalReady : local setupVc() completed (recv WQEs posted,
+  //                          QPs moved to RTR/RTS).
+  //   kLocalReady -> kPeerReady : the bootstrap handshake confirmed the
+  //                          remote peer also finished its setupVc(), so it
+  //                          is safe to issue WQEs to it.
+  enum class Status : uint8_t { kNone = 0, kLocalReady = 1, kPeerReady = 2 };
+
+  void markLocalReady() {
+    status_.store(Status::kLocalReady, std::memory_order_release);
+  }
+
+  void markPeerReady() {
+    status_.store(Status::kPeerReady, std::memory_order_release);
+  }
+
+  bool isPeerReady() const {
+    return status_.load(std::memory_order_acquire) == Status::kPeerReady;
+  }
 
   // Create local IB connection resource (QPs) and get the local business card
   // that describes the local resource. It will be exchanged with the peer via
@@ -1907,7 +1928,7 @@ class CtranIbVirtualConn {
   const int iputFastQpIdx_{0};
   const int igetFastQpIdx_{0};
 
-  bool isReady_{false};
+  std::atomic<Status> status_{Status::kNone};
   std::vector<CtranIbDevice> devices_;
   // Set of IB device indices this VC owns QPs on (precomputed by
   // ctran::ib::VcLayout and supplied by CtranIb). For legacy
