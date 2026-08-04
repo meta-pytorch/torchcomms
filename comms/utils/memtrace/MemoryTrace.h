@@ -17,6 +17,7 @@
 #include <unordered_map>
 
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/Types.h"
 
 namespace meta::comms::memtrace {
 
@@ -24,7 +25,7 @@ namespace meta::comms::memtrace {
 
 void recordAlloc(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     int64_t bytes,
@@ -33,14 +34,14 @@ void recordAlloc(
 
 void recordFree(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes = std::nullopt);
 
 void recordReg(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes = std::nullopt,
@@ -77,8 +78,6 @@ class MemoryTrace {
  private:
   mutable std::mutex mutex_;
   MemoryStats stats_;
-  // Caches addr→bytes from recordAlloc; needed because some free paths
-  // (e.g. ncclCudaFree) don't know the allocation size at free time.
   std::unordered_map<uintptr_t, int64_t> allocMap_;
 };
 

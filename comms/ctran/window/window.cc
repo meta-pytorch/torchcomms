@@ -637,7 +637,9 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
               utils::getCuMemAllocHandleType(),
               allocSize,
               &comm->logMetaData_,
-              "allocate"));
+              meta::comms::memtrace::MemCallsite(
+                  meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                  "allocate")));
 
       // query the actually allocated range of the memory
       CUdeviceptr pbase = 0;
@@ -760,7 +762,12 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // utils func to free memory
   auto freeMem = [&](void* addr) {
     if (isGpuMem()) {
-      FB_COMMCHECK(utils::commCuMemFree(addr));
+      FB_COMMCHECK(
+          utils::commCuMemFree(
+              addr,
+              &comm->logMetaData_,
+              meta::comms::memtrace::MemCallsite(
+                  meta::comms::memtrace::MemCallsite::Scope::kCtran, "free")));
     } else {
       FB_CUDACHECK(cudaFreeHost(addr));
     }

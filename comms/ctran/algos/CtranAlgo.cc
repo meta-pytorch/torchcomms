@@ -17,6 +17,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/memtrace/Types.h"
 
 #if defined(ENABLE_PRIMS)
 using comms::prims::NvlChannelState;
@@ -56,7 +57,10 @@ CtranAlgo::~CtranAlgo() {
   if (this->isResInitialized_) {
     FB_COMMCHECKIGNORE(
         ctran::utils::commCudaFree(
-            this->devState_d_, &this->comm_->logMetaData_));
+            this->devState_d_,
+            &this->comm_->logMetaData_,
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__)));
     this->devState_d_ = nullptr;
   }
   if (ctran_->mapper && this->tmpbufSegHdl) {
@@ -72,7 +76,11 @@ CtranAlgo::~CtranAlgo() {
       // commCuMemFree
       // or cudaFree to free buffer based on cuMem support
       FB_COMMCHECKTHROW_EX(
-          ctran::utils::commCudaFree(this->tmpbuf, &this->comm_->logMetaData_),
+          ctran::utils::commCudaFree(
+              this->tmpbuf,
+              &this->comm_->logMetaData_,
+              meta::comms::memtrace::MemCallsite(
+                  meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__)),
           comm_->logMetaData_);
     }
   }
@@ -87,7 +95,11 @@ CtranAlgo::~CtranAlgo() {
 #if defined(ENABLE_PRIMS)
   if (nvlTransports_) {
     FB_COMMCHECKIGNORE(
-        ctran::utils::commCudaFree(nvlTransports_, &this->comm_->logMetaData_));
+        ctran::utils::commCudaFree(
+            nvlTransports_,
+            &this->comm_->logMetaData_,
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__)));
     nvlTransports_ = nullptr;
   }
 #endif // defined(ENABLE_PRIMS)
@@ -306,7 +318,9 @@ commResult_t CtranAlgo::initKernelResources() {
           &this->devState_d_,
           1,
           &this->comm_->logMetaData_,
-          "initKernelResources"));
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "initKernelResources")));
   FB_CUDACHECK(cudaMemcpy(
       this->devState_d_,
       &devState_,
@@ -320,7 +334,9 @@ commResult_t CtranAlgo::initKernelResources() {
           &nvlTransports_,
           nLocalRanks,
           &this->comm_->logMetaData_,
-          "initKernelResources-nvlTransports"));
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "initKernelResources-nvlTransports")));
 
   const size_t nvlPipelineDepth =
       static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
@@ -812,7 +828,8 @@ commResult_t CtranAlgo::initTmpBufs() {
             /*cuHandle=*/nullptr,
             segmentManager.totalLen,
             &this->comm_->logMetaData_,
-            __func__),
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__)),
         comm_->logMetaData_);
   } else {
     // `ctran::utils::commCudaMalloc` automatically decides whether to use cuMem
@@ -822,7 +839,9 @@ commResult_t CtranAlgo::initTmpBufs() {
             (char**)&this->tmpbuf,
             segmentManager.totalLen,
             &this->comm_->logMetaData_,
-            "initTmpBufs"),
+            meta::comms::memtrace::MemCallsite(
+                meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                "initTmpBufs")),
         comm_->logMetaData_);
   }
   FB_COMMCHECKTHROW_EX(

@@ -93,7 +93,9 @@ commResult_t setupP2pKernelConfig(
                 numSendOps,
                 cudaHostAllocDefault,
                 &comm->logMetaData_,
-                "setupP2pKernelConfig"));
+                meta::comms::memtrace::MemCallsite(
+                    meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                    "setupP2pKernelConfig")));
       }
       if (numRecvOps > 0) {
         FB_COMMCHECK(
@@ -102,15 +104,21 @@ commResult_t setupP2pKernelConfig(
                 numRecvOps,
                 cudaHostAllocDefault,
                 &comm->logMetaData_,
-                "setupP2pKernelConfig"));
+                meta::comms::memtrace::MemCallsite(
+                    meta::comms::memtrace::MemCallsite::Scope::kCtran,
+                    "setupP2pKernelConfig")));
       }
       config.postKernelCleanup = [sendsList = kernArgs.sendsList,
-                                  recvsList = kernArgs.recvsList]() {
+                                  recvsList = kernArgs.recvsList,
+                                  logMetaData = comm->logMetaData_]() {
+        const meta::comms::memtrace::MemCallsite callsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran,
+            "setupP2pKernelConfig");
         if (sendsList) {
-          ctran::utils::commCudaFreeHost(sendsList);
+          ctran::utils::commCudaFreeHost(sendsList, &logMetaData, callsite);
         }
         if (recvsList) {
-          ctran::utils::commCudaFreeHost(recvsList);
+          ctran::utils::commCudaFreeHost(recvsList, &logMetaData, callsite);
         }
       };
     }

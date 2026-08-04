@@ -17,6 +17,7 @@
 
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/Types.h"
 
 // Allow test class to access getFreeMemReg() method
 class memCacheAllocatorTest;
@@ -91,7 +92,7 @@ class memCacheAllocator {
       CUmemGenericAllocationHandle* cuHandle,
       size_t nBytes,
       const CommLogData* logMetaData,
-      const char* callsite,
+      const meta::comms::memtrace::MemCallsite& callsite,
       BucketType bucket = BucketType::DEFAULT);
 
   /* Reserve a buffer from the pool to be used by a communicator until it is
@@ -142,7 +143,7 @@ class memCacheAllocator {
       size_t nBytes,
       BucketType bucket,
       const CommLogData* logMetaData,
-      const char* callsite);
+      const meta::comms::memtrace::MemCallsite& callsite);
 
   void freeMemReg(std::shared_ptr<memRegion> reg) {
     // FIXME: more efficient way to erase region from the free list

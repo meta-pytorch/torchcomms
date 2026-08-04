@@ -59,6 +59,19 @@ bool MemoryEvent::shouldLog() {
   }
 }
 
+static const char* scopeToString(
+    meta::comms::memtrace::MemCallsite::Scope scope) {
+  switch (scope) {
+    case meta::comms::memtrace::MemCallsite::Scope::kNccl:
+      return "nccl";
+    case meta::comms::memtrace::MemCallsite::Scope::kCtran:
+      return "ctran";
+    case meta::comms::memtrace::MemCallsite::Scope::kMccl:
+      return "mccl";
+  }
+  return "nccl";
+}
+
 NcclScubaSample MemoryEvent::toSample() {
   NcclScubaSample sample("MemoryEvent");
   sample.addInt("commHash", commHash);
@@ -78,8 +91,9 @@ NcclScubaSample MemoryEvent::toSample() {
   if (memType.has_value()) {
     sample.addNormal("memType", memType.value());
   }
-  sample.addNormal("callsite", callsite);
+  sample.addNormal("callsite_func", callsite);
   sample.addNormal("use", use);
+  sample.addNormal("callsite_scope", scopeToString(scope));
   sample.addInt("iteration", iteration);
   return sample;
 }

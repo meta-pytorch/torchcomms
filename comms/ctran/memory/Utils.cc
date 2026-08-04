@@ -18,7 +18,7 @@ commResult_t cudaCallocAsync(
     size_t nBytes,
     cudaStream_t stream,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     SlabAllocator* allocator) {
   if (NCCL_MEM_USE_SLAB_ALLOCATOR && allocator) {
     return allocator->cuCallocAsync(ptr, nBytes, stream, callsite, logMetaData);
@@ -35,7 +35,7 @@ commResult_t allocateShareableBuffer(
     void** ptr,
     std::shared_ptr<memCacheAllocator> memCache,
     const CommLogData* logMetaData,
-    const char* use) {
+    const meta::comms::memtrace::MemCallsite& callsite) {
   CUmemAllocationHandleType type = ctran::utils::getCuMemAllocHandleType();
   auto commHash = (logMetaData) ? logMetaData->commHash : 0;
 
@@ -43,18 +43,18 @@ commResult_t allocateShareableBuffer(
   CUmemGenericAllocationHandle handle;
   if (memCache) {
     std::stringstream ss;
-    ss << use << ":0x" << std::hex << commHash;
+    ss << callsite.function << ":0x" << std::hex << commHash;
     FB_COMMCHECK(memCache->getCachedCuMemById(
         ss.str(), /*key*/
         ptr,
         &handle,
         size,
         logMetaData,
-        __func__));
+        meta::comms::memtrace::MemCallsite(callsite.scope, __func__)));
   } else {
     FB_COMMCHECK(
         ctran::utils::commCuMemAlloc(
-            ptr, &handle, type, size, logMetaData, use));
+            ptr, &handle, type, size, logMetaData, callsite));
   }
 
   if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
@@ -83,7 +83,7 @@ commResult_t allocateShareableBuffer(
       *ptr,
       size,
       (void*)ipcDesc,
-      use);
+      callsite.function);
 
   return commSuccess;
 }
