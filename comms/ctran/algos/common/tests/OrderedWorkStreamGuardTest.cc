@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <thread>
+#include <type_traits>
 
 #include <gtest/gtest.h>
 
@@ -16,6 +17,8 @@ namespace {
 
 using ctran::algos::OrderedWorkStreamGuard;
 using ctran::utils::cudagraph::StreamCaptureInfo;
+
+static_assert(std::is_nothrow_destructible_v<OrderedWorkStreamGuard>);
 
 void delayCallback(void* data) {
   const auto delay = *static_cast<const std::chrono::milliseconds*>(data);

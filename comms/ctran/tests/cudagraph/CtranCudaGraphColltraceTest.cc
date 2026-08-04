@@ -11,6 +11,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphTestBase.h"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/colltrace/CollTrace.h"
 
 namespace {
 
@@ -30,10 +31,12 @@ class CtranCudaGraphColltraceTest : public CtranCudaGraphTestBase {
         ctran::CtranEnvs{
             {"NCCL_COLLTRACE", "trace"},
             {"NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "true"},
-            // In-kernel device write is off by default until the cutover diff,
-            // so enable it explicitly to exercise the in-kernel colltrace path.
-            {"NCCLX_COLLTRACE_DEVICE_WRITE", "true"},
         });
+    if (!meta::comms::colltrace::graphColltraceSupported(
+            "CtranCudaGraphColltraceTest")) {
+      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
+                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+    }
   }
 
   // Warms the collective eagerly (establishes transport connections and gives a

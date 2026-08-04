@@ -20,8 +20,14 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-# pyre-ignore[21]: cpp_python_extension at runtime; static analyzer doesn't see it
-from comms.prims.collectives.link_ep import _cpp  # @manual
+try:
+    # Installed egg: this package is top-level, so `_cpp` sits beside it.
+    # pyre-ignore[21]: only resolvable in the installed-egg layout
+    from . import _cpp
+except ModuleNotFoundError:
+    # Buck: this package is nested one level deeper than the extension.
+    # pyre-ignore[21]: cpp_python_extension at runtime; static analyzer doesn't see it
+    from comms.prims.collectives.link_ep import _cpp  # @manual
 
 logger: logging.Logger = logging.getLogger(__name__)
 

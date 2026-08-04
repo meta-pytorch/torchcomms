@@ -72,10 +72,6 @@ inline void armInKernelColltrace(
       devHandle.emitStart = true;
       devHandle.emitEnd = emitEnd;
       flagDev.colltraceHdr = devHandle;
-      // Tell this collective's graph wait event it self-emits, so it skips the
-      // host-launched timestamp path (the two must never both write the ring).
-      // TEMPORARY: the host path is deleted at the in-kernel cutover.
-      colltraceHandle->markInKernelEmit();
       if (!emitEnd) {
         // Multi-kernel begin: the End kernel reuses the same ring/collId.
         pendingGroup = devHandle;
@@ -88,11 +84,6 @@ inline void armInKernelColltrace(
     // the Begin and emit only the end.
     if (pendingGroup.valid()) {
       flagDev.colltraceHdr = pendingGroup;
-      // TEMPORARY (removed at the in-kernel cutover): keep the host path off
-      // for the End kernel's wait event too, if it has one.
-      if (colltraceHandle) {
-        colltraceHandle->markInKernelEmit();
-      }
     }
     // The group is closed once its End is armed; clear it so a later unrelated
     // End (a Begin whose End was dropped, then this collective's End) can never

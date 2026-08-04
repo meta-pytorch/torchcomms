@@ -97,6 +97,25 @@ cvars:
      consolidated abort ERR line on stderr (gpeProfiler_->debugString())
      keeps producing per-phase latencies. Set true to enable Scuba flush.
 
+ - name        : NCCL_CTRAN_GRAPH_MIXING_SUPPORT
+   type        : int
+   default     : 1
+   description : |-
+     CTRAN GPE analog of NCCL_GRAPH_MIXING_SUPPORT, controlling the
+     OrderedWorkStreamGuard ordering fence inserted during CUDA graph capture.
+     When 1 (default), each captured CTRAN GPE submission records its ordering
+     event via cudaGraphAddEventRecordNode on a dedicated side stream and the
+     next submission waits on it with cudaEventWaitExternal, so the fence can
+     order across graphs (mixed capture/replay) without serializing unrelated
+     work on the user stream. When 0, the fence is instead a plain
+     cudaEventRecord on the user stream, awaited with a non-external
+     cudaStreamWaitEvent: under capture it folds into the graph as a dependency
+     edge rather than a standalone EVENT_RECORD node, so cudaGraphInstantiate
+     has no floating fence to mis-place onto a busy hardware channel — the cause
+     of an observed multi-ms collective park. The trade-off is no cross-graph
+     ordering. The eager (non-capture) path is unchanged regardless of this
+     setting.
+
  - name        : NCCL_CTRAN_GPE_DEVICE_RING
    type        : bool
    default     : false
@@ -2169,7 +2188,25 @@ cvars:
                   inter-node rail ring and intra-node CopyEngine based copy
      ctsrdpipeline - Ctran-based hybrid algorithm that streams recursive-doubling
                      forwards across rails while keeping NVLink-domain CopyEngine
-                     broadcast step-based. Requires nNodes to be a power of 2.
+                    broadcast step-based. Requires nNodes to be a power of 2.
+
+ - name        : NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER
+   type        : bool
+   default     : false
+   description : |-
+     Perf A/B knob for the per-step intra-node NVL broadcast barrier in the
+     AllGatherP pipeline / streamed-recursive-doubling algorithms, scoped to the
+     CE-multicast path only. When false (default) the per-step barrier is
+     emitted; when true it is skipped, but only where the multicast write is
+     engaged (pArgs.mcWrite). The barrier exists to pace the N-1 per-peer unicast
+     writes so they do not all-to-one incast a single peer, so it is always kept
+     on the unicast path regardless of this setting — including on ctwin runs
+     that fell back to unicast because multicast was unavailable, and on ctgraph,
+     which is always unicast. A multicast broadcast is one switch-fanned store
+     with no incast to pace, which is what makes it safe to drop there. Only the
+     optional per-step barrier is affected; the step-0/own-chunk barrier
+     (cross-iteration WAR guard) and the PipeEnd barrier (final completion) are
+     always kept for correctness.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
@@ -2480,16 +2517,6 @@ cvars:
      Enable colltrace for collectives launched in cuda graph. Currently we
      still haven't fully tested the performance impact of this feature. So
      it is disabled by default. In the future, we will enable it by default.
-
- - name        : NCCLX_COLLTRACE_DEVICE_WRITE
-   type        : bool
-   default     : false
-   description : |-
-     When graph colltrace tracing is enabled (NCCL_COLLTRACE_TRACE_CUDA_GRAPH),
-     have collective kernels publish their own start/end timestamps into the
-     graph ring from inside the kernel (in-kernel "device write"). Off by
-     default until the in-kernel cutover diff lands; set true to hand collective
-     kernels the device ring handle and enable in-kernel emission.
 
  - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
    type        : bool
@@ -3208,13 +3235,23 @@ cvars:
      benchmarking. Valid values are 1 through the compile-time maximum tree
      children.
 
+ - name        : MCCL_ALGO
+   type        : string
+   default     : none
+   description : |-
+     MCCL-native collective algorithm override. Use "none" or leave unset to
+     preserve the collective's existing selection. Prefer qualified selectors
+     such as allreduce:tree or allreduce:ring; unqualified tree, ring, and
+     direct are accepted as AllReduce aliases for compatibility with the
+     initial AllReduce-only rollout.
+
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t
    default     : 0
    description : |-
      Maximum bytes per signaled sub-chunk for MCCL fused AllReduce IB phases.
-     Applies to ctree and cthierarchical_ring. 0 preserves the transport
-     default signaling cadence.
+     Applies to tree and ring. 0 preserves the transport default signaling
+     cadence.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int

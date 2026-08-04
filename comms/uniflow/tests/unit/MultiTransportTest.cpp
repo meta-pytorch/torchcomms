@@ -1080,4 +1080,49 @@ TEST_F(MultiTransportTest, AsymmetricHandlesFallBackToRdma) {
   EXPECT_EQ(nvlink->putCount, 0);
 }
 
+TEST_F(MultiTransportTest, IntraNodeTransportFlipsToRdma) {
+  // intraNodeTransport=RDMA flips the intra-node default (NVLink) to RDMA; both
+  // tiers stay registered, so this is a per-transfer selection override.
+  MultiTransport mt(0, nullptr, TransportType::RDMA);
+  auto* nvlink = addMock(mt, TransportType::NVLink);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+
+  TestSegments local(
+      MemoryType::VRAM, 0, {TransportType::NVLink, TransportType::RDMA});
+  TestSegments remote(
+      MemoryType::VRAM, 0, {TransportType::NVLink, TransportType::RDMA});
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  auto future = mt.put(reqs);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_EQ(rdma->putCount, 1);
+  EXPECT_EQ(nvlink->putCount, 0);
+}
+
+TEST_F(MultiTransportTest, IntraNodeFlipToRdmaFallsBackToNvLinkWhenRdmaAbsent) {
+  // Flip-target-unavailable edge: intraNodeTransport=RDMA, but the intra-node
+  // VRAM<->VRAM segment has only an NVLink handle (no RDMA). This is the exact
+  // case that distinguishes the two possible contracts -- "prefer RDMA" vs
+  // "avoid the interconnect tier". Under the "prefer RDMA, NVLink is fine"
+  // contract the unsatisfiable RDMA preference falls back to the NVLink/P2P
+  // default (instead of skipping to the inter-node fallback), so NVLink gets
+  // the transfer and RDMA does not.
+  MultiTransport mt(0, nullptr, TransportType::RDMA);
+  auto* nvlink = addMock(mt, TransportType::NVLink);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+
+  TestSegments local(MemoryType::VRAM, 0, {TransportType::NVLink});
+  TestSegments remote(MemoryType::VRAM, 0, {TransportType::NVLink});
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  auto future = mt.put(reqs);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_EQ(nvlink->putCount, 1);
+  EXPECT_EQ(rdma->putCount, 0);
+}
+
 } // namespace uniflow

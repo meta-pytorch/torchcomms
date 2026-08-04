@@ -87,6 +87,9 @@ __global__ void ncclKernelAllGatherPPipeEnd(
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
   barrier(localRank, nLocalRanks);
+
+  // Signal the GPE thread that the intra-node bcast + barrier finished
+  GpeKernelSyncDev::complete(args.pipeSync, 0, kPipeEndDone);
 }
 
 // The ctsrdpipeline (streamed recursive-doubling) variant's nLocalRanks > 1
@@ -126,6 +129,9 @@ __global__ void ncclKernelAllGatherPSrdPipeEnd(
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
   barrier(localRank, nLocalRanks);
+
+  // Signal the GPE thread that the intra-node bcast + barrier finished
+  GpeKernelSyncDev::complete(args.pipeSync, 0, kPipeEndDone);
 }
 
 } // namespace ctran::allgatherp

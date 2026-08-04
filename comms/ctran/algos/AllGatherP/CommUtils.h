@@ -24,6 +24,24 @@ using ctran::algos::copyToSelf;
 using ctran::algos::nvlBarrier;
 using ctran::algos::nvlCeBcast;
 
+// Clear the previous op's completion before this one posts any step, so
+// waitPipeEnd cannot latch a stale done. Must run before the first post().
+inline void resetPipeEnd(const Resource& resource, CtranComm* comm) {
+  if (resource.pipeSync != nullptr && comm->statex_->nLocalRanks() > 1) {
+    resource.pipeSync->resetStatus();
+  }
+}
+
+// Block until the end kernel signals completion. The NVL bcast + end barrier
+// run on the stream after the inter-node exchange, so ALGO_DATA needs this.
+inline void waitPipeEnd(const Resource& resource, CtranComm* comm) {
+  if (resource.pipeSync == nullptr || comm->statex_->nLocalRanks() <= 1) {
+    return;
+  }
+  while (!resource.pipeSync->isComplete(kPipeEndDone) && !comm->testAbort()) {
+  }
+}
+
 // Exchange intra-node NVL IPC handles into pArgs and mark initialized. Owns
 // the remote-buffer resize, the intraAllGatherCtrl + intraBarrier, per-peer
 // IPC logging, and setting initState. Logs its timing breakdown on the GPE

@@ -588,11 +588,7 @@ void armNcclInKernelColltrace(
   devHandle.emitStart = true;
   devHandle.emitEnd = true;
   plan.kernelArgs->colltraceHdr = devHandle;
-  // Tell the graph wait event this collective self-emits so it skips the
-  // host-launched timestamp path (they must never both write the ring).
-  // TEMPORARY: the host path is deleted at the in-kernel cutover.
-  handle->markInKernelEmit();
-#endif
+#endif // in-kernel colltrace gate
 }
 
 } // namespace

@@ -24,8 +24,10 @@ using ctran::algos::PersistPlanKey;
 using ctran::allgather::ctsrd::createPersistPlan;
 using ctran::allgather::ctsrd::PersistPlan;
 using ctran::allgather::ctsrd::Plan;
+using ctran::allgather::ctsrd::common::exchangeCtrl;
+using ctran::allgather::ctsrd::common::progressSteps;
 using ctran::allgather::ctsrd::common::resolveFwdPeers;
-using ctran::allgather::ctsrd::common::runExchangeAndProgress;
+using ctran::allgather::ctsrd::common::waitCtrl;
 using ctran::allgatherp::AlgoImpl;
 using ctran::allgatherp::PersistArgs;
 using ctran::allgatherp::Resource;
@@ -159,7 +161,22 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
       recvPlan,
       sendPlan);
 
-  FB_COMMCHECK(runExchangeAndProgress(ctx, nodeId, profiler));
+  resetPipeEnd(*resource, comm);
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
+  FB_COMMCHECK(exchangeCtrl(ctx));
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
+  FB_COMMCHECK(progressSteps(ctx, nodeId));
+  waitPipeEnd(*resource, comm);
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
+  FB_COMMCHECK(waitCtrl(ctx));
 
   return commSuccess;
 }
@@ -329,6 +346,15 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         const auto offset =
             (static_cast<size_t>(node) * nLocalRanks + localRank) * sendSize;
         auto srcPtr = ctran::allgatherp::getPtr(pArgs.recvbuff, offset);
+        // The per-step barrier fires once per step (first chunk) and only paces
+        // the N-1 unicast writes' incast, so it is always kept on that path.
+        // The multicast write is a single switch-fanned store with no incast to
+        // pace, so NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER can drop it there as a
+        // perf A/B. Correctness holds either way via the pre-loop own-chunk
+        // barrier (cross-iteration WAR) + PipeEnd, with disjoint per-rank rail
+        // columns.
+        const bool skipBarrier =
+            pArgs.mcWrite && NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER;
         FB_COMMCHECK(nvlCeBcast(
             comm_,
             srcPtr,
@@ -337,7 +363,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
             pArgs.remoteRecvBuffs,
             pArgs.remoteAccessKeys,
             stream_,
-            chunkIndex++ == 0,
+            chunkIndex++ == 0 && !skipBarrier,
             pArgs.mcWrite));
       }
     }

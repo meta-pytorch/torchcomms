@@ -60,13 +60,6 @@ class GraphCollTraceHandle : public ICollTraceHandle {
   }
 
   ColltraceDeviceHandle getColltraceDeviceHandle() noexcept override {
-    // Killswitch: when NCCLX_COLLTRACE_DEVICE_WRITE is off, hand out no device
-    // ring handle, so neither the ctran nor the baseline arming path arms the
-    // kernel (both gate on valid()). This is the single gate for the in-kernel
-    // device-write across all backends.
-    if (!colltraceDeviceWriteEnabled()) {
-      return {};
-    }
     auto* graphWaitEvent = graphWaitEvent_();
     if (graphWaitEvent == nullptr || !graphWaitEvent->hasRingBuffer()) {
       return {};
@@ -80,24 +73,6 @@ class GraphCollTraceHandle : public ICollTraceHandle {
         .emitStart = false,
         .emitEnd = false,
         .ring = graphWaitEvent->deviceHandle()};
-  }
-
-  // TEMPORARY (removed at the in-kernel cutover): forward the "kernel
-  // self-emits" signal to the wait event so it skips the host-launched
-  // timestamp path.
-  void markInKernelEmit() noexcept override {
-    // Gate identically to getColltraceDeviceHandle(): only mark the wait event
-    // as self-emitting when the killswitch is on and a ring is attached, so we
-    // never skip the host-launched fallback for a kernel that isn't actually
-    // armed to self-emit.
-    if (!colltraceDeviceWriteEnabled()) {
-      return;
-    }
-    auto* graphWaitEvent = graphWaitEvent_();
-    if (graphWaitEvent == nullptr || !graphWaitEvent->hasRingBuffer()) {
-      return;
-    }
-    graphWaitEvent->markInKernelEmit();
   }
 
  private:

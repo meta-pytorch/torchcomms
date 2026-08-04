@@ -65,22 +65,21 @@ constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 // Global call-once check for graph timeout monitoring (env var gated).
 // Reads TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING on first call; caches result.
 // Default: enabled. Set to "0" or "false" to disable (for benchmarking).
-// Also returns false when the colltrace cudagraph watchdog will actually run —
-// i.e. NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled AND NCCL_COLLTRACE selects a
-// "trace"/"verbose" mode — since the colltrace watchdog plugin then handles
-// graph timeout detection instead. If cudagraph tracing is requested but
-// colltrace is not in trace/verbose mode (so no watchdog plugin is installed),
-// GraphEventTracker is kept active and a warning is logged.
+// GraphEventTracker is the primary graph-collective timeout watchdog and also
+// feeds clog's per-replay logging, so this is independent of colltrace. When it
+// returns false, init() falls back to the colltrace watchdog (see
+// tryEnableColltraceTimeoutWatchdog).
 bool isGraphTimeoutMonitoringEnabled();
 
 // Test-only: reset the cached state so next call re-reads the env var.
 void resetGraphTimeoutMonitoringCacheForTest();
 
-// When NCCL_COLLTRACE_TRACE_CUDA_GRAPH is enabled, configures the colltrace
-// watchdog plugin to handle async error checking and timeout detection for
-// graph-captured collectives via ncclx global hints.
-// No-op when TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING is explicitly disabled.
-// Returns true if colltrace graph tracing is active and all hints succeeded.
+// Fallback watchdog used when GraphEventTracker monitoring is disabled:
+// configures the colltrace WatchdogPlugin to handle async error checking and
+// timeout detection for graph-captured collectives via ncclx global hints.
+// Requires colltrace to be tracing graph-captured collectives (NCCL_COLLTRACE
+// in a "trace"/"verbose" mode AND NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1); otherwise
+// there is no WatchdogPlugin to configure. Returns true if the hints succeeded.
 bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout);
 
 class TorchCommNCCLX : public TorchCommBackend,

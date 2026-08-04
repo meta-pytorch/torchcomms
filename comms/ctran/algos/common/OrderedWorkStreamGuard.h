@@ -17,7 +17,7 @@ namespace ctran::algos {
 
 class OrderedWorkStreamGuard {
  public:
-  ~OrderedWorkStreamGuard();
+  ~OrderedWorkStreamGuard() noexcept;
 
   // Captured graphs that reference this guard must be destroyed first.
   void init(
@@ -69,13 +69,13 @@ class OrderedWorkStreamGuard {
   cudaEvent_t execModeSyncEvent_{};
   unsigned long long lastCaptureId_{0};
   bool everCaptured_{false};
+  bool graphMixingSupport_{true};
   bool synchronizeEagerAfterCapturedWork_{false};
   bool initialized_{false};
   commResult_t error_{commSuccess};
   cudaStream_t lastUserStream_{nullptr};
   cudaGraphNode_t lastRecordNode_{};
   std::unique_ptr<meta::comms::GraphSideStream> sideStream_;
-  const CommLogData* logMetaData_{nullptr};
 };
 
 } // namespace ctran::algos

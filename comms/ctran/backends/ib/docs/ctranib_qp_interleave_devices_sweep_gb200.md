@@ -108,7 +108,7 @@ slightly negative at 2-put 64K) — the latency-bound region the gate excludes.
 NCCL_CTRAN_IB_DEVICES_PER_RANK=2 NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=0 \
   buck2 run @fbcode//mode/opt -c fbcode.arch=aarch64 \
   -c fbcode.platform010-aarch64_clang=17 -c fbcode.nvcc_arch=b200 \
-  -c fbcode.platform010_cuda_version=12.8 \
+  -m ovr_config//third-party/cuda/constraints:12.8 \
   -m ovr_config//third-party/cuda/constraints:12.8 \
   fbcode//comms/ctran/backends/ib/benchmarks:ctranib_bench -- \
   --benchmark_filter=BM_CtranIb_MultiPut

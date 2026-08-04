@@ -144,6 +144,10 @@ MultiTransportFactory::MultiTransportFactory(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
 
+  // Register the intra-node interconnect tier whenever the hardware is present
+  // (NVLink on NVIDIA, P2P/XGMI on AMD). This tier and RDMA are both registered
+  // when available; selectTransport chooses per transfer (intraNodeTransport
+  // can flip the intra-node default -- see selectTransport).
 #ifndef __HIP_PLATFORM_AMD__
   if (deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
@@ -305,9 +309,23 @@ Result<Transport*> MultiTransport::selectTransport(
     return true;
   };
 
-  // VRAM→VRAM on matching device: prefer NVLink if ALL requests have it.
+  // Intra-node (VRAM<->VRAM on this device): default to the interconnect tier
+  // (NVLink/P2P). intraNodeTransport flips that choice (e.g. to RDMA) -- both
+  // tiers are registered, so this is a per-transfer selection override, not a
+  // kill-switch.
   if (localMemType == MemoryType::VRAM && remoteMemType == MemoryType::VRAM &&
       localDeviceId == deviceId_) {
+    // Try the intra-node override first (only if set and distinct from the
+    // NVLink/P2P default), then the default. Two explicit checks -> no
+    // per-transfer heap allocation, and no redundant re-check when the override
+    // is itself NVLink/P2P.
+    if (intraNodeTransport_.has_value() &&
+        *intraNodeTransport_ != TransportType::NVLink &&
+        allHaveTransport(*intraNodeTransport_)) {
+      if (auto* t = findTransport(*intraNodeTransport_)) {
+        return t;
+      }
+    }
     if (allHaveTransport(TransportType::NVLink)) {
       if (auto* t = findTransport(TransportType::NVLink)) {
         return t;
@@ -479,7 +497,8 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
         entries.size());
   }
 
-  auto mt = std::make_unique<MultiTransport>(deviceId_, eventBaseThread_);
+  auto mt = std::make_unique<MultiTransport>(
+      deviceId_, eventBaseThread_, options_.intraNodeTransport);
   for (size_t i = 0, j = 0; i < entries.size() && j < factories_.size();) {
     if (entries[i].type < factories_[j]->transportType()) {
       ++i;
