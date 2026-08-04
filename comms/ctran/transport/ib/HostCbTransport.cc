@@ -46,10 +46,20 @@ HostCbTransport::HostCbTransport(
   // in NCCL memtrace; pass logMetaData_ for callsite attribution.
   FB_COMMCHECKTHROW_EX_NOCOMM(
       ctran::utils::commCudaMalloc(
-          &sendStaging_, stagingSize, logMetaData_, "HostCbTransport.send"));
+          &sendStaging_,
+          stagingSize,
+          logMetaData_,
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "HostCbTransport.send")));
   FB_COMMCHECKTHROW_EX_NOCOMM(
       ctran::utils::commCudaMalloc(
-          &recvStaging_, stagingSize, logMetaData_, "HostCbTransport.recv"));
+          &recvStaging_,
+          stagingSize,
+          logMetaData_,
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "HostCbTransport.recv")));
   FB_COMMCHECKTHROW_EX_NOCOMM(
       CtranIb::regMem(
           sendStaging_, stagingSize, cudaDev_, &sendStagingRegElem_));
@@ -86,7 +96,9 @@ HostCbTransport::HostCbTransport(
           pipelineDepth_,
           cudaHostAllocDefault,
           logMetaData_,
-          "HostCbTransport.remoteReady"));
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "HostCbTransport.remoteReady")));
   memset(remoteReady_, 0, pipelineDepth_ * sizeof(uint64_t));
   FB_COMMCHECKTHROW_EX_NOCOMM(
       CtranIb::regMem(
@@ -101,7 +113,9 @@ HostCbTransport::HostCbTransport(
           1,
           cudaHostAllocDefault,
           logMetaData_,
-          "HostCbTransport.fetchAddDiscard"));
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "HostCbTransport.fetchAddDiscard")));
   *fetchAddDiscardBuf_ = 0;
   FB_COMMCHECKTHROW_EX_NOCOMM(
       CtranIb::regMem(
@@ -118,20 +132,32 @@ HostCbTransport::HostCbTransport(
 
 HostCbTransport::~HostCbTransport() {
   if (devTransport_) {
-    (void)ctran::utils::commCudaFree(devTransport_, logMetaData_);
+    (void)ctran::utils::commCudaFree(
+        devTransport_,
+        logMetaData_,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__));
     devTransport_ = nullptr;
   }
   if (fetchAddDiscardRegElem_) {
     CtranIb::deregMem(fetchAddDiscardRegElem_);
   }
   if (fetchAddDiscardBuf_) {
-    (void)ctran::utils::commCudaFreeHost(fetchAddDiscardBuf_, logMetaData_);
+    (void)ctran::utils::commCudaFreeHost(
+        fetchAddDiscardBuf_,
+        logMetaData_,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__));
   }
   if (remoteReadyRegElem_) {
     CtranIb::deregMem(remoteReadyRegElem_);
   }
   if (remoteReady_) {
-    (void)ctran::utils::commCudaFreeHost(remoteReady_, logMetaData_);
+    (void)ctran::utils::commCudaFreeHost(
+        remoteReady_,
+        logMetaData_,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__));
   }
   for (auto* s : recvSyncs_) {
     if (s) {
@@ -152,10 +178,18 @@ HostCbTransport::~HostCbTransport() {
     CtranIb::deregMem(sendStagingRegElem_);
   }
   if (recvStaging_) {
-    (void)ctran::utils::commCudaFree(recvStaging_, logMetaData_);
+    (void)ctran::utils::commCudaFree(
+        recvStaging_,
+        logMetaData_,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__));
   }
   if (sendStaging_) {
-    (void)ctran::utils::commCudaFree(sendStaging_, logMetaData_);
+    (void)ctran::utils::commCudaFree(
+        sendStaging_,
+        logMetaData_,
+        meta::comms::memtrace::MemCallsite(
+            meta::comms::memtrace::MemCallsite::Scope::kCtran, __func__));
   }
 }
 
@@ -187,7 +221,12 @@ HostTransportDev* HostCbTransport::getDeviceTransport() {
 
   FB_COMMCHECKTHROW_EX_NOCOMM(
       ctran::utils::commCudaMalloc(
-          &devTransport_, 1, logMetaData_, "HostCbTransport.devTransport"));
+          &devTransport_,
+          1,
+          logMetaData_,
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "HostCbTransport.devTransport")));
   FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemcpy(
       devTransport_,
       &hostCopy,

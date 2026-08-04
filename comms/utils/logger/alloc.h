@@ -6,6 +6,7 @@
 #include <string>
 
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/Types.h"
 
 struct CommLogData;
 
@@ -18,4 +19,6 @@ void logMemoryEvent(
     std::optional<int> numSegments = std::nullopt,
     std::optional<int64_t> durationUs = std::nullopt,
     const std::optional<std::string>& memType = std::nullopt,
-    bool isRegMemEvent = false);
+    bool isRegMemEvent = false,
+    meta::comms::memtrace::MemCallsite::Scope scope =
+        meta::comms::memtrace::MemCallsite::Scope::kNccl);

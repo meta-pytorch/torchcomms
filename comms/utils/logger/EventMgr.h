@@ -11,6 +11,7 @@
 
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/NcclScubaSample.h"
+#include "comms/utils/memtrace/Types.h"
 #include "comms/utils/trainer/TrainerContext.h"
 
 #define LOGGER_PG_ID_DEFAULT 0x80000000UL
@@ -134,7 +135,9 @@ class MemoryEvent : public LoggerEvent {
       std::optional<int> numSegments = std::nullopt,
       std::optional<int64_t> durationUs = std::nullopt,
       std::optional<std::string> memType = std::nullopt,
-      bool isRegMemEvent = false)
+      bool isRegMemEvent = false,
+      meta::comms::memtrace::MemCallsite::Scope scope =
+          meta::comms::memtrace::MemCallsite::Scope::kNccl)
       : commHash(logMetaData.commHash),
         commDesc(logMetaData.commDesc),
         rank(logMetaData.rank),
@@ -146,7 +149,8 @@ class MemoryEvent : public LoggerEvent {
         numSegments(numSegments),
         durationUs(durationUs),
         memType(std::move(memType)),
-        isRegMemEvent(isRegMemEvent) {
+        isRegMemEvent(isRegMemEvent),
+        scope(scope) {
     iteration = ncclxGetIteration();
   }
 
@@ -184,6 +188,8 @@ class MemoryEvent : public LoggerEvent {
   std::optional<int64_t> durationUs;
   std::optional<std::string> memType;
   bool isRegMemEvent = false;
+  meta::comms::memtrace::MemCallsite::Scope scope =
+      meta::comms::memtrace::MemCallsite::Scope::kNccl;
 };
 
 class CtranProfilerEvent : public CommEvent {

@@ -47,7 +47,9 @@ commResult_t memCacheAllocator::init() {
       FB_COMMCHECKTHROW_EX_NOCOMM(slabAllocator_->cuMalloc(
           (void**)&poolPtr_,
           NCCL_MEM_POOL_SIZE,
-          "memCacheAllocator::init",
+          meta::comms::memtrace::MemCallsite(
+              meta::comms::memtrace::MemCallsite::Scope::kCtran,
+              "memCacheAllocator::init"),
           nullptr,
           &poolHandle_,
           &newSlabSize));
@@ -133,7 +135,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
     size_t nBytes,
     BucketType bucket,
     const CommLogData* logMetaData,
-    const char* callsite) {
+    const meta::comms::memtrace::MemCallsite& callsite) {
   auto region = std::make_shared<memRegion>();
   if (poolPtr_ != nullptr && nBytes <= poolRemainSize_) {
     // pre allocated pool has enough space for this allocation, create a new
@@ -180,7 +182,7 @@ commResult_t memCacheAllocator::getCachedCuMemById(
     CUmemGenericAllocationHandle* cuHandle,
     size_t nBytes,
     const CommLogData* logMetaData,
-    const char* callsite,
+    const meta::comms::memtrace::MemCallsite& callsite,
     BucketType bucket) {
   // We align the allocation bytes to 16 before enterring allocation/caching
   // logic

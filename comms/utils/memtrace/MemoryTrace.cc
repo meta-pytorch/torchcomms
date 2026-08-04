@@ -44,15 +44,13 @@ void MemoryTrace::recordAlloc(uintptr_t addr, int64_t bytes) {
 void MemoryTrace::recordFree(uintptr_t addr, std::optional<int64_t> bytes) {
   std::lock_guard<std::mutex> lock(mutex_);
   int64_t freedBytes = 0;
-  if (bytes.has_value()) {
-    freedBytes = bytes.value();
+  auto it = allocMap_.find(addr);
+  if (it != allocMap_.end()) {
+    freedBytes = bytes.value_or(it->second);
+    allocMap_.erase(it);
   } else {
-    auto it = allocMap_.find(addr);
-    if (it != allocMap_.end()) {
-      freedBytes = it->second;
-    }
+    freedBytes = bytes.value_or(0);
   }
-  allocMap_.erase(addr);
   stats_.totalFreed += freedBytes;
   stats_.currentUsage -= freedBytes;
 }
@@ -74,7 +72,7 @@ std::string MemoryTrace::dump() const {
 
 void recordAlloc(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     int64_t bytes,
@@ -84,26 +82,47 @@ void recordAlloc(
     return;
   }
   logMemoryEvent(
-      logMetaData, callsite, use, addr, bytes, numSegments, durationUs);
+      logMetaData,
+      callsite.function,
+      use,
+      addr,
+      bytes,
+      numSegments,
+      durationUs,
+      /*memType=*/std::nullopt,
+      /*isRegMemEvent=*/false,
+      callsite.scope);
   MemoryTrace::getOrCreate(logMetaData.commHash)->recordAlloc(addr, bytes);
 }
 
 void recordFree(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes) {
   if (!NCCL_MEMTRACE_ENABLE) {
     return;
   }
-  logMemoryEvent(logMetaData, callsite, use, addr, bytes);
+  // The free callsite supplies its own scope directly (symmetric with alloc),
+  // so the scuba FREE row is tagged from callsite.scope.
+  logMemoryEvent(
+      logMetaData,
+      callsite.function,
+      use,
+      addr,
+      bytes,
+      /*numSegments=*/std::nullopt,
+      /*durationUs=*/std::nullopt,
+      /*memType=*/std::nullopt,
+      /*isRegMemEvent=*/false,
+      callsite.scope);
   MemoryTrace::getOrCreate(logMetaData.commHash)->recordFree(addr, bytes);
 }
 
 void recordReg(
     const CommLogData& logMetaData,
-    const std::string& callsite,
+    const MemCallsite& callsite,
     const std::string& use,
     uintptr_t addr,
     std::optional<int64_t> bytes,
@@ -115,14 +134,15 @@ void recordReg(
   }
   logMemoryEvent(
       logMetaData,
-      callsite,
+      callsite.function,
       use,
       addr,
       bytes,
       numSegments,
       durationUs,
       memType,
-      /*isRegMemEvent=*/true);
+      /*isRegMemEvent=*/true,
+      callsite.scope);
 }
 
 } // namespace meta::comms::memtrace

@@ -106,3 +106,25 @@ TEST(MemoryTraceTest, DumpToCommDumpMap) {
   EXPECT_EQ(stats.currentUsage, 512 * 1024);
   EXPECT_EQ(stats.peakUsage, 1024 * 1024 + 512 * 1024);
 }
+
+// A MemCallsite built implicitly from a bare string is baseline (kNccl); the
+// explicit two-arg form tags the scope (e.g. kCtran) while preserving the
+// function name. This is how baseline call sites stay unchanged and ctran call
+// sites opt into attribution.
+TEST(MemoryTraceTest, MemCallsiteScopeClassification) {
+  const MemCallsite baselineLiteral("initChannelDevRingUserRanks");
+  EXPECT_EQ(baselineLiteral.scope, MemCallsite::Scope::kNccl);
+  EXPECT_EQ(baselineLiteral.function, "initChannelDevRingUserRanks");
+
+  const MemCallsite baselineString(std::string("commAlloc"));
+  EXPECT_EQ(baselineString.scope, MemCallsite::Scope::kNccl);
+
+  const MemCallsite ctranCallsite(MemCallsite::Scope::kCtran, "initTmpBufs");
+  EXPECT_EQ(ctranCallsite.scope, MemCallsite::Scope::kCtran);
+  EXPECT_EQ(ctranCallsite.function, "initTmpBufs");
+
+  const MemCallsite mcclCallsite(
+      MemCallsite::Scope::kMccl, "McclComm::commRegister");
+  EXPECT_EQ(mcclCallsite.scope, MemCallsite::Scope::kMccl);
+  EXPECT_EQ(mcclCallsite.function, "McclComm::commRegister");
+}
