@@ -707,13 +707,14 @@ struct ReleaseFencePlacement {
 // Capture: submit(kernelA) -> cudaMemsetAsync (non-GPE work) ->
 // submit(kernelB), all on one user stream, with
 // NCCL_CTRAN_GRAPH_MIXING_SUPPORT=`mixingMode`. With mixing on (=1) the guard
-// emits one explicit EVENT_RECORD node per submit (on the side stream); with
-// mixing off (=0) the ordering fence is a plain captured event that folds into
-// the graph as an edge, so no EVENT_RECORD node appears. Either way the two GPE
-// kernels must stay ordered. The graph is also instantiated and launched to
-// confirm correctness in both modes. The cvar is latched in
-// OrderedWorkStreamGuard::init() at CtranGpe construction, so it must be set
-// before `new CtranGpe`.
+// emits one explicit EVENT_RECORD node per submit, hung off a forked side
+// stream so the fence can order across graphs; with mixing off (=0) the fence
+// is a plain captured record on the user stream that folds into the graph as a
+// dependency edge, so no EVENT_RECORD node appears for cudaGraphInstantiate to
+// place onto a busy channel. Either way the two GPE kernels must stay ordered.
+// The graph is also instantiated and launched to confirm correctness in both
+// modes. The cvar is latched in OrderedWorkStreamGuard::init() at CtranGpe
+// construction, so it must be set before `new CtranGpe`.
 static ReleaseFencePlacement captureReleaseFencePlacement(
     int cudaDev,
     CtranComm* dummyComm,
@@ -841,10 +842,15 @@ TEST_F(CtranGpeTest, GraphCaptureGraphMixingSupportSideStream) {
 }
 
 // NCCL_CTRAN_GRAPH_MIXING_SUPPORT=0: the ordering fence is a plain captured
-// event that folds into the graph as a dependency edge, so no standalone
-// EVENT_RECORD node is emitted — cudaGraphInstantiate has no floating fence to
-// mis-place onto a busy channel. Cross-submit ordering is still preserved via
-// the edge.
+// event recorded on the user stream, which capture folds into the graph as a
+// dependency edge, so no standalone EVENT_RECORD node is emitted --
+// cudaGraphInstantiate has no floating fence to mis-place onto a busy channel.
+// Cross-submit ordering is still preserved via the edge.
+//
+// The fence uses captureFenceEvent_, not execModeSyncEvent_, so the absorbed
+// record cannot leave the eager path's event capture-bound. The cost is that
+// nothing records execModeSyncEvent_ during capture; see
+// EagerAfterCaptureGraphMixingSupportOffIsUnordered.
 TEST_F(CtranGpeTest, GraphCaptureGraphMixingSupportEdge) {
   auto placement =
       captureReleaseFencePlacement(cudaDev, dummyComm, dummyDevState_d, "0");
@@ -853,6 +859,81 @@ TEST_F(CtranGpeTest, GraphCaptureGraphMixingSupportEdge) {
          "a dependency edge";
   EXPECT_TRUE(placement.kernelsOrdered)
       << "cross-submit ordering must be preserved";
+}
+
+// NCCL_CTRAN_GRAPH_MIXING_SUPPORT=0 does not support eager submissions after a
+// capture, and must degrade cleanly rather than erroring.
+//
+// The captured fence is a plain cudaEventRecord that capture absorbs, so no
+// graph node ever records it. Keeping that absorbed record on a dedicated
+// captureFenceEvent_ leaves execModeSyncEvent_ untainted, so doAcquire()'s
+// eager cudaEventSynchronize(execModeSyncEvent_) still succeeds -- recording it
+// on execModeSyncEvent_ instead would leave the event capture-bound and fail
+// with cudaErrorInvalidValue, which the guard then latches permanently
+// (doAcquire() returns error_ on every later submit).
+//
+// What this does NOT assert is ordering: because no node records
+// execModeSyncEvent_ during capture, the host barrier has no replay completion
+// to wait on, so a replay's host node may still race the eager cmdEnqueue.
+// Callers at mixing=0 must host-synchronize between a replay and an eager
+// CTRAN submission. Only mixing=1 orders this transition in the guard.
+TEST_F(CtranGpeTest, EagerAfterCaptureGraphMixingSupportOffIsUnordered) {
+  setenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT", "0", 1);
+  ncclCvarInit();
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = 42;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  auto submit = [&]() {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", 0);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    return gpe->submit(
+        std::move(emptyOps),
+        nullptr,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+  };
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  ASSERT_EQ(submit(), commSuccess);
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  // The host sync callers must perform at mixing=0: it is what actually orders
+  // the replay's host node ahead of the eager cmdEnqueue below.
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  EXPECT_EQ(submit(), commSuccess)
+      << "eager submit after capture must not fail on a capture-bound event";
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // The guard latches errors, so a second eager submit proves it stayed clean.
+  EXPECT_EQ(submit(), commSuccess) << "guard must not have latched an error";
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+  unsetenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT");
+  ncclCvarInit();
 }
 
 // Verify that consecutive same-stream submits followed by a cross-stream
