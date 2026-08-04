@@ -530,7 +530,7 @@ TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
 }
 
 // ============================================================================
-// Rank-sweep tables: Default arch, arch-default BDP, ranks {8,16,32,64}
+// Rank-sweep tables: Default arch, arch-default BDP, ranks {8,16,32,64,96,128}
 // ============================================================================
 
 TEST(AutoTuneDefaultRankSweep, DefaultBDP_8Ranks) {
@@ -687,6 +687,86 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
       {     16 * GB, 8, 512,      2 * MB,  16, 256 * KB},
       {     32 * GB, 8, 512,      2 * MB,  16, 256 * KB},
       {     64 * GB, 8, 512,      2 * MB,  16, 256 * KB},
+  };
+  // clang-format on
+
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
+}
+
+TEST(AutoTuneDefaultRankSweep, DefaultBDP_96Ranks) {
+  const int nRanks = 96;
+  const int maxOccNumBlocks = 64;
+  const int maxOccBlockSize = 512;
+
+  // clang-format off
+  const AutoTuneExpected cases[] = {
+      {      1 * KB, 1, 512,           8, 128, 256 * KB},
+      {      2 * KB, 1, 512,          16, 128, 256 * KB},
+      {      4 * KB, 1, 512,          32, 128, 256 * KB},
+      {      8 * KB, 1, 512,          64, 128, 256 * KB},
+      {     16 * KB, 1, 512,         128, 128, 256 * KB},
+      {     32 * KB, 1, 512,         256, 128, 256 * KB},
+      {     64 * KB, 1, 512,         512, 128, 256 * KB},
+      {    128 * KB, 1, 512,      1 * KB, 128, 256 * KB},
+      {    256 * KB, 1, 512,      2 * KB, 128, 256 * KB},
+      {    512 * KB, 1, 512,      4 * KB, 128, 256 * KB},
+      {      1 * MB, 2, 512,      8 * KB, 128, 256 * KB},
+      {      2 * MB, 2, 512,     16 * KB, 128, 256 * KB},
+      {      4 * MB, 2, 512,     16 * KB, 256, 256 * KB},
+      {      8 * MB, 4, 512,     32 * KB, 256, 256 * KB},
+      {     16 * MB, 8, 512,     64 * KB, 256, 256 * KB},
+      {     32 * MB, 8, 512,    128 * KB, 256, 256 * KB},
+      {     64 * MB, 8, 512,    256 * KB, 128, 256 * KB},
+      {    128 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {    256 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {    512 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      1 * GB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      2 * GB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      4 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {      8 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     16 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     32 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     64 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+  };
+  // clang-format on
+
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
+}
+
+TEST(AutoTuneDefaultRankSweep, DefaultBDP_128Ranks) {
+  const int nRanks = 128;
+  const int maxOccNumBlocks = 64;
+  const int maxOccBlockSize = 512;
+
+  // clang-format off
+  const AutoTuneExpected cases[] = {
+      {      1 * KB, 1, 512,           8, 128, 256 * KB},
+      {      2 * KB, 1, 512,          16, 128, 256 * KB},
+      {      4 * KB, 1, 512,          32, 128, 256 * KB},
+      {      8 * KB, 1, 512,          64, 128, 256 * KB},
+      {     16 * KB, 1, 512,         128, 128, 256 * KB},
+      {     32 * KB, 1, 512,         256, 128, 256 * KB},
+      {     64 * KB, 1, 512,         512, 128, 256 * KB},
+      {    128 * KB, 1, 512,      1 * KB, 128, 256 * KB},
+      {    256 * KB, 1, 512,      2 * KB, 128, 256 * KB},
+      {    512 * KB, 1, 512,      4 * KB, 128, 256 * KB},
+      {      1 * MB, 2, 512,      8 * KB, 128, 256 * KB},
+      {      2 * MB, 2, 512,     16 * KB, 128, 256 * KB},
+      {      4 * MB, 2, 512,     16 * KB, 256, 256 * KB},
+      {      8 * MB, 4, 512,     32 * KB, 256, 256 * KB},
+      {     16 * MB, 8, 512,     64 * KB, 256, 256 * KB},
+      {     32 * MB, 8, 512,    128 * KB, 256, 256 * KB},
+      {     64 * MB, 8, 512,    256 * KB, 128, 256 * KB},
+      {    128 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {    256 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {    512 * MB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      1 * GB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      2 * GB, 8, 512,    512 * KB,  64, 256 * KB},
+      {      4 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {      8 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     16 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     32 * GB, 8, 512,      1 * MB,  32, 256 * KB},
+      {     64 * GB, 8, 512,      1 * MB,  32, 256 * KB},
   };
   // clang-format on
 
