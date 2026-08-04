@@ -556,6 +556,8 @@ std::string createValidRemoteBusCard() {
         uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
       } ib;
     } u;
+    // OOO_RQ capability advertised to peer; must match CtranIbVc.cc BusCard.
+    uint8_t oooRq;
   };
 
   BusCard busCard{};
@@ -576,6 +578,8 @@ std::string createValidRemoteBusCard() {
     busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
     busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
   }
+
+  busCard.oooRq = 0;
 
   return std::string(reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
 }
@@ -854,6 +858,40 @@ TEST_P(CtranIbAbortCtrlMsgTest, NoAbortNoError) {
       });
 
   testAbortedCtrlMsg(std::move(mockSocket), false);
+  EXPECT_FALSE(abortCtrl_->isAborted());
+}
+
+// Fail-closed contract: with NCCL_CTRAN_IB_ENABLE_OOO_RQ=true, if either side
+// cannot support OOO_RQ, setupVc must return commSystemError instead of
+// silently degrading. createValidRemoteBusCard() advertises oooRq=0, and on
+// any host without OOO_RQ HW localOooRq_ is also false, so the negotiation
+// must fail.
+TEST_P(CtranIbAbortCtrlMsgTest, EnableOooRqRemoteMismatchFailsCleanly) {
+  EnvRAII<bool> enableOooRq(NCCL_CTRAN_IB_ENABLE_OOO_RQ, /*newValue=*/true);
+
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  std::string remoteBusCard = createValidRemoteBusCard();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillOnce([&](const folly::SocketAddress& addr,
+                    const std::string& ifName,
+                    const std::chrono::milliseconds timeout,
+                    size_t numRetries,
+                    bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) { return 0; });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly([&](void* buf, const size_t len) {
+        std::memcpy(
+            buf, remoteBusCard.data(), std::min(len, remoteBusCard.size()));
+        return 0;
+      });
+
+  testAbortedCtrlMsg(std::move(mockSocket), /*shouldFail=*/true);
   EXPECT_FALSE(abortCtrl_->isAborted());
 }
 

@@ -1977,6 +1977,17 @@ cvars:
      Number of main IB QPs owned by each physical CUDA block on each NIC.
      Puts from a block round-robin across its NIC-first QP lanes.
 
+ - name        : NCCL_CTRAN_IB_ENABLE_OOO_RQ
+   type        : bool
+   default     : false
+   description : |-
+     Enable out-of-order receive queue for ctran IB backend. When true,
+     ctran data QPs are created with MLX5DV_QP_CREATE_OOO_DP so
+     WRITE_WITH_IMM traffic can benefit from fabric packet spraying on CX8+
+     adaptive-routing fabrics. Fail-closed: if the local NIC doesn't
+     expose ooo_recv_wrs_caps.max_rc >= 128 or the peer doesn't advertise
+     support, the connection is aborted.
+
  - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
    type        : uint64_t
    default     : 1

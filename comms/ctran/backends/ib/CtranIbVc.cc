@@ -38,6 +38,12 @@ struct BusCard {
       uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
     } ib;
   } u;
+  // OOO_RQ capability advertised to the peer during bootstrap. 1 iff the local
+  // peer set NCCL_CTRAN_IB_ENABLE_OOO_RQ=true AND every active device
+  // exposes ooo_recv_wrs_caps.max_rc >= MAX_RECV_WR. setupVc() cross-checks
+  // both sides and fail-closes if the local peer requested OOO_RQ but the
+  // negotiation doesn't yield mutual support.
+  uint8_t oooRq;
 };
 
 // Apply the per-VC QP configuration. MAX_QPS is supplied by the caller
@@ -431,6 +437,31 @@ std::size_t CtranIbVirtualConn::getBusCardSize() {
 
 commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   BusCard* busCard = reinterpret_cast<BusCard*>(localBusCard);
+
+  // Compute local OOO_RQ support from per-device caps probed at init.
+  // Require every active device's HW to accept at least MAX_RECV_WR OOO
+  // placements — matches the per-QP pre-post depth we run with.
+  localOooRq_ = NCCL_CTRAN_IB_ENABLE_OOO_RQ;
+  for (int device : activeDevices_) {
+    if (devices_[device].oooRqSize < static_cast<uint32_t>(MAX_RECV_WR)) {
+      localOooRq_ = false;
+      break;
+    }
+  }
+
+  // Data QPs get MLX5DV_QP_CREATE_OOO_DP when local support is confirmed
+  // (localOooRq_). If the user requested OOO_RQ but local caps are missing,
+  // we still create plain QPs and advertise oooRq=0; setupVc() on both peers
+  // evaluates the negotiation symmetrically and fail-closes (WARN +
+  // commSystemError) if the request can't be honored.
+  if (localOooRq_) {
+    CLOGF(
+        INFO,
+        "CTRAN-IB-VC: OOO_RQ ENABLED — data QPs created with "
+        "MLX5DV_QP_CREATE_OOO_DP (per-device oooRqSize >= MAX_RECV_WR={}).",
+        MAX_RECV_WR);
+  }
+
   // assuming all devices portAttr
   ibverbx::ibv_port_attr portAttr;
   const int ctrlDevice = ctrlDevice_;
@@ -491,13 +522,17 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
           devices_[device].port,
           qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC));
     }
-    // maxNumQps_ is always a multiple of activeDevices_.size()
+    // Data QPs may opt into OOO_DP when local caps confirm it (localOooRq_).
+    // Control / notify / atomic QPs stay on the plain createRcQp path — their
+    // CQE handler (processCqeImpl) matches by FIFO deque order and would
+    // break under reordering.
     for (int i = 0; i < numQpsPerDevice_; i++) {
-      auto maybeQp = createRcQp(
+      auto maybeQp = createRcQpWithOooDp(
           devices_[device].ibvPd,
           devices_[device].ibvCq->cq(),
           MAX_SEND_WR,
-          MAX_RECV_WR);
+          MAX_RECV_WR,
+          localOooRq_);
       FOLLY_EXPECTED_CHECK(maybeQp);
       FOLLY_EXPECTED_CHECK(
           initQp(*maybeQp, devices_[device].port, qpAccessFlags));
@@ -531,11 +566,42 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   mtu_ = 128 * (1 << static_cast<int>(portAttr.active_mtu));
   maxMsgSize_ = portAttr.max_msg_sz;
 
+  busCard->oooRq = localOooRq_ ? 1 : 0;
+
   return commSuccess;
 }
 
 commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   BusCard* remoteBusCardStruct = reinterpret_cast<BusCard*>(remoteBusCard);
+
+  // OOO_RQ negotiation: fail-closed at the receive side so both peers
+  // evaluate symmetrically and abort together. Only fires when the local
+  // user explicitly requested OOO_RQ; peers with the cvar off ignore the
+  // remote's advertisement.
+  if (NCCL_CTRAN_IB_ENABLE_OOO_RQ) {
+    const bool remoteOooRq = (remoteBusCardStruct->oooRq != 0);
+    if (!localOooRq_ || !remoteOooRq) {
+      std::string perDevice;
+      for (int device : activeDevices_) {
+        perDevice += fmt::format(
+            " [dev={} name={} oooRqSize={}]",
+            device,
+            devices_[device].devName,
+            devices_[device].oooRqSize);
+      }
+      CLOGF(
+          WARN,
+          "CTRAN-IB-VC: NCCL_CTRAN_IB_ENABLE_OOO_RQ=true requested but "
+          "negotiation failed with peer {}: localOooRq={}, remoteOooRq={} "
+          "(need both sides supported). Local per-device state:{}. Aborting "
+          "connection (no silent fallback).",
+          peerRank,
+          localOooRq_,
+          remoteOooRq,
+          perDevice);
+      return commSystemError;
+    }
+  }
 
   // Validate that QPs have been initialized via getLocalBusCard()
   if (!areQpsInitialized()) {
