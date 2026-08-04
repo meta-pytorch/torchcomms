@@ -345,6 +345,15 @@ commResult_t AlgoImpl::execPipeline(
       const auto offset =
           getRecvChunkIdxInRail(upPeer, step, nLocalRanks, nRanks) * sendSize;
       const auto sendPtr = getPtr(pArgs.recvbuff, offset);
+      // The per-step barrier only paces the N-1 unicast writes' incast, so it
+      // is always kept on that path. The multicast write is a single
+      // switch-fanned store with no incast to pace, so
+      // NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER can drop it there as a perf A/B.
+      // Correctness holds either way via the step-0 barrier (cross-iteration
+      // WAR) + PipeEnd (completion), with disjoint per-rank rail columns in
+      // between.
+      const bool skipBarrier =
+          pArgs.mcWrite && NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER;
       FB_COMMCHECK(nvlCeBcast(
           comm_,
           sendPtr,
@@ -353,7 +362,7 @@ commResult_t AlgoImpl::execPipeline(
           pArgs.remoteRecvBuffs,
           pArgs.remoteAccessKeys,
           stream_,
-          /*barrier=*/true,
+          /*barrier=*/!skipBarrier,
           pArgs.mcWrite));
     }
 

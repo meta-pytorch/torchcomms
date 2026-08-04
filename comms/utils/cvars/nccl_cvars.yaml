@@ -2188,7 +2188,25 @@ cvars:
                   inter-node rail ring and intra-node CopyEngine based copy
      ctsrdpipeline - Ctran-based hybrid algorithm that streams recursive-doubling
                      forwards across rails while keeping NVLink-domain CopyEngine
-                     broadcast step-based. Requires nNodes to be a power of 2.
+                    broadcast step-based. Requires nNodes to be a power of 2.
+
+ - name        : NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER
+   type        : bool
+   default     : false
+   description : |-
+     Perf A/B knob for the per-step intra-node NVL broadcast barrier in the
+     AllGatherP pipeline / streamed-recursive-doubling algorithms, scoped to the
+     CE-multicast path only. When false (default) the per-step barrier is
+     emitted; when true it is skipped, but only where the multicast write is
+     engaged (pArgs.mcWrite). The barrier exists to pace the N-1 per-peer unicast
+     writes so they do not all-to-one incast a single peer, so it is always kept
+     on the unicast path regardless of this setting — including on ctwin runs
+     that fell back to unicast because multicast was unavailable, and on ctgraph,
+     which is always unicast. A multicast broadcast is one switch-fanned store
+     with no incast to pace, which is what makes it safe to drop there. Only the
+     optional per-step barrier is affected; the step-0/own-chunk barrier
+     (cross-iteration WAR guard) and the PipeEnd barrier (final completion) are
+     always kept for correctness.
 
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
