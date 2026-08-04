@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
 
@@ -34,6 +35,10 @@ StreamCaptureInfo captureInfo(cudaStream_t stream) {
 class OrderedWorkStreamGuardTest : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
+    // The guard latches NCCL_CTRAN_GRAPH_MIXING_SUPPORT in init(); without
+    // this the cvar reads 0 instead of its default 1, so the suite would
+    // silently exercise the non-default mixing-off path.
+    ncclCvarInit();
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamA_, cudaStreamNonBlocking));
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamB_, cudaStreamNonBlocking));
     guard_.init(logMetaData_, GetParam());
