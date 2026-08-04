@@ -62,20 +62,25 @@ class OrderedWorkStreamGuardTest
     ncclCvarInit();
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamA_, cudaStreamNonBlocking));
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&streamB_, cudaStreamNonBlocking));
+    CUDACHECK_TEST(cudaMalloc(&buf_, kBufBytes));
     guard_.init(logMetaData_, syncEagerAfterCaptured());
   }
 
   void TearDown() override {
+    CUDACHECK_TEST(cudaFree(buf_));
     CUDACHECK_TEST(cudaStreamDestroy(streamA_));
     CUDACHECK_TEST(cudaStreamDestroy(streamB_));
     unsetenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT");
     ncclCvarInit();
   }
 
+  static constexpr size_t kBufBytes = sizeof(int);
+
   CommLogData logMetaData_{};
   OrderedWorkStreamGuard guard_;
   cudaStream_t streamA_{};
   cudaStream_t streamB_{};
+  int* buf_{};
 };
 
 TEST_P(OrderedWorkStreamGuardTest, OrdersEagerWorkAcrossStreams) {
@@ -143,6 +148,111 @@ TEST_P(OrderedWorkStreamGuardTest, AppliesCapturedToEagerPolicy) {
   CUDACHECK_TEST(cudaStreamSynchronize(streamA_));
   CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
+}
+
+// Two captures in sequence through the same guard, each replayed, with an eager
+// acquire after each. This is the `isNewCapture` path: on the second capture's
+// first acquire, `lastRecordNode_` (mixing=1) and `captureFenceEvent_`
+// (mixing=0) both belong to graph 1, so neither can carry ordering into graph
+// 2 -- mixing=1 falls back to an external event wait and mixing=0 to nothing.
+//
+// The regression this guards against is state carried between captures: a
+// stale `lastCaptureId_`, a `lastRecordNode_` from the wrong graph, or a
+// capture-bound event leaking into the eager path. Every acquire/release must
+// still succeed and the guard must not latch an error, since `doAcquire()`
+// returns `error_` on all later calls once poisoned.
+TEST_P(OrderedWorkStreamGuardTest, HandlesSerialCaptures) {
+  std::chrono::milliseconds delay{100};
+
+  auto captureAndReplay = [&]() {
+    cudaGraph_t graph{};
+    cudaGraphExec_t graphExec{};
+    CUDACHECK_TEST(
+        cudaStreamBeginCapture(streamA_, cudaStreamCaptureModeGlobal));
+    auto captured = guard_.acquire(streamA_, captureInfo(streamA_));
+    ASSERT_EQ(captured.status(), commSuccess);
+    CUDACHECK_TEST(cudaLaunchHostFunc(streamA_, delayCallback, &delay));
+    ASSERT_EQ(captured.release(), commSuccess);
+    CUDACHECK_TEST(cudaStreamEndCapture(streamA_, &graph));
+    CUDACHECK_TEST(
+        cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, streamA_));
+    CUDACHECK_TEST(cudaStreamSynchronize(streamA_));
+    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+    CUDACHECK_TEST(cudaGraphDestroy(graph));
+  };
+
+  // Graph 1, then an eager acquire that consumes its fence.
+  captureAndReplay();
+  {
+    auto eager = guard_.acquire(streamB_, captureInfo(streamB_));
+    EXPECT_EQ(eager.status(), commSuccess) << "eager acquire after capture 1";
+    EXPECT_EQ(eager.release(), commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB_));
+
+  // Graph 2 is a distinct capture id, so its first acquire takes the
+  // isNewCapture path with graph 1's state still recorded in the guard.
+  captureAndReplay();
+  {
+    auto eager = guard_.acquire(streamB_, captureInfo(streamB_));
+    EXPECT_EQ(eager.status(), commSuccess) << "eager acquire after capture 2";
+    EXPECT_EQ(eager.release(), commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB_));
+
+  // The guard latches errors, so a clean acquire here proves none of the
+  // transitions above poisoned it.
+  auto final = guard_.acquire(streamB_, captureInfo(streamB_));
+  EXPECT_EQ(final.status(), commSuccess) << "guard must not have latched";
+  EXPECT_EQ(final.release(), commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB_));
+}
+
+// Serial captures where each capture contains two submits, so the second
+// submit takes the intra-capture path (`!isNewCapture`: the
+// cudaStreamUpdateCaptureDependencies re-link at mixing=1, the folded
+// dependency-edge wait at mixing=0) and the next capture's first submit then
+// takes the isNewCapture path with that state in place. Verifies the guard
+// transitions cleanly between the two in-capture branches across a capture
+// boundary, and that both graphs stay independently replayable.
+TEST_P(OrderedWorkStreamGuardTest, HandlesSerialCapturesWithMultipleSubmits) {
+  auto captureTwoSubmits = [&](cudaGraph_t* graph) {
+    CUDACHECK_TEST(
+        cudaStreamBeginCapture(streamA_, cudaStreamCaptureModeGlobal));
+    for (int i = 0; i < 2; ++i) {
+      auto scope = guard_.acquire(streamA_, captureInfo(streamA_));
+      ASSERT_EQ(scope.status(), commSuccess) << "submit " << i;
+      CUDACHECK_TEST(cudaMemsetAsync(buf_, i + 1, kBufBytes, streamA_));
+      ASSERT_EQ(scope.release(), commSuccess) << "submit " << i;
+    }
+    CUDACHECK_TEST(cudaStreamEndCapture(streamA_, graph));
+    ASSERT_NE(*graph, nullptr);
+  };
+
+  cudaGraph_t graph1{};
+  cudaGraph_t graph2{};
+  captureTwoSubmits(&graph1);
+  captureTwoSubmits(&graph2);
+
+  // Both graphs must instantiate and replay; a dependency on a node from the
+  // other graph would fail here rather than at capture time.
+  for (cudaGraph_t graph : {graph1, graph2}) {
+    cudaGraphExec_t graphExec{};
+    CUDACHECK_TEST(
+        cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+    CUDACHECK_TEST(cudaGraphLaunch(graphExec, streamA_));
+    CUDACHECK_TEST(cudaStreamSynchronize(streamA_));
+    CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  }
+
+  auto eager = guard_.acquire(streamB_, captureInfo(streamB_));
+  EXPECT_EQ(eager.status(), commSuccess) << "guard must not have latched";
+  EXPECT_EQ(eager.release(), commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB_));
+
+  CUDACHECK_TEST(cudaGraphDestroy(graph1));
+  CUDACHECK_TEST(cudaGraphDestroy(graph2));
 }
 
 TEST_P(OrderedWorkStreamGuardTest, PropagatesPoisonedError) {
