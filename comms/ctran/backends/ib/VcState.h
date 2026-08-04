@@ -86,10 +86,14 @@ class VcState {
 
   // ---- connectVcs() helpers used by CtranIb::connectVcs() ----
   //
-  // Read-only lookup of the per-peer VC vector. Returns nullptr when the
-  // peer has not yet been published.
+  // Read-only lookup of the per-peer VC vector. Returns nullptr until every
+  // VC of the peer is peer-ready.
   const std::vector<std::shared_ptr<CtranIbVirtualConn>>* tryGetVcs(
       int peerRank);
+
+  // Promote every VC of `peerRank` to peer-ready (safe to issue WQEs). Called
+  // once the bootstrap handshake confirms the remote peer finished setupVc.
+  void markPeerReady(int peerRank);
 
   // Returns true if the peer has been pre-connected (preConnect path).
   inline bool isPeerConnected(int peerRank) const {
@@ -110,9 +114,7 @@ class VcState {
   }
 
   // Get a virtual connection for a given peer (legacy single-VC view).
-  // Reads rankToVcs[peer].front(). If the peer is not yet connected,
-  // returns nullptr. For a returned VC, it is guaranteed to be ready
-  // to use.
+  // Reads rankToVcs[peer].front(). Returns nullptr until the VC is peer-ready.
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline std::shared_ptr<CtranIbVirtualConn> getVc(int peerRank) {
     if (PerfConfig::skipVcConnectionCheck ||
@@ -124,7 +126,14 @@ class VcState {
       if (it == locked->rankToVcs.end() || it->second.empty()) {
         return nullptr;
       }
-      return it->second.front();
+      auto& vc = it->second.front();
+      // Two-layer readiness: the VC is published (routable for incoming CQEs
+      // via getVcByQp) at setupVc time, but only safe to ISSUE on once the
+      // bootstrap handshake confirmed the peer finished setupVc. Gate here.
+      if (!vc->isPeerReady()) {
+        return nullptr;
+      }
+      return vc;
     }
   }
 

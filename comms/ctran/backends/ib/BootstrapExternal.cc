@@ -101,7 +101,18 @@ commResult_t BootstrapExternal::connectVc(
   std::vector<std::shared_ptr<CtranIbVirtualConn>> vcs;
   vcs.push_back(std::move(vc));
   std::vector<std::string> remoteIds{remoteVcIdentifier};
-  return vcState_.setupAndPublishVc(std::move(vcs), remoteIds, peerRank);
+  FB_COMMCHECK(vcState_.setupAndPublishVc(std::move(vcs), remoteIds, peerRank));
+  // STOPGAP: external bootstrap has no ack/handshake, so CtranIb cannot prove
+  // the remote peer finished setupVc (recv WQEs posted). We mark peer-ready
+  // here anyway, which assumes the external caller performed its own
+  // cross-rank barrier before issuing traffic. This preserves pre-existing
+  // external behavior (external mode never had a readiness barrier) and does
+  // not regress it; removing the call would deadlock external mode under the
+  // getVc peer-ready gate.
+  // TODO: add a proper external readiness handshake (deferred to a follow-up
+  // diff) so we no longer rely on the caller's barrier assumption.
+  vcState_.markPeerReady(peerRank);
+  return commSuccess;
 }
 
 } // namespace ctran::ib

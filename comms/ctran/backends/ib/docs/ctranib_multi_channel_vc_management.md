@@ -346,12 +346,13 @@ const std::vector<std::shared_ptr<CtranIbVirtualConn>>&
 **`connectVcs` is a blocking, init-once-per-peer API:**
 
 - **Blocking on first call.** The call returns only after the per-peer
-  rendezvous (TCP connect → bus-card swap loop → publish) has
+  rendezvous (TCP connect → bus-card swap loop → publish → ack) has
   completed on both sides. The smaller-rank side does the work
   synchronously inside the call; the larger-rank side spins on
   `vcState_.tryGetVcs(peer)` (with `std::this_thread::yield()` and
   an `abortCtrl_->Test()` check) until the CtranIb listen thread
-  publishes the vector. There is no async / future-returning variant.
+  publishes the vector *and marks it peer-ready* (see "VC readiness"
+  below). There is no async / future-returning variant.
 - **Single-thread-per-peer contract.** `connectVcs(peer, ...)` is NOT
   safe to call concurrently from multiple threads for the same
   `peer`. Callers (algos / RMA / `p2pHostIbTransport`) must serialize
@@ -384,7 +385,8 @@ const std::vector<std::shared_ptr<CtranIbVirtualConn>>&
 - **Single source of truth — fully backward compatible with
   `getVc`.** `vcStateMaps.rankToVcs[peer]` is the only per-peer VC
   storage. The legacy `getVc(peer)` is now a thin accessor that
-  returns `rankToVcs[peer].front()` (i.e. `vcs[0]`); it does not
+  returns `rankToVcs[peer].front()` (i.e. `vcs[0]`), and only once
+  that VC is peer-ready (see "VC readiness" below); it does not
   maintain a separate map and does not own a separate VC. The
   bootstrap path is unified too: `Bootstrap::connect` (and the
   accept-side handshake) always loops over
@@ -419,19 +421,81 @@ derived from cvars at init time):
   `Bootstrap` computes once per peer via
   `CtranIbVirtualConn::computeMaxQpsPerVc(comm, peer, numVcs)`),
   inserts the QPs into `qpToVcMap`, and publishes the vector into
-  `vcStateMaps.rankToVcs[B]`.
+  `vcStateMaps.rankToVcs[B]`. A then completes a one-int **ack
+  round-trip** with B over the same socket and calls `markPeerReady(B)`
+  to promote every VC to `kPeerReady`.
 - **Larger rank B**: the CtranIb listen thread accepts the TCP
   connection from A, matches the magic + rank, runs the matching
-  accept side of the bus-card swap loop, then publishes the resulting
-  VC vector into `vcStateMaps.rankToVcs[A]`. The application thread
+  accept side of the bus-card swap loop, publishes the resulting
+  VC vector into `vcStateMaps.rankToVcs[A]`, then runs the ack
+  round-trip and calls `markPeerReady(A)`. The application thread
   that called `connectVcs(A)` is spinning on `tryGetVcs(A)` (with a
   yield and an abort check) and returns the cached vector as soon
-  as the listen thread publishes.
+  as it is **peer-ready** — after the listen thread's ack, not merely
+  after publish.
 
 The larger-rank spin is intentionally simple — the same pattern as
 `preConnect` — and avoids per-peer waiter bookkeeping. `releaseAll()`
 clears `rankToVcs` and the spin loop's `abortCtrl_->Test()` check is
 what lets in-flight spinners exit cleanly during teardown.
+
+### VC readiness — the two-layer publish / peer-ready gate
+
+A VC carries a monotonic readiness status that separates *routable*
+from *issuable*, so a rank never issues traffic to a peer that has not
+yet finished its own `setupVc()`:
+
+`kNone → kLocalReady → kPeerReady`
+
+- **kLocalReady** — set at the end of `setupVc()` (local recv WQEs
+  posted, QPs in RTR/RTS). The VC is published into `vcStateMaps` at
+  this point, so incoming completions can already be routed.
+- **kPeerReady** — set by `VcState::markPeerReady(peer)` *after* the
+  bootstrap ack round-trip (internal bootstrap), or right after
+  `setupAndPublishVc` in the external bootstrap (no ack — the caller
+  owns the cross-rank barrier).
+
+The two lookup surfaces gate on different levels:
+
+| Lookup | Used for | Gated on |
+|---|---|---|
+| `getVcByQp((qpn, dev))` | incoming-CQE routing (`progressInternal`) | publish (kLocalReady) |
+| `getVc(peer)` / `tryGetVcs(peer)` | the **issue** path (ctrl/data ops, `connectVcs`, `preConnect`) | kPeerReady |
+
+`getVcByQp` resolves at publish so a completion for a QP that just
+reached RTR can always be dispatched. `getVc` / `tryGetVcs` return
+`nullptr` until the VC is peer-ready, so every issue path waits for the
+ack with no scattered per-call checks. The lock-free fast path in
+`getVc` (eager / `skipVcConnectionCheck`) is exempt: `preConnect`
+latches `connectedPeerMap_` only after a peer is peer-ready, so
+`isPeerConnected ⇒ kPeerReady`.
+
+**Why the gate exists.** The VC is published *before* the bootstrap
+ack. On the larger-rank side `setupVc()` and the ack both run on the
+**IB listen thread**, while the **user thread** reaches the data path
+by spinning on `getVc` / `tryGetVcs`. If those returned at publish, the
+user thread could issue a WQE after publish but before the ack — i.e.
+before the peer finished `setupVc()` and posted its recv WQEs. The
+smaller rank was already safe because its user thread drives
+`connect()` synchronously, which does not return until the ack
+completes. Gating `getVc` / `tryGetVcs` on `kPeerReady` extends that
+happens-before to the larger-rank user thread:
+
+```
+  LARGER RANK (issues the WQE)                    SMALLER RANK
+  user thread        IB listen thread             connect() thread (user)
+  -------------      ----------------------       -----------------------
+                     setupVc: RTR/RTS             setupVc: prepost + RTR/RTS
+                     publish VC (kLocalReady)
+  getVc()==null <--- published, NOT peer-ready
+   (keep spinning)   ack round-trip  <==socket==>  ack (sent after prepost)
+                     markPeerReady (kPeerReady)
+  getVc()!=null ───► issue WQE ═══════════════════► RQ has recvs, no RNR
+```
+
+Destructor cleanup keys on "past kNone" (`>= kLocalReady`), so a VC
+that completed `setupVc` but died before the ack still releases its
+control-message buffers.
 
 After `connectVcs` returns, the consumer holds `shared_ptr`s to every VC and
 calls `vc->iput(...)`, `vc->isendCtrlMsg(...)`, etc. directly **under
