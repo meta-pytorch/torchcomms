@@ -15,8 +15,8 @@
 
 namespace comms::fault_tolerance {
 
-Abort::Abort(bool enabled) : enabled_(enabled) {
-  if (!enabled_) {
+Abort::Abort(bool enabled) {
+  if (!enabled) {
     return;
   }
 
@@ -62,7 +62,7 @@ Abort::~Abort() {
 }
 
 void Abort::setAbort(AbortReason newReason) {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return;
   }
 
@@ -70,7 +70,7 @@ void Abort::setAbort(AbortReason newReason) {
 }
 
 bool Abort::isAborted() {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return false;
   }
 
@@ -86,11 +86,11 @@ bool Abort::isAborted() {
 }
 
 bool Abort::isTimeoutActive() const {
-  return enabled_ && hasTimeout_.load(std::memory_order_acquire);
+  return state_ != nullptr && hasTimeout_.load(std::memory_order_acquire);
 }
 
 bool Abort::isTimedOut() {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return false;
   }
 
@@ -112,7 +112,7 @@ bool Abort::isTimedOut() {
 }
 
 std::chrono::milliseconds Abort::getTimeRemaining() {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return std::chrono::milliseconds{-1};
   }
 
@@ -130,7 +130,7 @@ std::chrono::milliseconds Abort::getTimeRemaining() {
 }
 
 void Abort::startTimeout(std::chrono::milliseconds duration) {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return;
   }
 
@@ -140,7 +140,7 @@ void Abort::startTimeout(std::chrono::milliseconds duration) {
 }
 
 void Abort::cancelTimeout() {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return;
   }
 
@@ -148,7 +148,7 @@ void Abort::cancelTimeout() {
 }
 
 void Abort::setDefaultTimeout(std::chrono::milliseconds duration) {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return;
   }
 
@@ -157,7 +157,7 @@ void Abort::setDefaultTimeout(std::chrono::milliseconds duration) {
 }
 
 std::optional<std::chrono::milliseconds> Abort::getDefaultTimeout() const {
-  if (!enabled_) {
+  if (state_ == nullptr) {
     return std::nullopt;
   }
 
