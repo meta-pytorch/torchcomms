@@ -76,7 +76,7 @@ void launch_direct_reduce_scatter_ib(
   const auto timeout = make_launch_timeout(params.timeout_ms);
   if (params.quantized) {
     launch_direct_reduce_scatter_ib_quantized_impl(
-        args, params.num_blocks, params.stream, timeout);
+        args, params.num_blocks, params.use_tma, params.stream, timeout);
   } else {
     launch_direct_reduce_scatter_ib_impl(
         args, params.num_blocks, params.stream, timeout);

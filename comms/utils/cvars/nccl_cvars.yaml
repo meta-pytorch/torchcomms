@@ -3235,6 +3235,17 @@ cvars:
      Maximum number of logical CUDA blocks used by MCCL collectives that
      support message-size-based block tuning.
 
+ - name        : MCCL_PRIMS_TMA
+   type        : bool
+   default     : true
+   description : |-
+     Use Blackwell bulk TMA (cp.async.bulk) to stage the receive operands of the
+     quantized prims ReduceScatter through shared memory. Ignored on devices
+     below compute capability 10.0 and on any device that cannot opt into the
+     required dynamic shared memory; those fall back to the register load path,
+     which is functionally identical but slower. This is a kill switch for the
+     TMA path.
+
  - name        : MCCL_ABORT_TIMEOUT_MS
    type        : float
    default     : 30000.0
