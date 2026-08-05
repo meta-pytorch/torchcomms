@@ -161,8 +161,8 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     cudaSetDevice(0);
     if (!meta::comms::colltrace::graphColltraceSupported(
             "GraphColltraceProgressingTest")) {
-      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
-                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+      GTEST_SKIP()
+          << "graph colltrace unsupported on this device (needs sm_90+)";
     }
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaStreamCreate(&stream_);

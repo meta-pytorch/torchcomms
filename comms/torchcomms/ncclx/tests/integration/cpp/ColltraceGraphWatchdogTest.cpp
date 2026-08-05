@@ -65,8 +65,8 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
     // created, so no replay can time out and there is nothing to assert.
     if (!meta::comms::colltrace::graphColltraceSupported(
             "ColltraceGraphWatchdogTest")) {
-      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
-                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+      GTEST_SKIP()
+          << "graph colltrace unsupported on this device (needs sm_90+)";
     }
   }
 
@@ -186,14 +186,6 @@ TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
 // Captures an AllReduce into a CUDA graph via TorchComms, replays it, and
 // verifies the colltrace watchdog detects a timeout during graph replay.
 TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
-#if CUDART_VERSION >= 13000 && CUDART_VERSION < 13030
-  // The in-kernel colltrace graph path this exercises is compiled out on CUDA
-  // 13.0-13.2 (nvcc [[no_unique_address]] layout bug, fixed in 13.3; see the
-  // colltraceHdr gate in comms/ncclx/v2_30/src/include/device.h). With the
-  // primary GraphEventTracker also disabled in SetUp, there is no graph-replay
-  // timeout detector left to test here.
-  GTEST_SKIP() << "in-kernel colltrace graph path disabled on CUDA 13.0-13.2";
-#endif
   if (isTestDriverProcess()) {
     testDriverCheckCrashedWithWatchdog();
     return;
@@ -265,12 +257,6 @@ TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
 TEST_F(
     ColltraceGraphWatchdogTest,
     TestGraphReplayTimeoutAfterSuccessfulReplays) {
-#if CUDART_VERSION >= 13000 && CUDART_VERSION < 13030
-  // In-kernel colltrace graph path is compiled out on CUDA 13.0-13.2 (nvcc
-  // [[no_unique_address]] layout bug, fixed in 13.3); nothing to test here with
-  // GraphEventTracker also disabled in SetUp. See device.h colltraceHdr gate.
-  GTEST_SKIP() << "in-kernel colltrace graph path disabled on CUDA 13.0-13.2";
-#endif
   if (isTestDriverProcess()) {
     testDriverCheckCrashedWithWatchdog();
     return;
