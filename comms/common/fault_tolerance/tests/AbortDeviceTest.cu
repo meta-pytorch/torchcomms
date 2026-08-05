@@ -65,6 +65,16 @@ __global__ void deviceReadAbortPredicateKernel(
   }
 }
 
+__global__ void deviceReadCheckExpiredKernel(
+    AbortDevice abort,
+    int* observedCheckExpired,
+    int* observedReason) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *observedCheckExpired = abort.checkExpired() ? 1 : 0;
+    *observedReason = static_cast<int>(abort.reason());
+  }
+}
+
 __global__ void deviceWaitForTimeoutKernel(
     AbortDevice abort,
     int* observedMode,
@@ -86,6 +96,29 @@ __global__ void deviceWaitForTimeoutKernel(
 
   *observedMode = static_cast<int>(AbortReason::NONE);
   *observedIsAborted = 0;
+}
+
+__global__ void deviceWaitForTimeoutStartAliasKernel(
+    AbortDevice abort,
+    int* observedMode,
+    int* observedCheckExpired,
+    int maxIterations) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.start();
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.checkExpired()) {
+      *observedMode = static_cast<int>(abort.reason());
+      *observedCheckExpired = 1;
+      return;
+    }
+    __nanosleep(64);
+  }
+
+  *observedMode = static_cast<int>(AbortReason::NONE);
+  *observedCheckExpired = 0;
 }
 
 __global__ void deviceCancelAndRestartTimeoutKernel(
@@ -170,6 +203,16 @@ cudaError_t launchDeviceReadAbortPredicate(
   return cudaGetLastError();
 }
 
+cudaError_t launchDeviceReadCheckExpired(
+    AbortDevice abort,
+    int* observedCheckExpired,
+    int* observedReason,
+    cudaStream_t stream) {
+  deviceReadCheckExpiredKernel<<<1, 1, 0, stream>>>(
+      abort, observedCheckExpired, observedReason);
+  return cudaGetLastError();
+}
+
 cudaError_t launchDeviceWaitForTimeout(
     AbortDevice abort,
     int* observedMode,
@@ -178,6 +221,17 @@ cudaError_t launchDeviceWaitForTimeout(
     cudaStream_t stream) {
   deviceWaitForTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedMode, observedIsAborted, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceWaitForTimeoutStartAlias(
+    AbortDevice abort,
+    int* observedMode,
+    int* observedCheckExpired,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceWaitForTimeoutStartAliasKernel<<<1, 1, 0, stream>>>(
+      abort, observedMode, observedCheckExpired, maxIterations);
   return cudaGetLastError();
 }
 
