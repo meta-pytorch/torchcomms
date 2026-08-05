@@ -6,7 +6,6 @@
 #include <cstring>
 #include <sstream>
 
-#include <fmt/chrono.h>
 #include <fmt/format.h>
 #include <folly/String.h>
 #include <folly/Synchronized.h>
@@ -17,6 +16,7 @@
 
 #include "comms/utils/Conversion.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/CommsLogFormatter.h"
 #include "comms/utils/logger/ErrorStackUtil.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/NcclScubaSample.h"
@@ -267,85 +267,24 @@ std::string NcclLogFormatter::formatMessage(
     lockedError->lastErrorNativeStack.clear();
   }
 
-  auto timeSinceEpoch = message.getTimestamp().time_since_epoch();
-  auto epochSeconds =
-      std::chrono::duration_cast<std::chrono::seconds>(timeSinceEpoch);
-  std::chrono::microseconds usecs =
-      std::chrono::duration_cast<std::chrono::microseconds>(timeSinceEpoch) -
-      epochSeconds;
-
   // At least for now, formatter is called in the same thread as the logging
   // thread. So we don't need to worry about getting the information of another
   // thread here.
   int cudaDev = threadContextFn_();
 
-  auto basename = message.getFileBaseName();
-  // Format: <Glog format> <hostname>:<pid>:<tid> [<threadCtx>][<threadName>]
-  // <prefix> <logLevel>
-  // Example: W0414 11:46:56.369712 4115466 Logger.cc:25]
-  // devvm2605:4115466:4115466 [-1][main] NCCL WARN
-  auto header = fmt::format(
-      "{}{:%m%d %H:%M:%S}.{:06d} {:5d} {}:{}] {}:{}:{} [{}][{}] {} {} ",
-      getGlogLevelName(message.getLevel())[0],
-      message.getTimestamp(),
-      usecs.count(),
-      message.getThreadID(),
-      basename,
-      message.getLineNumber(),
-      procMetaData.hostname,
-      procMetaData.pid,
-      message.getThreadID(),
-      cudaDev,
-      myThreadName,
-      prefix_,
-      getGlogLevelName(message.getLevel()));
-
-  // The fixed portion of the header takes up 31 bytes.
-  //
-  // The variable portions that we can't account for here include the line
-  // number and the thread ID (just in case it is larger than 6 digits long).
-  // Here we guess that 40 bytes will be long enough to include room for this.
-  //
-  // If this still isn't long enough the string will grow as necessary, so the
-  // code will still be correct, but just slightly less efficient than if we
-  // had allocated a large enough buffer the first time around.
-  std::size_t headerLengthGuess = 90 + basename.size();
-
-  // Format the data into a buffer.
-  std::string buffer;
-  std::string_view msgData{message.getMessage()};
-  if (message.containsNewlines()) {
-    // If there are multiple lines in the log message, add a header
-    // before each one.
-
-    buffer.reserve(
-        ((header.size() + 1) * message.getNumNewlines()) + msgData.size());
-
-    std::size_t idx = 0;
-    while (true) {
-      auto end = msgData.find('\n', idx);
-      if (end == std::string_view::npos) {
-        end = msgData.size();
-      }
-
-      buffer.append(header);
-      auto line = msgData.substr(idx, end - idx);
-      buffer.append(line.data(), line.size());
-      buffer.push_back('\n');
-
-      if (end == msgData.size()) {
-        break;
-      }
-      idx = end + 1;
-    }
-  } else {
-    buffer.reserve(headerLengthGuess + msgData.size());
-    buffer.append(header);
-    buffer.append(msgData.data(), msgData.size());
-    buffer.push_back('\n');
-  }
-
-  return buffer;
+  const auto basename = message.getFileBaseName();
+  return formatCommsLogMessage(
+      getGlogLevelName(message.getLevel()),
+      message.getMessage(),
+      {.timestamp = message.getTimestamp(),
+       .threadId = message.getThreadID(),
+       .filename = std::string_view{basename.data(), basename.size()},
+       .lineNumber = message.getLineNumber(),
+       .hostname = procMetaData.hostname,
+       .processId = procMetaData.pid,
+       .threadContext = cudaDev,
+       .threadName = myThreadName,
+       .prefix = prefix_});
 }
 
 void logErrorToScuba(
