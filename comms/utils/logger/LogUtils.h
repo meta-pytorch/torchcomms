@@ -2,10 +2,13 @@
 
 #pragma once
 
+#include <chrono>
+
 #include <folly/Format.h>
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/RateLimit.h"
 
 //
 // This file defines Logging APIs modelled atop `folly/log.h`. Atop it intends
@@ -95,26 +98,26 @@ void initCommLogging(bool alwaysInit = false);
 #define CLOGF_SUBSYS(level, subsys, fmt, ...) \
   CLOGF_IF(level, CLOGF_ENABLED(subsys), fmt, ##__VA_ARGS__)
 
-#define CLOGF_FIRST_N(level, n, fmt, ...)                                      \
-  CLOGF_IF(                                                                    \
-      level,                                                                   \
-      [&] {                                                                    \
-        struct folly_detail_xlog_tag {};                                       \
-        return ::folly::detail::xlogFirstNExactImpl<folly_detail_xlog_tag>(n); \
-      }(),                                                                     \
-      fmt,                                                                     \
+#define CLOGF_FIRST_N(level, n, fmt, ...)                                    \
+  CLOGF_IF(                                                                  \
+      level,                                                                 \
+      [&] {                                                                  \
+        struct comms_log_first_n_tag {};                                     \
+        return ::meta::comms::logger::firstNExact<comms_log_first_n_tag>(n); \
+      }(),                                                                   \
+      fmt,                                                                   \
       ##__VA_ARGS__)
 
-#define CLOGF_EVERY_MS(level, ms, fmt, ...)                           \
-  CLOGF_IF(                                                           \
-      level,                                                          \
-      [_folly_detail_xlog_ms = ms] {                                  \
-        static ::folly::logging::IntervalRateLimiter                  \
-            folly_detail_xlog_limiter(                                \
-                1, std::chrono::milliseconds(_folly_detail_xlog_ms)); \
-        return folly_detail_xlog_limiter.check();                     \
-      }(),                                                            \
-      fmt,                                                            \
+#define CLOGF_EVERY_MS(level, ms, fmt, ...)                         \
+  CLOGF_IF(                                                         \
+      level,                                                        \
+      [_comms_log_every_ms = ms] {                                  \
+        static ::meta::comms::logger::IntervalRateLimiter           \
+            comms_log_rate_limiter(                                 \
+                1, std::chrono::milliseconds(_comms_log_every_ms)); \
+        return comms_log_rate_limiter.check();                      \
+      }(),                                                          \
+      fmt,                                                          \
       ##__VA_ARGS__)
 
 /* Trace level log API. Use cvar NCCL_CTRAN_ENABLE_TRACE_LOG to control for
