@@ -16,14 +16,29 @@ namespace ctran::allgatherp {
 // transfer.
 // Used when nLocalRanks > 1 in allgatherP pipeline algorithm. It is called once
 // to start the algorithm
+//
+// Also carries the own-chunk intra-node barrier that the following nvlCeBcast
+// would otherwise launch as a separate ncclKernelNvlBarrier, saving one kernel
+// (one graph node under capture). Folding it in is free: that standalone kernel
+// does the same devStateLoadToShm + barrier, so the ~67KB shared-memory load
+// moves rather than being added.
 __global__ void ncclKernelAllGatherPPipeStart(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState) {
   ctran::device::ColltraceEventScope colltraceScope(f);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
+    // Kick GPE first: barriering before this would let a rank that is late to
+    // the barrier delay every peer's inter-node start, which is exactly the
+    // overlap this kernel exists to preserve.
     ctran::device::KernelStartGpeAndExit(f);
   }
+  if (flag) {
+    devStateLoadToShm(flag, devState);
+  } else {
+    devStateLoadToShm(devState);
+  }
+  barrier(statex->localRank(), statex->nLocalRanks());
 }
 
 // Kernel to block intranode CE copies on the stream till GPE thread has
@@ -103,6 +118,12 @@ __global__ void ncclKernelAllGatherPSrdPipeStart(
   if (flag) {
     ctran::device::KernelStartGpeAndExit(f);
   }
+  if (flag) {
+    devStateLoadToShm(flag, devState);
+  } else {
+    devStateLoadToShm(devState);
+  }
+  barrier(statex->localRank(), statex->nLocalRanks());
 }
 
 __global__ void ncclKernelAllGatherPSrdPipeSync(
