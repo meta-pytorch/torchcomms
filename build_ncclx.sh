@@ -215,6 +215,11 @@ function build_third_party {
     fi
   fi
 
+  if [[ ! -f "${CMAKE_PREFIX_PATH}/include/spdlog/spdlog.h" ]]; then
+    build_fb_oss_library "https://github.com/gabime/spdlog.git" "v1.16.0" spdlog \
+      "-DSPDLOG_BUILD_SHARED=OFF -DSPDLOG_FMT_EXTERNAL=ON -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_BUILD_TESTS=OFF"
+  fi
+
   popd
 }
 
@@ -377,7 +382,7 @@ fi
 pushd "${NCCL_HOME}"
 
 function build_nccl {
-  make VERBOSE=1 -j$(nproc) \
+  make VERBOSE=1 -j"${NCCL_BUILD_JOBS:-$(nproc)}" \
     src.build \
     BUILDDIR="$BUILDDIR" \
     NVCC_GENCODE="$NVCC_GENCODE" \
@@ -394,7 +399,7 @@ function build_nccl {
 }
 
 function build_and_install_nccl {
-make VERBOSE=1 -j$(nproc) \
+make VERBOSE=1 -j"${NCCL_BUILD_JOBS:-$(nproc)}" \
     src.install \
     BUILDDIR="$BUILDDIR" \
     NVCC_GENCODE="$NVCC_GENCODE" \
