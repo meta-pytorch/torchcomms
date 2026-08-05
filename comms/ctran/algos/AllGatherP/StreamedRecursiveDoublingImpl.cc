@@ -314,6 +314,11 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
   }
 
   if (nLocalRanks > 1) {
+    // The own-chunk barrier (cross-iteration WAR guard) is folded into
+    // ncclKernelAllGatherPSrdPipeStart, saving a separate ncclKernelNvlBarrier
+    // launch. PipeStart is only submitted when nNodes > 1, so the single-node
+    // case must still emit the standalone barrier here: exactly one of the two
+    // must emit it.
     FB_COMMCHECK(nvlCeBcast(
         comm_,
         sendbuff,
@@ -322,7 +327,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
         pArgs.remoteRecvBuffs,
         pArgs.remoteAccessKeys,
         stream_,
-        /*barrier=*/true,
+        /*barrier=*/nNodes == 1,
         pArgs.mcWrite));
 
     for (int step = 0; step < recvPlan.nSteps(); step++) {

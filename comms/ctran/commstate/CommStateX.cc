@@ -161,9 +161,9 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
 
 void CommStateX::setNvlFabricTopos(
     std::vector<NvlFabricTopology> nvlFabricTopologies,
-    std::optional<bool> fabricHwSupportedForTest) {
-  bool fabricHwSupported =
-      fabricHwSupportedForTest.value_or(ctran::utils::isCuMemFabricEnabled());
+    std::optional<bool> fabricHwSupportedOverride) {
+  const bool fabricHwSupported =
+      fabricHwSupportedOverride.value_or(ctran::utils::isCuMemFabricEnabled());
   FB_CHECKABORT(
       nvlFabricTopologies.size() == nRanks_,
       "size of nvlFabricTopologies not equal to nRanks_: {}",
@@ -171,6 +171,9 @@ void CommStateX::setNvlFabricTopos(
   nvlFabricTopos_ = std::move(nvlFabricTopologies);
   nvlFabricRankStates_.clear();
   nvlDomainRanks_.clear();
+  cliqueRanks_.clear();
+  myNvlFabricRankState_ = {};
+  nvlFabricCliqueEnabled_ = false;
   nvlFabricEnabled_ =
       fabricHwSupported && nvlFabricTopos_.at(rank_).supportNvlFabric;
   if (!nvlFabricEnabled_) {

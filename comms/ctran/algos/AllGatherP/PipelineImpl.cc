@@ -310,6 +310,11 @@ commResult_t AlgoImpl::execPipeline(
   if (nLocalRanks > 1) {
     // - Step 0: Broadcast local chunk to intra-node peers
     // Copy data to other local ranks
+    //
+    // The own-chunk barrier (cross-iteration WAR guard) is folded into
+    // ncclKernelAllGatherPPipeStart, saving a separate ncclKernelNvlBarrier
+    // launch. PipeStart is only submitted when nNodes > 1, so the single-node
+    // case must still emit the standalone barrier here.
     FB_COMMCHECK(nvlCeBcast(
         comm_,
         sendbuff,
@@ -318,7 +323,7 @@ commResult_t AlgoImpl::execPipeline(
         pArgs.remoteRecvBuffs,
         pArgs.remoteAccessKeys,
         stream_,
-        /*barrier=*/true,
+        /*barrier=*/nNodes == 1,
         pArgs.mcWrite));
 
     const int upPeer = (nRanks + myRank - nLocalRanks) % nRanks;

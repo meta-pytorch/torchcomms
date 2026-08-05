@@ -335,6 +335,65 @@ TEST(CommStateXTest, nvlFabricTest) {
   }
 }
 
+// Regression for the MCCL fabric-init prep (mccl::utils::initRankTopology now
+// calls setNvlFabricTopos): a single NVL fabric clusterId spanning MULTIPLE
+// physical hosts must collapse into ONE cross-host NVL domain, so
+// localRankToRanks() returns the whole domain (all ranks) rather than the
+// per-host node group. This is what lets a single-NVL-domain algo (cnvlmm) span
+// an MNNVL clique; without the fabric topos, localRankToRanks() would return
+// only same-host ranks and cross-host peers would fall back to IB.
+TEST(CommStateXTest, nvlFabricCrossHostSingleDomain) {
+  const int rank = 0;
+  const int nRanks = 8;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+
+  // All 8 ranks share ONE NVL fabric (clusterId1 / cliqueId1) ...
+  std::vector<NvlFabricTopology> nvlFabricTopologies{};
+  for (int r = 0; r < nRanks; ++r) {
+    nvlFabricTopologies.emplace_back(
+        createNvlFabricTopology(r, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  }
+  // ... spread across 4 distinct physical hosts (2 ranks each).
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(4, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(5, kDc, kZone, kHost2));
+  rankTopologies.emplace_back(createRankTopology(6, kDc, kZone, kHost3));
+  rankTopologies.emplace_back(createRankTopology(7, kDc, kZone, kHost3));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      std::vector<int>{});
+
+  // With fabric HW supported, the single clusterId collapses all 8 cross-host
+  // ranks into one NVL domain.
+  commState->setNvlFabricTopos(nvlFabricTopologies, /*fabricHwSupported=*/true);
+  EXPECT_TRUE(commState->nvlFabricEnabled());
+  for (int i = 0; i < nRanks; ++i) {
+    EXPECT_TRUE(commState->isSameNvlFabric(0, i));
+  }
+  EXPECT_EQ(commState->localRankToRanks().size(), static_cast<size_t>(nRanks));
+
+  // Without fabric HW support (the pre-fix / no-IMEX case), it falls back to
+  // the per-host node group (2 ranks/host), NOT one cross-host domain.
+  commState->setNvlFabricTopos(
+      std::move(nvlFabricTopologies), /*fabricHwSupported=*/false);
+  EXPECT_FALSE(commState->nvlFabricEnabled());
+  EXPECT_LT(commState->localRankToRanks().size(), static_cast<size_t>(nRanks));
+}
+
 TEST(CommStateXTest, nvlFabricCliqueTest) {
   // enable clique and NVL software partioning mode
   EnvRAII env1(NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE, true);
@@ -403,6 +462,14 @@ TEST(CommStateXTest, nvlFabricCliqueTest) {
     EXPECT_EQ(commState->node(i), i / 2);
     EXPECT_EQ(commState->localRankToRanks().size(), 2);
   }
+
+  commState->setNvlFabricTopos(nvlFabricTopologies, true);
+  EXPECT_TRUE(commState->nvlFabricEnabled());
+  EXPECT_TRUE(commState->nvlFabricCliqueEnabled());
+
+  commState->setNvlFabricTopos(std::move(nvlFabricTopologies), false);
+  EXPECT_FALSE(commState->nvlFabricEnabled());
+  EXPECT_FALSE(commState->nvlFabricCliqueEnabled());
 }
 
 TEST(CommStateXTest, nvlFabricVCliqueSizeHint) {

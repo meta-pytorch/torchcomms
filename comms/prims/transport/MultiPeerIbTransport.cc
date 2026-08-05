@@ -1221,11 +1221,13 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
                 allocSize));
       }
       errno = 0;
+      // Data Direct requires the whole exported mapping; registering an
+      // unaligned subrange can fail with EOPNOTSUPP on GB300.
       mr = symbols.mlx5dv_internal_reg_dmabuf_mr(
           nics_[n].ibvPd,
-          ddDmabuf->alignment.dmabufOffset,
-          allocSize,
-          static_cast<uint64_t>(allocBase),
+          /*offset=*/0,
+          ddDmabuf->alignment.alignedSize,
+          reinterpret_cast<uint64_t>(ddDmabuf->alignment.alignedBase),
           ddDmabuf->fd,
           accessFlags,
           ibverbx::MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);

@@ -2,6 +2,8 @@
 
 #pragma once
 #include <folly/Synchronized.h>
+#include <condition_variable>
+#include <memory>
 #include <queue>
 
 namespace ctran::utils {

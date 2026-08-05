@@ -156,6 +156,7 @@ commResult_t buildSplitShareChild(
   child->logMetaData_.nRanks = parentRanks.size();
   child->opCount_ = parent->opCount_;
   child->runtimeConn_ = parent->runtimeConn_;
+  child->tmpbufEagerAlloc_ = parent->tmpbufEagerAlloc_;
   child->colltraceNew_ = parent->colltraceNew_;
   child->memCache_ = parent->memCache_;
   child->isSplitShare_ = true;

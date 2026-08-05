@@ -112,9 +112,22 @@ cvars:
      cudaStreamWaitEvent: under capture it folds into the graph as a dependency
      edge rather than a standalone EVENT_RECORD node, so cudaGraphInstantiate
      has no floating fence to mis-place onto a busy hardware channel — the cause
-     of an observed multi-ms collective park. The trade-off is no cross-graph
-     ordering. The eager (non-capture) path is unchanged regardless of this
-     setting.
+     of an observed multi-ms collective park.
+
+     CAVEAT — 0 does not order a graph replay ahead of a following eager CTRAN
+     submission, and does not order across graphs. The captured record is
+     absorbed by capture rather than executed, so no graph node records the
+     fence at replay and the guard's eager-path host barrier has nothing to wait
+     on. GPE enqueues its command from the graph's host node on a driver
+     callback thread, so that command can race an eager submission's enqueue
+     into GPE's single-threaded queue and deadlock. Callers that mix replay and
+     eager CTRAN operations must host-synchronize (cudaStreamSynchronize,
+     cudaDeviceSynchronize, or cudaEventSynchronize on their own event) between
+     the two; a cudaStreamWaitEvent is not sufficient, since it orders GPU work
+     while leaving the host free to enqueue ahead. Use 1 for eager-dispatching
+     paths such as ctwin AllGatherP; 0 suits capture-only paths such as ctgraph.
+     A separate internal event carries the captured fence, so the unsupported
+     mixed case degrades to unordered rather than failing.
 
  - name        : NCCL_CTRAN_GPE_DEVICE_RING
    type        : bool
