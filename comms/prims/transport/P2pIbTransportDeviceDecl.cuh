@@ -58,6 +58,21 @@ enum class IbgdaSendRecvProgressStatus : uint8_t {
   Done,
 };
 
+/**
+ * Result of one bounded registered-source send or drain attempt.
+ *
+ * `Posted` is deliberately distinct from `Drained`: after `Posted`, every
+ * data WQE has been submitted but the NIC may still be reading the caller's
+ * source buffer. The source is reusable only after a later drain returns
+ * `Drained`.
+ */
+enum class IbgdaRegisteredSendProgressStatus : uint8_t {
+  Waiting,
+  Progressed,
+  Posted,
+  Drained,
+};
+
 #if PIPES_IS_DEVICE_COMPILE
 __device__ __forceinline__ uint32_t trace_ibgda_step(std::size_t value) {
   constexpr std::size_t kMaxTraceStep = static_cast<std::size_t>(UINT32_MAX);
@@ -254,6 +269,13 @@ __device__ __forceinline__ void record_send_completion(
     uint64_t generation,
     const IbLocalCompletionTicket& ticket);
 
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_drain_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const Timeout& timeout = Timeout());
+
 /**
  * Transport-agnostic pipelined RDMA send/recv helpers.
  *
@@ -320,6 +342,29 @@ __device__ __forceinline__ void init_send_progress(
       channelLayout, group, nbytes, max_signal_bytes, "init_send_progress");
   reserve_progress_step(group, slot, state, geometry);
   store_progress_state(group, slot, state);
+#else
+  (void)transport;
+  (void)group;
+  (void)nbytes;
+  (void)max_signal_bytes;
+#endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ void init_registered_send_progress(
+    Transport& transport,
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (nbytes > 0) {
+    // A registered send may source bytes produced cooperatively by the entire
+    // group. Each producer publishes its own writes once before any chunk is
+    // posted; the source must remain immutable until the matching drain.
+    __threadfence_system();
+    group.sync();
+  }
+  init_send_progress(transport, group, nbytes, max_signal_bytes);
 #else
   (void)transport;
   (void)group;
@@ -586,6 +631,216 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   (void)max_signal_bytes;
   (void)timeout;
   return IbgdaSendRecvProgressStatus::Done;
+#endif
+}
+
+/**
+ * Attempt bounded progress on one initialized registered-source send.
+ *
+ * This is wire-compatible with `send()` and `progress_send_once()`, but the
+ * payload is RDMA-read directly from `src` instead of first being copied into
+ * transport-owned send staging. The peer still receives into its normal recv
+ * staging and observes the same DATA_READY/SLOT_FREE byte stream.
+ *
+ * The final posting attempt returns `Posted`, not `Drained`. Call
+ * `progress_registered_send_drain_once()` before modifying or releasing any
+ * source range used by posted sends. Multiple registered sends may be posted
+ * before one drain; completion tickets are monotonic per QP lane, so the drain
+ * conservatively covers all outstanding sends for this channel.
+ *
+ * The RDMA WQE reads only valid payload bytes. The final DATA_READY credit may
+ * still include rounded protocol bytes and signal-alignment padding so the
+ * existing receiver protocol remains unchanged.
+ */
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout()) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  auto& channelLayout = transport.channel_layout();
+  auto& progressSlot = progress_send_slot(transport, group);
+  IbChannelProgress state = progressSlot;
+  if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
+    // Even an empty operation must force the caller through the drain path:
+    // an earlier registered send on this channel may still be reading its
+    // source buffer.
+    return IbgdaRegisteredSendProgressStatus::Posted;
+  }
+
+  const ProgressGeometry geometry = make_progress_geometry(
+      channelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "progress_registered_send_once");
+  if (active_payload_offset(state) >= geometry.protocolBytes) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: progress_registered_send_once payloadOffset=%llu "
+          ">= protocolBytes=%llu without Done stage\n",
+          static_cast<unsigned long long>(active_payload_offset(state)),
+          static_cast<unsigned long long>(geometry.protocolBytes));
+    }
+    PIPES_DEVICE_TRAP();
+  }
+  validate_send_progress_stage(group, state);
+
+  const detail::IbSendRecvProgressStage initialStage = state.activeStage;
+  const std::size_t initialNextByte = state.activeNextByte;
+  const std::size_t pipelineBytes =
+      geometry.perBlockSlot * static_cast<std::size_t>(geometry.pipelineDepth);
+  IbLocalChannel& localChannel =
+      transport.local_channel(static_cast<uint32_t>(geometry.groupId));
+  const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
+  const IbRemoteChannel remoteChannel =
+      makeIbRemoteChannel(channelLayout, geometry.groupId);
+
+  if (state.activeStage ==
+      detail::IbSendRecvProgressStage::WaitLocalCompletion) {
+    const ProgressChunk chunk = next_chunk(channelLayout, state, geometry);
+    // Registered sends do not reuse local send staging, but retiring the prior
+    // generation bounds outstanding completion state and prevents QP/CQ
+    // exhaustion during transfers that wrap the pipeline many times.
+    if (!try_prepare_send_slot(
+            transport,
+            group,
+            chunk.slotId,
+            chunk.pipelineGeneration,
+            timeout)) {
+      return IbgdaRegisteredSendProgressStatus::Waiting;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
+  }
+
+  if (state.activeStage == detail::IbSendRecvProgressStage::WaitSlotFree) {
+    const ProgressChunk chunk = next_chunk(channelLayout, state, geometry);
+    const bool isFinalChunk =
+        chunk.dataOff + chunk.bytes >= geometry.protocolBytes;
+    const uint64_t protocolStreamEnd =
+        chunk.streamEnd + (isFinalChunk ? state.activeTailPadding : 0);
+    if (protocolStreamEnd > pipelineBytes) {
+      const uint64_t expected = protocolStreamEnd - pipelineBytes;
+      uint32_t ready = 1;
+      unsigned long long current = 0;
+      if (group.is_leader()) {
+        current = static_cast<unsigned long long>(
+            transport.read_signal(localSlotFree));
+        ready = current >= expected ? 1U : 0U;
+        if (!ready) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "progress_registered_send_once waiting for SLOT_FREE "
+              "expected>=%llu, current=%llu",
+              static_cast<unsigned long long>(expected),
+              current);
+        }
+      }
+      ready = group.broadcast<uint32_t>(ready);
+      if (!ready) {
+        if (state.activeStage != initialStage ||
+            state.activeNextByte != initialNextByte) {
+          store_progress_state(group, progressSlot, state);
+          return IbgdaRegisteredSendProgressStatus::Progressed;
+        }
+        return IbgdaRegisteredSendProgressStatus::Waiting;
+      }
+    }
+
+    const std::size_t validBytes =
+        valid_payload_bytes(chunk.dataOff, chunk.bytes, geometry.payloadBytes);
+    const std::size_t protocolBytesThis =
+        chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
+
+    group.sync();
+    if (group.is_leader()) {
+      __threadfence_system();
+      ThreadGroup solo{
+          0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+      const auto completion = transport.put(
+          solo,
+          src.subBuffer(chunk.dataOff),
+          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+          validBytes,
+          remoteChannel.dataReady,
+          protocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
+          /*signalPerLane=*/true);
+      record_send_completion(
+          transport,
+          static_cast<uint32_t>(geometry.groupId),
+          chunk.slotId,
+          chunk.pipelineGeneration,
+          completion);
+    }
+    group.sync();
+
+    state.activeNextByte += chunk.bytes;
+    if (active_payload_offset(state) >= geometry.protocolBytes) {
+      transition_progress_stage(
+          group, state, detail::IbSendRecvProgressStage::Done);
+      store_progress_state(group, progressSlot, state);
+      return IbgdaRegisteredSendProgressStatus::Posted;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::WaitLocalCompletion);
+  }
+
+  if (state.activeStage != initialStage ||
+      state.activeNextByte != initialNextByte) {
+    store_progress_state(group, progressSlot, state);
+    return IbgdaRegisteredSendProgressStatus::Progressed;
+  }
+  return IbgdaRegisteredSendProgressStatus::Waiting;
+#else
+  (void)transport;
+  (void)group;
+  (void)src;
+  (void)nbytes;
+  (void)max_signal_bytes;
+  (void)timeout;
+  return IbgdaRegisteredSendProgressStatus::Drained;
+#endif
+}
+
+/**
+ * Blocking registered-source send.
+ *
+ * Unlike the resumable posting API, this method does not return until all NIC
+ * reads from the source have locally completed.
+ */
+template <typename Transport>
+__device__ __forceinline__ void send_registered(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout()) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  init_registered_send_progress(transport, group, nbytes, max_signal_bytes);
+  IbgdaRegisteredSendProgressStatus status;
+  do {
+    status = progress_registered_send_once(
+        transport, group, src, nbytes, max_signal_bytes, timeout);
+  } while (status != IbgdaRegisteredSendProgressStatus::Posted &&
+           status != IbgdaRegisteredSendProgressStatus::Drained);
+  while (status != IbgdaRegisteredSendProgressStatus::Drained) {
+    status = progress_registered_send_drain_once(transport, group, timeout);
+  }
+#else
+  (void)transport;
+  (void)group;
+  (void)src;
+  (void)nbytes;
+  (void)max_signal_bytes;
+  (void)timeout;
 #endif
 }
 
@@ -2469,6 +2724,65 @@ __device__ __forceinline__ void record_send_completion(
   (void)ticket;
 #endif
 }
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_drain_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t result =
+      static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Drained);
+  if (group.is_leader()) {
+    bool foundPending = false;
+    bool madeProgress = false;
+    auto& channel = transport.local_channel(group.group_id);
+    const uint32_t numLanes = transport.send_completion_lane_count();
+    const int pipelineDepth = transport.channel_layout().pipelineDepth;
+
+    for (int slotId = 0; slotId < pipelineDepth; ++slotId) {
+      auto& slot = channel.sendCompletionSlots[slotId];
+      uint64_t pending = slot.laneMask;
+      for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+        const uint64_t laneBit = 1ULL << laneId;
+        if ((pending & laneBit) == 0) {
+          continue;
+        }
+        const IbLocalCompletionTicket ticket{
+            .completionId = laneId,
+            .value = slot.values[laneId],
+        };
+        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+          pending &= ~laneBit;
+          madeProgress = true;
+          continue;
+        }
+        foundPending = true;
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            timeout,
+            "registered send local completion timed out slot=%d lane=%u",
+            slotId,
+            laneId);
+      }
+      slot.laneMask = pending;
+    }
+
+    if (foundPending) {
+      result = static_cast<uint32_t>(
+          madeProgress ? IbgdaRegisteredSendProgressStatus::Progressed
+                       : IbgdaRegisteredSendProgressStatus::Waiting);
+    }
+  }
+  result = group.broadcast<uint32_t>(result);
+  return static_cast<IbgdaRegisteredSendProgressStatus>(result);
+#else
+  (void)transport;
+  (void)group;
+  (void)timeout;
+  return IbgdaRegisteredSendProgressStatus::Drained;
+#endif
+}
 } // namespace detail
 
 struct P2pIbTransportDevice {
@@ -2657,6 +2971,10 @@ struct P2pIbTransportDevice {
 
   __device__ void fence();
 
+  __device__ __forceinline__ void require_ibgda(
+      ThreadGroup& group,
+      const char* operation) const;
+
   // Pipelined send/recv — forwarded to the active backend's shared helpers.
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
@@ -2666,6 +2984,13 @@ struct P2pIbTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args);
+
+  __device__ __forceinline__ void send_registered(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
@@ -2700,6 +3025,11 @@ struct P2pIbTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
+  __device__ __forceinline__ void init_registered_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0);
+
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
@@ -2713,6 +3043,19 @@ struct P2pIbTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args);
+
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_once(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout());
+
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_drain_once(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
