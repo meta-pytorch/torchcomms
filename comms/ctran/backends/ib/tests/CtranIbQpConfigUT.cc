@@ -113,6 +113,23 @@ TEST(CtranIbDefaultFlushTest, EnablesFlushForOldNvidiaGb300AndForceFlush) {
   }
 }
 
+TEST(CtranIbDefaultFlushTest, LocalFlushModeOverridesPlatformDefault) {
+  ncclCvarInit();
+  EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
+
+  {
+    EnvRAII envLocalFlushMode(NCCL_CTRAN_NET_LOCAL_FLUSH_MODE, 0);
+    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(800));
+    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(1030));
+  }
+
+  {
+    EnvRAII envLocalFlushMode(NCCL_CTRAN_NET_LOCAL_FLUSH_MODE, 1);
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(900));
+    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1000));
+  }
+}
+
 // Build the physical QP visit order produced by the NIC-interleaved
 // round-robin for the first `steps` logical positions.
 static std::vector<int>

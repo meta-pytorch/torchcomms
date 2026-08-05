@@ -1752,6 +1752,13 @@ cvars:
      GPU visibility for DMA writes, the flush drains pending writes before
      received data is forwarded or read by GPU copy engines/kernels.
 
+ - name        : NCCL_CTRAN_NET_LOCAL_FLUSH_MODE
+   type        : int
+   default     : -1
+   description : |-
+     Override CTRAN local receive flush selection for controlled experiments.
+     -1 uses the platform default, 0 disables local flush, and 1 enables it.
+
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1
@@ -2921,6 +2928,14 @@ cvars:
      The local directory to store ctran perftrace json files.
      The default value is /tmp/, and the trace file will be stored in /tmp/ctran_trace_log.*.log.
      If want to upload to manifold, set this as /tmp/{uuid}, then manually upload to manifold.
+
+ - name        : NCCL_CTRAN_PERFTRACE_RANKS
+   type        : string
+   default     : ""
+   description : |-
+     Comma-separated communicator ranks to include in CTRAN PerfTrace output.
+     An empty value traces every rank. This only applies when
+     NCCL_CTRAN_ENABLE_PERFTRACE is enabled.
 
  - name        : NCCL_DEBUG_LOGGING_ASYNC
    type        : bool

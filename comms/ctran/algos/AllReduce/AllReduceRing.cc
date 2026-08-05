@@ -20,6 +20,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
+#include "comms/ctran/algos/AllReduce/AllReduceRingPerfTrace.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
@@ -158,6 +159,100 @@ roundLogPrefix(const int round, const int step, const AlgoContext& algoCtx) {
       algoCtx.numSteps);
 }
 
+template <Op op>
+inline int chunkTraceSequence(const AlgoContext& algoCtx, int round) {
+  if constexpr (op == Op::kSendCopy || op == Op::kSendTrans) {
+    return algoCtx.partitionStartSendRounds + round;
+  } else {
+    return algoCtx.partitionStartRecvRounds + round;
+  }
+}
+
+template <Op op>
+inline void startChunkTrace(
+    RingPerfTrace* trace,
+    const char* name,
+    const AlgoContext& algoCtx,
+    int round,
+    const OpStep& opStep,
+    int peer) {
+  if (!trace || !trace->enabled()) {
+    return;
+  }
+
+  const auto chunk = getRoundArgs<op>(algoCtx, round, opStep);
+  trace->startChunkStage(
+      name,
+      chunkTraceSequence<op>(algoCtx, round),
+      peer,
+      ChunkTraceMetadata{
+          .partition = algoCtx.partition,
+          .step = opStep.step,
+          .round = round,
+          .chunkId = getTmpChunkId(algoCtx, round),
+          .shardId = chunk.shardId,
+          .shardDataChunkId = chunk.shardDataChunkId,
+          .offsetBytes = chunk.dataOffsetElem * algoCtx.typeSize,
+          .bytes = chunk.numel * algoCtx.typeSize,
+          .phase = opStep.step < algoCtx.nRanks - 1 ? "reduce_scatter"
+                                                    : "all_gather",
+      });
+}
+
+template <Op op>
+inline void endChunkTrace(
+    RingPerfTrace* trace,
+    const char* name,
+    const AlgoContext& algoCtx,
+    int round) {
+  if (trace && trace->enabled()) {
+    trace->endChunkStage(name, chunkTraceSequence<op>(algoCtx, round));
+  }
+}
+
+template <Op op>
+inline void addChunkTracePoint(
+    RingPerfTrace* trace,
+    const char* name,
+    const AlgoContext& algoCtx,
+    int round,
+    const OpStep& opStep,
+    int peer,
+    const std::map<std::string, std::string>& metadata = {}) {
+  if (!trace || !trace->enabled()) {
+    return;
+  }
+
+  const auto chunk = getRoundArgs<op>(algoCtx, round, opStep);
+  trace->addChunkPoint(
+      name,
+      chunkTraceSequence<op>(algoCtx, round),
+      peer,
+      ChunkTraceMetadata{
+          .partition = algoCtx.partition,
+          .step = opStep.step,
+          .round = round,
+          .chunkId = getTmpChunkId(algoCtx, round),
+          .shardId = chunk.shardId,
+          .shardDataChunkId = chunk.shardDataChunkId,
+          .offsetBytes = chunk.dataOffsetElem * algoCtx.typeSize,
+          .bytes = chunk.numel * algoCtx.typeSize,
+          .phase = opStep.step < algoCtx.nRanks - 1 ? "reduce_scatter"
+                                                    : "all_gather",
+      },
+      metadata);
+}
+
+struct FlushTraceStats {
+  std::vector<uint32_t> pollCount;
+  std::vector<uint64_t> pollCpuNs;
+
+  void resize(size_t size) {
+    pollCount.assign(size, 0);
+    pollCpuNs.assign(size, 0);
+  }
+};
+
 inline bool progressSendCheckSendBuf(const AlgoContext& algoCtx) {
   int round = algoCtx.opRounds[Op::kSendCopy].post;
   int step = algoCtx.opRounds[Op::kSendCopy].postStep.step;
@@ -244,7 +339,8 @@ inline void progressSendCheckTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
+    RingPerfTrace* trace) {
   int startRound = algoCtx.opRounds[Op::kSendTrans].done;
   int lastRound = algoCtx.opRounds[Op::kSendTrans].post;
   int step = algoCtx.opRounds[Op::kSendTrans].doneStep.step;
@@ -259,6 +355,7 @@ inline void progressSendCheckTrans(
           resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
           resource.comm->logMetaData_);
       if (isComplete) {
+        endChunkTrace<Op::kSendTrans>(trace, "send_trans", algoCtx, r);
         CLOGF_TRACE(
             COLL,
             "progressSendCheckTrans {} done",
@@ -272,18 +369,27 @@ inline void progressSendCheckTrans(
 inline void progressSendPostCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kSendCopy].post;
   int step = algoCtx.opRounds[Op::kSendCopy].postStep.step;
   CLOGF_TRACE(
       COLL, "{} posted", roundLogPrefix<Op::kSendCopy>(round, step, algoCtx));
+  startChunkTrace<Op::kSendCopy>(
+      trace,
+      "send_copy",
+      algoCtx,
+      round,
+      algoCtx.opRounds[Op::kSendCopy].postStep,
+      algoCtx.rank);
   resource.sendCopySync->post(round);
 }
 
 inline bool progressSendCheckCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kSendCopy].done;
   auto& opStep = algoCtx.opRounds[Op::kSendCopy].doneStep;
   int step = opStep.step;
@@ -291,6 +397,7 @@ inline bool progressSendCheckCopyKern(
   bool done = resource.sendCopySync->isComplete(round);
 
   if (done) {
+    endChunkTrace<Op::kSendCopy>(trace, "send_copy", algoCtx, round);
     CLOGF_TRACE(
         COLL,
         "{} done: tmpChunkId {}",
@@ -304,7 +411,8 @@ inline void progressSendPostTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     const AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kSendTrans].post;
   auto& opStep = algoCtx.opRounds[Op::kSendTrans].postStep;
   int step = opStep.step;
@@ -326,6 +434,8 @@ inline void progressSendPostTrans(
       resource.ibConfig ? &*resource.ibConfig : nullptr;
 
   CtranMapperRequest* req;
+  startChunkTrace<Op::kSendTrans>(
+      trace, "send_trans", algoCtx, round, opStep, args.rightRank);
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iput(
           tmpSendBuf,
@@ -357,9 +467,10 @@ inline void progressSendPostTrans(
 inline bool progressRecvCheckTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
-  int round = algoCtx.opRounds[Op::kRecvTrans].post;
-  auto& opStep = algoCtx.opRounds[Op::kRecvTrans].postStep;
+    const AlgoContext& algoCtx,
+    RingPerfTrace* trace) {
+  int round = algoCtx.opRounds[Op::kRecvTrans].done;
+  auto& opStep = algoCtx.opRounds[Op::kRecvTrans].doneStep;
   int step = opStep.step;
   int tmpChunkId = getTmpChunkId(algoCtx, round);
 
@@ -372,6 +483,14 @@ inline bool progressRecvCheckTrans(
       resource.comm->ctran_->mapper->checkNotify(args.leftNotify.get(), &done),
       resource.comm->logMetaData_);
   if (done) {
+    endChunkTrace<Op::kRecvTrans>(trace, "recv_trans", algoCtx, round);
+    startChunkTrace<Op::kRecvFlush>(
+        trace,
+        "flush_queue_wait",
+        algoCtx,
+        round,
+        algoCtx.opRounds[Op::kRecvTrans].doneStep,
+        algoCtx.rank);
     CLOGF_TRACE(
         COLL,
         "{} to tmpRecvBuf {} shardId {} shardDataChunkId {} dataOffsetElem {} tmpChunkId {}",
@@ -389,7 +508,8 @@ inline void progressRecvPostFlush(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kRecvFlush].post;
   int step = algoCtx.opRounds[Op::kRecvFlush].postStep.step;
   std::map<std::string, std::string> metaData = {
@@ -400,10 +520,26 @@ inline void progressRecvPostFlush(
       tmpChunkId * algoCtx.chunkSize;
 
   CtranMapperRequest* req;
+  endChunkTrace<Op::kRecvFlush>(trace, "flush_queue_wait", algoCtx, round);
+  startChunkTrace<Op::kRecvFlush>(
+      trace,
+      "flush_submit_cpu",
+      algoCtx,
+      round,
+      algoCtx.opRounds[Op::kRecvFlush].postStep,
+      algoCtx.rank);
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
       resource.comm->logMetaData_);
+  endChunkTrace<Op::kRecvFlush>(trace, "flush_submit_cpu", algoCtx, round);
+  startChunkTrace<Op::kRecvFlush>(
+      trace,
+      "flush_cq_wait",
+      algoCtx,
+      round,
+      algoCtx.opRounds[Op::kRecvFlush].postStep,
+      algoCtx.rank);
   flushResps.at(round).reset(req);
 }
 
@@ -411,7 +547,9 @@ inline bool progressRecvCheckFlush(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    FlushTraceStats& flushTraceStats,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kRecvFlush].done;
   int step = algoCtx.opRounds[Op::kRecvFlush].doneStep.step;
   int chunkId = getTmpChunkId(algoCtx, round);
@@ -427,10 +565,33 @@ inline bool progressRecvCheckFlush(
   auto& resp = flushResps.at(round);
 
   bool isComplete = false;
+  const auto pollStart = std::chrono::steady_clock::now();
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
       resource.comm->logMetaData_);
+  const auto pollEnd = std::chrono::steady_clock::now();
+  flushTraceStats.pollCount.at(round)++;
+  flushTraceStats.pollCpuNs.at(round) +=
+      std::chrono::duration_cast<std::chrono::nanoseconds>(pollEnd - pollStart)
+          .count();
   if (isComplete) {
+    endChunkTrace<Op::kRecvFlush>(trace, "flush_cq_wait", algoCtx, round);
+    addChunkTracePoint<Op::kRecvFlush>(
+        trace,
+        "flush_complete",
+        algoCtx,
+        round,
+        algoCtx.opRounds[Op::kRecvFlush].doneStep,
+        algoCtx.rank,
+        {{"poll_count", std::to_string(flushTraceStats.pollCount.at(round))},
+         {"poll_cpu_ns", std::to_string(flushTraceStats.pollCpuNs.at(round))}});
+    startChunkTrace<Op::kRecvRedCopy>(
+        trace,
+        "reduce_queue_wait",
+        algoCtx,
+        round,
+        algoCtx.opRounds[Op::kRecvFlush].doneStep,
+        algoCtx.rank);
     CLOGF_TRACE(
         COLL, "{} done", roundLogPrefix<Op::kRecvFlush>(round, step, algoCtx));
   }
@@ -468,7 +629,8 @@ inline bool progressRecvCheckSendBuf(const AlgoContext& algoCtx) {
 inline void progressRecvPostRedCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kRecvRedCopy].post;
   int step = algoCtx.opRounds[Op::kRecvRedCopy].postStep.step;
 
@@ -476,19 +638,29 @@ inline void progressRecvPostRedCopyKern(
       COLL,
       "{} posted",
       roundLogPrefix<Op::kRecvRedCopy>(round, step, algoCtx));
+  endChunkTrace<Op::kRecvRedCopy>(trace, "reduce_queue_wait", algoCtx, round);
+  startChunkTrace<Op::kRecvRedCopy>(
+      trace,
+      "recv_reduce_copy",
+      algoCtx,
+      round,
+      algoCtx.opRounds[Op::kRecvRedCopy].postStep,
+      algoCtx.rank);
   resource.recvRedCopySync->post(round);
 }
 
 inline bool progressRecvCheckRedCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    RingPerfTrace* trace) {
   int round = algoCtx.opRounds[Op::kRecvRedCopy].done;
   auto& opStep = algoCtx.opRounds[Op::kRecvRedCopy].doneStep;
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   bool done = resource.recvRedCopySync->isComplete(round);
 
   if (done) {
+    endChunkTrace<Op::kRecvRedCopy>(trace, "recv_reduce_copy", algoCtx, round);
     bool isRecvFwd_ = isRecvFwd(algoCtx, opStep.step);
     int fwdRound = isRecvFwd_ ? getRecvFwdSendRound(algoCtx, round) : -1;
     int tmpFwdChunkId = isRecvFwd_ ? getTmpChunkId(algoCtx, fwdRound) : -1;
@@ -555,17 +727,18 @@ inline void progressSend(
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncRResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncRResps,
+    RingPerfTrace* trace) {
   // Try post copy to kernel if the send data is ready
   if (opReadyToPost<Op::kSendCopy>(algoCtx) &&
       progressSendCheckSendBuf(algoCtx)) {
-    progressSendPostCopyKern(args, resource, algoCtx);
+    progressSendPostCopyKern(args, resource, algoCtx, trace);
     opUpdatePost<Op::kSendCopy>(algoCtx);
   }
 
   // Check if any outstanding copy is done
   if (opHasPosted<Op::kSendCopy>(algoCtx) &&
-      progressSendCheckCopyKern(args, resource, algoCtx)) {
+      progressSendCheckCopyKern(args, resource, algoCtx, trace)) {
     opUpdateDone<Op::kSendCopy>(algoCtx);
   }
 
@@ -573,13 +746,13 @@ inline void progressSend(
   if (opReadyToPost<Op::kSendTrans>(algoCtx)) {
     // Check if right neighbor has consumed the tmpRecvBuf chunk
     if (progressSendCheckRemRecvBuf(args, resource, algoCtx, bufSyncRResps)) {
-      progressSendPostTrans(args, resource, algoCtx, dataSResps);
+      progressSendPostTrans(args, resource, algoCtx, dataSResps, trace);
       opUpdatePost<Op::kSendTrans>(algoCtx);
     }
   }
 
   // Check if any outstanding transmission has been done
-  progressSendCheckTrans(args, resource, algoCtx, dataSResps);
+  progressSendCheckTrans(args, resource, algoCtx, dataSResps, trace);
 }
 
 inline void progressRecv(
@@ -587,9 +760,19 @@ inline void progressRecv(
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    FlushTraceStats& flushTraceStats,
+    RingPerfTrace* trace) {
   // Post step: TCPDM posts irecv, IB is a no-op (data arrives via RDMA put).
   if (opReadyToPost<Op::kRecvTrans>(algoCtx)) {
+    const int round = algoCtx.opRounds[Op::kRecvTrans].post;
+    startChunkTrace<Op::kRecvTrans>(
+        trace,
+        "recv_trans",
+        algoCtx,
+        round,
+        algoCtx.opRounds[Op::kRecvTrans].postStep,
+        args.leftRank);
     if (hasTcpDmRecv(args, resource)) {
       progressRecvPostTcpDmIrecv(args, resource, algoCtx);
       opUpdatePost<Op::kRecvTrans>(algoCtx);
@@ -600,18 +783,19 @@ inline void progressRecv(
 
   // Check if data has arrived from left peer
   if (opHasPosted<Op::kRecvTrans>(algoCtx) &&
-      progressRecvCheckTrans(args, resource, algoCtx)) {
+      progressRecvCheckTrans(args, resource, algoCtx, trace)) {
     opUpdateDone<Op::kRecvTrans>(algoCtx);
   }
 
   // Check if any received chunk is ready to flush
   if (opReadyToPost<Op::kRecvFlush>(algoCtx)) {
-    progressRecvPostFlush(args, resource, algoCtx, flushResps);
+    progressRecvPostFlush(args, resource, algoCtx, flushResps, trace);
     opUpdatePost<Op::kRecvFlush>(algoCtx);
   }
   // Check if any outstanding flush is done
   if (opHasPosted<Op::kRecvFlush>(algoCtx)) {
-    if (progressRecvCheckFlush(args, resource, algoCtx, flushResps)) {
+    if (progressRecvCheckFlush(
+            args, resource, algoCtx, flushResps, flushTraceStats, trace)) {
       opUpdateDone<Op::kRecvFlush>(algoCtx);
     }
   }
@@ -620,14 +804,14 @@ inline void progressRecv(
   if (opReadyToPost<Op::kRecvRedCopy>(algoCtx)) {
     int step = algoCtx.opRounds[Op::kRecvRedCopy].postStep.step;
     if (!isRecvFwd(algoCtx, step) || progressRecvCheckSendBuf(algoCtx)) {
-      progressRecvPostRedCopyKern(args, resource, algoCtx);
+      progressRecvPostRedCopyKern(args, resource, algoCtx, trace);
       opUpdatePost<Op::kRecvRedCopy>(algoCtx);
     }
   }
 
   // Check if any outstanding reduceCopy is done
   if (opHasPosted<Op::kRecvRedCopy>(algoCtx)) {
-    if (progressRecvCheckRedCopyKern(args, resource, algoCtx)) {
+    if (progressRecvCheckRedCopyKern(args, resource, algoCtx, trace)) {
       progressRecvPostRecvBuf(args, resource, algoCtx, bufSyncSResps);
       if (hasTcpDmRecv(args, resource)) {
         algoCtx.opRounds[Op::kRecvTrans].ready++;
@@ -1102,6 +1286,7 @@ static commResult_t impl(
   std::vector<std::unique_ptr<CtranMapperRequest>> bufSyncSResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> bufSyncRResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> flushResps;
+  FlushTraceStats flushTraceStats;
 
   // Reverse direction request vectors
   std::vector<std::unique_ptr<CtranMapperRequest>> revDataSResps;
@@ -1109,7 +1294,15 @@ static commResult_t impl(
   std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncRResps;
   std::vector<std::unique_ptr<CtranMapperRequest>> revFlushResps;
 
-  // Perftrace: create tracer on first use, create record per allreduce
+  RingPerfTrace perfTrace(
+      algoCtx.rank,
+      algoCtx.nRanks,
+      messageSize,
+      algoCtx.chunkSize,
+      algoCtx.numChunks,
+      args.numBlocks,
+      op->opCount,
+      NCCL_CTRAN_PERFTRACE_RANKS);
 
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
@@ -1126,6 +1319,7 @@ static commResult_t impl(
     bufSyncSResps.resize(totalRecvTrans);
     bufSyncRResps.resize(totalSendTrans);
     flushResps.resize(totalRecvTrans);
+    flushTraceStats.resize(totalRecvTrans);
 
     int totalRevSendTrans = algoCtx.opRounds[Op::kRevSendTrans].totalRounds;
     int totalRevRecvTrans = algoCtx.opRounds[Op::kRevRecvTrans].totalRounds;
@@ -1172,8 +1366,16 @@ static commResult_t impl(
             fmt::format("Unsupported data type {}", op->allreduce.datatype),
             commInvalidArgument);
       }
-      progressSend(args, resource, algoCtx, dataSResps, bufSyncRResps);
-      progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps);
+      progressSend(
+          args, resource, algoCtx, dataSResps, bufSyncRResps, &perfTrace);
+      progressRecv(
+          args,
+          resource,
+          algoCtx,
+          bufSyncSResps,
+          flushResps,
+          flushTraceStats,
+          &perfTrace);
       progressRevSend(args, resource, algoCtx, revDataSResps, revBufSyncRResps);
       progressRevRecv(args, resource, algoCtx, revBufSyncSResps, revFlushResps);
       HOST_ABORT(
