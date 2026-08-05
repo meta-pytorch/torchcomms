@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
@@ -122,6 +123,33 @@ void launch_ibgda_reset_send_recv(
 void launch_ibgda_progress_send(
     P2pIbgdaTransportDevice* transport,
     char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch the staged progress sender and wait for the receiver's final credit.
+ */
+void launch_ibgda_progress_send_complete(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch a unidirectional registered-source progress send kernel.
+ *
+ * The source is read directly by the NIC. The kernel drains local NIC reads
+ * and waits for the receiver's final slot-free credit before returning.
+ */
+void launch_ibgda_registered_progress_send(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,

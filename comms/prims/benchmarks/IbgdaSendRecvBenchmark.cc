@@ -8,6 +8,7 @@
 #include <folly/portability/GFlags.h>
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -29,20 +30,36 @@ using meta::comms::ITestBootstrap;
 using meta::comms::MpiBootstrap;
 using meta::comms::TcpStoreBootstrap;
 
+DEFINE_bool(
+    ibgda_sendrecv_enable_registered,
+    false,
+    "Enable the registered-source send comparison");
+DEFINE_int32(
+    ibgda_sendrecv_num_blocks,
+    2,
+    "Number of sender and receiver blocks");
+DEFINE_int64(
+    ibgda_sendrecv_per_channel_bytes,
+    4 * 1024 * 1024,
+    "Transport staging bytes per channel");
+DEFINE_int32(ibgda_sendrecv_pipeline_depth, 2, "Transport slots per channel");
+DEFINE_int32(
+    ibgda_sendrecv_qps_per_connection,
+    1,
+    "QPs per channel, direction, and NIC");
+DEFINE_int32(ibgda_sendrecv_warmup_iters, 5, "Warmup iterations");
+
 namespace comms::prims::benchmark {
 namespace {
 
 constexpr int kWorldSize = 2;
-constexpr int kNumBlocks = 2;
-constexpr std::size_t kSlotSize = 8 * 1024 * 1024;
-constexpr int kPipelineDepth = 2;
-constexpr int kWarmupIters = 5;
 constexpr const char* kDefaultBenchmarkIters = "20";
 constexpr const char* kDefaultBenchmarkMaxIters = "21";
 
 enum class SendRecvApi {
   Blocking,
   Progress,
+  RegisteredProgress,
 };
 
 enum class SendRecvDirection {
@@ -225,6 +242,8 @@ const char* apiName(SendRecvApi api) {
       return "blocking";
     case SendRecvApi::Progress:
       return "progress";
+    case SendRecvApi::RegisteredProgress:
+      return "registered_progress";
   }
   return "unknown";
 }
@@ -253,7 +272,8 @@ std::string benchmarkName(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
-    const char* sizeName) {
+    const char* sizeName,
+    int repeat = -1) {
   std::string name = "ibgdaSendRecv(";
   name += apiName(api);
   name += "_";
@@ -262,6 +282,10 @@ std::string benchmarkName(
   name += copyOpName(copyOp);
   name += "_";
   name += sizeName;
+  if (repeat >= 0) {
+    name += "_rep";
+    name += std::to_string(repeat);
+  }
   name += ")";
   return name;
 }
@@ -271,9 +295,27 @@ class IbgdaSendRecvBenchmarkContext {
   IbgdaSendRecvBenchmarkContext(
       std::shared_ptr<ITestBootstrap> bootstrap,
       std::size_t maxBytes)
-      : bootstrap_(std::move(bootstrap)), maxBytes_(maxBytes) {
+      : bootstrap_(std::move(bootstrap)),
+        maxBytes_(maxBytes),
+        perChannelSize_(
+            static_cast<std::size_t>(FLAGS_ibgda_sendrecv_per_channel_bytes)),
+        numBlocks_(FLAGS_ibgda_sendrecv_num_blocks),
+        pipelineDepth_(FLAGS_ibgda_sendrecv_pipeline_depth),
+        warmupIters_(FLAGS_ibgda_sendrecv_warmup_iters),
+        registeredEnabled_(FLAGS_ibgda_sendrecv_enable_registered) {
     CHECK(bootstrap_ != nullptr);
     CHECK_GT(maxBytes_, 0);
+    CHECK_GT(FLAGS_ibgda_sendrecv_per_channel_bytes, 0);
+    CHECK_GT(FLAGS_ibgda_sendrecv_qps_per_connection, 0);
+    CHECK_GT(perChannelSize_, 0);
+    CHECK_GT(numBlocks_, 0);
+    CHECK_GT(pipelineDepth_, 0);
+    CHECK_GT(warmupIters_, 0);
+    CHECK_EQ(perChannelSize_ % static_cast<std::size_t>(pipelineDepth_), 0);
+    if (registeredEnabled_) {
+      CHECK_EQ(numBlocks_, 1)
+          << "registered-source comparison requires one block";
+    }
     globalRank_ = bootstrap_->getGlobalRank();
     worldSize_ = bootstrap_->getWorldSize();
     localRank_ = bootstrap_->getLocalRank();
@@ -289,9 +331,10 @@ class IbgdaSendRecvBenchmarkContext {
 
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank_,
-        .perChannelSize = kSlotSize / kNumBlocks,
-        .max_num_channels = kNumBlocks,
-        .pipelineDepth = kPipelineDepth,
+        .perChannelSize = perChannelSize_,
+        .max_num_channels = numBlocks_,
+        .pipelineDepth = pipelineDepth_,
+        .qpsPerConnection = FLAGS_ibgda_sendrecv_qps_per_connection,
     };
     transportConfig.ibHca = benchIbHca();
     transport_ = std::make_unique<MultipeerIbgdaTransport>(
@@ -304,6 +347,11 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaMemset(recvBuf_->get(), 0, maxBytes_), cudaSuccess);
     CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
+    if (registeredEnabled_ && globalRank_ == 0) {
+      registeredSendBuf_ =
+          transport_->registerBuffer(sendBuf_->get(), maxBytes_, true);
+    }
+
     deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
   }
 
@@ -314,6 +362,10 @@ class IbgdaSendRecvBenchmarkContext {
     }
     if (bootstrap_) {
       bootstrap_->barrierAll();
+    }
+    if (transport_ && registeredSendBuf_.ptr != nullptr) {
+      transport_->deregisterBuffer(sendBuf_->get());
+      registeredSendBuf_ = {};
     }
     if (stream_ != nullptr) {
       CHECK_EQ(cudaStreamDestroy(stream_), cudaSuccess);
@@ -332,6 +384,18 @@ class IbgdaSendRecvBenchmarkContext {
   IbgdaSendRecvBenchmarkContext& operator=(IbgdaSendRecvBenchmarkContext&&) =
       delete;
 
+  int numBlocks() const {
+    return numBlocks_;
+  }
+
+  std::size_t pipelineChunkBytes() const {
+    return perChannelSize_ / static_cast<std::size_t>(pipelineDepth_);
+  }
+
+  bool registeredEnabled() const {
+    return registeredEnabled_;
+  }
+
   void warmup(
       std::size_t nbytes,
       SendRecvApi api,
@@ -339,10 +403,11 @@ class IbgdaSendRecvBenchmarkContext {
       SendRecvCopyOp copyOp) {
     CHECK_LE(nbytes, maxBytes_);
     bootstrap_->barrierAll();
-    for (int i = 0; i < kWarmupIters; ++i) {
+    for (int i = 0; i < warmupIters_; ++i) {
       launchOperation(nbytes, api, direction, copyOp);
       CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
     }
+    bootstrap_->barrierAll();
   }
 
   float runLocalElapsed(
@@ -370,7 +435,15 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaEventDestroy(start), cudaSuccess);
     CHECK_EQ(cudaEventDestroy(stop), cudaSuccess);
 
-    return elapsedMs;
+    std::array<float, kWorldSize> rankElapsed{};
+    rankElapsed[globalRank_] = elapsedMs;
+    CHECK_EQ(
+        bootstrap_
+            ->allGather(
+                rankElapsed.data(), sizeof(float), globalRank_, worldSize_)
+            .get(),
+        0);
+    return *std::max_element(rankElapsed.begin(), rankElapsed.end());
   }
 
  private:
@@ -399,10 +472,10 @@ class IbgdaSendRecvBenchmarkContext {
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
         launch_ibgda_send_recv(
-            deviceTransport_, sendBuf, recvBuf, nbytes, kNumBlocks, stream_);
+            deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
       } else {
         launch_ibgda_progress_send_recv(
-            deviceTransport_, sendBuf, recvBuf, nbytes, kNumBlocks, stream_);
+            deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
       }
       return;
     }
@@ -410,19 +483,28 @@ class IbgdaSendRecvBenchmarkContext {
     if (globalRank_ == 0) {
       if (api == SendRecvApi::Blocking) {
         launch_ibgda_send(
-            deviceTransport_, sendBuf, nbytes, kNumBlocks, stream_);
+            deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+      } else if (api == SendRecvApi::RegisteredProgress) {
+        CHECK(registeredEnabled_);
+        launch_ibgda_registered_progress_send(
+            deviceTransport_, registeredSendBuf_, nbytes, numBlocks_, stream_);
       } else {
-        launch_ibgda_progress_send(
-            deviceTransport_, sendBuf, nbytes, kNumBlocks, stream_);
+        if (registeredEnabled_) {
+          launch_ibgda_progress_send_complete(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        } else {
+          launch_ibgda_progress_send(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        }
       }
       return;
     }
 
     if (api == SendRecvApi::Blocking) {
-      launch_ibgda_recv(deviceTransport_, recvBuf, nbytes, kNumBlocks, stream_);
+      launch_ibgda_recv(deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
     } else {
       launch_ibgda_progress_recv(
-          deviceTransport_, recvBuf, nbytes, kNumBlocks, stream_);
+          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
     }
   }
 
@@ -430,12 +512,18 @@ class IbgdaSendRecvBenchmarkContext {
   std::unique_ptr<MultipeerIbgdaTransport> transport_;
   std::unique_ptr<DeviceBuffer> sendBuf_;
   std::unique_ptr<DeviceBuffer> recvBuf_;
+  IbgdaLocalBuffer registeredSendBuf_{};
   P2pIbgdaTransportDevice* deviceTransport_{nullptr};
   std::size_t maxBytes_{0};
+  std::size_t perChannelSize_{0};
   cudaStream_t stream_{};
+  int numBlocks_{0};
+  int pipelineDepth_{0};
+  int warmupIters_{0};
   int globalRank_{0};
   int worldSize_{0};
   int localRank_{0};
+  bool registeredEnabled_{false};
 };
 
 static unsigned int ibgdaSendRecv(
@@ -468,6 +556,12 @@ static unsigned int ibgdaSendRecv(
         (totalBytes / 1e9) / elapsedSec, folly::UserMetric::Type::METRIC);
     counters["message_size"] = folly::UserMetric(
         static_cast<double>(nbytes), folly::UserMetric::Type::METRIC);
+    counters["num_blocks"] = folly::UserMetric(
+        static_cast<double>(context.numBlocks()),
+        folly::UserMetric::Type::METRIC);
+    counters["pipeline_chunk_bytes"] = folly::UserMetric(
+        static_cast<double>(context.pipelineChunkBytes()),
+        folly::UserMetric::Type::METRIC);
   }
   return iters;
 }
@@ -477,10 +571,11 @@ void registerBenchmark(
     const BenchmarkSize& size,
     SendRecvApi api,
     SendRecvDirection direction,
-    SendRecvCopyOp copyOp) {
+    SendRecvCopyOp copyOp,
+    int repeat = -1) {
   folly::addBenchmark(
       __FILE__,
-      benchmarkName(api, direction, copyOp, size.name),
+      benchmarkName(api, direction, copyOp, size.name, repeat),
       [&context, nbytes = size.nbytes, api, direction, copyOp](
           folly::UserCounters& counters, unsigned int iters) -> unsigned int {
         return ibgdaSendRecv(
@@ -514,6 +609,36 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
         SendRecvApi::Progress,
         SendRecvDirection::Unidirectional,
         SendRecvCopyOp::Memcpy);
+    if (context.registeredEnabled()) {
+      registerBenchmark(
+          context,
+          size,
+          SendRecvApi::RegisteredProgress,
+          SendRecvDirection::Unidirectional,
+          SendRecvCopyOp::Memcpy);
+    }
+
+    if (context.registeredEnabled() &&
+        (size.nbytes == (64ULL << 20) || size.nbytes == (256ULL << 20) ||
+         size.nbytes == (1ULL << 30) || size.nbytes == (2ULL << 30))) {
+      for (int repeat = 0; repeat < 5; ++repeat) {
+        registerBenchmark(
+            context,
+            size,
+            SendRecvApi::Progress,
+            SendRecvDirection::Unidirectional,
+            SendRecvCopyOp::Memcpy,
+            repeat);
+        registerBenchmark(
+            context,
+            size,
+            SendRecvApi::RegisteredProgress,
+            SendRecvDirection::Unidirectional,
+            SendRecvCopyOp::Memcpy,
+            repeat);
+      }
+    }
+
     // ANS (variable-size CopyOp): blocking + unidirectional only, over a
     // bounded size window. This is the transport benchmark's coverage of the
     // compressed send/recv path from D111967119.
