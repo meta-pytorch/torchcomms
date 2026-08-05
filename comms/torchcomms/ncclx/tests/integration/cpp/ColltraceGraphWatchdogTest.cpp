@@ -7,7 +7,6 @@
 // colltrace watchdog plugin via tryEnableColltraceTimeoutWatchdog() and detects
 // timeouts.
 
-#include <folly/Conv.h>
 #include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/stop_watch.h>

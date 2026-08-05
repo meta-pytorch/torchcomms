@@ -19,7 +19,6 @@
 #include <thread>
 
 #include <folly/SocketAddress.h>
-#include <folly/stop_watch.h>
 
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
