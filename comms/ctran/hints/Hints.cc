@@ -2,9 +2,9 @@
 
 #include "comms/ctran/hints/Hints.h"
 
-#include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
+#include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h" // @manual=//comms/ctran:all_to_allp_hint_utils
 #include "comms/ctran/utils/Checks.h"
-#include "comms/ctran/window/WinHintUtils.h"
+#include "comms/ctran/window/WinHintUtils.h" // @manual=//comms/ctran:win_hint_utils
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms {
