@@ -34,8 +34,8 @@ class CtranCudaGraphColltraceTest : public CtranCudaGraphTestBase {
         });
     if (!meta::comms::colltrace::graphColltraceSupported(
             "CtranCudaGraphColltraceTest")) {
-      GTEST_SKIP() << "graph colltrace unsupported on this device/driver "
-                      "(needs sm_90+ and a CUDA driver outside 13.0-13.2)";
+      GTEST_SKIP()
+          << "graph colltrace unsupported on this device (needs sm_90+)";
     }
   }
 

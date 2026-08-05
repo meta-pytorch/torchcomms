@@ -37,11 +37,11 @@ void
   delete sp;
 }
 
-// Why graph colltrace cannot run here, or empty if it can. Both inputs are
-// fixed for the process -- the driver version is per-process, and the compute
-// capability is read from the current device, which assumes a homogeneous-GPU
-// host (true across the fleet; a mixed sm_80/sm_90 host would get whichever
-// device was current on the first call). So this is computed exactly once.
+// Why graph colltrace cannot run here, or empty if it can. The input is fixed
+// for the process: the compute capability is read from the current device,
+// which assumes a homogeneous-GPU host (true across the fleet; a mixed
+// sm_80/sm_90 host would get whichever device was current on the first call).
+// So this is computed exactly once.
 // The lambda captures nothing on purpose: a static whose initializer reads a
 // function argument would bind the first caller's value forever, which is both
 // a dangling-reference hazard and a clang-tidy
@@ -66,15 +66,9 @@ const std::string& graphColltraceUnsupportedReason() {
           device,
           ccMajor);
     }
-    int driverVersion = 0;
-    if (cudaDriverGetVersion(&driverVersion) == cudaSuccess &&
-        driverVersion >= 13000 && driverVersion < 13030) {
-      return fmt::format(
-          "CUDA driver {} is in 13.0-13.2, which miscompiles the device "
-          "ring-write handle; graph collectives will be untimed. Please use a "
-          "compatible version if you want colltrace graph support.",
-          driverVersion);
-    }
+    // No driver-version check: the 13.0-13.2 rejection that used to live here
+    // guarded the [[no_unique_address]] layout bug now fixed in
+    // HRDWRingBufferDeviceHandle.
     return std::string{};
   }();
   return reason;
