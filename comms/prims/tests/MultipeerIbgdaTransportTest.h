@@ -243,6 +243,21 @@ void testRegisteredSendRecv(
     uint8_t overwriteValue = 0,
     bool zeroByteAfterPosted = false);
 
+/**
+ * Test kernel: registered A, staged B, registered C on one send cursor.
+ */
+void testMixedRegisteredAndStagedSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t thirdBytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
 /** Fill or verify a byte range in this channel's transport staging. */
 void testFillTransportStaging(
     P2pIbgdaTransportDevice* transport,
