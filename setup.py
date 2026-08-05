@@ -77,13 +77,14 @@ def get_torch_pybind11_include_root(build_temp: pathlib.Path) -> pathlib.Path:
 
 
 print("Configuration:")
-USE_NCCL = flag_enabled("USE_NCCL", True)
-USE_NCCLX = flag_enabled("USE_NCCLX", True)
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
+# Backend defaults flip automatically based on whether the installed torch is ROCm.
+USE_NCCL = flag_enabled("USE_NCCL", not IS_ROCM)
+USE_NCCLX = flag_enabled("USE_NCCLX", not IS_ROCM)
 USE_GLOO = flag_enabled("USE_GLOO", True)
-USE_RCCL = flag_enabled("USE_RCCL", False)
+USE_RCCL = flag_enabled("USE_RCCL", IS_ROCM)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
 USE_XCCL = flag_enabled("USE_XCCL", False)
-IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
 # Minimal RDMA CCA-hook extension. CUDA-only and requires the NCCLX static lib;

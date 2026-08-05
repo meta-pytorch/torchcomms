@@ -41,15 +41,23 @@ message(STATUS "  USE_TRANSPORT_CCA_HOOK : ${USE_TRANSPORT_CCA_HOOK}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
-# NEEDS_CUDA: TRUE when any enabled backend requires CUDA. GLOO and XCCL
-# are the only non-CUDA backends; if no CUDA-dependent backend is enabled
-# we can skip CUDA-specific setup like TORCH_CUDA_ARCH_LIST detection.
-if(USE_NCCL OR USE_NCCLX OR USE_RCCL OR USE_RCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_TRITON)
+# NEEDS_CUDA: TRUE when any enabled backend requires CUDA (excludes ROCm backends).
+# NEEDS_ROCM: TRUE when any enabled backend requires ROCm.
+# GLOO and XCCL are the only backends that are neither CUDA nor ROCm.
+# If no CUDA-dependent backend is enabled we can skip CUDA-specific setup
+# like TORCH_CUDA_ARCH_LIST detection.
+if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_TRITON)
     set(NEEDS_CUDA TRUE)
 else()
     set(NEEDS_CUDA FALSE)
 endif()
+if(USE_RCCL OR USE_RCCLX)
+    set(NEEDS_ROCM TRUE)
+else()
+    set(NEEDS_ROCM FALSE)
+endif()
 message(STATUS "  NEEDS_CUDA  : ${NEEDS_CUDA}")
+message(STATUS "  NEEDS_ROCM  : ${NEEDS_ROCM}")
 
 if(NOT NEEDS_CUDA)
     message(STATUS "Skipping CUDA arch detection (no CUDA-dependent backends enabled)")
