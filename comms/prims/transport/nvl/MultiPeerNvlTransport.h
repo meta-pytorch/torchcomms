@@ -87,11 +87,9 @@ struct MultiPeerNvlTransportConfig {
   std::optional<MemSharingMode> memSharingMode;
 
   // NVLS multicast: when true, the transport composes an internal
-  // MultimemNvlTransport (from `multimem` below) and reports it via
-  // hasMultimemNvlTransport(). The actual multicast setup runs lazily on the
-  // first getMultimemNvlTransportDevice() call, and only when the device
-  // supports multimem and the NVL team has more than two ranks. `multimem` is
-  // ignored unless `enableMultimem` is true.
+  // MultimemNvlTransport (from `multimem` below). Collective callers should
+  // use initializeMultimemNvlTransportIfEligible() before querying or fetching
+  // it. `multimem` is ignored unless `enableMultimem` is true.
   bool enableMultimem{false};
   MultimemNvlTransportConfig multimem;
 };
@@ -202,11 +200,36 @@ class MultiPeerNvlTransport {
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
 
   /**
+   * Constructor with an explicit device for lazy multicast initialization.
+   *
+   * `multimemCudaDevice` is used only for multicast eligibility checks,
+   * construction, and teardown. Base P2P resources retain the existing
+   * contract that the caller makes their owning device current before
+   * construction and destruction.
+   *
+   * @param myRank This rank's ID in the communicator (0 to nRanks-1)
+   * @param nRanks Total number of ranks in the communicator
+   * @param multimemCudaDevice Valid CUDA device ordinal for this rank's lazy
+   * multicast resources
+   * @param bootstrap Bootstrap interface for collective handle exchange
+   * @param multiPeerNvlTransportConfig Buffer configuration (must match across
+   * all ranks)
+   *
+   * @throws std::runtime_error if buffer allocation fails
+   */
+  MultiPeerNvlTransport(
+      int myRank,
+      int nRanks,
+      int multimemCudaDevice,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
+
+  /**
    * Destructor - Clean up CUDA resources
    *
    * Frees device memory allocated for Transport array.
    */
-  ~MultiPeerNvlTransport() = default;
+  ~MultiPeerNvlTransport();
 
   /**
    * setExternalDataBuffers - Provide pre-exchanged data buffers
@@ -241,9 +264,9 @@ class MultiPeerNvlTransport {
    *    preallocated device array (allocated in constructor)
    * 3. Implicit barrier ensures all ranks complete before returning
    *
-   * Optional multimem NVL setup is not performed here; it is a separate
-   * collective operation triggered by getMultimemNvlTransportDevice() so
-   * non-multimem collectives do not pay the multicast allocation cost.
+   * Optional multimem NVL setup is not performed here. Multimem collectives
+   * call initializeMultimemNvlTransportIfEligible() in lockstep so other
+   * collectives do not pay the multicast allocation cost.
    *
    * The type of handle (fabric or cudaIpc) depends on the automatically
    * detected memory sharing mode.
@@ -323,18 +346,25 @@ class MultiPeerNvlTransport {
    */
   DeviceSpan<Transport> getDeviceTransports();
 
-  // Cheap local check for whether multimem NVL was configured and appears
-  // usable on this rank. This does not perform the collective multimem setup;
-  // the first getMultimemNvlTransportDevice() call initializes it lazily.
+  // Cheap local check for a successfully initialized multimem NVL transport.
+  // It is false until initializeMultimemNvlTransportIfEligible() collectively
+  // establishes communicator-wide eligibility and completes setup.
   bool hasMultimemNvlTransport() const;
 
   /**
-   * getMultimemNvlTransportDevice - Get the lazily initialized NVLS device
-   * transport.
+   * Collectively initialize multimem NVL when every rank is eligible.
    *
-   * PRECONDITION: All ranks that may use this multimem collective must call
-   * this method in the same order. The first call performs a collective
-   * eligibility check, multicast memory setup, and exchange.
+   * @return true after successful initialization, or false when multimem is
+   * disabled or any rank is ineligible. Setup failures throw and are cached as
+   * terminal errors. All ranks in the NVL team must call this in lockstep.
+   */
+  bool initializeMultimemNvlTransportIfEligible() const;
+
+  /**
+   * Get the cached NVLS device transport after successful initialization.
+   *
+   * This is a local operation and never touches bootstrap.
+   * PRECONDITION: initializeMultimemNvlTransportIfEligible() returned true.
    */
   MultimemNvlTransportDevice getMultimemNvlTransportDevice() const;
 
@@ -377,6 +407,7 @@ class MultiPeerNvlTransport {
 
   const int myRank_{-1};
   const int nRanks_{-1};
+  const int multimemCudaDevice_{-1};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
@@ -394,24 +425,26 @@ class MultiPeerNvlTransport {
       llBufferHandler_; // nullptr when llBufferSize == 0
   mutable std::unique_ptr<MultimemNvlTransport> multimemNvlTransport_;
   // Latched to true when we know multimem NVL cannot succeed on this comm:
-  // eligibility failed on some rank, or the multicast handle exchange() failed.
-  // Terminal -- subsequent calls throw the cached reason from
-  // `multimemNvlErrorMessage_` without re-attempting the collective. The
-  // eligibility allGather returning non-zero is intentionally NOT latched (it
-  // can be transient and is retry-safe) so callers can retry.
-  // `std::atomic` because `hasMultimemNvlTransport()` reads it on the fast path
-  // without holding `multimemInitMutex_`, while the init path stores under it.
-  mutable std::atomic<bool> multimemNvlUnavailable_{false};
-  // Preserved reason for the terminal-failure throw so debuggers see the
-  // original cause (e.g. "not eligible on all ranks") on every subsequent
-  // call, not a generic "not available".
+  // eligibility or local construction failed on some rank, the construction
+  // readiness agreement failed, or the multicast exchange failed.
+  // All listed outcomes prohibit retry. Eligibility rejection is a cached
+  // fallback that returns false; setup failures throw the cached reason from
+  // `multimemNvlErrorMessage_`.
+  // Protected by `multimemInitMutex_`.
+  mutable bool multimemNvlUnavailable_{false};
+  // Separates normal eligibility rejection (algorithm fallback) from a setup
+  // failure, which remains an error and must not be retried.
+  mutable std::atomic<bool> multimemNvlIneligible_{false};
+  // Preserved diagnostic for either terminal eligibility fallback or setup
+  // failure. Setup failures reuse it for subsequent throws instead of
+  // reporting a generic "not available" error.
   mutable std::string multimemNvlErrorMessage_;
   // Guards `initializeMultimemNvlTransport()` against concurrent callers on
-  // the same rank: only one thread performs the eligibility allGather +
-  // multimem exchange; other concurrent threads block and use the cached
-  // result. Without this, two same-rank threads could each drive an
-  // allGather while other ranks only participate once, deadlocking the
-  // collective.
+  // the same rank: only one thread performs the eligibility agreement, local
+  // construction, construction-readiness agreement, and multicast exchange.
+  // Other concurrent threads block and use the cached result. Without this,
+  // two same-rank threads could each drive an allGather while other ranks only
+  // participate once, deadlocking the collective.
   mutable std::mutex multimemInitMutex_;
 
   // External data buffer pointers (set via setExternalDataBuffers()).

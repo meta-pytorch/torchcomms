@@ -3,11 +3,15 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+
 #include <folly/futures/Future.h>
 #include <folly/init/Init.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -83,6 +87,21 @@ MultimemNvlTransportConfig makeConfig(
 using meta::comms::testing::MockBootstrap;
 using StrictMockBootstrap = ::testing::StrictMock<MockBootstrap>;
 
+class ScopedTestCudaDevice {
+ public:
+  explicit ScopedTestCudaDevice(int device) {
+    CUDACHECK_TEST(cudaGetDevice(&originalDevice_));
+    CUDACHECK_TEST(cudaSetDevice(device));
+  }
+
+  ~ScopedTestCudaDevice() {
+    EXPECT_EQ(cudaSetDevice(originalDevice_), cudaSuccess);
+  }
+
+ private:
+  int originalDevice_{-1};
+};
+
 // Builds a StrictMockBootstrap that, by default, forwards every IBootstrap
 // API to `real`. Individual tests override specific methods via EXPECT_CALL
 // to inject failures. StrictMock ensures that if MultimemNvlTransport (or
@@ -157,7 +176,7 @@ TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {
   // exercises only the disabled-path API (hasMultimemNvlTransport() == false,
   // getMultimemNvlTransportDevice() throws) and never touches the multimem
   // setup, so it must run on non-NVLS hosts too (skipping would drop coverage).
-  auto bootstrap = makeBootstrap("multimem_nvl_transport_multi_peer_lazy_test");
+  auto bootstrap = makeBootstrap("multimem_nvl_transport_multi_peer_disabled");
 
   MultiPeerNvlTransportConfig config{
       .pipelineDepth = 0,
@@ -165,6 +184,7 @@ TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {
       // Disable the tile P2P channels (a nonzero maxNumChannels requires
       // pipelineDepth >= 1); this test checks only the disabled-path API.
       .maxNumChannels = 0,
+      .memSharingMode = MemSharingMode::kCudaIpc,
       .enableMultimem = false,
   };
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
@@ -177,7 +197,361 @@ TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {
 
 TEST_F(
     MultimemNvlTransportTestFixture,
-    MultiPeerLazilyInitializesMultimemTransport) {
+    MultiPeerCollectivelyRejectsAsymmetricEligibility) {
+  using ::testing::_;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 2))
+      .WillOnce([](void* buf, int, int, int) {
+        auto* eligible = static_cast<int*>(buf);
+        eligible[0] = 0;
+        eligible[1] = 1;
+        return folly::makeSemiFuture(0);
+      });
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/2,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+  EXPECT_FALSE(transport.initializeMultimemNvlTransportIfEligible());
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerRemoteEligibilityQueryErrorPoisonsRetry) {
+  using ::testing::_;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+      .WillOnce([](void* buf, int, int, int) {
+        auto* eligibility = static_cast<int*>(buf);
+        EXPECT_GE(eligibility[0], 0);
+        eligibility[1] = -1;
+        eligibility[2] = 1;
+        return folly::makeSemiFuture(0);
+      });
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerGetterDoesNotInitializeOrTouchBootstrap) {
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/2,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.getMultimemNvlTransportDevice()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerEligibilityAgreementFailurePoisonsRetry) {
+  using ::testing::_;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+      .WillOnce([](void*, int, int, int) { return folly::makeSemiFuture(1); });
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerEligibilityAgreementExceptionPoisonsRetry) {
+  using ::testing::_;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+      .WillOnce([](void*, int, int, int) {
+        return folly::makeSemiFuture<int>(std::runtime_error("injected"));
+      });
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerCollectivelyRejectsAsymmetricConstructionFailure) {
+  using ::testing::_;
+  using ::testing::InSequence;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  {
+    InSequence sequence;
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce([](void* buf, int, int, int) {
+          auto* eligible = static_cast<int*>(buf);
+          eligible[0] = 1;
+          eligible[1] = 1;
+          eligible[2] = 1;
+          return folly::makeSemiFuture(0);
+        });
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce([](void* buf, int, int, int) {
+          auto* ready = static_cast<int*>(buf);
+          EXPECT_EQ(ready[0], 0);
+          ready[1] = 1;
+          ready[2] = 1;
+          return folly::makeSemiFuture(0);
+        });
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+      .multimem =
+          MultimemNvlTransportConfig{
+              .dataBufferSize = 0,
+              .userSignalCount = 1,
+              .internalSignalCount = 1,
+          },
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerMultimemUsesConfiguredDeviceAndRestoresCallerDevice) {
+  int deviceCount = 0;
+  CUDACHECK_TEST(cudaGetDeviceCount(&deviceCount));
+  if (deviceCount < 2 || numRanks < 3) {
+    GTEST_SKIP() << "test requires at least two GPUs and three ranks";
+  }
+
+  auto bootstrap = makeBootstrap("multimem_nvl_transport_owned_device");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  const int callerDevice = (localRank + 1) % deviceCount;
+  std::unique_ptr<ScopedTestCudaDevice> callerDeviceGuard;
+  {
+    MultiPeerNvlTransportConfig config{
+        .pipelineDepth = 0,
+        .p2pSignalCount = 1,
+        .maxNumChannels = 0,
+        .enableMultimem = true,
+        .multimem =
+            MultimemNvlTransportConfig{
+                .dataBufferSize = 4096,
+                .userSignalCount = 1,
+                .internalSignalCount = 1,
+            },
+    };
+    MultiPeerNvlTransport transport(
+        globalRank, numRanks, localRank, bootstrap, config);
+    ASSERT_NO_THROW(transport.exchange());
+
+    callerDeviceGuard = std::make_unique<ScopedTestCudaDevice>(callerDevice);
+    int currentDevice = -1;
+    CUDACHECK_TEST(cudaGetDevice(&currentDevice));
+    EXPECT_EQ(currentDevice, callerDevice);
+    ASSERT_TRUE(transport.initializeMultimemNvlTransportIfEligible());
+    CUDACHECK_TEST(cudaGetDevice(&currentDevice));
+    EXPECT_EQ(currentDevice, callerDevice);
+    EXPECT_NO_THROW(transport.getMultimemNvlTransportDevice());
+  }
+
+  int currentDevice = -1;
+  CUDACHECK_TEST(cudaGetDevice(&currentDevice));
+  EXPECT_EQ(currentDevice, callerDevice);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerConstructionAgreementFailurePoisonsRetry) {
+  using ::testing::_;
+  using ::testing::InSequence;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  {
+    InSequence sequence;
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce([](void* buf, int, int, int) {
+          auto* eligible = static_cast<int*>(buf);
+          eligible[0] = 1;
+          eligible[1] = 1;
+          eligible[2] = 1;
+          return folly::makeSemiFuture(0);
+        });
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce(
+            [](void*, int, int, int) { return folly::makeSemiFuture(1); });
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+      .multimem =
+          MultimemNvlTransportConfig{
+              .dataBufferSize = 4096,
+              .userSignalCount = 1,
+              .internalSignalCount = 1,
+          },
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerConstructionAgreementExceptionPoisonsRetry) {
+  using ::testing::_;
+  using ::testing::InSequence;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  {
+    InSequence sequence;
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce([](void* buf, int, int, int) {
+          auto* eligible = static_cast<int*>(buf);
+          eligible[0] = 1;
+          eligible[1] = 1;
+          eligible[2] = 1;
+          return folly::makeSemiFuture(0);
+        });
+    EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 3))
+        .WillOnce([](void*, int, int, int) {
+          return folly::makeSemiFuture<int>(
+              folly::make_exception_wrapper<std::runtime_error>(
+                  "readiness agreement failed"));
+        });
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+      .multimem =
+          MultimemNvlTransportConfig{
+              .dataBufferSize = 4096,
+              .userSignalCount = 1,
+              .internalSignalCount = 1,
+          },
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/3,
+      /*multimemCudaDevice=*/localRank,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerCollectivelyInitializesMultimemTransport) {
   auto bootstrap = makeBootstrap("multimem_nvl_transport_multi_peer_test");
   if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
     GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
@@ -200,9 +574,46 @@ TEST_F(
           },
   };
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
-  EXPECT_TRUE(transport.hasMultimemNvlTransport());
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
   ASSERT_NO_THROW(transport.exchange());
+  ASSERT_TRUE(transport.initializeMultimemNvlTransportIfEligible());
+  EXPECT_TRUE(transport.hasMultimemNvlTransport());
   EXPECT_NO_THROW(transport.getMultimemNvlTransportDevice());
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    MultiPeerConstructionFailureDoesNotStrandPeers) {
+  auto bootstrap = makeBootstrap("multimem_nvl_transport_construction_failure");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = true,
+      .multimem =
+          MultimemNvlTransportConfig{
+              .dataBufferSize =
+                  globalRank == 0 ? std::size_t{0} : std::size_t{4096},
+              .userSignalCount = 1,
+              .internalSignalCount = 1,
+          },
+  };
+  MultiPeerNvlTransport transport(
+      globalRank, numRanks, localRank, bootstrap, config);
+  ASSERT_NO_THROW(transport.exchange());
+
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+  EXPECT_THROW(
+      static_cast<void>(transport.initializeMultimemNvlTransportIfEligible()),
+      std::runtime_error);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
 // getDeviceTransport() must refuse to vend a handle before exchange() has
@@ -258,6 +669,8 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSetsUpDeviceHandle) {
 
   EXPECT_NE(handle.localData, nullptr);
   EXPECT_NE(handle.multimemData, nullptr);
+  EXPECT_EQ(handle.nvlRank, globalRank);
+  EXPECT_EQ(handle.nvlRanks, numRanks);
   EXPECT_NE(handle.localData, handle.multimemData)
       << "unicast and multicast VAs should be distinct";
   EXPECT_EQ(handle.dataBufferSize, kDataBytes);
@@ -684,6 +1097,129 @@ TEST_F(MultimemNvlTransportTestFixture, DeviceUserAndInternalSignalsIsolated) {
   CUDACHECK_TEST(cudaFree(pairOut));
 
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(MultimemNvlTransportTestFixture, DeviceLoadReduceCoversPublicTypes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_device_load_reduce_types");
+  auto transport = makeExchangedTransport(
+      bootstrap,
+      globalRank,
+      numRanks,
+      localRank,
+      /*userSignalCount=*/1,
+      /*internalSignalCount=*/1);
+  if (!transport) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kElems = 9;
+  const float rankValue = static_cast<float>(globalRank + 1);
+  const float expected = static_cast<float>(numRanks * (numRanks + 1) / 2);
+  auto handle = transport->getDeviceTransport();
+
+  auto run = [&](test::MultimemReductionTestType type,
+                 bool accF32,
+                 std::size_t elementSize,
+                 std::size_t sourceOffsetElems,
+                 auto verify) {
+    void* output = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&output, kElems * elementSize));
+    test::launchFillReductionInput(
+        handle, type, rankValue, kElems, sourceOffsetElems);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    test::launchLoadReduce(
+        handle, type, accF32, output, kElems, sourceOffsetElems);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    verify(output, expected);
+    CUDACHECK_TEST(cudaFree(output));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  };
+
+  run(test::MultimemReductionTestType::Float,
+      /*accF32=*/true,
+      sizeof(float),
+      /*sourceOffsetElems=*/0,
+      [&](void* output, float expectedValue) {
+        std::vector<float> values(kElems);
+        CUDACHECK_TEST(cudaMemcpy(
+            values.data(),
+            output,
+            values.size() * sizeof(float),
+            cudaMemcpyDeviceToHost));
+        for (float value : values) {
+          EXPECT_EQ(value, expectedValue);
+        }
+      });
+  run(test::MultimemReductionTestType::Float,
+      /*accF32=*/true,
+      sizeof(float),
+      /*sourceOffsetElems=*/1,
+      [&](void* output, float expectedValue) {
+        std::vector<float> values(kElems);
+        CUDACHECK_TEST(cudaMemcpy(
+            values.data(),
+            output,
+            values.size() * sizeof(float),
+            cudaMemcpyDeviceToHost));
+        for (float value : values) {
+          EXPECT_EQ(value, expectedValue);
+        }
+      });
+  run(test::MultimemReductionTestType::Int32,
+      /*accF32=*/true,
+      sizeof(int32_t),
+      /*sourceOffsetElems=*/0,
+      [&](void* output, float expectedValue) {
+        std::vector<int32_t> values(kElems);
+        CUDACHECK_TEST(cudaMemcpy(
+            values.data(),
+            output,
+            values.size() * sizeof(int32_t),
+            cudaMemcpyDeviceToHost));
+        for (int32_t value : values) {
+          EXPECT_EQ(value, static_cast<int32_t>(expectedValue));
+        }
+      });
+
+  for (const auto type :
+       {test::MultimemReductionTestType::Float16,
+        test::MultimemReductionTestType::Bfloat16}) {
+    for (const bool accF32 : {false, true}) {
+      for (const std::size_t sourceOffsetElems : {0, 1}) {
+        run(type,
+            accF32,
+            sizeof(uint16_t),
+            sourceOffsetElems,
+            [&, type](void* output, float expectedValue) {
+              std::vector<uint16_t> values(kElems);
+              CUDACHECK_TEST(cudaMemcpy(
+                  values.data(),
+                  output,
+                  values.size() * sizeof(uint16_t),
+                  cudaMemcpyDeviceToHost));
+              for (uint16_t bits : values) {
+                float value = 0;
+                if (type == test::MultimemReductionTestType::Float16) {
+                  __half raw{};
+                  std::memcpy(&raw, &bits, sizeof(raw));
+                  value = __half2float(raw);
+                } else {
+                  __nv_bfloat16 raw{};
+                  std::memcpy(&raw, &bits, sizeof(raw));
+                  value = __bfloat162float(raw);
+                  expectedValue =
+                      __bfloat162float(__float2bfloat16(expectedValue));
+                }
+                EXPECT_EQ(value, expectedValue);
+              }
+            });
+      }
+    }
+  }
 }
 
 } // namespace comms::prims::tests

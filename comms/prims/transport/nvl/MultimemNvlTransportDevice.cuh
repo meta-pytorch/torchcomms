@@ -16,15 +16,15 @@
 namespace comms::prims {
 
 // Per-lane internal-signal count for the staging pipeline: the single source of
-// truth shared by the host-side signal-region sizing (CtranPipes) and the
+// truth shared by the host-side signal-region sizing (MCCL) and the
 // device-side `make_stage_layout` (MultimemNvlStageLayout.cuh) so the region is
 // sized identically on both sides. Layout per lane: `nvlRanks` per-peer ready[]
 // + `nvlRanks` per-peer ack[] + 4 staging arrival-barrier slots (ready/ack
 // counter+epoch, laid out past the SET-mode slots so ADD residue never
 // contaminates a later SET-mode CMP_GE wait) => 2 * nvlRanks + 4.
 __host__ __device__ constexpr uint32_t multimem_staging_signals_per_lane(
-    int nvlRanks) {
-  return static_cast<uint32_t>(2 * nvlRanks + 4);
+    uint32_t nvlRanks) {
+  return 2 * nvlRanks + 4;
 }
 
 namespace detail {
@@ -71,9 +71,10 @@ __device__ __forceinline__ void multimem_red_release_sys_add_u64(
  * `multimemData` and multimem signal spans are multicast VAs. Writes into the
  * multicast pointer preserve multicast semantics; `localData` and local signal
  * spans are this rank's backing memory after multicast replication. Callers
- * that want to broadcast into the multicast VA should obtain
- * `multimem_data_ptr()` and use PTX `multimem.st.*` intrinsics (or a helper
- * built on top, e.g. the one in `MultimemNvlStaging.cuh`).
+ * that want to reduce from the multicast VA should obtain
+ * `multimem_data_ptr()` and pass it to `multimem::load_reduce_at()`, defined
+ * in `MultimemNvlReduce.cuh`. Broadcast-store helpers are introduced by the
+ * later store-primitives diff.
  */
 struct MultimemNvlTransportDevice {
   char* localData{nullptr};
@@ -83,6 +84,8 @@ struct MultimemNvlTransportDevice {
   DeviceSpan<SignalState> internalLocalSignals{};
   DeviceSpan<SignalState> internalMultimemSignals{};
   std::size_t dataBufferSize{0};
+  int nvlRank{0};
+  int nvlRanks{1};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;

@@ -107,14 +107,33 @@ MultimemNvlTransport::MultimemNvlTransport(
       break;
     }
   }
+  // Defensive backstop for the validateRankMap invariant: a -1 here would flow
+  // into device-side signal-slot indexing and produce out-of-bounds offsets, so
+  // fail loudly rather than corrupt memory if the map ever omits this rank.
+  if (nvlRank < 0) {
+    throw std::runtime_error(
+        "MultimemNvlTransport: commRank not found in nvlRankToCommRank_");
+  }
+  nvlRank_ = nvlRank;
 
-  cudaDevice_ = getCurrentCudaDevice();
-
+  constexpr std::size_t kSignalAlignment = alignof(SignalState);
+  if (config_.dataBufferSize >
+      std::numeric_limits<std::size_t>::max() - (kSignalAlignment - 1)) {
+    throw std::runtime_error(
+        "MultimemNvlTransport: dataBufferSize alignment overflows");
+  }
   signalRegionOffset_ =
-      comms::bitops::alignUp(config_.dataBufferSize, alignof(SignalState));
+      comms::bitops::alignUp(config_.dataBufferSize, kSignalAlignment);
   const std::size_t signalRegionBytes =
       getSignalBufferSize(static_cast<int>(totalSignalCount));
+  if (signalRegionOffset_ >
+      std::numeric_limits<std::size_t>::max() - signalRegionBytes) {
+    throw std::runtime_error(
+        "MultimemNvlTransport: combined allocation size overflows");
+  }
   const std::size_t combinedSize = signalRegionOffset_ + signalRegionBytes;
+
+  cudaDevice_ = getCurrentCudaDevice();
 
   // The GpuMemHandler owns the unicast backing; exchange() adds the multicast
   // overlay over it. Size the allocation to the multicast granularity
@@ -217,6 +236,8 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .internalMultimemSignals = DeviceSpan<SignalState>(
           multimemSignals + userSignalCount, internalSignalCount),
       .dataBufferSize = config_.dataBufferSize,
+      .nvlRank = nvlRank_,
+      .nvlRanks = nvlRanks_,
   };
 }
 

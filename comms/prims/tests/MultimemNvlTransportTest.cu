@@ -2,8 +2,11 @@
 
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
 
+#include <type_traits>
+
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
+#include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
 
 namespace comms::prims::test {
 
@@ -78,6 +81,72 @@ __global__ void readUserAndInternalKernel(
   }
 }
 
+template <typename T>
+__device__ T reductionValue(float value) {
+  if constexpr (std::is_same_v<T, __half>) {
+    return __float2half(value);
+  } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+    return __float2bfloat16_rn(value);
+  } else {
+    return static_cast<T>(value);
+  }
+}
+
+template <typename T>
+__global__ void fillReductionInputKernel(
+    MultimemNvlTransportDevice transport,
+    float value,
+    std::size_t elems,
+    std::size_t sourceOffsetElems) {
+  auto* source = reinterpret_cast<T*>(transport.localData) + sourceOffsetElems;
+  for (std::size_t i = threadIdx.x; i < elems; i += blockDim.x) {
+    source[i] = reductionValue<T>(value);
+  }
+}
+
+template <typename T, bool kAccF32>
+__global__ void loadReduceKernel(
+    MultimemNvlTransportDevice transport,
+    T* output,
+    std::size_t elems,
+    std::size_t sourceOffsetElems) {
+  auto group = make_warp_group();
+  const auto* source =
+      reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
+  multimem::load_reduce_at<T, multimem::MultimemRedOp::Add, kAccF32>(
+      group, output, source, elems);
+}
+
+template <typename T>
+void launchFillReductionInputTyped(
+    MultimemNvlTransportDevice transport,
+    float value,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
+    cudaStream_t stream) {
+  fillReductionInputKernel<T>
+      <<<1, 32, 0, stream>>>(transport, value, elems, sourceOffsetElems);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
+void launchLoadReduceTyped(
+    MultimemNvlTransportDevice transport,
+    bool accF32,
+    void* output,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
+    cudaStream_t stream) {
+  if (accF32) {
+    loadReduceKernel<T, true><<<1, 32, 0, stream>>>(
+        transport, static_cast<T*>(output), elems, sourceOffsetElems);
+  } else {
+    loadReduceKernel<T, false><<<1, 32, 0, stream>>>(
+        transport, static_cast<T*>(output), elems, sourceOffsetElems);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace
 
 void launchSetUserSignal(
@@ -149,6 +218,53 @@ void launchReadUserAndInternal(
   readUserAndInternalKernel<<<1, 32, 0, stream>>>(
       transport, userId, internalId, out);
   PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchFillReductionInput(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    float value,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float:
+      return launchFillReductionInputTyped<float>(
+          transport, value, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Int32:
+      return launchFillReductionInputTyped<int32_t>(
+          transport, value, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Float16:
+      return launchFillReductionInputTyped<__half>(
+          transport, value, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchFillReductionInputTyped<__nv_bfloat16>(
+          transport, value, elems, sourceOffsetElems, stream);
+  }
+}
+
+void launchLoadReduce(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    void* output,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float:
+      return launchLoadReduceTyped<float>(
+          transport, accF32, output, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Int32:
+      return launchLoadReduceTyped<int32_t>(
+          transport, accF32, output, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Float16:
+      return launchLoadReduceTyped<__half>(
+          transport, accF32, output, elems, sourceOffsetElems, stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchLoadReduceTyped<__nv_bfloat16>(
+          transport, accF32, output, elems, sourceOffsetElems, stream);
+  }
 }
 
 } // namespace comms::prims::test

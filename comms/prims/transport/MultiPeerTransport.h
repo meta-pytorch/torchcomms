@@ -188,6 +188,39 @@ class MultiPeerTransport {
   Transport* /*nullable*/ get_nvl_transports_array() const;
 
   /**
+   * @return True after collective multimem initialization succeeds.
+   *
+   * This is a cached local query and never starts a collective operation.
+   */
+  bool has_multimem_nvl_transport() const;
+
+  /**
+   * Collectively initialize the multimem NVL transport when all ranks are
+   * eligible. Returns false for disabled/ineligible communicators so the
+   * dispatcher can select a fallback algorithm.
+   *
+   * PRECONDITION: all NVL ranks call this in lockstep.
+   * @throws std::runtime_error on bootstrap or multicast setup failure.
+   */
+  bool initialize_multimem_nvl_transport() const;
+
+  /**
+   * Return the device handle for the copy-based (staging) multimem NVL
+   * transport. Delegates to
+   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the cnvlmm
+   * staging path.
+   *
+   * Call initialize_multimem_nvl_transport() collectively before this cached
+   * getter. It throws when initialization has not succeeded.
+   *
+   * This getter is local and never touches bootstrap.
+   *
+   * @throws std::runtime_error if no NVL transport, multimem NVL is not
+   * initialized.
+   */
+  MultimemNvlTransportDevice get_multimem_nvl_transport_device() const;
+
+  /**
    * @param globalPeerRank Global rank of the IBGDA peer.
    * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
    */
