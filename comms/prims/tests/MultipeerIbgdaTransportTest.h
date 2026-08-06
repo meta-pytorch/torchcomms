@@ -145,6 +145,24 @@ void testSendRecv(
     int blockSize);
 
 /**
+ * Test kernel: Blocking pipelined send or recv driving the variable-size
+ * `AnsCompress` CopyOp — the compressed transport path added in D111967119.
+ * `maxSignalBytes == 0` exercises the transport's 0-sentinel (which derives a
+ * trap-safe chunk size via CopyOp::max_safe_chunk_size_for_slot()); a non-zero
+ * value (e.g. 256 KiB) exercises the explicit signaled-chunk-size path.
+ * `blockSize` must be 128, 256, or 512 (NumWarps 4/8/16). Defined in the
+ * separately device-linked MultipeerIbgdaTransportAnsTest.cu.
+ */
+void testSendRecvAns(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: two sequential bidirectional blocking send/recv calls.
  */
 void testTwoCallSendThenRecv(

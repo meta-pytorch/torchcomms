@@ -150,4 +150,39 @@ TEST(
       "signalCount too large");
 }
 
+TEST(
+    MultimemNvlTransportValidationTest,
+    PrimaryCtorRejectsDataBufferAlignmentOverflow) {
+  MultimemNvlTransportConfig config{};
+  config.dataBufferSize = std::numeric_limits<std::size_t>::max();
+  config.userSignalCount = 1;
+  expectRuntimeErrorContains(
+      [&] {
+        MultimemNvlTransport(
+            /*bootstrap=*/nullptr,
+            /*commRank=*/0,
+            /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
+            config);
+      },
+      "dataBufferSize alignment overflows");
+}
+
+TEST(
+    MultimemNvlTransportValidationTest,
+    PrimaryCtorRejectsCombinedAllocationSizeOverflow) {
+  MultimemNvlTransportConfig config{};
+  config.dataBufferSize =
+      std::numeric_limits<std::size_t>::max() - (alignof(SignalState) - 1);
+  config.userSignalCount = 1;
+  expectRuntimeErrorContains(
+      [&] {
+        MultimemNvlTransport(
+            /*bootstrap=*/nullptr,
+            /*commRank=*/0,
+            /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
+            config);
+      },
+      "combined allocation size overflows");
+}
+
 } // namespace comms::prims::tests

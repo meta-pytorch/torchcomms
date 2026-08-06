@@ -303,6 +303,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
         recvBytes,
         statex->rank());
     params.num_blocks = numBlocks;
+    params.use_tma = MCCL_PRIMS_TMA;
     params.timeout_ms = MCCL_ABORT_TIMEOUT_MS;
     params.stream = stream;
 

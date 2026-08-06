@@ -30,5 +30,7 @@ pip install pyyaml
 
 export NCCL_SKIP_CONDA_INSTALL=1
 export CLEAN_BUILD=1
+# NCCLX device compilation can exhaust memory at full host parallelism.
+export NCCL_BUILD_JOBS=16
 
 python setup.py bdist_wheel

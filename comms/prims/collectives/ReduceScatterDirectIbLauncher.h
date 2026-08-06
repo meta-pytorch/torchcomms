@@ -24,6 +24,7 @@ struct DirectReduceScatterIbLaunchParams {
   bool quantized{false};
   bool in_place{false};
   int num_blocks{16};
+  bool use_tma{true};
   float timeout_ms{0.0f};
   cudaStream_t stream{nullptr};
   P2pIbTransportDevice peers[kDirectReduceScatterIbMaxRanks]{};

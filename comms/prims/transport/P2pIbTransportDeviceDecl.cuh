@@ -19,6 +19,20 @@ struct Memcpy;
 class P2pIbgdaTransportDevice;
 class P2pIbrcTransportDevice;
 
+namespace detail {
+// Query whether a CopyOp policy is variable-size (e.g. AnsCompress, which
+// produces a data-dependent compressed payload and needs the variable-size
+// transport protocol). Policies that don't declare `kVariableSize` (Memcpy,
+// TileReduce, MemcpyAndSelfCopy, …) are treated as fixed-size.
+template <typename C, typename = void>
+struct copyop_variable_size : std::false_type {};
+template <typename C>
+struct copyop_variable_size<C, std::void_t<decltype(C::kVariableSize)>>
+    : std::bool_constant<C::kVariableSize> {};
+template <typename C>
+inline constexpr bool copyop_variable_size_v = copyop_variable_size<C>::value;
+} // namespace detail
+
 enum class P2pIbBackendType : uint8_t {
   IBGDA,
   IBRC,
@@ -410,6 +424,15 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
     Args... args) {
+  // The progress API drives the FIXED-size protocol only: it signals in wire
+  // bytes and ignores CopyOp::send()'s returned wire size, so a variable-size
+  // policy (e.g. AnsCompress) would put/signal the wrong length and corrupt the
+  // stream. Forbid it explicitly; variable-size CopyOps must use the blocking
+  // send(). See D108485978 review.
+  static_assert(
+      !detail::copyop_variable_size_v<CopyOp>,
+      "progress_send_once() supports fixed-size CopyOps only; use the "
+      "blocking send() for variable-size CopyOps such as AnsCompress.");
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #ifdef __HIP_PLATFORM_AMD__
   static_assert(
@@ -706,6 +729,13 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
     Args... args) {
+  // Mirror of progress_send_once: the progress API is fixed-size only. A
+  // variable-size policy would mis-size the DATA_READY/SLOT_FREE protocol and
+  // corrupt the stream; use the blocking recv() instead. See D108485978 review.
+  static_assert(
+      !detail::copyop_variable_size_v<CopyOp>,
+      "progress_recv_once() supports fixed-size CopyOps only; use the "
+      "blocking recv() for variable-size CopyOps such as AnsCompress.");
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 #ifdef __HIP_PLATFORM_AMD__
   static_assert(
@@ -946,10 +976,12 @@ __device__ __forceinline__ void send(
   const int groupId = geometry.groupId;
   const std::size_t perBlockSlotWire = geometry.perBlockSlotWire;
   const std::size_t perBlockSlotPayload = geometry.perBlockSlotPayload;
-  const std::size_t chunkPayload = geometry.chunkPayload;
-  const std::size_t pipelineBytesPayload = geometry.pipelineBytesPayload;
+  [[maybe_unused]] const std::size_t chunkPayload = geometry.chunkPayload;
+  [[maybe_unused]] const std::size_t pipelineBytesPayload =
+      geometry.pipelineBytesPayload;
   const std::size_t pipelineBytesWire = geometry.pipelineBytesWire;
-  const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
+  [[maybe_unused]] const std::size_t payloadProtocolBytes =
+      geometry.payloadProtocolBytes;
 
   auto& state = progress_send_slot(transport, group);
   IbLocalChannel& localChannel =
@@ -959,109 +991,319 @@ __device__ __forceinline__ void send(
       makeIbRemoteChannel(channelLayout, groupId);
   assert_progress_slot_idle(group, state, "send");
   const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
+  // Category of the previous op on this slot, read before the leader overwrites
+  // it below. Used only to make the compressed slot-alignment trap precise
+  // about a fixed->variable transition (byte cursor vs sub-chunk cursor).
+  [[maybe_unused]] const bool prevOpVariableSize = state.activeVariableSize;
   const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
       baseByte, max_signal_bytes, perBlockSlotPayload, nbytes);
-  const uint64_t payloadBaseByte = baseByte;
-  const std::size_t protocolBytes = payloadProtocolBytes + protocolTailPadding;
+  [[maybe_unused]] const uint64_t payloadBaseByte = baseByte;
+  [[maybe_unused]] const std::size_t protocolBytes =
+      payloadProtocolBytes + protocolTailPadding;
   if (group.is_leader()) {
+    // Record this op's CopyOp category in the persistent slot state so the
+    // cross-category contract is explicit (see IbChannelProgress). Safe to
+    // switch categories between ops: nextStep is a slot-pinned wire-byte
+    // cursor.
+    state.activeVariableSize = detail::copyop_variable_size_v<CopyOp>;
     state.activeStage = detail::IbSendRecvProgressStage::Busy;
     state.activeBaseStep = static_cast<int64_t>(baseByte);
     state.activeNextByte = 0;
     state.activeTailPadding = protocolTailPadding;
   }
 
-  // The loop iterates in PAYLOAD bytes; physical staging offsets, RDMA lengths,
-  // and signal/counter thresholds are derived in WIRE bytes via
-  // Proto::wire_bytes() (1:1 for Simple, kPacketBytes:kData for LL). Tail
-  // padding rides the final signal/counter credit only -- the RDMA write covers
-  // valid payload/wire bytes.
-  for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
-    const uint64_t streamPayload = payloadBaseByte + dataOff;
-    const std::size_t pipelineOff =
-        static_cast<std::size_t>(streamPayload % pipelineBytesPayload);
-    const int slot = static_cast<int>(pipelineOff / perBlockSlotPayload);
-    const std::size_t chunkOff = pipelineOff - slot * perBlockSlotPayload;
-    const std::size_t slotRemaining = perBlockSlotPayload - chunkOff;
-    const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
-    std::size_t payloadBytes =
-        chunkPayload < dataRemaining ? chunkPayload : dataRemaining;
-    payloadBytes = payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
-    const bool isFinalChunk = dataOff + payloadBytes >= payloadProtocolBytes;
+  if constexpr (detail::copyop_variable_size_v<CopyOp>) {
+    // Variable-size (compressed) send. A compressed sub-chunk's on-wire size is
+    // data-dependent, so the staging ring reserves a fixed worst-case region
+    // (`chunkStride`) per sub-chunk while the RDMA put writes only the bytes
+    // the CopyOp actually produced. Flow control still runs in WIRE bytes (the
+    // same unit as the plain path above), so the shared per-channel progress
+    // cursor, DATA_READY/SLOT_FREE signals, and lane/completion machinery are
+    // reused unchanged and a plain send can safely follow a compressed one on
+    // the same channel. The cursor advances in whole slots (`perBlockSlot`):
+    // the last sub-chunk of every slot carries the slot's unused tail as
+    // flow-control credit so the cumulative stream lands exactly on a slot
+    // boundary.
+    //
+    // Cross-category staging-reuse contract (shared physical ring): the fixed
+    // and variable paths share one physical staging ring, but a switch between
+    // categories can NOT reuse a slot region while the previous category still
+    // has NIC reads in flight. Reuse is gated by the per-slot completion
+    // handshake, which is category-agnostic: every put records its completion
+    // via record_send_completion(groupId, ringSlot, cycle), and every slot is
+    // re-armed by prepare_send_slot(ringSlot, cycle) below, which blocks until
+    // the NIC has finished the prior use of that ring slot. Because both paths
+    // key on the same (channel, slot) completion state and advance the same
+    // wire-byte cursor, a following op -- fixed after variable or vice versa --
+    // waits out any in-flight read before overwriting staging. Two ops on a
+    // channel never overlap (assert_progress_slot_idle traps on a non-Done
+    // predecessor) and signal_alignment() pins the shared cursor to whole
+    // perBlockSlot strides for both categories, so a switch always resumes on a
+    // slot boundary. No separate cross-category drain is therefore required.
+    const std::size_t perBlockSlot = perBlockSlotWire;
+    const std::size_t pipelineBytes = pipelineBytesWire;
+    const int pipelineDepth = channelLayout.pipelineDepth;
+    // nvcompdx requires 512-byte-aligned staging regions; every compressed
+    // sub-chunk starts at groupId*pipelineBytes + ringSlot*perBlockSlot +
+    // subStep*chunkStride, so perBlockSlot must be 512-aligned for those starts
+    // to be aligned (chunkStride already is).
+    if ((perBlockSlot & 511ULL) != 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed send perBlockSlot=%llu not 512-aligned; "
+            "size the per-channel staging so each block's slot is a multiple of "
+            "the NIC burst alignment.\n",
+            (unsigned long long)perBlockSlot);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    // The compressed cursor is slot-granular and requires a slot-aligned start.
+    // `signal_alignment()` pins the persistent per-channel cursor to whole
+    // perBlockSlot strides for BOTH plain and compressed ops, so a preceding
+    // plain (byte-granular) op always leaves this aligned. This remains as a
+    // defensive invariant check: fail fast rather than corrupt if some future
+    // path advances the cursor on a sub-slot boundary.
+    if ((baseByte % perBlockSlot) != 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed send requires a slot-aligned start "
+            "cursor (baseByte=%llu, perBlockSlot=%llu, prevOpVariableSize=%d); a "
+            "preceding op left the per-channel cursor mid-slot, which would "
+            "reinterpret its byte cursor as a compressed sub-chunk cursor.\n",
+            (unsigned long long)baseByte,
+            (unsigned long long)perBlockSlot,
+            (int)prevOpVariableSize);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    // For the 0 sentinel (or an over-large request) pick the largest chunk
+    // whose worst-case ANS-expanded staging still fits one perBlockSlot, via
+    // the policy's max_safe_chunk_size_for_slot(). Using perBlockSlot directly
+    // would make worst_case_chunk_stride() exceed the slot and trap, since a
+    // compressed sub-chunk's worst case is ~1.3x its uncompressed input. send()
+    // and recv() derive the identical value from the shared perBlockSlot, so
+    // the two sides agree on the chunking without any exchange.
+    std::size_t chunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
+        ? (max_signal_bytes & ~511ULL)
+        : CopyOp::max_safe_chunk_size_for_slot(perBlockSlot);
+    if (chunkSize == 0) {
+      chunkSize = CopyOp::max_safe_chunk_size_for_slot(perBlockSlot);
+    }
+    const std::size_t chunkStride = CopyOp::worst_case_chunk_stride(chunkSize);
+    if (chunkStride == 0 || chunkStride > perBlockSlot) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed send perBlockSlot=%llu < chunkStride="
+            "%llu (chunkSize=%llu). Increase the per-channel staging or reduce "
+            "max_signal_bytes so each slot fits at least one worst-case-expanded "
+            "sub-chunk.\n",
+            (unsigned long long)perBlockSlot,
+            (unsigned long long)chunkStride,
+            (unsigned long long)chunkSize);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    const std::size_t chunksPerSlot = perBlockSlot / chunkStride;
+    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
+    const std::size_t numSlots =
+        (totalChunks + chunksPerSlot - 1) / chunksPerSlot;
+    const std::size_t baseSlot =
+        static_cast<std::size_t>(baseByte) / perBlockSlot;
 
-    // Wire-space derivations (== payload for Simple: wire_bytes is identity).
-    const std::size_t bytesThis = Proto::wire_bytes(payloadBytes);
-    // Tail padding is a payload-space alignment credit; convert it to wire so
-    // it matches the wire flow-control stream (streamWire =
-    // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
-    const std::size_t protocolBytesThis =
-        bytesThis + (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
-    const std::size_t stagingOff =
-        static_cast<std::size_t>(groupId) * pipelineBytesWire +
-        static_cast<std::size_t>(slot) * perBlockSlotWire +
-        Proto::wire_bytes(chunkOff);
-    const uint64_t streamWire = Proto::wire_bytes(streamPayload);
-    const uint64_t protocolStreamEnd = streamWire + protocolBytesThis;
-    const uint64_t pipelineCycle = streamPayload / pipelineBytesPayload;
+    for (std::size_t s = 0; s < totalChunks; ++s) {
+      const std::size_t slotIdx = s / chunksPerSlot;
+      const std::size_t subStep = s % chunksPerSlot;
+      const bool isLastInSlot =
+          (subStep == chunksPerSlot - 1) || (s == totalChunks - 1);
+      const std::size_t subStart =
+          slotIdx * perBlockSlot + subStep * chunkStride;
+      const std::size_t subEnd =
+          isLastInSlot ? (slotIdx + 1) * perBlockSlot : subStart + chunkStride;
+      const std::size_t protocolBytesThis = subEnd - subStart;
+      const uint64_t protocolStreamEnd = baseByte + subEnd;
 
-    // (1) Wait for NIC to finish with this slot's local sendStaging.
-    prepare_send_slot(transport, group, slot, pipelineCycle, timeout);
+      const std::size_t absSlot = baseSlot + slotIdx;
+      const int ringSlot = static_cast<int>(absSlot % pipelineDepth);
+      const uint64_t pipelineCycle = absSlot / pipelineDepth;
+      const std::size_t stagingOff =
+          static_cast<std::size_t>(groupId) * pipelineBytes +
+          static_cast<std::size_t>(ringSlot) * perBlockSlot +
+          subStep * chunkStride;
+      const std::size_t dataOff = s * chunkSize;
+      const std::size_t bytesThis =
+          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
-    // (2) Cooperative copy: src -> local sendStaging via CopyOp.
-    const std::size_t validBytes =
-        valid_payload_bytes(dataOff, payloadBytes, nbytes);
-    if (validBytes > 0) {
-      CopyOp::send(
+      // (1) Wait for NIC to finish with this slot's local sendStaging.
+      prepare_send_slot(transport, group, ringSlot, pipelineCycle, timeout);
+
+      // (2) Cooperative compress: src -> local sendStaging via CopyOp. The
+      //     return value is the compressed byte count the leader uses to size
+      //     the RDMA put.
+      const std::size_t copyResult = CopyOp::send(
           channelLayout.sendStagingPtr + stagingOff,
           static_cast<const char*>(src) + dataOff,
-          validBytes,
+          bytesThis,
           group,
           dataOff,
           args...);
-    }
-    group.sync();
+      group.sync();
 
-    // (3) Backpressure: wait for receiver to free this byte range's
-    //     recvStaging offset. Symmetric with DATA_READY.
-    if (protocolStreamEnd > pipelineBytesWire) {
-      transport.wait_signal(
-          group, localSlotFree, protocolStreamEnd - pipelineBytesWire, timeout);
+      // (3) Backpressure: wait for receiver to free this slot's recvStaging.
+      if (protocolStreamEnd > pipelineBytes) {
+        transport.wait_signal(
+            group, localSlotFree, protocolStreamEnd - pipelineBytes, timeout);
+      }
+
+      // (4) Leader-only RDMA put with fused signal. The put length is the
+      //     compressed size; DATA_READY advances by the reserved wire stride so
+      //     the receiver's cumulative threshold is data-independent. The
+      //     preceding group.sync() gives the happens-before so the leader's
+      //     __threadfence_system() flushes every thread's compressed writes to
+      //     system scope before the WQE is posted (only the leader pays the
+      //     system fence).
+      group.sync();
+      if (group.is_leader()) {
+        __threadfence_system();
+        if (copyResult > chunkStride) {
+          printf(
+              "[PIPES] FATAL: compressed send copyResult=%llu > chunkStride="
+              "%llu (chunkSize=%llu). Compressed sub-chunk exceeded its "
+              "reserved worst-case slot region; refusing to truncate the RDMA "
+              "put (would corrupt decompression).\n",
+              (unsigned long long)copyResult,
+              (unsigned long long)chunkStride,
+              (unsigned long long)chunkSize);
+          PIPES_DEVICE_TRAP();
+        }
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+        const auto completion = transport.put(
+            solo,
+            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            remoteChannel.recvStaging.subBuffer(stagingOff),
+            copyResult,
+            remoteChannel.dataReady,
+            protocolBytesThis,
+            /*counterBuf=*/{},
+            /*counterVal=*/0,
+            /*signalPerLane=*/true);
+        record_send_completion(
+            transport,
+            static_cast<uint32_t>(groupId),
+            ringSlot,
+            pipelineCycle,
+            completion);
+      }
+      group.sync();
     }
 
-    // (4) Leader-only single-WQE RDMA put with fused signal.
-    group.sync();
     if (group.is_leader()) {
-      __threadfence_system();
-      ThreadGroup solo{
-          0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      const auto completion = transport.put(
-          solo,
-          channelLayout.sendStagingBuf.subBuffer(stagingOff),
-          remoteChannel.recvStaging.subBuffer(stagingOff),
-          bytesThis,
-          remoteChannel.dataReady,
-          protocolBytesThis,
-          /*counterBuf=*/{},
-          /*counterVal=*/0,
-          /*signalPerLane=*/true);
-      record_send_completion(
-          transport,
-          static_cast<uint32_t>(groupId),
-          slot,
-          pipelineCycle,
-          completion);
+      state.nextStep = static_cast<int64_t>(baseByte + numSlots * perBlockSlot);
+      state.activeStage = detail::IbSendRecvProgressStage::Done;
+      state.activeBaseStep = 0;
+      state.activeNextByte = 0;
+      state.activeTailPadding = 0;
     }
     group.sync();
-    dataOff += payloadBytes;
-  }
+  } else {
+    // The loop iterates in PAYLOAD bytes; physical staging offsets, RDMA
+    // lengths, and signal/counter thresholds are derived in WIRE bytes via
+    // Proto::wire_bytes() (1:1 for Simple, kPacketBytes:kData for LL). Tail
+    // padding rides the final signal/counter credit only -- the RDMA write
+    // covers valid payload/wire bytes.
+    for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
+      const uint64_t streamPayload = payloadBaseByte + dataOff;
+      const std::size_t pipelineOff =
+          static_cast<std::size_t>(streamPayload % pipelineBytesPayload);
+      const int slot = static_cast<int>(pipelineOff / perBlockSlotPayload);
+      const std::size_t chunkOff = pipelineOff - slot * perBlockSlotPayload;
+      const std::size_t slotRemaining = perBlockSlotPayload - chunkOff;
+      const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
+      std::size_t payloadBytes =
+          chunkPayload < dataRemaining ? chunkPayload : dataRemaining;
+      payloadBytes =
+          payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
+      const bool isFinalChunk = dataOff + payloadBytes >= payloadProtocolBytes;
 
-  if (group.is_leader()) {
-    state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
-    state.activeStage = detail::IbSendRecvProgressStage::Done;
-    state.activeBaseStep = 0;
-    state.activeNextByte = 0;
-    state.activeTailPadding = 0;
+      // Wire-space derivations (== payload for Simple: wire_bytes is identity).
+      const std::size_t bytesThis = Proto::wire_bytes(payloadBytes);
+      // Tail padding is a payload-space alignment credit; convert it to wire so
+      // it matches the wire flow-control stream (streamWire =
+      // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
+      const std::size_t protocolBytesThis = bytesThis +
+          (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
+      const std::size_t stagingOff =
+          static_cast<std::size_t>(groupId) * pipelineBytesWire +
+          static_cast<std::size_t>(slot) * perBlockSlotWire +
+          Proto::wire_bytes(chunkOff);
+      const uint64_t streamWire = Proto::wire_bytes(streamPayload);
+      const uint64_t protocolStreamEnd = streamWire + protocolBytesThis;
+      const uint64_t pipelineCycle = streamPayload / pipelineBytesPayload;
+
+      // (1) Wait for NIC to finish with this slot's local sendStaging.
+      prepare_send_slot(transport, group, slot, pipelineCycle, timeout);
+
+      // (2) Cooperative copy: src -> local sendStaging via CopyOp.
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, payloadBytes, nbytes);
+      if (validBytes > 0) {
+        CopyOp::send(
+            channelLayout.sendStagingPtr + stagingOff,
+            static_cast<const char*>(src) + dataOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
+      group.sync();
+
+      // (3) Backpressure: wait for receiver to free this byte range's
+      //     recvStaging offset. Symmetric with DATA_READY.
+      if (protocolStreamEnd > pipelineBytesWire) {
+        transport.wait_signal(
+            group,
+            localSlotFree,
+            protocolStreamEnd - pipelineBytesWire,
+            timeout);
+      }
+
+      // (4) Leader-only single-WQE RDMA put with fused signal.
+      group.sync();
+      if (group.is_leader()) {
+        __threadfence_system();
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+        const auto completion = transport.put(
+            solo,
+            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            remoteChannel.recvStaging.subBuffer(stagingOff),
+            bytesThis,
+            remoteChannel.dataReady,
+            protocolBytesThis,
+            /*counterBuf=*/{},
+            /*counterVal=*/0,
+            /*signalPerLane=*/true);
+        record_send_completion(
+            transport,
+            static_cast<uint32_t>(groupId),
+            slot,
+            pipelineCycle,
+            completion);
+      }
+      group.sync();
+      dataOff += payloadBytes;
+    }
+
+    if (group.is_leader()) {
+      state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
+      state.activeStage = detail::IbSendRecvProgressStage::Done;
+      state.activeBaseStep = 0;
+      state.activeNextByte = 0;
+      state.activeTailPadding = 0;
+    }
+    group.sync();
   }
-  group.sync();
 #endif
 }
 
@@ -1122,10 +1364,12 @@ __device__ __forceinline__ void recv(
   const int groupId = geometry.groupId;
   const std::size_t perBlockSlotWire = geometry.perBlockSlotWire;
   const std::size_t perBlockSlotPayload = geometry.perBlockSlotPayload;
-  const std::size_t chunkPayload = geometry.chunkPayload;
-  const std::size_t pipelineBytesPayload = geometry.pipelineBytesPayload;
+  [[maybe_unused]] const std::size_t chunkPayload = geometry.chunkPayload;
+  [[maybe_unused]] const std::size_t pipelineBytesPayload =
+      geometry.pipelineBytesPayload;
   const std::size_t pipelineBytesWire = geometry.pipelineBytesWire;
-  const std::size_t payloadProtocolBytes = geometry.payloadProtocolBytes;
+  [[maybe_unused]] const std::size_t payloadProtocolBytes =
+      geometry.payloadProtocolBytes;
 
   auto& state = progress_recv_slot(transport, group);
   IbLocalChannel& localChannel =
@@ -1135,81 +1379,223 @@ __device__ __forceinline__ void recv(
       makeIbRemoteChannel(channelLayout, groupId);
   assert_progress_slot_idle(group, state, "recv");
   const uint64_t baseByte = static_cast<uint64_t>(state.nextStep);
+  // Category of the previous op on this slot, read before the leader overwrites
+  // it below. Used only to make the compressed slot-alignment trap precise
+  // about a fixed->variable transition (byte cursor vs sub-chunk cursor).
+  [[maybe_unused]] const bool prevOpVariableSize = state.activeVariableSize;
   const std::size_t protocolTailPadding = tail_padding_for_signal_granularity(
       baseByte, max_signal_bytes, perBlockSlotPayload, nbytes);
-  const uint64_t payloadBaseByte = baseByte;
-  const std::size_t protocolBytes = payloadProtocolBytes + protocolTailPadding;
+  [[maybe_unused]] const uint64_t payloadBaseByte = baseByte;
+  [[maybe_unused]] const std::size_t protocolBytes =
+      payloadProtocolBytes + protocolTailPadding;
   if (group.is_leader()) {
+    // Record this op's CopyOp category in the persistent slot state so the
+    // cross-category contract is explicit (see IbChannelProgress). Safe to
+    // switch categories between ops: nextStep is a slot-pinned wire-byte
+    // cursor.
+    state.activeVariableSize = detail::copyop_variable_size_v<CopyOp>;
     state.activeStage = detail::IbSendRecvProgressStage::Busy;
     state.activeBaseStep = static_cast<int64_t>(baseByte);
     state.activeNextByte = 0;
     state.activeTailPadding = protocolTailPadding;
   }
 
-  // Payload-space iteration; wire-space staging/threshold derivations via
-  // Proto::wire_bytes() (identity for Simple). Tail padding rides the final
-  // SLOT_FREE credit only; the recv copies valid payload bytes.
-  for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
-    const uint64_t streamPayload = payloadBaseByte + dataOff;
-    const std::size_t pipelineOff =
-        static_cast<std::size_t>(streamPayload % pipelineBytesPayload);
-    const int slot = static_cast<int>(pipelineOff / perBlockSlotPayload);
-    const std::size_t chunkOff = pipelineOff - slot * perBlockSlotPayload;
-    const std::size_t slotRemaining = perBlockSlotPayload - chunkOff;
-    const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
-    std::size_t payloadBytes =
-        chunkPayload < dataRemaining ? chunkPayload : dataRemaining;
-    payloadBytes = payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
-    const bool isFinalChunk = dataOff + payloadBytes >= payloadProtocolBytes;
+  if constexpr (detail::copyop_variable_size_v<CopyOp>) {
+    // Variable-size (compressed) recv, mirror of send(): the staging ring
+    // reserves a fixed worst-case region per sub-chunk while the CopyOp
+    // decompresses only the bytes that arrived (AnsCompress reads its own
+    // in-staging size header). Flow control runs in WIRE bytes with the same
+    // gap-carried, slot-granular cursor as the sender, so DATA_READY/SLOT_FREE
+    // thresholds match the sender's exactly.
+    //
+    // Cross-category staging-reuse contract (shared physical ring): mirror of
+    // send(). Reuse of a recvStaging slot across a fixed<->variable switch is
+    // serialized by the same cumulative DATA_READY/SLOT_FREE handshake on the
+    // shared wire-byte cursor -- the sender never overwrites a slot the
+    // receiver has not yet released -- so no separate cross-category drain is
+    // needed.
+    const std::size_t perBlockSlot = perBlockSlotWire;
+    const int pipelineDepth = channelLayout.pipelineDepth;
+    if ((perBlockSlot & 511ULL) != 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed recv perBlockSlot=%llu not 512-aligned; "
+            "size the per-channel staging so each block's slot is a multiple of "
+            "the NIC burst alignment.\n",
+            (unsigned long long)perBlockSlot);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    // `signal_alignment()` pins the persistent per-channel cursor to whole
+    // perBlockSlot strides for both plain and compressed ops, so this is always
+    // aligned in practice. Kept as a defensive invariant check (mirror of the
+    // send-side guard above).
+    if ((baseByte % perBlockSlot) != 0) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed recv requires a slot-aligned start "
+            "cursor (baseByte=%llu, perBlockSlot=%llu, prevOpVariableSize=%d); a "
+            "preceding op left the per-channel cursor mid-slot, which would "
+            "reinterpret its byte cursor as a compressed sub-chunk cursor.\n",
+            (unsigned long long)baseByte,
+            (unsigned long long)perBlockSlot,
+            (int)prevOpVariableSize);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    // For the 0 sentinel (or an over-large request) pick the largest chunk
+    // whose worst-case ANS-expanded staging still fits one perBlockSlot, via
+    // the policy's max_safe_chunk_size_for_slot(). Using perBlockSlot directly
+    // would make worst_case_chunk_stride() exceed the slot and trap, since a
+    // compressed sub-chunk's worst case is ~1.3x its uncompressed input. send()
+    // and recv() derive the identical value from the shared perBlockSlot, so
+    // the two sides agree on the chunking without any exchange.
+    std::size_t chunkSize =
+        (max_signal_bytes > 0 && max_signal_bytes < perBlockSlot)
+        ? (max_signal_bytes & ~511ULL)
+        : CopyOp::max_safe_chunk_size_for_slot(perBlockSlot);
+    if (chunkSize == 0) {
+      chunkSize = CopyOp::max_safe_chunk_size_for_slot(perBlockSlot);
+    }
+    const std::size_t chunkStride = CopyOp::worst_case_chunk_stride(chunkSize);
+    if (chunkStride == 0 || chunkStride > perBlockSlot) {
+      if (group.is_leader()) {
+        printf(
+            "[PIPES] FATAL: compressed recv perBlockSlot=%llu < chunkStride="
+            "%llu (chunkSize=%llu).\n",
+            (unsigned long long)perBlockSlot,
+            (unsigned long long)chunkStride,
+            (unsigned long long)chunkSize);
+      }
+      PIPES_DEVICE_TRAP();
+    }
+    const std::size_t chunksPerSlot = perBlockSlot / chunkStride;
+    const std::size_t totalChunks = (nbytes + chunkSize - 1) / chunkSize;
+    const std::size_t numSlots =
+        (totalChunks + chunksPerSlot - 1) / chunksPerSlot;
+    const std::size_t baseSlot =
+        static_cast<std::size_t>(baseByte) / perBlockSlot;
 
-    const std::size_t bytesThis = Proto::wire_bytes(payloadBytes);
-    // Tail padding is a payload-space alignment credit; convert it to wire so
-    // it matches the wire flow-control stream (streamWire =
-    // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
-    const std::size_t protocolBytesThis =
-        bytesThis + (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
-    const std::size_t stagingOff =
-        static_cast<std::size_t>(groupId) * pipelineBytesWire +
-        static_cast<std::size_t>(slot) * perBlockSlotWire +
-        Proto::wire_bytes(chunkOff);
+    for (std::size_t s = 0; s < totalChunks; ++s) {
+      const std::size_t slotIdx = s / chunksPerSlot;
+      const std::size_t subStep = s % chunksPerSlot;
+      const bool isLastInSlot =
+          (subStep == chunksPerSlot - 1) || (s == totalChunks - 1);
+      const std::size_t subStart =
+          slotIdx * perBlockSlot + subStep * chunkStride;
+      const std::size_t subEnd =
+          isLastInSlot ? (slotIdx + 1) * perBlockSlot : subStart + chunkStride;
+      const std::size_t protocolBytesThis = subEnd - subStart;
 
-    // (1) Wait for sender's DATA_READY on the specific round-robin lane that
-    //     carried this chunk (mirrors the sender's per-channel Send cursor).
-    wait_recv_data_ready(
-        transport,
-        group,
-        localChannel,
-        localDataReady,
-        protocolBytesThis,
-        timeout);
+      const std::size_t absSlot = baseSlot + slotIdx;
+      const int ringSlot = static_cast<int>(absSlot % pipelineDepth);
+      const std::size_t stagingOff =
+          static_cast<std::size_t>(groupId) * pipelineBytesWire +
+          static_cast<std::size_t>(ringSlot) * perBlockSlot +
+          subStep * chunkStride;
+      const std::size_t dataOff = s * chunkSize;
+      const std::size_t bytesThis =
+          (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
-    // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
-    const std::size_t validBytes =
-        valid_payload_bytes(dataOff, payloadBytes, nbytes);
-    if (validBytes > 0) {
+      // (1) Wait for sender's DATA_READY (reserved wire stride, gap-carried).
+      wait_recv_data_ready(
+          transport,
+          group,
+          localChannel,
+          localDataReady,
+          protocolBytesThis,
+          timeout);
+
+      // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
           static_cast<char*>(dst) + dataOff,
           channelLayout.recvStagingPtr + stagingOff,
-          validBytes,
+          bytesThis,
           group,
           dataOff,
           args...);
+      group.sync();
+
+      // (3) Signal SLOT_FREE to sender (same reserved wire stride).
+      transport.signal(
+          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+    }
+
+    if (group.is_leader()) {
+      state.nextStep = static_cast<int64_t>(baseByte + numSlots * perBlockSlot);
+      state.activeStage = detail::IbSendRecvProgressStage::Done;
+      state.activeBaseStep = 0;
+      state.activeNextByte = 0;
+      state.activeTailPadding = 0;
     }
     group.sync();
+  } else {
+    // Payload-space iteration; wire-space staging/threshold derivations via
+    // Proto::wire_bytes() (identity for Simple). Tail padding rides the final
+    // SLOT_FREE credit only; the recv copies valid payload bytes.
+    for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
+      const uint64_t streamPayload = payloadBaseByte + dataOff;
+      const std::size_t pipelineOff =
+          static_cast<std::size_t>(streamPayload % pipelineBytesPayload);
+      const int slot = static_cast<int>(pipelineOff / perBlockSlotPayload);
+      const std::size_t chunkOff = pipelineOff - slot * perBlockSlotPayload;
+      const std::size_t slotRemaining = perBlockSlotPayload - chunkOff;
+      const std::size_t dataRemaining = payloadProtocolBytes - dataOff;
+      std::size_t payloadBytes =
+          chunkPayload < dataRemaining ? chunkPayload : dataRemaining;
+      payloadBytes =
+          payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
+      const bool isFinalChunk = dataOff + payloadBytes >= payloadProtocolBytes;
 
-    transport.signal(
-        group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
-    dataOff += payloadBytes;
-  }
+      const std::size_t bytesThis = Proto::wire_bytes(payloadBytes);
+      // Tail padding is a payload-space alignment credit; convert it to wire so
+      // it matches the wire flow-control stream (streamWire =
+      // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
+      const std::size_t protocolBytesThis = bytesThis +
+          (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
+      const std::size_t stagingOff =
+          static_cast<std::size_t>(groupId) * pipelineBytesWire +
+          static_cast<std::size_t>(slot) * perBlockSlotWire +
+          Proto::wire_bytes(chunkOff);
 
-  if (group.is_leader()) {
-    state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
-    state.activeStage = detail::IbSendRecvProgressStage::Done;
-    state.activeBaseStep = 0;
-    state.activeNextByte = 0;
-    state.activeTailPadding = 0;
+      // (1) Wait for sender's DATA_READY on the specific round-robin lane that
+      //     carried this chunk (mirrors the sender's per-channel Send cursor).
+      wait_recv_data_ready(
+          transport,
+          group,
+          localChannel,
+          localDataReady,
+          protocolBytesThis,
+          timeout);
+
+      // (2) Cooperative copy: local recvStaging -> dst via CopyOp.
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, payloadBytes, nbytes);
+      if (validBytes > 0) {
+        CopyOp::recv(
+            static_cast<char*>(dst) + dataOff,
+            channelLayout.recvStagingPtr + stagingOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
+      group.sync();
+
+      transport.signal(
+          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+      dataOff += payloadBytes;
+    }
+
+    if (group.is_leader()) {
+      state.nextStep = static_cast<int64_t>(baseByte + protocolBytes);
+      state.activeStage = detail::IbSendRecvProgressStage::Done;
+      state.activeBaseStep = 0;
+      state.activeNextByte = 0;
+      state.activeTailPadding = 0;
+    }
+    group.sync();
   }
-  group.sync();
 #endif
 }
 
@@ -1536,14 +1922,30 @@ __device__ __forceinline__ static uint64_t round_up_to_multiple(
   return ((value + alignment64 - 1) / alignment64) * alignment64;
 }
 
+// Granularity to which the persistent per-channel cursor advances BETWEEN
+// operations (via tail_padding_for_signal_granularity). This is intentionally
+// ALWAYS `perBlockSlot`, independent of `maxSignalBytes`.
+//
+// Rationale: a channel's stateful cursor (IbChannelProgress::nextStep) is
+// shared by every op on that channel, plain OR compressed. The compressed
+// (variable-size CopyOp) send()/recv() path requires a slot-aligned start
+// cursor -- it lays sub-chunks out at `slotIdx*perBlockSlot +
+// subStep*chunkStride` and nvcompdx needs 512-byte-aligned staging, both of
+// which only hold when each slot begins exactly on a perBlockSlot boundary
+// (it traps via `baseByte % perBlockSlot != 0` otherwise). If the plain path
+// were allowed to round the cursor to a sub-slot (maxSignalBytes) boundary --
+// which in general does NOT divide perBlockSlot -- a later compressed op on
+// the same channel would start mid-slot and trap. So the cursor stride is
+// pinned to whole slots for both paths.
+//
+// `maxSignalBytes` still controls INTRA-transfer signaling granularity (the
+// per-signaled-chunk size) via calcGeometry()'s `chunkPayload`; it just must
+// not drive the between-op cursor stride. Kept as a parameter so the signature
+// and all call sites are unchanged.
 __device__ __forceinline__ static std::size_t signal_alignment(
-    std::size_t maxSignalBytes,
+    [[maybe_unused]] std::size_t maxSignalBytes,
     std::size_t perBlockSlot) {
-  const bool usesPartialSlot =
-      maxSignalBytes > 0 && maxSignalBytes < perBlockSlot;
-  std::size_t alignment =
-      usesPartialSlot ? (maxSignalBytes & ~15ULL) : perBlockSlot;
-  return alignment == 0 ? perBlockSlot : alignment;
+  return perBlockSlot;
 }
 
 /**

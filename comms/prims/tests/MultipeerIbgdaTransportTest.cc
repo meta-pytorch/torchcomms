@@ -1481,6 +1481,131 @@ TEST_F(
   }
 }
 
+// ANS (nvcompdx) is NVIDIA-only; the compressed CopyOp is not built on AMD/HIP.
+#ifndef __HIP_PLATFORM_AMD__
+// Round-trips a payload through the variable-size (ANS-compressed) CopyOp over
+// the blocking send()/recv() path added in D111967119: rank 0 compresses+sends,
+// rank 1 recvs+decompresses, and the received bytes must match the sent
+// pattern. The channel window is sized so one worst-case-expanded compressed
+// chunk (~1.3x MaxUncompBytes) fits in a per-block staging slot
+// (perBlockSlot = perChannelSize / pipelineDepth). `maxSignalBytes == 0`
+// exercises the transport's 0-sentinel (chunk size picked via
+// AnsCompress::max_safe_chunk_size_for_slot()); a non-zero value drives the
+// explicit signaled-chunk-size path. Both ranks pass the same value.
+namespace {
+void runIbgdaAnsBlockingRoundTrip(
+    int localRank,
+    int globalRank,
+    int numRanks,
+    std::size_t maxSignalBytes) {
+  const std::size_t nbytes = 2 * 1024 * 1024; // 2 MiB payload
+  const std::size_t dataBufferSize = 8 * 1024 * 1024; // 8 MiB channel window
+  const int pipelineDepth = 2; // => perBlockSlot = 4 MiB
+  const int numBlocks = 1;
+  const int blockSize = 128; // NumWarps = 4 (keeps ANS+transport kernel within
+                             // the SM register/shared-mem budget)
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t pattern = 0x5C;
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+    DeviceBuffer sendBuffer(nbytes);
+    DeviceBuffer recvBuffer(nbytes);
+    DeviceBuffer errorCountBuf(sizeof(int));
+    auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          sendBuffer.get(), nbytes, pattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, nbytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      test::testSendRecvAns(
+          peerTransportPtr,
+          sendBuffer.get(),
+          nbytes,
+          maxSignalBytes,
+          /*send=*/true,
+          numBlocks,
+          blockSize);
+    } else {
+      test::testSendRecvAns(
+          peerTransportPtr,
+          recvBuffer.get(),
+          nbytes,
+          maxSignalBytes,
+          /*send=*/false,
+          numBlocks,
+          blockSize);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          recvBuffer.get(),
+          nbytes,
+          pattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(h_errorCount, 0)
+          << "ANS compressed send/recv corrupted " << h_errorCount << " bytes";
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+} // namespace
+
+// max_signal_bytes == 0: transport derives the chunk size via the 0-sentinel
+// (AnsCompress::max_safe_chunk_size_for_slot()).
+TEST_F(MultipeerIbgdaTransportTestFixture, IbgdaAnsBlockingSendRecvRoundTrip) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  runIbgdaAnsBlockingRoundTrip(
+      localRank, globalRank, numRanks, /*maxSignalBytes=*/0);
+}
+
+// Explicit 256 KiB signaled chunk size (== PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES):
+// exercises the non-zero max_signal_bytes path (chunkSize = 256 KiB & ~511;
+// worst_case_chunk_stride fits the 4 MiB perBlockSlot).
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    IbgdaAnsBlockingSendRecvRoundTripMaxSignal256K) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  runIbgdaAnsBlockingRoundTrip(
+      localRank, globalRank, numRanks, /*maxSignalBytes=*/256 * 1024);
+}
+#endif // __HIP_PLATFORM_AMD__
+
 TEST_F(
     MultipeerIbgdaTransportTestFixture,
     ProgressSendRecvBackpressureAcrossStagingWrap) {

@@ -73,6 +73,7 @@ struct Nothing {
 
 // define_if<Cond, T> is T when Cond, otherwise an empty Nothing<T>.
 // Pair with [[no_unique_address]] so the absent member costs zero bytes.
+// Host-only: nvcc 13.0-13.2 mis-offsets device-side fields that follow one.
 template <bool Cond, typename T>
 using define_if = std::conditional_t<Cond, T, Nothing<T>>;
 
@@ -430,12 +431,13 @@ struct HRDWRingBufferDeviceHandle {
   uint64_t* writeIndex;
   uint32_t mask;
   uint32_t shift;
-  [[no_unique_address]] detail::
-      define_if<W == WritePolicy::Blocking, const uint64_t*> readIndex;
-  [[no_unique_address]] detail::
-      define_if<W == WritePolicy::Blocking, const uint32_t*> abort;
-  [[no_unique_address]] detail::define_if<W == WritePolicy::Blocking, uint32_t>
-      spinBackoffNanos;
+  // Blocking-only, but declared unconditionally and without
+  // [[no_unique_address]]: nvcc 13.0-13.2 mis-offsets fields following such a
+  // member on device. One layout for both policies, 24 bytes wasted on
+  // Overwrite. The host-side ring below is unaffected and keeps the attribute.
+  const uint64_t* readIndex;
+  const uint32_t* abort;
+  uint32_t spinBackoffNanos;
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
   __device__ __forceinline__ void write(DataT data) {
@@ -471,11 +473,12 @@ static_assert(
         std::is_trivially_copyable_v<BlockingHandleProbe>,
     "device handle must stay trivially copyable - it is passed by value to kernels");
 static_assert(
-    sizeof(OverwriteHandleProbe) == 24,
-    "Overwrite device handle regressed: expected 2 pointers + 2 uint32s = 24 bytes");
+    sizeof(OverwriteHandleProbe) == sizeof(BlockingHandleProbe),
+    "device handle layout must not depend on WritePolicy; see the note on "
+    "HRDWRingBufferDeviceHandle");
 static_assert(
     sizeof(BlockingHandleProbe) == 48,
-    "Blocking device handle regressed: expected Overwrite + readIndex + abort + spin = 48 bytes");
+    "device handle regressed: expected 2 pointers + 2 uint32s + readIndex + abort + spin = 48 bytes");
 } // namespace detail
 
 // Templated kernel launch for host-side write(). The template definition

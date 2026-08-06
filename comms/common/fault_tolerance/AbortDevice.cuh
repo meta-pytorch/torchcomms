@@ -120,12 +120,20 @@ deviceCompareExchangeSystem(int* value, int* expected, int desired) {
  */
 struct AbortDevice final {
   /**
+   * Creates a disabled no-op device handle.
+   *
+   * This makes `AbortDevice` usable in aggregate kernel arguments and as a
+   * temporary compatibility replacement for disabled Prims timeouts.
+   */
+  __host__ __device__ AbortDevice() = default;
+
+  /**
    * Returns whether this handle references enabled shared abort state.
    *
    * Disabled handles are valid kernel arguments. They have a null state pointer
    * and all mutating/query APIs behave like the host disabled `Abort` object.
    */
-  __device__ bool isEnabled() const {
+  __host__ __device__ bool isEnabled() const {
     return state_ != nullptr;
   }
 
@@ -157,6 +165,17 @@ struct AbortDevice final {
   }
 
   /**
+   * Transition alias for Prims `Timeout::start()`.
+   *
+   * New device code should prefer `startTimeout()`. This exists so timeout
+   * shaped Prims waits can migrate to `AbortDevice` without introducing a
+   * separate adapter type.
+   */
+  __device__ void start() {
+    startTimeout();
+  }
+
+  /**
    * Cancels this handle's active device-side timeout.
    *
    * The deadline is local to this copied handle. Canceling it does not clear a
@@ -175,15 +194,35 @@ struct AbortDevice final {
    * first-writer-wins.
    */
   __device__ bool isAborted() const {
+    return checkExpired();
+  }
+
+  /**
+   * Transition alias for Prims `Timeout::checkExpired()`.
+   *
+   * Returns true for either an explicit abort or an expired local device
+   * timeout. If this handle's local deadline has expired, this records
+   * `AbortReason::TIMED_OUT` in the shared state.
+   */
+  __device__ bool checkExpired() const {
     if (!isEnabled()) {
       return false;
     }
-    const auto observedReason = reason();
-    if (observedReason != AbortReason::NONE) {
+    if (reason() != AbortReason::NONE) {
       return true;
     }
-    (void)markTimedOutIfExpired();
-    return reason() != AbortReason::NONE;
+    return markTimedOutIfExpired() || reason() != AbortReason::NONE;
+  }
+
+  /**
+   * Group-scoped transition alias for Prims `Timeout::checkExpired(group)`.
+   *
+   * Only the group leader polls shared abort state, matching the current
+   * timeout check shape used by Prims wait loops.
+   */
+  template <typename ThreadGroup>
+  __device__ bool checkExpired(const ThreadGroup& group) const {
+    return group.is_leader() && checkExpired();
   }
 
   /**

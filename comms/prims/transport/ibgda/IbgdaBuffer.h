@@ -447,6 +447,15 @@ struct IbChannelProgress {
   int64_t activeBaseStep{0};
   detail::IbSendRecvProgressStage activeStage{
       detail::IbSendRecvProgressStage::Done};
+  // CopyOp category of the most recent op driven on this channel (true =
+  // variable-size, e.g. AnsCompress). The persistent cursor (nextStep) is kept
+  // in WIRE bytes and pinned to whole perBlockSlot strides for BOTH categories,
+  // so a fixed<->variable-size switch on the same slot is safe: a compressed op
+  // always resumes on a slot boundary rather than reinterpreting a mid-slot
+  // byte cursor as a sub-chunk cursor. Recorded here so the compressed-path
+  // slot-alignment trap can attribute a mis-aligned cursor to a preceding
+  // fixed-size op, making the cross-category contract explicit in state.
+  bool activeVariableSize{false};
 };
 
 inline constexpr std::size_t kSendRecvSignalSlotStride = sizeof(SignalState);

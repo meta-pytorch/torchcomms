@@ -27,6 +27,7 @@
 #include <folly/portability/Stdlib.h>
 #include <folly/system/ThreadName.h>
 
+#include "comms/utils/logger/CommsLogFormatter.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
 FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
@@ -53,11 +54,12 @@ std::string formatMsg(
     StringPiece functionName,
     // Default timestamp: 2017-04-17 13:45:56.123456 UTC
     uint64_t timestampNS = 1492436756123456789ULL,
-    StringPiece prefix = "NCCL") {
+    StringPiece prefix = "NCCL",
+    int threadContext = 0) {
   LoggerDB db{LoggerDB::TESTING};
   auto* category = db.getCategory("test");
   meta::comms::logger::NcclLogFormatter formatter(
-      prefix.str(), []() { return 0; });
+      prefix.str(), [threadContext]() { return threadContext; });
 
   std::chrono::system_clock::time_point logTimePoint{
       std::chrono::duration_cast<std::chrono::system_clock::duration>(
@@ -111,6 +113,39 @@ TEST(GlogFormatter, log) {
       expected,
       formatMsg(
           LogLevel::WARN, "hello world", "myfile.cpp", 1234, "testFunction"));
+}
+
+TEST(GlogFormatter, logCustomPrefixAndThreadContext) {
+  const auto formatted = formatMsg(
+      LogLevel::WARN,
+      "hello world",
+      "myfile.cpp",
+      1234,
+      "testFunction",
+      1492436756123456789ULL,
+      "CTRAN",
+      7);
+  EXPECT_NE(
+      formatted.find(" [7][main] CTRAN WARN hello world\n"), std::string::npos);
+}
+
+TEST(CommsLogFormatter, emptyLevelUsesPlaceholder) {
+  const meta::comms::logger::CommsLogMetadata metadata{
+      .timestamp = std::chrono::system_clock::time_point{},
+      .threadId = 1,
+      .filename = "test.cpp",
+      .lineNumber = 2,
+      .hostname = "host",
+      .processId = 3,
+      .threadContext = 4,
+      .threadName = "thread",
+      .prefix = "NCCL",
+  };
+
+  const auto formatted =
+      meta::comms::logger::formatCommsLogMessage("", "message", metadata);
+  EXPECT_EQ(formatted.front(), '?');
+  EXPECT_NE(formatted.find(" NCCL  message\n"), std::string::npos);
 }
 
 TEST(GlogFormatter, logThreadName) {

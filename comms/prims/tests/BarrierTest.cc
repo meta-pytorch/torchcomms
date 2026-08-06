@@ -61,7 +61,7 @@ class BarrierTwoGpuFixture : public ::testing::Test {
     auto err0 = cudaDeviceEnablePeerAccess(kGpu1, 0);
     if (err0 == cudaErrorPeerAccessAlreadyEnabled) {
       // Clear the error from the runtime state
-      cudaGetLastError();
+      (void)cudaGetLastError();
     } else if (err0 != cudaSuccess) {
       CUDACHECK_TEST(err0);
     }
@@ -71,7 +71,7 @@ class BarrierTwoGpuFixture : public ::testing::Test {
     auto err1 = cudaDeviceEnablePeerAccess(kGpu0, 0);
     if (err1 == cudaErrorPeerAccessAlreadyEnabled) {
       // Clear the error from the runtime state
-      cudaGetLastError();
+      (void)cudaGetLastError();
     } else if (err1 != cudaSuccess) {
       CUDACHECK_TEST(err1);
     }
@@ -80,10 +80,10 @@ class BarrierTwoGpuFixture : public ::testing::Test {
 
   void TearDown() override {
     // Cleanup streams
-    cudaSetDevice(kGpu0);
-    cudaStreamDestroy(stream0_);
-    cudaSetDevice(kGpu1);
-    cudaStreamDestroy(stream1_);
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaStreamDestroy(stream0_));
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaStreamDestroy(stream1_));
   }
 };
 

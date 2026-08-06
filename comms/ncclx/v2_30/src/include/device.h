@@ -14,15 +14,11 @@
 #include "bitops.h"
 // [META] In-kernel colltrace gate. Defined here, and used by every reference to
 // colltraceHdr (see common.h and CollTraceWrapper.cc), so ncclDevKernelArgs has
-// one layout across all TUs. Compiled out when either:
-//   - AMD: see the note on device_object's exported_deps in
-//     comms/ncclx/nccl_build_config.bzl.
-//   - CUDA 13.0-13.2: an nvcc [[no_unique_address]] device-layout bug (fixed in
-//     13.3) misaligns the args->__shared__ copy of ncclDevKernelArgs, so any
-//     kernel launch carrying these args faults with cudaErrorMisalignedAddress.
-//     CUDART_VERSION comes from nccl.h above.
-#if !defined(NCCLX_NO_INKERNEL_COLLTRACE) && \
-    !(CUDART_VERSION >= 13000 && CUDART_VERSION < 13030)
+// one layout across all TUs. Compiled out only on AMD: see the note on
+// device_object's exported_deps in comms/ncclx/nccl_build_config.bzl.
+// (A CUDA 13.0-13.2 carve-out used to live here; the layout bug behind it is
+// fixed in HRDWRingBufferDeviceHandle.)
+#if !defined(NCCLX_NO_INKERNEL_COLLTRACE)
 #define NCCLX_INKERNEL_COLLTRACE 1
 #endif
 

@@ -12,6 +12,8 @@
 
 namespace comms::prims::test {
 
+enum class MultimemReductionTestType { Float, Int32, Float16, Bfloat16 };
+
 // Each launch is one warp -> one ThreadGroup. The leader performs the
 // multimem PTX store; the remaining lanes sync alongside it. Callers must
 // cudaStreamSynchronize (or cudaDeviceSynchronize) before observing effects
@@ -74,6 +76,23 @@ void launchReadUserAndInternal(
     uint64_t userId,
     uint64_t internalId,
     uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchFillReductionInput(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    float value,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
+    cudaStream_t stream = nullptr);
+
+void launchLoadReduce(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    void* output,
+    std::size_t elems,
+    std::size_t sourceOffsetElems,
     cudaStream_t stream = nullptr);
 
 } // namespace comms::prims::test

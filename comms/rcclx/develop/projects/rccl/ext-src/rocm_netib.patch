@@ -74,7 +74,7 @@ index 9bfd8dcf..4d3f0a08 100644
  
    // Detect IB cards
    int nIbDevs = 0;
-@@ -944,6 +978,23 @@ ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
+@@ -944,6 +978,29 @@ ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config
      INFO(NCCL_INIT|NCCL_NET, "NET/IB : Using%s %s; OOB %s:%s", line, ncclIbRelaxedOrderingEnabled ? "[RO]" : "",
            ncclIbIfName, ncclSocketToString(&ncclIbIfAddr, addrline));
  
@@ -86,14 +86,20 @@ index 9bfd8dcf..4d3f0a08 100644
 +      // for AINIC, these params are defaulted to enabled unless user forces it to disable(0).
 +      rcclCtsInlineData = ((rcclParamCtsInlineData() == 0) ? false : true);
 +      rcclCtsOffloadEnabled = ((rcclParamCtsOffloadEnabled() == 0) ? false : true);
-+      // for AINIC IbUseInline is enabled by default always
-+      ncclIbUseInline = true;
++      // Honor NCCL_IB_USE_INLINE for AINIC (already read into ncclIbUseInline above).
++      // The CTS Offload and CTS Inline Data paths both rely on inline sends, so
++      // auto-enable inline whenever either is on (this restores 2.27's offload->inline
++      // coupling, extended to the 2.28 CTS-inline-data feature). Otherwise leave the
++      // decision to NCCL_IB_USE_INLINE (default off) so it can be A/B tested.
++      if ((rcclCtsOffloadEnabled || rcclCtsInlineData) && !ncclIbUseInline) {
++        ncclIbUseInline = true;
++      }
 +      // for AINIC GDR flush is disabled by default
 +      // ncclIbGdrFlushDisable = 1;
 +
 +      INFO(NCCL_INIT|NCCL_NET, "NET/IB : AINIC RoCEv2 optimizations enabled: CTS Inline Data: %s; CTS Offload: %s; "
-+           "IB Use Inline: enabled; GDR Flush: disabled", rcclCtsInlineData ? "Enabled": "Disabled",
-+           rcclCtsOffloadEnabled ? "Enabled": "Disabled");
++           "IB Use Inline: %s; GDR Flush: disabled", rcclCtsInlineData ? "Enabled": "Disabled",
++           rcclCtsOffloadEnabled ? "Enabled": "Disabled", ncclIbUseInline ? "Enabled": "Disabled");
 +    }
    }
  exit:
