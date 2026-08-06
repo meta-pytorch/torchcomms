@@ -3306,19 +3306,19 @@ cvars:
 
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t
-   default     : 2097152
+   default     : 4194304
    description : |-
      Per-channel, per-direction prims IB send/recv staging size in bytes,
      shared by the IBGDA and IBRC backends. Total staging per peer and
      direction is this value multiplied by MCCL_MAX_NCHANNELS. Combined with
      MCCL_CHANNEL_PIPELINE_DEPTH: channel chunk size = this / depth.
-     The default is 2MiB per channel per direction; with the default pipeline
-     depth of 4 this yields 512KiB chunks, or 4MiB combined send+recv staging
+     The default is 4MiB per channel per direction; with the default pipeline
+     depth of 8 this yields 512KiB chunks, or 8MiB combined send+recv staging
      per channel.
 
  - name        : MCCL_CHANNEL_PIPELINE_DEPTH
    type        : int
-   default     : 4
+   default     : 8
    description : |-
      Number of staging slots per prims IB channel, shared by the IBGDA and
      IBRC backends. Each slot carries one channel chunk. Channel chunk size is
