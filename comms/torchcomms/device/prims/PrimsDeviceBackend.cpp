@@ -241,6 +241,7 @@ comms::prims::MultiPeerDeviceHandle PrimsDeviceBackend::fetch_transport_handle(
        static_cast<
            comms::prims::DeviceSpan<comms::prims::Transport>::size_type>(
            n_ranks)},
+      {},
       num_nvl_peers,
       num_ib_peers};
 }
