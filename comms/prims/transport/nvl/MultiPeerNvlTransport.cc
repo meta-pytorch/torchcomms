@@ -3,6 +3,9 @@
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <exception>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -16,6 +19,68 @@
 namespace comms::prims {
 
 namespace {
+
+constexpr int kMultimemEligibilityError = -1;
+constexpr int kMultimemIneligible = 0;
+constexpr int kMultimemEligible = 1;
+
+class ScopedCudaDevice {
+ public:
+  explicit ScopedCudaDevice(int device) {
+    auto status = cudaGetDevice(&previousDevice_);
+    if (status != cudaSuccess) {
+      throw std::runtime_error(
+          std::string("failed to query current CUDA device: ") +
+          cudaGetErrorString(status));
+    }
+    if (previousDevice_ != device) {
+      status = cudaSetDevice(device);
+      if (status != cudaSuccess) {
+        const auto selectionStatus = status;
+        const auto restoreStatus = cudaSetDevice(previousDevice_);
+        if (restoreStatus != cudaSuccess) {
+          throw std::runtime_error(
+              std::string("failed to select and restore CUDA device: ") +
+              cudaGetErrorString(selectionStatus) + "; " +
+              cudaGetErrorString(restoreStatus));
+        }
+        throw std::runtime_error(
+            std::string("failed to select CUDA device: ") +
+            cudaGetErrorString(selectionStatus));
+      }
+      restore_ = true;
+    }
+  }
+
+  ~ScopedCudaDevice() {
+    if (!restore_) {
+      return;
+    }
+    const auto status = cudaSetDevice(previousDevice_);
+    if (status != cudaSuccess) {
+      std::fprintf(
+          stderr,
+          "ScopedCudaDevice: failed to restore CUDA device %d: %s\n",
+          previousDevice_,
+          cudaGetErrorString(status));
+    }
+  }
+
+  ScopedCudaDevice(const ScopedCudaDevice&) = delete;
+  ScopedCudaDevice& operator=(const ScopedCudaDevice&) = delete;
+  ScopedCudaDevice(ScopedCudaDevice&&) = delete;
+  ScopedCudaDevice& operator=(ScopedCudaDevice&&) = delete;
+
+ private:
+  int previousDevice_{-1};
+  bool restore_{false};
+};
+
+int currentCudaDevice() {
+  int device = -1;
+  CUDA_CHECK(cudaGetDevice(&device));
+  return device;
+}
 
 std::size_t dataBufferSize(const MultiPeerNvlTransportConfig& config) {
   return static_cast<std::size_t>(config.maxNumChannels) *
@@ -70,8 +135,22 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     int nRanks,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
+    : MultiPeerNvlTransport(
+          myRank,
+          nRanks,
+          currentCudaDevice(),
+          std::move(bootstrap),
+          multiPeerNvlTransportConfig) {}
+
+MultiPeerNvlTransport::MultiPeerNvlTransport(
+    int myRank,
+    int nRanks,
+    int multimemCudaDevice,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+    const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
     : myRank_(myRank),
       nRanks_(nRanks),
+      multimemCudaDevice_(multimemCudaDevice),
       bootstrap_(std::move(bootstrap)),
       config_(normalizeChannelConfig(multiPeerNvlTransportConfig)),
       memSharingMode_(
@@ -179,6 +258,24 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   }
 }
 
+MultiPeerNvlTransport::~MultiPeerNvlTransport() {
+  if (!multimemNvlTransport_) {
+    return;
+  }
+  try {
+    ScopedCudaDevice guard(multimemCudaDevice_);
+    multimemNvlTransport_.reset();
+  } catch (const std::exception& error) {
+    std::fprintf(
+        stderr,
+        "MultiPeerNvlTransport: failed to select multimem CUDA device during "
+        "cleanup; leaking the multicast transport to avoid unsafe teardown: "
+        "%s\n",
+        error.what());
+    static_cast<void>(multimemNvlTransport_.release());
+  }
+}
+
 void MultiPeerNvlTransport::setExternalDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   // Validate that the vectors are large enough to index by rank.
@@ -248,8 +345,8 @@ void MultiPeerNvlTransport::exchange() {
   }
 
   // Multimem NVL is intentionally not initialized here. Most collectives only
-  // need the peer-to-peer NVLink transport; multicast setup is deferred until
-  // getMultimemNvlTransportDevice() is called by a multimem collective.
+  // need the peer-to-peer NVLink transport. Multimem collectives invoke the
+  // explicit collective initializer before reading the cached device handle.
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -440,29 +537,43 @@ DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {
 }
 
 bool MultiPeerNvlTransport::hasMultimemNvlTransport() const {
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+  return multimemNvlTransport_ != nullptr;
+}
+
+bool MultiPeerNvlTransport::initializeMultimemNvlTransportIfEligible() const {
   if (!config_.enableMultimem ||
-      multimemNvlUnavailable_.load(std::memory_order_acquire)) {
+      multimemNvlIneligible_.load(std::memory_order_acquire)) {
     return false;
   }
-
-  int cudaDevice = 0;
-  CUDA_CHECK(cudaGetDevice(&cudaDevice));
-  return MultimemNvlTransport::isEligible(nRanks_, cudaDevice);
+  try {
+    initializeMultimemNvlTransport();
+    return true;
+  } catch (...) {
+    if (multimemNvlIneligible_.load(std::memory_order_acquire)) {
+      return false;
+    }
+    throw;
+  }
 }
 
 MultimemNvlTransportDevice
 MultiPeerNvlTransport::getMultimemNvlTransportDevice() const {
-  initializeMultimemNvlTransport();
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+  if (!multimemNvlTransport_) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem NVL transport is not initialized");
+  }
   return multimemNvlTransport_->getDeviceTransport();
 }
 
 void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
   // Serialize concurrent same-rank callers so at most one thread drives the
-  // collective (eligibility allGather + MultimemNvlTransport::exchange). If
-  // two threads on this rank both raced past the null-check, each would
-  // enter its own collective while other ranks only participate once,
-  // deadlocking the bootstrap. Second+ arrivals block here, then see the
-  // cached transport (or the poison bit) via the fast paths below.
+  // eligibility agreement, local construction, construction-readiness
+  // agreement, and multicast exchange. If two threads on this rank both raced
+  // past the null-check, each would enter its own collective while other ranks
+  // only participate once, deadlocking the bootstrap. Second+ arrivals block
+  // here, then see the cached transport or terminal state below.
   std::lock_guard<std::mutex> lock(multimemInitMutex_);
 
   if (multimemNvlTransport_) {
@@ -473,48 +584,115 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
         "MultiPeerNvlTransport: multimem NVL transport is not enabled "
         "(config.enableMultimem is false)");
   }
-  if (multimemNvlUnavailable_.load(std::memory_order_acquire)) {
+  if (multimemNvlUnavailable_) {
     throw std::runtime_error(
         "MultiPeerNvlTransport: multimem NVL transport is not available: " +
         multimemNvlErrorMessage_);
   }
 
-  int cudaDevice = 0;
-  CUDA_CHECK(cudaGetDevice(&cudaDevice));
   std::vector<int> multimemEligible(nRanks_, 0);
-  multimemEligible[myRank_] =
-      MultimemNvlTransport::isEligible(nRanks_, cudaDevice) ? 1 : 0;
-  auto eligibilityResult =
-      bootstrap_
-          ->allGather(multimemEligible.data(), sizeof(int), myRank_, nRanks_)
-          .get();
-  // Note: allGather-failure is intentionally NOT latched into
-  // multimemNvlUnavailable_. It can be transient (bootstrap glitch, peer
-  // slow-start) and the caller may legitimately want to retry -- the outer
-  // mutex serializes concurrent retries so cross-rank collectives stay
-  // aligned. Eligibility failure, in contrast, is terminal on this comm.
+  std::vector<int> multimemReady(nRanks_, 0);
+  std::optional<ScopedCudaDevice> deviceGuard;
+  // A local CUDA/driver query failure is an error vote, not an early return:
+  // every rank must still enter the allGather so peers cannot hang.
+  try {
+    deviceGuard.emplace(multimemCudaDevice_);
+    multimemEligible[myRank_] =
+        MultimemNvlTransport::isEligible(nRanks_, multimemCudaDevice_)
+        ? kMultimemEligible
+        : kMultimemIneligible;
+  } catch (...) {
+    multimemEligible[myRank_] = kMultimemEligibilityError;
+  }
+  int eligibilityResult = 0;
+  try {
+    eligibilityResult =
+        bootstrap_
+            ->allGather(multimemEligible.data(), sizeof(int), myRank_, nRanks_)
+            .get();
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility allGather threw";
+    throw;
+  }
   if (eligibilityResult != 0) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility allGather failed";
     throw std::runtime_error(
-        "MultiPeerNvlTransport: multimem eligibility allGather failed");
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+  if (std::any_of(
+          multimemEligible.begin(), multimemEligible.end(), [](int value) {
+            return value == kMultimemEligibilityError;
+          })) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility query failed on at least one rank";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
   }
   if (!std::all_of(
           multimemEligible.begin(), multimemEligible.end(), [](int value) {
-            return value != 0;
+            return value == kMultimemEligible;
           })) {
+    multimemNvlIneligible_.store(true, std::memory_order_release);
+    multimemNvlUnavailable_ = true;
     multimemNvlErrorMessage_ =
         "multimem NVL transport is not eligible on all ranks";
-    multimemNvlUnavailable_.store(true, std::memory_order_release);
     throw std::runtime_error(
         "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
   }
 
-  auto multimemNvlTransport = std::make_unique<MultimemNvlTransport>(
-      myRank_, nRanks_, bootstrap_, config_.multimem);
+  std::unique_ptr<MultimemNvlTransport> multimemNvlTransport;
+  std::exception_ptr constructionError;
+  try {
+    multimemNvlTransport = std::make_unique<MultimemNvlTransport>(
+        myRank_, nRanks_, bootstrap_, config_.multimem);
+    multimemReady[myRank_] = 1;
+  } catch (...) {
+    constructionError = std::current_exception();
+  }
+
+  int readinessResult = 0;
+  try {
+    readinessResult =
+        bootstrap_
+            ->allGather(multimemReady.data(), sizeof(int), myRank_, nRanks_)
+            .get();
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction allGather threw";
+    throw;
+  }
+  if (readinessResult != 0) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction allGather failed";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+  if (!std::all_of(multimemReady.begin(), multimemReady.end(), [](int value) {
+        return value != 0;
+      })) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction failed on at least one rank";
+    if (constructionError) {
+      std::rethrow_exception(constructionError);
+    }
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+
   // Unlike the eligibility allGather above, exchange() is a cross-rank
   // collective that can partially succeed on peers before it throws locally; a
   // retry would re-enter a collective the other ranks have already moved past,
   // risking desync/hang. So an exchange() failure is terminal: latch the poison
-  // bit before rethrowing so future callers fall back instead of retrying.
+  // bit before rethrowing so future callers throw the cached failure instead
+  // of retrying.
   try {
     multimemNvlTransport->exchange();
   } catch (const std::exception& e) {
@@ -522,9 +700,14 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
     // concatenation can throw (bad_alloc), and if the poison store were skipped
     // a later caller would retry the already-partially-run collective and risk
     // cross-rank desync.
-    multimemNvlUnavailable_.store(true, std::memory_order_release);
+    multimemNvlUnavailable_ = true;
     multimemNvlErrorMessage_ =
         std::string("multimem NVL transport exchange failed: ") + e.what();
+    throw;
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport exchange failed with a non-standard exception";
     throw;
   }
   multimemNvlTransport_ = std::move(multimemNvlTransport);

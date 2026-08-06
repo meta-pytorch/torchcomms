@@ -160,7 +160,11 @@ void MultiPeerTransport::initFromTopology(
         bootstrap_, std::move(localRankToCommRank));
 
     nvlTransport_ = std::make_unique<MultiPeerNvlTransport>(
-        nvlLocalRank_, nvlNRanks_, nvlBootstrapAdapter_, config.nvlConfig);
+        nvlLocalRank_,
+        nvlNRanks_,
+        deviceId_,
+        nvlBootstrapAdapter_,
+        config.nvlConfig);
     VLOG(1) << "MultiPeerTransport: rank " << myRank_
             << " created NVL sub-transport, nvlNRanks=" << nvlNRanks_
             << " nvlLocalRank=" << nvlLocalRank_;
@@ -271,6 +275,28 @@ Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
     return nullptr;
   }
   return nvlTransport_->getDeviceTransports().data();
+}
+
+bool MultiPeerTransport::has_multimem_nvl_transport() const {
+  // nvlTransport_ is legitimately null in normal builds without an NVL domain
+  // (e.g. nRanks == 1), same as get_nvl_transports_array() above; the null
+  // check is not masking an invariant.
+  return nvlTransport_ && nvlTransport_->hasMultimemNvlTransport();
+}
+
+bool MultiPeerTransport::initialize_multimem_nvl_transport() const {
+  return nvlTransport_ &&
+      nvlTransport_->initializeMultimemNvlTransportIfEligible();
+}
+
+MultimemNvlTransportDevice
+MultiPeerTransport::get_multimem_nvl_transport_device() const {
+  // The getter is local after collective initialization succeeds.
+  if (!has_multimem_nvl_transport()) {
+    throw std::runtime_error(
+        "MultiPeerTransport: multimem NVL transport is not initialized");
+  }
+  return nvlTransport_->getMultimemNvlTransportDevice();
 }
 
 P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()
