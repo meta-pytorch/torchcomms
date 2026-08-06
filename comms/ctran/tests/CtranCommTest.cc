@@ -79,7 +79,7 @@ TEST(CtranCommTest, PrimsPolicyIsPerCommunicator) {
   EXPECT_FALSE(ctranPrimsEnabled(&ncclxComm));
 }
 
-TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
+TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectProcessDefault) {
   auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
   const bool savedUsePipes = NCCL_CTRAN_USE_PIPES;
   NCCL_CTRAN_USE_PIPES = true;
@@ -92,5 +92,97 @@ TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
   EXPECT_FALSE(ctranPrimsEnabled(&mcclComm));
   EXPECT_TRUE(ctranPrimsEnabled(&ncclxComm));
 }
+
+#if defined(ENABLE_PRIMS)
+TEST(CtranApplyMultimemConfigTest, UsesFallbackConfig) {
+  const comms::prims::MultimemNvlTransportConfig fallback{
+      .dataBufferSize = 4096,
+      .userSignalCount = 1,
+      .pipelineDepth = 2,
+      .maxGroups = 4,
+  };
+  comms::prims::MultiPeerNvlTransportConfig nvlConfig{};
+
+  EXPECT_EQ(
+      ctranApplyMultimemConfig(
+          ctranPipesConfig{}, fallback, 8192, 4, nvlConfig),
+      commSuccess);
+  EXPECT_TRUE(nvlConfig.enableMultimem);
+  EXPECT_EQ(nvlConfig.multimem, fallback);
+}
+
+TEST(CtranApplyMultimemConfigTest, UsesExplicitConfigExactly) {
+  const comms::prims::MultimemNvlTransportConfig fallback{
+      .dataBufferSize = 4096,
+      .userSignalCount = 1,
+      .pipelineDepth = 2,
+      .maxGroups = 4,
+  };
+  const comms::prims::MultimemNvlTransportConfig explicitConfig{
+      .dataBufferSize = 8192,
+      .userSignalCount = 3,
+      .pipelineDepth = 4,
+      .maxGroups = 8,
+  };
+  const ctranPipesConfig pipesConfig{.multimemConfig = explicitConfig};
+  comms::prims::MultiPeerNvlTransportConfig nvlConfig{};
+
+  EXPECT_EQ(
+      ctranApplyMultimemConfig(pipesConfig, fallback, 16384, 4, nvlConfig),
+      commSuccess);
+  EXPECT_TRUE(nvlConfig.enableMultimem);
+  EXPECT_EQ(nvlConfig.multimem, explicitConfig);
+}
+
+TEST(CtranApplyMultimemConfigTest, ResolvesTopologyDataBufferSize) {
+  const comms::prims::MultimemNvlTransportConfig explicitConfig{
+      .dataBufferSize = 0,
+      .userSignalCount = 1,
+      .pipelineDepth = 2,
+      .maxGroups = 4,
+  };
+  const ctranPipesConfig pipesConfig{.multimemConfig = explicitConfig};
+  comms::prims::MultiPeerNvlTransportConfig nvlConfig{};
+
+  EXPECT_EQ(
+      ctranApplyMultimemConfig(pipesConfig, explicitConfig, 8192, 4, nvlConfig),
+      commSuccess);
+  EXPECT_EQ(nvlConfig.multimem.dataBufferSize, 8192);
+}
+
+TEST(CtranApplyMultimemConfigTest, RejectsInvalidConfigWithoutMutation) {
+  const comms::prims::MultimemNvlTransportConfig invalidConfig{
+      .dataBufferSize = 4096,
+      .userSignalCount = 1,
+      .pipelineDepth = 2,
+      .maxGroups = 0,
+  };
+  const ctranPipesConfig pipesConfig{.multimemConfig = invalidConfig};
+  comms::prims::MultiPeerNvlTransportConfig nvlConfig{};
+  const auto original = nvlConfig;
+
+  EXPECT_EQ(
+      ctranApplyMultimemConfig(pipesConfig, invalidConfig, 4096, 4, nvlConfig),
+      commInvalidArgument);
+  EXPECT_EQ(nvlConfig.enableMultimem, original.enableMultimem);
+  EXPECT_EQ(nvlConfig.multimem, original.multimem);
+}
+
+TEST(CtranApplyMultimemConfigTest, LeavesTwoRankTransportDisabled) {
+  const comms::prims::MultimemNvlTransportConfig invalidConfig{
+      .dataBufferSize = 4096,
+      .userSignalCount = 1,
+      .pipelineDepth = 2,
+      .maxGroups = 0,
+  };
+  const ctranPipesConfig pipesConfig{.multimemConfig = invalidConfig};
+  comms::prims::MultiPeerNvlTransportConfig nvlConfig{};
+
+  EXPECT_EQ(
+      ctranApplyMultimemConfig(pipesConfig, invalidConfig, 4096, 2, nvlConfig),
+      commSuccess);
+  EXPECT_FALSE(nvlConfig.enableMultimem);
+}
+#endif // defined(ENABLE_PRIMS)
 
 } // namespace ctran::testing

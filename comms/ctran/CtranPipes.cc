@@ -43,6 +43,37 @@ size_t roundDownToMultiple(size_t value, size_t multiple) {
 
 } // namespace
 
+commResult_t ctran::ctranApplyMultimemConfig(
+    const ctranPipesConfig& config,
+    const comms::prims::MultimemNvlTransportConfig& fallbackConfig,
+    size_t topologyDataBufferSize,
+    int nLocalRanks,
+    comms::prims::MultiPeerNvlTransportConfig& nvlConfig) {
+  if (nLocalRanks <= 2) {
+    return commSuccess;
+  }
+  const auto resolved = comms::prims::resolve_multimem_nvl_transport_config(
+      config.multimemConfig,
+      fallbackConfig,
+      topologyDataBufferSize,
+      nLocalRanks);
+  if (!resolved) {
+    CLOGF(
+        ERR,
+        "CTRAN-PRIMS: invalid multimem config: {} (dataBufferSize={} userSignalCount={} pipelineDepth={} maxGroups={})",
+        comms::prims::multimem_nvl_transport_config_error_string(
+            resolved.error),
+        resolved.config.dataBufferSize,
+        resolved.config.userSignalCount,
+        resolved.config.pipelineDepth,
+        resolved.config.maxGroups);
+    return commInvalidArgument;
+  }
+  nvlConfig.enableMultimem = true;
+  nvlConfig.multimem = resolved.config;
+  return commSuccess;
+}
+
 commResult_t ctran::ctranPreparePipesTrace(
     CtranComm* comm,
     comms::prims::PipesTraceHandle& trace) {
@@ -120,24 +151,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // dedicated cvar is 0. Computed before the enable guard so setting only the
     // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the
     // path.
-    const size_t multimemDevbufSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
+    const size_t fallbackMultimemDataBufferSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
         ? static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE)
         : nvlSharedDevbufSize;
-    if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
-      const size_t multimemPipelineDepth =
-          std::max<size_t>(1, config.nvlConfig.pipelineDepth);
-      // Reuse the already-computed channel count (== std::max(1,
-      // MCCL_MAX_NBLOCKS)) as the group count so allocation and launch policy
-      // share one immutable geometry snapshot.
-      const uint32_t multimemMaxGroups =
-          static_cast<uint32_t>(config.nvlConfig.maxNumChannels);
-      config.nvlConfig.enableMultimem = true;
-      config.nvlConfig.multimem = comms::prims::MultimemNvlTransportConfig{
-          .dataBufferSize = multimemDevbufSize,
-          .userSignalCount = 1,
-          .pipelineDepth = multimemPipelineDepth,
-          .maxGroups = multimemMaxGroups,
-      };
+    const comms::prims::MultimemNvlTransportConfig fallbackConfig{
+        .dataBufferSize = fallbackMultimemDataBufferSize,
+        .userSignalCount = 1,
+        .pipelineDepth = std::max<size_t>(1, config.nvlConfig.pipelineDepth),
+        .maxGroups = static_cast<size_t>(config.nvlConfig.maxNumChannels),
+    };
+    if (const auto result = ctran::ctranApplyMultimemConfig(
+            pc,
+            fallbackConfig,
+            nvlSharedDevbufSize,
+            comm->statex_->nLocalRanks(),
+            config.nvlConfig);
+        result != commSuccess) {
+      return result;
     }
 
     // LL128 buffer allocation for DeviceAllToAllv

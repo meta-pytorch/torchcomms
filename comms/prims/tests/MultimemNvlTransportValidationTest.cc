@@ -112,7 +112,7 @@ TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroDataBufferSize) {
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "dataBufferSize must be non-zero");
+      "data buffer size must be non-zero");
 }
 
 TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroSignalCount) {
@@ -147,7 +147,7 @@ TEST(
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "invalid staging geometry or capacity");
+      "signal count exceeds INT_MAX");
 }
 
 TEST(
