@@ -5,6 +5,7 @@
 // `cudaSuccess` / `cudaGetErrorString` / `cudaGetLastError` directly).
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
@@ -110,6 +111,22 @@ __global__ void testWaitSignalMultipleSlots(
   }
 }
 
+__global__ void testWaitSignalWithDisabledAbort(
+    uint64_t* d_signalBuf,
+    bool* success) {
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
+
+  comms::fault_tolerance::AbortDevice abort;
+  transport.wait_signal(0, 0, abort);
+  *success = true;
+}
+
 // =============================================================================
 // Wrapper functions to launch the kernels (called from .cc test file)
 // =============================================================================
@@ -141,6 +158,12 @@ void runTestWaitSignalMultipleSlots(
     int numSignals,
     bool* d_success) {
   testWaitSignalMultipleSlots<<<1, 1>>>(d_signalBuf, numSignals, d_success);
+}
+
+void runTestWaitSignalWithDisabledAbort(
+    uint64_t* d_signalBuf,
+    bool* d_success) {
+  testWaitSignalWithDisabledAbort<<<1, 1>>>(d_signalBuf, d_success);
 }
 
 // =============================================================================

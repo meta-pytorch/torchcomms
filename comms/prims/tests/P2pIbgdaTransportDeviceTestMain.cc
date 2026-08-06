@@ -209,6 +209,16 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
   });
 }
 
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalAcceptsDisabledAbort) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  runAndVerify([d_signalBuf](bool* d_success) {
+    runTestWaitSignalWithDisabledAbort(d_signalBuf, d_success);
+  });
+}
+
 TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {
   // Test wait_signal with max uint64 value (edge case)
   const uint64_t targetValue = UINT64_MAX;
