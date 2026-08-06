@@ -348,8 +348,8 @@ bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
 
   // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
   // Reject communicators with any IB-only peers to prevent silent data loss.
-  // Use host-side API — getMultiPeerTransportsPtr(peers) returns a device
-  // pointer that cannot be dereferenced on the host.
+  // Use host-side API because the device Transport array cannot be dereferenced
+  // on the host.
   const auto statex = comm->statex_.get();
   for (int rank = 0; rank < statex->nRanks(); rank++) {
     auto type = comm->multiPeerTransport_->get_transport_type(rank);

@@ -1,8 +1,16 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <array>
+#include <cerrno>
+
 #include <gtest/gtest.h>
 
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
+
+using ::testing::_;
+using ::testing::StrictMock;
 
 namespace comms::prims {
 namespace {
@@ -129,6 +137,77 @@ TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingDisabledNeverActive) {
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   const MultipeerIbTransportConfig config;
   EXPECT_TRUE(config.ibLazyConnect);
+}
+
+TEST(MultiPeerIbTransportConfigTest, LazyChannelsDefaultOff) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_FALSE(config.lazyChannels);
+}
+
+TEST(MultiPeerTransportInitTest, MatchingRecordsSucceed) {
+  const detail::ChannelProtocolRecord record{
+      .mode = detail::PrimsChannelMode::kLazyPrefix,
+      .channelCapacity = 64,
+  };
+  const std::array records{record, record};
+  EXPECT_NO_THROW(detail::validateChannelProtocolRecords(records));
+}
+
+TEST(MultiPeerTransportInitTest, MismatchedChannelModesFail) {
+  detail::ChannelProtocolRecord eager;
+  auto lazy = eager;
+  lazy.mode = detail::PrimsChannelMode::kLazyPrefix;
+  const std::array records{eager, lazy};
+  EXPECT_THROW(
+      detail::validateChannelProtocolRecords(records), std::runtime_error);
+}
+
+TEST(MultiPeerTransportInitTest, MismatchedChannelCapacitiesFail) {
+  detail::ChannelProtocolRecord smaller;
+  smaller.channelCapacity = 4;
+  auto larger = smaller;
+  larger.channelCapacity = 8;
+  const std::array records{smaller, larger};
+  EXPECT_THROW(
+      detail::validateChannelProtocolRecords(records), std::runtime_error);
+}
+
+TEST(MultiPeerTransportInitTest, SymmetricRoutesSucceed) {
+  using Route = detail::PrimsTransportRoute;
+  const std::array routes{
+      Route::kSelf,
+      Route::kIbgda,
+      Route::kIbgda,
+      Route::kSelf,
+  };
+  EXPECT_NO_THROW(detail::validatePrimsTransportRoutes(routes, 2));
+}
+
+TEST(MultiPeerTransportInitTest, AsymmetricRoutesFail) {
+  using Route = detail::PrimsTransportRoute;
+  const std::array routes{
+      Route::kSelf,
+      Route::kNvl,
+      Route::kIbgda,
+      Route::kSelf,
+  };
+  EXPECT_THROW(
+      detail::validatePrimsTransportRoutes(routes, 2), std::runtime_error);
+}
+
+TEST(MultiPeerTransportInitTest, AllGatherFailureFailsInitialization) {
+  StrictMock<meta::comms::testing::MockBootstrap> bootstrap;
+  EXPECT_CALL(
+      bootstrap,
+      allGather(
+          _, static_cast<int>(sizeof(detail::ChannelProtocolRecord)), 0, 2))
+      .WillOnce(
+          [](void*, int, int, int) { return folly::makeSemiFuture(EIO); });
+
+  EXPECT_THROW(
+      detail::exchangeAndValidateChannelProtocol(
+          bootstrap, 0, 2, detail::ChannelProtocolRecord{}),
+      std::runtime_error);
 }
 
 } // namespace

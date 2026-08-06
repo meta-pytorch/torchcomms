@@ -326,7 +326,6 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     progressCpus_ = selectProgressCpus();
     initializeControlResources();
     initializeDeviceTransportSlots();
-    peerMaterialized_.resize(nRanks_ - 1, false);
   } catch (const std::exception&) {
     cleanup();
     throw;
@@ -1394,12 +1393,9 @@ MultipeerIbrcTransport::qpResourceAt(int peerIndex, int nic, int qpSlot) const {
 PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
   const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
   PeerQpPayload payload{};
+  populatePeerGeometry(payload);
   payload.gidIndex = gidIndex_;
   payload.mtu = static_cast<int>(localMtu_);
-  payload.numNics = numNics_;
-  payload.numQpsPerPeerPerNic = numQps;
-  payload.maxGroups = config_.max_num_channels;
-  payload.qpsPerBlockPerNic = config_.qpsPerConnection;
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1519,35 +1515,7 @@ void MultipeerIbrcTransport::connectPeerQp(
 void MultipeerIbrcTransport::connectPeerQps(
     int peerIndex,
     const PeerQpPayload& remotePayload) {
-  if (remotePayload.numNics != numNics_) {
-    throw std::runtime_error(
-        fmt::format(
-            "IBRC peerIndex={} numNics={} vs local {}",
-            peerIndex,
-            remotePayload.numNics,
-            numNics_));
-  }
-  if (remotePayload.numQpsPerPeerPerNic !=
-      config_.fixedChannelMainQpsPerPeerPerNic()) {
-    throw std::runtime_error(
-        fmt::format(
-            "IBRC peerIndex={} numQps={} vs local {}",
-            peerIndex,
-            remotePayload.numQpsPerPeerPerNic,
-            config_.fixedChannelMainQpsPerPeerPerNic()));
-  }
-  if (remotePayload.maxGroups != config_.max_num_channels ||
-      remotePayload.qpsPerBlockPerNic != config_.qpsPerConnection) {
-    throw std::runtime_error(
-        fmt::format(
-            "IBRC peerIndex={} fixed-channel QP shape max_num_channels={} "
-            "qpsPerConnection={} vs local {} {}",
-            peerIndex,
-            remotePayload.maxGroups,
-            remotePayload.qpsPerBlockPerNic,
-            config_.max_num_channels,
-            config_.qpsPerConnection));
-  }
+  validatePeerGeometry(peerIndexToRank(peerIndex), remotePayload);
 
   const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
   for (int nic = 0; nic < numNics_; ++nic) {
@@ -1630,10 +1598,6 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
-  LOG_FIRST_N(WARNING, 1)
-      << "MultipeerIbrcTransport: Transport[] array is being built with "
-      << "possibly unmaterialized IBRC slots. Call get_device_handle(peers) "
-      << "before kernels access those peers.";
   if (p2pTransportDevices_.device == nullptr) {
     throw std::runtime_error(
         "getP2pTransportDeviceSlot: IBRC device transport slots are not initialized");
@@ -1647,7 +1611,8 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
     int peerRank) {
   if (!isPeerMaterialized(peerRank)) {
-    materializePeer(peerRank);
+    queuePeerForMaterialization(peerRank, channelCapacity());
+    connectPeers();
   }
   if (p2pTransportDevices_.device == nullptr) {
     throw std::runtime_error(
@@ -1659,7 +1624,14 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
       peerIndex * ibrcDeviceSlotSize());
 }
 
-void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
+void MultipeerIbrcTransport::doMaterializePeer(
+    int peerRank,
+    uint32_t oldChannels,
+    uint32_t newChannels) {
+  if (oldChannels != 0 || newChannels != channelCapacity()) {
+    throw std::runtime_error(
+        "IBRC eager materialization requires the full channel range");
+  }
   const int peerIndex = rankToPeerIndex(peerRank);
 
   createPeerQps(peerIndex);
@@ -1686,7 +1658,6 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
   allocatePeerCmdQueues(peerIndex);
   startProgressThread();
-  peerMaterialized_[peerIndex] = true;
 }
 
 void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
@@ -1696,10 +1667,6 @@ void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
   cleanupPeerQps(peerIndex);
   cleanupPeerSignalCounterResources(peerIndex);
   cleanupSendRecvBufferForPeer(peerIndex);
-  if (peerIndex >= 0 &&
-      peerIndex < static_cast<int>(peerMaterialized_.size())) {
-    peerMaterialized_[peerIndex] = false;
-  }
 }
 
 } // namespace comms::prims

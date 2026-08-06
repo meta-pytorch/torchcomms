@@ -83,7 +83,8 @@ class MultipeerIbrcTransport
   // The shared base owns queueing, ordering, and failure rollback. IBRC creates
   // the peer's QPs, exchanges staging, builds command queues, and publishes the
   // device transport here.
-  void doMaterializePeer(int peerRank);
+  void
+  doMaterializePeer(int peerRank, uint32_t oldChannels, uint32_t newChannels);
   void cleanupPeerOnFailure(int peerIndex);
 
   struct PeerQpResource {

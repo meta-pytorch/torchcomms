@@ -3297,6 +3297,15 @@ cvars:
      not necessarily map one-to-one to CUDA blocks; for example, ctree uses
      two channels per block.
 
+ - name        : MCCL_PRIMS_LAZY_CHANNELS
+   type        : bool
+   default     : false
+   description : |-
+     Globally request grow-only lazy IB channel materialization for MCCL Prims
+     communicators. Ranks validate the same setting during communicator
+     initialization. Until incremental channel growth is supported, the
+     transport retains eager full-capacity behavior.
+
  - name        : MCCL_IB_MODE
    type        : enum
    default     : ibgda

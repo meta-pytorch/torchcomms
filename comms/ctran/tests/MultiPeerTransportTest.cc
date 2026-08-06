@@ -111,7 +111,14 @@ TEST_F(MultiPeerTransportTest, DeviceHandle) {
     addIbPeer(ringPeers, (globalRank + numRanks - 1) % numRanks);
     addIbPeer(ringPeers, (globalRank + 1) % numRanks);
   }
-  auto ringHandle = comm->multiPeerTransport_->get_device_handle(ringPeers);
+  std::vector<comms::prims::PeerChannelDemand> ringDemands;
+  for (const int peer : ringPeers) {
+    ringDemands.push_back({
+        .peerRank = peer,
+        .ibChannels = comm->multiPeerTransport_->ib_channel_capacity(),
+    });
+  }
+  auto ringHandle = comm->multiPeerTransport_->get_device_handle(ringDemands);
 
   std::vector<int> treePeers;
   if (globalRank > 0) {
@@ -120,7 +127,14 @@ TEST_F(MultiPeerTransportTest, DeviceHandle) {
   addIbPeer(treePeers, globalRank * 2 + 1);
   addIbPeer(treePeers, globalRank * 2 + 2);
   std::reverse(treePeers.begin(), treePeers.end());
-  auto deviceHandle = comm->multiPeerTransport_->get_device_handle(treePeers);
+  std::vector<comms::prims::PeerChannelDemand> treeDemands;
+  for (const int peer : treePeers) {
+    treeDemands.push_back({
+        .peerRank = peer,
+        .ibChannels = comm->multiPeerTransport_->ib_channel_capacity(),
+    });
+  }
+  auto deviceHandle = comm->multiPeerTransport_->get_device_handle(treeDemands);
 
   // Verify device handle has valid data
   EXPECT_EQ(ringHandle.transports.data(), deviceHandle.transports.data());

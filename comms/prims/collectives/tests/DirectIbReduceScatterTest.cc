@@ -60,7 +60,7 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
     if (peer == globalRank) {
       continue;
     }
-    transport.queuePeerForMaterialization(peer);
+    transport.queuePeerForMaterialization(peer, transport.channelCapacity());
   }
   transport.connectPeers();
 

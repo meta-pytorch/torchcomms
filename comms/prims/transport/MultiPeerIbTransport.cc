@@ -291,6 +291,7 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
   if (nRanks_ < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
+  materializedChannels_.resize(nRanks_ - 1, 0);
   if (auto isolatedBootstrap = bootstrap_->duplicate()) {
     bootstrap_ =
         std::shared_ptr<meta::comms::IBootstrap>(std::move(isolatedBootstrap));
@@ -358,6 +359,67 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
 // against a complete type (DeviceBuffer is only forward-declared in the
 // header).
 MultiPeerIbTransportBase::~MultiPeerIbTransportBase() = default;
+
+void MultiPeerIbTransportBase::populatePeerGeometry(
+    PeerQpPayload& payload) const {
+  payload.numNics = numNics_;
+  payload.numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
+  payload.maxGroups = config_.max_num_channels;
+  payload.qpsPerBlockPerNic = config_.qpsPerConnection;
+  payload.directionCount = config_.fixedChannelDirectionCount();
+  payload.pipelineDepth = config_.pipelineDepth;
+  payload.numSignalSlots = config_.numSignalSlots;
+  payload.numCounterSlots = config_.numCounterSlots;
+  payload.perChannelSize = static_cast<uint64_t>(config_.perChannelSize);
+}
+
+void MultiPeerIbTransportBase::validatePeerGeometry(
+    int peerRank,
+    const PeerQpPayload& remotePayload) const {
+  if (remotePayload.numNics != numNics_ ||
+      remotePayload.numQpsPerPeerPerNic !=
+          config_.fixedChannelMainQpsPerPeerPerNic() ||
+      remotePayload.maxGroups != config_.max_num_channels ||
+      remotePayload.qpsPerBlockPerNic != config_.qpsPerConnection) {
+    throw std::runtime_error(
+        fmt::format(
+            "peer {} IB QP geometry mismatch: remote nics={} qps={} "
+            "channels={} qpsPerConnection={}, local nics={} qps={} "
+            "channels={} qpsPerConnection={}",
+            peerRank,
+            remotePayload.numNics,
+            remotePayload.numQpsPerPeerPerNic,
+            remotePayload.maxGroups,
+            remotePayload.qpsPerBlockPerNic,
+            numNics_,
+            config_.fixedChannelMainQpsPerPeerPerNic(),
+            config_.max_num_channels,
+            config_.qpsPerConnection));
+  }
+  if (remotePayload.directionCount != config_.fixedChannelDirectionCount() ||
+      remotePayload.pipelineDepth != config_.pipelineDepth ||
+      remotePayload.numSignalSlots != config_.numSignalSlots ||
+      remotePayload.numCounterSlots != config_.numCounterSlots ||
+      remotePayload.perChannelSize !=
+          static_cast<uint64_t>(config_.perChannelSize)) {
+    throw std::runtime_error(
+        fmt::format(
+            "peer {} IB channel geometry mismatch: remote directions={} "
+            "pipeline={} signals={} counters={} bytes={}, local directions={} "
+            "pipeline={} signals={} counters={} bytes={}",
+            peerRank,
+            remotePayload.directionCount,
+            remotePayload.pipelineDepth,
+            remotePayload.numSignalSlots,
+            remotePayload.numCounterSlots,
+            remotePayload.perChannelSize,
+            config_.fixedChannelDirectionCount(),
+            config_.pipelineDepth,
+            config_.numSignalSlots,
+            config_.numCounterSlots,
+            config_.perChannelSize));
+  }
+}
 
 // ---- shared send/recv staging-ring lifecycle (eager mode) ----
 
@@ -1861,19 +1923,26 @@ IbgdaRemoteBuffer MultiPeerIbTransportBase::slotDiscardSignalRemoteView(
 }
 
 bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
+  return materializedChannelCount(peerRank) == channelCapacity();
+}
+
+uint32_t MultiPeerIbTransportBase::materializedChannelCount(
+    int peerRank) const {
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
     throw std::invalid_argument(
         fmt::format(
-            "isPeerMaterialized: invalid peerRank={} (myRank={}, nRanks={})",
+            "materializedChannelCount: invalid peerRank={} (myRank={}, nRanks={})",
             peerRank,
             myRank_,
             nRanks_));
   }
   const std::lock_guard<std::mutex> lock(materializationMutex_);
-  return peerMaterialized_[rankToPeerIndex(peerRank)];
+  return materializedChannels_[rankToPeerIndex(peerRank)];
 }
 
-void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
+void MultiPeerIbTransportBase::queuePeerForMaterialization(
+    int peerRank,
+    uint32_t targetChannels) {
   const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     throw std::runtime_error(
@@ -1889,15 +1958,28 @@ void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
             myRank_,
             nRanks_));
   }
-  if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
+  if (targetChannels == 0 || targetChannels > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "queuePeerForMaterialization: targetChannels={} must be in [1, {}]",
+            targetChannels,
+            channelCapacity()));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  // Requested lazy-channel mode remains an eager fallback until the
+  // incremental backend and rank-agreement protocol are available.
+  const uint32_t materializationTarget = channelCapacity();
+  if (materializationTarget <= materializedChannels_[peerIndex]) {
     return;
   }
-  for (int p : pendingPeers_) {
-    if (p == peerRank) {
+  for (auto& pending : pendingPeers_) {
+    if (pending.rank == peerRank) {
+      pending.targetChannels =
+          std::max(pending.targetChannels, materializationTarget);
       return;
     }
   }
-  pendingPeers_.push_back(peerRank);
+  pendingPeers_.push_back({peerRank, materializationTarget});
 }
 
 std::vector<IbTransportExchInfoAll> MultiPeerIbTransportBase::allGatherExchInfo(

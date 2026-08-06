@@ -26,6 +26,10 @@ namespace meta::comms {
 class DeviceBuffer;
 } // namespace meta::comms
 
+namespace comms::fault_tolerance {
+class Abort;
+} // namespace comms::fault_tolerance
+
 namespace comms::prims {
 
 /**
@@ -220,6 +224,12 @@ struct MultipeerIbTransportConfig {
   // Deprecated compatibility setting. Per-peer state is always materialized
   // on demand; false no longer enables eager all-peer allocation.
   bool ibLazyConnect{true};
+
+  // Materialize only the demanded channel prefix when the backend supports it.
+  bool lazyChannels{false};
+
+  // MCCL communicator abort state. Direct transport users may omit it.
+  std::shared_ptr<::comms::fault_tolerance::Abort> abort;
 };
 
 // Whether Data-Direct MR registration applies for a NIC: Data-Direct is
@@ -343,6 +353,11 @@ struct PeerQpPayload {
   int numQpsPerPeerPerNic{0};
   int maxGroups{0};
   int qpsPerBlockPerNic{0};
+  int directionCount{0};
+  int pipelineDepth{0};
+  int numSignalSlots{0};
+  int numCounterSlots{0};
+  uint64_t perChannelSize{0};
 };
 
 struct PeerBufferPayload {
@@ -444,10 +459,18 @@ class MultiPeerIbTransportBase {
   std::vector<IbgdaRemoteBuffer> exchangeBuffer(
       const IbgdaLocalBuffer& localBuf);
 
-  /** Queue a peer for lazy materialization (no network I/O). */
-  void queuePeerForMaterialization(int peerRank);
+  /** Queue a peer/channel target, max-merging repeated requests. */
+  void queuePeerForMaterialization(int peerRank, uint32_t targetChannels);
 
-  /** @return true if the peer is materialized and ready for kernel use. */
+  /** @return Number of materialized channels currently ready for this peer. */
+  uint32_t materializedChannelCount(int peerRank) const;
+
+  /** @return Configured logical channel capacity for each peer. */
+  uint32_t channelCapacity() const {
+    return static_cast<uint32_t>(config_.max_num_channels);
+  }
+
+  /** @return true if the peer's full capacity is ready for legacy access. */
   bool isPeerMaterialized(int peerRank) const;
 
  protected:
@@ -488,6 +511,10 @@ class MultiPeerIbTransportBase {
   // info (indexed by global rank).
   std::vector<IbTransportExchInfoAll> allGatherExchInfo(
       const IbTransportExchInfoAll& localInfo);
+
+  void populatePeerGeometry(PeerQpPayload& payload) const;
+  void validatePeerGeometry(int peerRank, const PeerQpPayload& remotePayload)
+      const;
 
   // Validate every peer agrees on numNics (same-rail pairing precondition) and
   // numQpsPerPeerPerNic. Throws std::runtime_error on mismatch.
@@ -657,9 +684,13 @@ class MultiPeerIbTransportBase {
   // Lazy materialization state machine.
   // connectPeers() holds this lock through the backend/bootstrap exchange so
   // fixed bootstrap tags cannot be reused concurrently on one communicator.
+  struct PendingPeer {
+    int rank;
+    uint32_t targetChannels;
+  };
   mutable std::mutex materializationMutex_;
-  std::vector<int> pendingPeers_;
-  std::vector<bool> peerMaterialized_;
+  std::vector<PendingPeer> pendingPeers_;
+  std::vector<uint32_t> materializedChannels_;
   bool materializationFailed_{false};
 
  private:
@@ -766,12 +797,6 @@ class MultiPeerIbTransportBase {
 template <typename Backend>
 class MultiPeerIbTransport : public MultiPeerIbTransportBase {
  public:
-  /** Materialize one peer (queue + connect). */
-  void materializePeer(int peerRank) {
-    queuePeerForMaterialization(peerRank);
-    connectPeers();
-  }
-
   /** Connect all queued peers in sorted order (deadlock-safe for >2 ranks). */
   void connectPeers();
 
@@ -801,7 +826,7 @@ class MultiPeerIbTransport : public MultiPeerIbTransportBase {
 template <typename Backend>
 void MultiPeerIbTransport<Backend>::connectPeers() {
   // queuePeerForMaterialization() releases this mutex before entering here;
-  // backend hooks must not recursively call materializePeer()/connectPeers().
+  // backend hooks must not recursively call connectPeers().
   const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     pendingPeers_.clear();
@@ -812,27 +837,35 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
   if (pendingPeers_.empty()) {
     return;
   }
-  // For a symmetric request graph, ascending local order is deadlock-free: the
+  // For a symmetric request graph, ascending rank order is deadlock-free: the
   // lowest remaining rank and its lowest pending neighbor select each other.
-  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+  std::sort(
+      pendingPeers_.begin(),
+      pendingPeers_.end(),
+      [](const auto& lhs, const auto& rhs) { return lhs.rank < rhs.rank; });
 
-  std::vector<int> peers;
+  std::vector<PendingPeer> peers;
   peers.swap(pendingPeers_);
   std::vector<int> touchedPeerIndexes;
   touchedPeerIndexes.reserve(peers.size());
 
   try {
-    for (int peerRank : peers) {
-      if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
+    for (const auto& peer : peers) {
+      const int peerIndex = rankToPeerIndex(peer.rank);
+      if (peer.targetChannels <= materializedChannels_[peerIndex]) {
         continue;
       }
-      touchedPeerIndexes.push_back(rankToPeerIndex(peerRank));
-      backend().doMaterializePeer(peerRank);
+      const uint32_t oldChannels = materializedChannels_[peerIndex];
+      touchedPeerIndexes.push_back(peerIndex);
+      backend().doMaterializePeer(peer.rank, oldChannels, peer.targetChannels);
+      materializedChannels_[peerIndex] = peer.targetChannels;
     }
   } catch (...) {
     materializationFailed_ = true;
+    pendingPeers_.clear();
     for (int peerIndex : touchedPeerIndexes) {
       backend().cleanupPeerOnFailure(peerIndex);
+      materializedChannels_[peerIndex] = 0;
     }
     throw;
   }

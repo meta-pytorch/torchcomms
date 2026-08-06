@@ -25,6 +25,26 @@ IbgdaLocalBuffer allocateIbgdaBuffer(std::size_t size) {
   return IbgdaLocalBuffer(ptr, NetworkLKeys{});
 }
 
+std::vector<PeerChannelDemand> makeFullCapacityIbDemands(
+    const MultiPeerTransport& transport,
+    const std::vector<int>& peers) {
+  std::vector<PeerChannelDemand> demands;
+  demands.reserve(peers.size());
+  for (int peer : peers) {
+    if (peer < 0 || peer >= transport.n_ranks() ||
+        peer == transport.my_rank()) {
+      continue;
+    }
+    const auto type = transport.get_transport_type(peer);
+    if (type != TransportType::P2P_IBGDA && type != TransportType::P2P_IBRC) {
+      continue;
+    }
+    demands.push_back(
+        {.peerRank = peer, .ibChannels = transport.ib_channel_capacity()});
+  }
+  return demands;
+}
+
 } // namespace
 
 HostWindow::HostWindow(
@@ -488,11 +508,13 @@ DeviceWindow HostWindow::buildDeviceWindowImpl(
 }
 
 DeviceWindow HostWindow::getDeviceWindow() const {
-  return buildDeviceWindowImpl(transport_.get_device_handle(ibgdaPeerRanks_));
+  const auto demands = makeFullCapacityIbDemands(transport_, ibgdaPeerRanks_);
+  return buildDeviceWindowImpl(transport_.get_device_handle(demands));
 }
 
 DeviceWindow HostWindow::getDeviceWindow(const std::vector<int>& peers) {
-  return buildDeviceWindowImpl(transport_.get_device_handle(peers));
+  const auto demands = makeFullCapacityIbDemands(transport_, peers);
+  return buildDeviceWindowImpl(transport_.get_device_handle(demands));
 }
 
 } // namespace comms::prims

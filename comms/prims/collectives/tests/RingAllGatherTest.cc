@@ -84,8 +84,10 @@ TEST_P(RingAllGatherTest, Correctness) {
     auto& ringParams = launchParams.rings[r];
     ringParams.prev_rank = rings[r].prev_rank;
     ringParams.next_rank = rings[r].next_rank;
-    transport->queuePeerForMaterialization(ringParams.prev_rank);
-    transport->queuePeerForMaterialization(ringParams.next_rank);
+    transport->queuePeerForMaterialization(
+        ringParams.prev_rank, transport->channelCapacity());
+    transport->queuePeerForMaterialization(
+        ringParams.next_rank, transport->channelCapacity());
   }
   transport->connectPeers();
   for (int r = 0; r < params.num_rings; r++) {

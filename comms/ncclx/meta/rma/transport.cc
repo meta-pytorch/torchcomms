@@ -3,6 +3,8 @@
 
 #if defined(ENABLE_PRIMS)
 
+#include <vector>
+
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
@@ -46,7 +48,13 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     return ncclInternalError;
   }
 
-  auto handle = mpt->get_device_handle(mpt->ib_peer_ranks());
+  std::vector<comms::prims::PeerChannelDemand> demands;
+  demands.reserve(mpt->ib_peer_ranks().size());
+  for (int peer : mpt->ib_peer_ranks()) {
+    demands.push_back(
+        {.peerRank = peer, .ibChannels = mpt->ib_channel_capacity()});
+  }
+  auto handle = mpt->get_device_handle(demands);
   *outTransportsPtr = handle.transports.data();
   *outMyRank = handle.myRank;
   *outNRanks = handle.nRanks;

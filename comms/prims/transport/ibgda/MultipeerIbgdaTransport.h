@@ -173,10 +173,9 @@ class MultipeerIbgdaTransport
    */
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
 
-  // materializePeer()/queuePeerForMaterialization()/connectPeers()/
-  // isPeerMaterialized() are inherited from MultiPeerIbTransport (the lazy
-  // state machine lives in the base; this backend supplies the
-  // doMaterializePeer()/cleanupPeerOnFailure() hooks below).
+  // queuePeerForMaterialization()/connectPeers()/isPeerMaterialized() are
+  // inherited from MultiPeerIbTransport. This backend supplies the
+  // doMaterializePeer()/cleanupPeerOnFailure() hooks below.
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -234,12 +233,13 @@ class MultipeerIbgdaTransport
   // rankToPeerIndex()/peerIndexToRank() are inherited from
   // MultiPeerIbTransport.
 
-  // Per-peer helpers shared by eager exchange() and lazy materializePeer()
+  // Per-peer helpers used by lazy materialization.
   void createPeerQps(int peerIndex);
   void connectPeerLoopback(int peerIndex);
   P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
 
-  void doMaterializePeer(int peerRank);
+  void
+  doMaterializePeer(int peerRank, uint32_t oldChannels, uint32_t newChannels);
 
   PeerQpPayload buildLocalQpPayload(int peerIndex) const;
   void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
@@ -308,8 +308,7 @@ class MultipeerIbgdaTransport
   // cleanupSendRecvBuffers(); the lazy path below fills the inherited
   // sendRecvPeerBuffers_ directly.
 
-  // Lazy state (pendingPeers_/peerMaterialized_/materializationFailed_) is
-  // inherited (protected) from MultiPeerIbTransport.
+  // Lazy readiness state is inherited from MultiPeerIbTransport.
 };
 
 } // namespace comms::prims
