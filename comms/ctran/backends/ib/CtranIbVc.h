@@ -1908,6 +1908,10 @@ class CtranIbVirtualConn {
   const int igetFastQpIdx_{0};
 
   bool isReady_{false};
+  // Local OOO_RQ eligibility: user set NCCL_CTRAN_IB_ENABLE_OOO_RQ=true AND
+  // every active device exposes ooo_recv_wrs_caps.max_rc >= MAX_RECV_WR.
+  // Advertised to the peer via BusCard::oooRq and cross-checked in setupVc.
+  bool localOooRq_{false};
   std::vector<CtranIbDevice> devices_;
   // Set of IB device indices this VC owns QPs on (precomputed by
   // ctran::ib::VcLayout and supplied by CtranIb). For legacy

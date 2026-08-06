@@ -41,6 +41,12 @@ struct CtranIbDevice {
   ibverbx::IbvCq* ibvCq;
   uint8_t port{0};
   std::string devName;
+
+  // Max recv WRs the mlx5 provider will place out-of-order per RC QP when
+  // MLX5DV_QP_CREATE_OOO_DP is set. Populated from mlx5dv_query_device's
+  // ooo_recv_wrs_caps.max_rc when NCCL_CTRAN_IB_ENABLE_OOO_RQ is true; 0
+  // means the device does not advertise OOO recv-wrs capability.
+  uint32_t oooRqSize{0};
 };
 
 /**

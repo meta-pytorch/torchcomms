@@ -20,6 +20,7 @@
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/ibverbx/Mlx5dv.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/utils/ArgCheck.h"
 #include "comms/ctran/utils/Checks.h"
@@ -528,6 +529,44 @@ void CtranIb::init(
     }
 
     if (foundPort) {
+      // Probe OOO_DP per device. Default oooRqSize=0 (unsupported); only
+      // overwritten on a successful cap query. Any failure path — cvar off,
+      // libmlx5 symbol null, or driver too old to populate the mask bit —
+      // leaves it at 0, and this device silently drops out of localOooRq_
+      // downstream.
+      devices[device].oooRqSize = 0;
+      if (NCCL_CTRAN_IB_ENABLE_OOO_RQ) {
+        auto maybeCtx = ibverbx::Mlx5dv::queryDevice(
+            s->ibvDevices[singletonDevIdx].context(),
+            ibverbx::MLX5DV_CONTEXT_MASK_OOO_RECV_WRS);
+        if (maybeCtx.hasError()) {
+          // Covers: libmlx5 dlopen failed (EOPNOTSUPP from null symbol);
+          // driver didn't populate the requested caps (EOPNOTSUPP from
+          // firmware/kernel too old); any other errno from the driver.
+          CLOGF(
+              WARN,
+              "CTRAN-IB: OOO_RQ detection FAILED on {}: {} (errno {}).",
+              devices[device].devName,
+              maybeCtx.error().errStr,
+              maybeCtx.error().errNum);
+        } else if (maybeCtx->ooo_recv_wrs_caps.max_rc == 0) {
+          // Driver populated the caps struct but HW/firmware reports zero
+          // capability — the query API works; the feature is just absent.
+          CLOGF(
+              WARN,
+              "CTRAN-IB: OOO_RQ not supported by HW on {}: "
+              "ooo_recv_wrs_caps.max_rc == 0.",
+              devices[device].devName);
+        } else {
+          devices[device].oooRqSize = maybeCtx->ooo_recv_wrs_caps.max_rc;
+          CLOGF(
+              INFO,
+              "CTRAN-IB: OOO_RQ detected on {}: max_rc={}.",
+              devices[device].devName,
+              devices[device].oooRqSize);
+        }
+      }
+
       CLOGF_SUBSYS(
           INFO,
           INIT,
