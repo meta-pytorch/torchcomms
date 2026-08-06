@@ -19,6 +19,7 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/memory/NvlMemExchange.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
@@ -28,6 +29,10 @@
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
+
+namespace comms::fault_tolerance {
+class Abort;
+} // namespace comms::fault_tolerance
 
 namespace comms::prims {
 
@@ -82,7 +87,8 @@ class MultiPeerTransport {
       int deviceId,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultiPeerTransportConfig& config,
-      std::optional<TopologyResult> topo = std::nullopt);
+      std::optional<TopologyResult> topo = std::nullopt,
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr);
 
   ~MultiPeerTransport();
 
@@ -325,6 +331,7 @@ class MultiPeerTransport {
   const int nRanks_;
   const int deviceId_;
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+  std::shared_ptr<comms::fault_tolerance::Abort> abort_;
 
   // --- Topology (populated in constructor) ---
   std::vector<int> nvlPeerRanks_;
