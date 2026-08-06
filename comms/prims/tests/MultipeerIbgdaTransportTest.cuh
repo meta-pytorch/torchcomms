@@ -118,6 +118,16 @@ __global__ void registeredSendRecvKernel(
     uint8_t overwriteValue,
     bool zeroByteAfterPosted);
 
+__global__ void mixedRegisteredAndStagedSendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t thirdBytes,
+    std::size_t maxSignalBytes,
+    bool send);
+
 __global__ void fillTransportStagingKernel(
     P2pIbgdaTransportDevice* transport,
     bool sendStaging,

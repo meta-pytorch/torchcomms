@@ -568,6 +568,57 @@ __global__ void registeredSendRecvKernel(
   }
 }
 
+__global__ void mixedRegisteredAndStagedSendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t thirdBytes,
+    std::size_t maxSignalBytes,
+    bool send) {
+  auto group = make_block_group();
+  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  timeout.start();
+  if (send) {
+    (void)postRegisteredSend(
+        *transport,
+        group,
+        sendBuffer,
+        firstBytes,
+        maxSignalBytes,
+        timeout,
+        nullptr);
+    transport->send(
+        group,
+        static_cast<const char*>(sendBuffer.ptr) + firstBytes,
+        secondBytes,
+        maxSignalBytes,
+        timeout);
+    (void)postRegisteredSend(
+        *transport,
+        group,
+        sendBuffer.subBuffer(firstBytes + secondBytes),
+        thirdBytes,
+        maxSignalBytes,
+        timeout,
+        nullptr);
+    drainRegisteredSends(*transport, group, timeout, nullptr);
+    return;
+  }
+
+  auto* output = static_cast<char*>(recvBuffer);
+  transport->recv(group, output, firstBytes, maxSignalBytes, timeout);
+  transport->recv(
+      group, output + firstBytes, secondBytes, maxSignalBytes, timeout);
+  transport->recv(
+      group,
+      output + firstBytes + secondBytes,
+      thirdBytes,
+      maxSignalBytes,
+      timeout);
+}
+
 __global__ void fillTransportStagingKernel(
     P2pIbgdaTransportDevice* transport,
     bool sendStaging,
@@ -711,6 +762,47 @@ void testRegisteredSendRecv(
       overwriteAfterDrain,
       overwriteValue,
       zeroByteAfterPosted);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
+void testMixedRegisteredAndStagedSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t thirdBytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)sendBuffer;
+  (void)recvBuffer;
+  (void)firstBytes;
+  (void)secondBytes;
+  (void)thirdBytes;
+  (void)maxSignalBytes;
+  (void)send;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("registered-source send is NVIDIA-only");
+#else
+  mixedRegisteredAndStagedSendRecvKernel<<<numBlocks, blockSize>>>(
+      transport,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      thirdBytes,
+      maxSignalBytes,
+      send);
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
