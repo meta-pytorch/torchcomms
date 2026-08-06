@@ -68,12 +68,14 @@ class CommsSpdlogLogger {
   bool should_log(spdlog::level::level_enum level) const;
   const std::string& name() const;
   void set_level(spdlog::level::level_enum level);
+  bool usesAsyncLogging() const;
   void flush();
 
   void configure(
       std::string prefix,
       std::function<int(void)> threadContextFn,
-      std::function<void(std::string_view)> errorCallback = {});
+      std::function<void(std::string_view)> errorCallback = {},
+      bool asyncLogging = true);
   void configureOutput(std::string_view logFilePath);
 
  private:
@@ -81,6 +83,7 @@ class CommsSpdlogLogger {
     std::string prefix{"COMMS"};
     std::function<int(void)> threadContextFn{[]() { return 0; }};
     std::function<void(std::string_view)> errorCallback;
+    bool asyncLogging{true};
   };
 
 #if defined(__cpp_lib_atomic_shared_ptr) && \
@@ -106,6 +109,7 @@ class CommsSpdlogLogger {
 
   std::shared_ptr<spdlog::logger> logger_;
   std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink_;
+  std::shared_ptr<spdlog::logger> synchronousLogger_;
   ConfigurationStorage configuration_;
 };
 
@@ -121,11 +125,12 @@ void configureSpdlogLogger(
     std::string prefix,
     std::string_view logFilePath,
     std::function<int(void)> threadContextFn,
-    std::function<void(std::string_view)> errorCallback);
+    std::function<void(std::string_view)> errorCallback,
+    bool asyncLogging = true);
 
 void setSpdlogThreadName(std::string_view threadName);
 
-bool shouldWriteCommsLogToStderr(spdlog::level::level_enum level);
+bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 
 } // namespace meta::comms::logger
 
