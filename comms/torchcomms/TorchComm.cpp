@@ -456,6 +456,10 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather_single(
   return work;
 }
 
+bool TorchComm::supportsWindow() const {
+  return impl_->supportsWindow();
+}
+
 std::shared_ptr<TorchCommWindow> TorchComm::new_window(
     const std::optional<at::Tensor>& tensor) {
   auto op_id = GlobalOpIdGenerator::instance().nextOpId();

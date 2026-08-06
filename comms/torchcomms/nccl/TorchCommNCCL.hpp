@@ -208,6 +208,13 @@ class TorchCommNCCL : public TorchCommBackend,
       const CommOptions& options = {}) override;
 
   // Window / one-sided RMA. Requires NCCL 2.29+.
+  bool supportsWindow() const override {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
+    return true;
+#else
+    return false;
+#endif
+  }
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 

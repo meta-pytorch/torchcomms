@@ -25,7 +25,9 @@ class FakeTorchCommWindow : public TorchCommWindow {
     (void)dstRank;
     (void)targetOffsetNelems;
     (void)asyncOp;
-    (void)options;
+    TORCH_CHECK(
+        options.timeout.count() >= 0,
+        "Window operation timeout must be non-negative");
     return c10::make_intrusive<TorchWorkCompleted>();
   }
   at::Tensor map_remote_tensor(int rank) override {
@@ -36,7 +38,9 @@ class FakeTorchCommWindow : public TorchCommWindow {
   signal(int peerRank, bool asyncOp, const SignalOptions& options) override {
     (void)peerRank;
     (void)asyncOp;
-    (void)options;
+    TORCH_CHECK(
+        options.timeout.count() >= 0,
+        "Window operation timeout must be non-negative");
     return c10::make_intrusive<TorchWorkCompleted>();
   }
   c10::intrusive_ptr<TorchWork> wait_signal(
@@ -45,13 +49,17 @@ class FakeTorchCommWindow : public TorchCommWindow {
       const WaitSignalOptions& options) override {
     (void)peerRank;
     (void)asyncOp;
-    (void)options;
+    TORCH_CHECK(
+        options.timeout.count() >= 0,
+        "Window operation timeout must be non-negative");
     return c10::make_intrusive<TorchWorkCompleted>();
   }
 
   std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override {
     (void)peerRank;
-    return nullptr;
+    auto attr = std::make_shared<TorchCommWindowAttr>();
+    attr->accessType = TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
+    return attr;
   }
 
   std::shared_ptr<TorchCommWindow> clone() override {

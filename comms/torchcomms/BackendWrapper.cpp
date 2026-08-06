@@ -68,6 +68,123 @@ std::vector<uint64_t> toVecUint64(const std::vector<int64_t>& vec) {
   return vecUint64;
 }
 
+#ifdef C10D_BACKEND_HAS_WINDOW
+PutOptions toTorchCommOptions(
+    const c10d::PutOptions& options,
+    std::chrono::milliseconds defaultTimeout) {
+  PutOptions result;
+  result.hints = options.hints;
+  result.timeout =
+      options.timeout != c10d::kUnsetTimeout ? options.timeout : defaultTimeout;
+  return result;
+}
+
+SignalOptions toTorchCommOptions(
+    const c10d::SignalOptions& options,
+    std::chrono::milliseconds defaultTimeout) {
+  SignalOptions result;
+  result.hints = options.hints;
+  result.timeout =
+      options.timeout != c10d::kUnsetTimeout ? options.timeout : defaultTimeout;
+  return result;
+}
+
+WaitSignalOptions toTorchCommOptions(
+    const c10d::WaitSignalOptions& options,
+    std::chrono::milliseconds defaultTimeout) {
+  WaitSignalOptions result;
+  result.hints = options.hints;
+  result.timeout =
+      options.timeout != c10d::kUnsetTimeout ? options.timeout : defaultTimeout;
+  return result;
+}
+
+class C10dWindowWrapper final : public c10d::Window {
+ public:
+  C10dWindowWrapper(
+      std::shared_ptr<TorchCommWindow> window,
+      std::chrono::milliseconds defaultTimeout)
+      : window_(std::move(window)), defaultTimeout_(defaultTimeout) {
+    TORCH_CHECK(window_ != nullptr, "TorchComm returned a null window");
+  }
+
+  void tensor_register(const at::Tensor& tensor, bool owning) override {
+    window_->tensor_register(tensor, owning);
+  }
+
+  void tensor_deregister() override {
+    window_->tensor_deregister();
+  }
+
+  c10::intrusive_ptr<c10d::Work> put(
+      const at::Tensor& tensor,
+      int64_t dstRank,
+      int64_t targetOffsetNelems,
+      bool asyncOp,
+      const c10d::PutOptions& options) override {
+    TORCH_CHECK(
+        targetOffsetNelems >= 0,
+        "Window target offset must be non-negative, got ",
+        targetOffsetNelems);
+    return c10::make_intrusive<WorkWrapper>(window_->put(
+        tensor,
+        static_cast<int>(dstRank),
+        static_cast<size_t>(targetOffsetNelems),
+        asyncOp,
+        toTorchCommOptions(options, defaultTimeout_)));
+  }
+
+  at::Tensor map_remote_tensor(int64_t rank) override {
+    return window_->map_remote_tensor(static_cast<int>(rank));
+  }
+
+  c10::intrusive_ptr<c10d::Work> signal(
+      int64_t peerRank,
+      bool asyncOp,
+      const c10d::SignalOptions& options) override {
+    return c10::make_intrusive<WorkWrapper>(window_->signal(
+        static_cast<int>(peerRank),
+        asyncOp,
+        toTorchCommOptions(options, defaultTimeout_)));
+  }
+
+  c10::intrusive_ptr<c10d::Work> wait_signal(
+      int64_t peerRank,
+      bool asyncOp,
+      const c10d::WaitSignalOptions& options) override {
+    return c10::make_intrusive<WorkWrapper>(window_->wait_signal(
+        static_cast<int>(peerRank),
+        asyncOp,
+        toTorchCommOptions(options, defaultTimeout_)));
+  }
+
+  c10d::WindowAttr get_attr(int64_t peerRank) override {
+    const auto attr = window_->get_attr(static_cast<int>(peerRank));
+    TORCH_CHECK(attr != nullptr, "TorchComm returned a null window attribute");
+
+    c10d::WindowAttr result;
+    switch (attr->accessType) {
+      case TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED:
+        result.access_type = c10d::WindowAccessType::UNIFIED;
+        break;
+      case TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE:
+        result.access_type = c10d::WindowAccessType::SEPARATE;
+        break;
+      default:
+        TORCH_CHECK(
+            false,
+            "Unknown TorchCommWinAccessType: ",
+            static_cast<int>(attr->accessType));
+    }
+    return result;
+  }
+
+ private:
+  std::shared_ptr<TorchCommWindow> window_;
+  std::chrono::milliseconds defaultTimeout_;
+};
+#endif
+
 } // namespace
 
 WorkWrapper::WorkWrapper(
@@ -855,6 +972,18 @@ std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
 std::shared_ptr<c10::Allocator> BackendWrapper::getMemAllocator() {
   return comm_->getMemAllocator();
 }
+
+#ifdef C10D_BACKEND_HAS_WINDOW
+bool BackendWrapper::supportsWindow() const {
+  return comm_->supportsWindow();
+}
+
+c10::intrusive_ptr<c10d::Window> BackendWrapper::new_window(
+    const std::optional<at::Tensor>& tensor) {
+  return c10::make_intrusive<C10dWindowWrapper>(
+      comm_->new_window(tensor), options_->timeout);
+}
+#endif
 
 const std::string BackendWrapper::getBackendName() const {
   return comm_->getBackend();
