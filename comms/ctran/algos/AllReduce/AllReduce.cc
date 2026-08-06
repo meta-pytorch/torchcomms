@@ -6,6 +6,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -53,7 +54,7 @@ commResult_t ctranAllReduce(
       if (comm->statex_->nRanks() == 1) {
         // TODO(T242570177): this is a temp workaround for nRanks == 1. Remove
         // the warning below if fixed.
-        CLOGF(
+        CTRAN_LOG(
             DBG,
             "AllReduce ctring currently requires nRanks > 1, fallback to ctdirect");
         return ctranAllReduceDirect(
@@ -74,7 +75,7 @@ commResult_t ctranAllReduce(
               stream,
               timeout);
         }
-        CLOGF(
+        CTRAN_LOG(
             DBG,
             "AllReduce ctring requires count {} > nRanks {}, fallback to ctdirect",
             count,
