@@ -2079,6 +2079,18 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * Initialize a registered-source send that shares the normal send protocol
+   * cursor but bypasses local send staging.
+   */
+  __device__ __forceinline__ void init_registered_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0) {
+    detail::init_registered_send_progress(
+        *this, group, nbytes, max_signal_bytes);
+  }
+
+  /**
    * Initialize transport-owned state for one pipelined recv operation.
    *
    * The transport reserves the receiver-side protocol byte stream for
@@ -2153,6 +2165,32 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+  }
+
+  /**
+   * Post registered-source send chunks without copying through send staging.
+   * `Posted` does not release the source; callers must later drain.
+   */
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_once(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+    return detail::progress_registered_send_once(
+        *this, group, src, nbytes, max_signal_bytes, timeout);
+  }
+
+  /**
+   * Poll all outstanding send completion tickets for this channel. `Drained`
+   * means registered source ranges posted before the call are reusable.
+   */
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_drain_once(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout()) {
+    return detail::progress_registered_send_drain_once(*this, group, timeout);
   }
 
   /**
@@ -2245,6 +2283,19 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     sendWithTrace<CopyOp>(
         group, src, nbytes, max_signal_bytes, timeout, {}, 0, args...);
+  }
+
+  /**
+   * Blocking registered-source send. Returns only after local NIC completion.
+   */
+  __device__ __forceinline__ void send_registered(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+    detail::send_registered(
+        *this, group, src, nbytes, max_signal_bytes, timeout);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>

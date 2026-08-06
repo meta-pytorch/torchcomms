@@ -505,6 +505,17 @@ __device__ __forceinline__ void P2pIbTransportDevice::fence() {
 // Pipelined send/recv — forwarded to the active backend.
 // ===========================================================================
 
+__device__ __forceinline__ void P2pIbTransportDevice::require_ibgda(
+    ThreadGroup& group,
+    const char* operation) const {
+  if (type == P2pIbBackendType::IBRC) {
+    if (group.is_leader()) {
+      printf("[PIPES] FATAL: %s requires IBGDA\n", operation);
+    }
+    PIPES_DEVICE_TRAP();
+  }
+}
+
 template <typename CopyOp, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::send(
     ThreadGroup& group,
@@ -518,6 +529,16 @@ __device__ __forceinline__ void P2pIbTransportDevice::send(
   } else {
     ibgda->send<CopyOp>(group, src, nbytes, max_signal_bytes, timeout, args...);
   }
+}
+
+__device__ __forceinline__ void P2pIbTransportDevice::send_registered(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+  require_ibgda(group, "registered-source send");
+  ibgda->send_registered(group, src, nbytes, max_signal_bytes, timeout);
 }
 
 template <typename CopyOp, typename... Args>
@@ -594,6 +615,15 @@ __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
   }
 }
 
+__device__ __forceinline__ void
+P2pIbTransportDevice::init_registered_send_progress(
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes) {
+  require_ibgda(group, "registered-source send progress");
+  ibgda->init_registered_send_progress(group, nbytes, max_signal_bytes);
+}
+
 __device__ __forceinline__ void P2pIbTransportDevice::init_recv_progress(
     ThreadGroup& group,
     std::size_t nbytes,
@@ -620,6 +650,26 @@ P2pIbTransportDevice::progress_send_once(
   }
   return ibgda->progress_send_once<CopyOp>(
       group, src, nbytes, max_signal_bytes, timeout, args...);
+}
+
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+P2pIbTransportDevice::progress_registered_send_once(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+  require_ibgda(group, "registered-source send progress");
+  return ibgda->progress_registered_send_once(
+      group, src, nbytes, max_signal_bytes, timeout);
+}
+
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+P2pIbTransportDevice::progress_registered_send_drain_once(
+    ThreadGroup& group,
+    const Timeout& timeout) {
+  require_ibgda(group, "registered-source send drain");
+  return ibgda->progress_registered_send_drain_once(group, timeout);
 }
 
 template <typename CopyOp, typename... Args>
