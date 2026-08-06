@@ -53,27 +53,10 @@ def _local_rank() -> int:
     return int(os.environ.get("LOCAL_RANK", get_rank_and_size()[0]))
 
 
-_root_store: dist.TCPStore | None = None
+_root_store = None
 
 
 def _create_isolated_store(store_name: str) -> dist.Store:
-    """Give each test its own rendezvous namespace.
-
-    Both tests call ``init_process_group`` in the same process, and c10d
-    restarts its internal group-name numbering after
-    ``destroy_process_group``, so the second PG can collide with keys the
-    first one left behind. A per-test ``PrefixStore`` isolates them.
-
-    Isolation is by *namespace*, not by port: the root ``TCPStore`` is bound
-    once to the launcher's ``MASTER_ADDR``/``MASTER_PORT``, which is the only
-    rendezvous endpoint every rank knows without a cross-rank hand-off. That
-    is what makes this multi-node safe -- an ephemeral port has to be
-    communicated somehow, and a node-local file (the previous approach) is
-    invisible to ranks on other hosts.
-
-    Keyed on ``store_name`` rather than a per-process counter so that ranks
-    agree on the namespace regardless of how many stores each has created.
-    """
     global _root_store
     if _root_store is None:
         rank, _ = get_rank_and_size()
