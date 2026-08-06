@@ -83,7 +83,7 @@ struct alignas(128) BarrierState {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
 #if PIPES_IS_DEVICE_COMPILE
-      switch (timeout_detail::checkResult(timeout)) {
+      switch (timeout.check()) {
         case comms::fault_tolerance::AbortCheckResult::CONTINUE:
           break;
         case comms::fault_tolerance::AbortCheckResult::SKIP:

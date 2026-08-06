@@ -507,6 +507,7 @@ class P2pIbgdaTransportDevice {
    *                   WQE through the companion QP.
    * @param counterVal Value added to *counterBuf.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ IbLocalCompletionTicket
   put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -516,7 +517,9 @@ class P2pIbgdaTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
-      bool signalPerLane = false) {
+      bool signalPerLane = false,
+      const TimeoutLike& timeout = TimeoutLike()) {
+    (void)timeout;
     return put_impl(
         group,
         localBuf,
@@ -604,11 +607,14 @@ class P2pIbgdaTransportDevice {
    *                  exact uint64_t slot).
    * @param signalVal Value added to *signalBuf (atomic FA).
    */
+  template <typename TimeoutLike = Timeout>
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
-      IbDirection direction = IbDirection::Send) {
+      IbDirection direction = IbDirection::Send,
+      const TimeoutLike& timeout = TimeoutLike()) {
+    (void)timeout;
     if (group.is_leader()) {
       validate_group_scope(group);
       IbgdaLane lane = control_lane(group, direction);
@@ -1094,7 +1100,7 @@ class P2pIbgdaTransportDevice {
             DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
             doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_TRAP_IF_ABORTED_SINGLE(
               timeout,
               "wait_local_on_qp timed out (ticket=%llu)",
               static_cast<unsigned long long>(ticket));
@@ -1262,7 +1268,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(signalBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
@@ -1284,7 +1290,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(counterBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),

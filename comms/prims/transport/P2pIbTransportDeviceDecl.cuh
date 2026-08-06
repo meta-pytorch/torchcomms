@@ -517,7 +517,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
             transport.read_signal(localSlotFree));
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_TRAP_IF_ABORTED_SINGLE(
               timeout,
               "progress_send_once waiting for SLOT_FREE expected>=%llu, "
               "current=%llu",
@@ -552,7 +552,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           protocolBytesThis,
           /*counterBuf=*/{},
           /*counterVal=*/0,
-          /*signalPerLane=*/true);
+          /*signalPerLane=*/true,
+          timeout);
       record_send_completion(
           transport,
           static_cast<uint32_t>(progress_params.groupId),
@@ -795,7 +796,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
         ? 1U
         : 0U;
     if (!ready) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
@@ -822,7 +823,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   group.sync();
 
   transport.signal(
-      group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+      group,
+      remoteChannel.slotFree,
+      protocolBytesThis,
+      IbDirection::Recv,
+      timeout);
 
   state.activeNextByte += chunk.bytes;
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -1196,7 +1201,8 @@ __device__ __forceinline__ void send(
             protocolBytesThis,
             /*counterBuf=*/{},
             /*counterVal=*/0,
-            /*signalPerLane=*/true);
+            /*signalPerLane=*/true,
+            timeout);
         record_send_completion(
             transport,
             static_cast<uint32_t>(groupId),
@@ -1292,7 +1298,8 @@ __device__ __forceinline__ void send(
             protocolBytesThis,
             /*counterBuf=*/{},
             /*counterVal=*/0,
-            /*signalPerLane=*/true);
+            /*signalPerLane=*/true,
+            timeout);
         record_send_completion(
             transport,
             static_cast<uint32_t>(groupId),
@@ -1528,7 +1535,11 @@ __device__ __forceinline__ void recv(
 
       // (3) Signal SLOT_FREE to sender (same reserved wire stride).
       transport.signal(
-          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+          group,
+          remoteChannel.slotFree,
+          protocolBytesThis,
+          IbDirection::Recv,
+          timeout);
     }
 
     if (group.is_leader()) {
@@ -1593,7 +1604,11 @@ __device__ __forceinline__ void recv(
       group.sync();
 
       transport.signal(
-          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+          group,
+          remoteChannel.slotFree,
+          protocolBytesThis,
+          IbDirection::Recv,
+          timeout);
       dataOff += payloadBytes;
     }
 
@@ -1827,7 +1842,8 @@ __device__ __forceinline__ void forward(
         group,
         recvRemoteChannel.slotFree,
         recvProtocolBytesThis,
-        IbDirection::Recv);
+        IbDirection::Recv,
+        timeout);
 
     // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
     //     recvStaging).
@@ -1854,7 +1870,8 @@ __device__ __forceinline__ void forward(
           fwdProtocolBytesThis,
           /*counterBuf=*/{},
           /*counterVal=*/0,
-          /*signalPerLane=*/true);
+          /*signalPerLane=*/true,
+          timeout);
       record_send_completion(
           fwdTransport,
           static_cast<uint32_t>(groupId),
@@ -2406,7 +2423,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
         slot.generation = generation;
       } else {
         ready = 0;
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "send slot local completion timed out slot=%u generation=%llu "
             "pending=0x%llx",

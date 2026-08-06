@@ -24,12 +24,6 @@
 
 namespace comms::prims {
 
-// Default bound for device-side waits on the CPU progress thread (flush /
-// reserve). Mirrors IBGDA's kDefaultDeviceTimeoutCycles: converts an indefinite
-// hang (a stalled progress thread that never publishes an error) into a bounded
-// trap.
-inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
-
 #if PIPES_IS_DEVICE_COMPILE
 #define IBRC_CHECK_SLOT_ID(id, count, kind)             \
   do {                                                  \
@@ -246,11 +240,13 @@ class P2pIbrcTransportDevice {
   // Public raw put/signal/flush/fence APIs default to the Send direction.
   // Recv-direction operations are reserved for the send/recv protocol internals
   // that explicitly pass IbDirection::Recv.
+  template <typename TimeoutLike = Timeout>
   __device__ void signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1,
-      IbDirection direction = IbDirection::Send) {
+      IbDirection direction = IbDirection::Send,
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       if (signalBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: signal buffer is null");
@@ -265,7 +261,7 @@ class P2pIbrcTransportDevice {
       desc.op = static_cast<uint16_t>(IbrcOp::SIGNAL);
       desc.flags = IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD;
       desc.ready_seq = kIbrcInvalidReadySeq;
-      enqueue(queueId, desc);
+      enqueue(queueId, desc, timeout);
     }
     group.sync();
   }
@@ -278,6 +274,7 @@ class P2pIbrcTransportDevice {
     signal(solo, signalBuf, signalVal, direction);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ IbLocalCompletionTicket
   put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -287,7 +284,8 @@ class P2pIbrcTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
-      bool signalPerLane = false) {
+      bool signalPerLane = false,
+      const TimeoutLike& timeout = TimeoutLike()) {
     const bool hasData = nbytes > 0;
     const bool hasSignal = signalBuf.ptr != nullptr;
     const bool hasCounter = counterBuf.ptr != nullptr;
@@ -344,7 +342,7 @@ class P2pIbrcTransportDevice {
         desc.flags |= IBRC_HAS_COUNTER;
       }
 
-      const uint64_t seq = enqueue(queueId, desc);
+      const uint64_t seq = enqueue(queueId, desc, timeout);
       completion = IbLocalCompletionTicket{
           .completionId = laneOrdinal,
           .value = seq + 1,
@@ -538,12 +536,14 @@ class P2pIbrcTransportDevice {
     return load_acquire_system_u64(counterBuf.ptr);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void flush(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send) {
+      IbDirection direction = IbDirection::Send,
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      drain_channel_queues(group, direction);
+      drain_channel_queues(group, direction, timeout);
     }
     group.sync();
   }
@@ -553,10 +553,12 @@ class P2pIbrcTransportDevice {
     flush(solo, direction);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void fence(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send) {
-    flush(group, direction);
+      IbDirection direction = IbDirection::Send,
+      const TimeoutLike& timeout = TimeoutLike()) {
+    flush(group, direction, timeout);
   }
 
   __device__ void fence(IbDirection direction = IbDirection::Send) {
@@ -818,27 +820,31 @@ class P2pIbrcTransportDevice {
     return queueId % numNics;
   }
 
-  __device__ void drain_queue(const IbrcCmdQueueDevice& queue) const {
+  template <typename TimeoutLike>
+  __device__ void drain_queue(
+      const IbrcCmdQueueDevice& queue,
+      const TimeoutLike& timeout) const {
     const uint64_t target = load_acquire_system_u64(queue.pi);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
     while (load_acquire_system_u64(queue.ci) < target) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf("P2pIbrcTransportDevice: flush timed out\n");
-        PIPES_DEVICE_TRAP();
-      }
+      ABORT_TRAP_IF_ABORTED_SINGLE(
+          timeout,
+          "P2pIbrcTransportDevice: drain_queue waiting for ci >= %llu",
+          static_cast<unsigned long long>(target));
     }
   }
 
+  template <typename TimeoutLike>
   __device__ void drain_channel_queues(
       const ThreadGroup& group,
-      IbDirection direction) const {
+      IbDirection direction,
+      const TimeoutLike& timeout) const {
     const uint32_t channelId = group.group_id;
     validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
     for (uint32_t lane = 0; lane < lanes; ++lane) {
-      drain_queue(cmdQueues[queue_for_lane(channelId, direction, lane)]);
+      drain_queue(
+          cmdQueues[queue_for_lane(channelId, direction, lane)], timeout);
     }
   }
 
@@ -854,25 +860,29 @@ class P2pIbrcTransportDevice {
     }
   }
 
-  __device__ __forceinline__ uint64_t reserve(IbrcCmdQueueDevice& queue) const {
+  template <typename TimeoutLike>
+  __device__ __forceinline__ uint64_t
+  reserve(IbrcCmdQueueDevice& queue, const TimeoutLike& timeout) const {
     const uint64_t seq = fetch_add_system_u64(queue.pi, 1);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
     while (seq - load_acquire_system_u64(queue.ci) >= queue.depth) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf("P2pIbrcTransportDevice: reserve timed out\n");
-        PIPES_DEVICE_TRAP();
-      }
+      ABORT_TRAP_IF_ABORTED_SINGLE(
+          timeout,
+          "P2pIbrcTransportDevice: reserve waiting for command queue space seq=%llu depth=%llu",
+          static_cast<unsigned long long>(seq),
+          static_cast<unsigned long long>(queue.depth));
     }
     return seq;
   }
 
-  __device__ __forceinline__ uint64_t
-  enqueue(uint32_t queueId, const IbrcDesc& desc) const {
+  template <typename TimeoutLike = Timeout>
+  __device__ __forceinline__ uint64_t enqueue(
+      uint32_t queueId,
+      const IbrcDesc& desc,
+      const TimeoutLike& timeout = TimeoutLike()) const {
     IbrcCmdQueueDevice& queue = cmdQueues[queueId];
     check_status(queue);
-    const uint64_t seq = reserve(queue);
+    const uint64_t seq = reserve(queue, timeout);
     IbrcDesc& slot = queue.descs[seq & queue.mask];
     slot = desc;
     store_release_system_u64(&slot.ready_seq, seq);

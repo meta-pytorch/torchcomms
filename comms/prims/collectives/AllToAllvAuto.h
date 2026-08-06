@@ -59,7 +59,7 @@ struct AllToAllvAutoConfig {
  *                           provides this since chunk infos are in device
  *                           memory)
  * @param config Auto-selector configuration
- * @param timeout Timeout duration (0ms = no timeout, default)
+ * @param timeout Compatibility timeout; only 0ms is accepted.
  * @param stream CUDA stream for kernel execution
  */
 void all_to_allv_auto(

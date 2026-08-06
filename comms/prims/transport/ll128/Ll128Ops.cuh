@@ -219,7 +219,7 @@ __device__ __forceinline__ void ll128_send(
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            ABORT_TRAP_IF_ABORTED_SINGLE(
                 timeout,
                 "ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)",
                 (unsigned long long)pkt_idx,
@@ -389,7 +389,7 @@ __device__ __forceinline__ void ll128_recv(
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            ABORT_TRAP_IF_ABORTED_SINGLE(
                 timeout,
                 "ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
                 (long long)pkt_flag_value,
@@ -565,7 +565,7 @@ __device__ __forceinline__ void ll128_forward(
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            ABORT_TRAP_IF_ABORTED_SINGLE(
                 timeout,
                 "ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
                 (long long)pkt_flag_value,
@@ -599,7 +599,7 @@ __device__ __forceinline__ void ll128_forward(
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            ABORT_TRAP_IF_ABORTED_SINGLE(
                 timeout,
                 "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)",
                 (unsigned long long)pkt_idx,

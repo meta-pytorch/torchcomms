@@ -179,7 +179,7 @@ struct alignas(128) SignalState {
       CmpOp op,
       uint64_t expected) const {
 #if PIPES_IS_DEVICE_COMPILE
-    switch (timeout_detail::checkResult(timeout)) {
+    switch (timeout.check()) {
       case comms::fault_tolerance::AbortCheckResult::CONTINUE:
         return false;
       case comms::fault_tolerance::AbortCheckResult::SKIP:

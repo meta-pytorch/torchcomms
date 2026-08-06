@@ -209,7 +209,7 @@ __device__ __forceinline__ void wait_ready(
     uint64_t sequence,
     const Timeout& timeout) {
   while (load_ready_counter(ready_counters + idx) != sequence) {
-    TIMEOUT_TRAP_IF_EXPIRED(
+    ABORT_TRAP_IF_ABORTED(
         timeout,
         group,
         "hierarchical allgather waiting for ready counter idx=%llu sequence=%llu",

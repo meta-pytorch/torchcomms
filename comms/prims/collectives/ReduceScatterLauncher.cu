@@ -11,7 +11,6 @@
 #include "comms/prims/collectives/ReduceScatterDirect.cuh"
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 
@@ -23,16 +22,6 @@ void validate_direct_nvl(int num_ranks) {
         "Unsupported direct NVLink num_ranks=" + std::to_string(num_ranks) +
         " (supported: 1.." + std::to_string(kDirectNvlMaxRanks) + ")");
   }
-}
-
-Timeout make_launch_timeout(float timeout_ms) {
-  Timeout timeout;
-  if (timeout_ms > 0) {
-    int device = 0;
-    PIPES_CUDA_CHECK(cudaGetDevice(&device));
-    timeout = makeTimeout(timeout_ms, device);
-  }
-  return timeout;
 }
 
 } // namespace
@@ -57,8 +46,7 @@ void launch_direct_reduce_scatter_nvl(
   }
 
   direct_reduce_scatter_nvl_kernel<float, SumOp, 16384, 512>
-      <<<params.num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+      <<<params.num_blocks, 512, 0, params.stream>>>(args, params.abort);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
