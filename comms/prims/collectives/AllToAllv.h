@@ -20,9 +20,9 @@ namespace comms::prims {
  * This is a host function that launches the AllToAllv kernel. All device
  * pointers and DeviceSpans must already be allocated and populated on the GPU.
  *
- * This overload creates a Timeout internally per call. For pipelined usage
- * (multiple back-to-back calls), prefer the Timeout overload below to avoid
- * per-call cudaGetDevice/cudaDeviceGetAttribute overhead.
+ * This compatibility overload accepts only a zero timeout. New callers that
+ * need abort or timeout behavior should pass an externally owned `AbortDevice`
+ * with the overload below.
  *
  * @param recvbuff_d Device pointer to receive buffer
  * @param sendbuff_d Device pointer to send buffer (const)
@@ -31,7 +31,7 @@ namespace comms::prims {
  *                            P2P for others)
  * @param send_chunk_infos DeviceSpan of ChunkInfo for send operations
  * @param recv_chunk_infos DeviceSpan of ChunkInfo for receive operations
- * @param timeout Timeout duration (0ms = no timeout, default)
+ * @param timeout Compatibility timeout; non-zero values are rejected.
  * @param stream CUDA stream for kernel execution
  * @param num_blocks Number of thread blocks to launch (default: 4)
  * @param num_threads Number of threads per block (default: 256)
@@ -53,11 +53,7 @@ void all_to_allv(
     std::optional<dim3> cluster_dim = dim3{4, 1, 1});
 
 /**
- * Host wrapper for AllToAllv with pre-built Timeout.
- *
- * Use this overload for pipelined/multi-call usage (e.g., benchmarks) where
- * Timeout is created once outside the loop (avoids per-call CUDA API
- * queries from makeTimeout).
+ * Host wrapper for AllToAllv with an externally owned device abort handle.
  */
 void all_to_allv(
     void* recvbuff_d,
@@ -66,7 +62,7 @@ void all_to_allv(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout_config,
+    AbortDevice abort,
     cudaStream_t stream = nullptr,
     int num_blocks = 4,
     int num_threads = 256,

@@ -19,7 +19,7 @@
 #endif
 
 #if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
 #endif
 
 namespace torch::comms {
@@ -686,7 +686,7 @@ template class TorchCommWindowNCCLX<HostOnlyBackend>;
 // (get_device_window, register_local_buffer) fall back to the base class
 // default that throws "not yet supported".
 #if defined(ENABLE_PRIMS)
-template class TorchCommWindowNCCLX<torchcomms::device::PipesDeviceBackend>;
+template class TorchCommWindowNCCLX<torchcomms::device::PrimsDeviceBackend>;
 #endif
 
 } // namespace torch::comms

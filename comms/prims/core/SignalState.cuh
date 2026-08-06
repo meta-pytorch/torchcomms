@@ -169,20 +169,37 @@ struct alignas(128) SignalState {
 
  private:
   /**
-   * checkTimeoutAndTrap - Helper to check timeout and trap with error message
+   * checkTimeoutAndTrap - Helper to check timeout/abort and trap or skip
    *
    * Used internally by wait_until to avoid code duplication.
    */
-  __device__ __forceinline__ void checkTimeoutAndTrap(
-      const Timeout& timeout,
+  template <typename TimeoutLike>
+  __device__ __forceinline__ bool checkTimeoutAndTrap(
+      const TimeoutLike& timeout,
       CmpOp op,
       uint64_t expected) const {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-        timeout,
-        "SignalState::wait_until waiting for signal %s %llu (current=%llu)",
-        cmpOpToString(op),
-        static_cast<unsigned long long>(expected),
-        static_cast<unsigned long long>(load()));
+#if PIPES_IS_DEVICE_COMPILE
+    switch (timeout.check()) {
+      case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+        return false;
+      case comms::fault_tolerance::AbortCheckResult::SKIP:
+        return true;
+      case comms::fault_tolerance::AbortCheckResult::TRAP:
+        printf(
+            "CUDA ABORT ERROR: SignalState::wait_until waiting for signal %s "
+            "%llu (current=%llu)\n",
+            cmpOpToString(op),
+            static_cast<unsigned long long>(expected),
+            static_cast<unsigned long long>(load()));
+        PIPES_DEVICE_TRAP();
+        return true;
+    }
+#else
+    (void)timeout;
+    (void)op;
+    (void)expected;
+#endif
+    return false;
   }
 
  public:
@@ -199,37 +216,52 @@ struct alignas(128) SignalState {
    * @param expected The expected value to compare against
    * @param timeout Timeout config (default: no timeout)
    */
-  __device__ __forceinline__ void
-  wait_until(CmpOp op, uint64_t expected, const Timeout& timeout = Timeout()) {
+  template <typename TimeoutLike = Timeout>
+  __device__ __forceinline__ void wait_until(
+      CmpOp op,
+      uint64_t expected,
+      const TimeoutLike& timeout = TimeoutLike()) {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
       case CmpOp::CMP_GT:
         while (load() <= expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
       case CmpOp::CMP_LT:
         while (load() >= expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
       case CmpOp::CMP_GE:
         while (load() < expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
       case CmpOp::CMP_LE:
         while (load() > expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
       case CmpOp::CMP_NE:
         while (load() == expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          if (checkTimeoutAndTrap(timeout, op, expected)) {
+            return;
+          }
         }
         break;
     }
@@ -275,11 +307,12 @@ struct alignas(128) SignalState {
    * @param expected The expected value to compare against
    * @param timeout Timeout config (default: no timeout)
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait_until(
       ThreadGroup& group,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_until(op, expected, timeout);
   }
 };

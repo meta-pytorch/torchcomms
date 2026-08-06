@@ -2,6 +2,8 @@
 
 #include "comms/prims/collectives/AllToAllvAuto.h"
 
+#include <stdexcept>
+
 #include "comms/prims/collectives/AllToAllv.h"
 #include "comms/prims/collectives/AllToAllvLl128.h"
 #include "comms/prims/transport/ll128/Ll128AutoTune.cuh"
@@ -20,6 +22,11 @@ void all_to_allv_auto(
     const AllToAllvAutoConfig& config,
     std::chrono::milliseconds timeout,
     cudaStream_t stream) {
+  if (timeout.count() != 0) {
+    throw std::invalid_argument(
+        "all_to_allv_auto legacy host timeout is no longer supported; pass AbortDevice through the selected protocol wrapper");
+  }
+  AbortDevice abort;
   if (max_bytes_per_peer <= config.ll128Threshold) {
     int blocks = config.ll128NumBlocks;
     if (blocks <= 0) {
@@ -33,7 +40,7 @@ void all_to_allv_auto(
         transports_per_rank,
         send_chunk_infos,
         recv_chunk_infos,
-        timeout,
+        abort,
         stream,
         blocks,
         config.ll128NumThreads);
@@ -45,7 +52,7 @@ void all_to_allv_auto(
         transports_per_rank,
         send_chunk_infos,
         recv_chunk_infos,
-        timeout,
+        abort,
         stream,
         config.simpleNumBlocks,
         config.simpleNumThreads,

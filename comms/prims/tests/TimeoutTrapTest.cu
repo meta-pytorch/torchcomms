@@ -3,11 +3,13 @@
 #include "comms/prims/tests/TimeoutTrapTest.cuh"
 
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims::test {
 
@@ -22,6 +24,17 @@ namespace comms::prims::test {
           __FILE__ + ":" + std::to_string(__LINE__));                      \
     }                                                                      \
   } while (0)
+
+namespace {
+
+Timeout makeTestAbortDevice(
+    comms::fault_tolerance::Abort& abort,
+    uint32_t timeout_ms) {
+  abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
+  return abort.getDeviceHandle();
+}
+
+} // namespace
 
 // Kernel that waits on SignalState that will never be signaled
 // This should trigger a timeout and call __trap()
@@ -50,7 +63,7 @@ __global__ void noTimeoutKernel(Timeout timeout) {
   }
 }
 
-void launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms) {
+cudaError_t launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms) {
   CUDA_CHECK(cudaSetDevice(device));
 
   // Allocate SignalState on device
@@ -62,24 +75,25 @@ void launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms) {
   CUDA_CHECK(cudaMemcpy(
       d_state, &h_state, sizeof(SignalState), cudaMemcpyHostToDevice));
 
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
 
   // Launch kernel with a full warp - should trap due to timeout
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
   signalStateTimeoutKernel<<<1, 32>>>(d_state, timeout);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
+  const auto syncErr = cudaDeviceSynchronize();
 
   // Don't free - device will be reset by test
+  return syncErr;
 }
 
 void launchNoTimeoutKernel(int device, uint32_t timeout_ms) {
   CUDA_CHECK(cudaSetDevice(device));
 
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
 
   // Launch kernel - should complete normally
   noTimeoutKernel<<<1, 1>>>(timeout);
@@ -96,12 +110,6 @@ __global__ void signalStateThreadGroupTimeoutKernel(
   // State is initialized to 0, so waiting for value 1 will spin forever
   // Uses ThreadGroup-based wait which calls timeout.check(group)
   state->wait_until(group, CmpOp::CMP_EQ, 1, timeout);
-}
-
-// Kernel that calls start() twice - should trap on the second call
-__global__ void doubleStartKernel(Timeout timeout) {
-  timeout.start(); // First start - OK
-  timeout.start(); // Second start - should trap!
 }
 
 // Simple kernel that sets a flag to indicate it ran
@@ -121,7 +129,7 @@ __global__ void timeoutTrapKernel(Timeout timeout) {
   }
 }
 
-void launchSignalStateThreadGroupTimeoutKernel(
+cudaError_t launchSignalStateThreadGroupTimeoutKernel(
     int device,
     uint32_t timeout_ms) {
   CUDA_CHECK(cudaSetDevice(device));
@@ -135,8 +143,8 @@ void launchSignalStateThreadGroupTimeoutKernel(
   CUDA_CHECK(cudaMemcpy(
       d_state, &h_state, sizeof(SignalState), cudaMemcpyHostToDevice));
 
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
 
   // Launch kernel with a full warp - should trap due to timeout
   // Leader-only checking means only thread 0 calls clock64()
@@ -144,26 +152,16 @@ void launchSignalStateThreadGroupTimeoutKernel(
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
   signalStateThreadGroupTimeoutKernel<<<1, 32>>>(d_state, timeout);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
+  const auto syncErr = cudaDeviceSynchronize();
 
   // Don't free - device will be reset by test
+  return syncErr;
 }
 
-void launchDoubleStartKernel(int device, uint32_t timeout_ms) {
-  CUDA_CHECK(cudaSetDevice(device));
-
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
-
-  // Launch kernel - should trap on second start() call
-  // Intentionally unchecked - we expect the kernel to trap
-  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  doubleStartKernel<<<1, 1>>>(timeout);
-  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
-}
-
-bool launchMultipleKernelsOnStreamTest(int device, uint32_t timeout_ms) {
+cudaError_t launchMultipleKernelsOnStreamTest(
+    int device,
+    uint32_t timeout_ms,
+    bool* secondKernelDidNotRun) {
   CUDA_CHECK(cudaSetDevice(device));
 
   // Create a stream for ordered execution
@@ -176,8 +174,8 @@ bool launchMultipleKernelsOnStreamTest(int device, uint32_t timeout_ms) {
   int zero = 0;
   CUDA_CHECK(cudaMemcpy(d_flag, &zero, sizeof(int), cudaMemcpyHostToDevice));
 
-  // Create timeout configuration
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
 
   // Launch first kernel that will trap due to timeout
   // Intentionally unchecked - we expect the kernel to trap
@@ -191,7 +189,7 @@ bool launchMultipleKernelsOnStreamTest(int device, uint32_t timeout_ms) {
 
   // Synchronize - this will return an error due to the trap
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-  cudaDeviceSynchronize();
+  const auto syncErr = cudaDeviceSynchronize();
 
   // Copy flag back to check if second kernel ran
   // Note: After a trap, the context is corrupted, so this may fail
@@ -203,7 +201,8 @@ bool launchMultipleKernelsOnStreamTest(int device, uint32_t timeout_ms) {
 
   // If copy failed or flag is still 0, second kernel did not run
   // Return true if second kernel did NOT run (expected behavior)
-  return (copyErr != cudaSuccess || h_flag == 0);
+  *secondKernelDidNotRun = (copyErr != cudaSuccess || h_flag == 0);
+  return syncErr;
 }
 
 } // namespace comms::prims::test

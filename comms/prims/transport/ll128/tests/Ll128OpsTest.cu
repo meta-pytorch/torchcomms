@@ -1,12 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll128/Ll128Ops.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
@@ -293,10 +294,12 @@ void test_ll128_multi_step_send_recv_chunked(
   PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 
   // 20s debug timeout — generous upper bound for a test completing in <100ms.
-  // On timeout, TIMEOUT_TRAP_IF_EXPIRED_SINGLE in ll128_send/ll128_recv prints
+  // On timeout, ABORT_TRAP_IF_ABORTED_SINGLE in ll128_send/ll128_recv prints
   // which side is stuck, which packet, which buf_idx, and the current flag
   // value.
-  auto timeout = makeTimeout(20000);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{20000});
+  auto timeout = abort.getDeviceHandle();
 
   int total_blocks = 2 * num_blocks;
   ll128_chunked_combined_kernel<<<total_blocks, block_size>>>(

@@ -37,6 +37,19 @@ the caller must create a new handle after switching devices.
 Disabled handles are valid kernel arguments. They have a null state pointer and
 all APIs behave as no-op or non-aborted.
 
+`AbortBehavior` selects what device wait code should do after observing an
+abort:
+
+- `AbortBehavior::SKIP` is the default. Device waits should return a failure
+  status so the caller can unwind without consuming incomplete transport data.
+- `AbortBehavior::TRAP` preserves legacy Prims behavior. Common fault-tolerance
+  code returns `AbortCheckResult::TRAP`; Prims helpers perform the actual
+  `__trap()` so this package stays transport-agnostic.
+
+Callers that only need the old boolean predicate may continue using
+`AbortDevice::isAborted()` or `checkExpired()`. New Prims wait loops should use
+`AbortDevice::check()` and handle `SKIP` explicitly.
+
 ## Device Timeout Semantics
 
 `AbortDevice::startTimeout()` starts a timeout on the copied device handle. The
@@ -91,6 +104,40 @@ For Prims-backed collectives:
 The long-term target is to remove the separate Prims `Timeout` type and use
 `AbortDevice` for both explicit abort and abort-based timeout checks.
 
+## Review And Test Matrix
+
+The stack is intentionally split so each layer has an isolated build and test
+surface:
+
+| Layer | Diff | Coverage |
+| --- | --- | --- |
+| Contract | D114901581 | Documents host `Abort`, device `AbortDevice`, per-block timeout ownership, MPT propagation, and MCCL integration rules. |
+| Device handle | D114901578 | `abort_device_ut` covers disabled handles, explicit device abort, timeout expiry, first-writer-wins reason recording, and host/device producer-consumer signaling. |
+| MPT propagation | D114901579 | MPT construction and device-handle build coverage verify that one communicator-scoped abort reaches `MultiPeerDeviceHandle`. |
+| NVL waits | D114901576 | NVL wrapper tests instantiate wait paths with a disabled `AbortDevice`; transport correctness remains covered by the existing NVL transport tests. |
+| IBRC / IBGDA waits | D114901577 | IB wrapper and kernel build tests instantiate IBRC/IBGDA wait paths with `AbortDevice`; existing multiprocess IBGDA/IBRC transport tests remain the runtime coverage. |
+| MCCL SendRecv | D114901580 | SendRecv launcher and unit tests verify MCCL kernels consume the MPT-propagated abort handle. |
+| MCCL AllReduce FT | Top of stack | `AllReduceTestSuite` runs Tree, Ring, and Direct explicit user-abort tests and dropped-rank timeout tests across the configured NVL-only, IB-only, and hybrid targets. |
+
+Transport-specific validation should be read by operation rather than by one
+monolithic test binary:
+
+- NVL: run `p2p_nvl_transport_device_test` and the NVL-only AllReduce suite.
+  The explicit-abort case validates that a host abort is visible before the
+  collective waits, and the dropped-rank timeout case validates that a stalled
+  NVL wait transitions the shared abort state to timed out.
+- IBRC: run the IB-only AllReduce suite on non-GDA IB coverage lanes. The same
+  explicit-abort and dropped-rank timeout tests cover waits that are serviced by
+  the IBRC transport.
+- IBGDA: run the IBGDA transport kernel build/tests and the IB-only Direct
+  AllReduce target with GDA-enabled configuration. This covers send/recv wait
+  loops that poll the operation-local `AbortDevice`.
+
+Each transport should be exercised for send, recv, signal/flush, and barrier
+style waits. For collective integration, AllReduce is the first broad suite
+because it covers Tree, Ring, and Direct algorithms; SendRecv remains the direct
+MPT handle consumer and is kept as a smaller launcher-level regression.
+
 ## Usage Examples
 
 Host explicit abort:
@@ -115,9 +162,14 @@ __global__ void kernel(KernArgs args) {
   abort.startTimeout();
 
   while (!ready()) {
-    if (abort.isAborted()) {
-      printf("CUDA ABORT ERROR: wait aborted\n");
-      __trap();
+    switch (abort.check()) {
+      case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+        break;
+      case comms::fault_tolerance::AbortCheckResult::SKIP:
+        return;
+      case comms::fault_tolerance::AbortCheckResult::TRAP:
+        printf("CUDA ABORT ERROR: wait aborted\n");
+        __trap();
     }
   }
 }
@@ -133,8 +185,8 @@ Device timeout:
 ```cpp
 abort.startTimeout();
 while (!ready()) {
-  if (abort.isAborted()) {
-    __trap();
+  if (abort.check() != comms::fault_tolerance::AbortCheckResult::CONTINUE) {
+    return;
   }
 }
 ```

@@ -286,12 +286,13 @@ class P2pNvlTransportDevice {
    * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
    * @param value The value to compare against
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait_signal_until(
       ThreadGroup& group,
       uint64_t signal_id,
       CmpOp op,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     localState_.signalBuffer[signal_id].wait_until(group, op, value, timeout);
   }
 
@@ -338,10 +339,11 @@ class P2pNvlTransportDevice {
    * All threads in the group must call this function (collective operation).
    * Both GPUs must call with the same barrier_id to synchronize.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void barrier_sync(
       ThreadGroup& group,
       uint64_t barrier_id,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     // Ensure all prior memory operations are complete
     group.sync();
 
@@ -376,11 +378,12 @@ class P2pNvlTransportDevice {
    * @param nbytes  Total bytes (must be a multiple of 16)
    * @param timeout Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll128_send_group(
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
@@ -408,11 +411,12 @@ class P2pNvlTransportDevice {
    * @param nbytes  Total bytes (must be a multiple of 16)
    * @param timeout Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll128_recv_group(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -442,12 +446,13 @@ class P2pNvlTransportDevice {
    * @param successor_transport  Transport for the successor peer
    * @param timeout              Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll128_forward_group(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(successor_transport.remoteState_.ll128Buffer != nullptr);
@@ -489,12 +494,13 @@ class P2pNvlTransportDevice {
    * @param max_signal_bytes Hint for max bytes between DATA_READY signals.
    *   0 means one signal per slot fill. Capped at per_channel_slot.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
@@ -563,13 +569,16 @@ class P2pNvlTransportDevice {
 #endif
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] const TimeoutLike& timeout = TimeoutLike(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -661,14 +670,17 @@ class P2pNvlTransportDevice {
    * @param max_signal_bytes Hint for max bytes between signals.
    *   0 means one signal per slot fill. Capped at per_channel_slot.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       P2pNvlTransportDevice& successor,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] const TimeoutLike& timeout = TimeoutLike(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -826,12 +838,13 @@ class P2pNvlTransportDevice {
    *   >0 = explicit group count; buffer partitioned per group.group_id.
    * @param timeout       Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll_send(
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
@@ -884,12 +897,13 @@ class P2pNvlTransportDevice {
    *   >0 = explicit group count; buffer partitioned per group.group_id.
    * @param timeout       Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll_recv(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
@@ -944,13 +958,14 @@ class P2pNvlTransportDevice {
    *   >0 = explicit group count; buffer partitioned per group.group_id.
    * @param timeout              Timeout for flag polling
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void ll_forward(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);

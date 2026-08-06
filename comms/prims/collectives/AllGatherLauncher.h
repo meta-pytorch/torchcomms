@@ -6,6 +6,7 @@
 
 #include <cstddef>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/collectives/AllGatherDirectTypes.h"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
@@ -20,7 +21,7 @@ struct DirectAllgatherNvlLaunchParams {
   char* recvbuf{nullptr};
   bool in_place{false};
   int num_blocks{16};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   P2pNvlTransportDevice peers[kDirectNvlMaxRanks]{};
 };
@@ -40,7 +41,7 @@ struct HierarchicalAllgatherLaunchParams {
   char* recvbuf{nullptr};
   bool in_place{false};
   int ib_num_blocks{16};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};
@@ -66,7 +67,7 @@ struct HierarchicalAllgatherOverlapLaunchParams {
   bool in_place{false};
   int ib_num_blocks{16};
   int nvl_num_blocks{16};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   HierarchicalAllgatherIbgdaRing ib_ring{};
   P2pNvlTransportDevice nvl_peers[kDirectNvlMaxRanks]{};

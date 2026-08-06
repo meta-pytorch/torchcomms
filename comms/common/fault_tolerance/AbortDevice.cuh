@@ -138,6 +138,13 @@ struct AbortDevice final {
   }
 
   /**
+   * Returns the abort behavior captured when this device handle was created.
+   */
+  __host__ __device__ AbortBehavior behavior() const {
+    return behavior_;
+  }
+
+  /**
    * Starts this handle's device-side timeout from the shared default duration.
    *
    * Non-positive or unset default timeouts leave the device deadline inactive.
@@ -195,6 +202,23 @@ struct AbortDevice final {
    */
   __device__ bool isAborted() const {
     return checkExpired();
+  }
+
+  /**
+   * Checks abort state and returns the action the caller should take.
+   *
+   * `CONTINUE` means no abort is visible. `SKIP` means the caller should
+   * unwind or return without consuming incomplete transport data. `TRAP` means
+   * the caller should preserve legacy Prims trap behavior; the trap itself is
+   * performed by Prims helpers so common fault-tolerance code stays transport
+   * agnostic.
+   */
+  __device__ AbortCheckResult check() const {
+    if (!checkExpired()) {
+      return AbortCheckResult::CONTINUE;
+    }
+    return behavior_ == AbortBehavior::TRAP ? AbortCheckResult::TRAP
+                                            : AbortCheckResult::SKIP;
   }
 
   /**
@@ -298,8 +322,11 @@ struct AbortDevice final {
    *
    * TODO: Evaluate CUPTI APIs for a more accurate timeout conversion source.
    */
-  explicit AbortDevice(AbortState* state, uint64_t cyclesPerMs)
-      : state_{state}, cyclesPerMs_{cyclesPerMs} {}
+  explicit AbortDevice(
+      AbortState* state,
+      uint64_t cyclesPerMs,
+      AbortBehavior behavior = AbortBehavior::SKIP)
+      : state_{state}, cyclesPerMs_{cyclesPerMs}, behavior_{behavior} {}
 
   __device__ bool deadlineExpired() const {
     return deadlineCycles_ != 0 && detail::deviceClock() >= deadlineCycles_;
@@ -337,6 +364,11 @@ struct AbortDevice final {
   uint64_t cyclesPerMs_{0};
 
   /**
+   * Device abort behavior selected by the owning host `Abort`.
+   */
+  AbortBehavior behavior_{AbortBehavior::SKIP};
+
+  /**
    * Per-handle device deadline in `detail::deviceClock()` cycles.
    *
    * A value of zero means no device-side timeout is active. This is local to
@@ -347,7 +379,7 @@ struct AbortDevice final {
 
 inline AbortDevice Abort::getDeviceHandle() const {
   if (state_ == nullptr) {
-    return AbortDevice{/*state=*/nullptr, /*cyclesPerMs=*/0};
+    return AbortDevice{/*state=*/nullptr, /*cyclesPerMs=*/0, behavior_};
   }
   if (!stateMapped_) {
     throw std::runtime_error(
@@ -363,7 +395,8 @@ inline AbortDevice Abort::getDeviceHandle() const {
   }
   return AbortDevice{
       static_cast<AbortState*>(deviceState),
-      detail::hostDeviceCyclesPerMs(device)};
+      detail::hostDeviceCyclesPerMs(device),
+      behavior_};
 }
 
 } // namespace comms::fault_tolerance

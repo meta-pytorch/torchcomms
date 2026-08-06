@@ -77,14 +77,29 @@ struct alignas(128) BarrierState {
    *
    * @param timeout Optional timeout (default: no timeout, infinite wait)
    */
-  __device__ __forceinline__ void wait(const Timeout& timeout = Timeout()) {
+  template <typename TimeoutLike = Timeout>
+  __device__ __forceinline__ void wait(
+      const TimeoutLike& timeout = TimeoutLike()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-          timeout,
-          "BarrierState::wait timed out (expected=%llu, current=%llu)",
-          static_cast<unsigned long long>(expected),
-          static_cast<unsigned long long>(current_counter_.load()));
+#if PIPES_IS_DEVICE_COMPILE
+      switch (timeout.check()) {
+        case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+          break;
+        case comms::fault_tolerance::AbortCheckResult::SKIP:
+          return;
+        case comms::fault_tolerance::AbortCheckResult::TRAP:
+          printf(
+              "CUDA ABORT ERROR: BarrierState::wait timed out "
+              "(expected=%llu, current=%llu)\n",
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(current_counter_.load()));
+          PIPES_DEVICE_TRAP();
+          return;
+      }
+#else
+      (void)timeout;
+#endif
     }
   }
 
@@ -118,9 +133,10 @@ struct alignas(128) BarrierState {
    *
    * All threads in the group must call this function (collective operation).
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       wait(timeout);
     }

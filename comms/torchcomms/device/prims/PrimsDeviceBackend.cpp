@@ -1,9 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// PipesDeviceBackend - Static method implementations
+// PrimsDeviceBackend - Static method implementations
 
 #if defined(ENABLE_PRIMS)
 
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/rdma/NicConstants.h"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
@@ -19,9 +19,9 @@ namespace torchcomms::device {
 
 using torch::comms::RegisteredBuffer;
 
-// PipesDeviceBackend is the bridge layer where torchcomms, ncclx, and
-// pipes per-NIC IBGDA constants meet. Verify they all agree at compile
-// time so RegisteredBuffer.hpp can stay free of NCCLx and pipes deps.
+// PrimsDeviceBackend is the bridge layer where torchcomms, ncclx, and
+// Prims per-NIC IBGDA constants meet. Verify they all agree at compile
+// time so RegisteredBuffer.hpp can stay free of NCCLx and Prims deps.
 static_assert(
     NCCLX_MAX_NICS_PER_GPU == ::comms::prims::kMaxNicsPerGpu,
     "NCCLX_MAX_NICS_PER_GPU must match comms::prims::kMaxNicsPerGpu");
@@ -33,25 +33,25 @@ static_assert(
 // DeviceWindowDeleter Implementation
 // =============================================================================
 
-void PipesDeviceBackend::DeviceWindowDeleter::operator()(
-    TorchCommDeviceWindow<PipesDeviceBackend>* ptr) const {
+void PrimsDeviceBackend::DeviceWindowDeleter::operator()(
+    TorchCommDeviceWindow<PrimsDeviceBackend>* ptr) const {
   if (cuda_api == nullptr) {
     return;
   }
-  // Destroy the Pipes DeviceWindow via the ncclx API.
+  // Destroy the Prims DeviceWindow via the ncclx API.
   // This mirrors the error-cleanup paths in create_device_window() and
   // ensures ncclx internal state (CtranWin, HostWindow) is properly torn down.
-  if (pipes_device_window != nullptr && nccl_api != nullptr) {
-    auto result = nccl_api->winDestroyDeviceWin(pipes_device_window);
+  if (prims_device_window != nullptr && nccl_api != nullptr) {
+    auto result = nccl_api->winDestroyDeviceWin(prims_device_window);
     if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "[PipesDeviceBackend]: winDestroyDeviceWin failed "
+      TC_LOG(ERROR) << "[PrimsDeviceBackend]: winDestroyDeviceWin failed "
                     << "during cleanup";
     }
   }
   // Free the TorchCommDeviceWindow struct in device memory.
   if (ptr != nullptr) {
     CUDA_CHECK_IGNORE(
-        cuda_api, cuda_api->free(ptr), "Failed to free Pipes device window");
+        cuda_api, cuda_api->free(ptr), "Failed to free Prims device window");
   }
 }
 
@@ -59,7 +59,7 @@ void PipesDeviceBackend::DeviceWindowDeleter::operator()(
 // create_device_window Implementation
 // =============================================================================
 
-PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
+PrimsDeviceBackend::Ptr PrimsDeviceBackend::create_device_window(
     ncclComm_t /* nccl_comm */,
     torch::comms::NcclxApi* nccl_api,
     torch::comms::CudaApi* cuda_api,
@@ -69,60 +69,60 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
     size_t size) {
   if (nccl_api == nullptr) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: nccl_api cannot be null");
+        "[PrimsDeviceBackend::create_device_window]: nccl_api cannot be null");
   }
   if (nccl_win == nullptr) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: nccl_win cannot be null");
+        "[PrimsDeviceBackend::create_device_window]: nccl_win cannot be null");
   }
   if (cuda_api == nullptr) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: cuda_api cannot be null");
+        "[PrimsDeviceBackend::create_device_window]: cuda_api cannot be null");
   }
 
-  // Step 1: Create the Pipes DeviceWindow in device memory via ncclx.
+  // Step 1: Create the Prims DeviceWindow in device memory via ncclx.
   // COLLECTIVE on first call — all ranks must call together.
-  void* pipes_device_win = nullptr;
+  void* prims_device_win = nullptr;
   auto nccl_result = nccl_api->winCreateDeviceWin(
       nccl_win,
       config.signal_count,
       config.counter_count,
       config.barrier_count,
-      &pipes_device_win);
+      &prims_device_win);
   if (nccl_result != ncclSuccess) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: "
+        "[PrimsDeviceBackend::create_device_window]: "
         "winCreateDeviceWin failed");
   }
 
-  // Step 2: Build TorchCommDeviceWindow<PipesDeviceBackend> on host.
-  // comm_ = nullptr (unused for Pipes; no separate communicator handle)
+  // Step 2: Build TorchCommDeviceWindow<PrimsDeviceBackend> on host.
+  // comm_ = nullptr (unused for Prims; no separate communicator handle)
   // window_ = typed device pointer to DeviceWindow
-  auto* device_win = static_cast<comms::prims::DeviceWindow*>(pipes_device_win);
-  TorchCommDeviceWindow<PipesDeviceBackend> host_dev_window(
-      nullptr, // Comm = void*, unused for Pipes
+  auto* device_win = static_cast<comms::prims::DeviceWindow*>(prims_device_win);
+  TorchCommDeviceWindow<PrimsDeviceBackend> host_dev_window(
+      nullptr, // Comm = void*, unused for Prims
       device_win, // Window = DeviceWindow*, device pointer
       base,
       size,
       config.comm_rank,
       config.comm_size,
-      0 /* signal_buffer_handle, unused for Pipes */);
+      0 /* signal_buffer_handle, unused for Prims */);
 
   // Step 3: Allocate device memory for the TorchCommDeviceWindow struct.
-  TorchCommDeviceWindow<PipesDeviceBackend>* device_ptr = nullptr;
+  TorchCommDeviceWindow<PrimsDeviceBackend>* device_ptr = nullptr;
   cudaError_t cuda_result = cuda_api->malloc(
       reinterpret_cast<void**>(&device_ptr),
-      sizeof(TorchCommDeviceWindow<PipesDeviceBackend>));
+      sizeof(TorchCommDeviceWindow<PrimsDeviceBackend>));
   if (cuda_result != cudaSuccess) {
-    // Clean up Pipes DeviceWindow on failure.
+    // Clean up Prims DeviceWindow on failure.
     // NOLINTNEXTLINE(facebook-hte-NullableDereference)
-    auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
+    auto destroy_result = nccl_api->winDestroyDeviceWin(prims_device_win);
     if (destroy_result != ncclSuccess) {
-      TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
+      TC_LOG(ERROR) << "[PrimsDeviceBackend]: Failed to clean up Prims device "
                     << "window after malloc failure";
     }
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: Failed to allocate "
+        "[PrimsDeviceBackend::create_device_window]: Failed to allocate "
         "device memory for TorchCommDeviceWindow. CUDA error: " +
         std::string(cuda_api->getErrorString(cuda_result)));
   }
@@ -132,7 +132,7 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
   cuda_result = cuda_api->memcpy(
       device_ptr,
       &host_dev_window,
-      sizeof(TorchCommDeviceWindow<PipesDeviceBackend>),
+      sizeof(TorchCommDeviceWindow<PrimsDeviceBackend>),
       cudaMemcpyHostToDevice);
   if (cuda_result != cudaSuccess) {
     // NOLINTNEXTLINE(facebook-hte-NullableDereference)
@@ -141,18 +141,18 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
         cuda_api->free(device_ptr),
         "Failed to free device window during error cleanup");
     // NOLINTNEXTLINE(facebook-hte-NullableDereference)
-    auto destroy_result = nccl_api->winDestroyDeviceWin(pipes_device_win);
+    auto destroy_result = nccl_api->winDestroyDeviceWin(prims_device_win);
     if (destroy_result != ncclSuccess) {
-      TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to clean up Pipes device "
+      TC_LOG(ERROR) << "[PrimsDeviceBackend]: Failed to clean up Prims device "
                     << "window after memcpy failure";
     }
     throw std::runtime_error(
-        "[PipesDeviceBackend::create_device_window]: Failed to copy "
+        "[PrimsDeviceBackend::create_device_window]: Failed to copy "
         "TorchCommDeviceWindow to device memory. CUDA error: " +
         std::string(cuda_api->getErrorString(cuda_result)));
   }
 
-  DeviceWindowDeleter deleter(nccl_api, cuda_api, pipes_device_win);
+  DeviceWindowDeleter deleter(nccl_api, cuda_api, prims_device_win);
   return Ptr(device_ptr, deleter);
 }
 
@@ -160,26 +160,26 @@ PipesDeviceBackend::Ptr PipesDeviceBackend::create_device_window(
 // register_local_buffer / deregister_local_buffer Implementation
 // =============================================================================
 
-RegisteredBuffer PipesDeviceBackend::register_local_buffer(
+RegisteredBuffer PrimsDeviceBackend::register_local_buffer(
     torch::comms::NcclxApi* nccl_api,
     ncclComm_t nccl_comm,
     void* ptr,
     size_t size) {
-  // Pipes (IBGDA) put uses per-NIC lkeys for WQE construction during RDMA
+  // Prims (IBGDA) put uses per-NIC lkeys for WQE construction during RDMA
   // writes. The kernel-side put selects lkeys[nic] based on the slot it
   // dispatches on, so the full per-NIC array must be populated (using only
   // [0] would corrupt WQEs for slots landing on NIC[1..N-1] on multi-NIC HW).
   // ABI returns into a C struct (ncclLkeyPerDevice) which we field-copy
   // into the C++ wrapper (LkeyPerDevice) so the caller-visible
   // RegisteredBuffer.lkey_per_device gets bounds-checked operator[] and a
-  // populated `size` field. backend_window is unused by Pipes — only the
+  // populated `size` field. backend_window is unused by Prims — only the
   // GIN backend needs it.
   RegisteredBuffer buf;
   ncclLkeyPerDevice raw{};
   auto result = nccl_api->winLocalRegisterBuffer(nccl_comm, ptr, size, &raw);
   if (result != ncclSuccess) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::register_local_buffer]: "
+        "[PrimsDeviceBackend::register_local_buffer]: "
         "winLocalRegisterBuffer failed");
   }
   buf.lkey_per_device.size = raw.size;
@@ -192,7 +192,7 @@ RegisteredBuffer PipesDeviceBackend::register_local_buffer(
   return buf;
 }
 
-void PipesDeviceBackend::deregister_local_buffer(
+void PrimsDeviceBackend::deregister_local_buffer(
     torch::comms::NcclxApi* nccl_api,
     ncclComm_t nccl_comm,
     RegisteredBuffer& buf) {
@@ -201,7 +201,7 @@ void PipesDeviceBackend::deregister_local_buffer(
   }
   auto result = nccl_api->winLocalDeregisterBuffer(nccl_comm, buf.base_ptr);
   if (result != ncclSuccess) {
-    TC_LOG(ERROR) << "[PipesDeviceBackend]: Failed to deregister local buffer";
+    TC_LOG(ERROR) << "[PrimsDeviceBackend]: Failed to deregister local buffer";
   }
   buf = RegisteredBuffer{};
 }
@@ -210,7 +210,7 @@ void PipesDeviceBackend::deregister_local_buffer(
 // fetch_transport_handle Implementation
 // =============================================================================
 
-comms::prims::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
+comms::prims::MultiPeerDeviceHandle PrimsDeviceBackend::fetch_transport_handle(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api) {
   void* transports_ptr = nullptr;
@@ -229,7 +229,7 @@ comms::prims::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
 
   if (result != ncclSuccess) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::fetch_transport_handle] "
+        "[PrimsDeviceBackend::fetch_transport_handle] "
         "Failed to get MultiPeerDeviceHandle. "
         "Ensure NCCL_CTRAN_USE_PIPES=1 is set.");
   }
@@ -241,6 +241,7 @@ comms::prims::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
        static_cast<
            comms::prims::DeviceSpan<comms::prims::Transport>::size_type>(
            n_ranks)},
+      {},
       num_nvl_peers,
       num_ib_peers};
 }
@@ -249,7 +250,7 @@ comms::prims::MultiPeerDeviceHandle PipesDeviceBackend::fetch_transport_handle(
 // TransportHandleDeleter Implementation
 // =============================================================================
 
-void PipesDeviceBackend::TransportHandleDeleter::operator()(void* ptr) const {
+void PrimsDeviceBackend::TransportHandleDeleter::operator()(void* ptr) const {
   if (ptr != nullptr && cuda_api != nullptr) {
     CUDA_CHECK_IGNORE(
         cuda_api, cuda_api->free(ptr), "Failed to free transport handle");
@@ -260,14 +261,14 @@ void PipesDeviceBackend::TransportHandleDeleter::operator()(void* ptr) const {
 // get_device_transport Implementation
 // =============================================================================
 
-PipesDeviceBackend::TransportHandleDevPtr
-PipesDeviceBackend::get_device_transport(
+PrimsDeviceBackend::TransportHandleDevPtr
+PrimsDeviceBackend::get_device_transport(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api,
     torch::comms::CudaApi* cuda_api) {
   if (nccl_api == nullptr || cuda_api == nullptr) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::get_device_transport]: "
+        "[PrimsDeviceBackend::get_device_transport]: "
         "nccl_api and cuda_api must not be null");
   }
 
@@ -280,7 +281,7 @@ PipesDeviceBackend::get_device_transport(
       &device_ptr, sizeof(comms::prims::MultiPeerDeviceHandle));
   if (err != cudaSuccess) {
     throw std::runtime_error(
-        "[PipesDeviceBackend::get_device_transport]: "
+        "[PrimsDeviceBackend::get_device_transport]: "
         "cudaMalloc failed: " +
         std::string(cuda_api->getErrorString(err)));
   }
@@ -298,7 +299,7 @@ PipesDeviceBackend::get_device_transport(
         cuda_api->free(device_ptr),
         "Failed to free transport handle during error cleanup");
     throw std::runtime_error(
-        "[PipesDeviceBackend::get_device_transport]: "
+        "[PrimsDeviceBackend::get_device_transport]: "
         "cudaMemcpy failed: " +
         std::string(cuda_api->getErrorString(err)));
   }

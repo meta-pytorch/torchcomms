@@ -9,6 +9,8 @@
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
 
+#include <exception>
+
 #include "nccl.h"
 
 NCCL_API(
@@ -46,12 +48,20 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     return ncclInternalError;
   }
 
-  auto handle = mpt->get_device_handle(mpt->ib_peer_ranks());
-  *outTransportsPtr = handle.transports.data();
-  *outMyRank = handle.myRank;
-  *outNRanks = handle.nRanks;
-  *outNumNvlPeers = handle.numNvlPeers;
-  *outNumIbPeers = handle.numIbPeers;
+  try {
+    auto handle = mpt->get_device_handle(mpt->ib_peer_ranks());
+    *outTransportsPtr = handle.transports.data();
+    *outMyRank = handle.myRank;
+    *outNRanks = handle.nRanks;
+    *outNumNvlPeers = handle.numNvlPeers;
+    *outNumIbPeers = handle.numIbPeers;
+  } catch (const std::exception& ex) {
+    WARN("ncclGetMultiPeerDeviceHandle failed: %s", ex.what());
+    return ncclInternalError;
+  } catch (...) {
+    WARN("ncclGetMultiPeerDeviceHandle failed with unknown exception");
+    return ncclInternalError;
+  }
   return ncclSuccess;
 }
 

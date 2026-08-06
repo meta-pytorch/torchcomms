@@ -78,8 +78,6 @@ TEST_P(RingAllGatherTest, Correctness) {
   launchParams.recvbuf = static_cast<char*>(recvbuf.get());
   launchParams.num_blocks = config.num_blocks * params.num_rings;
   launchParams.num_rings = params.num_rings;
-  launchParams.timeout_ms = 30000.0f;
-
   for (int r = 0; r < params.num_rings; r++) {
     auto& ringParams = launchParams.rings[r];
     ringParams.prev_rank = rings[r].prev_rank;
