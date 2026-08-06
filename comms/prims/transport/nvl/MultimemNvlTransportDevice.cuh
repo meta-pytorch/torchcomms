@@ -107,12 +107,13 @@ struct MultimemNvlTransportDevice {
     return user_local_signal_ptr(signal_id)->load();
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait_signal_until(
       ThreadGroup& group,
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     user_local_signal_ptr(signal_id)->wait_until(group, op, expected, timeout);
   }
 
@@ -129,12 +130,13 @@ struct MultimemNvlTransportDevice {
     return internal_local_signal_ptr(signal_id)->load();
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait_internal_signal_until(
       ThreadGroup& group,
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     internal_local_signal_ptr(signal_id)->wait_until(
         group, op, expected, timeout);
   }

@@ -135,12 +135,13 @@ namespace comms::prims {
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
+template <typename TimeoutLike>
 __device__ __forceinline__ void ll128_send(
     const ThreadGroup& group,
     const char* __restrict__ src,
     size_t nbytes,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -311,12 +312,13 @@ __device__ __forceinline__ void ll128_send(
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
+template <typename TimeoutLike>
 __device__ __forceinline__ void ll128_recv(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -485,13 +487,14 @@ __device__ __forceinline__ void ll128_recv(
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
+template <typename TimeoutLike>
 __device__ __forceinline__ void ll128_forward(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between

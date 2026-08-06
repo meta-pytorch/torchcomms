@@ -173,8 +173,9 @@ struct alignas(128) SignalState {
    *
    * Used internally by wait_until to avoid code duplication.
    */
+  template <typename TimeoutLike>
   __device__ __forceinline__ void checkTimeoutAndTrap(
-      const Timeout& timeout,
+      const TimeoutLike& timeout,
       CmpOp op,
       uint64_t expected) const {
     TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
@@ -199,8 +200,11 @@ struct alignas(128) SignalState {
    * @param expected The expected value to compare against
    * @param timeout Timeout config (default: no timeout)
    */
-  __device__ __forceinline__ void
-  wait_until(CmpOp op, uint64_t expected, const Timeout& timeout = Timeout()) {
+  template <typename TimeoutLike = Timeout>
+  __device__ __forceinline__ void wait_until(
+      CmpOp op,
+      uint64_t expected,
+      const TimeoutLike& timeout = TimeoutLike()) {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
@@ -275,11 +279,12 @@ struct alignas(128) SignalState {
    * @param expected The expected value to compare against
    * @param timeout Timeout config (default: no timeout)
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait_until(
       ThreadGroup& group,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_until(op, expected, timeout);
   }
 };
