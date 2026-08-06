@@ -24,12 +24,6 @@
 
 namespace comms::prims {
 
-// Default bound for device-side waits on the CPU progress thread (flush /
-// reserve). Mirrors IBGDA's kDefaultDeviceTimeoutCycles: converts an indefinite
-// hang (a stalled progress thread that never publishes an error) into a bounded
-// trap.
-inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
-
 #if PIPES_IS_DEVICE_COMPILE
 #define IBRC_CHECK_SLOT_ID(id, count, kind)             \
   do {                                                  \
@@ -820,14 +814,8 @@ class P2pIbrcTransportDevice {
 
   __device__ void drain_queue(const IbrcCmdQueueDevice& queue) const {
     const uint64_t target = load_acquire_system_u64(queue.pi);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
     while (load_acquire_system_u64(queue.ci) < target) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf("P2pIbrcTransportDevice: flush timed out\n");
-        PIPES_DEVICE_TRAP();
-      }
     }
   }
 
@@ -856,14 +844,8 @@ class P2pIbrcTransportDevice {
 
   __device__ __forceinline__ uint64_t reserve(IbrcCmdQueueDevice& queue) const {
     const uint64_t seq = fetch_add_system_u64(queue.pi, 1);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
     while (seq - load_acquire_system_u64(queue.ci) >= queue.depth) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf("P2pIbrcTransportDevice: reserve timed out\n");
-        PIPES_DEVICE_TRAP();
-      }
     }
     return seq;
   }

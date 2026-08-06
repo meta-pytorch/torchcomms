@@ -119,14 +119,6 @@ int benchmark_pipeline_depth() {
   return kPipelineDepth;
 }
 
-float benchmark_timeout_ms() {
-  const char* timeout_ms = std::getenv("HIER_AG_BENCH_TIMEOUT_MS");
-  if (timeout_ms != nullptr) {
-    return std::strtof(timeout_ms, nullptr);
-  }
-  return 30000.0f;
-}
-
 std::string benchmark_ib_hca() {
   const char* ib_hca = std::getenv("HIER_AG_BENCH_IB_HCA");
   if (ib_hca != nullptr) {
@@ -393,7 +385,6 @@ class HierarchicalAllGatherBenchmarkFixture
     launch_params.sendbuf = static_cast<const char*>(send_buf.get());
     launch_params.recvbuf = static_cast<char*>(recv_buf.get());
     launch_params.ib_num_blocks = config.num_blocks;
-    launch_params.timeout_ms = benchmark_timeout_ms();
     launch_params.stream = stream_;
 
     if (config.ib_size > 1) {

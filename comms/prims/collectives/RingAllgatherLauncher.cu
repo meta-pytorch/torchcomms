@@ -8,7 +8,6 @@
 #include <string>
 
 #include "comms/prims/collectives/RingAllgather.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 
@@ -41,22 +40,15 @@ void launch_impl(const RingAllgatherLaunchParams& params, Timeout timeout) {
 } // namespace
 
 void launch_ring_allgather(const RingAllgatherLaunchParams& params) {
-  Timeout timeout;
-  if (params.timeout_ms > 0) {
-    int device = 0;
-    cudaGetDevice(&device);
-    timeout = makeTimeout(params.timeout_ms, device);
-  }
-
   switch (params.num_rings) {
     case 1:
-      launch_impl<1>(params, timeout);
+      launch_impl<1>(params, params.abort);
       break;
     case 2:
-      launch_impl<2>(params, timeout);
+      launch_impl<2>(params, params.abort);
       break;
     case 4:
-      launch_impl<4>(params, timeout);
+      launch_impl<4>(params, params.abort);
       break;
     default:
       throw std::runtime_error(

@@ -545,7 +545,7 @@ class DeviceWindow {
       int nvlIdx = rankToNvlPeerIndex_[source_rank];
       int slot = nvlIdx * peerSignalCount_ + signal_id;
       while (!compare(nvlPeerSignalInbox_[slot].load(), cmp, value)) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "DeviceWindow::wait_signal_from(source_rank=%d,"
             " signal_id=%d, value=%llu) rank=%d",
@@ -560,7 +560,7 @@ class DeviceWindow {
       // volatile: bypass L1 to read from L2 where RDMA atomics land
       volatile uint64_t* sig = &ibgdaPeerSignalInbox_[slot];
       while (!compare(*sig, cmp, value)) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "DeviceWindow::wait_signal_from(source_rank=%d,"
             " signal_id=%d, value=%llu) rank=%d",
@@ -643,7 +643,7 @@ class DeviceWindow {
         if (compare(total, cmp, value)) {
           break;
         }
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "DeviceWindow::wait_signal(signal_id=%d, value=%llu)"
             " rank=%d",
@@ -744,7 +744,7 @@ class DeviceWindow {
     auto counterSlotBuf = counter_slot_for_access(ibPeerIdx, counter_id);
     auto ib = handle_.get_ib(peer_rank);
     while (!compare(ib.read_counter(counterSlotBuf), cmp, value)) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "DeviceWindow::wait_counter(peer_rank=%d,"
           " counter_id=%d, value=%llu) rank=%d",
@@ -981,7 +981,7 @@ class DeviceWindow {
         if (compare(total, cmp, value)) {
           break;
         }
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "DeviceWindow::barrier_wait(barrier_id=%d, value=%llu)"
             " rank=%d",

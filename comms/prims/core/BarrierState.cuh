@@ -82,7 +82,7 @@ struct alignas(128) BarrierState {
       const TimeoutLike& timeout = TimeoutLike()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "BarrierState::wait timed out (expected=%llu, current=%llu)",
           static_cast<unsigned long long>(expected),

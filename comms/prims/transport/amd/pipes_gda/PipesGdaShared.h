@@ -57,20 +57,11 @@ using comms::prims::kMaxMultiwarpsPerBlock;
 using comms::prims::kMultiwarpSize;
 
 // ---------------------------------------------------------------------------
-// Timeout types and helpers
+// Abort wait guard type
 // ---------------------------------------------------------------------------
-using comms::prims::gpu_clock64;
 using comms::prims::Timeout;
-
-// AMD wall_clock64() clock rate: 100 MHz = 100 ticks per microsecond
-constexpr uint64_t kAmdWallClockTicksPerUs = 100;
-
-// Convenience: create a Timeout from microseconds (AMD wall_clock64 @ 100 MHz)
-inline Timeout make_timeout_us(uint64_t timeoutUs) {
-  return Timeout(timeoutUs * kAmdWallClockTicksPerUs);
-}
 
 } // namespace pipes_gda
 
-// TIMEOUT_TRAP_IF_EXPIRED_SINGLE is already defined in
+// ABORT_TRAP_IF_ABORTED_SINGLE is already defined in
 // comms/prims/core/Timeout.cuh

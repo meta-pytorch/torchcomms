@@ -178,7 +178,7 @@ struct alignas(128) SignalState {
       const TimeoutLike& timeout,
       CmpOp op,
       uint64_t expected) const {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+    ABORT_TRAP_IF_ABORTED_SINGLE(
         timeout,
         "SignalState::wait_until waiting for signal %s %llu (current=%llu)",
         cmpOpToString(op),

@@ -517,7 +517,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
             transport.read_signal(localSlotFree));
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_TRAP_IF_ABORTED_SINGLE(
               timeout,
               "progress_send_once waiting for SLOT_FREE expected>=%llu, "
               "current=%llu",
@@ -795,7 +795,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
         ? 1U
         : 0U;
     if (!ready) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
@@ -2406,7 +2406,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
         slot.generation = generation;
       } else {
         ready = 0;
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "send slot local completion timed out slot=%u generation=%llu "
             "pending=0x%llx",
