@@ -351,6 +351,352 @@ TEST_F(RecvForwardChainTest, MultiSection) {
   }
 }
 
+// ===========================================================================
+// Resumable-forward parity: same chains as above, but intermediates drive
+// init_forward_progress / progress_forward_once to completion. These exercise
+// the new resumable forward against blocking send/recv endpoints on the real
+// wire protocol. Multi-block / multi-section geometries run the forward across
+// multiple chunks, validating the fwd cursor advancing (in lockstep) between
+// puts.
+// ===========================================================================
+
+TEST_F(RecvForwardChainTest, ForwardWithCopyProgress) {
+  // >= 3: a 2-rank chain has no intermediate rank, so the forward under test
+  // never runs and the case would report a vacuous pass.
+  if (worldSize < 3) {
+    GTEST_SKIP()
+        << "requires >= 3 ranks for an intermediate forwarding rank, got "
+        << worldSize;
+  }
+
+  constexpr std::size_t kDataBytes = 1 * 1024 * 1024;
+  constexpr int kNumBlocks = 4;
+
+  try {
+    auto transport = create_transport(kDataBytes, kNumBlocks);
+
+    DeviceBuffer sendBuf(kDataBytes);
+    DeviceBuffer recvBuf(kDataBytes);
+
+    const uint8_t fillPattern = 0xAC;
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
+    for (int r = 0; r < worldSize; ++r) {
+      if (r != globalRank) {
+        peer_transports[r] = transport->getP2pTransportDevice(r);
+      }
+    }
+    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_transports.get(),
+        peer_transports.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+
+    bootstrap->barrierAll();
+
+    ASSERT_EQ(
+        test::launch_recv_forward_chain_progress(
+            static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
+            static_cast<const char*>(sendBuf.get()),
+            static_cast<char*>(recvBuf.get()),
+            kDataBytes,
+            globalRank,
+            worldSize,
+            kNumBlocks,
+            stream_),
+        cudaSuccess)
+        << "kernel launch failed";
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+    bootstrap->barrierAll();
+
+    if (globalRank != 0) {
+      std::vector<uint8_t> hostBuf(kDataBytes);
+      CUDACHECK_TEST(cudaMemcpy(
+          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
+
+      int errors = 0;
+      for (std::size_t i = 0; i < kDataBytes; ++i) {
+        if (hostBuf[i] != fillPattern) {
+          if (errors < 10) {
+            XLOGF(
+                ERR,
+                "Rank {}: byte {} expected 0x{:02X} got 0x{:02X}",
+                globalRank,
+                i,
+                fillPattern,
+                hostBuf[i]);
+          }
+          ++errors;
+        }
+      }
+      EXPECT_EQ(errors, 0) << "Rank " << globalRank << ": " << errors
+                           << " byte mismatches (resumable forward)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+TEST_F(RecvForwardChainTest, ForwardOnlyProgress) {
+  if (worldSize < 3) {
+    GTEST_SKIP() << "requires >= 3 ranks for forward-only test, got "
+                 << worldSize;
+  }
+
+  constexpr std::size_t kDataBytes = 1 * 1024 * 1024;
+  constexpr int kNumBlocks = 4;
+
+  try {
+    auto transport = create_transport(kDataBytes, kNumBlocks);
+
+    DeviceBuffer sendBuf(kDataBytes);
+    DeviceBuffer recvBuf(kDataBytes);
+
+    const uint8_t fillPattern = 0xEF;
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
+    for (int r = 0; r < worldSize; ++r) {
+      if (r != globalRank) {
+        peer_transports[r] = transport->getP2pTransportDevice(r);
+      }
+    }
+    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_transports.get(),
+        peer_transports.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+
+    bootstrap->barrierAll();
+
+    ASSERT_EQ(
+        test::launch_recv_forward_chain_progress_no_dst(
+            static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
+            static_cast<const char*>(sendBuf.get()),
+            static_cast<char*>(recvBuf.get()),
+            kDataBytes,
+            globalRank,
+            worldSize,
+            kNumBlocks,
+            stream_),
+        cudaSuccess)
+        << "kernel launch failed";
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+    bootstrap->barrierAll();
+
+    if (globalRank == worldSize - 1) {
+      std::vector<uint8_t> hostBuf(kDataBytes);
+      CUDACHECK_TEST(cudaMemcpy(
+          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
+
+      int errors = 0;
+      for (std::size_t i = 0; i < kDataBytes; ++i) {
+        if (hostBuf[i] != fillPattern) {
+          ++errors;
+        }
+      }
+      EXPECT_EQ(errors, 0) << "Last rank: " << errors
+                           << " byte mismatches (resumable forward-only)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// Resumable forward across more data than one slot: per-block bytes span
+// several pipeline windows, so each forward runs many chunks and the fwd cursor
+// is advanced/validated between puts.
+TEST_F(RecvForwardChainTest, MultiSectionProgress) {
+  // >= 3: a 2-rank chain has no intermediate rank, so the forward under test
+  // never runs and the case would report a vacuous pass.
+  if (worldSize < 3) {
+    GTEST_SKIP() << "requires >= 3 ranks for an intermediate forwarding rank, "
+                    "got "
+                 << worldSize;
+  }
+
+  constexpr std::size_t kSlotSize = 512 * 1024;
+  constexpr std::size_t kDataBytes = 4 * kSlotSize; // 4 sections
+  constexpr int kNumBlocks = 2;
+
+  try {
+    auto transport = create_transport(kSlotSize, kNumBlocks);
+
+    DeviceBuffer sendBuf(kDataBytes);
+    DeviceBuffer recvBuf(kDataBytes);
+
+    const uint8_t fillPattern = 0x9C;
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
+    for (int r = 0; r < worldSize; ++r) {
+      if (r != globalRank) {
+        peer_transports[r] = transport->getP2pTransportDevice(r);
+      }
+    }
+    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_transports.get(),
+        peer_transports.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+
+    bootstrap->barrierAll();
+
+    ASSERT_EQ(
+        test::launch_recv_forward_chain_progress(
+            static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
+            static_cast<const char*>(sendBuf.get()),
+            static_cast<char*>(recvBuf.get()),
+            kDataBytes,
+            globalRank,
+            worldSize,
+            kNumBlocks,
+            stream_),
+        cudaSuccess)
+        << "kernel launch failed";
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+    bootstrap->barrierAll();
+
+    if (globalRank != 0) {
+      std::vector<uint8_t> hostBuf(kDataBytes);
+      CUDACHECK_TEST(cudaMemcpy(
+          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
+
+      int errors = 0;
+      for (std::size_t i = 0; i < kDataBytes; ++i) {
+        if (hostBuf[i] != fillPattern) {
+          ++errors;
+        }
+      }
+      EXPECT_EQ(errors, 0)
+          << "Rank " << globalRank << ": " << errors
+          << " byte mismatches (resumable multi-section forward)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// ===========================================================================
+// Guards resumable-forward slot completion when a forward reuses a send slot an
+// ordinary resumable send just released: rank 1 does a resumable send (op A)
+// then a reduce-forward (op B) to the SAME next transport, reusing the send
+// slot across a pipeline-window boundary. This is the send->forward same-slot
+// pattern the step-halved ring uses. Requires >= 3 ranks.
+// ===========================================================================
+TEST_F(RecvForwardChainTest, SendThenReduceForward) {
+  if (worldSize < 3) {
+    GTEST_SKIP() << "send-then-reduce-forward requires >= 3 ranks, got "
+                 << worldSize;
+  }
+
+  constexpr std::size_t kSlotSize = 1 * 1024 * 1024; // one pipeline window
+  constexpr std::size_t kDataBytes = kSlotSize; // one window per op
+  constexpr int kNumBlocks = 1;
+  const std::size_t nElems = kDataBytes / sizeof(float);
+
+  try {
+    auto transport = create_transport(kSlotSize, kNumBlocks);
+
+    DeviceBuffer sendBuf(kDataBytes); // rank0: op B data; rank1: op A data
+    DeviceBuffer localBuf(kDataBytes); // rank1: reduce input for op B
+    DeviceBuffer recvA(kDataBytes); // rank2: op A result
+    DeviceBuffer recvB(kDataBytes); // rank2: op B result
+
+    // rank0 sends 10; rank1 op A sends 5, op B reduces rank0(10)+local(20)=30.
+    const float rank0Value = 10.0f;
+    const float rank1SendValue = 5.0f;
+    const float rank1LocalValue = 20.0f;
+    const float mySend =
+        (globalRank == 0) ? rank0Value : rank1SendValue; // used by rank0/rank1
+    std::vector<float> hostSend(nElems, mySend);
+    std::vector<float> hostLocal(nElems, rank1LocalValue);
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuf.get(), hostSend.data(), kDataBytes, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
+        localBuf.get(), hostLocal.data(), kDataBytes, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemset(recvA.get(), 0, kDataBytes));
+    CUDACHECK_TEST(cudaMemset(recvB.get(), 0, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
+    for (int r = 0; r < worldSize; ++r) {
+      if (r != globalRank) {
+        peer_transports[r] = transport->getP2pTransportDevice(r);
+      }
+    }
+    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        d_transports.get(),
+        peer_transports.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+
+    bootstrap->barrierAll();
+
+    ASSERT_EQ(
+        test::launch_send_then_reduce_forward(
+            static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
+            static_cast<const char*>(sendBuf.get()),
+            static_cast<const char*>(localBuf.get()),
+            static_cast<char*>(recvA.get()),
+            static_cast<char*>(recvB.get()),
+            kDataBytes,
+            globalRank,
+            worldSize,
+            kNumBlocks,
+            stream_),
+        cudaSuccess)
+        << "kernel launch failed";
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+
+    bootstrap->barrierAll();
+
+    // rank 2 holds op A (rank1's send=5) and op B (rank0 10 + rank1 local 20).
+    if (globalRank == 2) {
+      auto check = [&](DeviceBuffer& buf, float expect, const char* which) {
+        std::vector<float> hostBuf(nElems);
+        CUDACHECK_TEST(cudaMemcpy(
+            hostBuf.data(), buf.get(), kDataBytes, cudaMemcpyDeviceToHost));
+        int errors = 0;
+        for (std::size_t i = 0; i < nElems; ++i) {
+          if (std::abs(hostBuf[i] - expect) > 1e-3f) {
+            ++errors;
+          }
+        }
+        EXPECT_EQ(errors, 0)
+            << which << ": " << errors << " element mismatches (expected "
+            << expect << ")";
+      };
+      check(recvA, rank1SendValue, "op A (send)");
+      check(recvB, rank0Value + rank1LocalValue, "op B (reduce-forward)");
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char* argv[]) {
