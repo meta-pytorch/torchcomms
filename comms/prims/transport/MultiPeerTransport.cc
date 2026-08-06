@@ -464,6 +464,11 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
     throw std::runtime_error(
         "MultiPeerTransport::get_device_handle called before exchange()");
   }
+  if (ibgdaTransport_) {
+    ibgdaTransport_->throwIfMaterializationFailed();
+  } else if (ibrcTransport_) {
+    ibrcTransport_->throwIfMaterializationFailed();
+  }
   for (const auto& demand : demands) {
     if (demand.peerRank < 0 || demand.peerRank >= nRanks_ ||
         demand.peerRank == myRank_) {

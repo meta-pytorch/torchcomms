@@ -540,23 +540,6 @@ struct IbChannelLayout {
     return localCounterCompletionBuf.subBuffer(
         sendRecvSignalSlotOffset(counterSlot(channelId)));
   }
-
-  IBGDA_HOST_DEVICE SignalState* localSignalState(int slot) const {
-    return signalStateAt(localSignalBuf.ptr, slot);
-  }
-
-  IBGDA_HOST_DEVICE SignalState* localCounterState(int channelId) const {
-    return signalStateAt(localCounterBuf.ptr, counterSlot(channelId));
-  }
-
- private:
-  IBGDA_HOST_DEVICE static SignalState* signalStateAt(void* base, int slot) {
-    if (base == nullptr) {
-      return nullptr;
-    }
-    return reinterpret_cast<SignalState*>(
-        static_cast<char*>(base) + sendRecvSignalSlotOffset(slot));
-  }
 };
 
 enum class IbDirection : uint8_t {

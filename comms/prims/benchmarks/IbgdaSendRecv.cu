@@ -344,57 +344,48 @@ void launch_ibgda_drain_send_recv(
 
 __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
-    int maxGroups) {
-  const auto& layout = transport->channel_layout();
+    int numChannels) {
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   const auto stride = blockDim.x * gridDim.x;
-
-  // Zero the whole signal region: a numLanes-per-channel DATA_READY block plus
-  // a one-per-channel SLOT_FREE block. Grid-stride so the loop covers it for
-  // any launch grid size.
-  const uint32_t dataReadySlots =
-      static_cast<uint32_t>(layout.numLanes * maxGroups);
-  const uint32_t slotFreeSlots = static_cast<uint32_t>(maxGroups);
-  const uint32_t totalSignalSlots = dataReadySlots + slotFreeSlots;
-  for (auto slot = idx; slot < totalSignalSlots; slot += stride) {
-    if (SignalState* signal = layout.localSignalState(static_cast<int>(slot))) {
-      signal->signal_ = 0;
-    }
-    if (slot < static_cast<uint32_t>(maxGroups)) {
-      auto& channel = transport->channel(slot);
-      channel.sendProgress = IbChannelProgress{};
-      channel.recvProgress = IbChannelProgress{};
-      // Zero the per-lane receiver DATA_READY expectations so they stay aligned
-      // with the DATA_READY slots zeroed above. recvDataReadyLaneCursor is
-      // deliberately NOT reset here: it mirrors the sender's free-running
-      // IbQpState::cursor, which this kernel also leaves untouched, so zeroing
-      // it would desync the round-robin lane mapping on the next stream.
-      for (int lane = 0; lane < kIbMaxQpLanesPerChannelDirection; ++lane) {
-        channel.recvLaneExpected[lane] = 0;
+  const int numLanes = transport->channel_layout().numLanes;
+  for (auto channelId = idx; channelId < static_cast<uint32_t>(numChannels);
+       channelId += stride) {
+    auto& channel = transport->channel(channelId);
+    for (int lane = 0; lane < numLanes; ++lane) {
+      if (channel.dataReady.ptr != nullptr) {
+        auto* signal = reinterpret_cast<SignalState*>(
+            static_cast<char*>(channel.dataReady.ptr) +
+            lane * kSendRecvSignalSlotStride);
+        signal->signal_ = 0;
       }
     }
-  }
-
-  for (auto slot = idx; slot < static_cast<uint32_t>(maxGroups);
-       slot += stride) {
-    if (SignalState* counter =
-            layout.localCounterState(static_cast<int>(slot))) {
-      counter->signal_ = 0;
+    if (channel.slotFree.ptr != nullptr) {
+      reinterpret_cast<SignalState*>(channel.slotFree.ptr)->signal_ = 0;
+    }
+    if (channel.nicDoneWait.ptr != nullptr) {
+      reinterpret_cast<SignalState*>(channel.nicDoneWait.ptr)->signal_ = 0;
+    }
+    channel.sendProgress = IbChannelProgress{};
+    channel.recvProgress = IbChannelProgress{};
+    // recvDataReadyLaneCursor mirrors the sender's free-running QP cursor and
+    // is intentionally not reset here.
+    for (int lane = 0; lane < kIbMaxQpLanesPerChannelDirection; ++lane) {
+      channel.recvLaneExpected[lane] = 0;
     }
   }
 }
 
 void launch_ibgda_reset_send_recv(
     P2pIbgdaTransportDevice* transport,
-    int maxGroups,
+    int numChannels,
     cudaStream_t stream) {
-  if (maxGroups == 0) {
+  if (numChannels == 0) {
     return;
   }
   constexpr int kThreads = 256;
-  const int blocks = (2 * maxGroups + kThreads - 1) / kThreads;
+  const int blocks = (numChannels + kThreads - 1) / kThreads;
   ibgda_reset_send_recv_kernel<<<blocks, kThreads, 0, stream>>>(
-      transport, maxGroups);
+      transport, numChannels);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("[PIPES] Reset launch failed: %s\n", cudaGetErrorString(err));

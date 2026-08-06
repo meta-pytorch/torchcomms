@@ -132,17 +132,4 @@ void publishIbgdaDeviceSlot(
     int peerIndex,
     const P2pIbgdaTransportBuildParams& params);
 
-/** Clear one peer's canonical channel range without freeing table storage. */
-bool clearIbgdaDeviceRange(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex,
-    int beginChannel,
-    int endChannel) noexcept;
-
-/** Restore one outer slot to an unpublished shape while retaining table bases.
- */
-bool resetIbgdaDeviceSlot(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex) noexcept;
-
 } // namespace comms::prims

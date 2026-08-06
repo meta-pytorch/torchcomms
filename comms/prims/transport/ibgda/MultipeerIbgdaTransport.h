@@ -115,6 +115,14 @@ using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 class MultipeerIbgdaTransport
     : public MultiPeerIbTransport<MultipeerIbgdaTransport> {
  public:
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend peerChannelBackend() {
+    return PeerChannelBackend::kIbgda;
+  }
+
   /**
    * Constructor - Initialize multi-peer IBGDA transport
    */
@@ -175,7 +183,7 @@ class MultipeerIbgdaTransport
 
   // queuePeerForMaterialization()/connectPeers()/isPeerMaterialized() are
   // inherited from MultiPeerIbTransport. This backend supplies the
-  // doMaterializePeer()/cleanupPeerOnFailure() hooks below.
+  // materializePeerChannelRange() hook below.
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -205,7 +213,6 @@ class MultipeerIbgdaTransport
   // backend supplies the register_mr_on_nics()/lookup_alloc_base()/
   // deregister_mr() hooks below).
 
-  int maxGroups() const;
   int qpsPerBlockPerNic() const;
 
   // numNics() is inherited from MultiPeerIbTransport.
@@ -221,7 +228,6 @@ class MultipeerIbgdaTransport
   void openIbDevice();
   void allocateResources();
   void registerMemory();
-  void createQpGroups();
   void cleanup();
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
@@ -234,20 +240,34 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransport.
 
   // Per-peer helpers used by lazy materialization.
-  void createPeerQps(int peerIndex);
-  void connectPeerLoopback(int peerIndex);
-  P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
+  void createPeerQps(int peerIndex, uint32_t beginChannel, uint32_t endChannel);
+  void connectPeerLoopback(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel);
+  P2pIbgdaTransportBuildParams buildPeerTransportParams(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
 
-  void
-  doMaterializePeer(int peerRank, uint32_t oldChannels, uint32_t newChannels);
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t beginChannel,
+      uint32_t endChannel);
 
-  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
-  void cleanupPeerOnFailure(int peerIndex);
+  PeerQpPayload buildLocalQpPayload(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
+  void connectPeerMainQps(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const PeerQpPayload& remotePayload);
 
   // MultiPeerIbTransport drives the shared control plane (config, MR registry,
   // lazy materialization, bootstrap exchangeWithPeer) and calls back into this
-  // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
+  // backend's materializePeerChannelRange() hook.
   friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
 
   // myRank_/nRanks_/bootstrap_/config_/registeredBuffers_/nics_/lazy-state are
@@ -301,12 +321,9 @@ class MultipeerIbgdaTransport
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Per-peer send/recv buffer views (IbSendRecvPeerBuffers) and the eager-mode
-  // bulk allocations now live in MultiPeerIbTransportBase
-  // (sendRecvPeerBuffers_). Eager allocation/exchange/cleanup delegate to the
-  // base's allocateSendRecvBuffersEager(Device)/exchangeSendRecvBuffersEager()/
-  // cleanupSendRecvBuffers(); the lazy path below fills the inherited
-  // sendRecvPeerBuffers_ directly.
+  // Eager send/recv views and bulk allocations live in
+  // MultiPeerIbTransportBase. Lazy growth retains separate immutable range
+  // buffers there until communicator teardown.
 
   // Lazy readiness state is inherited from MultiPeerIbTransport.
 };

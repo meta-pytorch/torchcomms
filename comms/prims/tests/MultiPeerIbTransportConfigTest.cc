@@ -2,7 +2,11 @@
 
 #include <array>
 #include <cerrno>
+#include <memory>
+#include <stdexcept>
+#include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
@@ -207,6 +211,129 @@ TEST(MultiPeerTransportInitTest, AllGatherFailureFailsInitialization) {
   EXPECT_THROW(
       detail::exchangeAndValidateChannelProtocol(
           bootstrap, 0, 2, detail::ChannelProtocolRecord{}),
+      std::runtime_error);
+}
+
+class TestLazyChannelTransport
+    : public MultiPeerIbTransport<TestLazyChannelTransport> {
+ public:
+  struct MaterializedRange {
+    int peerRank;
+    uint32_t beginChannel;
+    uint32_t endChannel;
+
+    bool operator==(const MaterializedRange&) const = default;
+  };
+
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend peerChannelBackend() {
+    return PeerChannelBackend::kIbgda;
+  }
+
+  explicit TestLazyChannelTransport(bool lazyChannels)
+      : MultiPeerIbTransport<TestLazyChannelTransport>(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::make_shared<
+                ::testing::NiceMock<meta::comms::testing::MockBootstrap>>(),
+            makeConfig(lazyChannels)) {
+    // This fake isolates local target and watermark behavior.
+    channelRangeProtocolEnabled_ = false;
+  }
+
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t beginChannel,
+      uint32_t endChannel) {
+    observedWatermarks.push_back(
+        materializedChannels_[rankToPeerIndex(peerRank)]);
+    materializedRanges.push_back({peerRank, beginChannel, endChannel});
+    if (failNextMaterialization) {
+      throw std::runtime_error("injected materialization failure");
+    }
+  }
+
+  uint32_t rawMaterializedChannelCount(int peerRank) const {
+    return materializedChannels_[rankToPeerIndex(peerRank)];
+  }
+
+  int configuredQpsPerConnection() const {
+    return config_.qpsPerConnection;
+  }
+
+  std::vector<MaterializedRange> materializedRanges;
+  std::vector<uint32_t> observedWatermarks;
+  bool failNextMaterialization{false};
+
+ private:
+  static MultipeerIbTransportConfig makeConfig(bool lazyChannels) {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    config.maxGroups = 8;
+    config.qpsPerBlockPerNic = 2;
+    config.lazyChannels = lazyChannels;
+    return config;
+  }
+};
+
+TEST(MultiPeerIbTransportConfigTest, LegacyQpGeometryIsNormalized) {
+  const TestLazyChannelTransport transport(/*lazyChannels=*/false);
+  EXPECT_EQ(8, transport.channelCapacity());
+  EXPECT_EQ(2, transport.configuredQpsPerConnection());
+}
+
+TEST(MultiPeerIbTransportConfigTest, LazyChannelsMaterializeMissingPrefix) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/true);
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/3);
+  transport.connectPeers();
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/2);
+  transport.connectPeers();
+
+  const std::vector<TestLazyChannelTransport::MaterializedRange> expected{
+      {1, 0, 1},
+      {1, 1, 4},
+  };
+  EXPECT_EQ(expected, transport.materializedRanges);
+  EXPECT_EQ((std::vector<uint32_t>{0, 1}), transport.observedWatermarks);
+  EXPECT_EQ(4, transport.materializedChannelCount(/*peerRank=*/1));
+}
+
+TEST(MultiPeerIbTransportConfigTest, EagerChannelsMaterializeCapacity) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/false);
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+
+  const std::vector<TestLazyChannelTransport::MaterializedRange> expected{
+      {1, 0, 8},
+  };
+  EXPECT_EQ(expected, transport.materializedRanges);
+  EXPECT_EQ(8, transport.materializedChannelCount(/*peerRank=*/1));
+}
+
+TEST(
+    MultiPeerIbTransportConfigTest,
+    FailedGrowthDoesNotPublishAndPoisonsTransport) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/true);
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+  transport.failNextMaterialization = true;
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/4);
+  EXPECT_THROW(transport.connectPeers(), std::runtime_error);
+
+  EXPECT_EQ(1, transport.rawMaterializedChannelCount(/*peerRank=*/1));
+  EXPECT_THROW(
+      transport.materializedChannelCount(/*peerRank=*/1), std::runtime_error);
+  EXPECT_THROW(
+      transport.queuePeerForMaterialization(
+          /*peerRank=*/1, /*targetChannels=*/2),
       std::runtime_error);
 }
 

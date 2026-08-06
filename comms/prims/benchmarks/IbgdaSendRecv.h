@@ -113,7 +113,7 @@ void launch_ibgda_drain_send_recv(
  */
 void launch_ibgda_reset_send_recv(
     P2pIbgdaTransportDevice* transport,
-    int maxGroups,
+    int numChannels,
     cudaStream_t stream);
 
 /**

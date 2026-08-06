@@ -45,11 +45,19 @@ class P2pIbrcTransportDevice;
  *
  * IBRC always materializes peer resources lazily. exchange() leaves per-peer
  * QPs, staging, and command queues deferred; the base's lazy connect loop
- * drives the doMaterializePeer() hook below on first peer use.
+ * drives the materializePeerChannelRange() hook below on first peer use.
  */
 class MultipeerIbrcTransport
     : public MultiPeerIbTransport<MultipeerIbrcTransport> {
  public:
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return false;
+  }
+
+  static constexpr PeerChannelBackend peerChannelBackend() {
+    return PeerChannelBackend::kIbrc;
+  }
+
   MultipeerIbrcTransport(
       int myRank,
       int nRanks,
@@ -80,12 +88,13 @@ class MultipeerIbrcTransport
   P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank);
 
  private:
-  // The shared base owns queueing, ordering, and failure rollback. IBRC creates
-  // the peer's QPs, exchanges staging, builds command queues, and publishes the
-  // device transport here.
-  void
-  doMaterializePeer(int peerRank, uint32_t oldChannels, uint32_t newChannels);
-  void cleanupPeerOnFailure(int peerIndex);
+  // The shared base owns queueing, ordering, and terminal failure state. IBRC
+  // creates the peer's QPs, exchanges staging, builds command queues, and
+  // publishes the device transport here.
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t oldChannels,
+      uint32_t newChannels);
 
   struct PeerQpResource {
     ibverbx::ibv_cq* cq{nullptr};
@@ -195,9 +204,10 @@ class MultipeerIbrcTransport
   // ---- Pipelined send/recv staging (peer-lazy) ----
   //
   // Host send/recv buffer management is shared with IBGDA in
-  // MultiPeerIbTransportBase. doMaterializePeer() allocates and exchanges only
-  // the requested peer's staging and signal/counter resources. The NIC_DONE
-  // counter is host-mapped and updated by the CPU proxy (NCCL GIN style)
+  // MultiPeerIbTransportBase. materializePeerChannelRange() allocates and
+  // exchanges only the requested peer's staging and signal/counter resources.
+  // The NIC_DONE counter is host-mapped and updated by the CPU proxy (NCCL GIN
+  // style)
   // instead of an IBGDA companion-QP loopback counter.
 
   void createPeerQps(int peerIndex);

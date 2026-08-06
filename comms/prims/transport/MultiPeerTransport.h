@@ -299,7 +299,8 @@ class MultiPeerTransport {
    * demand and are processed by rank.
    * Both endpoints must demand each IB edge in the same connect round.
    * Channel-eager mode promotes every positive demand to full capacity.
-   * Demanded peers must be materialized before CUDA graph capture begins.
+   * Capture-time growth completes on graph-external device work before this
+   * call returns; graph replay performs no allocation or connection.
    */
   MultiPeerDeviceHandle get_device_handle(
       std::span<const PeerChannelDemand> demands);

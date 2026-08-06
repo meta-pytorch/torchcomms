@@ -2877,6 +2877,9 @@ class LazyModeTestFixture
       bool lazyChannels = false) {
     MultipeerIbTransportConfig config{
         .cudaDevice = localRank,
+        .perChannelSize = 4096,
+        .max_num_channels = 8,
+        .pipelineDepth = 2,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
@@ -2913,7 +2916,7 @@ TEST_P(LazyModeTestFixture, MaterializeOnAccess) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_P(LazyModeTestFixture, LazyChannelsUseEagerCapacity) {
+TEST_P(LazyModeTestFixture, LazyChannelsUseBackendCapability) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
@@ -2927,22 +2930,33 @@ TEST_P(LazyModeTestFixture, LazyChannelsUseEagerCapacity) {
   auto transport = createLazyTransport(/*lazyChannels=*/true);
   const int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr uint32_t kRequestedChannels = 1;
+  const void* const deviceTransport = transport->getDeviceTransportPtr();
 
   transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
   EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
   EXPECT_EQ(0u, transport->materializedChannelCount(peerRank));
 
   transport->connectPeers();
-  EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
-  EXPECT_EQ(
-      transport->channelCapacity(),
-      transport->materializedChannelCount(peerRank));
+  EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
+  if (backend() == IbTestBackend::Ibgda) {
+    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+    EXPECT_EQ(
+        kRequestedChannels, transport->materializedChannelCount(peerRank));
 
-  transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
-  transport->connectPeers();
-  EXPECT_EQ(
-      transport->channelCapacity(),
-      transport->materializedChannelCount(peerRank));
+    transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/4);
+    transport->connectPeers();
+    EXPECT_EQ(4, transport->materializedChannelCount(peerRank));
+    EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
+
+    transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/2);
+    transport->connectPeers();
+    EXPECT_EQ(4, transport->materializedChannelCount(peerRank));
+  } else {
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+    EXPECT_EQ(
+        transport->channelCapacity(),
+        transport->materializedChannelCount(peerRank));
+  }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }

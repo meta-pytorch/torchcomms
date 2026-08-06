@@ -48,17 +48,61 @@ constexpr int kHopLimit = 255;
 // mainAttr and therefore uses config_.qpDepth.
 constexpr uint32_t kLoopbackCompanionQpDepth = 32;
 
+#ifdef __HIP_PLATFORM_AMD__
+class HipStreamCaptureModeGuard {
+ public:
+  HipStreamCaptureModeGuard() {
+    const hipError_t error = hipThreadExchangeStreamCaptureMode(&previous_);
+    if (error != hipSuccess) {
+      throw std::runtime_error(
+          "hipThreadExchangeStreamCaptureMode failed: " +
+          std::string(hipGetErrorString(error)));
+    }
+  }
+
+  ~HipStreamCaptureModeGuard() {
+    const hipError_t error = hipThreadExchangeStreamCaptureMode(&previous_);
+    if (error != hipSuccess) {
+      LOG(ERROR) << "Failed to restore HIP stream capture mode: "
+                 << hipGetErrorString(error);
+    }
+  }
+
+ private:
+  hipStreamCaptureMode previous_{hipStreamCaptureModeRelaxed};
+};
+#endif
+
+struct QpSlotRange {
+  int begin;
+  int end;
+};
+
+QpSlotRange qpSlotRange(
+    const MultipeerIbTransportConfig& config,
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  const int slotsPerChannel =
+      config.fixedChannelDirectionCount() * config.qpsPerConnection;
+  return {
+      .begin = static_cast<int>(beginChannel) * slotsPerChannel,
+      .end = static_cast<int>(endChannel) * slotsPerChannel,
+  };
+}
+
 std::vector<IbChannel> buildChannelDescriptors(
-    const P2pIbgdaTransportBuildParams& params,
+    const IbChannelLayout& rangeLayout,
     int beginChannel,
     int endChannel,
     IbSendCompletionSlot* completionSlots) {
   CHECK_GE(beginChannel, 0);
   CHECK_LE(beginChannel, endChannel);
-  CHECK_LE(endChannel, params.maxChannels);
-  CHECK_GE(params.channelLayout.pipelineDepth, 0);
+  CHECK(
+      rangeLayout.maxChannels == 0 ||
+      rangeLayout.maxChannels == endChannel - beginChannel);
+  CHECK_GE(rangeLayout.pipelineDepth, 0);
   const std::size_t pipelineDepth =
-      static_cast<std::size_t>(params.channelLayout.pipelineDepth);
+      static_cast<std::size_t>(rangeLayout.pipelineDepth);
   CHECK(pipelineDepth == 0 || completionSlots != nullptr);
 
   std::vector<IbChannel> channels;
@@ -68,8 +112,8 @@ std::vector<IbChannel> buildChannelDescriptors(
         ? nullptr
         : completionSlots +
             static_cast<std::size_t>(channel - beginChannel) * pipelineDepth;
-    channels.push_back(
-        makeIbChannel(params.channelLayout, channel, channelCompletionSlots));
+    channels.push_back(makeIbChannel(
+        rangeLayout, channel - beginChannel, channelCompletionSlots));
   }
   return channels;
 }
@@ -384,57 +428,6 @@ void MultipeerIbgdaTransport::registerMemory() {
             << " (zero-based MR, iova=0)";
   }
 }
-void MultipeerIbgdaTransport::createQpGroups() {
-  const int numPeers = nRanks_ - 1;
-  const int directionCount = config_.fixedChannelDirectionCount();
-  const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
-  const int totalMainQpsPerPeer = numNics_ * mainQpsPerPeerPerNic;
-  const int companionQpsPerPeerPerNic =
-      config_.fixedChannelCompanionQpsPerPeerPerNic();
-  const int totalCompanionQpsPerPeer = numNics_ * companionQpsPerPeerPerNic;
-  for (auto& nic : nicDoca_) {
-    nic.blockQpGroups.resize(
-        static_cast<size_t>(numPeers) * companionQpsPerPeerPerNic);
-    nic.extraMainQps.clear();
-    nic.loopbackCompanionQps.resize(
-        static_cast<size_t>(numPeers) * companionQpsPerPeerPerNic);
-  }
-
-  // Verify CUDA device is still set correctly
-  int currentDevice = -1;
-  cudaError_t cudaErr = cudaGetDevice(&currentDevice);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error(
-        "Failed to get CUDA device: " +
-        std::string(cudaGetErrorString(cudaErr)));
-  }
-  VLOG(1) << "MultipeerIbgdaTransport::createQpGroups: current CUDA device="
-          << currentDevice << " expected=" << config_.cudaDevice;
-
-  // Query IB device capabilities for debugging (NIC 0 is representative).
-  ibverbx::ibv_device_attr devAttr{};
-  auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_query_device(nics_[0].ibvCtx, &devAttr) == 0) {
-    VLOG(1) << "MultipeerIbgdaTransport: IB device - max_qp=" << devAttr.max_qp
-            << " max_cq=" << devAttr.max_cq << " max_mr=" << devAttr.max_mr
-            << " max_qp_wr=" << devAttr.max_qp_wr;
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalMainQpsPerPeer
-          << " main QPs/peer and " << totalCompanionQpsPerPeer
-          << " companion QPs/peer (" << numNics_
-          << " NICs × max_num_channels=" << config_.max_num_channels
-          << " × direction_count=" << directionCount
-          << " × qpsPerConnection=" << config_.qpsPerConnection
-          << ", peers=" << numPeers << ") gpu_dev=" << (void*)docaGpu_
-          << " sq_nwqe=" << config_.qpDepth
-          << " nic_handler=AUTO mreg_type=DEFAULT";
-
-  for (int peer = 0; peer < numPeers; peer++) {
-    createPeerQps(peer);
-  }
-}
-
 void MultipeerIbgdaTransport::connectQp(
     doca_gpu_verbs_qp_hl* qpHl,
     const IbgdaTransportExchInfo& peerInfo,
@@ -540,7 +533,11 @@ void MultipeerIbgdaTransport::connectQp(
           << peerInfo.qpn;
 }
 
-void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
+void MultipeerIbgdaTransport::createPeerQps(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
     mainAttr.gpu_dev = docaGpu_;
@@ -555,8 +552,10 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     auto& nicQps = nicDoca_[nic].blockQpGroups;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
     const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
+    for (int slot = slots.begin; slot < slots.end; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
+      CHECK(nicQps[slotIdx] == nullptr);
+      CHECK(nicLoopback[slotIdx] == nullptr);
       doca_error_t err =
           doca_gpu_verbs_create_qp_group_hl(&mainAttr, &nicQps[slotIdx]);
       checkDocaError(err, "Failed to create QP group");
@@ -566,7 +565,11 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
   }
 }
 
-void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
+void MultipeerIbgdaTransport::connectPeerLoopback(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   for (int nic = 0; nic < numNics_; nic++) {
     auto& nicQps = nicDoca_[nic].blockQpGroups;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
@@ -582,7 +585,7 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
     }
 
     const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
+    for (int slot = slots.begin; slot < slots.end; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
       selfInfo.qpn = doca_verbs_qp_get_qpn(nicLoopback[slotIdx]->qp);
       connectQp(&nicQps[slotIdx]->qp_companion, selfInfo, nic);
@@ -593,11 +596,14 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
 }
 
 P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
-    int peerIndex) const {
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) const {
   const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   // Build the device-side send/recv layout from the shared base.
-  P2pIbgdaTransportBuildParams params(channelLayoutForPeer(peerIndex));
+  P2pIbgdaTransportBuildParams params(sendRecvChannelGeometry());
   params.maxChannels = config_.max_num_channels;
   params.qpDirectionCount = config_.fixedChannelDirectionCount();
   params.qpsPerConnection = config_.qpsPerConnection;
@@ -613,7 +619,7 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   for (int nic = 0; nic < numNics_; nic++) {
     auto& nicQps = nicDoca_[nic].blockQpGroups;
     auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
-    for (int slot = 0; slot < companionSlots; slot++) {
+    for (int slot = slots.begin; slot < slots.end; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
       doca_error_t err = doca_gpu_verbs_get_qp_dev(
           nicQps[slotIdx]->qp_main.qp_gverbs, &nicSpec.qps[slot]);
@@ -689,6 +695,9 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
             numNics_,
             config_.qpsPerConnection,
             kIbMaxQpLanesPerChannelDirection));
+  }
+  if (sendRecvBuffersEnabled()) {
+    validateSendRecvConfig();
   }
   if (mainQpsPerPeerPerNic * (nRanks_ - 1) * 3 > 1000) {
     LOG(WARNING) << "MultipeerIbgdaTransport: high QP count: "
@@ -883,6 +892,7 @@ void MultipeerIbgdaTransport::exchange() {
 }
 
 MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport() {
+  throwIfMaterializationFailed();
   if (fixedDeviceTables_ == nullptr) {
     throw std::runtime_error(
         "MultipeerIbgdaTransport::getDeviceTransport called before exchange");
@@ -902,6 +912,7 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport() {
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
     int peerRank) {
+  throwIfMaterializationFailed();
   if (!isPeerMaterialized(peerRank)) {
     queuePeerForMaterialization(peerRank, channelCapacity());
     connectPeers();
@@ -911,12 +922,14 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getDeviceTransportPtr()
     const {
+  throwIfMaterializationFailed();
   return fixedDeviceTables_ == nullptr ? nullptr
                                        : fixedDeviceTables_->transports;
 }
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
+  throwIfMaterializationFailed();
   auto* const transports = getDeviceTransportPtr();
   return transports == nullptr
       ? nullptr
@@ -925,10 +938,6 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceSlot(
 
 int MultipeerIbgdaTransport::getGidIndex() const {
   return gidIndex_;
-}
-
-int MultipeerIbgdaTransport::maxGroups() const {
-  return config_.max_num_channels;
 }
 
 int MultipeerIbgdaTransport::qpsPerBlockPerNic() const {
@@ -941,12 +950,15 @@ int MultipeerIbgdaTransport::qpsPerBlockPerNic() const {
 
 // Eager send/recv staging allocation, exchange, and cleanup are now provided by
 // MultiPeerIbTransportBase (allocateSendRecvBuffersEager(Device) /
-// exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers()). The lazy per-peer
-// path below fills the inherited sendRecvPeerBuffers_ directly.
+// exchangeSendRecvBuffersEager() / cleanupSendRecvBuffers()). Lazy channel
+// ranges retain immutable allocations in lazyPeerChannelRangeBufs_.
 
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
-    int peerIndex) const {
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) const {
   const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   PeerQpPayload payload{};
   populatePeerGeometry(payload);
   payload.gidIndex = gidIndex_;
@@ -963,7 +975,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
       payload.nicInfo[n].lid = portAttr.lid;
     }
     auto& nicQps = nicDoca_[n].blockQpGroups;
-    for (int slot = 0; slot < companionSlots; slot++) {
+    for (int slot = slots.begin; slot < slots.end; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
       payload.nicInfo[n].qpns[slot] =
           doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_main.qp);
@@ -974,11 +986,14 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
 
 void MultipeerIbgdaTransport::connectPeerMainQps(
     int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel,
     const PeerQpPayload& remotePayload) {
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   for (int nic = 0; nic < numNics_; nic++) {
     auto& nicQps = nicDoca_[nic].blockQpGroups;
     const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
+    for (int slot = slots.begin; slot < slots.end; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
       IbgdaTransportExchInfo peerInfo;
       peerInfo.qpn = remotePayload.nicInfo[nic].qpns[slot];
@@ -992,89 +1007,96 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
   }
 }
 
-void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
-  if (fixedDeviceTables_ != nullptr &&
-      fixedDeviceTables_->transports != nullptr) {
-    const bool rangeCleared = clearIbgdaDeviceRange(
-        *fixedDeviceTables_, peerIndex, 0, config_.max_num_channels);
-    const bool slotReset = resetIbgdaDeviceSlot(*fixedDeviceTables_, peerIndex);
-    if (!rangeCleared || !slotReset) {
-      LOG(WARNING) << "Failed to clear fixed device tables for lazy peerIndex="
-                   << peerIndex;
-    }
-  }
-  for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
-    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
-      if (nicQps[slotIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_group_hl(nicQps[slotIdx]);
-        nicQps[slotIdx] = nullptr;
-      }
-      if (nicLoopback[slotIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(nicLoopback[slotIdx]);
-        nicLoopback[slotIdx] = nullptr;
-      }
-    }
-  }
-  cleanupSendRecvBufferForPeer(peerIndex);
-  cleanupPeerSignalCounterResources(peerIndex);
-}
-
-void MultipeerIbgdaTransport::doMaterializePeer(
+void MultipeerIbgdaTransport::materializePeerChannelRange(
     int peerRank,
-    uint32_t oldChannels,
-    uint32_t newChannels) {
-  if (oldChannels != 0 || newChannels != channelCapacity()) {
-    throw std::runtime_error(
-        "IBGDA eager materialization requires the full channel range");
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  if (beginChannel >= endChannel || endChannel > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "materializePeerChannelRange: invalid range=[{}, {}) capacity={}",
+            beginChannel,
+            endChannel,
+            channelCapacity()));
   }
-  int peerIndex = rankToPeerIndex(peerRank);
+  const int peerIndex = rankToPeerIndex(peerRank);
+#ifdef __HIP_PLATFORM_AMD__
+  HipStreamCaptureModeGuard captureModeGuard;
+#else
+  meta::comms::StreamCaptureModeGuard captureModeGuard{
+      cudaStreamCaptureModeRelaxed};
+#endif
 
-  createPeerQps(peerIndex);
+  createPeerQps(peerIndex, beginChannel, endChannel);
 
   // Phase 1: exchange QP info, connect QPs.
-  auto localQp = buildLocalQpPayload(peerIndex);
-  auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
+  const auto localQp = buildLocalQpPayload(peerIndex, beginChannel, endChannel);
+  const auto remoteQp =
+      exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
   validatePeerGeometry(peerRank, remoteQp);
 
-  connectPeerMainQps(peerIndex, remoteQp);
-  connectPeerLoopback(peerIndex);
+  connectPeerMainQps(peerIndex, beginChannel, endChannel, remoteQp);
+  connectPeerLoopback(peerIndex, beginChannel, endChannel);
 
   // Phase 2: exchange buffer info (acts as QP-ready barrier).
   PeerBufferPayload localBuf{};
-  allocateSendRecvBufferForPeer(peerIndex, localBuf, IbCounterStorage::Device);
-  allocatePeerSignalCounterResources(
-      peerIndex,
-      localBuf,
-      IbCounterStorage::Device,
-      /*allocateDiscardSignal=*/true);
-  auto remoteBuf =
+  IbChannelLayout channelLayout;
+  if (config_.lazyChannels) {
+    channelLayout = allocateSendRecvChannelRange(
+        peerIndex, beginChannel, endChannel, localBuf);
+  } else {
+    if (beginChannel != 0 || endChannel != channelCapacity()) {
+      throw std::logic_error(
+          "eager IBGDA materialization requires the full channel range");
+    }
+    allocateSendRecvBufferForPeer(
+        peerIndex, localBuf, IbCounterStorage::Device);
+    channelLayout = channelLayoutForPeer(peerIndex);
+  }
+  if (beginChannel == 0) {
+    allocatePeerSignalCounterResources(
+        peerIndex,
+        localBuf,
+        IbCounterStorage::Device,
+        /*allocateDiscardSignal=*/true);
+  }
+  const auto remoteBuf =
       exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
-  applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
-  applyRemoteSignalCounterResources(
-      peerIndex, remoteBuf, /*hasDiscardSignal=*/true);
+  if (config_.lazyChannels) {
+    applyRemoteSendRecvChannelRange(channelLayout, remoteBuf);
+  } else {
+    applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
+    channelLayout = channelLayoutForPeer(peerIndex);
+  }
+  if (beginChannel == 0) {
+    applyRemoteSignalCounterResources(
+        peerIndex, remoteBuf, /*hasDiscardSignal=*/true);
+  }
 
-  auto params = buildPeerTransportParams(peerIndex);
+  auto params = buildPeerTransportParams(peerIndex, beginChannel, endChannel);
+  if (!config_.lazyChannels) {
+    params.channelLayout = channelLayout;
+  }
   auto* completionSlots = allocateIbgdaCompletionSlots(
-      config_.max_num_channels,
+      endChannel - beginChannel,
       sendRecvBuffersEnabled() ? config_.pipelineDepth : 0,
       gpuAllocations_);
   const auto channels = buildChannelDescriptors(
-      params, 0, config_.max_num_channels, completionSlots);
+      channelLayout, beginChannel, endChannel, completionSlots);
   populateIbgdaDeviceRange(
       *fixedDeviceTables_,
       peerIndex,
-      0,
-      config_.max_num_channels,
+      beginChannel,
+      endChannel,
       params,
       channels);
-  publishIbgdaDeviceSlot(*fixedDeviceTables_, peerIndex, params);
+  if (beginChannel == 0) {
+    publishIbgdaDeviceSlot(*fixedDeviceTables_, peerIndex, params);
+  }
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
-          << " materialized peer " << peerRank;
+          << " materialized peer " << peerRank << " channels [" << beginChannel
+          << ", " << endChannel << ")";
 }
 
 } // namespace comms::prims
