@@ -37,7 +37,7 @@ add_library(ctran OBJECT
 
 target_compile_features(ctran PRIVATE cxx_std_20)
 target_compile_definitions(ctran PRIVATE
-    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
     SPDLOG_FMT_EXTERNAL
 )
 

@@ -13,6 +13,7 @@
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -68,11 +69,11 @@ commResult_t ctran::ctranPreparePipesTrace(
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!ctranPrimsEnabled(comm)) {
-    CLOGF(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
+    CTRAN_LOG(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
     return commSuccess;
   }
   try {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: initialization started rank={} nRanks={} cudaDev={}",
         comm->statex_->rank(),

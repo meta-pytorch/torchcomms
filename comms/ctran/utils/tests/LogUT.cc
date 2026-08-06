@@ -70,14 +70,13 @@ TEST_F(CtranUtilsLogTest, TestCLOGF) {
   EXPECT_NE(messages[0].find(expectedContent), std::string::npos);
 }
 
-TEST_F(CtranUtilsLogTest, TestSpdlogContextPreservesLastError) {
+TEST_F(CtranUtilsLogTest, TestCtranLoggerPreservesLastError) {
   auto& logger =
-      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranSpdlogContext);
-  EXPECT_EQ(logger.name(), ctran::logging::kCtranSpdlogContext);
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  EXPECT_EQ(logger.name(), ctran::logging::kCtranLoggerName);
   logger.set_level(spdlog::level::info);
 
-  COMMS_LOG_CONTEXT(
-      ctran::logging::kCtranSpdlogContext, ERR, "Spdlog CTRAN error {}", 42);
+  CTRAN_LOG(ERR, "Spdlog CTRAN error {}", 42);
 
   EXPECT_THAT(
       meta::comms::logger::getLastCommsError(),
