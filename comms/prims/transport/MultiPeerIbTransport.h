@@ -247,6 +247,54 @@ inline bool relaxedOrderingActiveForNic(
       nicRelaxedOrderingCapable;
 }
 
+// Explicit-release token for one transport-owned registration. Callers must
+// pass every valid lease to deregisterIbBulkBuffer() before destroying it; the
+// lease does not own the transport and therefore cannot release itself safely.
+class IbBufferRegistrationLease {
+ public:
+  IbBufferRegistrationLease() = default;
+  ~IbBufferRegistrationLease() = default;
+  IbBufferRegistrationLease(const IbBufferRegistrationLease&) = delete;
+  IbBufferRegistrationLease& operator=(const IbBufferRegistrationLease&) =
+      delete;
+  IbBufferRegistrationLease(IbBufferRegistrationLease&& other) noexcept
+      : generation_(std::exchange(other.generation_, 0)) {}
+  // Assignment could silently discard a registration that still requires an
+  // explicit release.
+  IbBufferRegistrationLease& operator=(IbBufferRegistrationLease&&) = delete;
+
+  bool valid() const {
+    return generation_ != 0;
+  }
+
+  uint64_t generation() const {
+    return generation_;
+  }
+
+ private:
+  friend class MultiPeerIbTransportBase;
+
+  explicit IbBufferRegistrationLease(uint64_t generation)
+      : generation_(generation) {}
+
+  void reset() {
+    generation_ = 0;
+  }
+
+  uint64_t generation_{0};
+};
+
+struct IbBufferRegistrationView {
+  uint64_t leaseGeneration{0};
+  IbgdaLocalBuffer localBuffer;
+  std::size_t size{0};
+  bool relaxedOrdering{false};
+
+  bool valid() const {
+    return leaseGeneration != 0 && localBuffer.ptr != nullptr && size != 0;
+  }
+};
+
 /**
  * Transport connection information for RDMA QP setup.
  *
@@ -438,6 +486,29 @@ class MultiPeerIbTransportBase {
   void deregisterBuffer(void* ptr);
 
   /**
+   * Register a logical bulk-data range and return its move-only ownership
+   * token. The underlying allocation MR is shared with other registrations,
+   * while the lease preserves the exact caller-visible range.
+   */
+  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size);
+
+  /**
+   * Return a non-owning RDMA view when the requested range is fully contained
+   * in the active lease. The view remains valid only while its lease is active.
+   */
+  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
+      const IbBufferRegistrationLease& lease,
+      void* ptr,
+      std::size_t size) const;
+
+  /** Release one logical bulk registration and invalidate its ownership token.
+   */
+  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease);
+
+  /** Return whether a previously resolved view still names its active lease. */
+  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const;
+
+  /**
    * exchangeBuffer - COLLECTIVE. allGather a registered buffer's addr + per-NIC
    * rkeys; return one IbgdaRemoteBuffer per peer (indexed by peerIndexToRank).
    */
@@ -594,6 +665,13 @@ class MultiPeerIbTransportBase {
     bool relaxedOrdering{false};
   };
 
+  struct BulkBufferRegistration {
+    void* ptr{nullptr};
+    std::size_t size{0};
+    IbgdaLocalBuffer localBuffer;
+    bool relaxedOrdering{false};
+  };
+
   const int myRank_{-1};
   const int nRanks_{0};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
@@ -638,6 +716,11 @@ class MultiPeerIbTransportBase {
   // Maps allocation base address -> cached MR covering the full allocation.
   // Ordered map enables O(log n) containment lookup via upper_bound.
   std::map<uintptr_t, CachedMr> registeredBuffers_;
+
+  // Logical bulk-data registrations are keyed by a monotonically increasing
+  // generation. Their underlying MRs remain owned by registeredBuffers_.
+  std::map<uint64_t, BulkBufferRegistration> bulkBufferRegistrations_;
+  uint64_t nextBulkBufferGeneration_{1};
 
   // Shared send/recv staging-ring state (eager mode). Owns the bulk
   // allocations; sendRecvPeerBuffers_ slices them per peer.

@@ -1936,6 +1936,16 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
+ - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
+   type        : enum
+   default     : "off"
+   choices     : off, force
+   description : |-
+     Select send-side zero-copy for MCCL-native AllReduce.
+     off - Preserve the existing copy-based registration and collective paths.
+     force - Require every rank and the exact Phase-2 source range to be
+             eligible for IBGDA zero-copy; never fall back to the copy path.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
