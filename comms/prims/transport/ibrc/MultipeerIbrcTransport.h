@@ -50,10 +50,6 @@ class P2pIbrcTransportDevice;
 class MultipeerIbrcTransport
     : public MultiPeerIbTransport<MultipeerIbrcTransport> {
  public:
-  static constexpr bool supportsLazyChannelPrefixGrowth() {
-    return false;
-  }
-
   static constexpr PeerChannelBackend peerChannelBackend() {
     return PeerChannelBackend::kIbrc;
   }
@@ -95,6 +91,7 @@ class MultipeerIbrcTransport
       int peerRank,
       uint32_t oldChannels,
       uint32_t newChannels);
+  void onTerminalMaterializationFailure() noexcept;
 
   struct PeerQpResource {
     ibverbx::ibv_cq* cq{nullptr};
@@ -149,9 +146,9 @@ class MultipeerIbrcTransport
   struct PeerResources {
     std::vector<PeerQpResource> qpResources;
     std::vector<IbrcCmdQueueHost> cmdQueues;
-    MappedAllocation completionSlots;
-    bool qpsConnected{false};
-    bool cmdQueuesAllocated{false};
+    std::vector<MappedAllocation> completionRanges;
+    IbChannelLayout channelLayout;
+    bool deviceSlotPublished{false};
   };
 
   void cleanup();
@@ -183,8 +180,11 @@ class MultipeerIbrcTransport
   // any specific command queue, so all device wait paths observe the failure.
   void publishTransportError(uint32_t errorCode, const char* reason) noexcept;
 
-  void allocateCmdQueuesForAllPeers();
-  void allocatePeerCmdQueues(int peerIndex);
+  void allocatePeerCmdQueueRange(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const IbChannelLayout& rangeLayout);
   void initializeDeviceTransportSlots();
   // Both descriptor vectors contain exactly [channelBegin, channelEnd).
   void populatePeerDeviceRange(
@@ -198,7 +198,6 @@ class MultipeerIbrcTransport
       int channelBegin,
       int channelEnd) noexcept;
   void updatePeerDeviceTransport(int peerIndex) noexcept;
-  std::size_t allocatedCmdQueueCount() const;
   MappedAllocation allocateMapped(std::size_t bytes, const char* label);
 
   // ---- Pipelined send/recv staging (peer-lazy) ----
@@ -210,16 +209,22 @@ class MultipeerIbrcTransport
   // style)
   // instead of an IBGDA companion-QP loopback counter.
 
-  void createPeerQps(int peerIndex);
-  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void connectPeerQps(int peerIndex, const PeerQpPayload& remotePayload);
+  void createPeerQps(int peerIndex, uint32_t beginChannel, uint32_t endChannel);
+  PeerQpPayload buildLocalQpPayload(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
+  void connectPeerQps(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const PeerQpPayload& remotePayload);
   void connectPeerQp(
       PeerQpResource& qpResource,
       uint32_t remoteQpn,
       const uint8_t* remoteGid,
       uint16_t remoteLid,
       int remoteMtu);
-  void exchangeAndConnectQps();
   PeerQpResource& qpResourceAt(int peerIndex, int nic, int qpSlot);
   const PeerQpResource& qpResourceAt(int peerIndex, int nic, int qpSlot) const;
 
@@ -228,10 +233,10 @@ class MultipeerIbrcTransport
   friend class MultiPeerIbTransport<MultipeerIbrcTransport>;
 
   std::vector<PeerResources> peerResources_;
-  // Per-peer publish flag (release in allocatePeerCmdQueues, acquire in
-  // progressOnce) so the progress thread never reads a half-moved cmdQueues.
-  // Separate array: std::atomic can't live in the movable PeerResources vector.
-  std::unique_ptr<std::atomic<bool>[]> peerQueuesPublished_;
+  // Release-published command-queue prefix. Host queue tables are pre-sized so
+  // growth writes only unpublished elements while the progress thread reads
+  // the previously published prefix.
+  std::unique_ptr<std::atomic<uint32_t>[]> publishedCmdQueueCounts_;
   MappedAllocation statusControl_;
   MappedAllocation p2pTransportDevices_;
   MappedAllocation cmdQueueDevices_;

@@ -54,6 +54,51 @@ bool isPowerOfTwo(uint32_t value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
 
+struct QpSlotRange {
+  int begin;
+  int end;
+};
+
+QpSlotRange qpSlotRange(
+    const MultipeerIbTransportConfig& config,
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  const auto slot = [&](uint32_t channel) {
+    return static_cast<int>(ibQpSlotWithinNic(
+        channel,
+        IbDirection::Send,
+        static_cast<uint32_t>(config.fixedChannelDirectionCount()),
+        static_cast<uint32_t>(config.qpsPerConnection),
+        0));
+  };
+  return {.begin = slot(beginChannel), .end = slot(endChannel)};
+}
+
+#ifdef __HIP_PLATFORM_AMD__
+class HipStreamCaptureModeGuard {
+ public:
+  HipStreamCaptureModeGuard() {
+    const hipError_t error = hipThreadExchangeStreamCaptureMode(&previous_);
+    if (error != hipSuccess) {
+      throw std::runtime_error(
+          "hipThreadExchangeStreamCaptureMode failed: " +
+          std::string(hipGetErrorString(error)));
+    }
+  }
+
+  ~HipStreamCaptureModeGuard() {
+    const hipError_t error = hipThreadExchangeStreamCaptureMode(&previous_);
+    if (error != hipSuccess) {
+      LOG(ERROR) << "Failed to restore HIP stream capture mode: "
+                 << hipGetErrorString(error);
+    }
+  }
+
+ private:
+  hipStreamCaptureMode previous_{hipStreamCaptureModeRelaxed};
+};
+#endif
+
 #ifdef __HIP_PLATFORM_AMD__
 using GpuError = hipError_t;
 constexpr GpuError kGpuSuccess = hipSuccess;
@@ -309,7 +354,11 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     validateSendRecvConfig();
   }
   peerResources_.resize(nRanks_ - 1);
-  peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
+  publishedCmdQueueCounts_ =
+      std::make_unique<std::atomic<uint32_t>[]>(nRanks_ - 1);
+  for (int peerIndex = 0; peerIndex < nRanks_ - 1; ++peerIndex) {
+    publishedCmdQueueCounts_[peerIndex].store(0, std::memory_order_relaxed);
+  }
 
   try {
     // Pin GPU work to config_.cudaDevice.
@@ -342,7 +391,7 @@ MultipeerIbrcTransport::~MultipeerIbrcTransport() {
 void MultipeerIbrcTransport::exchange() {
   VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_
           << " exchange complete (per-peer QPs and command queues deferred "
-             "to materializePeer)";
+             "to materializePeerChannelRange)";
 }
 
 void MultipeerIbrcTransport::cleanup() {
@@ -496,13 +545,15 @@ bool MultipeerIbrcTransport::progressOnce() {
   bool progressed = false;
   for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
        ++peerIndex) {
-    // Acquire pairs with the release in allocatePeerCmdQueues: skip peers whose
-    // cmdQueues is not fully built (avoids racing a lazy move-assignment).
-    if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    const uint32_t queueCount =
+        publishedCmdQueueCounts_[peerIndex].load(std::memory_order_acquire);
+    if (queueCount == 0) {
       continue;
     }
     auto& peer = peerResources_[peerIndex];
-    for (auto& cmdQueue : peer.cmdQueues) {
+    CHECK_LE(queueCount, peer.cmdQueues.size());
+    for (uint32_t queue = 0; queue < queueCount; ++queue) {
+      auto& cmdQueue = peer.cmdQueues[queue];
       progressed |= pollCmdQueueCompletions(peerIndex, cmdQueue);
       progressed |= pollOneCmdQueueDescriptor(peerIndex, cmdQueue);
     }
@@ -760,6 +811,7 @@ void MultipeerIbrcTransport::publishQueueError(
     __atomic_store_n(&status->error, 1, __ATOMIC_RELEASE);
   }
   stopProgress_.store(true, std::memory_order_release);
+  poisonTransport();
 }
 
 void MultipeerIbrcTransport::publishTransportError(
@@ -775,6 +827,13 @@ void MultipeerIbrcTransport::publishTransportError(
     __atomic_store_n(&status->error, 1, __ATOMIC_RELEASE);
   }
   stopProgress_.store(true, std::memory_order_release);
+  poisonTransport();
+}
+
+void MultipeerIbrcTransport::onTerminalMaterializationFailure() noexcept {
+  publishTransportError(
+      ECANCELED, "terminal peer/channel materialization failure");
+  stopProgressThread();
 }
 
 void MultipeerIbrcTransport::initializeControlResources() {
@@ -834,52 +893,54 @@ void MultipeerIbrcTransport::cleanupPeerCmdQueues(int peerIndex) noexcept {
   if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
     return;
   }
-  // Unpublish before clearing so progressOnce can't walk a half-cleared vector.
-  peerQueuesPublished_[peerIndex].store(false, std::memory_order_release);
+  publishedCmdQueueCounts_[peerIndex].store(0, std::memory_order_release);
   auto& peer = peerResources_[peerIndex];
   clearPeerDeviceRange(peerIndex, 0, config_.max_num_channels);
   peer.cmdQueues.clear();
-  peer.completionSlots.reset();
-  peer.cmdQueuesAllocated = false;
+  peer.completionRanges.clear();
+  peer.channelLayout = IbChannelLayout{};
+  peer.deviceSlotPublished = false;
   if (p2pTransportDevices_.host != nullptr) {
     updatePeerDeviceTransport(peerIndex);
   }
 }
 
-void MultipeerIbrcTransport::allocateCmdQueuesForAllPeers() {
-  for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
-       ++peerIndex) {
-    allocatePeerCmdQueues(peerIndex);
-  }
-}
-
-void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
+void MultipeerIbrcTransport::allocatePeerCmdQueueRange(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel,
+    const IbChannelLayout& rangeLayout) {
   if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
     throw std::invalid_argument(
-        fmt::format("allocatePeerCmdQueues: invalid peerIndex={}", peerIndex));
+        fmt::format(
+            "allocatePeerCmdQueueRange: invalid peerIndex={}", peerIndex));
+  }
+  if (beginChannel >= endChannel || endChannel > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "allocatePeerCmdQueueRange: invalid range=[{}, {}) capacity={}",
+            beginChannel,
+            endChannel,
+            channelCapacity()));
   }
 
   auto& peer = peerResources_[peerIndex];
-  if (peer.cmdQueuesAllocated) {
-    return;
-  }
-
-  const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
-  const std::size_t cmdQueuesPerPeer = checkedMul(
-      static_cast<std::size_t>(numNics_),
-      static_cast<std::size_t>(numQps),
-      "command queues per peer");
-  if (cmdQueuesPerPeer == 0) {
-    throw std::overflow_error(
-        "MultipeerIbrcTransport: command queues per peer must be non-zero");
-  }
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
+  const std::size_t queueBegin =
+      static_cast<std::size_t>(slots.begin) * numNics_;
+  const std::size_t queueEnd = static_cast<std::size_t>(slots.end) * numNics_;
+  const std::size_t queueCount = queueEnd - queueBegin;
+  CHECK_EQ(peer.cmdQueues.size(), cmdQueuesPerPeer_);
+  CHECK_EQ(
+      publishedCmdQueueCounts_[peerIndex].load(std::memory_order_acquire),
+      queueBegin);
 
   std::vector<IbrcCmdQueueHost> cmdQueues;
-  cmdQueues.reserve(cmdQueuesPerPeer);
+  cmdQueues.reserve(queueCount);
   std::vector<IbrcCmdQueueDevice> deviceCmdQueues;
-  deviceCmdQueues.reserve(cmdQueuesPerPeer);
+  deviceCmdQueues.reserve(queueCount);
 
-  for (int q = 0; q < numQps; ++q) {
+  for (int q = slots.begin; q < slots.end; ++q) {
     for (int nic = 0; nic < numNics_; ++nic) {
       IbrcCmdQueueHost cmdQueue;
       cmdQueue.control =
@@ -913,42 +974,57 @@ void MultipeerIbrcTransport::allocatePeerCmdQueues(int peerIndex) {
     }
   }
 
-  CHECK_EQ(deviceCmdQueues.size(), cmdQueuesPerPeer_);
-  const IbChannelLayout channelLayout = channelLayoutForPeer(peerIndex);
-  CHECK_GE(channelLayout.pipelineDepth, 0);
+  CHECK_EQ(deviceCmdQueues.size(), queueCount);
+  CHECK_GE(rangeLayout.pipelineDepth, 0);
   const std::size_t completionSlotCount = checkedMul(
-      static_cast<std::size_t>(config_.max_num_channels),
-      static_cast<std::size_t>(channelLayout.pipelineDepth),
-      "per-peer send completion slots");
+      static_cast<std::size_t>(endChannel - beginChannel),
+      static_cast<std::size_t>(rangeLayout.pipelineDepth),
+      "channel-range send completion slots");
   const std::size_t completionSlotBytes = checkedMul(
       completionSlotCount,
       sizeof(IbSendCompletionSlot),
-      "per-peer send completion slots");
+      "channel-range send completion slots");
+  MappedAllocation completionRange;
   if (completionSlotBytes != 0) {
-    peer.completionSlots =
-        allocateMapped(completionSlotBytes, "per-peer send completion slots");
+    completionRange = allocateMapped(
+        completionSlotBytes, "channel-range send completion slots");
   }
   auto* const completionSlots = completionSlotBytes == 0
       ? nullptr
-      : static_cast<IbSendCompletionSlot*>(peer.completionSlots.device);
+      : static_cast<IbSendCompletionSlot*>(completionRange.device);
   std::vector<IbChannel> channels;
-  channels.reserve(config_.max_num_channels);
+  channels.reserve(endChannel - beginChannel);
   const std::size_t pipelineDepth =
-      static_cast<std::size_t>(channelLayout.pipelineDepth);
-  for (int channel = 0; channel < config_.max_num_channels; ++channel) {
+      static_cast<std::size_t>(rangeLayout.pipelineDepth);
+  for (uint32_t channel = beginChannel; channel < endChannel; ++channel) {
     IbSendCompletionSlot* channelCompletionSlots = pipelineDepth == 0
         ? nullptr
-        : completionSlots + static_cast<std::size_t>(channel) * pipelineDepth;
-    channels.push_back(
-        makeIbChannel(channelLayout, channel, channelCompletionSlots));
+        : completionSlots +
+            static_cast<std::size_t>(channel - beginChannel) * pipelineDepth;
+    channels.push_back(makeIbChannel(
+        rangeLayout,
+        static_cast<int>(channel - beginChannel),
+        channelCompletionSlots));
+  }
+
+  for (std::size_t queue = 0; queue < queueCount; ++queue) {
+    CHECK(peer.cmdQueues[queueBegin + queue].control.host == nullptr);
+    peer.cmdQueues[queueBegin + queue] = std::move(cmdQueues[queue]);
+  }
+  if (completionSlotBytes != 0) {
+    peer.completionRanges.push_back(std::move(completionRange));
   }
   populatePeerDeviceRange(
-      peerIndex, 0, config_.max_num_channels, deviceCmdQueues, channels);
-  peer.cmdQueues = std::move(cmdQueues);
-  peer.cmdQueuesAllocated = true;
-  updatePeerDeviceTransport(peerIndex);
-  // Publish last (release): progressOnce may now iterate this peer's cmdQueues.
-  peerQueuesPublished_[peerIndex].store(true, std::memory_order_release);
+      peerIndex, beginChannel, endChannel, deviceCmdQueues, channels);
+  if (beginChannel == 0) {
+    peer.channelLayout = config_.lazyChannels ? sendRecvChannelGeometry()
+                                              : channelLayoutForPeer(peerIndex);
+    peer.deviceSlotPublished = true;
+    updatePeerDeviceTransport(peerIndex);
+  }
+  CHECK_LE(queueEnd, std::numeric_limits<uint32_t>::max());
+  publishedCmdQueueCounts_[peerIndex].store(
+      static_cast<uint32_t>(queueEnd), std::memory_order_release);
 }
 
 void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
@@ -978,6 +1054,10 @@ void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
   p2pTransportDevices_ = allocateMapped(
       numPeers * ibrcDeviceSlotSize(), "P2pIbrcTransportDevice slots");
   for (int peerIndex = 0; peerIndex < static_cast<int>(numPeers); ++peerIndex) {
+    auto& peer = peerResources_[peerIndex];
+    peer.qpResources.resize(cmdQueuesPerPeer_);
+    peer.cmdQueues.resize(cmdQueuesPerPeer_);
+    peer.completionRanges.reserve(config_.max_num_channels);
     updatePeerDeviceTransport(peerIndex);
   }
 }
@@ -1089,24 +1169,23 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
   auto& peer = peerResources_[peerIndex];
   IbgdaRemoteBuffer remoteSignalBuf{};
   IbgdaLocalBuffer localSignalBuf{};
-  if (peer.cmdQueuesAllocated && config_.numSignalSlots > 0) {
+  if (peer.deviceSlotPublished && config_.numSignalSlots > 0) {
     remoteSignalBuf = slotRemoteSignalView(peerIndex);
     localSignalBuf = slotLocalSignalView(peerIndex);
   }
   IbgdaLocalBuffer counterDeviceBuf{};
   IbgdaLocalBuffer counterHostBuf{};
-  if (peer.cmdQueuesAllocated && config_.numCounterSlots > 0) {
+  if (peer.deviceSlotPublished && config_.numCounterSlots > 0) {
     counterDeviceBuf = slotCounterDeviceView(peerIndex);
     counterHostBuf = slotCounterHostView(peerIndex);
   }
-  const IbChannelLayout channelLayout = peer.cmdQueuesAllocated
-      ? channelLayoutForPeer(peerIndex)
-      : IbChannelLayout{};
+  const IbChannelLayout channelLayout =
+      peer.deviceSlotPublished ? peer.channelLayout : IbChannelLayout{};
   const int numSignalSlots =
-      peer.cmdQueuesAllocated ? config_.numSignalSlots : 0;
+      peer.deviceSlotPublished ? config_.numSignalSlots : 0;
   const int numCounterSlots =
-      peer.cmdQueuesAllocated ? config_.numCounterSlots : 0;
-  const uint32_t maxChannels = peer.cmdQueuesAllocated
+      peer.deviceSlotPublished ? config_.numCounterSlots : 0;
+  const uint32_t maxChannels = peer.deviceSlotPublished
       ? static_cast<uint32_t>(config_.max_num_channels)
       : 0;
   auto* const peerCmdQueueDevices =
@@ -1133,14 +1212,6 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       numSignalSlots,
       numCounterSlots,
       channelLayout);
-}
-
-std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
-  std::size_t count = 0;
-  for (const auto& peer : peerResources_) {
-    count = checkedAdd(count, peer.cmdQueues.size(), "allocated command queue");
-  }
-  return count;
 }
 
 MultipeerIbrcTransport::MappedAllocation MultipeerIbrcTransport::allocateMapped(
@@ -1253,26 +1324,37 @@ void MultipeerIbrcTransport::cleanupPeerQps(int peerIndex) noexcept {
     return;
   }
   destroyPeerQps(peerResources_[peerIndex].qpResources);
-  peerResources_[peerIndex].qpsConnected = false;
 }
 
-void MultipeerIbrcTransport::createPeerQps(int peerIndex) {
+void MultipeerIbrcTransport::createPeerQps(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) {
   if (peerIndex < 0 || peerIndex >= static_cast<int>(peerResources_.size())) {
     throw std::invalid_argument(
         fmt::format("createPeerQps: invalid peerIndex={}", peerIndex));
   }
-  auto& peer = peerResources_[peerIndex];
-  if (!peer.qpResources.empty()) {
-    return;
+  if (beginChannel >= endChannel || endChannel > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "createPeerQps: invalid range=[{}, {}) capacity={}",
+            beginChannel,
+            endChannel,
+            channelCapacity()));
   }
-
-  const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
+  auto& peer = peerResources_[peerIndex];
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
+  const std::size_t resourceBegin =
+      static_cast<std::size_t>(slots.begin) * numNics_;
+  const std::size_t resourceCount =
+      static_cast<std::size_t>(slots.end - slots.begin) * numNics_;
+  CHECK_EQ(peer.qpResources.size(), cmdQueuesPerPeer_);
   std::vector<PeerQpResource> qpResources;
-  qpResources.reserve(static_cast<std::size_t>(numNics_) * numQps);
+  qpResources.reserve(resourceCount);
   auto& symbols = ibverbx::ibvSymbols;
 
   try {
-    for (int q = 0; q < numQps; ++q) {
+    for (int q = slots.begin; q < slots.end; ++q) {
       for (int nic = 0; nic < numNics_; ++nic) {
         errno = 0;
         ibverbx::ibv_cq* cq = symbols.ibv_internal_create_cq(
@@ -1358,7 +1440,19 @@ void MultipeerIbrcTransport::createPeerQps(int peerIndex) {
     throw;
   }
 
-  peer.qpResources = std::move(qpResources);
+  for (std::size_t resource = 0; resource < resourceCount; ++resource) {
+    auto& destination = peer.qpResources[resourceBegin + resource];
+    auto& source = qpResources[resource];
+    CHECK(destination.cq == nullptr);
+    CHECK(destination.qp == nullptr);
+    destination.cq = std::exchange(source.cq, nullptr);
+    destination.qp = std::exchange(source.qp, nullptr);
+    destination.signalAtomicSinkMr =
+        std::exchange(source.signalAtomicSinkMr, nullptr);
+    destination.signalAtomicSink = std::move(source.signalAtomicSink);
+    destination.nic = source.nic;
+    destination.qpSlot = source.qpSlot;
+  }
 }
 
 MultipeerIbrcTransport::PeerQpResource&
@@ -1393,8 +1487,11 @@ MultipeerIbrcTransport::qpResourceAt(int peerIndex, int nic, int qpSlot) const {
   return qpResources[slot];
 }
 
-PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
-  const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
+PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel) const {
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   PeerQpPayload payload{};
   populatePeerGeometry(payload);
   payload.gidIndex = gidIndex_;
@@ -1413,7 +1510,7 @@ PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
     } else {
       LOG(WARNING) << "Failed to query port for IBRC LID on NIC " << n;
     }
-    for (int q = 0; q < numQps; ++q) {
+    for (int q = slots.begin; q < slots.end; ++q) {
       payload.nicInfo[n].qpns[q] = qpResourceAt(peerIndex, n, q).qp->qp_num;
     }
   }
@@ -1517,12 +1614,14 @@ void MultipeerIbrcTransport::connectPeerQp(
 
 void MultipeerIbrcTransport::connectPeerQps(
     int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel,
     const PeerQpPayload& remotePayload) {
   validatePeerGeometry(peerIndexToRank(peerIndex), remotePayload);
 
-  const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
+  const auto slots = qpSlotRange(config_, beginChannel, endChannel);
   for (int nic = 0; nic < numNics_; ++nic) {
-    for (int q = 0; q < numQps; ++q) {
+    for (int q = slots.begin; q < slots.end; ++q) {
       connectPeerQp(
           qpResourceAt(peerIndex, nic, q),
           remotePayload.nicInfo[nic].qpns[q],
@@ -1530,72 +1629,6 @@ void MultipeerIbrcTransport::connectPeerQps(
           remotePayload.nicInfo[nic].lid,
           remotePayload.mtu);
     }
-  }
-  peerResources_[peerIndex].qpsConnected = true;
-}
-
-void MultipeerIbrcTransport::exchangeAndConnectQps() {
-  const int numPeers = nRanks_ - 1;
-  const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
-
-  for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-    createPeerQps(peerIndex);
-  }
-
-  IbTransportExchInfoAll myInfo{};
-  myInfo.gidIndex = gidIndex_;
-  myInfo.mtu = localMtu_;
-  myInfo.numNics = numNics_;
-  myInfo.numQpsPerPeerPerNic = numQps;
-  myInfo.maxGroups = config_.max_num_channels;
-  myInfo.qpsPerBlockPerNic = config_.qpsPerConnection;
-
-  auto& symbols = ibverbx::ibvSymbols;
-  for (int n = 0; n < numNics_; ++n) {
-    std::memcpy(
-        myInfo.nicInfo[n].gid,
-        nics_[n].localGid.raw,
-        sizeof(myInfo.nicInfo[n].gid));
-    ibverbx::ibv_port_attr portAttr{};
-    if (symbols.ibv_internal_query_port(
-            nics_[n].ibvCtx, kDefaultIbPort, &portAttr) == 0) {
-      myInfo.nicInfo[n].lid = portAttr.lid;
-    } else {
-      LOG(WARNING) << "Failed to query port for IBRC LID on NIC " << n;
-    }
-  }
-
-  const int totalQpsPerPeer = numNics_ * numQps;
-  for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-    const int peerRank = peerIndexToRank(peerIndex);
-    for (int nic = 0; nic < numNics_; ++nic) {
-      for (int q = 0; q < numQps; ++q) {
-        myInfo.nicInfo[nic].qpnForRank[peerRank][q] =
-            qpResourceAt(peerIndex, nic, q).qp->qp_num;
-      }
-    }
-  }
-
-  VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_
-          << " performing allGather QP exchange (" << totalQpsPerPeer
-          << " slots/peer = " << numNics_ << " NICs x " << numQps << " QPs)";
-
-  std::vector<IbTransportExchInfoAll> allInfo = allGatherExchInfo(myInfo);
-  validatePeerTopology(allInfo);
-
-  for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-    const auto& peerInfo = allInfo[peerIndexToRank(peerIndex)];
-    for (int nic = 0; nic < numNics_; ++nic) {
-      for (int q = 0; q < numQps; ++q) {
-        connectPeerQp(
-            qpResourceAt(peerIndex, nic, q),
-            peerInfo.nicInfo[nic].qpnForRank[myRank_][q],
-            peerInfo.nicInfo[nic].gid,
-            peerInfo.nicInfo[nic].lid,
-            static_cast<int>(peerInfo.mtu));
-      }
-    }
-    peerResources_[peerIndex].qpsConnected = true;
   }
 }
 
@@ -1631,38 +1664,74 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
 
 void MultipeerIbrcTransport::materializePeerChannelRange(
     int peerRank,
-    uint32_t oldChannels,
-    uint32_t newChannels) {
-  if (oldChannels != 0 || newChannels != channelCapacity()) {
+    uint32_t beginChannel,
+    uint32_t endChannel) {
+  if (beginChannel >= endChannel || endChannel > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "materializePeerChannelRange: invalid range=[{}, {}) capacity={}",
+            beginChannel,
+            endChannel,
+            channelCapacity()));
+  }
+  if (!config_.lazyChannels &&
+      (beginChannel != 0 || endChannel != channelCapacity())) {
     throw std::runtime_error(
         "IBRC eager materialization requires the full channel range");
   }
   const int peerIndex = rankToPeerIndex(peerRank);
+#ifdef __HIP_PLATFORM_AMD__
+  HipStreamCaptureModeGuard captureModeGuard;
+#else
+  meta::comms::StreamCaptureModeGuard captureModeGuard{
+      cudaStreamCaptureModeRelaxed};
+#endif
 
-  createPeerQps(peerIndex);
+  createPeerQps(peerIndex, beginChannel, endChannel);
 
-  auto localQp = buildLocalQpPayload(peerIndex);
-  auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
-  connectPeerQps(peerIndex, remoteQp);
+  const auto localQp = buildLocalQpPayload(peerIndex, beginChannel, endChannel);
+  const auto remoteQp =
+      exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
+  connectPeerQps(peerIndex, beginChannel, endChannel, remoteQp);
+
   PeerBufferPayload localBuf{};
-  allocatePeerSignalCounterResources(
-      peerIndex,
-      localBuf,
-      IbCounterStorage::HostPinned,
-      /*allocateDiscardSignal=*/false);
-  // Allocate this peer's send/recv rings on demand (HostPinned NIC_DONE
-  // counter, CPU-proxy written) and publish them on the same bilateral round,
-  // so channelLayoutForPeer(peerIndex) is populated when allocatePeerCmdQueues
-  // -> updatePeerDeviceTransport bakes it into the device slot.
-  allocateSendRecvBufferForPeer(
-      peerIndex, localBuf, IbCounterStorage::HostPinned);
-  auto remoteBuf =
+  if (beginChannel == 0) {
+    allocatePeerSignalCounterResources(
+        peerIndex, localBuf, IbCounterStorage::HostPinned);
+  }
+
+  IbChannelLayout channelLayout;
+  if (config_.lazyChannels) {
+    channelLayout = allocateSendRecvChannelRange(
+        peerIndex,
+        beginChannel,
+        endChannel,
+        localBuf,
+        IbCounterStorage::HostPinned);
+  } else {
+    allocateSendRecvBufferForPeer(
+        peerIndex, localBuf, IbCounterStorage::HostPinned);
+    channelLayout = channelLayoutForPeer(peerIndex);
+  }
+
+  const auto remoteBuf =
       exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
-  applyRemoteSignalCounterResources(
-      peerIndex, remoteBuf, /*hasDiscardSignal=*/false);
-  applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
-  allocatePeerCmdQueues(peerIndex);
+  if (config_.lazyChannels) {
+    applyRemoteSendRecvChannelRange(channelLayout, remoteBuf);
+  } else {
+    applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
+    channelLayout = channelLayoutForPeer(peerIndex);
+  }
+  if (beginChannel == 0) {
+    applyRemoteSignalCounterResources(peerIndex, remoteBuf);
+  }
+
+  allocatePeerCmdQueueRange(peerIndex, beginChannel, endChannel, channelLayout);
   startProgressThread();
+
+  VLOG(1) << "MultipeerIbrcTransport: rank " << myRank_ << " materialized peer "
+          << peerRank << " channels [" << beginChannel << ", " << endChannel
+          << ")";
 }
 
 } // namespace comms::prims

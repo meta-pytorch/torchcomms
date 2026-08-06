@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
 
@@ -225,21 +226,19 @@ class TestLazyChannelTransport
     bool operator==(const MaterializedRange&) const = default;
   };
 
-  static constexpr bool supportsLazyChannelPrefixGrowth() {
-    return true;
-  }
-
   static constexpr PeerChannelBackend peerChannelBackend() {
     return PeerChannelBackend::kIbgda;
   }
 
-  explicit TestLazyChannelTransport(bool lazyChannels)
+  explicit TestLazyChannelTransport(
+      bool lazyChannels,
+      std::shared_ptr<::comms::fault_tolerance::Abort> abort = nullptr)
       : MultiPeerIbTransport<TestLazyChannelTransport>(
             /*myRank=*/0,
             /*nRanks=*/2,
             std::make_shared<
                 ::testing::NiceMock<meta::comms::testing::MockBootstrap>>(),
-            makeConfig(lazyChannels)) {
+            makeConfig(lazyChannels, std::move(abort))) {
     // This fake isolates local target and watermark behavior.
     channelRangeProtocolEnabled_ = false;
   }
@@ -267,14 +266,24 @@ class TestLazyChannelTransport
   std::vector<MaterializedRange> materializedRanges;
   std::vector<uint32_t> observedWatermarks;
   bool failNextMaterialization{false};
+  int terminalFailureCount{0};
 
  private:
-  static MultipeerIbTransportConfig makeConfig(bool lazyChannels) {
+  friend class MultiPeerIbTransport<TestLazyChannelTransport>;
+
+  void onTerminalMaterializationFailure() noexcept {
+    ++terminalFailureCount;
+  }
+
+  static MultipeerIbTransportConfig makeConfig(
+      bool lazyChannels,
+      std::shared_ptr<::comms::fault_tolerance::Abort> abort) {
     MultipeerIbTransportConfig config;
     config.gpuNicMap[0] = {"test_nic"};
     config.maxGroups = 8;
     config.qpsPerBlockPerNic = 2;
     config.lazyChannels = lazyChannels;
+    config.abort = std::move(abort);
     return config;
   }
 };
@@ -320,7 +329,9 @@ TEST(MultiPeerIbTransportConfigTest, EagerChannelsMaterializeCapacity) {
 TEST(
     MultiPeerIbTransportConfigTest,
     FailedGrowthDoesNotPublishAndPoisonsTransport) {
-  TestLazyChannelTransport transport(/*lazyChannels=*/true);
+  auto abort = ::comms::fault_tolerance::createAbort(/*enabled=*/true);
+  TestLazyChannelTransport transport(
+      /*lazyChannels=*/true, abort);
   transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
   transport.connectPeers();
   transport.failNextMaterialization = true;
@@ -329,6 +340,8 @@ TEST(
   EXPECT_THROW(transport.connectPeers(), std::runtime_error);
 
   EXPECT_EQ(1, transport.rawMaterializedChannelCount(/*peerRank=*/1));
+  EXPECT_TRUE(abort->isAborted());
+  EXPECT_EQ(1, transport.terminalFailureCount);
   EXPECT_THROW(
       transport.materializedChannelCount(/*peerRank=*/1), std::runtime_error);
   EXPECT_THROW(

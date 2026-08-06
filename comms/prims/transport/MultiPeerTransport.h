@@ -394,9 +394,8 @@ class MultiPeerTransport {
   // --- Sub-transports ---
   std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
-  // Exactly one IB backend is constructed, selected by MultiPeerTransportConfig
-  // ::ibMode (kIbgda by default, kIbrc selects the CPU-proxy skeleton backend).
-  // IBRC functional entry points fail fast until the backend is implemented.
+  // Exactly one IB backend is constructed, selected by
+  // MultiPeerTransportConfig::ibMode.
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
   std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
   detail::PrimsChannelMode channelMode_{detail::PrimsChannelMode::kEager};

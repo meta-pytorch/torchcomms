@@ -1043,7 +1043,11 @@ void MultipeerIbgdaTransport::materializePeerChannelRange(
   IbChannelLayout channelLayout;
   if (config_.lazyChannels) {
     channelLayout = allocateSendRecvChannelRange(
-        peerIndex, beginChannel, endChannel, localBuf);
+        peerIndex,
+        beginChannel,
+        endChannel,
+        localBuf,
+        IbCounterStorage::Device);
   } else {
     if (beginChannel != 0 || endChannel != channelCapacity()) {
       throw std::logic_error(
@@ -1055,10 +1059,7 @@ void MultipeerIbgdaTransport::materializePeerChannelRange(
   }
   if (beginChannel == 0) {
     allocatePeerSignalCounterResources(
-        peerIndex,
-        localBuf,
-        IbCounterStorage::Device,
-        /*allocateDiscardSignal=*/true);
+        peerIndex, localBuf, IbCounterStorage::Device);
   }
   const auto remoteBuf =
       exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
@@ -1069,8 +1070,7 @@ void MultipeerIbgdaTransport::materializePeerChannelRange(
     channelLayout = channelLayoutForPeer(peerIndex);
   }
   if (beginChannel == 0) {
-    applyRemoteSignalCounterResources(
-        peerIndex, remoteBuf, /*hasDiscardSignal=*/true);
+    applyRemoteSignalCounterResources(peerIndex, remoteBuf);
   }
 
   auto params = buildPeerTransportParams(peerIndex, beginChannel, endChannel);

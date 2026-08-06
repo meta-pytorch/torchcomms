@@ -3301,10 +3301,10 @@ cvars:
    type        : bool
    default     : false
    description : |-
-     Globally request grow-only lazy IB channel materialization for MCCL Prims
+     Globally enable grow-only lazy IB channel materialization for MCCL Prims
      communicators. Ranks validate the same setting during communicator
-     initialization. Until incremental channel growth is supported, the
-     transport retains eager full-capacity behavior.
+     initialization. When disabled, first peer use materializes the full
+     configured channel capacity.
 
  - name        : MCCL_IB_MODE
    type        : enum

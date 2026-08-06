@@ -115,10 +115,6 @@ using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 class MultipeerIbgdaTransport
     : public MultiPeerIbTransport<MultipeerIbgdaTransport> {
  public:
-  static constexpr bool supportsLazyChannelPrefixGrowth() {
-    return true;
-  }
-
   static constexpr PeerChannelBackend peerChannelBackend() {
     return PeerChannelBackend::kIbgda;
   }
@@ -223,6 +219,8 @@ class MultipeerIbgdaTransport
   int getGidIndex() const;
 
  private:
+  void onTerminalMaterializationFailure() noexcept {}
+
   // Helper methods
   void initDocaGpu();
   void openIbDevice();
