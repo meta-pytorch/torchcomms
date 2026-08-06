@@ -33,6 +33,7 @@
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
+struct IbgdaFixedDeviceTables;
 struct MultipeerIbgdaDeviceTransport;
 struct P2pIbgdaTransportBuildParams;
 struct PeerQpPayload;
@@ -135,10 +136,10 @@ class MultipeerIbgdaTransport
   MultipeerIbgdaTransport& operator=(MultipeerIbgdaTransport&&) = delete;
 
   /**
-   * exchange - Exchange connection info and connect QPs
+   * exchange - Reserve stable device descriptor tables
    *
-   * COLLECTIVE OPERATION: All ranks MUST call this before using
-   * getDeviceTransportPtr().
+   * All ranks must call this before using getDeviceTransportPtr(). Peer QPs
+   * and channel resources are materialized separately on demand.
    */
   void exchange();
 
@@ -148,13 +149,14 @@ class MultipeerIbgdaTransport
    * Returns a MultipeerIbgdaDeviceTransport wrapper that provides convenient
    * access to per-peer transport handles with rank-to-index mapping.
    * Use .get(peerRank) to get the transport for a specific peer.
+   * This legacy aggregate accessor materializes every peer at full capacity.
    *
    * NOTE: Requires including MultipeerIbgdaDeviceTransport.cuh in CUDA files.
    * For non-CUDA code, use getP2pTransportDevice(peerRank) instead.
    *
    * @return MultipeerIbgdaDeviceTransport wrapper (include .cuh header to use)
    */
-  MultipeerIbgdaDeviceTransport getDeviceTransport() const;
+  MultipeerIbgdaDeviceTransport getDeviceTransport();
 
   /**
    * getP2pTransportDevice - Get P2P transport for a specific peer rank
@@ -292,11 +294,8 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransportBase (set by openNics()); the backend reads them
   // (inherited) when building DOCA AH attrs and connecting QPs.
 
-  // Per-peer device transports (GPU accessible)
-  P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
-  std::size_t peerTransportSize_{0};
-
-  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  // Host view of communicator-lifetime tables; gpuAllocations_ owns storage.
+  std::unique_ptr<IbgdaFixedDeviceTables> fixedDeviceTables_;
   std::vector<void*> gpuAllocations_;
 
   // Exchange info received from peers

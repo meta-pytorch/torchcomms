@@ -319,7 +319,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
   if (expectedBytes == 0) {
     return;
   }
-  auto& channel = transport->local_channel(static_cast<uint32_t>(groupId));
+  auto& channel = transport->channel(static_cast<uint32_t>(groupId));
   transport->wait_counter(group, channel.nicDoneWait, expectedBytes, timeout);
   transport->wait_signal(group, channel.slotFree, expectedBytes, timeout);
 }
@@ -361,7 +361,7 @@ __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
       signal->signal_ = 0;
     }
     if (slot < static_cast<uint32_t>(maxGroups)) {
-      auto& channel = transport->local_channel(slot);
+      auto& channel = transport->channel(slot);
       channel.sendProgress = IbChannelProgress{};
       channel.recvProgress = IbChannelProgress{};
       // Zero the per-lane receiver DATA_READY expectations so they stay aligned
@@ -514,10 +514,9 @@ __global__ void ibgda_snapshot_step_state_kernel(
     const auto& layout = transport->channel_layout();
     const auto maxChannels = static_cast<uint32_t>(layout.maxChannels);
     if (idx < maxChannels) {
-      dst[idx] = transport->local_channel(idx).sendProgress.nextStep;
+      dst[idx] = transport->channel(idx).sendProgress.nextStep;
     } else {
-      dst[idx] =
-          transport->local_channel(idx - maxChannels).recvProgress.nextStep;
+      dst[idx] = transport->channel(idx - maxChannels).recvProgress.nextStep;
     }
   }
 }

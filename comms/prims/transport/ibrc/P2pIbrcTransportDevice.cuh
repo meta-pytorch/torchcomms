@@ -75,7 +75,8 @@ class P2pIbrcTransportDevice {
       uint32_t nics,
       uint32_t maxChannels,
       uint32_t qpsPerConnection,
-      DeviceSpan<IbLocalChannel> localChannels,
+      uint32_t qpDirectionCount,
+      DeviceSpan<IbChannel> channels,
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
       IbgdaLocalBuffer ownedCounterDeviceBuf = {},
@@ -87,7 +88,8 @@ class P2pIbrcTransportDevice {
         numNics(nics),
         maxChannels_(maxChannels),
         qpsPerConnection_(qpsPerConnection),
-        localChannels_(localChannels),
+        qpDirectionCount_(qpDirectionCount),
+        channels_(channels),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
         ownedCounterDeviceBuf_(ownedCounterDeviceBuf),
@@ -562,13 +564,13 @@ class P2pIbrcTransportDevice {
   // backend device; each method routes every transport op through `*this`, so
   // IBRC reuses IBGDA's send/recv unchanged.
 
-  __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {
+  __device__ __forceinline__ IbChannel& channel(uint32_t channelId) {
     validate_channel_id(channelId);
-    return localChannels_[channelId];
+    return channels_[channelId];
   }
 
-  __device__ __forceinline__ IbLocalChannel& local_channel(ThreadGroup& group) {
-    return local_channel(group.group_id);
+  __device__ __forceinline__ IbChannel& channel(ThreadGroup& group) {
+    return channel(group.group_id);
   }
 
   __host__ __device__ IbChannelLayout& channel_layout() {
@@ -580,9 +582,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return channelLayout_.perChannelBufferSize != 0
-        ? channelLayout_.perChannelBufferSize
-        : channelLayout_.perChannelSize;
+    return channelLayout_.channelBufferSize();
   }
 
   __device__ __forceinline__ std::size_t pipeline_window(
@@ -684,7 +684,7 @@ class P2pIbrcTransportDevice {
   }
 
   __device__ __forceinline__ uint32_t num_qps_per_peer_per_nic() const {
-    return maxChannels_ * kIbDirections * qpsPerConnection_;
+    return maxChannels_ * qpDirectionCount_ * qpsPerConnection_;
   }
 
   __device__ __forceinline__ void validate_channel_id(
@@ -708,8 +708,8 @@ class P2pIbrcTransportDevice {
     if (cmdQueues.empty()) {
       trap("P2pIbrcTransportDevice: no command queues");
     }
-    if (numNics == 0 || qpsPerConnection_ == 0 || maxChannels_ == 0 ||
-        localChannels_.empty() || channelId >= maxChannels_) {
+    if (numNics == 0 || qpsPerConnection_ == 0 || qpDirectionCount_ == 0 ||
+        maxChannels_ == 0 || channels_.empty() || channelId >= maxChannels_) {
       printf(
           "P2pIbrcTransportDevice: invalid channel QP state channel_id=%u "
           "maxChannels=%u qpsPerConnection=%u numNics=%u stateSize=%u\n",
@@ -717,7 +717,7 @@ class P2pIbrcTransportDevice {
           maxChannels_,
           qpsPerConnection_,
           numNics,
-          static_cast<unsigned>(localChannels_.size()));
+          static_cast<unsigned>(channels_.size()));
       PIPES_DEVICE_TRAP();
     }
   }
@@ -734,7 +734,7 @@ class P2pIbrcTransportDevice {
       uint32_t channelId,
       IbDirection direction) const {
     validate_channel_id(channelId);
-    auto& channel = localChannels_[channelId];
+    auto& channel = channels_[channelId];
     return direction == IbDirection::Send ? channel.sendQp : channel.recvQp;
   }
 
@@ -749,14 +749,22 @@ class P2pIbrcTransportDevice {
     }
     const uint32_t nicId = laneOrdinal % numNics;
     const uint32_t qpIndex = laneOrdinal / numNics;
-    const uint32_t directionIndex = static_cast<uint32_t>(direction);
-    const uint32_t qpSlot =
-        ((channelId * kIbDirections + directionIndex) * qpsPerConnection_) +
-        qpIndex;
+    if (static_cast<uint32_t>(direction) >= qpDirectionCount_) {
+      trap("P2pIbrcTransportDevice: direction out of range");
+    }
+    const uint32_t qpSlot = ibQpSlotWithinNic(
+        channelId, direction, qpDirectionCount_, qpsPerConnection_, qpIndex);
     if (qpSlot >= num_qps_per_peer_per_nic()) {
       trap("P2pIbrcTransportDevice: QP slot out of range");
     }
-    const uint32_t queueId = qpSlot * numNics + nicId;
+    const uint32_t queueId = ibCommandQueueSlot(
+        channelId,
+        direction,
+        qpDirectionCount_,
+        qpsPerConnection_,
+        qpIndex,
+        numNics,
+        nicId);
     if (queueId >= cmdQueues.size()) {
       trap("P2pIbrcTransportDevice: command queue id out of range");
     }
@@ -820,7 +828,7 @@ class P2pIbrcTransportDevice {
   __device__ void check_channel_status(uint32_t channelId) const {
     validate_channel_id(channelId);
     const uint32_t lanes = num_qp_lanes();
-    for (uint32_t dir = 0; dir < kIbDirections; ++dir) {
+    for (uint32_t dir = 0; dir < qpDirectionCount_; ++dir) {
       for (uint32_t lane = 0; lane < lanes; ++lane) {
         check_status(
             cmdQueues[queue_for_lane(
@@ -1012,7 +1020,8 @@ class P2pIbrcTransportDevice {
   uint32_t numNics{0};
   uint32_t maxChannels_{0};
   uint32_t qpsPerConnection_{0};
-  DeviceSpan<IbLocalChannel> localChannels_{};
+  uint32_t qpDirectionCount_{0};
+  DeviceSpan<IbChannel> channels_{};
   IbgdaRemoteBuffer ownedRemoteSignalBuf_{};
   IbgdaLocalBuffer ownedLocalSignalBuf_{};
   IbgdaLocalBuffer ownedCounterDeviceBuf_{};

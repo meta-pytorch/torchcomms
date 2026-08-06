@@ -32,17 +32,17 @@ The config carries the fixed-channel geometry explicitly:
 
 | Field | Role in tile API |
 |---|---|
-| `perChannelSize` | Bytes owned by one channel in one pipeline slot. |
-| `pipelineDepth` | Number of slots in the pipeline ring. |
-| `maxNumChannels` | Number of **channels** allocated per peer. Each channel owns one fixed `perChannelSize` staging slice in every pipeline slot, plus one `NvlChannelState` for cursors + signals. |
+| `perChannelSize` | Total bytes in one channel's contiguous staging window. |
+| `pipelineDepth` | Number of slots that divide each channel window. |
+| `maxNumChannels` | Number of **channels** allocated per peer. Each channel owns one fixed `perChannelSize` staging window, plus one `NvlChannelState` for cursors + signals. |
 
 The host derives `data_buffer_size = perChannelSize * maxNumChannels` for
-the pipeline slot. Channel sizing is fixed at init.
+the complete per-peer staging allocation. Channel sizing is fixed at init.
 
 ### IB (`MultipeerIbTransportConfig`)
 
 IB uses the same fixed-channel shape. The config exposes the first-order
-geometry and derives the total staging slot size:
+geometry and derives the total staging allocation size:
 
 ```cpp
 struct MultipeerIbTransportConfig {
@@ -52,7 +52,7 @@ struct MultipeerIbTransportConfig {
   // perChannelSize * max_num_channels when perChannelSize is set.
   std::size_t dataBufferSize{0};
 
-  // Bytes owned by one channel in one pipeline slot.
+  // Total staging-window bytes owned by one channel.
   std::size_t perChannelSize{0};
 
   // Number of channels allocated per peer.
@@ -67,12 +67,14 @@ struct MultipeerIbTransportConfig {
 
 - `pipelineDepth >= 1`
 - `maxNumChannels` / `max_num_channels >= 1`
-- per-channel size is `>= 16` and 16-byte aligned, so each channel slot fits
-  at least one 16-byte vectorized memcpy.
+- `perChannelSize` is divisible by `pipelineDepth`
+- `perChannelSize / pipelineDepth` is `>= 16` and 16-byte aligned, so each
+  channel slot fits at least one 16-byte vectorized memcpy.
 
 **Defaults rationale:** NVL and IB default to channel counts that cover the
 largest NCCL P2P channel counts we expect to mirror. With
-`perChannelSize=128 KiB` and `maxNumChannels=64`, one pipeline slot is 8 MiB.
+`perChannelSize=128 KiB` and `maxNumChannels=64`, total per-peer staging is
+8 MiB. At `pipelineDepth=2`, each channel has two 64 KiB slots.
 
 ---
 
@@ -116,47 +118,48 @@ NvlChannelState* remote_channels_;  // remote rank's endpoint via IPC; this rank
 ```
 
 Both arrays have length `options_.max_num_channels`. Both
-the channel index and the per-channel staging slice index are `group.group_id`.
+the channel index and the per-channel staging-window index are
+`group.group_id`.
 
-### IB: `IbLocalChannel`, `IbRemoteChannel`, and `IbChannelLayout`
+### IB: `IbChannel` and `IbChannelLayout`
 
 ```cpp
-struct IbLocalChannel {
+struct IbChannel {
+  // Exact local send/recv staging and remote recv-staging views.
+  // Exact local/remote DATA_READY and SLOT_FREE views.
+  // Exact local NIC_DONE wait/completion views.
   IbChannelProgress sendProgress;
   IbChannelProgress recvProgress;
-  // Local DATA_READY, SLOT_FREE, and NIC_DONE endpoints.
-  // Local send staging and channel-owned QP state.
-};
-
-struct IbRemoteChannel {
-  // Peer DATA_READY and SLOT_FREE endpoints.
-  // Peer recv staging slice and registration handles.
+  // Completion state and channel-owned QP cursors.
 };
 
 struct IbChannelLayout {
-  std::byte* sendStaging;
-  std::byte* recvStaging;
-  DeviceSpan<IbLocalChannel> localChannels;
-  DeviceSpan<IbRemoteChannel> remoteChannels;
-  int max_num_channels;
+  // Host construction views plus geometry shared by every channel.
+  int maxChannels;
+  int numLanes;
   int pipelineDepth;
-  std::size_t perChannelSize;
+  std::size_t perChannelBufferSize;
 };
 ```
 
-**Per-slot layout** (one slot is `data_buffer_size` bytes, partitioned across
-fixed channels):
+The host slices every resource when it constructs the fixed
+`IbChannel[capacity]` table. After selecting a channel, device send/recv
+uses only offsets within that entry; it does not add another channel offset to
+peer-wide staging or control bases.
+
+**Channel-major layout** (`data_buffer_size` bytes total):
 
 ```
-slot k  (= step / chunks_per_slot % pipeline_depth):
-┌──────────────┬──────────────┬─────┬────────────────────┐
-│ channel 0 row│ channel 1 row│ ... │ channel (N-1) row  │
-└──────────────┴──────────────┴─────┴────────────────────┘
-   N = maxNumChannels / max_num_channels (fixed at init).
-   each row = per_channel_slot = per_channel_size
+┌──────────────────────────────┬──────────────────────────────┬─────┐
+│ channel 0 window             │ channel 1 window             │ ... │
+│ slot 0 │ slot 1 │ ... │ D-1 │ slot 0 │ slot 1 │ ... │ D-1 │     │
+└──────────────────────────────┴──────────────────────────────┴─────┘
+   channel window = per_channel_size
+   channel slot   = per_channel_size / pipeline_depth
+   channel base   = channel * per_channel_size
 ```
 
-Using fewer-than-max channels wastes the unused channels' slices but does not
+Using fewer-than-max channels wastes the unused channels' windows but does not
 change live channels' bandwidth.
 
 **Construction responsibilities (host):**
@@ -164,10 +167,10 @@ change live channels' bandwidth.
   buffer; exchange via `GpuMemHandler::exchangeMemPtrs()`. P2P-enable
   `recv_staging` access; exchange device pointers. Zero-init the channel
   buffer (zeros cursors and signals).
-- IB: allocate local channels, remote channel descriptors, send staging, and
-  recv staging. Register MRs for staging and signal/counter storage; exchange
-  peer channel descriptors and rkeys. Zero-init channel progress, signals, and
-  counters.
+- IB: allocate the fixed local-channel descriptor table, send staging, and recv
+  staging. Register MRs for staging and signal/counter storage; exchange peer
+  addresses and rkeys; then populate each channel entry with exact local and
+  remote views. Zero-init channel progress, signals, and counters.
 
 **Destruction:** deregister MRs (IB), free buffers. Outstanding ops are the
 caller's responsibility (kernel must finish before the host destructor runs).
@@ -251,10 +254,10 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 
 | Param | Required | Default | Meaning |
 |---|---|---|---|
-| `group` (cpp) / `block_id` (Triton) | yes | — | Identifies this calling block. Slot routing uses `group.group_id` (cpp) or the `block_id` arg (Triton). |
+| `group` (cpp) / `block_id` (Triton) | yes | — | Identifies this calling block. Channel routing uses `group.group_id` (cpp) or the `block_id` arg (Triton). |
 | `src` / `dst` | yes | — | This block's pre-sliced data pointer. Caller computes per-block offset (see `TiledBuffer`). |
 | `nbytes` | yes | — | This block's data size. May exceed `per_channel_size` — chunked internally over pipeline slots. |
-| `max_signal_bytes` | no | `0` → `per_channel_size` | Hint for the maximum number of bytes between consecutive DATA_READY signals. Capped at `per_channel_size` if larger (sub-slot signaling only). |
+| `max_signal_bytes` | no | `0` → `per_channel_slot` | Hint for the maximum number of bytes between consecutive DATA_READY signals. Capped at `per_channel_slot` if larger (sub-slot signaling only). |
 | `timeout` | no | `Timeout()` (no limit) | Per-wait timeout. Reuses `comms::prims::Timeout`. On expiry: `__trap()`. |
 
 ### Special values
@@ -262,7 +265,7 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 - **`nbytes == 0`** — block participates in convergent control flow but does no
   copy and no signal; channel progress does not advance. Sender and receiver MUST
   both pass `nbytes==0` for the same `block_id` (per-block matching rule below).
-- **`max_signal_bytes > per_channel_size`** — silently capped to `per_channel_size`.
+- **`max_signal_bytes > per_channel_slot`** — silently capped to `per_channel_slot`.
   The protocol never signals less frequently than once per slot fill (sub-slot
   signaling only).
 - **`group.group_id >= max_num_channels`** — `__trap()`. Catches a kernel
@@ -278,11 +281,11 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 1. **CTA-cooperative.** All threads in `group` MUST call `send` /
    `recv` convergently. Cooperative memcpy across the block; leader thread
    issues signals and RDMA puts.
-2. **Slot routing index = `group.group_id`** (cpp) / `block_id` extern arg
+2. **Channel routing index = `group.group_id`** (cpp) / `block_id` extern arg
    (Triton). The *logical index within the calling group*, not raw `blockIdx.x`.
    So a kernel that does `auto [role, sub] = group.partition(2)` passes `sub`
    to `send` / `recv`, and `sub.group_id` (range `[0, sub.total_groups)`)
-   is the slot row index.
+   is the channel index.
 3. **Trap precondition (debug-mode `__trap`):**
    - `group.group_id < max_num_channels`. The channel index is
      `group.group_id`; selecting a channel outside the allocated range would
@@ -291,7 +294,7 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 ### Cross-rank coordination
 
 - For each `group_id k`: sender block_k's `(nbytes, max_signal_bytes)` MUST
-  equal receiver block_k's. The protocol routes data through slot row `k` on
+  equal receiver block_k's. The protocol routes data through channel `k` on
   both sides; mismatched values cause deadlock (receiver waits for more
   signals) or silent drop (receiver consumes too few).
 - Across blocks within the same call: `nbytes` may differ per block (uneven tile
@@ -334,7 +337,8 @@ primitives are used.
 channel         = group.group_id
 trap if group.total_groups > options.max_num_channels
 
-per_channel_slot = options.per_channel_slot            // fixed at host init
+per_channel_window = options.per_channel_buffer         // fixed at host init
+per_channel_slot = per_channel_window / pipeline_depth
 trap if per_channel_slot == 0
 chunk_size      = min(max_signal_bytes > 0 ? max_signal_bytes : per_channel_slot,
                       per_channel_slot)
@@ -350,7 +354,8 @@ remote_ch       = remote_channels_[channel]           // this rank writes here v
 channel         = group.group_id
 trap if channel >= max_num_channels
 
-per_block_slot  = perChannelSize & ~15ULL
+per_channel_window = perChannelSize
+per_block_slot  = per_channel_window / pipeline_depth
 trap if per_block_slot == 0
 chunk_size      = min(max_signal_bytes > 0 ? max_signal_bytes : per_block_slot,
                       per_block_slot)
@@ -371,14 +376,14 @@ vary between calls without losing monotonicity.
 if nbytes == 0: return
 
 base_byte    = local_ch.send_cursor
-staging_off  = channel * per_channel_slot
-pipeline_bytes = per_channel_slot * pipeline_depth
+channel_base = channel * per_channel_window
+pipeline_bytes = per_channel_window
 
 for data_off in [0, protocol_bytes):           // protocol_bytes = align16(nbytes)
     stream_start    = base_byte + data_off
     pipeline_off    = stream_start % pipeline_bytes
     slot            = pipeline_off / per_channel_slot
-    slot_off        = slot * data_buffer_size
+    slot_off        = channel_base + slot * per_channel_slot
     chunk_off       = pipeline_off - slot * per_channel_slot
     copy_bytes      = min(chunk_size, protocol_bytes - data_off,
                           per_channel_slot - chunk_off)
@@ -391,7 +396,7 @@ for data_off in [0, protocol_bytes):           // protocol_bytes = align16(nbyte
 
     // (2) Cooperative P2P memcpy: src chunk -> remote staging via NVLink.
     memcpy_vectorized(
-        remote_recv_staging + slot_off + staging_off + chunk_off,
+        remote_recv_staging + slot_off + chunk_off,
         src + data_off,
         valid_payload(copy_bytes, nbytes, data_off),
         group)
@@ -420,14 +425,14 @@ remain.
 if nbytes == 0: return
 
 base_byte    = local_ch.recv_cursor
-staging_off  = channel * per_channel_slot
-pipeline_bytes = per_channel_slot * pipeline_depth
+channel_base = channel * per_channel_window
+pipeline_bytes = per_channel_window
 
 for data_off in [0, protocol_bytes):
     stream_start    = base_byte + data_off
     pipeline_off    = stream_start % pipeline_bytes
     slot            = pipeline_off / per_channel_slot
-    slot_off        = slot * data_buffer_size
+    slot_off        = channel_base + slot * per_channel_slot
     chunk_off       = pipeline_off - slot * per_channel_slot
     copy_bytes      = min(chunk_size, protocol_bytes - data_off,
                           per_channel_slot - chunk_off)
@@ -439,7 +444,7 @@ for data_off in [0, protocol_bytes):
     // (2) Cooperative memcpy: local recv_staging -> dst.
     memcpy_vectorized(
         dst + data_off,
-        local_recv_staging + slot_off + staging_off + chunk_off,
+        local_recv_staging + slot_off + chunk_off,
         valid_payload(copy_bytes, nbytes, data_off),
         group)
 
@@ -465,15 +470,15 @@ group.sync()
 if nbytes == 0: return
 
 base_byte = local_ch.sendProgress.cursor
-pipeline_bytes = per_block_slot * pipeline_depth
+pipeline_bytes = per_channel_window
 
 for s in [0, total_chunks):
     slot_step     = s / chunks_per_slot
     sub_step      = s % chunks_per_slot
     slot          = slot_step % pipeline_depth
-    slot_off      = slot * data_buffer_size
+    slot_off      = slot * per_block_slot
     chunk_off     = sub_step * chunk_size
-    staging_off   = slot_off + channel * per_block_slot + chunk_off
+    staging_off   = slot_off + chunk_off
     data_off      = s * chunk_size
     bytes_this    = min(chunk_size, nbytes - data_off)
     stream_end    = base_byte + data_off + bytes_this
@@ -528,9 +533,9 @@ for s in [0, total_chunks):
     slot_step     = s / chunks_per_slot
     sub_step      = s % chunks_per_slot
     slot          = slot_step % pipeline_depth
-    slot_off      = slot * data_buffer_size
+    slot_off      = slot * per_block_slot
     chunk_off     = sub_step * chunk_size
-    staging_off   = slot_off + channel * per_block_slot + chunk_off
+    staging_off   = slot_off + chunk_off
     data_off      = s * chunk_size
     bytes_this    = min(chunk_size, nbytes - data_off)
     stream_end    = base_byte + data_off + bytes_this

@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include <endian.h>
 
@@ -469,8 +470,6 @@ struct IbChannelLayout {
   IbgdaLocalBuffer
       sendStagingBuf; ///< Registered sendStaging (lkey for put src)
   IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
-  char* sendStagingPtr{
-      nullptr}; ///< Raw sendStaging pointer (memcpy addressing)
   char* recvStagingPtr{
       nullptr}; ///< Raw local recvStaging pointer (recv memcpy)
   IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
@@ -484,10 +483,17 @@ struct IbChannelLayout {
   std::size_t perChannelSize{0}; ///< Backward-compatible channel window alias
   std::size_t perChannelBufferSize{0}; ///< Total staging bytes for one channel
 
-  __host__ __device__ std::size_t data_buffer_size() const {
-    const std::size_t perChannel =
-        perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
-    return perChannel * static_cast<std::size_t>(maxChannels);
+  IBGDA_HOST_DEVICE std::size_t channelBufferSize() const {
+    return perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
+  }
+
+  IBGDA_HOST_DEVICE std::size_t channelBufferOffset(int channelId) const {
+    assert(channelId >= 0 && channelId < maxChannels);
+    return static_cast<std::size_t>(channelId) * channelBufferSize();
+  }
+
+  IBGDA_HOST_DEVICE std::size_t data_buffer_size() const {
+    return channelBufferSize() * static_cast<std::size_t>(maxChannels);
   }
 
   IBGDA_HOST_DEVICE int dataReadySignalSlot(int channelId) const {
@@ -561,6 +567,31 @@ enum class IbDirection : uint8_t {
 inline constexpr int kIbDirections = 2;
 inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
 
+IBGDA_HOST_DEVICE inline uint32_t ibQpSlotWithinNic(
+    uint32_t channelId,
+    IbDirection direction,
+    uint32_t directionCount,
+    uint32_t qpsPerConnection,
+    uint32_t lane) {
+  return ((channelId * directionCount + static_cast<uint32_t>(direction)) *
+          qpsPerConnection) +
+      lane;
+}
+
+IBGDA_HOST_DEVICE inline uint32_t ibCommandQueueSlot(
+    uint32_t channelId,
+    IbDirection direction,
+    uint32_t directionCount,
+    uint32_t qpsPerConnection,
+    uint32_t qpIndex,
+    uint32_t numNics,
+    uint32_t nicId) {
+  return ibQpSlotWithinNic(
+             channelId, direction, directionCount, qpsPerConnection, qpIndex) *
+      numNics +
+      nicId;
+}
+
 // Identifies a lane-local completion threshold returned by put().
 // completionId is the send-lane ordinal; value is complete once that lane's
 // backend-specific completion frontier reaches it.
@@ -584,7 +615,17 @@ struct IbQpState {
   uint64_t lastFlushWqe[kIbMaxQpLanesPerChannelDirection]{};
 };
 
-struct IbLocalChannel {
+struct IbChannel {
+  IbgdaLocalBuffer sendStaging;
+  char* recvStaging{nullptr};
+  IbgdaRemoteBuffer remoteRecvStaging;
+  IbgdaLocalBuffer dataReady;
+  IbgdaRemoteBuffer remoteDataReady;
+  IbgdaLocalBuffer slotFree;
+  IbgdaRemoteBuffer remoteSlotFree;
+  IbgdaLocalBuffer nicDoneWait;
+  IbgdaLocalBuffer nicDoneCompletion;
+
   IbChannelProgress sendProgress;
   IbChannelProgress recvProgress;
 
@@ -610,44 +651,36 @@ struct IbLocalChannel {
   uint64_t recvDataReadyLaneCursor{0};
   uint64_t recvLaneExpected[kIbMaxQpLanesPerChannelDirection]{};
 
-  IbgdaLocalBuffer dataReady;
-  IbgdaLocalBuffer slotFree;
-  IbgdaLocalBuffer nicDoneWait;
-  IbgdaLocalBuffer nicDoneCompletion;
-
   IbSendCompletionSlot* sendCompletionSlots{nullptr};
 
   IbQpState sendQp;
   IbQpState recvQp;
 };
 
-struct IbRemoteChannel {
-  IbgdaRemoteBuffer dataReady;
-  IbgdaRemoteBuffer slotFree;
-  IbgdaRemoteBuffer recvStaging;
-};
+static_assert(std::is_trivially_copyable_v<IbChannel>);
 
-IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
+IBGDA_HOST_DEVICE inline IbChannel makeIbChannel(
     const IbChannelLayout& layout,
     int channelId,
     IbSendCompletionSlot* sendCompletionSlots = nullptr) {
-  IbLocalChannel channel{};
+  IbChannel channel{};
+  channel.sendCompletionSlots = sendCompletionSlots;
+  if (layout.maxChannels == 0) {
+    return channel;
+  }
+  const std::size_t stagingOffset = layout.channelBufferOffset(channelId);
+  channel.sendStaging = layout.sendStagingBuf.subBuffer(stagingOffset);
+  channel.recvStaging = layout.recvStagingPtr == nullptr
+      ? nullptr
+      : layout.recvStagingPtr + stagingOffset;
+  channel.remoteRecvStaging = layout.recvStagingBuf.subBuffer(stagingOffset);
   channel.dataReady = layout.localDataReadySignal(channelId);
+  channel.remoteDataReady = layout.remoteDataReadySignal(channelId);
   channel.slotFree = layout.localSlotFreeSignal(channelId);
+  channel.remoteSlotFree = layout.remoteSlotFreeSignal(channelId);
   channel.nicDoneWait = layout.localCounter(channelId);
   channel.nicDoneCompletion = layout.localCompletionCounter(channelId);
-  channel.sendCompletionSlots = sendCompletionSlots;
   return channel;
-}
-
-IBGDA_HOST_DEVICE inline IbRemoteChannel makeIbRemoteChannel(
-    const IbChannelLayout& layout,
-    int channelId) {
-  return IbRemoteChannel{
-      .dataReady = layout.remoteDataReadySignal(channelId),
-      .slotFree = layout.remoteSlotFreeSignal(channelId),
-      .recvStaging = layout.recvStagingBuf,
-  };
 }
 
 } // namespace comms::prims

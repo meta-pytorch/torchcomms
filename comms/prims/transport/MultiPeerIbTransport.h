@@ -92,14 +92,12 @@ struct MultipeerIbTransportConfig {
   // slot-index API. Independent of send/recv's private counter buffers.
   int numCounterSlots{0};
 
-  // Maximum number of physical block groups that may own IB QP resources.
-  // Device-side IB QP selection uses ThreadGroup::block_id and requires
-  // block_id < maxGroups.
+  // Legacy raw put() channel count. When perChannelSize is zero, the transport
+  // uses this value as max_num_channels.
   int maxGroups{64};
 
-  // Legacy block-owned QP count for IBRC. IBGDA send/recv uses
-  // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
-  // fixed-channel shape in the following stack diff.
+  // Legacy raw put() QPs per channel and NIC. When perChannelSize is zero, the
+  // transport uses this value as qpsPerConnection.
   int qpsPerBlockPerNic{1};
 
   // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
@@ -115,6 +113,8 @@ struct MultipeerIbTransportConfig {
   // geometry as main QPs because device-side lane selection indexes both with
   // qpsPerConnection.
   int qpsPerConnection{1};
+
+  MultipeerIbTransportConfig normalizedChannelGeometry() const;
 
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
@@ -378,7 +378,7 @@ struct IbSendRecvPeerBuffers {
 
 /**
  * MultiPeerIbTransportBase - backend-agnostic host control plane shared by the
- * multi-peer IB transports (IBGDA today, IBRC next).
+ * multi-peer IB transports (IBGDA and IBRC).
  *
  * This is a NON-template base so its (heavy) method bodies live in
  * MultiPeerIbTransport.cc and are compiled exactly once, reused by every

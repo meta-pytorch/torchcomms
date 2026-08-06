@@ -250,6 +250,32 @@ void checkSendRecvSignalAlignment(const void* ptr, const char* label) {
 }
 } // namespace
 
+MultipeerIbTransportConfig
+MultipeerIbTransportConfig::normalizedChannelGeometry() const {
+  auto normalized = *this;
+  if (normalized.perChannelSize > 0) {
+    if (normalized.max_num_channels <= 0) {
+      throw std::invalid_argument(
+          "max_num_channels must be positive when perChannelSize is set");
+    }
+    if (normalized.perChannelSize < 16) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be >= 16");
+    }
+    if (normalized.perChannelSize % 16 != 0) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be 16-byte aligned");
+    }
+    normalized.dataBufferSize = normalized.fixedChannelDataBufferSize();
+    normalized.maxGroups = normalized.max_num_channels;
+    normalized.qpsPerBlockPerNic = normalized.qpsPerConnection;
+  } else {
+    normalized.max_num_channels = normalized.maxGroups;
+    normalized.qpsPerConnection = normalized.qpsPerBlockPerNic;
+  }
+  return normalized;
+}
+
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     int myRank,
     int nRanks,
@@ -258,23 +284,7 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     : myRank_(myRank),
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
-      config_(std::move(config)) {
-  if (config_.perChannelSize > 0) {
-    if (config_.max_num_channels <= 0) {
-      throw std::invalid_argument(
-          "max_num_channels must be positive when perChannelSize is set");
-    }
-    if (config_.perChannelSize < 16) {
-      throw std::invalid_argument(
-          "IB fixed-channel perChannelSize must be >= 16");
-    }
-    if (config_.perChannelSize % 16 != 0) {
-      throw std::invalid_argument(
-          "IB fixed-channel perChannelSize must be 16-byte aligned");
-    }
-    config_.dataBufferSize = config_.fixedChannelDataBufferSize();
-    config_.maxGroups = config_.max_num_channels;
-  }
+      config_(config.normalizedChannelGeometry()) {
   if (myRank_ < 0 || myRank_ >= nRanks_) {
     throw std::invalid_argument("Invalid rank");
   }
@@ -425,7 +435,6 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
   return IbChannelLayout{
       .sendStagingBuf = pb.sendStaging,
       .recvStagingBuf = pb.remoteRecvStaging,
-      .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
       .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
       .localSignalBuf = pb.signal,
       .remoteSignalBuf = pb.remoteSignal,

@@ -23,10 +23,6 @@ class P2pIbrcTransportDevice;
 // into the host-pinned mapped array of device handles).
 std::size_t ibrcDeviceSlotSize();
 
-// Default-construct (placement-new) each P2pIbrcTransportDevice slot in a
-// host-pinned mapped array.
-void constructIbrcDeviceSlots(void* slotsHost, int numSlots);
-
 // Placement-new a single populated P2pIbrcTransportDevice into the host-pinned
 // mapped array. Args mirror the device-handle constructor; all are plain-data
 // host-safe types.
@@ -37,7 +33,8 @@ void writeIbrcDeviceSlot(
     uint32_t numNics,
     uint32_t maxChannels,
     uint32_t qpsPerConnection,
-    DeviceSpan<IbLocalChannel> localChannels,
+    uint32_t qpDirectionCount,
+    DeviceSpan<IbChannel> channels,
     IbgdaRemoteBuffer remoteSignalBuf,
     IbgdaLocalBuffer localSignalBuf,
     IbgdaLocalBuffer counterDeviceBuf,
