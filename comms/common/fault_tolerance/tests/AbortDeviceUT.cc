@@ -94,6 +94,29 @@ TEST(AbortDeviceTest, hostProducerDeviceConsumer) {
       readDeviceValue(observedMode), static_cast<int>(AbortReason::ABORTED));
 }
 
+TEST(AbortDeviceTest, checkExpiredSeesHostAbort) {
+  Abort abort{/*enabled=*/true};
+  auto observedCheckExpired = makeDeviceValue<int>();
+  auto observedReason = makeDeviceValue<int>();
+  ASSERT_NE(observedCheckExpired, nullptr);
+  ASSERT_NE(observedReason, nullptr);
+
+  abort.setAbort();
+
+  EXPECT_EQ(
+      launchDeviceReadCheckExpired(
+          abort.getDeviceHandle(),
+          observedCheckExpired.get(),
+          observedReason.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(observedCheckExpired), 1);
+  EXPECT_EQ(
+      readDeviceValue(observedReason), static_cast<int>(AbortReason::ABORTED));
+}
+
 TEST(AbortDeviceTest, deviceProducerHostConsumer) {
   Abort abort{/*enabled=*/true};
 
@@ -303,6 +326,31 @@ TEST(AbortDeviceTest, deviceTimeoutWinsOverHostAbort) {
   EXPECT_TRUE(abort.isTimedOut());
 }
 
+TEST(AbortDeviceTest, startAliasAndCheckExpiredRecordTimeout) {
+  Abort abort{/*enabled=*/true};
+  auto observedMode = makeDeviceValue<int>();
+  auto observedCheckExpired = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedCheckExpired, nullptr);
+
+  abort.setDefaultTimeout(std::chrono::milliseconds{1});
+
+  EXPECT_EQ(
+      launchDeviceWaitForTimeoutStartAlias(
+          abort.getDeviceHandle(),
+          observedMode.get(),
+          observedCheckExpired.get(),
+          kDeviceTimeoutPollIterations,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(observedCheckExpired), 1);
+  EXPECT_EQ(
+      readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));
+  EXPECT_TRUE(abort.isTimedOut());
+}
+
 TEST(AbortDeviceTest, deviceTimeoutCanBeCancelledAndRestarted) {
   Abort abort{/*enabled=*/true};
   auto observedAfterCancel = makeDeviceValue<int>();
@@ -400,6 +448,24 @@ TEST(AbortDeviceTest, disabledAbortDeviceHandleIsNoop) {
   EXPECT_EQ(readDeviceValue(observed), 0);
   EXPECT_EQ(readDeviceValue(observedMode), static_cast<int>(AbortReason::NONE));
   EXPECT_EQ(readDeviceValue(observedTimeoutMs), -1);
+}
+
+TEST(AbortDeviceTest, defaultConstructedHandleIsDisabledNoop) {
+  AbortDevice handle;
+  auto observed = makeDeviceValue<int>();
+  auto observedMode = makeDeviceValue<int>();
+  ASSERT_NE(observed, nullptr);
+  ASSERT_NE(observedMode, nullptr);
+
+  EXPECT_FALSE(handle.isEnabled());
+  EXPECT_EQ(
+      launchDeviceReadAbort(
+          handle, observed.get(), observedMode.get(), /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(observed), 0);
+  EXPECT_EQ(readDeviceValue(observedMode), static_cast<int>(AbortReason::NONE));
 }
 
 } // namespace comms::fault_tolerance::testing
