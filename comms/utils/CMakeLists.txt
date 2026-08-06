@@ -39,7 +39,7 @@ target_compile_options(utils PRIVATE
     -fPIC
 )
 target_compile_definitions(utils PRIVATE
-    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
     SPDLOG_FMT_EXTERNAL
 )
 set_target_properties(utils PROPERTIES
