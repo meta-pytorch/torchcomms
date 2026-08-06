@@ -6,7 +6,9 @@
 #include "comms/ctran/utils/Alloc.h" // isCuMemFabricEnabled
 #include "comms/ctran/utils/Checks.h" // FB_COMMCHECK
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace ctran::utils {
 
@@ -57,7 +59,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
         FB_CUPFN(cuMulticastBindMem) == nullptr ||
         FB_CUPFN(cuMulticastGetGranularity) == nullptr ||
         FB_CUPFN(cuMulticastUnbind) == nullptr) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- driver multicast entry points unavailable (needs a newer CUDA driver)");
       return false;
@@ -71,7 +74,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
             &sup, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, cuDev),
         false);
     if (sup == 0) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- device {} reports no multicast support",
           cudaDev);
@@ -90,7 +94,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
     // cannot be shared across the domain -> declare unsupported so the group
     // falls back to unicast.
     if (!isCuMemFabricEnabled()) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- device {} reports multicast support but fabric memory handles are unavailable (IMEX channel not enabled?); the multicast object cannot be shared across the NVL domain",
           cudaDev);
