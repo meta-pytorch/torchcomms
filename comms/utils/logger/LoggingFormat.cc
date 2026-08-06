@@ -20,6 +20,7 @@
 #include "comms/utils/logger/ErrorStackUtil.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/NcclScubaSample.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace {
 std::string getHostName(const char delim) {
@@ -245,7 +246,10 @@ void initProcMetaData() {
 
 void initThreadMetaData(std::string_view threadName) {
   static thread_local folly::once_flag threadNameFlag;
-  folly::call_once(threadNameFlag, [&]() { myThreadName = threadName; });
+  folly::call_once(threadNameFlag, [&]() {
+    myThreadName = threadName;
+    setSpdlogThreadName(threadName);
+  });
 }
 
 std::string NcclLogFormatter::formatMessage(
