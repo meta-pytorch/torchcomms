@@ -22,7 +22,7 @@
 #include "comms/utils/CudaRAII.h"
 
 #if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
 #endif
 
 namespace torch::comms {
@@ -2160,7 +2160,7 @@ std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
   std::shared_ptr<TorchCommWindow> win;
 #if defined(ENABLE_PRIMS)
   // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
-  // Pipes uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
+  // Prims uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
   const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
   if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
     win = std::make_shared<TorchCommWindowNCCLXPipes>(
@@ -2388,7 +2388,7 @@ static const NCCLXRegistration registration{};
 int64_t TorchCommNCCLX::get_device_transport() {
   if (!device_transport_handle_) {
     device_transport_handle_ =
-        torchcomms::device::PipesDeviceBackend::get_device_transport(
+        torchcomms::device::PrimsDeviceBackend::get_device_transport(
             nccl_comm_, nccl_api_.get(), cuda_api_.get());
   }
   return reinterpret_cast<int64_t>(device_transport_handle_.get());

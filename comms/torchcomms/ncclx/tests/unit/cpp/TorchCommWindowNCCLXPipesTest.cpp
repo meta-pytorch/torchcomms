@@ -1,5 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// Unit tests for TorchCommWindowNCCLX with PipesDeviceBackend.
+// Unit tests for TorchCommWindowNCCLX with PrimsDeviceBackend.
 //
 // These tests verify Pipes-specific error paths without real hardware:
 //   1. register_local_buffer() throws when device window not initialized
@@ -145,7 +145,7 @@ TEST_F(TorchCommWindowNCCLXPipesTest, RegisterLocalBufferSuccess) {
   EXPECT_NO_THROW(win->tensor_register(dst_tensor));
 
   // Mock winCreateDeviceWin to succeed — returns a fake device pointer.
-  // PipesDeviceBackend::create_device_window() calls this, then malloc+memcpy.
+  // PrimsDeviceBackend::create_device_window() calls this, then malloc+memcpy.
   void* fake_pipes_dev_win = reinterpret_cast<void*>(0xBEEF);
   EXPECT_CALL(*nccl_mock_, winCreateDeviceWin(_, _, _, _, _))
       .WillOnce(
