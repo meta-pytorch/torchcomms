@@ -20,6 +20,7 @@
 
 #include <glog/logging.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
@@ -51,6 +52,41 @@ namespace {
     }                                                                          \
   } while (0)
 
+class ScopedCudaDevice {
+ public:
+  explicit ScopedCudaDevice(int device) : targetDevice_(device) {
+    CUDA_CHECK(cudaGetDevice(&previousDevice_));
+    if (previousDevice_ != targetDevice_) {
+      CUDA_CHECK(cudaSetDevice(targetDevice_));
+    }
+  }
+
+  ScopedCudaDevice(const ScopedCudaDevice&) = delete;
+  ScopedCudaDevice& operator=(const ScopedCudaDevice&) = delete;
+  ScopedCudaDevice(ScopedCudaDevice&&) = delete;
+  ScopedCudaDevice& operator=(ScopedCudaDevice&&) = delete;
+
+  ~ScopedCudaDevice() {
+    if (previousDevice_ != targetDevice_) {
+      (void)cudaSetDevice(previousDevice_);
+    }
+  }
+
+ private:
+  int previousDevice_{-1};
+  int targetDevice_{-1};
+};
+
+comms::fault_tolerance::AbortDevice makeAbortDeviceHandle(
+    const std::shared_ptr<comms::fault_tolerance::Abort>& abort,
+    int deviceId) {
+  if (abort == nullptr || !abort->isEnabled()) {
+    return comms::fault_tolerance::AbortDevice{};
+  }
+  ScopedCudaDevice guard{deviceId};
+  return abort->getDeviceHandle();
+}
+
 } // namespace
 
 MultiPeerTransport::MultiPeerTransport(
@@ -59,11 +95,13 @@ MultiPeerTransport::MultiPeerTransport(
     int deviceId,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerTransportConfig& config,
-    std::optional<TopologyResult> topo)
+    std::optional<TopologyResult> topo,
+    std::shared_ptr<comms::fault_tolerance::Abort> abort)
     : myRank_(myRank),
       nRanks_(nRanks),
       deviceId_(deviceId),
-      bootstrap_(std::move(bootstrap)) {
+      bootstrap_(std::move(bootstrap)),
+      abort_(std::move(abort)) {
   if (!topo.has_value()) {
     TopologyDiscovery topoDiscovery;
     topo = topoDiscovery.discover(
@@ -317,6 +355,7 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
       myRank_,
       nRanks_,
       {transportsGpu_, static_cast<uint32_t>(nRanks_)},
+      makeAbortDeviceHandle(abort_, deviceId_),
       static_cast<int>(nvlPeerRanks_.size()),
       static_cast<int>(ibPeerRanks_.size()),
   };

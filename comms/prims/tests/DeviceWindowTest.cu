@@ -92,6 +92,7 @@ struct NvlOnlyDeviceWindowBuffers {
         myRank,
         nRanks,
         DeviceSpan<Transport>(transportsPtr, nRanks),
+        {},
         nPeers,
         0};
     dw.nNvlPeers_ = nPeers;
@@ -631,6 +632,7 @@ struct IbgdaOnlyDeviceWindowBuffers {
         myRank,
         nRanks,
         DeviceSpan<Transport>(transportsPtr, nRanks),
+        {},
         0,
         nPeers};
     dw.nNvlPeers_ = 0;

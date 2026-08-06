@@ -89,14 +89,14 @@ if("$ENV{ENABLE_PRIMS}" STREQUAL "1")
     set(TORCHCOMMS_ENABLE_PRIMS ON)
     message(STATUS "ENABLE_PRIMS=1 set, building with prims support")
     if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
-        file(GLOB TORCHCOMMS_DEVICE_PIPES_SOURCE
-            "comms/torchcomms/device/pipes/*.cpp")
+        file(GLOB TORCHCOMMS_DEVICE_PRIMS_SOURCE
+            "comms/torchcomms/device/prims/*.cpp")
     else()
-        set(TORCHCOMMS_DEVICE_PIPES_SOURCE "")
+        set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
     endif()
 else()
     set(TORCHCOMMS_ENABLE_PRIMS OFF)
-    set(TORCHCOMMS_DEVICE_PIPES_SOURCE "")
+    set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
     message(STATUS "ENABLE_PRIMS not set, building without prims support")
 endif()
 
@@ -104,7 +104,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
-    ${TORCHCOMMS_DEVICE_PIPES_SOURCE}
+    ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
 )

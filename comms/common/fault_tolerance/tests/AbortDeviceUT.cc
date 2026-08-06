@@ -117,6 +117,58 @@ TEST(AbortDeviceTest, checkExpiredSeesHostAbort) {
       readDeviceValue(observedReason), static_cast<int>(AbortReason::ABORTED));
 }
 
+TEST(AbortDeviceTest, deviceCheckContinuesBeforeAbort) {
+  Abort abort{/*enabled=*/true};
+  auto observedCheckResult = makeDeviceValue<int>();
+  ASSERT_NE(observedCheckResult, nullptr);
+
+  EXPECT_EQ(
+      launchDeviceReadCheckResult(
+          abort.getDeviceHandle(), observedCheckResult.get(), nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      readDeviceValue(observedCheckResult),
+      static_cast<int>(AbortCheckResult::CONTINUE));
+}
+
+TEST(AbortDeviceTest, deviceCheckDefaultsToSkipOnAbort) {
+  Abort abort{/*enabled=*/true};
+  auto observedCheckResult = makeDeviceValue<int>();
+  ASSERT_NE(observedCheckResult, nullptr);
+
+  abort.setAbort();
+
+  EXPECT_EQ(
+      launchDeviceReadCheckResult(
+          abort.getDeviceHandle(), observedCheckResult.get(), nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      readDeviceValue(observedCheckResult),
+      static_cast<int>(AbortCheckResult::SKIP));
+}
+
+TEST(AbortDeviceTest, deviceCheckReturnsTrapWhenConfigured) {
+  Abort abort{/*enabled=*/true, AbortBehavior::TRAP};
+  auto observedCheckResult = makeDeviceValue<int>();
+  ASSERT_NE(observedCheckResult, nullptr);
+
+  abort.setAbort();
+
+  EXPECT_EQ(
+      launchDeviceReadCheckResult(
+          abort.getDeviceHandle(), observedCheckResult.get(), nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      readDeviceValue(observedCheckResult),
+      static_cast<int>(AbortCheckResult::TRAP));
+}
+
 TEST(AbortDeviceTest, deviceProducerHostConsumer) {
   Abort abort{/*enabled=*/true};
 
