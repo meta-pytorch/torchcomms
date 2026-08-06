@@ -22,9 +22,15 @@ namespace comms::prims {
 // + `nvlRanks` per-peer ack[] + 4 staging arrival-barrier slots (ready/ack
 // counter+epoch, laid out past the SET-mode slots so ADD residue never
 // contaminates a later SET-mode CMP_GE wait) => 2 * nvlRanks + 4.
+__host__ __device__ constexpr uint64_t multimem_staging_signals_per_lane_wide(
+    uint64_t nvlRanks) {
+  return 2 * nvlRanks + 4;
+}
+
 __host__ __device__ constexpr uint32_t multimem_staging_signals_per_lane(
     uint32_t nvlRanks) {
-  return 2 * nvlRanks + 4;
+  return static_cast<uint32_t>(
+      multimem_staging_signals_per_lane_wide(nvlRanks));
 }
 
 namespace detail {
@@ -84,6 +90,9 @@ struct MultimemNvlTransportDevice {
   DeviceSpan<SignalState> internalLocalSignals{};
   DeviceSpan<SignalState> internalMultimemSignals{};
   std::size_t dataBufferSize{0};
+  uint32_t pipelineDepth{0};
+  uint32_t maxGroups{0};
+  uint32_t signalsPerLane{0};
   int nvlRank{0};
   int nvlRanks{1};
 

@@ -7,6 +7,7 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlStageLayout.cuh"
 
 namespace comms::prims::test {
 
@@ -115,6 +116,22 @@ __global__ void loadReduceKernel(
       reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
   multimem::load_reduce_at<T, multimem::MultimemRedOp::Add, kAccF32>(
       group, output, source, elems);
+}
+
+__global__ void stageLayoutKernel(
+    MultimemNvlTransportDevice transport,
+    StageLayoutResult* results) {
+  auto group = make_block_group();
+  const auto layout = multimem::make_stage_layout<uint32_t>(transport, group);
+  if (group.is_leader()) {
+    results[group.group_id] = StageLayoutResult{
+        .groupBeginBytes = layout.groupBeginBytes,
+        .stagingBytes = layout.stagingBytes,
+        .signalBase = layout.signalBase,
+        .signalsPerLane = layout.signalsPerLane,
+        .pipelineDepth = layout.pipelineDepth,
+    };
+  }
 }
 
 template <typename T>
@@ -265,6 +282,15 @@ void launchLoadReduce(
       return launchLoadReduceTyped<__nv_bfloat16>(
           transport, accF32, output, elems, sourceOffsetElems, stream);
   }
+}
+
+void launchStageLayout(
+    MultimemNvlTransportDevice transport,
+    StageLayoutResult* results,
+    uint32_t numGroups,
+    cudaStream_t stream) {
+  stageLayoutKernel<<<numGroups, 32, 0, stream>>>(transport, results);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::prims::test
