@@ -20,6 +20,7 @@ namespace {
 struct DirectIbReduceScatterTestParams {
   std::size_t chunk_elements;
   bool quantized;
+  bool use_tma{true};
   std::string name;
 };
 
@@ -88,6 +89,7 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
       ? static_cast<const std::uint64_t*>(seedBuf.get())
       : nullptr;
   launchParams.num_blocks = num_blocks;
+  launchParams.use_tma = params.use_tma;
   launchParams.timeout_ms = 30000.0f;
   for (int peer = 0; peer < worldSize; ++peer) {
     if (peer == globalRank) {
@@ -152,9 +154,28 @@ std::vector<DirectIbReduceScatterTestParams> all_test_params() {
         {.chunk_elements = chunk_elements,
          .quantized = true,
          .name = size_label + "Quantized"});
+    // MCCL_PRIMS_TMA=0. Exercises launch_quantized<false, ...>, which is the
+    // production kill switch and is otherwise never instantiated by a test.
+    out.push_back(
+        {.chunk_elements = chunk_elements,
+         .quantized = true,
+         .use_tma = false,
+         .name = size_label + "QuantizedNoTma"});
   }
   out.push_back(
       {.chunk_elements = 1025, .quantized = true, .name = "OddTailQuantized"});
+  out.push_back(
+      {.chunk_elements = 1025,
+       .quantized = true,
+       .use_tma = false,
+       .name = "OddTailQuantizedNoTma"});
+  // A tile is 16384 bf16 elements per channel; this size leaves a partial final
+  // tile so the TMA path's ragged-tail handling is covered rather than only
+  // whole-tile chunks.
+  out.push_back(
+      {.chunk_elements = 16384 * 8 + 4096,
+       .quantized = true,
+       .name = "RaggedTileQuantized"});
   return out;
 }
 

@@ -1,5 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <atomic>
+
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
 
 #include "comms/prims/core/Checks.h"
@@ -14,6 +16,7 @@ namespace comms::prims {
 
 template <
     bool kQuantized,
+    bool kTmaRecv,
     bool kStaggerChannels,
     typename T,
     typename AccumOp,
@@ -31,6 +34,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
   static_assert(kSendThreads % comms::device::kWarpSize == 0);
   static_assert(kRecvThreads % comms::device::kWarpSize == 0);
   static_assert(kSendThreads + kRecvThreads == kBlockSize);
+
+  using QuantOp = QuantizedReduceScatterCopyOpT<kTmaRecv>;
 
   const ThreadGroup block = make_block_group();
   const bool is_recv = block.thread_id_in_group < kRecvThreads;
@@ -96,14 +101,14 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
       if constexpr (kQuantized) {
         const std::size_t wire_bytes =
             output_tile.tile_size(channel) * sizeof(__nv_bfloat16);
-        QuantizedReduceScatterCopyOp::Args copy_args{
+        typename QuantOp::Args copy_args{
             .sender_input_base = nullptr,
             .receiver_input_base = reinterpret_cast<const T*>(local_input),
             .receiver_output_base = output,
             .seed = *args.seed_ptr,
             .logical_element_base = 0,
         };
-        transport.template recv<QuantizedReduceScatterCopyOp>(
+        transport.template recv<QuantOp>(
             group, output_bytes, wire_bytes, max_sig, timeout, copy_args);
       } else {
         transport.template recv<ReduceOp>(
@@ -134,14 +139,14 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             static_cast<std::uint64_t>(my_rank) * total_elements +
             static_cast<std::uint64_t>(peer) * args.chunk_elements +
             static_cast<std::uint64_t>(channel) * send_tile.tile_elements;
-        QuantizedReduceScatterCopyOp::Args copy_args{
+        typename QuantOp::Args copy_args{
             .sender_input_base = send_tile.data(),
             .receiver_input_base = nullptr,
             .receiver_output_base = nullptr,
             .seed = *args.seed_ptr,
             .logical_element_base = logical_element_base,
         };
-        transport.template send<QuantizedReduceScatterCopyOp>(
+        transport.template send<QuantOp>(
             group,
             reinterpret_cast<const char*>(send_tile.data()),
             wire_bytes,
@@ -163,6 +168,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
 
 template __global__ void direct_reduce_scatter_ib_kernel<
     false,
+    false,
     true,
     float,
     SumOp,
@@ -179,6 +185,7 @@ void launch_direct_reduce_scatter_ib_impl(
     cudaStream_t stream,
     Timeout timeout) {
   auto* kernel = direct_reduce_scatter_ib_kernel<
+      false,
       false,
       true,
       float,
@@ -221,22 +228,102 @@ void launch_direct_reduce_scatter_ib_impl(
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_direct_reduce_scatter_ib_quantized_impl(
+namespace {
+
+// Instantiated once per (TMA, geometry) pair. The TMA receive path stages both
+// operands through shared memory, which frees the receive group from issuing
+// per-thread loads, so it needs far fewer threads than the register path.
+template <bool kTmaRecv, int kSend, int kRecv, int kBlock>
+void launch_quantized(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     cudaStream_t stream,
     Timeout timeout) {
   auto* kernel = direct_reduce_scatter_ib_kernel<
       true,
+      kTmaRecv,
       true,
       float,
       SumOp,
-      480,
-      160,
-      640,
+      kSend,
+      kRecv,
+      kBlock,
       CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>;
-  kernel<<<num_blocks, 640, 0, stream>>>(args, timeout);
+  constexpr std::size_t dynamic_smem =
+      QuantizedReduceScatterCopyOpT<kTmaRecv>::smem_bytes();
+  if constexpr (dynamic_smem > 0) {
+    // The device's opt-in limit was already checked by
+    // tma_supported_on_device() before this specialization was selected.
+    PIPES_CUDA_CHECK(cudaFuncSetAttribute(
+        kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        static_cast<int>(dynamic_smem)));
+  }
+  kernel<<<num_blocks, kBlock, dynamic_smem, stream>>>(args, timeout);
   PIPES_CUDA_CHECK(cudaGetLastError());
+}
+
+} // namespace
+
+namespace {
+
+// The TMA receive path is only validated on Blackwell (sm_100+) and its shared
+// memory footprint exceeds what earlier architectures can opt into, so it is
+// gated on the device rather than on the compile target. Anything else silently
+// takes the register path, which is functionally identical.
+//
+// Cached per device ordinal, not once per process: a process can bind several
+// GPUs, and a single cached answer would route a device of a different
+// capability onto the wrong geometry. Racing writers compute the same value.
+bool tma_supported_on_device() {
+  int device = 0;
+  PIPES_CUDA_CHECK(cudaGetDevice(&device));
+
+  constexpr int kMaxCachedDevices = 16;
+  constexpr signed char kUnknown = 0;
+  constexpr signed char kSupported = 1;
+  constexpr signed char kUnsupported = 2;
+  static std::atomic<signed char> cache[kMaxCachedDevices];
+
+  const bool cacheable = device >= 0 && device < kMaxCachedDevices;
+  if (cacheable) {
+    const signed char cached = cache[device].load(std::memory_order_relaxed);
+    if (cached != kUnknown) {
+      return cached == kSupported;
+    }
+  }
+
+  int cc_major = 0;
+  PIPES_CUDA_CHECK(cudaDeviceGetAttribute(
+      &cc_major, cudaDevAttrComputeCapabilityMajor, device));
+  bool supported = cc_major >= 10;
+  if (supported) {
+    int max_dynamic_smem = 0;
+    PIPES_CUDA_CHECK(cudaDeviceGetAttribute(
+        &max_dynamic_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+    supported = QuantizedReduceScatterCopyOpT<true>::smem_bytes() <=
+        static_cast<std::size_t>(max_dynamic_smem);
+  }
+  if (cacheable) {
+    cache[device].store(
+        supported ? kSupported : kUnsupported, std::memory_order_relaxed);
+  }
+  return supported;
+}
+
+} // namespace
+
+void launch_direct_reduce_scatter_ib_quantized_impl(
+    const DirectReduceScatterIbArgs<float>& args,
+    int num_blocks,
+    bool use_tma,
+    cudaStream_t stream,
+    Timeout timeout) {
+  if (use_tma && tma_supported_on_device()) {
+    launch_quantized<true, 640, 128, 768>(args, num_blocks, stream, timeout);
+  } else {
+    launch_quantized<false, 480, 160, 640>(args, num_blocks, stream, timeout);
+  }
 }
 
 } // namespace comms::prims
