@@ -7,6 +7,7 @@
 
 // HipCompat provides `__trap` (mapped to `abort`) when this file is compiled
 // for the AMD device pass; on NVIDIA the include is a harmless no-op.
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
@@ -147,6 +148,23 @@ struct Timeout {
    */
   __device__ __forceinline__ bool checkExpired(const ThreadGroup& group) const;
 };
+
+namespace timeout_detail {
+
+__device__ __forceinline__ comms::fault_tolerance::AbortCheckResult checkResult(
+    const Timeout& timeout) {
+  return timeout.checkExpired()
+      ? comms::fault_tolerance::AbortCheckResult::TRAP
+      : comms::fault_tolerance::AbortCheckResult::CONTINUE;
+}
+
+template <typename TimeoutLike>
+__device__ __forceinline__ auto checkResult(const TimeoutLike& timeout)
+    -> decltype(timeout.check()) {
+  return timeout.check();
+}
+
+} // namespace timeout_detail
 
 } // namespace comms::prims
 
