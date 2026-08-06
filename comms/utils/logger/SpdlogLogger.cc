@@ -57,7 +57,8 @@ class StderrRoutingSink final : public spdlog::sinks::sink {
 
   void log(const spdlog::details::log_msg& message) override {
     if (should_log(message.level) &&
-        shouldWriteCommsLogToStderr(message.level)) {
+        shouldWriteCommsLogToStderr(
+            std::string_view{message.payload.data(), message.payload.size()})) {
       sink_->log(message);
     }
   }
@@ -142,8 +143,16 @@ std::shared_ptr<spdlog::logger> createLogger(std::string name) {
 
 } // namespace
 
-bool shouldWriteCommsLogToStderr(spdlog::level::level_enum level) {
-  return level >= spdlog::level::warn && level < spdlog::level::off;
+bool shouldWriteCommsLogToStderr(std::string_view formattedMessage) {
+  /*
+   * CRITICAL and FATAL share spdlog's critical level. The formatter begins
+   * with the legacy level name so stderr routing can still distinguish them.
+   */
+  if (formattedMessage.empty()) {
+    return false;
+  }
+  const auto levelInitial = formattedMessage.front();
+  return levelInitial == 'W' || levelInitial == 'E' || levelInitial == 'F';
 }
 
 CommsSpdlogLogger::CommsSpdlogLogger()
@@ -154,6 +163,9 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
       outputSink_(
           std::make_shared<spdlog::sinks::dist_sink_mt>(logger_->sinks())) {
   logger_->sinks() = {outputSink_};
+  synchronousLogger_ = std::make_shared<spdlog::logger>(
+      logger_->name(), logger_->sinks().begin(), logger_->sinks().end());
+  synchronousLogger_->set_level(spdlog::level::trace);
   storeConfiguration(std::make_shared<const Configuration>());
 }
 
@@ -172,10 +184,22 @@ const std::string& CommsSpdlogLogger::name() const {
 
 void CommsSpdlogLogger::set_level(spdlog::level::level_enum level) {
   logger_->set_level(level);
+  /*
+   * logger_ applies the runtime gate before either delivery path. The
+   * synchronous logger stays at trace so it accepts enabled synchronous
+   * messages while logFatal can bypass the primary gate.
+   */
+}
+
+bool CommsSpdlogLogger::usesAsyncLogging() const {
+  return loadConfiguration()->asyncLogging;
 }
 
 void CommsSpdlogLogger::flush() {
   logger_->flush();
+  if (!usesAsyncLogging()) {
+    synchronousLogger_->flush();
+  }
 }
 
 void CommsSpdlogLogger::log(
@@ -196,7 +220,8 @@ void CommsSpdlogLogger::logFatal(
 void CommsSpdlogLogger::configure(
     std::string prefix,
     std::function<int(void)> threadContextFn,
-    std::function<void(std::string_view)> errorCallback) {
+    std::function<void(std::string_view)> errorCallback,
+    bool asyncLogging) {
   if (!threadContextFn) {
     threadContextFn = []() { return 0; };
   }
@@ -204,7 +229,8 @@ void CommsSpdlogLogger::configure(
       std::make_shared<const Configuration>(Configuration{
           std::move(prefix),
           std::move(threadContextFn),
-          std::move(errorCallback)});
+          std::move(errorCallback),
+          asyncLogging});
   storeConfiguration(std::move(configuration));
 }
 
@@ -235,13 +261,15 @@ void CommsSpdlogLogger::configureOutput(std::string_view logFilePath) {
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
   } else {
     const auto path = std::string{logFilePath};
+    std::shared_ptr<spdlog::sinks::sink> fileSink;
     try {
-      sinks.push_back(
-          std::make_shared<spdlog::sinks::basic_file_sink_mt>(path, false));
+      fileSink =
+          std::make_shared<spdlog::sinks::basic_file_sink_mt>(path, false);
     } catch (const spdlog::spdlog_ex& error) {
       throw spdlog::spdlog_ex(
           "Failed to open comms log file '" + path + "': " + error.what());
     }
+    sinks.push_back(std::move(fileSink));
     sinks.push_back(std::make_shared<StderrRoutingSink>());
   }
   for (auto& sink : sinks) {
@@ -279,11 +307,9 @@ void CommsSpdlogLogger::logFormatted(
        configuration->threadContextFn(),
        threadName,
        configuration->prefix});
-  if (bypassLevelGate) {
-    spdlog::logger fatalLogger{
-        logger_->name(), logger_->sinks().begin(), logger_->sinks().end()};
-    fatalLogger.log(location, level, formatted);
-    fatalLogger.flush();
+  if (bypassLevelGate || !configuration->asyncLogging) {
+    synchronousLogger_->log(location, level, formatted);
+    synchronousLogger_->flush();
   } else {
     logger_->log(location, level, formatted);
   }
@@ -294,8 +320,8 @@ CommsSpdlogLogger& getSpdlogLogger() {
   return logger;
 }
 
-CommsSpdlogLogger& getSpdlogLogger(std::string_view contextName) {
-  if (contextName == kLoggerName) {
+CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
+  if (loggerName == kLoggerName) {
     return getSpdlogLogger();
   }
   static std::shared_mutex mutex;
@@ -303,15 +329,15 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view contextName) {
       loggers;
   {
     std::shared_lock lock{mutex};
-    if (const auto it = loggers.find(contextName); it != loggers.end()) {
+    if (const auto it = loggers.find(loggerName); it != loggers.end()) {
       return *it->second;
     }
   }
   std::unique_lock lock{mutex};
-  if (const auto it = loggers.find(contextName); it != loggers.end()) {
+  if (const auto it = loggers.find(loggerName); it != loggers.end()) {
     return *it->second;
   }
-  auto name = std::string{contextName};
+  auto name = std::string{loggerName};
   auto logger = std::make_unique<CommsSpdlogLogger>(name);
   const auto it = loggers.emplace(std::move(name), std::move(logger)).first;
   return *it->second;
@@ -324,14 +350,18 @@ void configureSpdlogLogger(
 }
 
 void configureSpdlogLogger(
-    std::string_view contextName,
+    std::string_view loggerName,
     std::string prefix,
     std::string_view logFilePath,
     std::function<int(void)> threadContextFn,
-    std::function<void(std::string_view)> errorCallback) {
-  auto& logger = getSpdlogLogger(contextName);
+    std::function<void(std::string_view)> errorCallback,
+    bool asyncLogging) {
+  auto& logger = getSpdlogLogger(loggerName);
   logger.configure(
-      std::move(prefix), std::move(threadContextFn), std::move(errorCallback));
+      std::move(prefix),
+      std::move(threadContextFn),
+      std::move(errorCallback),
+      asyncLogging);
   logger.configureOutput(logFilePath);
 }
 
