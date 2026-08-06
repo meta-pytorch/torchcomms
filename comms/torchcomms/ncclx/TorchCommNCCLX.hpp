@@ -26,7 +26,7 @@
 #include "comms/utils/GraphCaptureSideStream.h"
 
 #if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
+#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
 #endif
 
 namespace torch::comms {
@@ -500,7 +500,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void attachMemoryHook();
 
 #if defined(ENABLE_PRIMS)
-  torchcomms::device::PipesDeviceBackend::TransportHandleDevPtr
+  torchcomms::device::PrimsDeviceBackend::TransportHandleDevPtr
       device_transport_handle_;
 #endif
 

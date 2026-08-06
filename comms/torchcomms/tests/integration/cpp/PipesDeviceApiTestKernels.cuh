@@ -7,7 +7,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
-#include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
+#include "comms/torchcomms/device/prims/TorchCommDevicePrimsTypes.hpp"
 
 namespace torchcomms::device::test {
 

@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API - Pipes Backend Implementation (IBGDA + NVLink)
+// TorchComms Device API - Prims Backend Implementation (IBGDA + NVLink)
 //
-// Device-side implementations for TorchComms using Pipes:
+// Device-side implementations for TorchComms using Prims:
 //   - NVLink peers: direct vectorized memcpy via NVLink-mapped pointers
 //   - IBGDA peers: RDMA Write via DOCA GPUNetIO (P2pIbgdaTransportDevice)
 //   - SELF: NVLink local copy
@@ -20,7 +20,7 @@
 #if defined(ENABLE_PRIMS)
 
 #ifndef __CUDACC__
-#error "TorchCommDevicePipes.cuh must be compiled with nvcc."
+#error "TorchCommDevicePrims.cuh must be compiled with nvcc."
 #endif
 
 #include <cuda_runtime.h>
@@ -32,8 +32,8 @@
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
-#include "comms/torchcomms/device/pipes/PipesDeviceBackend.hpp"
-#include "comms/torchcomms/device/pipes/TorchCommDevicePipesTypes.hpp"
+#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
+#include "comms/torchcomms/device/prims/TorchCommDevicePrimsTypes.hpp"
 
 namespace torchcomms::device {
 
@@ -43,14 +43,14 @@ namespace torchcomms::device {
 
 namespace detail {
 
-// Map TorchComms SignalOp to Pipes SignalOp.
-__device__ inline comms::prims::SignalOp to_pipes_signal_op(SignalOp op) {
+// Map TorchComms SignalOp to Prims SignalOp.
+__device__ inline comms::prims::SignalOp to_prims_signal_op(SignalOp op) {
   return (op == SignalOp::ADD) ? comms::prims::SignalOp::SIGNAL_ADD
                                : comms::prims::SignalOp::SIGNAL_SET;
 }
 
-// Map TorchComms CmpOp to Pipes CmpOp.
-__device__ inline comms::prims::CmpOp to_pipes_cmp_op(CmpOp cmp) {
+// Map TorchComms CmpOp to Prims CmpOp.
+__device__ inline comms::prims::CmpOp to_prims_cmp_op(CmpOp cmp) {
   switch (cmp) {
     case CmpOp::EQ:
       return comms::prims::CmpOp::CMP_EQ;
@@ -68,8 +68,8 @@ __device__ inline comms::prims::CmpOp to_pipes_cmp_op(CmpOp cmp) {
   return comms::prims::CmpOp::CMP_GE;
 }
 
-// Build a pipes::ThreadGroup for the given CoopScope.
-__device__ inline comms::prims::ThreadGroup make_pipes_thread_group(
+// Build a Prims ThreadGroup for the given CoopScope.
+__device__ inline comms::prims::ThreadGroup make_prims_thread_group(
     CoopScope scope) {
   switch (scope) {
     case CoopScope::WARP:
@@ -85,7 +85,7 @@ __device__ inline comms::prims::ThreadGroup make_pipes_thread_group(
 } // namespace detail
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> Signal Operations
+// TorchCommDeviceWindow<PrimsDeviceBackend> Signal Operations
 // =============================================================================
 //
 // Delegates to comms::prims::DeviceWindow::signal_peer() which handles
@@ -93,30 +93,30 @@ __device__ inline comms::prims::ThreadGroup make_pipes_thread_group(
 // by (peer, signal_id) pairs.
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::signal(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::signal(
     int peer,
     int signal_id,
     SignalOp op,
     uint64_t value,
     CoopScope scope) {
   auto& win = *window_;
-  auto pipes_op = detail::to_pipes_signal_op(op);
+  auto prims_op = detail::to_prims_signal_op(op);
 
   if (scope == CoopScope::THREAD) {
-    win.signal_peer(peer, signal_id, pipes_op, value);
+    win.signal_peer(peer, signal_id, prims_op, value);
   } else {
-    auto group = detail::make_pipes_thread_group(scope);
-    win.signal_peer(group, peer, signal_id, pipes_op, value);
+    auto group = detail::make_prims_thread_group(scope);
+    win.signal_peer(group, peer, signal_id, prims_op, value);
   }
   return 0;
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> RMA Operations
+// TorchCommDeviceWindow<PrimsDeviceBackend> RMA Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::put(
     size_t dst_offset,
     const torch::comms::RegisteredBuffer& src_buf,
     size_t src_offset,
@@ -126,23 +126,23 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
     int counter_id,
     CoopScope scope) {
   auto& win = *window_;
-  auto group = detail::make_pipes_thread_group(scope);
+  auto group = detail::make_prims_thread_group(scope);
 
-  // Build Pipes LocalBufferRegistration from RegisteredBuffer.
-  // Pipes uses per-NIC lkeys (IBGDA local keys); GIN uses backend_window.
+  // Build Prims LocalBufferRegistration from RegisteredBuffer.
+  // Prims uses per-NIC lkeys (IBGDA local keys); GIN uses backend_window.
   // The kernel-side put selects lkeys[nic] based on slot dispatch, so all
   // per-NIC keys must be forwarded — partial population would leave
   // NIC[1..size-1] keys zero and corrupt WQEs on multi-NIC HW.
   // Loop bounded by src_buf.lkey_per_device.size (the populated NIC count
   // returned by the backend); on a 1-NIC host only slot 0 is read.
   const int numNics = src_buf.lkey_per_device.size;
-  ::comms::prims::NetworkLKeys pipes_lkeys(numNics);
+  ::comms::prims::NetworkLKeys prims_lkeys(numNics);
   for (int n = 0; n < numNics; ++n) {
-    pipes_lkeys[n] =
+    prims_lkeys[n] =
         ::comms::prims::NetworkLKey{src_buf.lkey_per_device.values[n]};
   }
-  ::comms::prims::LocalBufferRegistration pipes_src{
-      src_buf.base_ptr, src_buf.size, pipes_lkeys};
+  ::comms::prims::LocalBufferRegistration prims_src{
+      src_buf.base_ptr, src_buf.size, prims_lkeys};
 
   bool has_signal = signal_id >= 0;
   bool has_counter = counter_id >= 0;
@@ -152,7 +152,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
         group,
         dst_rank,
         dst_offset,
-        pipes_src,
+        prims_src,
         src_offset,
         bytes,
         signal_id,
@@ -164,7 +164,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
         group,
         dst_rank,
         dst_offset,
-        pipes_src,
+        prims_src,
         src_offset,
         bytes,
         signal_id,
@@ -174,53 +174,53 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::put(
         group,
         dst_rank,
         dst_offset,
-        pipes_src,
+        prims_src,
         src_offset,
         bytes,
         counter_id,
         /*counterVal=*/1);
   } else {
-    win.put(group, dst_rank, dst_offset, pipes_src, src_offset, bytes);
+    win.put(group, dst_rank, dst_offset, prims_src, src_offset, bytes);
   }
 
   return 0;
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> Wait Signal Operations
+// TorchCommDeviceWindow<PrimsDeviceBackend> Wait Signal Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_signal(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::wait_signal(
     int signal_id,
     CmpOp cmp,
     uint64_t value,
     CoopScope scope) {
   auto& win = *window_;
-  auto pipes_cmp = detail::to_pipes_cmp_op(cmp);
-  auto group = detail::make_pipes_thread_group(scope);
-  win.wait_signal(group, signal_id, pipes_cmp, value);
+  auto prims_cmp = detail::to_prims_cmp_op(cmp);
+  auto group = detail::make_prims_thread_group(scope);
+  win.wait_signal(group, signal_id, prims_cmp, value);
   return 0;
 }
 
 template <>
 __device__ inline int
-TorchCommDeviceWindow<PipesDeviceBackend>::wait_signal_from(
+TorchCommDeviceWindow<PrimsDeviceBackend>::wait_signal_from(
     int peer,
     int signal_id,
     CmpOp cmp,
     uint64_t value,
     CoopScope scope) {
   auto& win = *window_;
-  auto pipes_cmp = detail::to_pipes_cmp_op(cmp);
-  auto group = detail::make_pipes_thread_group(scope);
-  win.wait_signal_from(group, peer, signal_id, pipes_cmp, value);
+  auto prims_cmp = detail::to_prims_cmp_op(cmp);
+  auto group = detail::make_prims_thread_group(scope);
+  win.wait_signal_from(group, peer, signal_id, prims_cmp, value);
   return 0;
 }
 
 template <>
 __device__ inline uint64_t
-TorchCommDeviceWindow<PipesDeviceBackend>::read_signal(int signal_id) const {
+TorchCommDeviceWindow<PrimsDeviceBackend>::read_signal(int signal_id) const {
   // window_ is DeviceWindow* (not const), so dereference works in const
   // methods. DeviceWindow::read_signal() only reads inbox values despite being
   // non-const.
@@ -229,10 +229,10 @@ TorchCommDeviceWindow<PipesDeviceBackend>::read_signal(int signal_id) const {
 }
 
 template <>
-__device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
+__device__ inline void TorchCommDeviceWindow<PrimsDeviceBackend>::reset_signal(
     int signal_id,
     CoopScope scope) {
-  // Pipes DeviceWindow does not support device-side signal reset.
+  // Prims DeviceWindow does not support device-side signal reset.
   // Use monotonically increasing signal values, or reset from host side.
   (void)signal_id;
   (void)scope;
@@ -240,7 +240,7 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> Counter Operations
+// TorchCommDeviceWindow<PrimsDeviceBackend> Counter Operations
 // =============================================================================
 // Counters use companion RDMA QP loopback atomic signaling for NIC completion
 // tracking. read_counter/reset_counter must precede wait_counter (which calls
@@ -248,7 +248,7 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_signal(
 
 template <>
 __device__ inline uint64_t
-TorchCommDeviceWindow<PipesDeviceBackend>::read_counter(int counter_id) const {
+TorchCommDeviceWindow<PrimsDeviceBackend>::read_counter(int counter_id) const {
   // Sum the counter across all peers (aggregate model).
   auto& win = *window_;
   int nPeers = win.num_peers();
@@ -261,10 +261,10 @@ TorchCommDeviceWindow<PipesDeviceBackend>::read_counter(int counter_id) const {
 }
 
 template <>
-__device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
+__device__ inline void TorchCommDeviceWindow<PrimsDeviceBackend>::reset_counter(
     int counter_id,
     CoopScope scope) {
-  auto group = detail::make_pipes_thread_group(scope);
+  auto group = detail::make_prims_thread_group(scope);
   group.sync();
 
   if (group.is_leader()) {
@@ -278,12 +278,12 @@ __device__ inline void TorchCommDeviceWindow<PipesDeviceBackend>::reset_counter(
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_counter(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::wait_counter(
     int counter_id,
     CmpOp cmp,
     uint64_t value,
     CoopScope scope) {
-  auto group = detail::make_pipes_thread_group(scope);
+  auto group = detail::make_prims_thread_group(scope);
 
   if (group.is_leader()) {
     while (true) {
@@ -320,18 +320,18 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::wait_counter(
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> Synchronization Operations
+// TorchCommDeviceWindow<PrimsDeviceBackend> Synchronization Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::fence() {
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::fence() {
   // Compiler barrier: prevents reordering of put() calls across this point.
   asm volatile("" ::: "memory");
   return 0;
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::flush(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::flush(
     CoopScope scope) {
   // flush() = local completion: source buffers are safe to reuse.
   //
@@ -340,7 +340,7 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::flush(
   //
   // IBGDA: fence() drains each QP by posting a NOP WQE and waiting for
   // completion, ensuring all prior puts have been handed off to the NIC.
-  auto group = detail::make_pipes_thread_group(scope);
+  auto group = detail::make_prims_thread_group(scope);
   group.sync();
 
   auto& win = *window_;
@@ -356,36 +356,36 @@ __device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::flush(
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<PipesDeviceBackend>::barrier(
+__device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::barrier(
     int barrier_id,
     CoopScope scope) {
   // Delegate to DeviceWindow::barrier() which handles the full
   // arrive + wait protocol across NVL and IBGDA peers.
   auto& win = *window_;
-  auto group = detail::make_pipes_thread_group(scope);
+  auto group = detail::make_prims_thread_group(scope);
   win.barrier(group, barrier_id);
   return 0;
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> NVLink Address Query
+// TorchCommDeviceWindow<PrimsDeviceBackend> NVLink Address Query
 // =============================================================================
 
 template <>
 __device__ inline void*
-TorchCommDeviceWindow<PipesDeviceBackend>::get_nvlink_address(int peer) {
+TorchCommDeviceWindow<PrimsDeviceBackend>::get_nvlink_address(int peer) {
   return window_->get_nvlink_address(peer);
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<PipesDeviceBackend> Multimem Address Query
+// TorchCommDeviceWindow<PrimsDeviceBackend> Multimem Address Query
 // =============================================================================
 
 template <>
 __device__ inline void*
-TorchCommDeviceWindow<PipesDeviceBackend>::get_multimem_address(
+TorchCommDeviceWindow<PrimsDeviceBackend>::get_multimem_address(
     size_t /*offset*/) {
-  // Multimem (NVLS multicast) is an NCCL/GIN feature, not available via Pipes.
+  // Multimem (NVLS multicast) is an NCCL/GIN feature, not available via Prims.
   return nullptr;
 }
 
