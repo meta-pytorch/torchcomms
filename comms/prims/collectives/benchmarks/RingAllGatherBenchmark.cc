@@ -213,8 +213,10 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       auto& rp = launch_params.rings[r];
       rp.prev_rank = rings[r].prev_rank;
       rp.next_rank = rings[r].next_rank;
-      transport.queuePeerForMaterialization(rp.prev_rank);
-      transport.queuePeerForMaterialization(rp.next_rank);
+      transport.queuePeerForMaterialization(
+          rp.prev_rank, transport.channelCapacity());
+      transport.queuePeerForMaterialization(
+          rp.next_rank, transport.channelCapacity());
     }
     transport.connectPeers();
     for (int r = 0; r < config.num_rings; r++) {

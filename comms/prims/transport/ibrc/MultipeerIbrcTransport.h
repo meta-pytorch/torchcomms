@@ -43,13 +43,17 @@ class P2pIbrcTransportDevice;
  * updating host-mapped counter memory directly, instead of adding IBGDA-style
  * companion counter QPs.
  *
- * IBRC supports both eager exchange() and lazy per-peer materialization from
- * day one: the base's lazy connect loop drives the doMaterializePeer() hook
- * below, so there is no design-level eager-only restriction.
+ * IBRC always materializes peer resources lazily. exchange() leaves per-peer
+ * QPs, staging, and command queues deferred; the base's lazy connect loop
+ * drives the materializePeerChannelRange() hook below on first peer use.
  */
 class MultipeerIbrcTransport
     : public MultiPeerIbTransport<MultipeerIbrcTransport> {
  public:
+  static constexpr PeerChannelBackend peerChannelBackend() {
+    return PeerChannelBackend::kIbrc;
+  }
+
   MultipeerIbrcTransport(
       int myRank,
       int nRanks,
@@ -65,15 +69,13 @@ class MultipeerIbrcTransport
   MultipeerIbrcTransport& operator=(MultipeerIbrcTransport&&) = delete;
 
   /**
-   * exchange - COLLECTIVE. Connect QPs eagerly, then build command queues,
-   * device transports, and the CPU progress thread once those slices land.
+   * exchange - COLLECTIVE. Complete communicator setup without materializing
+   * any peer; peer resources remain deferred until first use.
    */
   void exchange();
 
   // numPeers() / myRank() / nRanks() / numNics() are inherited from
-  // MultiPeerIbTransport(Base). Buffer registration/exchange and lazy
-  // materialization are intentionally blocked by MultiPeerTransport until the
-  // IBRC backend initializes the required resources.
+  // MultiPeerIbTransport(Base). exchange() does not materialize any peer.
 
   P2pIbrcTransportDevice* getP2pTransportDeviceSlot(int peerRank) const;
 
@@ -82,11 +84,14 @@ class MultipeerIbrcTransport
   P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank);
 
  private:
-  // Lazy per-peer materialization hook. The shared base owns queueing,
-  // ordering, and failure rollback; IBRC fills in per-peer QPs and command
-  // queues here, then later slices will attach the device transport.
-  void doMaterializePeer(int peerRank);
-  void cleanupPeerOnFailure(int peerIndex);
+  // The shared base owns queueing, ordering, and terminal failure state. IBRC
+  // creates the peer's QPs, exchanges staging, builds command queues, and
+  // publishes the device transport here.
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t oldChannels,
+      uint32_t newChannels);
+  void onTerminalMaterializationFailure() noexcept;
 
   struct PeerQpResource {
     ibverbx::ibv_cq* cq{nullptr};
@@ -141,10 +146,9 @@ class MultipeerIbrcTransport
   struct PeerResources {
     std::vector<PeerQpResource> qpResources;
     std::vector<IbrcCmdQueueHost> cmdQueues;
-    MappedAllocation cmdQueueDevices;
-    MappedAllocation channelState;
-    bool qpsConnected{false};
-    bool cmdQueuesAllocated{false};
+    std::vector<MappedAllocation> completionRanges;
+    IbChannelLayout channelLayout;
+    bool deviceSlotPublished{false};
   };
 
   void cleanup();
@@ -176,33 +180,51 @@ class MultipeerIbrcTransport
   // any specific command queue, so all device wait paths observe the failure.
   void publishTransportError(uint32_t errorCode, const char* reason) noexcept;
 
-  void allocateCmdQueuesForAllPeers();
-  void allocatePeerCmdQueues(int peerIndex);
+  void allocatePeerCmdQueueRange(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const IbChannelLayout& rangeLayout);
   void initializeDeviceTransportSlots();
+  // Both descriptor vectors contain exactly [channelBegin, channelEnd).
+  void populatePeerDeviceRange(
+      int peerIndex,
+      int channelBegin,
+      int channelEnd,
+      const std::vector<IbrcCmdQueueDevice>& rangeCmdQueues,
+      const std::vector<IbChannel>& rangeChannels);
+  void clearPeerDeviceRange(
+      int peerIndex,
+      int channelBegin,
+      int channelEnd) noexcept;
   void updatePeerDeviceTransport(int peerIndex) noexcept;
-  std::size_t allocatedCmdQueueCount() const;
   MappedAllocation allocateMapped(std::size_t bytes, const char* label);
 
-  // ---- Pipelined send/recv staging (eager mode only) ----
+  // ---- Pipelined send/recv staging (peer-lazy) ----
   //
   // Host send/recv buffer management is shared with IBGDA in
-  // MultiPeerIbTransportBase. IBRC delegates to
-  // allocateSendRecvBuffersEager(IbCounterStorage::HostPinned) — the NIC_DONE
-  // counter is host-mapped and updated by the CPU proxy (NCCL GIN style)
-  // instead of an IBGDA companion-QP loopback counter — plus
-  // exchangeSendRecvBuffersEager(), sendRecvStateForPeer(), and
-  // cleanupSendRecvBuffers().
+  // MultiPeerIbTransportBase. materializePeerChannelRange() allocates and
+  // exchanges only the requested peer's staging and signal/counter resources.
+  // The NIC_DONE counter is host-mapped and updated by the CPU proxy (NCCL GIN
+  // style)
+  // instead of an IBGDA companion-QP loopback counter.
 
-  void createPeerQps(int peerIndex);
-  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void connectPeerQps(int peerIndex, const PeerQpPayload& remotePayload);
+  void createPeerQps(int peerIndex, uint32_t beginChannel, uint32_t endChannel);
+  PeerQpPayload buildLocalQpPayload(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
+  void connectPeerQps(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const PeerQpPayload& remotePayload);
   void connectPeerQp(
       PeerQpResource& qpResource,
       uint32_t remoteQpn,
       const uint8_t* remoteGid,
       uint16_t remoteLid,
       int remoteMtu);
-  void exchangeAndConnectQps();
   PeerQpResource& qpResourceAt(int peerIndex, int nic, int qpSlot);
   const PeerQpResource& qpResourceAt(int peerIndex, int nic, int qpSlot) const;
 
@@ -211,14 +233,17 @@ class MultipeerIbrcTransport
   friend class MultiPeerIbTransport<MultipeerIbrcTransport>;
 
   std::vector<PeerResources> peerResources_;
-  // Per-peer publish flag (release in allocatePeerCmdQueues, acquire in
-  // progressOnce) so the progress thread never reads a half-moved cmdQueues.
-  // Separate array: std::atomic can't live in the movable PeerResources vector.
-  std::unique_ptr<std::atomic<bool>[]> peerQueuesPublished_;
+  // Release-published command-queue prefix. Host queue tables are pre-sized so
+  // growth writes only unpublished elements while the progress thread reads
+  // the previously published prefix.
+  std::unique_ptr<std::atomic<uint32_t>[]> publishedCmdQueueCounts_;
   MappedAllocation statusControl_;
   MappedAllocation p2pTransportDevices_;
+  MappedAllocation cmdQueueDevices_;
+  MappedAllocation channelStates_;
   std::vector<IbrcNicStatus*> statusHostByNic_;
   std::vector<IbrcNicStatus*> statusDeviceByNic_;
+  std::size_t cmdQueuesPerPeer_{0};
   uint32_t cmdQueueDepth_{kIbrcDefaultCmdQueueDepth};
   std::size_t cmdQueuePiOffset_{0};
   std::size_t cmdQueueCiOffset_{0};
@@ -227,8 +252,8 @@ class MultipeerIbrcTransport
   std::thread progressThread_;
   std::vector<int> progressCpus_;
 
-  // Send/recv staging state (eager mode) lives in MultiPeerIbTransportBase
-  // (sendRecvPeerBuffers_ + bulks); IBRC delegates allocation/exchange/cleanup.
+  // Peer-lazy send/recv staging state and cleanup live in
+  // MultiPeerIbTransportBase.
 };
 
 } // namespace comms::prims

@@ -2,6 +2,7 @@
 
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 #include <cuda_runtime.h>
 #include <stdexcept>
@@ -365,7 +366,7 @@ __global__ void sendRecvKernel(
   }
 }
 
-__global__ void twoCallSendThenRecvKernel(
+__device__ void runTwoCallSendThenRecv(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
     void* recvBuffer,
@@ -384,6 +385,39 @@ __global__ void twoCallSendThenRecvKernel(
       group, sendBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
   transport.recv(
       group, recvBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+}
+
+__global__ void twoCallSendThenRecvKernel(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes) {
+  runTwoCallSendThenRecv(
+      transport,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes);
+}
+
+__global__ void multiPeerTwoCallSendThenRecvKernel(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes) {
+  runTwoCallSendThenRecv(
+      handle.get_ib(peerRank),
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes);
 }
 
 void testSendRecv(
@@ -420,6 +454,32 @@ void testTwoCallSendThenRecv(
       secondBytes,
       maxSignalBytes);
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testMultiPeerTwoCallSendThenRecv(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream) {
+  multiPeerTwoCallSendThenRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
+      handle,
+      peerRank,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes);
+  const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
         std::string("Kernel launch failed: ") + cudaGetErrorString(err));
@@ -470,7 +530,7 @@ __global__ void progressReservationKernel(
   transport->init_recv_progress(group, recvBytes);
 
   if (group.is_leader()) {
-    const auto& channel = transport->local_channel(group.group_id);
+    const auto& channel = transport->channel(group.group_id);
     output[0] = channel.sendProgress.nextStep;
     output[1] = channel.recvProgress.nextStep;
   }

@@ -5,19 +5,15 @@
 #include <cuda_runtime.h>
 #include <glog/logging.h>
 
-#include <cstring>
+#include <cstdint>
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims {
 namespace {
-
-std::size_t checkedAdd(std::size_t lhs, std::size_t rhs, const char* label) {
-  CHECK_LE(lhs, std::numeric_limits<std::size_t>::max() - rhs)
-      << label << " size overflow";
-  return lhs + rhs;
-}
 
 std::size_t checkedMul(std::size_t lhs, std::size_t rhs, const char* label) {
   CHECK(lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs)
@@ -25,345 +21,324 @@ std::size_t checkedMul(std::size_t lhs, std::size_t rhs, const char* label) {
   return lhs * rhs;
 }
 
-} // namespace
-
-P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
-    const std::vector<P2pIbgdaTransportBuildParams>& params,
-    int numPeers,
-    std::vector<void*>& outGpuAllocations) {
-  // All peers must have the same shape: same numNics, and same per-NIC QP
-  // counts. Take peer 0's layout as canonical and validate the rest.
-  CHECK(!params.empty() && !params[0].h_nicDeviceIbgdaResources.empty())
-      << "buildDeviceTransportsOnGpu: empty params or zero NICs";
-  int numNics = static_cast<int>(params[0].h_nicDeviceIbgdaResources.size());
-  int mainQpsPerNic =
-      static_cast<int>(params[0].h_nicDeviceIbgdaResources[0].qps.size());
-  int companionQpsPerNic = static_cast<int>(
-      params[0].h_nicDeviceIbgdaResources[0].companionQps.size());
-  for (int i = 0; i < numPeers; ++i) {
-    CHECK_EQ(params[i].maxChannels, params[0].maxChannels)
-        << "All peers must have the same maxChannels";
-    CHECK_EQ(params[i].qpsPerConnection, params[0].qpsPerConnection)
-        << "All peers must have the same qpsPerConnection";
-    CHECK_EQ(params[i].qpDirectionCount, params[0].qpDirectionCount)
-        << "All peers must have the same qpDirectionCount";
-    CHECK_EQ(
-        static_cast<int>(params[i].h_nicDeviceIbgdaResources.size()), numNics)
-        << "All peers must have the same numNics";
-    for (int n = 0; n < numNics; ++n) {
-      CHECK_EQ(
-          static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
-          params[i].maxChannels * params[i].qpDirectionCount *
-              params[i].qpsPerConnection)
-          << "Main QP count must equal maxChannels * qpDirectionCount * "
-             "qpsPerConnection";
-      CHECK_EQ(
-          static_cast<int>(
-              params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
-          params[i].maxChannels * params[i].qpDirectionCount *
-              params[i].qpsPerConnection)
-          << "Companion QP count must equal maxChannels * qpDirectionCount * "
-             "qpsPerConnection";
-      CHECK_EQ(
-          static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
-          mainQpsPerNic)
-          << "All peers' NICs must have the same QP count";
-      CHECK_EQ(
-          static_cast<int>(
-              params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
-          companionQpsPerNic)
-          << "All peers' NICs must have the same companion QP count";
-    }
+void throwOnCudaError(cudaError_t error, const char* operation) {
+  if (error != cudaSuccess) {
+    throw std::runtime_error(
+        std::string(operation) + ": " + cudaGetErrorString(error));
   }
-
-  // 1. Allocate one contiguous GPU buffer for all QP pointer arrays.
-  //    Layout per peer: [nic0_main][nic0_comp][nic1_main][nic1_comp]...
-  //    Total: numPeers * numNics * (mainQpsPerNic + companionQpsPerNic).
-  std::size_t qpsPerPeer = static_cast<std::size_t>(numNics) *
-      (static_cast<std::size_t>(mainQpsPerNic) + companionQpsPerNic);
-  std::size_t totalQpBytes =
-      numPeers * qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
-  doca_gpu_dev_verbs_qp** d_allQps = nullptr;
-  cudaError_t err = cudaMalloc(&d_allQps, totalQpBytes);
-  CHECK(err == cudaSuccess)
-      << "Failed to allocate GPU QP arrays: " << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_allQps);
-
-  std::vector<doca_gpu_dev_verbs_qp*> h_qps;
-  h_qps.reserve(numPeers * qpsPerPeer);
-  for (int i = 0; i < numPeers; ++i) {
-    for (int n = 0; n < numNics; ++n) {
-      const auto& nicSpec = params[i].h_nicDeviceIbgdaResources[n];
-      h_qps.insert(h_qps.end(), nicSpec.qps.begin(), nicSpec.qps.end());
-      h_qps.insert(
-          h_qps.end(),
-          nicSpec.companionQps.begin(),
-          nicSpec.companionQps.end());
-    }
-  }
-  err =
-      cudaMemcpy(d_allQps, h_qps.data(), totalQpBytes, cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to copy QP arrays to GPU: " << cudaGetErrorString(err);
-
-  // 2. Allocate one contiguous GPU buffer for all NicDeviceIbgdaResources
-  // structs:
-  //    [peer0_nic0..nicN-1][peer1_nic0..nicN-1]...
-  std::size_t totalNicBytes =
-      numPeers * numNics * sizeof(NicDeviceIbgdaResources);
-  NicDeviceIbgdaResources* d_allNicResources = nullptr;
-  err = cudaMalloc(&d_allNicResources, totalNicBytes);
-  CHECK(err == cudaSuccess)
-      << "Failed to allocate GPU NicDeviceIbgdaResources array: "
-      << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_allNicResources);
-
-  std::vector<NicDeviceIbgdaResources> h_nicResources;
-  h_nicResources.reserve(numPeers * numNics);
-  for (int i = 0; i < numPeers; ++i) {
-    for (int n = 0; n < numNics; ++n) {
-      auto* d_mainQps = d_allQps + (i * qpsPerPeer) +
-          n * (mainQpsPerNic + companionQpsPerNic);
-      auto* d_companionQps = d_mainQps + mainQpsPerNic;
-      h_nicResources.push_back(
-          NicDeviceIbgdaResources{
-              DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, mainQpsPerNic),
-              DeviceSpan<doca_gpu_dev_verbs_qp*>(
-                  d_companionQps, companionQpsPerNic),
-              params[i].h_nicDeviceIbgdaResources[n].sinkLkey,
-              params[i].h_nicDeviceIbgdaResources[n].deviceId,
-          });
-    }
-  }
-  err = cudaMemcpy(
-      d_allNicResources,
-      h_nicResources.data(),
-      totalNicBytes,
-      cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to copy NicDeviceIbgdaResources array to GPU: "
-      << cudaGetErrorString(err);
-
-  // 3. Build transport objects pointing into the contiguous
-  // NicDeviceIbgdaResources array.
-  IbLocalChannel* d_allLocalChannels = nullptr;
-  std::size_t blockStateBytes = static_cast<std::size_t>(numPeers) *
-      params[0].maxChannels * sizeof(IbLocalChannel);
-  err = cudaMalloc(&d_allLocalChannels, blockStateBytes);
-  CHECK(err == cudaSuccess)
-      << "Failed to allocate GPU IB channel state: " << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_allLocalChannels);
-  std::size_t totalCompletionSlots = 0;
-  for (int i = 0; i < numPeers; ++i) {
-    const int pipelineDepth = params[i].channelLayout.pipelineDepth;
-    CHECK_GE(pipelineDepth, 0) << "pipelineDepth must not be negative";
-    const std::size_t peerCompletionSlots = checkedMul(
-        static_cast<std::size_t>(params[i].maxChannels),
-        static_cast<std::size_t>(pipelineDepth),
-        "send completion slots");
-    totalCompletionSlots = checkedAdd(
-        totalCompletionSlots, peerCompletionSlots, "send completion slots");
-  }
-  IbSendCompletionSlot* d_allCompletionSlots = nullptr;
-  const std::size_t completionSlotBytes = checkedMul(
-      totalCompletionSlots,
-      sizeof(IbSendCompletionSlot),
-      "send completion slots");
-  if (completionSlotBytes != 0) {
-    err = cudaMalloc(&d_allCompletionSlots, completionSlotBytes);
-    CHECK(err == cudaSuccess)
-        << "Failed to allocate GPU send completion slots: "
-        << cudaGetErrorString(err);
-    outGpuAllocations.push_back(d_allCompletionSlots);
-    err = cudaMemset(d_allCompletionSlots, 0, completionSlotBytes);
-    CHECK(err == cudaSuccess)
-        << "Failed to initialize GPU send completion slots: "
-        << cudaGetErrorString(err);
-  }
-  std::vector<IbLocalChannel> h_localChannels(
-      static_cast<std::size_t>(numPeers) * params[0].maxChannels);
-  std::size_t completionSlotOffset = 0;
-  for (int i = 0; i < numPeers; ++i) {
-    for (int channel = 0; channel < params[i].maxChannels; ++channel) {
-      const auto channelIndex =
-          static_cast<std::size_t>(i) * params[0].maxChannels + channel;
-      const std::size_t pipelineDepth =
-          static_cast<std::size_t>(params[i].channelLayout.pipelineDepth);
-      IbSendCompletionSlot* completionSlots = pipelineDepth == 0
-          ? nullptr
-          : d_allCompletionSlots + completionSlotOffset;
-      h_localChannels[channelIndex] =
-          makeIbLocalChannel(params[i].channelLayout, channel, completionSlots);
-      completionSlotOffset += pipelineDepth;
-    }
-  }
-  err = cudaMemcpy(
-      d_allLocalChannels,
-      h_localChannels.data(),
-      blockStateBytes,
-      cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess) << "Failed to initialize GPU IB channel state: "
-                            << cudaGetErrorString(err);
-
-  std::vector<P2pIbgdaTransportDevice> h_transports;
-  h_transports.reserve(numPeers);
-  for (int i = 0; i < numPeers; ++i) {
-    NicDeviceIbgdaResources* d_peerNicResources =
-        d_allNicResources + i * numNics;
-    h_transports.emplace_back(
-        DeviceSpan<NicDeviceIbgdaResources>(d_peerNicResources, numNics),
-        params[i].remoteSignalBuf,
-        params[i].localSignalBuf,
-        params[i].counterBuf,
-        params[i].numSignalSlots,
-        params[i].numCounterSlots,
-        params[i].maxChannels,
-        params[i].qpsPerConnection,
-        params[i].qpDirectionCount,
-        DeviceSpan<IbLocalChannel>(
-            d_allLocalChannels + i * params[i].maxChannels,
-            params[i].maxChannels),
-        params[i].channelLayout);
-  }
-
-  // 4. Allocate and copy transport objects to GPU.
-  P2pIbgdaTransportDevice* gpuPtr = nullptr;
-  std::size_t transportSize = numPeers * sizeof(P2pIbgdaTransportDevice);
-  err = cudaMalloc(&gpuPtr, transportSize);
-  CHECK(err == cudaSuccess) << "Failed to allocate GPU device transports: "
-                            << cudaGetErrorString(err);
-  outGpuAllocations.push_back(gpuPtr); // track before memcpy for leak safety
-  err = cudaMemcpy(
-      gpuPtr, h_transports.data(), transportSize, cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to copy device transports to GPU: " << cudaGetErrorString(err);
-
-  return gpuPtr;
 }
 
-void writeDeviceTransportSlot(
-    P2pIbgdaTransportDevice* deviceArray,
-    int peerIndex,
-    const P2pIbgdaTransportBuildParams& params,
+// Initializes and publishes device transport state outside active stream
+// capture.
+class CaptureSafeDeviceInitStream {
+ public:
+  CaptureSafeDeviceInitStream() {
+    throwOnCudaError(
+        cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking),
+        "Failed to create IBGDA device initialization stream");
+  }
+
+  ~CaptureSafeDeviceInitStream() {
+    if (stream_ != nullptr) {
+      cudaStream_t stream = stream_;
+      stream_ = nullptr;
+      (void)cudaStreamSynchronize(stream);
+      (void)cudaStreamDestroy(stream);
+    }
+  }
+
+  void memset(void* dst, int value, std::size_t bytes) {
+    throwOnCudaError(
+        cudaMemsetAsync(dst, value, bytes, stream_),
+        "Failed to enqueue IBGDA device initialization memset");
+  }
+
+  void copyHostToDevice(void* dst, const void* src, std::size_t bytes) {
+    throwOnCudaError(
+        cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_),
+        "Failed to enqueue IBGDA device initialization copy");
+  }
+
+  void synchronize() {
+    cudaStream_t stream = stream_;
+    stream_ = nullptr;
+    const cudaError_t syncError = cudaStreamSynchronize(stream);
+    const cudaError_t destroyError = cudaStreamDestroy(stream);
+    throwOnCudaError(
+        syncError, "Failed to synchronize IBGDA device initialization");
+    throwOnCudaError(
+        destroyError, "Failed to destroy IBGDA device initialization stream");
+  }
+
+ private:
+  cudaStream_t stream_{nullptr};
+};
+
+struct QpTableLayout {
+  std::size_t qpsPerChannel;
+  std::size_t qpsPerNic;
+  std::size_t qpsPerPeer;
+};
+
+QpTableLayout qpTableLayout(const IbgdaFixedDeviceTables& tables) {
+  const std::size_t qpsPerChannel = checkedMul(
+      static_cast<std::size_t>(tables.qpDirectionCount),
+      static_cast<std::size_t>(tables.qpsPerConnection),
+      "QP slots per channel");
+  const std::size_t qpsPerNic = checkedMul(
+      static_cast<std::size_t>(tables.maxChannels),
+      qpsPerChannel,
+      "QP slots per NIC");
+  return QpTableLayout{
+      .qpsPerChannel = qpsPerChannel,
+      .qpsPerNic = qpsPerNic,
+      .qpsPerPeer = checkedMul(
+          static_cast<std::size_t>(tables.numNics),
+          checkedMul(std::size_t{2}, qpsPerNic, "main and companion QP slots"),
+          "QP slots per peer"),
+  };
+}
+
+doca_gpu_dev_verbs_qp** peerQps(
+    const IbgdaFixedDeviceTables& tables,
+    const QpTableLayout& layout,
+    int peerIndex) {
+  return tables.qps + static_cast<std::size_t>(peerIndex) * layout.qpsPerPeer;
+}
+
+IbChannel* peerChannels(const IbgdaFixedDeviceTables& tables, int peerIndex) {
+  return tables.channels +
+      static_cast<std::size_t>(peerIndex) * tables.maxChannels;
+}
+
+} // namespace
+
+IbgdaFixedDeviceTables allocateIbgdaFixedDeviceTables(
+    int numPeers,
+    int numNics,
+    int maxChannels,
+    int qpsPerConnection,
+    int qpDirectionCount,
+    int pipelineDepth,
     std::vector<void*>& outGpuAllocations) {
-  CHECK(!params.h_nicDeviceIbgdaResources.empty())
-      << "writeDeviceTransportSlot needs >= 1 NIC";
-  int numNics = static_cast<int>(params.h_nicDeviceIbgdaResources.size());
-  int mainQpsPerNic =
-      static_cast<int>(params.h_nicDeviceIbgdaResources[0].qps.size());
-  int companionQpsPerNic =
-      static_cast<int>(params.h_nicDeviceIbgdaResources[0].companionQps.size());
-  for (int n = 0; n < numNics; ++n) {
-    CHECK_EQ(
-        static_cast<int>(params.h_nicDeviceIbgdaResources[n].qps.size()),
-        mainQpsPerNic)
-        << "All NICs must have the same QP count";
-    CHECK_EQ(
-        static_cast<int>(
-            params.h_nicDeviceIbgdaResources[n].companionQps.size()),
-        companionQpsPerNic)
-        << "All NICs must have the same companion QP count";
+  CHECK_GT(numPeers, 0);
+  CHECK_GT(numNics, 0);
+  CHECK_GT(maxChannels, 0);
+  CHECK_GT(qpsPerConnection, 0);
+  CHECK_GT(qpDirectionCount, 0);
+  CHECK_GE(pipelineDepth, 0);
+
+  IbgdaFixedDeviceTables tables{
+      .numPeers = numPeers,
+      .numNics = numNics,
+      .maxChannels = maxChannels,
+      .qpsPerConnection = qpsPerConnection,
+      .qpDirectionCount = qpDirectionCount,
+      .pipelineDepth = pipelineDepth,
+  };
+  const QpTableLayout layout = qpTableLayout(tables);
+
+  const std::size_t qpBytes = checkedMul(
+      checkedMul(
+          static_cast<std::size_t>(numPeers),
+          layout.qpsPerPeer,
+          "fixed QP slots"),
+      sizeof(doca_gpu_dev_verbs_qp*),
+      "fixed QP table");
+  cudaError_t err = cudaMalloc(&tables.qps, qpBytes);
+  throwOnCudaError(err, "Failed to allocate fixed GPU QP tables");
+  outGpuAllocations.push_back(tables.qps);
+  err = cudaMemset(tables.qps, 0, qpBytes);
+  throwOnCudaError(err, "Failed to zero fixed GPU QP tables");
+
+  const std::size_t nicBytes = checkedMul(
+      checkedMul(
+          static_cast<std::size_t>(numPeers),
+          static_cast<std::size_t>(numNics),
+          "fixed NIC resources"),
+      sizeof(NicDeviceIbgdaResources),
+      "fixed NIC resource table");
+  err = cudaMalloc(&tables.nicResources, nicBytes);
+  throwOnCudaError(err, "Failed to allocate fixed GPU NIC resource table");
+  outGpuAllocations.push_back(tables.nicResources);
+  err = cudaMemset(tables.nicResources, 0, nicBytes);
+  throwOnCudaError(err, "Failed to zero fixed GPU NIC resource table");
+
+  const std::size_t channelCount = checkedMul(
+      static_cast<std::size_t>(numPeers),
+      static_cast<std::size_t>(maxChannels),
+      "fixed channel descriptors");
+  const std::size_t channelBytes = checkedMul(
+      channelCount, sizeof(IbChannel), "fixed channel descriptor table");
+  err = cudaMalloc(&tables.channels, channelBytes);
+  throwOnCudaError(
+      err, "Failed to allocate fixed GPU channel descriptor table");
+  outGpuAllocations.push_back(tables.channels);
+  err = cudaMemset(tables.channels, 0, channelBytes);
+  throwOnCudaError(err, "Failed to zero fixed GPU channel descriptor table");
+
+  const std::size_t transportBytes = checkedMul(
+      static_cast<std::size_t>(numPeers),
+      sizeof(P2pIbgdaTransportDevice),
+      "fixed device transport table");
+  err = cudaMalloc(&tables.transports, transportBytes);
+  throwOnCudaError(err, "Failed to allocate fixed GPU device transport table");
+  outGpuAllocations.push_back(tables.transports);
+  err = cudaMemset(tables.transports, 0, transportBytes);
+  throwOnCudaError(err, "Failed to zero fixed GPU device transport table");
+
+  return tables;
+}
+
+P2pIbgdaTransportDevice* ibgdaDeviceSlot(
+    P2pIbgdaTransportDevice* transports,
+    int peerIndex) {
+  return transports + peerIndex;
+}
+
+IbSendCompletionSlot* allocateIbgdaCompletionSlots(
+    std::size_t numChannels,
+    int pipelineDepth,
+    std::vector<void*>& outGpuAllocations) {
+  CHECK_GE(pipelineDepth, 0);
+  const std::size_t completionCount = checkedMul(
+      numChannels,
+      static_cast<std::size_t>(pipelineDepth),
+      "send completion slots");
+  const std::size_t completionBytes = checkedMul(
+      completionCount, sizeof(IbSendCompletionSlot), "send completion slots");
+  if (completionBytes == 0) {
+    return nullptr;
   }
 
-  std::size_t qpsPerPeer = static_cast<std::size_t>(numNics) *
-      (static_cast<std::size_t>(mainQpsPerNic) + companionQpsPerNic);
-  std::size_t qpBytes = qpsPerPeer * sizeof(doca_gpu_dev_verbs_qp*);
-  doca_gpu_dev_verbs_qp** d_qps = nullptr;
-  cudaError_t err = cudaMalloc(&d_qps, qpBytes);
-  CHECK(err == cudaSuccess) << "Failed to allocate per-peer GPU QP array: "
-                            << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_qps);
+  IbSendCompletionSlot* completionSlots = nullptr;
+  cudaError_t err = cudaMalloc(&completionSlots, completionBytes);
+  throwOnCudaError(err, "Failed to allocate GPU send completion slots");
+  outGpuAllocations.push_back(completionSlots);
+  CaptureSafeDeviceInitStream deviceInitStream;
+  deviceInitStream.memset(completionSlots, 0, completionBytes);
+  deviceInitStream.synchronize();
+  return completionSlots;
+}
 
-  std::vector<doca_gpu_dev_verbs_qp*> h_qps;
-  h_qps.reserve(qpsPerPeer);
-  for (int n = 0; n < numNics; ++n) {
-    const auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
-    h_qps.insert(h_qps.end(), nicSpec.qps.begin(), nicSpec.qps.end());
-    h_qps.insert(
-        h_qps.end(), nicSpec.companionQps.begin(), nicSpec.companionQps.end());
+void populateIbgdaDeviceRange(
+    const IbgdaFixedDeviceTables& tables,
+    int peerIndex,
+    int beginChannel,
+    int endChannel,
+    const P2pIbgdaTransportBuildParams& params,
+    const std::vector<IbChannel>& rangeChannels) {
+  CHECK(tables.transports != nullptr);
+  CHECK(tables.qps != nullptr);
+  CHECK(tables.nicResources != nullptr);
+  CHECK(tables.channels != nullptr);
+  CHECK_GE(peerIndex, 0);
+  CHECK_LT(peerIndex, tables.numPeers);
+  CHECK_GE(beginChannel, 0);
+  CHECK_LE(beginChannel, endChannel);
+  CHECK_LE(endChannel, tables.maxChannels);
+  CHECK_EQ(params.maxChannels, tables.maxChannels);
+  CHECK_EQ(params.qpsPerConnection, tables.qpsPerConnection);
+  CHECK_EQ(params.qpDirectionCount, tables.qpDirectionCount);
+  CHECK_EQ(params.channelLayout.pipelineDepth, tables.pipelineDepth);
+  CHECK_EQ(
+      rangeChannels.size(),
+      static_cast<std::size_t>(endChannel - beginChannel));
+  CHECK_EQ(
+      static_cast<int>(params.h_nicDeviceIbgdaResources.size()),
+      tables.numNics);
+
+  const QpTableLayout layout = qpTableLayout(tables);
+  const std::size_t beginQp =
+      static_cast<std::size_t>(beginChannel) * layout.qpsPerChannel;
+  const std::size_t qpCount =
+      static_cast<std::size_t>(endChannel - beginChannel) *
+      layout.qpsPerChannel;
+  auto* const peerQpTable = peerQps(tables, layout, peerIndex);
+
+  CaptureSafeDeviceInitStream deviceInitStream;
+  for (int nic = 0; nic < tables.numNics; ++nic) {
+    const auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
+    CHECK_EQ(nicSpec.qps.size(), layout.qpsPerNic);
+    CHECK_EQ(nicSpec.companionQps.size(), layout.qpsPerNic);
+    auto* mainQps =
+        peerQpTable + static_cast<std::size_t>(nic) * 2 * layout.qpsPerNic;
+    if (qpCount != 0) {
+      const std::size_t qpBytes = qpCount * sizeof(doca_gpu_dev_verbs_qp*);
+      deviceInitStream.copyHostToDevice(
+          mainQps + beginQp, nicSpec.qps.data() + beginQp, qpBytes);
+      deviceInitStream.copyHostToDevice(
+          mainQps + layout.qpsPerNic + beginQp,
+          nicSpec.companionQps.data() + beginQp,
+          qpBytes);
+    }
   }
-  err = cudaMemcpy(d_qps, h_qps.data(), qpBytes, cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to copy per-peer QP array to GPU: " << cudaGetErrorString(err);
 
-  std::size_t nicBytes = numNics * sizeof(NicDeviceIbgdaResources);
-  NicDeviceIbgdaResources* d_nicResources = nullptr;
-  err = cudaMalloc(&d_nicResources, nicBytes);
-  CHECK(err == cudaSuccess)
-      << "Failed to allocate per-peer NicDeviceIbgdaResources: "
-      << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_nicResources);
+  auto* const peerChannelTable = peerChannels(tables, peerIndex);
+  if (beginChannel != endChannel) {
+    deviceInitStream.copyHostToDevice(
+        peerChannelTable + beginChannel,
+        rangeChannels.data(),
+        rangeChannels.size() * sizeof(IbChannel));
+  }
+  deviceInitStream.synchronize();
+}
 
-  std::vector<NicDeviceIbgdaResources> h_nicResources;
-  h_nicResources.reserve(numNics);
-  for (int n = 0; n < numNics; ++n) {
-    auto* d_mainQps = d_qps + n * (mainQpsPerNic + companionQpsPerNic);
-    auto* d_companionQps = d_mainQps + mainQpsPerNic;
-    h_nicResources.push_back(
+void publishIbgdaDeviceSlot(
+    const IbgdaFixedDeviceTables& tables,
+    int peerIndex,
+    const P2pIbgdaTransportBuildParams& params) {
+  CHECK(tables.transports != nullptr);
+  CHECK(tables.qps != nullptr);
+  CHECK(tables.nicResources != nullptr);
+  CHECK(tables.channels != nullptr);
+  CHECK_GE(peerIndex, 0);
+  CHECK_LT(peerIndex, tables.numPeers);
+  CHECK_EQ(params.maxChannels, tables.maxChannels);
+  CHECK_EQ(params.qpsPerConnection, tables.qpsPerConnection);
+  CHECK_EQ(params.qpDirectionCount, tables.qpDirectionCount);
+  CHECK_EQ(params.channelLayout.pipelineDepth, tables.pipelineDepth);
+  CHECK_EQ(
+      static_cast<int>(params.h_nicDeviceIbgdaResources.size()),
+      tables.numNics);
+  CHECK_LE(tables.numNics, kMaxNicsPerGpu);
+
+  const QpTableLayout layout = qpTableLayout(tables);
+  CHECK_LE(layout.qpsPerNic, static_cast<std::size_t>(UINT32_MAX));
+  const auto qpsPerNicSpan = static_cast<uint32_t>(layout.qpsPerNic);
+  auto* const peerQpTable = peerQps(tables, layout, peerIndex);
+
+  std::vector<NicDeviceIbgdaResources> hostNicResources;
+  hostNicResources.reserve(tables.numNics);
+  for (int nic = 0; nic < tables.numNics; ++nic) {
+    const auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
+    CHECK_EQ(nicSpec.qps.size(), layout.qpsPerNic);
+    CHECK_EQ(nicSpec.companionQps.size(), layout.qpsPerNic);
+    auto* mainQps =
+        peerQpTable + static_cast<std::size_t>(nic) * 2 * layout.qpsPerNic;
+    hostNicResources.push_back(
         NicDeviceIbgdaResources{
-            DeviceSpan<doca_gpu_dev_verbs_qp*>(d_mainQps, mainQpsPerNic),
+            DeviceSpan<doca_gpu_dev_verbs_qp*>(mainQps, qpsPerNicSpan),
             DeviceSpan<doca_gpu_dev_verbs_qp*>(
-                d_companionQps, companionQpsPerNic),
-            params.h_nicDeviceIbgdaResources[n].sinkLkey,
-            params.h_nicDeviceIbgdaResources[n].deviceId,
+                mainQps + layout.qpsPerNic, qpsPerNicSpan),
+            nicSpec.sinkLkey,
+            nicSpec.deviceId,
         });
   }
-  err = cudaMemcpy(
-      d_nicResources, h_nicResources.data(), nicBytes, cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to copy per-peer NicDeviceIbgdaResources to GPU: "
-      << cudaGetErrorString(err);
+  CaptureSafeDeviceInitStream deviceInitStream;
+  deviceInitStream.copyHostToDevice(
+      tables.nicResources +
+          static_cast<std::size_t>(peerIndex) * tables.numNics,
+      hostNicResources.data(),
+      static_cast<std::size_t>(tables.numNics) *
+          sizeof(NicDeviceIbgdaResources));
 
-  IbLocalChannel* d_localChannels = nullptr;
-  std::size_t blockStateBytes =
-      static_cast<std::size_t>(params.maxChannels) * sizeof(IbLocalChannel);
-  err = cudaMalloc(&d_localChannels, blockStateBytes);
-  CHECK(err == cudaSuccess) << "Failed to allocate per-peer IB channel state: "
-                            << cudaGetErrorString(err);
-  outGpuAllocations.push_back(d_localChannels);
-  CHECK_GE(params.channelLayout.pipelineDepth, 0)
-      << "pipelineDepth must not be negative";
-  const std::size_t pipelineDepth =
-      static_cast<std::size_t>(params.channelLayout.pipelineDepth);
-  const std::size_t completionSlotCount = checkedMul(
-      static_cast<std::size_t>(params.maxChannels),
-      pipelineDepth,
-      "send completion slots");
-  IbSendCompletionSlot* d_completionSlots = nullptr;
-  const std::size_t completionSlotBytes = checkedMul(
-      completionSlotCount,
-      sizeof(IbSendCompletionSlot),
-      "send completion slots");
-  if (completionSlotBytes != 0) {
-    err = cudaMalloc(&d_completionSlots, completionSlotBytes);
-    CHECK(err == cudaSuccess) << "Failed to allocate per-peer send completion "
-                                 "slots: "
-                              << cudaGetErrorString(err);
-    outGpuAllocations.push_back(d_completionSlots);
-    err = cudaMemset(d_completionSlots, 0, completionSlotBytes);
-    CHECK(err == cudaSuccess)
-        << "Failed to initialize per-peer send completion slots: "
-        << cudaGetErrorString(err);
-  }
-  std::vector<IbLocalChannel> h_localChannels(params.maxChannels);
-  for (int channel = 0; channel < params.maxChannels; ++channel) {
-    IbSendCompletionSlot* completionSlots = pipelineDepth == 0
-        ? nullptr
-        : d_completionSlots + static_cast<std::size_t>(channel) * pipelineDepth;
-    h_localChannels[channel] =
-        makeIbLocalChannel(params.channelLayout, channel, completionSlots);
-  }
-  err = cudaMemcpy(
-      d_localChannels,
-      h_localChannels.data(),
-      blockStateBytes,
-      cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess)
-      << "Failed to initialize per-peer IB channel state: "
-      << cudaGetErrorString(err);
-
+  auto* const peerChannelTable = peerChannels(tables, peerIndex);
   P2pIbgdaTransportDevice hostTransport(
-      DeviceSpan<NicDeviceIbgdaResources>(d_nicResources, numNics),
+      DeviceSpan<NicDeviceIbgdaResources>(
+          tables.nicResources +
+              static_cast<std::size_t>(peerIndex) * tables.numNics,
+          tables.numNics),
       params.remoteSignalBuf,
       params.localSignalBuf,
       params.counterBuf,
@@ -372,20 +347,13 @@ void writeDeviceTransportSlot(
       params.maxChannels,
       params.qpsPerConnection,
       params.qpDirectionCount,
-      DeviceSpan<IbLocalChannel>(d_localChannels, params.maxChannels),
+      DeviceSpan<IbChannel>(peerChannelTable, params.maxChannels),
       params.channelLayout);
-
-  err = cudaMemcpy(
-      deviceArray + peerIndex,
+  deviceInitStream.copyHostToDevice(
+      tables.transports + peerIndex,
       &hostTransport,
-      sizeof(P2pIbgdaTransportDevice),
-      cudaMemcpyHostToDevice);
-  CHECK(err == cudaSuccess) << "Failed to copy per-peer device transport slot: "
-                            << cudaGetErrorString(err);
-}
-
-std::size_t getP2pIbgdaTransportDeviceSize() {
-  return sizeof(P2pIbgdaTransportDevice);
+      sizeof(P2pIbgdaTransportDevice));
+  deviceInitStream.synchronize();
 }
 
 } // namespace comms::prims

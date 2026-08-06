@@ -26,6 +26,10 @@ namespace meta::comms {
 class DeviceBuffer;
 } // namespace meta::comms
 
+namespace comms::fault_tolerance {
+class Abort;
+} // namespace comms::fault_tolerance
+
 namespace comms::prims {
 
 /**
@@ -92,14 +96,12 @@ struct MultipeerIbTransportConfig {
   // slot-index API. Independent of send/recv's private counter buffers.
   int numCounterSlots{0};
 
-  // Maximum number of physical block groups that may own IB QP resources.
-  // Device-side IB QP selection uses ThreadGroup::block_id and requires
-  // block_id < maxGroups.
+  // Legacy raw put() channel count. When perChannelSize is zero, the transport
+  // uses this value as max_num_channels.
   int maxGroups{64};
 
-  // Legacy block-owned QP count for IBRC. IBGDA send/recv uses
-  // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
-  // fixed-channel shape in the following stack diff.
+  // Legacy raw put() QPs per channel and NIC. When perChannelSize is zero, the
+  // transport uses this value as qpsPerConnection.
   int qpsPerBlockPerNic{1};
 
   // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
@@ -115,6 +117,8 @@ struct MultipeerIbTransportConfig {
   // geometry as main QPs because device-side lane selection indexes both with
   // qpsPerConnection.
   int qpsPerConnection{1};
+
+  MultipeerIbTransportConfig normalizedChannelGeometry() const;
 
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
@@ -220,6 +224,14 @@ struct MultipeerIbTransportConfig {
   // Deprecated compatibility setting. Per-peer state is always materialized
   // on demand; false no longer enables eager all-peer allocation.
   bool ibLazyConnect{true};
+
+  // Enable per-peer channel-prefix growth on supporting backends. Unsupported
+  // backends retain full-capacity materialization on first peer use. All ranks
+  // in a communicator must use the same value.
+  bool lazyChannels{false};
+
+  // MCCL communicator abort state. Direct transport users may omit it.
+  std::shared_ptr<::comms::fault_tolerance::Abort> abort;
 };
 
 // Whether Data-Direct MR registration applies for a NIC: Data-Direct is
@@ -278,7 +290,7 @@ struct IbTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 // Eager allGather QPN exchange uses a compact fixed-size wire format. Larger
-// block-owned QP shapes must use lazy peer materialization.
+// block-owned QP shapes must use per-peer channel materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
 constexpr int kMaxIbGroups = 64;
@@ -325,11 +337,36 @@ struct IbTransportExchInfoAll {
 
 // Phases within the peer-pair-specific bootstrap tag computed by
 // exchangeRawWithPeer().
-constexpr int kIbPeerQpExchangeTag = 0;
-constexpr int kIbPeerBufferExchangeTag = 1;
+constexpr int kIbPeerChannelRequestTag = 0;
+constexpr int kIbPeerQpExchangeTag = 1;
+constexpr int kIbPeerBufferExchangeTag = 2;
+constexpr int kIbPeerChannelReadyTag = 3;
 
-// Wire formats for bilateral peer materialization. Split into two phases: QP
-// info first (to connect), then buffer info (acts as QP-ready barrier).
+enum class PeerChannelBackend : uint32_t {
+  kIbgda = 0,
+  kIbrc = 1,
+};
+
+struct PeerChannelRequest {
+  uint32_t backend{0};
+  uint32_t beginChannel{0};
+  uint32_t endChannel{0};
+  uint32_t capacity{0};
+  uint32_t numNics{0};
+  uint32_t directionCount{0};
+  uint32_t qpsPerConnection{0};
+  uint32_t pipelineDepth{0};
+  uint32_t numSignalSlots{0};
+  uint32_t numCounterSlots{0};
+  uint64_t perChannelSize{0};
+
+  bool operator==(const PeerChannelRequest&) const = default;
+};
+
+static_assert(sizeof(PeerChannelRequest) == 48);
+
+// Wire formats for the request, QP, buffer, and ready phases of bilateral peer
+// materialization.
 struct PeerQpPayload {
   struct NicQpInfo {
     uint8_t gid[16]{};
@@ -343,13 +380,17 @@ struct PeerQpPayload {
   int numQpsPerPeerPerNic{0};
   int maxGroups{0};
   int qpsPerBlockPerNic{0};
+  int directionCount{0};
+  int pipelineDepth{0};
+  int numSignalSlots{0};
+  int numCounterSlots{0};
+  uint64_t perChannelSize{0};
 };
 
 struct PeerBufferPayload {
   IbgdaBufferExchInfo recvStaging;
   IbgdaBufferExchInfo srSignal;
   IbgdaBufferExchInfo slotSignal;
-  IbgdaBufferExchInfo slotDiscard;
 };
 
 // Which memory a NIC completion counter lives in. Shared by the slot counter
@@ -378,7 +419,7 @@ struct IbSendRecvPeerBuffers {
 
 /**
  * MultiPeerIbTransportBase - backend-agnostic host control plane shared by the
- * multi-peer IB transports (IBGDA today, IBRC next).
+ * multi-peer IB transports (IBGDA and IBRC).
  *
  * This is a NON-template base so its (heavy) method bodies live in
  * MultiPeerIbTransport.cc and are compiled exactly once, reused by every
@@ -444,10 +485,21 @@ class MultiPeerIbTransportBase {
   std::vector<IbgdaRemoteBuffer> exchangeBuffer(
       const IbgdaLocalBuffer& localBuf);
 
-  /** Queue a peer for lazy materialization (no network I/O). */
-  void queuePeerForMaterialization(int peerRank);
+  /** Queue a peer/channel target, max-merging repeated requests. */
+  void queuePeerForMaterialization(int peerRank, uint32_t targetChannels);
 
-  /** @return true if the peer is materialized and ready for kernel use. */
+  /** @return Number of materialized channels currently ready for this peer. */
+  uint32_t materializedChannelCount(int peerRank) const;
+
+  /** Throw after a terminal materialization failure. */
+  void throwIfMaterializationFailed() const;
+
+  /** @return Configured logical channel capacity for each peer. */
+  uint32_t channelCapacity() const {
+    return static_cast<uint32_t>(config_.max_num_channels);
+  }
+
+  /** @return true if the peer's full capacity is ready for legacy access. */
   bool isPeerMaterialized(int peerRank) const;
 
  protected:
@@ -489,6 +541,10 @@ class MultiPeerIbTransportBase {
   std::vector<IbTransportExchInfoAll> allGatherExchInfo(
       const IbTransportExchInfoAll& localInfo);
 
+  void populatePeerGeometry(PeerQpPayload& payload) const;
+  void validatePeerGeometry(int peerRank, const PeerQpPayload& remotePayload)
+      const;
+
   // Validate every peer agrees on numNics (same-rail pairing precondition) and
   // numQpsPerPeerPerNic. Throws std::runtime_error on mismatch.
   void validatePeerTopology(
@@ -513,6 +569,8 @@ class MultiPeerIbTransportBase {
       void* remotePayload,
       std::size_t bytes,
       int tag);
+  void poisonTransport() noexcept;
+  void abortCommunicator() noexcept;
 
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
@@ -524,6 +582,7 @@ class MultiPeerIbTransportBase {
   bool sendRecvBuffersEnabled() const {
     return config_.perChannelSize > 0;
   }
+  IbChannelLayout sendRecvChannelGeometry() const;
   IbChannelLayout channelLayoutForPeer(int peerIndex) const;
   // Allocate + register the per-peer staging/signal bulks and slice them.
   // counterStorage selects the NIC_DONE counter: Device (transport-allocated,
@@ -554,31 +613,46 @@ class MultiPeerIbTransportBase {
   // its views. Safe on an unmaterialized peer.
   void cleanupSendRecvBufferForPeer(int peerIndex) noexcept;
 
+  // Allocate one immutable send/recv resource range. Channel descriptors keep
+  // these addresses for the communicator lifetime, so a later prefix growth
+  // appends another range instead of moving an already-published allocation.
+  // counterStorage selects IBGDA's device counter or IBRC's host-mapped proxy
+  // counter.
+  IbChannelLayout allocateSendRecvChannelRange(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      PeerBufferPayload& payload,
+      IbCounterStorage counterStorage);
+  void applyRemoteSendRecvChannelRange(
+      IbChannelLayout& layout,
+      const PeerBufferPayload& remotePayload) const;
+  void cleanupSendRecvChannelRangesForPeer(int peerIndex) noexcept;
+
   void validateSendRecvConfig() const;
+  std::size_t deviceMrAllocationAlignment() const;
+  std::unique_ptr<meta::comms::DeviceBuffer> allocateDeviceMrBuffer(
+      std::size_t usedBytes,
+      std::size_t allocationAlignment,
+      const char* label) const;
   std::size_t sendRecvStagingBytesPerPeer() const;
   std::size_t sendRecvSignalBytesPerPeer() const;
   std::size_t sendRecvCounterBytesPerPeer() const;
 
-  void allocateSignalCounterResources(
-      IbCounterStorage counterStorage,
-      bool allocateDiscardSignal);
   void cleanupSignalCounterResources() noexcept;
   void cleanupPeerSignalCounterResources(int peerIndex) noexcept;
   void allocatePeerSignalCounterResources(
       int peerIndex,
       PeerBufferPayload& payload,
-      IbCounterStorage counterStorage,
-      bool allocateDiscardSignal);
+      IbCounterStorage counterStorage);
   void applyRemoteSignalCounterResources(
       int peerIndex,
-      const PeerBufferPayload& remotePayload,
-      bool hasDiscardSignal);
+      const PeerBufferPayload& remotePayload);
 
   IbgdaRemoteBuffer slotRemoteSignalView(int peerIndex) const;
   IbgdaLocalBuffer slotLocalSignalView(int peerIndex) const;
   IbgdaLocalBuffer slotCounterDeviceView(int peerIndex) const;
   IbgdaLocalBuffer slotCounterHostView(int peerIndex) const;
-  IbgdaRemoteBuffer slotDiscardSignalRemoteView(int peerIndex) const;
 
   // Cached MR entry: one MR per (CUDA allocation, NIC), refcounted. Multiple
   // user buffers within the same allocation share one MR set.
@@ -598,6 +672,7 @@ class MultiPeerIbTransportBase {
   const int nRanks_{0};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   MultipeerIbTransportConfig config_;
+  bool channelRangeProtocolEnabled_{false};
 
   // Number of NICs (rails) in use; resolved by the base constructor.
   int numNics_{1};
@@ -657,9 +732,13 @@ class MultiPeerIbTransportBase {
   // Lazy materialization state machine.
   // connectPeers() holds this lock through the backend/bootstrap exchange so
   // fixed bootstrap tags cannot be reused concurrently on one communicator.
+  struct PendingPeer {
+    int rank;
+    uint32_t targetChannels;
+  };
   mutable std::mutex materializationMutex_;
-  std::vector<int> pendingPeers_;
-  std::vector<bool> peerMaterialized_;
+  std::vector<PendingPeer> pendingPeers_;
+  std::vector<uint32_t> materializedChannels_;
   bool materializationFailed_{false};
 
  private:
@@ -667,8 +746,8 @@ class MultiPeerIbTransportBase {
     void* ptr{nullptr};
     std::size_t bytes{0};
     bool registered{false};
-    // On AMD the signal-inbox/discard buffers are host-pinned (device-memory
-    // MR registration via peer-mem is unreliable); free accordingly.
+    // On AMD the signal inbox is host-pinned (device-memory MR registration
+    // via peer-mem is unreliable); free accordingly.
     bool isHostPinned{false};
 
     DeviceSlotAllocation() = default;
@@ -731,17 +810,12 @@ class MultiPeerIbTransportBase {
   std::vector<IbgdaLocalBuffer> slotLocalSignalViews_;
   std::vector<IbgdaLocalBuffer> slotCounterDeviceViews_;
   std::vector<IbgdaLocalBuffer> slotCounterHostViews_;
-  std::vector<IbgdaRemoteBuffer> slotDiscardSignalRemoteViews_;
 
-  DeviceSlotAllocation slotSignalAllocation_;
-  CounterSlotAllocation slotCounterAllocation_;
-  DeviceSlotAllocation slotDiscardSignalAllocation_;
   // Host-mapped send/recv NIC_DONE counter (counterStorage == Host). Owns the
   // host-pinned allocation; sliced per peer into IbSendRecvPeerBuffers.counter.
   CounterSlotAllocation sendRecvHostCounterAllocation_;
   std::vector<DeviceSlotAllocation> lazySlotSignalAllocations_;
   std::vector<CounterSlotAllocation> lazySlotCounterAllocations_;
-  std::vector<DeviceSlotAllocation> lazySlotDiscardSignalAllocations_;
   // Lazy per-peer send/recv allocations: one contiguous device buffer per
   // materialized peer (sendStaging|recvStaging|signal|state, plus the counter
   // when device-resident). Empty in eager mode. Shared by IBGDA (Device
@@ -749,6 +823,10 @@ class MultiPeerIbTransportBase {
   // NIC_DONE counter below.
   std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
   std::vector<CounterSlotAllocation> lazySendRecvHostCounters_;
+  std::vector<std::vector<std::unique_ptr<meta::comms::DeviceBuffer>>>
+      lazyPeerChannelRangeBufs_;
+  std::vector<std::vector<CounterSlotAllocation>>
+      lazyPeerChannelRangeHostCounters_;
 };
 
 /**
@@ -756,8 +834,8 @@ class MultiPeerIbTransportBase {
  *
  * Holds ONLY the small piece of control plane that must call into the concrete
  * backend: the lazy connect loop (connectPeers) drives the backend's per-peer
- * doMaterializePeer()/cleanupPeerOnFailure() hooks via a static `backend()`
- * downcast (no vtable). Each backend derives as
+ * materializePeerChannelRange() hook via a static `backend()` downcast (no
+ * vtable). Each backend derives as
  *   `class MultipeerIbgdaTransport : public
  * MultiPeerIbTransport<MultipeerIbgdaTransport>`.
  * All backend-agnostic state and methods are inherited from the non-template
@@ -766,12 +844,6 @@ class MultiPeerIbTransportBase {
 template <typename Backend>
 class MultiPeerIbTransport : public MultiPeerIbTransportBase {
  public:
-  /** Materialize one peer (queue + connect). */
-  void materializePeer(int peerRank) {
-    queuePeerForMaterialization(peerRank);
-    connectPeers();
-  }
-
   /** Connect all queued peers in sorted order (deadlock-safe for >2 ranks). */
   void connectPeers();
 
@@ -801,39 +873,70 @@ class MultiPeerIbTransport : public MultiPeerIbTransportBase {
 template <typename Backend>
 void MultiPeerIbTransport<Backend>::connectPeers() {
   // queuePeerForMaterialization() releases this mutex before entering here;
-  // backend hooks must not recursively call materializePeer()/connectPeers().
-  const std::lock_guard<std::mutex> lock(materializationMutex_);
+  // backend hooks must not recursively call connectPeers().
+  std::unique_lock<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     pendingPeers_.clear();
     throw std::runtime_error(
-        "MultiPeerIbTransport: lazy peer materialization previously failed; "
-        "retry is not supported");
+        "MultiPeerIbTransport: channel-prefix materialization previously "
+        "failed; retry is not supported");
   }
   if (pendingPeers_.empty()) {
     return;
   }
-  // For a symmetric request graph, ascending local order is deadlock-free: the
+  // For a symmetric request graph, ascending rank order is deadlock-free: the
   // lowest remaining rank and its lowest pending neighbor select each other.
-  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+  std::sort(
+      pendingPeers_.begin(),
+      pendingPeers_.end(),
+      [](const auto& lhs, const auto& rhs) { return lhs.rank < rhs.rank; });
 
-  std::vector<int> peers;
+  std::vector<PendingPeer> peers;
   peers.swap(pendingPeers_);
-  std::vector<int> touchedPeerIndexes;
-  touchedPeerIndexes.reserve(peers.size());
 
   try {
-    for (int peerRank : peers) {
-      if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
+    for (const auto& peer : peers) {
+      const int peerIndex = rankToPeerIndex(peer.rank);
+      if (peer.targetChannels <= materializedChannels_[peerIndex]) {
         continue;
       }
-      touchedPeerIndexes.push_back(rankToPeerIndex(peerRank));
-      backend().doMaterializePeer(peerRank);
+      const uint32_t oldChannels = materializedChannels_[peerIndex];
+      const PeerChannelRequest request{
+          .backend = static_cast<uint32_t>(Backend::peerChannelBackend()),
+          .beginChannel = oldChannels,
+          .endChannel = peer.targetChannels,
+          .capacity = channelCapacity(),
+          .numNics = static_cast<uint32_t>(numNics_),
+          .directionCount =
+              static_cast<uint32_t>(config_.fixedChannelDirectionCount()),
+          .qpsPerConnection = static_cast<uint32_t>(config_.qpsPerConnection),
+          .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
+          .numSignalSlots = static_cast<uint32_t>(config_.numSignalSlots),
+          .numCounterSlots = static_cast<uint32_t>(config_.numCounterSlots),
+          .perChannelSize = config_.perChannelSize,
+      };
+      if (channelRangeProtocolEnabled_ &&
+          exchangeWithPeer(peer.rank, request, kIbPeerChannelRequestTag) !=
+              request) {
+        throw std::runtime_error(
+            "MultiPeerIbTransport: peer channel request mismatch");
+      }
+      backend().materializePeerChannelRange(
+          peer.rank, oldChannels, peer.targetChannels);
+      if (channelRangeProtocolEnabled_ &&
+          exchangeWithPeer(peer.rank, request, kIbPeerChannelReadyTag) !=
+              request) {
+        throw std::runtime_error(
+            "MultiPeerIbTransport: peer channel ready mismatch");
+      }
+      materializedChannels_[peerIndex] = peer.targetChannels;
     }
   } catch (...) {
     materializationFailed_ = true;
-    for (int peerIndex : touchedPeerIndexes) {
-      backend().cleanupPeerOnFailure(peerIndex);
-    }
+    pendingPeers_.clear();
+    lock.unlock();
+    abortCommunicator();
+    backend().onTerminalMaterializationFailure();
     throw;
   }
 }

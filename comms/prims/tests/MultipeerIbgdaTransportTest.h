@@ -11,6 +11,7 @@ namespace comms::prims {
 
 // Forward declaration - full definition in P2pIbTransportDevice.cuh
 struct P2pIbTransportDevice;
+struct MultiPeerDeviceHandle;
 // Forward declaration - full definition in P2pIbgdaTransportDevice.cuh
 class P2pIbgdaTransportDevice;
 
@@ -174,6 +175,18 @@ void testTwoCallSendThenRecv(
     std::size_t maxSignalBytes,
     int numBlocks,
     int blockSize);
+
+void testMultiPeerTwoCallSendThenRecv(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.

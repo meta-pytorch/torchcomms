@@ -55,14 +55,18 @@ TEST(CtranCommTest, AbortAvailableAndDisabled) {
 TEST(CtranCommTest, ctranCommConfigTest) {
   auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
   ctranConfig config = {
-      .backends = {CommBackend::IB, CommBackend::NVL, CommBackend::SOCKET}};
+      .backends = {CommBackend::IB, CommBackend::NVL, CommBackend::SOCKET},
+      .pipesConfig = {.lazyChannels = true},
+  };
 
   CtranComm comm(abort, config);
   EXPECT_EQ(comm.config_.backends.size(), 3);
+  EXPECT_TRUE(comm.config_.pipesConfig.lazyChannels);
 
   /// Explicitly create comm with false abort as first argument is unomittable
   CtranComm comm2(comms::fault_tolerance::createAbort(false));
   EXPECT_EQ(comm2.config_.backends.size(), 0);
+  EXPECT_FALSE(comm2.config_.pipesConfig.lazyChannels);
 }
 
 TEST(CtranCommTest, PrimsPolicyIsPerCommunicator) {

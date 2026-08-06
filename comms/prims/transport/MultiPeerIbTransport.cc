@@ -16,6 +16,7 @@
 #include <folly/String.h>
 #include <glog/logging.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5core.h"
@@ -153,6 +154,7 @@ bool nicSupportsRelaxedOrdering(ibverbx::ibv_pd* pd) {
 
 #ifdef __HIP_PLATFORM_AMD__
 using SlotGpuError = hipError_t;
+using SlotGpuStream = hipStream_t;
 constexpr SlotGpuError kSlotGpuSuccess = hipSuccess;
 
 const char* slotGpuGetErrorString(SlotGpuError err) {
@@ -167,8 +169,24 @@ SlotGpuError slotGpuFree(void* ptr) {
   return hipFree(ptr);
 }
 
-SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
-  return hipMemset(ptr, value, bytes);
+SlotGpuError slotGpuStreamCreate(SlotGpuStream* stream) {
+  return hipStreamCreateWithFlags(stream, hipStreamNonBlocking);
+}
+
+SlotGpuError slotGpuMemsetAsync(
+    void* ptr,
+    int value,
+    std::size_t bytes,
+    SlotGpuStream stream) {
+  return hipMemsetAsync(ptr, value, bytes, stream);
+}
+
+SlotGpuError slotGpuStreamSynchronize(SlotGpuStream stream) {
+  return hipStreamSynchronize(stream);
+}
+
+SlotGpuError slotGpuStreamDestroy(SlotGpuStream stream) {
+  return hipStreamDestroy(stream);
 }
 
 SlotGpuError slotHostPinnedAlloc(void** ptr, std::size_t bytes) {
@@ -184,6 +202,7 @@ SlotGpuError slotHostFree(void* ptr) {
 }
 #else
 using SlotGpuError = cudaError_t;
+using SlotGpuStream = cudaStream_t;
 constexpr SlotGpuError kSlotGpuSuccess = cudaSuccess;
 
 const char* slotGpuGetErrorString(SlotGpuError err) {
@@ -198,8 +217,24 @@ SlotGpuError slotGpuFree(void* ptr) {
   return cudaFree(ptr);
 }
 
-SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
-  return cudaMemset(ptr, value, bytes);
+SlotGpuError slotGpuStreamCreate(SlotGpuStream* stream) {
+  return cudaStreamCreateWithFlags(stream, cudaStreamNonBlocking);
+}
+
+SlotGpuError slotGpuMemsetAsync(
+    void* ptr,
+    int value,
+    std::size_t bytes,
+    SlotGpuStream stream) {
+  return cudaMemsetAsync(ptr, value, bytes, stream);
+}
+
+SlotGpuError slotGpuStreamSynchronize(SlotGpuStream stream) {
+  return cudaStreamSynchronize(stream);
+}
+
+SlotGpuError slotGpuStreamDestroy(SlotGpuStream stream) {
+  return cudaStreamDestroy(stream);
 }
 
 SlotGpuError slotHostPinnedAlloc(void** ptr, std::size_t bytes) {
@@ -214,6 +249,20 @@ SlotGpuError slotHostFree(void* ptr) {
   return cudaFreeHost(ptr);
 }
 #endif
+
+SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
+  SlotGpuStream stream{};
+  SlotGpuError result = slotGpuStreamCreate(&stream);
+  if (result != kSlotGpuSuccess) {
+    return result;
+  }
+  result = slotGpuMemsetAsync(ptr, value, bytes, stream);
+  if (result == kSlotGpuSuccess) {
+    result = slotGpuStreamSynchronize(stream);
+  }
+  const SlotGpuError destroyResult = slotGpuStreamDestroy(stream);
+  return result == kSlotGpuSuccess ? destroyResult : result;
+}
 
 void checkSlotGpu(SlotGpuError err, const std::string& what) {
   if (err != kSlotGpuSuccess) {
@@ -250,6 +299,32 @@ void checkSendRecvSignalAlignment(const void* ptr, const char* label) {
 }
 } // namespace
 
+MultipeerIbTransportConfig
+MultipeerIbTransportConfig::normalizedChannelGeometry() const {
+  auto normalized = *this;
+  if (normalized.perChannelSize > 0) {
+    if (normalized.max_num_channels <= 0) {
+      throw std::invalid_argument(
+          "max_num_channels must be positive when perChannelSize is set");
+    }
+    if (normalized.perChannelSize < 16) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be >= 16");
+    }
+    if (normalized.perChannelSize % 16 != 0) {
+      throw std::invalid_argument(
+          "IB fixed-channel perChannelSize must be 16-byte aligned");
+    }
+    normalized.dataBufferSize = normalized.fixedChannelDataBufferSize();
+    normalized.maxGroups = normalized.max_num_channels;
+    normalized.qpsPerBlockPerNic = normalized.qpsPerConnection;
+  } else {
+    normalized.max_num_channels = normalized.maxGroups;
+    normalized.qpsPerConnection = normalized.qpsPerBlockPerNic;
+  }
+  return normalized;
+}
+
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     int myRank,
     int nRanks,
@@ -258,29 +333,15 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
     : myRank_(myRank),
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
-      config_(std::move(config)) {
-  if (config_.perChannelSize > 0) {
-    if (config_.max_num_channels <= 0) {
-      throw std::invalid_argument(
-          "max_num_channels must be positive when perChannelSize is set");
-    }
-    if (config_.perChannelSize < 16) {
-      throw std::invalid_argument(
-          "IB fixed-channel perChannelSize must be >= 16");
-    }
-    if (config_.perChannelSize % 16 != 0) {
-      throw std::invalid_argument(
-          "IB fixed-channel perChannelSize must be 16-byte aligned");
-    }
-    config_.dataBufferSize = config_.fixedChannelDataBufferSize();
-    config_.maxGroups = config_.max_num_channels;
-  }
+      config_(config.normalizedChannelGeometry()),
+      channelRangeProtocolEnabled_(config_.lazyChannels) {
   if (myRank_ < 0 || myRank_ >= nRanks_) {
     throw std::invalid_argument("Invalid rank");
   }
   if (nRanks_ < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
+  materializedChannels_.resize(nRanks_ - 1, 0);
   if (auto isolatedBootstrap = bootstrap_->duplicate()) {
     bootstrap_ =
         std::shared_ptr<meta::comms::IBootstrap>(std::move(isolatedBootstrap));
@@ -349,6 +410,67 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
 // header).
 MultiPeerIbTransportBase::~MultiPeerIbTransportBase() = default;
 
+void MultiPeerIbTransportBase::populatePeerGeometry(
+    PeerQpPayload& payload) const {
+  payload.numNics = numNics_;
+  payload.numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
+  payload.maxGroups = config_.max_num_channels;
+  payload.qpsPerBlockPerNic = config_.qpsPerConnection;
+  payload.directionCount = config_.fixedChannelDirectionCount();
+  payload.pipelineDepth = config_.pipelineDepth;
+  payload.numSignalSlots = config_.numSignalSlots;
+  payload.numCounterSlots = config_.numCounterSlots;
+  payload.perChannelSize = static_cast<uint64_t>(config_.perChannelSize);
+}
+
+void MultiPeerIbTransportBase::validatePeerGeometry(
+    int peerRank,
+    const PeerQpPayload& remotePayload) const {
+  if (remotePayload.numNics != numNics_ ||
+      remotePayload.numQpsPerPeerPerNic !=
+          config_.fixedChannelMainQpsPerPeerPerNic() ||
+      remotePayload.maxGroups != config_.max_num_channels ||
+      remotePayload.qpsPerBlockPerNic != config_.qpsPerConnection) {
+    throw std::runtime_error(
+        fmt::format(
+            "peer {} IB QP geometry mismatch: remote nics={} qps={} "
+            "channels={} qpsPerConnection={}, local nics={} qps={} "
+            "channels={} qpsPerConnection={}",
+            peerRank,
+            remotePayload.numNics,
+            remotePayload.numQpsPerPeerPerNic,
+            remotePayload.maxGroups,
+            remotePayload.qpsPerBlockPerNic,
+            numNics_,
+            config_.fixedChannelMainQpsPerPeerPerNic(),
+            config_.max_num_channels,
+            config_.qpsPerConnection));
+  }
+  if (remotePayload.directionCount != config_.fixedChannelDirectionCount() ||
+      remotePayload.pipelineDepth != config_.pipelineDepth ||
+      remotePayload.numSignalSlots != config_.numSignalSlots ||
+      remotePayload.numCounterSlots != config_.numCounterSlots ||
+      remotePayload.perChannelSize !=
+          static_cast<uint64_t>(config_.perChannelSize)) {
+    throw std::runtime_error(
+        fmt::format(
+            "peer {} IB channel geometry mismatch: remote directions={} "
+            "pipeline={} signals={} counters={} bytes={}, local directions={} "
+            "pipeline={} signals={} counters={} bytes={}",
+            peerRank,
+            remotePayload.directionCount,
+            remotePayload.pipelineDepth,
+            remotePayload.numSignalSlots,
+            remotePayload.numCounterSlots,
+            remotePayload.perChannelSize,
+            config_.fixedChannelDirectionCount(),
+            config_.pipelineDepth,
+            config_.numSignalSlots,
+            config_.numCounterSlots,
+            config_.perChannelSize));
+  }
+}
+
 // ---- shared send/recv staging-ring lifecycle (eager mode) ----
 
 void MultiPeerIbTransportBase::validateSendRecvConfig() const {
@@ -389,6 +511,48 @@ void MultiPeerIbTransportBase::validateSendRecvConfig() const {
   }
 }
 
+std::size_t MultiPeerIbTransportBase::deviceMrAllocationAlignment() const {
+#ifdef __HIP_PLATFORM_AMD__
+  return 1;
+#else
+  std::size_t alignment = std::size_t{2} << 20;
+  if (cuda_driver_lazy_init() != 0 || pfn_cuDeviceGet == nullptr ||
+      pfn_cuMemGetAllocationGranularity == nullptr) {
+    return alignment;
+  }
+
+  CUdevice device = 0;
+  if (pfn_cuDeviceGet(&device, config_.cudaDevice) != CUDA_SUCCESS) {
+    return alignment;
+  }
+  CUmemAllocationProp properties{};
+  properties.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  properties.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  properties.location.id = device;
+  std::size_t granularity = 0;
+  if (pfn_cuMemGetAllocationGranularity(
+          &granularity, &properties, CU_MEM_ALLOC_GRANULARITY_MINIMUM) ==
+          CUDA_SUCCESS &&
+      granularity != 0) {
+    alignment = granularity;
+  }
+  return alignment;
+#endif
+}
+
+std::unique_ptr<meta::comms::DeviceBuffer>
+MultiPeerIbTransportBase::allocateDeviceMrBuffer(
+    std::size_t usedBytes,
+    std::size_t allocationAlignment,
+    const char* label) const {
+  const std::size_t allocationBytes = alignUp(usedBytes, allocationAlignment);
+  auto buffer = std::make_unique<meta::comms::DeviceBuffer>(allocationBytes);
+  checkSlotGpu(
+      slotGpuMemset(buffer->get(), 0, allocationBytes),
+      fmt::format("MultiPeerIbTransport: zero {}", label));
+  return buffer;
+}
+
 std::size_t MultiPeerIbTransportBase::sendRecvStagingBytesPerPeer() const {
   return config_.dataBufferSize;
 }
@@ -414,29 +578,35 @@ std::size_t MultiPeerIbTransportBase::sendRecvCounterBytesPerPeer() const {
       kSendRecvSignalSlotStride;
 }
 
-IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
-    int peerIndex) const {
-  if (!sendRecvBuffersEnabled() || sendRecvPeerBuffers_.empty() ||
-      peerIndex < 0 ||
-      peerIndex >= static_cast<int>(sendRecvPeerBuffers_.size())) {
+IbChannelLayout MultiPeerIbTransportBase::sendRecvChannelGeometry() const {
+  if (!sendRecvBuffersEnabled()) {
     return {};
   }
-  const auto& pb = sendRecvPeerBuffers_[peerIndex];
   return IbChannelLayout{
-      .sendStagingBuf = pb.sendStaging,
-      .recvStagingBuf = pb.remoteRecvStaging,
-      .sendStagingPtr = static_cast<char*>(pb.sendStaging.ptr),
-      .recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr),
-      .localSignalBuf = pb.signal,
-      .remoteSignalBuf = pb.remoteSignal,
-      .localCounterBuf = pb.counter,
-      .localCounterCompletionBuf = pb.counterCompletion,
       .maxChannels = config_.max_num_channels,
       .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,
       .perChannelSize = config_.perChannelSize,
       .perChannelBufferSize = config_.perChannelSize,
   };
+}
+
+IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
+    int peerIndex) const {
+  if (!sendRecvBuffersEnabled() || peerIndex < 0 ||
+      peerIndex >= static_cast<int>(sendRecvPeerBuffers_.size())) {
+    return {};
+  }
+  IbChannelLayout layout = sendRecvChannelGeometry();
+  const auto& pb = sendRecvPeerBuffers_[peerIndex];
+  layout.sendStagingBuf = pb.sendStaging;
+  layout.recvStagingBuf = pb.remoteRecvStaging;
+  layout.recvStagingPtr = static_cast<char*>(pb.recvStaging.ptr);
+  layout.localSignalBuf = pb.signal;
+  layout.remoteSignalBuf = pb.remoteSignal;
+  layout.localCounterBuf = pb.counter;
+  layout.localCounterCompletionBuf = pb.counterCompletion;
+  return layout;
 }
 
 void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
@@ -466,41 +636,14 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   // a few MB of rounding on the small bulks. Granularity is queried from the
   // driver (2 MiB fallback); AMD (no Data-Direct) keeps the natural allocation
   // size.
-  std::size_t ddAlign = 1;
-#ifndef __HIP_PLATFORM_AMD__
-  ddAlign = std::size_t{2} << 20; // fallback if the query below fails
-  if (cuda_driver_lazy_init() == 0 && pfn_cuDeviceGet != nullptr &&
-      pfn_cuMemGetAllocationGranularity != nullptr) {
-    CUdevice dev = 0;
-    if (pfn_cuDeviceGet(&dev, config_.cudaDevice) == CUDA_SUCCESS) {
-      CUmemAllocationProp prop = {};
-      prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-      prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-      prop.location.id = dev;
-      std::size_t granularity = 0;
-      if (pfn_cuMemGetAllocationGranularity(
-              &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) ==
-              CUDA_SUCCESS &&
-          granularity > 0) {
-        ddAlign = granularity;
-      }
-    }
-  }
-#endif
-  auto allocateBulk = [&](std::size_t perPeer, const char* label) {
-    const std::size_t used = perPeer * numPeers;
-    const std::size_t allocBytes = ((used + ddAlign - 1) / ddAlign) * ddAlign;
-    auto buf = std::make_unique<meta::comms::DeviceBuffer>(allocBytes);
-    checkSlotGpu(
-        slotGpuMemset(buf->get(), 0, allocBytes),
-        fmt::format("MultiPeerIbTransport: zero send/recv {}", label));
-    return buf;
-  };
+  const std::size_t allocationAlignment = deviceMrAllocationAlignment();
 
   sendRecvPeerBuffers_.resize(numPeers);
 
-  sendRecvSendStagingBulk_ = allocateBulk(stagingPerPeer, "send staging bulk");
-  sendRecvRecvStagingBulk_ = allocateBulk(stagingPerPeer, "recv staging bulk");
+  sendRecvSendStagingBulk_ = allocateDeviceMrBuffer(
+      stagingPerPeer * numPeers, allocationAlignment, "send staging bulk");
+  sendRecvRecvStagingBulk_ = allocateDeviceMrBuffer(
+      stagingPerPeer * numPeers, allocationAlignment, "recv staging bulk");
 
   // Signal and the device counter are the small RDMA-registered control
   // buffers; pack them into ONE granularity-aligned allocation so they cost a
@@ -513,12 +656,9 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   const std::size_t counterTotal =
       deviceCounter ? counterPerPeer * numPeers : 0;
   const std::size_t counterOff = alignUp(signalTotal, alignof(SignalState));
-  const std::size_t controlBytes = alignUp(counterOff + counterTotal, ddAlign);
-  sendRecvControlBulk_ =
-      std::make_unique<meta::comms::DeviceBuffer>(controlBytes);
-  checkSlotGpu(
-      slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
-      "MultiPeerIbTransport: zero send/recv control bulk");
+  const std::size_t controlBytes = counterOff + counterTotal;
+  sendRecvControlBulk_ = allocateDeviceMrBuffer(
+      controlBytes, allocationAlignment, "send/recv control bulk");
   char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
   checkSendRecvSignalAlignment(
       controlBase, "MultiPeerIbTransport: send/recv signal base");
@@ -656,6 +796,13 @@ void MultiPeerIbTransportBase::cleanupSendRecvBuffers() noexcept {
     freeCounterSlotAllocation(counter);
   }
   lazySendRecvHostCounters_.clear();
+  for (int peerIndex = 0;
+       peerIndex < static_cast<int>(lazyPeerChannelRangeBufs_.size());
+       ++peerIndex) {
+    cleanupSendRecvChannelRangesForPeer(peerIndex);
+  }
+  lazyPeerChannelRangeBufs_.clear();
+  lazyPeerChannelRangeHostCounters_.clear();
   sendRecvCounterStorage_ = IbCounterStorage::Device;
   sendRecvPeerBuffers_.clear();
 }
@@ -709,8 +856,10 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
       slotGpuMemset(buf->get(), 0, total),
       "MultiPeerIbTransport: zero per-peer send/recv buffer");
   auto reg = registerBuffer(buf->get(), total);
+  CHECK(lazyPeerBufs_[peerIndex] == nullptr);
+  lazyPeerBufs_[peerIndex] = std::move(buf);
 
-  char* p = static_cast<char*>(buf->get());
+  char* p = static_cast<char*>(lazyPeerBufs_[peerIndex]->get());
   auto& pb = sendRecvPeerBuffers_[peerIndex];
   pb.sendStaging = IbgdaLocalBuffer(p + sendStagingOff, reg.lkey_per_device);
   void* recvStagingPtr = p + recvStagingOff;
@@ -729,22 +878,23 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
         IbCounterStorage::HostPinned,
         counterPerPeer,
         "lazy send/recv host counter");
+    lazySendRecvHostCounters_[peerIndex] = std::move(alloc);
+    const auto& ownedCounter = lazySendRecvHostCounters_[peerIndex];
     checkSendRecvSignalAlignment(
-        alloc.devicePtr,
+        ownedCounter.devicePtr,
         "MultiPeerIbTransport: lazy send/recv host counter device base");
     checkSendRecvSignalAlignment(
-        alloc.hostPtr,
+        ownedCounter.hostPtr,
         "MultiPeerIbTransport: lazy send/recv host counter host base");
-    pb.counter = IbgdaLocalBuffer(alloc.devicePtr, NetworkLKeys{});
-    pb.counterCompletion = IbgdaLocalBuffer(alloc.hostPtr, NetworkLKeys{});
-    lazySendRecvHostCounters_[peerIndex] = std::move(alloc);
+    pb.counter = IbgdaLocalBuffer(ownedCounter.devicePtr, NetworkLKeys{});
+    pb.counterCompletion =
+        IbgdaLocalBuffer(ownedCounter.hostPtr, NetworkLKeys{});
   }
 
   // The peer RDMA-writes into our recvStaging ring and signal inbox; publish
   // their addr + per-NIC rkeys (whole per-peer regions, no slicing).
   payload.recvStaging = registeredSlotMemoryExchInfo(recvStagingPtr);
   payload.srSignal = registeredSlotMemoryExchInfo(signalPtr);
-  lazyPeerBufs_[peerIndex] = std::move(buf);
 }
 
 void MultiPeerIbTransportBase::applyRemoteSendRecvBuffer(
@@ -757,6 +907,164 @@ void MultiPeerIbTransportBase::applyRemoteSendRecvBuffer(
   auto& pb = sendRecvPeerBuffers_[peerIndex];
   pb.remoteRecvStaging = remotePayload.recvStaging.toRemoteBuffer();
   pb.remoteSignal = remotePayload.srSignal.toRemoteBuffer();
+}
+
+IbChannelLayout MultiPeerIbTransportBase::allocateSendRecvChannelRange(
+    int peerIndex,
+    uint32_t beginChannel,
+    uint32_t endChannel,
+    PeerBufferPayload& payload,
+    IbCounterStorage counterStorage) {
+  if (!sendRecvBuffersEnabled()) {
+    return {};
+  }
+  validateSendRecvConfig();
+  const int numPeers = nRanks_ - 1;
+  if (peerIndex < 0 || peerIndex >= numPeers) {
+    throw std::invalid_argument(
+        fmt::format(
+            "allocateSendRecvChannelRange: invalid peerIndex={}", peerIndex));
+  }
+  if (beginChannel >= endChannel || endChannel > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "allocateSendRecvChannelRange: invalid range=[{}, {}) capacity={}",
+            beginChannel,
+            endChannel,
+            channelCapacity()));
+  }
+
+  const std::size_t channelCount = endChannel - beginChannel;
+  const std::size_t numLanes =
+      static_cast<std::size_t>(numNics_) * config_.qpsPerConnection;
+  const std::size_t stagingBytes = channelCount * config_.perChannelSize;
+  const std::size_t signalBytes =
+      (numLanes + 1) * channelCount * kSendRecvSignalSlotStride;
+  const std::size_t counterBytes = channelCount * kSendRecvSignalSlotStride;
+  const bool deviceCounter = counterStorage == IbCounterStorage::Device;
+
+  lazyPeerChannelRangeBufs_.resize(numPeers);
+  lazyPeerChannelRangeHostCounters_.resize(numPeers);
+  auto& ownedBuffers = lazyPeerChannelRangeBufs_[peerIndex];
+  auto& ownedHostCounters = lazyPeerChannelRangeHostCounters_[peerIndex];
+  ownedBuffers.reserve(ownedBuffers.size() + 2);
+  if (!deviceCounter) {
+    ownedHostCounters.reserve(ownedHostCounters.size() + 1);
+  }
+  const std::size_t allocationAlignment = deviceMrAllocationAlignment();
+
+  const std::size_t stagingAllocationBytes = 2 * stagingBytes;
+  auto stagingBuffer = allocateDeviceMrBuffer(
+      stagingAllocationBytes,
+      allocationAlignment,
+      "channel-range staging buffer");
+  const auto registeredStaging = registerBuffer(
+      stagingBuffer->get(),
+      stagingAllocationBytes,
+      /*relaxedOrdering=*/true);
+  char* const stagingBase = static_cast<char*>(stagingBuffer->get());
+  void* const recvStaging = stagingBase + stagingBytes;
+  ownedBuffers.push_back(std::move(stagingBuffer));
+
+  const std::size_t counterOff =
+      deviceCounter ? alignUp(signalBytes, alignof(SignalState)) : 0;
+  const std::size_t controlAllocationBytes =
+      deviceCounter ? counterOff + counterBytes : signalBytes;
+  auto controlBuffer = allocateDeviceMrBuffer(
+      controlAllocationBytes,
+      allocationAlignment,
+      "channel-range control buffer");
+  const auto registeredControl =
+      registerBuffer(controlBuffer->get(), controlAllocationBytes);
+  char* const controlBase = static_cast<char*>(controlBuffer->get());
+  void* const signal = controlBase;
+  ownedBuffers.push_back(std::move(controlBuffer));
+  checkSendRecvSignalAlignment(
+      signal, "MultiPeerIbTransport: channel-range signal base");
+
+  IbgdaLocalBuffer localCounter;
+  IbgdaLocalBuffer localCounterCompletion;
+  if (deviceCounter) {
+    void* const counter = controlBase + counterOff;
+    checkSendRecvSignalAlignment(
+        counter, "MultiPeerIbTransport: channel-range counter base");
+    localCounter = IbgdaLocalBuffer(counter, registeredControl.lkey_per_device);
+    localCounterCompletion = localCounter;
+  } else {
+    auto counter = allocateCounterSlotAllocation(
+        IbCounterStorage::HostPinned,
+        counterBytes,
+        "channel-range host counter");
+    ownedHostCounters.push_back(std::move(counter));
+    const auto& ownedCounter = ownedHostCounters.back();
+    checkSendRecvSignalAlignment(
+        ownedCounter.devicePtr,
+        "MultiPeerIbTransport: channel-range host counter device base");
+    checkSendRecvSignalAlignment(
+        ownedCounter.hostPtr,
+        "MultiPeerIbTransport: channel-range host counter host base");
+    localCounter = IbgdaLocalBuffer(ownedCounter.devicePtr, NetworkLKeys{});
+    localCounterCompletion =
+        IbgdaLocalBuffer(ownedCounter.hostPtr, NetworkLKeys{});
+  }
+
+  payload.recvStaging = registeredSlotMemoryExchInfo(recvStaging);
+  payload.srSignal = registeredSlotMemoryExchInfo(signal);
+
+  return IbChannelLayout{
+      .sendStagingBuf =
+          IbgdaLocalBuffer(stagingBase, registeredStaging.lkey_per_device),
+      .recvStagingPtr = static_cast<char*>(recvStaging),
+      .localSignalBuf =
+          IbgdaLocalBuffer(signal, registeredControl.lkey_per_device),
+      .localCounterBuf = localCounter,
+      .localCounterCompletionBuf = localCounterCompletion,
+      .maxChannels = static_cast<int>(channelCount),
+      .numLanes = static_cast<int>(numLanes),
+      .pipelineDepth = config_.pipelineDepth,
+      .perChannelSize = config_.perChannelSize,
+      .perChannelBufferSize = config_.perChannelSize,
+  };
+}
+
+void MultiPeerIbTransportBase::applyRemoteSendRecvChannelRange(
+    IbChannelLayout& layout,
+    const PeerBufferPayload& remotePayload) const {
+  if (layout.maxChannels == 0) {
+    return;
+  }
+  layout.recvStagingBuf = remotePayload.recvStaging.toRemoteBuffer();
+  layout.remoteSignalBuf = remotePayload.srSignal.toRemoteBuffer();
+}
+
+void MultiPeerIbTransportBase::cleanupSendRecvChannelRangesForPeer(
+    int peerIndex) noexcept {
+  if (peerIndex < 0) {
+    return;
+  }
+  if (peerIndex < static_cast<int>(lazyPeerChannelRangeBufs_.size())) {
+    for (auto& buffer : lazyPeerChannelRangeBufs_[peerIndex]) {
+      if (!buffer) {
+        continue;
+      }
+      try {
+        deregisterBuffer(buffer->get());
+      } catch (const std::exception& ex) {
+        LOG(ERROR)
+            << "MultiPeerIbTransport: failed to deregister channel-range "
+               "send/recv buffer: "
+            << ex.what();
+      }
+      buffer.reset();
+    }
+    lazyPeerChannelRangeBufs_[peerIndex].clear();
+  }
+  if (peerIndex < static_cast<int>(lazyPeerChannelRangeHostCounters_.size())) {
+    for (auto& counter : lazyPeerChannelRangeHostCounters_[peerIndex]) {
+      freeCounterSlotAllocation(counter);
+    }
+    lazyPeerChannelRangeHostCounters_[peerIndex].clear();
+  }
 }
 
 void MultiPeerIbTransportBase::cleanupSendRecvBufferForPeer(
@@ -1417,12 +1725,13 @@ MultiPeerIbTransportBase::allocateDeviceSlotAllocation(
   allocation.isHostPinned = true;
   std::memset(allocation.ptr, 0, bytes);
 #else
+  allocation.bytes = alignUp(bytes, deviceMrAllocationAlignment());
   allocation.ptr = checkedSlotAlloc(
       slotGpuMalloc,
-      bytes,
+      allocation.bytes,
       fmt::format("MultiPeerIbTransport: device allocation for {}", label));
   checkSlotGpu(
-      slotGpuMemset(allocation.ptr, 0, bytes),
+      slotGpuMemset(allocation.ptr, 0, allocation.bytes),
       fmt::format(
           "MultiPeerIbTransport: zero device allocation for {}", label));
 #endif
@@ -1447,12 +1756,13 @@ MultiPeerIbTransportBase::allocateCounterSlotAllocation(
   switch (storage) {
     case IbCounterStorage::Device:
       // NIC loopback atomic target: device memory, zeroed.
+      allocation.bytes = alignUp(bytes, deviceMrAllocationAlignment());
       allocation.devicePtr = checkedSlotAlloc(
           slotGpuMalloc,
-          bytes,
+          allocation.bytes,
           fmt::format("MultiPeerIbTransport: device allocation for {}", label));
       checkSlotGpu(
-          slotGpuMemset(allocation.devicePtr, 0, bytes),
+          slotGpuMemset(allocation.devicePtr, 0, allocation.bytes),
           fmt::format(
               "MultiPeerIbTransport: zero device allocation for {}", label));
       break;
@@ -1582,118 +1892,19 @@ void MultiPeerIbTransportBase::freeCounterSlotAllocation(
   allocation = CounterSlotAllocation{};
 }
 
-void MultiPeerIbTransportBase::allocateSignalCounterResources(
-    IbCounterStorage counterStorage,
-    bool allocateDiscardSignal) {
-  cleanupSignalCounterResources();
-
-  const int numPeers = nRanks_ - 1;
-  slotRemoteSignalViews_.assign(numPeers, IbgdaRemoteBuffer{});
-  slotLocalSignalViews_.assign(numPeers, IbgdaLocalBuffer{});
-  slotCounterDeviceViews_.assign(numPeers, IbgdaLocalBuffer{});
-  slotCounterHostViews_.assign(numPeers, IbgdaLocalBuffer{});
-  slotDiscardSignalRemoteViews_.assign(numPeers, IbgdaRemoteBuffer{});
-
-  if (config_.numSignalSlots > 0) {
-    const auto slotsPerPeer = static_cast<std::size_t>(config_.numSignalSlots);
-    const std::size_t totalSignalBytes =
-        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
-    slotSignalAllocation_ =
-        allocateDeviceSlotAllocation(totalSignalBytes, "slot signal buffer");
-    auto localSignalBuf = registerSlotMemory(
-        slotSignalAllocation_.ptr,
-        slotSignalAllocation_.ptr,
-        slotSignalAllocation_.bytes,
-        slotSignalAllocation_.registered);
-    auto remoteSignalBufs = exchangeBuffer(localSignalBuf);
-    for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-      const int peerRank = peerIndexToRank(peerIndex);
-      const int myPeerIndexOnPeer =
-          (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-      slotRemoteSignalViews_[peerIndex] = remoteSignalBufs[peerIndex].subBuffer(
-          static_cast<std::size_t>(myPeerIndexOnPeer) * slotsPerPeer *
-          sizeof(uint64_t));
-      slotLocalSignalViews_[peerIndex] = localSignalBuf.subBuffer(
-          static_cast<std::size_t>(peerIndex) * slotsPerPeer *
-          sizeof(uint64_t));
-    }
-  }
-
-  if (config_.numCounterSlots > 0) {
-    const auto slotsPerPeer = static_cast<std::size_t>(config_.numCounterSlots);
-    const std::size_t totalCounterBytes =
-        static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
-    slotCounterAllocation_ = allocateCounterSlotAllocation(
-        counterStorage, totalCounterBytes, "slot counter buffer");
-    if (counterStorage == IbCounterStorage::HostPinned) {
-      IbgdaLocalBuffer deviceCounterBuf(
-          slotCounterAllocation_.devicePtr, NetworkLKeys{});
-      IbgdaLocalBuffer hostCounterBuf(
-          slotCounterAllocation_.hostPtr, NetworkLKeys{});
-      for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-        const auto offset = static_cast<std::size_t>(peerIndex) * slotsPerPeer *
-            sizeof(uint64_t);
-        slotCounterDeviceViews_[peerIndex] = deviceCounterBuf.subBuffer(offset);
-        slotCounterHostViews_[peerIndex] = hostCounterBuf.subBuffer(offset);
-      }
-    } else {
-      auto localCounterBuf = registerSlotMemory(
-          slotCounterAllocation_.devicePtr,
-          slotCounterAllocation_.devicePtr,
-          slotCounterAllocation_.bytes,
-          slotCounterAllocation_.registered);
-      for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-        const auto offset = static_cast<std::size_t>(peerIndex) * slotsPerPeer *
-            sizeof(uint64_t);
-        slotCounterDeviceViews_[peerIndex] = localCounterBuf.subBuffer(offset);
-        slotCounterHostViews_[peerIndex] = localCounterBuf.subBuffer(offset);
-      }
-    }
-  }
-
-  if (allocateDiscardSignal && config_.numCounterSlots > 0) {
-    const std::size_t totalDiscardBytes =
-        static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
-    slotDiscardSignalAllocation_ = allocateDeviceSlotAllocation(
-        totalDiscardBytes, "slot discard-signal buffer");
-    auto localDiscardBuf = registerSlotMemory(
-        slotDiscardSignalAllocation_.ptr,
-        slotDiscardSignalAllocation_.ptr,
-        slotDiscardSignalAllocation_.bytes,
-        slotDiscardSignalAllocation_.registered);
-    auto remoteDiscardBufs = exchangeBuffer(localDiscardBuf);
-    for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
-      const int peerRank = peerIndexToRank(peerIndex);
-      const int myPeerIndexOnPeer =
-          (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-      slotDiscardSignalRemoteViews_[peerIndex] =
-          remoteDiscardBufs[peerIndex].subBuffer(
-              static_cast<std::size_t>(myPeerIndexOnPeer) * sizeof(uint64_t));
-    }
-  }
-}
-
 void MultiPeerIbTransportBase::cleanupSignalCounterResources() noexcept {
-  freeDeviceSlotAllocation(slotSignalAllocation_);
-  freeCounterSlotAllocation(slotCounterAllocation_);
-  freeDeviceSlotAllocation(slotDiscardSignalAllocation_);
   for (auto& allocation : lazySlotSignalAllocations_) {
     freeDeviceSlotAllocation(allocation);
   }
   for (auto& allocation : lazySlotCounterAllocations_) {
     freeCounterSlotAllocation(allocation);
   }
-  for (auto& allocation : lazySlotDiscardSignalAllocations_) {
-    freeDeviceSlotAllocation(allocation);
-  }
   lazySlotSignalAllocations_.clear();
   lazySlotCounterAllocations_.clear();
-  lazySlotDiscardSignalAllocations_.clear();
   slotRemoteSignalViews_.clear();
   slotLocalSignalViews_.clear();
   slotCounterDeviceViews_.clear();
   slotCounterHostViews_.clear();
-  slotDiscardSignalRemoteViews_.clear();
 }
 
 void MultiPeerIbTransportBase::cleanupPeerSignalCounterResources(
@@ -1707,9 +1918,6 @@ void MultiPeerIbTransportBase::cleanupPeerSignalCounterResources(
   if (peerIndex < static_cast<int>(lazySlotCounterAllocations_.size())) {
     freeCounterSlotAllocation(lazySlotCounterAllocations_[peerIndex]);
   }
-  if (peerIndex < static_cast<int>(lazySlotDiscardSignalAllocations_.size())) {
-    freeDeviceSlotAllocation(lazySlotDiscardSignalAllocations_[peerIndex]);
-  }
   if (peerIndex < static_cast<int>(slotRemoteSignalViews_.size())) {
     slotRemoteSignalViews_[peerIndex] = IbgdaRemoteBuffer{};
   }
@@ -1722,16 +1930,12 @@ void MultiPeerIbTransportBase::cleanupPeerSignalCounterResources(
   if (peerIndex < static_cast<int>(slotCounterHostViews_.size())) {
     slotCounterHostViews_[peerIndex] = IbgdaLocalBuffer{};
   }
-  if (peerIndex < static_cast<int>(slotDiscardSignalRemoteViews_.size())) {
-    slotDiscardSignalRemoteViews_[peerIndex] = IbgdaRemoteBuffer{};
-  }
 }
 
 void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
     int peerIndex,
     PeerBufferPayload& payload,
-    IbCounterStorage counterStorage,
-    bool allocateDiscardSignal) {
+    IbCounterStorage counterStorage) {
   const int numPeers = nRanks_ - 1;
   if (peerIndex < 0 || peerIndex >= numPeers) {
     throw std::invalid_argument(
@@ -1744,16 +1948,15 @@ void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
   slotLocalSignalViews_.resize(numPeers);
   slotCounterDeviceViews_.resize(numPeers);
   slotCounterHostViews_.resize(numPeers);
-  slotDiscardSignalRemoteViews_.resize(numPeers);
   lazySlotSignalAllocations_.resize(numPeers);
   lazySlotCounterAllocations_.resize(numPeers);
-  lazySlotDiscardSignalAllocations_.resize(numPeers);
 
   if (config_.numSignalSlots > 0) {
     const std::size_t signalBytes =
         static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
-    freeDeviceSlotAllocation(lazySlotSignalAllocations_[peerIndex]);
-    auto allocation =
+    auto& allocation = lazySlotSignalAllocations_[peerIndex];
+    freeDeviceSlotAllocation(allocation);
+    allocation =
         allocateDeviceSlotAllocation(signalBytes, "lazy slot signal buffer");
     auto localSignalBuf = registerSlotMemory(
         allocation.ptr,
@@ -1762,21 +1965,20 @@ void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
         allocation.registered);
     payload.slotSignal = registeredSlotMemoryExchInfo(allocation.ptr);
     slotLocalSignalViews_[peerIndex] = localSignalBuf;
-    lazySlotSignalAllocations_[peerIndex] = std::move(allocation);
   }
 
   if (config_.numCounterSlots > 0) {
     const std::size_t counterBytes =
         static_cast<std::size_t>(config_.numCounterSlots) * sizeof(uint64_t);
-    freeCounterSlotAllocation(lazySlotCounterAllocations_[peerIndex]);
-    auto allocation = allocateCounterSlotAllocation(
+    auto& allocation = lazySlotCounterAllocations_[peerIndex];
+    freeCounterSlotAllocation(allocation);
+    allocation = allocateCounterSlotAllocation(
         counterStorage, counterBytes, "lazy slot counter buffer");
     if (counterStorage == IbCounterStorage::HostPinned) {
       slotCounterDeviceViews_[peerIndex] =
           IbgdaLocalBuffer(allocation.devicePtr, NetworkLKeys{});
       slotCounterHostViews_[peerIndex] =
           IbgdaLocalBuffer(allocation.hostPtr, NetworkLKeys{});
-      lazySlotCounterAllocations_[peerIndex] = std::move(allocation);
     } else {
       auto localCounterBuf = registerSlotMemory(
           allocation.devicePtr,
@@ -1785,28 +1987,13 @@ void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
           allocation.registered);
       slotCounterDeviceViews_[peerIndex] = localCounterBuf;
       slotCounterHostViews_[peerIndex] = localCounterBuf;
-      lazySlotCounterAllocations_[peerIndex] = std::move(allocation);
     }
-  }
-
-  if (allocateDiscardSignal && config_.numCounterSlots > 0) {
-    freeDeviceSlotAllocation(lazySlotDiscardSignalAllocations_[peerIndex]);
-    auto allocation = allocateDeviceSlotAllocation(
-        sizeof(uint64_t), "lazy slot discard-signal buffer");
-    (void)registerSlotMemory(
-        allocation.ptr,
-        allocation.ptr,
-        allocation.bytes,
-        allocation.registered);
-    payload.slotDiscard = registeredSlotMemoryExchInfo(allocation.ptr);
-    lazySlotDiscardSignalAllocations_[peerIndex] = std::move(allocation);
   }
 }
 
 void MultiPeerIbTransportBase::applyRemoteSignalCounterResources(
     int peerIndex,
-    const PeerBufferPayload& remotePayload,
-    bool hasDiscardSignal) {
+    const PeerBufferPayload& remotePayload) {
   const int numPeers = nRanks_ - 1;
   if (peerIndex < 0 || peerIndex >= numPeers) {
     throw std::invalid_argument(
@@ -1815,14 +2002,9 @@ void MultiPeerIbTransportBase::applyRemoteSignalCounterResources(
             peerIndex));
   }
   slotRemoteSignalViews_.resize(numPeers);
-  slotDiscardSignalRemoteViews_.resize(numPeers);
   if (config_.numSignalSlots > 0) {
     slotRemoteSignalViews_[peerIndex] =
         remotePayload.slotSignal.toRemoteBuffer();
-  }
-  if (hasDiscardSignal && config_.numCounterSlots > 0) {
-    slotDiscardSignalRemoteViews_[peerIndex] =
-        remotePayload.slotDiscard.toRemoteBuffer();
   }
 }
 
@@ -1846,30 +2028,73 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::slotCounterHostView(
   return slotCounterHostViews_.at(peerIndex);
 }
 
-IbgdaRemoteBuffer MultiPeerIbTransportBase::slotDiscardSignalRemoteView(
-    int peerIndex) const {
-  return slotDiscardSignalRemoteViews_.at(peerIndex);
+bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
+  return materializedChannelCount(peerRank) == channelCapacity();
 }
 
-bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
+uint32_t MultiPeerIbTransportBase::materializedChannelCount(
+    int peerRank) const {
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
     throw std::invalid_argument(
         fmt::format(
-            "isPeerMaterialized: invalid peerRank={} (myRank={}, nRanks={})",
+            "materializedChannelCount: invalid peerRank={} (myRank={}, nRanks={})",
             peerRank,
             myRank_,
             nRanks_));
   }
   const std::lock_guard<std::mutex> lock(materializationMutex_);
-  return peerMaterialized_[rankToPeerIndex(peerRank)];
+  if (materializationFailed_) {
+    throw std::runtime_error(
+        "MultiPeerIbTransport: peer materialization previously failed");
+  }
+  return materializedChannels_[rankToPeerIndex(peerRank)];
 }
 
-void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
+void MultiPeerIbTransportBase::throwIfMaterializationFailed() const {
   const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {
     throw std::runtime_error(
-        "MultiPeerIbTransport: lazy peer materialization previously failed; "
-        "retry is not supported");
+        "MultiPeerIbTransport: peer materialization previously failed");
+  }
+}
+
+void MultiPeerIbTransportBase::abortCommunicator() noexcept {
+  if (!config_.abort) {
+    return;
+  }
+  try {
+    config_.abort->setAbort();
+  } catch (const std::exception& ex) {
+    LOG(ERROR) << "MultiPeerIbTransport: failed to abort communicator: "
+               << ex.what();
+  } catch (...) {
+    LOG(ERROR) << "MultiPeerIbTransport: failed to abort communicator";
+  }
+}
+
+void MultiPeerIbTransportBase::poisonTransport() noexcept {
+  bool newlyPoisoned = false;
+  {
+    const std::lock_guard<std::mutex> lock(materializationMutex_);
+    if (!materializationFailed_) {
+      materializationFailed_ = true;
+      pendingPeers_.clear();
+      newlyPoisoned = true;
+    }
+  }
+  if (newlyPoisoned) {
+    abortCommunicator();
+  }
+}
+
+void MultiPeerIbTransportBase::queuePeerForMaterialization(
+    int peerRank,
+    uint32_t targetChannels) {
+  const std::lock_guard<std::mutex> lock(materializationMutex_);
+  if (materializationFailed_) {
+    throw std::runtime_error(
+        "MultiPeerIbTransport: channel-prefix materialization previously "
+        "failed; retry is not supported");
   }
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
     throw std::invalid_argument(
@@ -1880,15 +2105,33 @@ void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
             myRank_,
             nRanks_));
   }
-  if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
+  if (targetChannels == 0 || targetChannels > channelCapacity()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "queuePeerForMaterialization: targetChannels={} must be in [1, {}]",
+            targetChannels,
+            channelCapacity()));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  uint32_t materializationTarget = channelCapacity();
+  if (config_.lazyChannels) {
+    materializationTarget = 1;
+    while (materializationTarget < targetChannels) {
+      materializationTarget =
+          std::min(channelCapacity(), materializationTarget * 2);
+    }
+  }
+  if (materializationTarget <= materializedChannels_[peerIndex]) {
     return;
   }
-  for (int p : pendingPeers_) {
-    if (p == peerRank) {
+  for (auto& pending : pendingPeers_) {
+    if (pending.rank == peerRank) {
+      pending.targetChannels =
+          std::max(pending.targetChannels, materializationTarget);
       return;
     }
   }
-  pendingPeers_.push_back(peerRank);
+  pendingPeers_.push_back({peerRank, materializationTarget});
 }
 
 std::vector<IbTransportExchInfoAll> MultiPeerIbTransportBase::allGatherExchInfo(
@@ -1964,12 +2207,32 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     std::size_t bytes,
     int phase) {
   constexpr int64_t kPrimsPeerTagBase = 1 << 16;
+  constexpr int64_t kLazyPhasesPerPeerPair = 4;
+  constexpr int64_t kEagerPhasesPerPeerPair = 2;
+  int wirePhase = phase;
+  int64_t phasesPerPeerPair = kLazyPhasesPerPeerPair;
+  if (!channelRangeProtocolEnabled_) {
+    phasesPerPeerPair = kEagerPhasesPerPeerPair;
+    if (phase == kIbPeerQpExchangeTag) {
+      wirePhase = 0;
+    } else if (phase == kIbPeerBufferExchangeTag) {
+      wirePhase = 1;
+    } else {
+      throw std::invalid_argument(
+          fmt::format("invalid eager peer materialization phase {}", phase));
+    }
+  } else if (phase < 0 || phase >= kLazyPhasesPerPeerPair) {
+    throw std::invalid_argument(
+        fmt::format("invalid peer materialization phase {}", phase));
+  }
   const int lowRank = std::min(myRank_, peerRank);
   const int highRank = std::max(myRank_, peerRank);
   const int64_t pairIndex = static_cast<int64_t>(lowRank) * nRanks_ + highRank;
-  const int64_t tagValue = kPrimsPeerTagBase + pairIndex * 2 + phase;
+  const int64_t tagValue =
+      kPrimsPeerTagBase + pairIndex * phasesPerPeerPair + wirePhase;
   if (tagValue > std::numeric_limits<int>::max()) {
-    throw std::runtime_error("materializePeer: bootstrap tag overflow");
+    throw std::runtime_error(
+        "materializePeerChannelRange: bootstrap tag overflow");
   }
   const int tag = static_cast<int>(tagValue);
   // Lower rank recvs first to avoid deadlock with blocking bootstrap
@@ -1981,7 +2244,8 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     if (recvResult != 0) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
+              "materializePeerChannelRange: rank {} recv from peer {} failed "
+              "(error {})",
               myRank_,
               peerRank,
               recvResult));
@@ -1992,7 +2256,8 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     if (sendResult != 0) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
+              "materializePeerChannelRange: rank {} send to peer {} failed "
+              "(error {})",
               myRank_,
               peerRank,
               sendResult));
@@ -2004,7 +2269,8 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     if (sendResult != 0) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: rank {} send to peer {} failed (error {})",
+              "materializePeerChannelRange: rank {} send to peer {} failed "
+              "(error {})",
               myRank_,
               peerRank,
               sendResult));
@@ -2015,7 +2281,8 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     if (recvResult != 0) {
       throw std::runtime_error(
           fmt::format(
-              "materializePeer: rank {} recv from peer {} failed (error {})",
+              "materializePeerChannelRange: rank {} recv from peer {} failed "
+              "(error {})",
               myRank_,
               peerRank,
               recvResult));

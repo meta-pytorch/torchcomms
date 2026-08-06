@@ -262,16 +262,17 @@ static commResult_t ctranReduceScatterDirectIbImpl(
   }
 
   auto* mpt = comm->multiPeerTransport_.get();
-  std::vector<int> peers;
-  peers.reserve(static_cast<size_t>(nRanks - 1));
+  std::vector<comms::prims::PeerChannelDemand> demands;
+  demands.reserve(static_cast<size_t>(nRanks - 1));
   for (int peer = 0; peer < nRanks; ++peer) {
     if (peer != statex->rank()) {
-      peers.push_back(peer);
+      demands.push_back(
+          {.peerRank = peer, .ibChannels = mpt->ib_channel_capacity()});
     }
   }
 
   try {
-    mpt->materializePeers(peers);
+    (void)mpt->get_device_handle(demands);
 
     size_t wireRecvBytes = recvBytes;
     size_t wireTotalBytes = totalBytes;
@@ -307,7 +308,8 @@ static commResult_t ctranReduceScatterDirectIbImpl(
     params.timeout_ms = MCCL_ABORT_TIMEOUT_MS;
     params.stream = stream;
 
-    for (int peer : peers) {
+    for (const auto& demand : demands) {
+      const int peer = demand.peerRank;
       params.peers[peer] = comms::prims::P2pIbTransportDevice(
           mpt->get_p2p_ibgda_transport_device(peer));
     }

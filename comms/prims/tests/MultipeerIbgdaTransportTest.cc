@@ -15,6 +15,9 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.h"
+#include "comms/prims/tests/TopologyTestUtils.h"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
@@ -127,8 +130,12 @@ class TestIbTransport {
     if (ibgda_) {
       return P2pIbTransportDevice(ibgda_->getP2pTransportDevice(peerRank));
     }
-    if (!ibrc_->isPeerMaterialized(peerRank)) {
-      ibrc_->materializePeer(peerRank);
+    return P2pIbTransportDevice(ibrc_->getP2pTransportDevice(peerRank));
+  }
+
+  P2pIbTransportDevice getP2pTransportDeviceSlot(int peerRank) const {
+    if (ibgda_) {
+      return P2pIbTransportDevice(ibgda_->getP2pTransportDeviceSlot(peerRank));
     }
     return P2pIbTransportDevice(ibrc_->getP2pTransportDeviceSlot(peerRank));
   }
@@ -144,11 +151,11 @@ class TestIbTransport {
                   : ibrc_->exchangeBuffer(localBuf);
   }
 
-  void queuePeerForMaterialization(int peerRank) {
+  void queuePeerForMaterialization(int peerRank, uint32_t targetChannels) {
     if (ibgda_) {
-      ibgda_->queuePeerForMaterialization(peerRank);
+      ibgda_->queuePeerForMaterialization(peerRank, targetChannels);
     } else {
-      ibrc_->queuePeerForMaterialization(peerRank);
+      ibrc_->queuePeerForMaterialization(peerRank, targetChannels);
     }
   }
 
@@ -163,6 +170,15 @@ class TestIbTransport {
   bool isPeerMaterialized(int peerRank) const {
     return ibgda_ ? ibgda_->isPeerMaterialized(peerRank)
                   : ibrc_->isPeerMaterialized(peerRank);
+  }
+
+  uint32_t materializedChannelCount(int peerRank) const {
+    return ibgda_ ? ibgda_->materializedChannelCount(peerRank)
+                  : ibrc_->materializedChannelCount(peerRank);
+  }
+
+  uint32_t channelCapacity() const {
+    return static_cast<uint32_t>(config_.max_num_channels);
   }
 
  private:
@@ -2867,16 +2883,46 @@ class LazyModeTestFixture
     return GetParam();
   }
 
-  std::unique_ptr<TestIbTransport> createLazyTransport() {
-    MultipeerIbTransportConfig config{
+  MultipeerIbTransportConfig lazyIbConfig(bool lazyChannels) const {
+    return MultipeerIbTransportConfig{
         .cudaDevice = localRank,
+        .perChannelSize = 4096,
+        .max_num_channels = 8,
+        .pipelineDepth = 2,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
+        .lazyChannels = lazyChannels,
     };
+  }
+
+  std::unique_ptr<TestIbTransport> createLazyTransport(
+      bool lazyChannels = false) {
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     return std::make_unique<TestIbTransport>(
-        backend(), globalRank, numRanks, std::move(bootstrap), config);
+        backend(),
+        globalRank,
+        numRanks,
+        std::move(bootstrap),
+        lazyIbConfig(lazyChannels));
+  }
+
+  std::unique_ptr<MultiPeerTransport> createLazyMultiPeerTransport() {
+    MultiPeerTransportConfig config{
+        .nvlConfig = {.maxNumChannels = 0},
+        .ibConfig = lazyIbConfig(/*lazyChannels=*/true),
+        .ibMode = backend() == IbTestBackend::Ibgda ? IbBackendMode::kIbgda
+                                                    : IbBackendMode::kIbrc,
+    };
+    auto transport = std::make_unique<MultiPeerTransport>(
+        globalRank,
+        numRanks,
+        localRank,
+        std::make_shared<meta::comms::MpiBootstrap>(),
+        config,
+        makeTopology(globalRank, {}));
+    transport->exchange();
+    return transport;
   }
 };
 
@@ -2905,23 +2951,229 @@ TEST_P(LazyModeTestFixture, MaterializeOnAccess) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_P(LazyModeTestFixture, QueueThenConnect) {
+TEST_P(LazyModeTestFixture, LazyChannelsGrowAndTransfer) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
   try {
-    auto transport = createLazyTransport();
-    int peerRank = (globalRank == 0) ? 1 : 0;
-
-    transport->queuePeerForMaterialization(peerRank);
-    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
-
-    transport->connectPeers();
-    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+    auto availabilityProbe = createLazyTransport();
+    (void)availabilityProbe;
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
+
+  auto transport = createLazyTransport(/*lazyChannels=*/true);
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr uint32_t kRequestedChannels = 1;
+  const void* const deviceTransport = transport->getDeviceTransportPtr();
+
+  transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
+  EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+  EXPECT_EQ(0u, transport->materializedChannelCount(peerRank));
+
+  transport->connectPeers();
+  EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
+  EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+  EXPECT_EQ(kRequestedChannels, transport->materializedChannelCount(peerRank));
+
+  const auto peerTransport = transport->getP2pTransportDeviceSlot(peerRank);
+  const uint8_t localPattern = globalRank == 0 ? 0x3A : 0xC5;
+  const uint8_t remotePattern = globalRank == 0 ? 0xC5 : 0x3A;
+  const auto exerciseChannels = [&](int channelCount) {
+    constexpr int kBlockSize = 128;
+    constexpr std::size_t kBytesPerChannel = 4096;
+    const std::size_t bytes = channelCount * kBytesPerChannel;
+    const std::size_t firstBytes = bytes / 2;
+    const std::size_t secondBytes = bytes - firstBytes;
+    DeviceBuffer sendBuffer(bytes);
+    DeviceBuffer recvBuffer(bytes);
+    DeviceBuffer errorCountBuffer(sizeof(int));
+    auto* const errorCount = static_cast<int*>(errorCountBuffer.get());
+
+    test::fillBufferWithPattern(
+        sendBuffer.get(), bytes, localPattern, channelCount, kBlockSize);
+    CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, bytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testTwoCallSendThenRecv(
+        peerTransport,
+        sendBuffer.get(),
+        recvBuffer.get(),
+        firstBytes,
+        secondBytes,
+        /*maxSignalBytes=*/1024,
+        channelCount,
+        kBlockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    CUDACHECK_TEST(cudaMemset(errorCount, 0, sizeof(int)));
+    test::verifyBufferPattern(
+        recvBuffer.get(),
+        bytes,
+        remotePattern,
+        errorCount,
+        channelCount,
+        kBlockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    int hostErrorCount = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &hostErrorCount,
+        errorCount,
+        sizeof(hostErrorCount),
+        cudaMemcpyDeviceToHost));
+    EXPECT_EQ(hostErrorCount, 0)
+        << backendName(backend()) << " lazy channel transfer corrupted data";
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  };
+
+  exerciseChannels(/*channelCount=*/1);
+
+  transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/4);
+  transport->connectPeers();
+  EXPECT_EQ(4, transport->materializedChannelCount(peerRank));
+  EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
+
+  exerciseChannels(/*channelCount=*/4);
+
+  transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/2);
+  transport->connectPeers();
+  EXPECT_EQ(4, transport->materializedChannelCount(peerRank));
+
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_P(LazyModeTestFixture, ColdGraphCaptureGrowAndReplayOldGraph) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+
+  std::unique_ptr<MultiPeerTransport> transport;
+  try {
+    transport = createLazyMultiPeerTransport();
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
+  }
+
+  constexpr int kBlockSize = 128;
+  constexpr int kMaxChannels = 4;
+  constexpr std::size_t kBytesPerChannel = 4096;
+  constexpr std::size_t kMaxBytes = kMaxChannels * kBytesPerChannel;
+  const int peerRank = globalRank == 0 ? 1 : 0;
+  const uint8_t localPattern = globalRank == 0 ? 0x3A : 0xC5;
+  const uint8_t remotePattern = globalRank == 0 ? 0xC5 : 0x3A;
+
+  DeviceBuffer sendBuffer(kMaxBytes);
+  DeviceBuffer recvBuffer(kMaxBytes);
+  DeviceBuffer errorCountBuffer(sizeof(int));
+  auto* const errorCount = static_cast<int*>(errorCountBuffer.get());
+
+  const auto prepareBuffers = [&]() {
+    test::fillBufferWithPattern(
+        sendBuffer.get(), kMaxBytes, localPattern, kMaxChannels, kBlockSize);
+    CUDACHECK_TEST(cudaMemset(recvBuffer.get(), 0, kMaxBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  };
+  const auto verifyBytes = [&](std::size_t bytes, int channels) {
+    CUDACHECK_TEST(cudaMemset(errorCount, 0, sizeof(int)));
+    test::verifyBufferPattern(
+        recvBuffer.get(),
+        bytes,
+        remotePattern,
+        errorCount,
+        channels,
+        kBlockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    int hostErrorCount = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &hostErrorCount,
+        errorCount,
+        sizeof(hostErrorCount),
+        cudaMemcpyDeviceToHost));
+    EXPECT_EQ(hostErrorCount, 0)
+        << backendName(backend()) << " graph transfer corrupted data";
+  };
+
+  const MultiPeerDeviceHandle initialHandle =
+      transport->get_device_handle(std::span<const PeerChannelDemand>{});
+  const Transport* const stableTransportTable = initialHandle.transports.data();
+  cudaStream_t stream = nullptr;
+  cudaGraph_t graph = nullptr;
+  cudaGraphExec_t graphExec = nullptr;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  prepareBuffers();
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+  const std::vector<PeerChannelDemand> oneChannelDemand{{
+      .peerRank = peerRank,
+      .ibChannels = 1,
+  }};
+  const MultiPeerDeviceHandle capturedHandle =
+      transport->get_device_handle(oneChannelDemand);
+  EXPECT_EQ(stableTransportTable, capturedHandle.transports.data());
+  test::testMultiPeerTwoCallSendThenRecv(
+      capturedHandle,
+      peerRank,
+      sendBuffer.get(),
+      recvBuffer.get(),
+      kBytesPerChannel / 2,
+      kBytesPerChannel / 2,
+      /*maxSignalBytes=*/1024,
+      /*numBlocks=*/1,
+      kBlockSize,
+      stream);
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+  std::size_t graphNodeCount = 0;
+  CUDACHECK_TEST(cudaGraphGetNodes(graph, nullptr, &graphNodeCount));
+  EXPECT_EQ(std::size_t{1}, graphNodeCount);
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  verifyBytes(kBytesPerChannel, /*channels=*/1);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  const std::vector<PeerChannelDemand> fourChannelDemand{{
+      .peerRank = peerRank,
+      .ibChannels = kMaxChannels,
+  }};
+  const MultiPeerDeviceHandle grownHandle =
+      transport->get_device_handle(fourChannelDemand);
+  EXPECT_EQ(stableTransportTable, grownHandle.transports.data());
+
+  prepareBuffers();
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  test::testMultiPeerTwoCallSendThenRecv(
+      grownHandle,
+      peerRank,
+      sendBuffer.get(),
+      recvBuffer.get(),
+      kMaxBytes / 2,
+      kMaxBytes / 2,
+      /*maxSignalBytes=*/1024,
+      kMaxChannels,
+      kBlockSize,
+      stream);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  verifyBytes(kMaxBytes, kMaxChannels);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  prepareBuffers();
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  verifyBytes(kBytesPerChannel, /*channels=*/1);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
 
 TEST_P(LazyModeTestFixture, DefaultModeDefersAllPeers) {

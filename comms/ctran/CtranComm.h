@@ -43,12 +43,14 @@ struct ctranPipesConfig {
   int64_t enablePrims{-1};
   int64_t nvlChunkSize{-1};
   bool ibLazyConnect{true};
+  bool lazyChannels{false};
   int64_t ibgdaDataBufferSize{-1};
 
   bool operator==(const ctranPipesConfig& other) const {
     return enablePrims == other.enablePrims &&
         nvlChunkSize == other.nvlChunkSize &&
         ibLazyConnect == other.ibLazyConnect &&
+        lazyChannels == other.lazyChannels &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;
   }
 };
@@ -189,8 +191,8 @@ class CtranComm {
     return parentRanks_;
   }
 
-  // Materializes `peers` and returns the Transport array indexed by global
-  // rank. An empty peer list initializes no IB transport slots.
+  // Materializes `peers` at full IB channel capacity and returns the stable
+  // Transport array indexed by global rank.
   comms::prims::Transport* getMultiPeerTransportsPtr(
       const std::vector<int>& peers);
 

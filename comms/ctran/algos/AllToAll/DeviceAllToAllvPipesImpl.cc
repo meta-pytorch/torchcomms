@@ -157,7 +157,6 @@ commResult_t setupKernelConfig(
     kernArgs.localRankToGlobalRank[lr] = statex->localRankToRank(lr);
   }
 
-  // Set transport array from MultiPeerTransport
   kernArgs.transports = comm->getMultiPeerTransportsPtr({});
 
   // LL128 threshold from pre-resolved config
