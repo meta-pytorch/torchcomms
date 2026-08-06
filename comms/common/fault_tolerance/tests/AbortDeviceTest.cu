@@ -75,6 +75,14 @@ __global__ void deviceReadCheckExpiredKernel(
   }
 }
 
+__global__ void deviceReadCheckResultKernel(
+    AbortDevice abort,
+    int* observedCheckResult) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *observedCheckResult = static_cast<int>(abort.check());
+  }
+}
+
 __global__ void deviceWaitForTimeoutKernel(
     AbortDevice abort,
     int* observedMode,
@@ -210,6 +218,14 @@ cudaError_t launchDeviceReadCheckExpired(
     cudaStream_t stream) {
   deviceReadCheckExpiredKernel<<<1, 1, 0, stream>>>(
       abort, observedCheckExpired, observedReason);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceReadCheckResult(
+    AbortDevice abort,
+    int* observedCheckResult,
+    cudaStream_t stream) {
+  deviceReadCheckResultKernel<<<1, 1, 0, stream>>>(abort, observedCheckResult);
   return cudaGetLastError();
 }
 
