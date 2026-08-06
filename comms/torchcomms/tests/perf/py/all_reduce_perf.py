@@ -47,7 +47,7 @@ def run_all_reduce_perf(
 
         # Measure
         timer = PerfTimer()
-        sync_device(device)
+        sync_device()
         timer.start()
 
         for i in range(params.measure_iterations):
@@ -56,9 +56,9 @@ def run_all_reduce_perf(
                 work.wait()
 
             if params.iteration_window > 0 and (i + 1) % params.iteration_window == 0:
-                sync_device(device)
+                sync_device()
 
-        sync_device(device)
+        sync_device()
         timer.stop()
 
         # Calculate statistics
