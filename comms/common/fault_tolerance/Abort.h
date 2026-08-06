@@ -17,6 +17,17 @@ enum class AbortReason : int {
   TIMED_OUT = 2,
 };
 
+enum class AbortBehavior : int {
+  SKIP = 0,
+  TRAP = 1,
+};
+
+enum class AbortCheckResult : int {
+  CONTINUE = 0,
+  SKIP = 1,
+  TRAP = 2,
+};
+
 /**
  * Host-owned state shared with CUDA device code through mapped pinned memory.
  *
@@ -87,7 +98,7 @@ class Abort final {
    * host-side state semantics. Disabled controllers are no-op placeholders for
    * callers that must pass an `Abort` object while fault tolerance is disabled.
    */
-  explicit Abort(bool enabled);
+  explicit Abort(bool enabled, AbortBehavior behavior = AbortBehavior::SKIP);
   ~Abort();
   Abort(const Abort&) = delete;
   Abort& operator=(const Abort&) = delete;
@@ -103,6 +114,17 @@ class Abort final {
    */
   inline bool isEnabled() const {
     return state_ != nullptr;
+  }
+
+  /**
+   * Returns the device-side behavior selected for this controller.
+   *
+   * `SKIP` asks device waits to return without trapping when an abort is
+   * observed. `TRAP` asks Prims wait helpers to preserve the legacy device
+   * trap behavior. The behavior is captured into each `AbortDevice` handle.
+   */
+  AbortBehavior behavior() const {
+    return behavior_;
   }
 
   /**
@@ -220,6 +242,7 @@ class Abort final {
   std::atomic<bool> hasTimeout_{false};
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
+  AbortBehavior behavior_{AbortBehavior::SKIP};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
   static_assert(
@@ -230,6 +253,8 @@ class Abort final {
  * Creates an enabled abort controller or returns the shared disabled
  * controller.
  */
-std::shared_ptr<Abort> createAbort(bool enabled);
+std::shared_ptr<Abort> createAbort(
+    bool enabled,
+    AbortBehavior behavior = AbortBehavior::SKIP);
 
 } // namespace comms::fault_tolerance

@@ -7,7 +7,7 @@
 #include "PipesDeviceApiTestKernels.cuh"
 #include "StressTestKernelUtils.cuh"
 
-#include "comms/torchcomms/device/pipes/TorchCommDevicePipes.cuh"
+#include "comms/torchcomms/device/prims/TorchCommDevicePrims.cuh"
 
 // Kernel launch error check for test code.
 #define KERNEL_LAUNCH_CHECK()                        \

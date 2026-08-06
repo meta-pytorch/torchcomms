@@ -37,6 +37,19 @@ the caller must create a new handle after switching devices.
 Disabled handles are valid kernel arguments. They have a null state pointer and
 all APIs behave as no-op or non-aborted.
 
+`AbortBehavior` selects what device wait code should do after observing an
+abort:
+
+- `AbortBehavior::SKIP` is the default. Device waits should return a failure
+  status so the caller can unwind without consuming incomplete transport data.
+- `AbortBehavior::TRAP` preserves legacy Prims behavior. Common fault-tolerance
+  code returns `AbortCheckResult::TRAP`; Prims helpers perform the actual
+  `__trap()` so this package stays transport-agnostic.
+
+Callers that only need the old boolean predicate may continue using
+`AbortDevice::isAborted()` or `checkExpired()`. New Prims wait loops should use
+`AbortDevice::check()` and handle `SKIP` explicitly.
+
 ## Device Timeout Semantics
 
 `AbortDevice::startTimeout()` starts a timeout on the copied device handle. The
@@ -115,9 +128,14 @@ __global__ void kernel(KernArgs args) {
   abort.startTimeout();
 
   while (!ready()) {
-    if (abort.isAborted()) {
-      printf("CUDA ABORT ERROR: wait aborted\n");
-      __trap();
+    switch (abort.check()) {
+      case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+        break;
+      case comms::fault_tolerance::AbortCheckResult::SKIP:
+        return;
+      case comms::fault_tolerance::AbortCheckResult::TRAP:
+        printf("CUDA ABORT ERROR: wait aborted\n");
+        __trap();
     }
   }
 }
@@ -133,8 +151,8 @@ Device timeout:
 ```cpp
 abort.startTimeout();
 while (!ready()) {
-  if (abort.isAborted()) {
-    __trap();
+  if (abort.check() != comms::fault_tolerance::AbortCheckResult::CONTINUE) {
+    return;
   }
 }
 ```
