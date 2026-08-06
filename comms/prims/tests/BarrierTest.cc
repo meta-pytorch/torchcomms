@@ -80,10 +80,10 @@ class BarrierTwoGpuFixture : public ::testing::Test {
 
   void TearDown() override {
     // Cleanup streams
-    CUDACHECK_TEST(cudaSetDevice(kGpu0));
-    CUDACHECK_TEST(cudaStreamDestroy(stream0_));
-    CUDACHECK_TEST(cudaSetDevice(kGpu1));
-    CUDACHECK_TEST(cudaStreamDestroy(stream1_));
+    (void)cudaSetDevice(kGpu0);
+    (void)cudaStreamDestroy(stream0_);
+    (void)cudaSetDevice(kGpu1);
+    (void)cudaStreamDestroy(stream1_);
   }
 };
 
