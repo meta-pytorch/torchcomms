@@ -5,12 +5,40 @@
 
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
 using meta::comms::logger::getSpdlogLogger;
+
+class ScopedTestFile {
+ public:
+  explicit ScopedTestFile(std::string filename)
+      : path_{std::filesystem::path{testing::TempDir()} / std::move(filename)} {
+    std::filesystem::remove(path_);
+  }
+
+  ~ScopedTestFile() {
+    removeNoexcept();
+  }
+
+  const std::filesystem::path& path() const {
+    return path_;
+  }
+
+ private:
+  void removeNoexcept() noexcept {
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
+
+  std::filesystem::path path_;
+};
 
 class LogLevelRestoringTest : public testing::Test {
  protected:
@@ -32,17 +60,45 @@ TEST(SpdlogLoggerTest, ReturnsStableLoggerPerContext) {
 }
 
 TEST(SpdlogLoggerTest, MatchesLegacyStderrRouting) {
+  EXPECT_TRUE(meta::comms::logger::shouldWriteCommsLogToStderr("WARN message"));
   EXPECT_TRUE(
-      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::warn));
+      meta::comms::logger::shouldWriteCommsLogToStderr("ERROR message"));
   EXPECT_TRUE(
-      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::err));
-  EXPECT_TRUE(
-      meta::comms::logger::shouldWriteCommsLogToStderr(
-          spdlog::level::critical));
+      meta::comms::logger::shouldWriteCommsLogToStderr("FATAL message"));
   EXPECT_FALSE(
-      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::info));
+      meta::comms::logger::shouldWriteCommsLogToStderr("CRITICAL message"));
   EXPECT_FALSE(
-      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::off));
+      meta::comms::logger::shouldWriteCommsLogToStderr("INFO message"));
+  EXPECT_FALSE(meta::comms::logger::shouldWriteCommsLogToStderr(""));
+}
+
+TEST(SpdlogLoggerTest, SynchronousFileDeliveryMatchesLegacyRouting) {
+  constexpr std::string_view kContext = "comms.synchronous_file_test";
+  const ScopedTestFile scopedLogFile{"comms_spdlog_sync.log"};
+  const auto logPath = scopedLogFile.path().string();
+  meta::comms::logger::configureSpdlogLogger(
+      kContext, "TEST", logPath, []() { return 0; }, {}, false);
+  auto& logger = getSpdlogLogger(kContext);
+  logger.set_level(spdlog::level::info);
+
+  testing::internal::CaptureStderr();
+  COMMS_LOG_NAMED(kContext, CRITICAL, "critical file message");
+  COMMS_LOG_NAMED(kContext, WARN, "warning mirrored message");
+  logger.set_level(spdlog::level::off);
+  COMMS_LOG_NAMED(kContext, INFO, "filtered synchronous message");
+  const auto stderrOutput = testing::internal::GetCapturedStderr();
+
+  std::ifstream logFile{logPath};
+  const std::string fileOutput{
+      std::istreambuf_iterator<char>{logFile},
+      std::istreambuf_iterator<char>{}};
+
+  EXPECT_FALSE(logger.usesAsyncLogging());
+  EXPECT_NE(fileOutput.find("critical file message"), std::string::npos);
+  EXPECT_NE(fileOutput.find("warning mirrored message"), std::string::npos);
+  EXPECT_EQ(fileOutput.find("filtered synchronous message"), std::string::npos);
+  EXPECT_EQ(stderrOutput.find("critical file message"), std::string::npos);
+  EXPECT_NE(stderrOutput.find("warning mirrored message"), std::string::npos);
 }
 
 TEST(SpdlogLoggerTest, MapsFollyLevelNames) {
@@ -79,18 +135,20 @@ TEST_F(LogLevelRestoringTest, FatalIsNotSuppressedByRuntimeLevel) {
       "FATAL fatal while logging is disabled");
 }
 
-TEST(SpdlogLoggerTest, CompileTimeGateSkipsArguments) {
+TEST_F(LogLevelRestoringTest, CompileTimeGateIncludesDebug) {
   int evaluationCount = 0;
-  COMMS_LOG(DBG, "compiled out: {}", ++evaluationCount);
-  EXPECT_EQ(evaluationCount, 0);
+  getSpdlogLogger().set_level(spdlog::level::debug);
 
-  COMMS_LOG(INFO, "compiled in: {}", ++evaluationCount);
+  COMMS_LOG(DBG, "compiled in: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 1);
 }
 
 TEST_F(LogLevelRestoringTest, RuntimeGateSkipsArguments) {
   int evaluationCount = 0;
   getSpdlogLogger().set_level(spdlog::level::warn);
+
+  COMMS_LOG(DBG, "filtered at runtime: {}", ++evaluationCount);
+  EXPECT_EQ(evaluationCount, 0);
 
   COMMS_LOG(INFO, "filtered at runtime: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 0);
@@ -116,7 +174,7 @@ TEST(SpdlogLoggerTest, ErrorCallbackReceivesFormattedUserMessage) {
       []() { return 0; },
       [&](std::string_view message) { errorMessage = message; });
 
-  COMMS_LOG_CONTEXT("comms.callback_test", ERR, "error message: {}", 9);
+  COMMS_LOG_NAMED("comms.callback_test", ERR, "error message: {}", 9);
   EXPECT_EQ(errorMessage, "error message: 9");
   logger.configure("TEST", []() { return 0; }, {});
 }
@@ -130,10 +188,10 @@ TEST(SpdlogLoggerTest, ErrorCallbackDoesNotReenter) {
       []() { return 0; },
       [&](std::string_view) {
         ++callbackCount;
-        COMMS_LOG_CONTEXT(kContext, ERR, "nested error");
+        COMMS_LOG_NAMED(kContext, ERR, "nested error");
       });
 
-  COMMS_LOG_CONTEXT(kContext, ERR, "outer error");
+  COMMS_LOG_NAMED(kContext, ERR, "outer error");
   EXPECT_EQ(callbackCount, 1);
   logger.configure("TEST", []() { return 0; }, {});
 }
@@ -154,10 +212,10 @@ TEST(SpdlogLoggerTest, ErrorCallbackGuardSpansContexts) {
       []() { return 0; },
       [&](std::string_view) {
         ++outerCallbackCount;
-        COMMS_LOG_CONTEXT(kInnerContext, ERR, "nested error");
+        COMMS_LOG_NAMED(kInnerContext, ERR, "nested error");
       });
 
-  COMMS_LOG_CONTEXT(kOuterContext, ERR, "outer error");
+  COMMS_LOG_NAMED(kOuterContext, ERR, "outer error");
   EXPECT_EQ(outerCallbackCount, 1);
   EXPECT_EQ(innerCallbackCount, 0);
   outerLogger.configure("TEST", []() { return 0; }, {});
@@ -176,8 +234,8 @@ TEST(SpdlogLoggerTest, ErrorCallbackExceptionDoesNotEscapeLogCall) {
         throw std::runtime_error{"callback failure"};
       });
 
-  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "first error"));
-  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "second error"));
+  EXPECT_NO_THROW(COMMS_LOG_NAMED(kContext, ERR, "first error"));
+  EXPECT_NO_THROW(COMMS_LOG_NAMED(kContext, ERR, "second error"));
   EXPECT_EQ(callbackCount, 2);
   logger.configure("TEST", []() { return 0; }, {});
 }
