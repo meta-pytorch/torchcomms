@@ -135,18 +135,20 @@ TEST_F(LogLevelRestoringTest, FatalIsNotSuppressedByRuntimeLevel) {
       "FATAL fatal while logging is disabled");
 }
 
-TEST(SpdlogLoggerTest, CompileTimeGateSkipsArguments) {
+TEST_F(LogLevelRestoringTest, CompileTimeGateIncludesDebug) {
   int evaluationCount = 0;
-  COMMS_LOG(DBG, "compiled out: {}", ++evaluationCount);
-  EXPECT_EQ(evaluationCount, 0);
+  getSpdlogLogger().set_level(spdlog::level::debug);
 
-  COMMS_LOG(INFO, "compiled in: {}", ++evaluationCount);
+  COMMS_LOG(DBG, "compiled in: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 1);
 }
 
 TEST_F(LogLevelRestoringTest, RuntimeGateSkipsArguments) {
   int evaluationCount = 0;
   getSpdlogLogger().set_level(spdlog::level::warn);
+
+  COMMS_LOG(DBG, "filtered at runtime: {}", ++evaluationCount);
+  EXPECT_EQ(evaluationCount, 0);
 
   COMMS_LOG(INFO, "filtered at runtime: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 0);
