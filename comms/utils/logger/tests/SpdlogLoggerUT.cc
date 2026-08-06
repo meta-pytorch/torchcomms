@@ -5,6 +5,7 @@
 
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -21,6 +22,27 @@ class LogLevelRestoringTest : public testing::Test {
 TEST(SpdlogLoggerTest, ReturnsStableNamedLogger) {
   EXPECT_EQ(&getSpdlogLogger(), &getSpdlogLogger());
   EXPECT_EQ(getSpdlogLogger().name(), "comms");
+}
+
+TEST(SpdlogLoggerTest, ReturnsStableLoggerPerContext) {
+  auto& ctranLogger = getSpdlogLogger("comms.ctran");
+  EXPECT_EQ(&ctranLogger, &getSpdlogLogger("comms.ctran"));
+  EXPECT_NE(&ctranLogger, &getSpdlogLogger("comms.ncclx"));
+  EXPECT_EQ(ctranLogger.name(), "comms.ctran");
+}
+
+TEST(SpdlogLoggerTest, MatchesLegacyStderrRouting) {
+  EXPECT_TRUE(
+      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::warn));
+  EXPECT_TRUE(
+      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::err));
+  EXPECT_TRUE(
+      meta::comms::logger::shouldWriteCommsLogToStderr(
+          spdlog::level::critical));
+  EXPECT_FALSE(
+      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::info));
+  EXPECT_FALSE(
+      meta::comms::logger::shouldWriteCommsLogToStderr(spdlog::level::off));
 }
 
 TEST(SpdlogLoggerTest, MapsFollyLevelNames) {
@@ -84,4 +106,89 @@ TEST_F(LogLevelRestoringTest, EmptyThreadContextUsesDefault) {
   EXPECT_NO_THROW(COMMS_LOG(INFO, "empty callback"));
 
   meta::comms::logger::configureSpdlogLogger("COMMS", []() { return 0; });
+}
+
+TEST(SpdlogLoggerTest, ErrorCallbackReceivesFormattedUserMessage) {
+  std::string errorMessage;
+  auto& logger = getSpdlogLogger("comms.callback_test");
+  logger.configure(
+      "TEST",
+      []() { return 0; },
+      [&](std::string_view message) { errorMessage = message; });
+
+  COMMS_LOG_CONTEXT("comms.callback_test", ERR, "error message: {}", 9);
+  EXPECT_EQ(errorMessage, "error message: 9");
+  logger.configure("TEST", []() { return 0; }, {});
+}
+
+TEST(SpdlogLoggerTest, ErrorCallbackDoesNotReenter) {
+  constexpr std::string_view kContext = "comms.reentrant_callback_test";
+  int callbackCount = 0;
+  auto& logger = getSpdlogLogger(kContext);
+  logger.configure(
+      "TEST",
+      []() { return 0; },
+      [&](std::string_view) {
+        ++callbackCount;
+        COMMS_LOG_CONTEXT(kContext, ERR, "nested error");
+      });
+
+  COMMS_LOG_CONTEXT(kContext, ERR, "outer error");
+  EXPECT_EQ(callbackCount, 1);
+  logger.configure("TEST", []() { return 0; }, {});
+}
+
+TEST(SpdlogLoggerTest, ErrorCallbackGuardSpansContexts) {
+  constexpr std::string_view kOuterContext = "comms.outer_callback_test";
+  constexpr std::string_view kInnerContext = "comms.inner_callback_test";
+  int outerCallbackCount = 0;
+  int innerCallbackCount = 0;
+  auto& outerLogger = getSpdlogLogger(kOuterContext);
+  auto& innerLogger = getSpdlogLogger(kInnerContext);
+  innerLogger.configure(
+      "TEST",
+      []() { return 0; },
+      [&](std::string_view) { ++innerCallbackCount; });
+  outerLogger.configure(
+      "TEST",
+      []() { return 0; },
+      [&](std::string_view) {
+        ++outerCallbackCount;
+        COMMS_LOG_CONTEXT(kInnerContext, ERR, "nested error");
+      });
+
+  COMMS_LOG_CONTEXT(kOuterContext, ERR, "outer error");
+  EXPECT_EQ(outerCallbackCount, 1);
+  EXPECT_EQ(innerCallbackCount, 0);
+  outerLogger.configure("TEST", []() { return 0; }, {});
+  innerLogger.configure("TEST", []() { return 0; }, {});
+}
+
+TEST(SpdlogLoggerTest, ErrorCallbackExceptionDoesNotEscapeLogCall) {
+  constexpr std::string_view kContext = "comms.throwing_callback_test";
+  int callbackCount = 0;
+  auto& logger = getSpdlogLogger(kContext);
+  logger.configure(
+      "TEST",
+      []() { return 0; },
+      [&](std::string_view) {
+        ++callbackCount;
+        throw std::runtime_error{"callback failure"};
+      });
+
+  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "first error"));
+  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "second error"));
+  EXPECT_EQ(callbackCount, 2);
+  logger.configure("TEST", []() { return 0; }, {});
+}
+
+TEST(SpdlogLoggerTest, FileOpenFailureIncludesPath) {
+  constexpr std::string_view kLogPath = "/proc/comms_spdlog_missing/logger.log";
+
+  try {
+    getSpdlogLogger("comms.file_failure_test").configureOutput(kLogPath);
+    FAIL() << "Expected configureOutput to reject an invalid path";
+  } catch (const spdlog::spdlog_ex& error) {
+    EXPECT_NE(std::string{error.what()}.find(kLogPath), std::string::npos);
+  }
 }
