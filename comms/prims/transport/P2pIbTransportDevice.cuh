@@ -123,11 +123,12 @@ __device__ __forceinline__ void P2pIbTransportDevice::put_cooperative(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
     ThreadGroup& group,
     int signalId,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_signal(group, signalId, expected, timeout);
   } else {
@@ -135,10 +136,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
     int signalId,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_signal(signalId, expected, timeout);
   } else {
@@ -146,11 +148,12 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
     ThreadGroup& group,
     int counterId,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_counter(group, counterId, expected, timeout);
   } else {
@@ -158,10 +161,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
     int counterId,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_counter(counterId, expected, timeout);
   } else {
@@ -169,10 +173,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_local(
     ThreadGroup& group,
     const IbLocalCompletionTicket& ticket,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_local(group, ticket, timeout);
   } else {
@@ -375,11 +380,12 @@ __device__ __forceinline__ void P2pIbTransportDevice::put_cooperative(
       counterVal);
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
     ThreadGroup& group,
     const IbgdaLocalBuffer& signalBuf,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_signal(group, signalBuf, expected, timeout);
   } else {
@@ -387,10 +393,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
     const IbgdaLocalBuffer& signalBuf,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_signal(signalBuf, expected, timeout);
   } else {
@@ -398,11 +405,12 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_signal(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
     ThreadGroup& group,
     const IbgdaLocalBuffer& counterBuf,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_counter(group, counterBuf, expected, timeout);
   } else {
@@ -410,10 +418,11 @@ __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
   }
 }
 
+template <typename TimeoutLike>
 __device__ __forceinline__ void P2pIbTransportDevice::wait_counter(
     const IbgdaLocalBuffer& counterBuf,
     uint64_t expected,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->wait_counter(counterBuf, expected, timeout);
   } else {
@@ -505,13 +514,13 @@ __device__ __forceinline__ void P2pIbTransportDevice::fence() {
 // Pipelined send/recv — forwarded to the active backend.
 // ===========================================================================
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename TimeoutLike, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::send(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->send<CopyOp>(group, src, nbytes, max_signal_bytes, timeout, args...);
@@ -520,13 +529,13 @@ __device__ __forceinline__ void P2pIbTransportDevice::send(
   }
 }
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename TimeoutLike, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::recv(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->recv<CopyOp>(group, dst, nbytes, max_signal_bytes, timeout, args...);
@@ -535,14 +544,14 @@ __device__ __forceinline__ void P2pIbTransportDevice::recv(
   }
 }
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename TimeoutLike, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::forward(
     ThreadGroup& group,
     void* __restrict__ dst,
     P2pIbTransportDevice& fwd,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC && fwd.type == P2pIbBackendType::IBRC) {
     ibrc->forward<CopyOp>(
@@ -605,14 +614,14 @@ __device__ __forceinline__ void P2pIbTransportDevice::init_recv_progress(
   }
 }
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename TimeoutLike, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_send_once(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     return ibrc->progress_send_once<CopyOp>(
@@ -622,14 +631,14 @@ P2pIbTransportDevice::progress_send_once(
       group, src, nbytes, max_signal_bytes, timeout, args...);
 }
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename TimeoutLike, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_recv_once(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const TimeoutLike& timeout,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     return ibrc->progress_recv_once<CopyOp>(

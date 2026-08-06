@@ -45,6 +45,10 @@ void runTestWaitSignalMultipleSlots(
     int numSignals,
     bool* d_success);
 
+// Test wait_signal accepts a disabled AbortDevice and completes when the signal
+// already satisfies the condition.
+void runTestWaitSignalWithDisabledAbort(uint64_t* d_signalBuf, bool* d_success);
+
 // =============================================================================
 // Group-level API tests
 // =============================================================================
