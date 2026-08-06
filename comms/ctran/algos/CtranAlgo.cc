@@ -9,6 +9,7 @@
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
 #if defined(ENABLE_PRIMS)
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
@@ -108,7 +109,7 @@ CtranAlgoDeviceState* CtranAlgo::getDevState() {
 
 comms::prims::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
   if (!isResInitialized_) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "CTRAN-ALGO: getNvlTransportsBase() called before initKernelResources() is called. ");
     return nullptr;
@@ -245,7 +246,7 @@ commResult_t CtranAlgo::initKernelResources() {
     return commInternalError;
   }
 
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-ALGO: prepare device global state {} bytes (sharedMemPerBlockOptin {} bytes) on rank {} localRank {} nLocalRanks {} commHash {:x}",
       sizeof(CtranAlgoDeviceState),
@@ -524,7 +525,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
       static_cast<commResult_t>(std::move(resFuture).get()),
       comm_->logMetaData_);
 
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-ALGO: requested {} bytes (allocated {}) of device buffer as shared resource on rank {} localRank {}",
       shmSize,
