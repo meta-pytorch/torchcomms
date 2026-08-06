@@ -2,19 +2,74 @@
 
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <memory>
+#include <string>
+#include <string_view>
 
 #include <spdlog/async.h>
+#include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+
+#include "comms/utils/logger/CommsLogFormatter.h"
 
 namespace meta::comms::logger {
 namespace {
 
 constexpr auto kLoggerName = "comms";
-constexpr auto kLogPattern = "%L%m%d %H:%M:%S.%f %t %s:%#] %v";
 constexpr size_t kAsyncQueueSize = 8192;
 constexpr size_t kAsyncThreadCount = 1;
+thread_local std::string threadName = "main";
+
+std::string getHostName() {
+  char hostname[HOST_NAME_MAX + 1];
+  if (gethostname(hostname, sizeof(hostname)) != 0) {
+    return "unknown";
+  }
+  hostname[HOST_NAME_MAX] = '\0';
+  if (auto* domain = std::strchr(hostname, '.')) {
+    *domain = '\0';
+  }
+  return hostname;
+}
+
+std::string_view getSpdlogLevelName(spdlog::level::level_enum level) {
+  switch (level) {
+    case spdlog::level::trace:
+    case spdlog::level::debug:
+      return "VERBOSE";
+    case spdlog::level::info:
+      return "INFO";
+    case spdlog::level::warn:
+      return "WARN";
+    case spdlog::level::err:
+      return "ERROR";
+    case spdlog::level::critical:
+      return "CRITICAL";
+    case spdlog::level::off:
+    case spdlog::level::n_levels:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+std::string_view getBaseName(const char* filename) {
+  if (filename == nullptr) {
+    return {};
+  }
+  const auto* slash = std::strrchr(filename, '/');
+  return slash == nullptr ? filename : slash + 1;
+}
+
+uint64_t getCurrentThreadId() {
+  static thread_local const auto threadId =
+      static_cast<uint64_t>(::syscall(SYS_gettid));
+  return threadId;
+}
 
 std::shared_ptr<spdlog::logger> createLogger() {
   if (!spdlog::thread_pool()) {
@@ -23,15 +78,131 @@ std::shared_ptr<spdlog::logger> createLogger() {
 
   auto logger =
       spdlog::create_async_nb<spdlog::sinks::stderr_color_sink_mt>(kLoggerName);
-  logger->set_pattern(kLogPattern);
+  logger->set_formatter(
+      std::make_unique<spdlog::pattern_formatter>(
+          "%v", spdlog::pattern_time_type::local, ""));
   return logger;
 }
 
 } // namespace
 
-spdlog::logger& getSpdlogLogger() {
-  static auto logger = createLogger();
-  return *logger;
+CommsSpdlogLogger::CommsSpdlogLogger() : logger_(createLogger()) {
+  storeConfiguration(std::make_shared<const Configuration>());
+}
+
+std::string_view CommsSpdlogLogger::getLevelName(
+    spdlog::level::level_enum level) {
+  return getSpdlogLevelName(level);
+}
+
+bool CommsSpdlogLogger::should_log(spdlog::level::level_enum level) const {
+  return logger_->should_log(level);
+}
+
+const std::string& CommsSpdlogLogger::name() const {
+  return logger_->name();
+}
+
+void CommsSpdlogLogger::set_level(spdlog::level::level_enum level) {
+  logger_->set_level(level);
+}
+
+void CommsSpdlogLogger::flush() {
+  logger_->flush();
+}
+
+void CommsSpdlogLogger::log(
+    spdlog::source_loc location,
+    spdlog::level::level_enum level,
+    std::string_view message) {
+  if (should_log(level)) {
+    logFormatted(location, level, getLevelName(level), message, false);
+  }
+}
+
+void CommsSpdlogLogger::logFatal(
+    spdlog::source_loc location,
+    std::string_view message) {
+  logFormatted(location, spdlog::level::critical, "FATAL", message, true);
+}
+
+void CommsSpdlogLogger::configure(
+    std::string prefix,
+    std::function<int(void)> threadContextFn) {
+  if (!threadContextFn) {
+    threadContextFn = []() { return 0; };
+  }
+  std::shared_ptr<const Configuration> configuration =
+      std::make_shared<const Configuration>(
+          Configuration{std::move(prefix), std::move(threadContextFn)});
+  storeConfiguration(std::move(configuration));
+}
+
+std::shared_ptr<const CommsSpdlogLogger::Configuration>
+CommsSpdlogLogger::loadConfiguration() const {
+#if defined(__cpp_lib_atomic_shared_ptr) && \
+    __cpp_lib_atomic_shared_ptr >= 201711L
+  return configuration_.load(std::memory_order_acquire);
+#else
+  return std::atomic_load_explicit(&configuration_, std::memory_order_acquire);
+#endif
+}
+
+void CommsSpdlogLogger::storeConfiguration(
+    std::shared_ptr<const Configuration> configuration) {
+#if defined(__cpp_lib_atomic_shared_ptr) && \
+    __cpp_lib_atomic_shared_ptr >= 201711L
+  configuration_.store(std::move(configuration), std::memory_order_release);
+#else
+  std::atomic_store_explicit(
+      &configuration_, std::move(configuration), std::memory_order_release);
+#endif
+}
+
+void CommsSpdlogLogger::logFormatted(
+    spdlog::source_loc location,
+    spdlog::level::level_enum level,
+    std::string_view levelName,
+    std::string_view message,
+    bool bypassLevelGate) {
+  static const auto hostname = getHostName();
+  static const auto processId = getpid();
+  const auto configuration = loadConfiguration();
+  const auto formatted = formatCommsLogMessage(
+      levelName,
+      message,
+      {std::chrono::system_clock::now(),
+       getCurrentThreadId(),
+       getBaseName(location.filename),
+       static_cast<unsigned int>(location.line),
+       hostname,
+       processId,
+       configuration->threadContextFn(),
+       threadName,
+       configuration->prefix});
+  if (bypassLevelGate) {
+    spdlog::logger fatalLogger{
+        logger_->name(), logger_->sinks().begin(), logger_->sinks().end()};
+    fatalLogger.log(location, level, formatted);
+    fatalLogger.flush();
+  } else {
+    logger_->log(location, level, formatted);
+  }
+}
+
+CommsSpdlogLogger& getSpdlogLogger() {
+  static CommsSpdlogLogger logger;
+  return logger;
+}
+
+void configureSpdlogLogger(
+    std::string prefix,
+    std::function<int(void)> threadContextFn) {
+  getSpdlogLogger().configure(std::move(prefix), std::move(threadContextFn));
+}
+
+void setSpdlogThreadName(std::string_view name) {
+  threadName = name;
 }
 
 } // namespace meta::comms::logger
