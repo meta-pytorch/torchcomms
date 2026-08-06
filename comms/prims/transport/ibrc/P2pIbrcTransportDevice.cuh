@@ -181,34 +181,38 @@ class P2pIbrcTransportDevice {
     signal(solo, signalId, signalVal);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     wait_signal(group, local_signal_slot(signalId), expected, timeout);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, timeout);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     wait_counter(group, counter_device_slot(counterId), expected, timeout);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, timeout);
   }
@@ -370,10 +374,11 @@ class P2pIbrcTransportDevice {
         counterVal);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     if (group.is_leader()) {
       const auto& queue = cmdQueues[queue_for_lane(
           group.group_id, IbDirection::Send, ticket.completionId)];
@@ -403,10 +408,11 @@ class P2pIbrcTransportDevice {
                load_acquire_system_u64(queue.ci) - ticket.value) >= 0;
   }
 
+  template <typename TimeoutLike>
   __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout) const {
+      const TimeoutLike& timeout) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     while (static_cast<int64_t>(
@@ -466,18 +472,20 @@ class P2pIbrcTransportDevice {
         counterVal);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     wait_local(group, signalBuf.ptr, expected, timeout, "signal");
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, timeout);
   }
@@ -504,18 +512,20 @@ class P2pIbrcTransportDevice {
     reset_counter(solo, counterBuf);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     wait_local(group, counterBuf.ptr, expected, timeout, "counter");
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const TimeoutLike& timeout = TimeoutLike()) const {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, timeout);
   }
@@ -617,62 +627,77 @@ class P2pIbrcTransportDevice {
     detail::init_recv_progress(*this, group, nbytes, max_signal_bytes);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     detail::send<P2pIbrcTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     detail::recv<P2pIbrcTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbrcTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     detail::forward<CopyOp>(
         *this, group, dst, fwd, nbytes, max_signal_bytes, timeout, args...);
@@ -868,11 +893,12 @@ class P2pIbrcTransportDevice {
     }
   }
 
+  template <typename TimeoutLike>
   __device__ void wait_local(
       ThreadGroup& group,
       const void* ptr,
       uint64_t expected,
-      const Timeout& timeout,
+      const TimeoutLike& timeout,
       const char* kind) const {
     if (ptr == nullptr) {
       trap("P2pIbrcTransportDevice: wait buffer is null");
