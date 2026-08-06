@@ -111,7 +111,8 @@ void initCtranLoggingImpl() {
       },
       [](std::string_view message) {
         meta::comms::logger::setLastError(std::string{message}, {});
-      });
+      },
+      NCCL_DEBUG_LOGGING_ASYNC);
   meta::comms::logger::getSpdlogLogger(kCtranSpdlogContext)
       .set_level(loggerLevelToSpdlogLevel(
           meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
