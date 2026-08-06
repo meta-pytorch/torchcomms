@@ -250,6 +250,42 @@ TEST_P(NcclxLazyConnectTestFixture, AllReduceTree) {
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
 
+// Test that AllReduce with NVLS algorithm works under lazy connect/setup.
+TEST_P(NcclxLazyConnectTestFixture, AllReduceNvls) {
+  SysEnvRAII nvlsEnable("NCCL_NVLS_ENABLE", "2");
+  SysEnvRAII algo("NCCL_ALGO", "NVLS");
+  EnvRAII<std::string> algoEnv(NCCL_ALGO, std::string("NVLS"));
+
+  rootComm = createRootComm();
+  ASSERT_NE(nullptr, rootComm);
+
+  // NVLS requires a multi-GPU, multicast-capable communicator. Where it is
+  // unavailable (single rank, or a host without NVLS) the crash path is never
+  // reachable, so skip to keep the test valid.
+  if (rootComm->nRanks == 1 || !rootComm->nvlsSupport) {
+    NCCLCHECK_TEST(ncclCommDestroy(rootComm));
+    GTEST_SKIP() << "NVLS unavailable (nRanks=" << rootComm->nRanks
+                 << ", nvlsSupport=" << rootComm->nvlsSupport << ")";
+  }
+
+  size_t count = 1 << 10; // 1K elements
+  prepBuffers(count * ncclTypeSize(dataType), count * ncclTypeSize(dataType));
+
+  auto res = ncclAllReduce(
+      sendBuf, recvBuf, count, dataType, ncclSum, rootComm, stream);
+  EXPECT_EQ(res, ncclSuccess);
+
+  if (LAZY_CONNECT_ENABLED) {
+    checkAlgoInitState(rootComm, NCCL_ALGO_NVLS);
+  }
+  if (NCCL_LAZY_SETUP_CHANNELS) {
+    checkAlgoChannelState(rootComm, NCCL_ALGO_NVLS, LAZY_CONNECT_ENABLED);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  NCCLCHECK_TEST(ncclCommDestroy(rootComm));
+}
+
 TEST_P(NcclxLazyConnectTestFixture, AllReduceTreeIncreaseChannel) {
   SysEnvRAII algo("NCCL_ALGO", "TREE");
   EnvRAII<std::string> algoEnv(NCCL_ALGO, std::string("TREE"));
@@ -671,6 +707,10 @@ INSTANTIATE_TEST_SUITE_P(
 #endif
 
 int main(int argc, char* argv[]) {
+  // Allow toggling NCCL_NVLS_ENABLE in NCCL_PARAMs. The no-cache set is parsed
+  // once on the first param read, so it must be established before any
+  // communicator is created.
+  setenv("NCCL_NO_CACHE", "NCCL_NVLS_ENABLE", 1);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);

@@ -170,13 +170,11 @@ static ncclResult_t ncclCollPreconnect(struct ncclComm* comm, bool* algoNeedConn
           break;
         }
         case NCCL_ALGO_NVLS: {
-          /* If we are using NVLS_TREE algo, we must mark NVLS algo to set up
-           * NVLS intra-node buffer */
-          NCCLCHECK(ncclNvlsBufferSetup(comm));
+          NCCLCHECK(ncclx::transportNvlsConnect(comm));
           break;
         }
         case NCCL_ALGO_NVLS_TREE: {
-          NCCLCHECK(ncclNvlsTreeConnect(comm));
+          NCCLCHECK(ncclx::transportNvlsTreeConnect(comm));
           break;
         }
         case NCCL_ALGO_COLLNET_CHAIN: {
