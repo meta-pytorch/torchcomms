@@ -12,8 +12,8 @@
 
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::allreduce::ring {
 
@@ -263,7 +263,7 @@ void logAutoTuneDecisions(
       sizeof(size_t) >= 8, "logAutoTuneDecisions assumes 64-bit size_t");
   auto qpThMin = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN;
   auto qpThMax = NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MAX;
-  CLOGF(
+  CTRAN_LOG(
       DBG,
       "AutoTune QP scaling: ThMin={}, ThMax={}, {}",
       qpThMin,
@@ -280,7 +280,7 @@ void logAutoTuneDecisions(
         maxOccupancyBlockSize,
         typeSize,
         arch);
-    CLOGF(
+    CTRAN_LOG(
         DBG,
         "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
         nRanks,
@@ -299,7 +299,7 @@ void logAutoTuneDecisions(
           maxOccupancyBlockSize,
           typeSize,
           arch);
-      CLOGF(
+      CTRAN_LOG(
           DBG,
           "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
           nRanks,
