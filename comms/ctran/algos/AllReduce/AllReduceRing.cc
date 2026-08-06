@@ -25,6 +25,7 @@
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -1433,7 +1434,7 @@ commResult_t ctranAllReduceRing(
   std::tie(hostResource.tmpRecvBufRev, hostResource.tmpRecvBufRevHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF_REV);
-  CLOGF(
+  CTRAN_LOG(
       DBG,
       "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks, bidirAg={}",
       numBlocks,
