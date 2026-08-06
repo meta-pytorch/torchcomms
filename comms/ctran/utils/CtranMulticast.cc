@@ -8,7 +8,9 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/logger/LogUtils.h"
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12010
 #include "comms/utils/logger/SpdlogLogger.h"
+#endif
 
 namespace ctran::utils {
 
