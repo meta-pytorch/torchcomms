@@ -320,8 +320,8 @@ CommsSpdlogLogger& getSpdlogLogger() {
   return logger;
 }
 
-CommsSpdlogLogger& getSpdlogLogger(std::string_view contextName) {
-  if (contextName == kLoggerName) {
+CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
+  if (loggerName == kLoggerName) {
     return getSpdlogLogger();
   }
   static std::shared_mutex mutex;
@@ -329,15 +329,15 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view contextName) {
       loggers;
   {
     std::shared_lock lock{mutex};
-    if (const auto it = loggers.find(contextName); it != loggers.end()) {
+    if (const auto it = loggers.find(loggerName); it != loggers.end()) {
       return *it->second;
     }
   }
   std::unique_lock lock{mutex};
-  if (const auto it = loggers.find(contextName); it != loggers.end()) {
+  if (const auto it = loggers.find(loggerName); it != loggers.end()) {
     return *it->second;
   }
-  auto name = std::string{contextName};
+  auto name = std::string{loggerName};
   auto logger = std::make_unique<CommsSpdlogLogger>(name);
   const auto it = loggers.emplace(std::move(name), std::move(logger)).first;
   return *it->second;
@@ -350,13 +350,13 @@ void configureSpdlogLogger(
 }
 
 void configureSpdlogLogger(
-    std::string_view contextName,
+    std::string_view loggerName,
     std::string prefix,
     std::string_view logFilePath,
     std::function<int(void)> threadContextFn,
     std::function<void(std::string_view)> errorCallback,
     bool asyncLogging) {
-  auto& logger = getSpdlogLogger(contextName);
+  auto& logger = getSpdlogLogger(loggerName);
   logger.configure(
       std::move(prefix),
       std::move(threadContextFn),
