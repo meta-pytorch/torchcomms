@@ -5,7 +5,7 @@
 // It is compiled TWICE to produce two bitcode files:
 //   - Without USE_PIPES_BACKEND → libdevice_window.bc (GIN/NCCLGinBackend)
 //   - With USE_PIPES_BACKEND    → libdevice_window_pipes.bc
-//   (PipesDeviceBackend)
+//   (PrimsDeviceBackend)
 //
 // All functions in this file use the generic TorchCommDeviceWindow API
 // (win->put(), win->signal(), win->flush(), etc.) and work with both backends.
@@ -27,7 +27,7 @@
 #include <cuda_runtime.h>
 
 #ifdef USE_PIPES_BACKEND
-#include "comms/torchcomms/device/pipes/TorchCommDevicePipes.cuh"
+#include "comms/torchcomms/device/prims/TorchCommDevicePrims.cuh"
 #else
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLX.cuh"
 #endif
@@ -36,7 +36,7 @@ using namespace torchcomms::device;
 using torch::comms::RegisteredBuffer;
 
 #ifdef USE_PIPES_BACKEND
-using DeviceWindow = TorchCommDeviceWindow<PipesDeviceBackend>;
+using DeviceWindow = TorchCommDeviceWindow<PrimsDeviceBackend>;
 #else
 using DeviceWindow = TorchCommDeviceWindow<NCCLGinBackend>;
 #endif
@@ -58,7 +58,7 @@ __device__ int torchcomms_self_copy_block(
   auto* dst = reinterpret_cast<char*>(dst_ptr) + dst_offset;
   auto* src = reinterpret_cast<const char*>(src_ptr) + src_offset;
 #ifdef USE_PIPES_BACKEND
-  auto group = detail::make_pipes_thread_group(CoopScope::BLOCK);
+  auto group = detail::make_prims_thread_group(CoopScope::BLOCK);
 #else
   auto group = detail::make_thread_group(CoopScope::BLOCK);
 #endif

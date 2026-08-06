@@ -390,7 +390,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
             comm->statex_->nRanks(),
             comm->statex_->cudaDev(),
             bootstrapPtr,
-            config);
+            config,
+            std::nullopt,
+            comm->getAbort());
     auto primsOrderedWorkStreamGuard =
         std::make_unique<ctran::algos::OrderedWorkStreamGuard>();
     primsOrderedWorkStreamGuard->init(

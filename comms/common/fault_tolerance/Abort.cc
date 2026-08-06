@@ -15,7 +15,7 @@
 
 namespace comms::fault_tolerance {
 
-Abort::Abort(bool enabled) {
+Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   if (!enabled) {
     return;
   }
@@ -185,9 +185,9 @@ void Abort::markAbort(AbortReason newReason) {
       std::memory_order_acquire);
 }
 
-std::shared_ptr<Abort> createAbort(bool enabled) {
+std::shared_ptr<Abort> createAbort(bool enabled, AbortBehavior behavior) {
   if (enabled) {
-    return std::make_shared<Abort>(/*enabled=*/true);
+    return std::make_shared<Abort>(/*enabled=*/true, behavior);
   } else {
     static const std::shared_ptr<Abort> disabled =
         std::make_shared<Abort>(/*enabled=*/false);
