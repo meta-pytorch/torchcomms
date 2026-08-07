@@ -267,21 +267,26 @@ commResult_t setupMulticast(
     return commSuccess;
   }
 
-  // Non-root: import the root's fabric handle.
-  if (!isRoot) {
-    CUmemGenericAllocationHandle mcHandle = 0;
-    // Abort (not return) on failure: post-vote, every domain rank proceeds to
-    // the second windowBarrier below, so a one-rank error return here would
-    // hang its peers there. The regular NVL buffer import earlier in this same
-    // registration already proved fabric/IMEX works, so a failure now is a
-    // genuine anomaly -- fail loudly rather than deadlock.
-    FB_CHECKABORT(
-        ctran::utils::importShareableHandle(
-            allRzv[0].handle, mcHandle, /*isFabric=*/true) == commSuccess,
-        "CTRAN-MC: rank {} failed to import the root multicast handle post-vote",
-        rank);
-    mc->adoptImported(mcHandle);
-  }
+  // EVERY rank imports, the root included (self-importing what it just
+  // exported). Provenance selects the copy path: over a natively-created handle
+  // the driver treats a write to the multicast VA as a local device-to-device
+  // copy on the engines that also service pinned HtoD/DtoH, so nvlCeBcast's
+  // memcpy serializes behind concurrent host transfers; an imported handle
+  // takes the peer path on a separate engine.
+  CUmemGenericAllocationHandle mcHandle = 0;
+  // Abort (not return) on failure: post-vote, every domain rank proceeds to the
+  // second windowBarrier below, so a one-rank error return here would hang its
+  // peers there. The regular NVL buffer import earlier in this same
+  // registration already proved fabric/IMEX works, so a failure now is a
+  // genuine anomaly -- fail loudly rather than deadlock.
+  FB_CHECKABORT(
+      ctran::utils::importShareableHandle(
+          allRzv[0].handle, mcHandle, /*isFabric=*/true) == commSuccess,
+      "CTRAN-MC: rank {} failed to import the root multicast handle post-vote",
+      rank);
+  // The import holds its own reference, so adoptImported() can safely drop the
+  // root's create reference.
+  mc->adoptImported(mcHandle);
 
   // Every rank: add local device, bind each segment, map the multicast VA.
   // Abort (not return) on failure for the same reason as the import above --

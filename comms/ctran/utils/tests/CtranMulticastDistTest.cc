@@ -23,7 +23,8 @@
 // Distributed test for the NVL CE-multicast registration mechanism, driven the
 // way production drives it: one rank per GPU. The root createRoot()s the
 // multicast object and broadcasts its fabric handle over allGatherNvlDomain;
-// every peer importShareableHandle()s + adoptImported()s it; each rank
+// EVERY rank -- the root included, which self-imports and drops its create
+// reference -- importShareableHandle()s + adoptImported()s it; each rank
 // retainSegments() its own buffer -- self-detecting + retaining its own segment
 // handles -- then addDeviceAndBind()s and mapVA()s. A single multicast write
 // from the root must then fan out (via NVSwitch) into every rank's own buffer
@@ -107,7 +108,7 @@ class MulticastDistTest : public ctran::CtranDistTestFixture {
             ctran::utils::getCuMemAllocHandleType()));
 
     // Root (rank 0) creates the object sized to the summed segments; its fabric
-    // handle is all-gathered so peers import a distinct reference.
+    // handle is all-gathered so every rank imports its own reference.
     constexpr int kRoot = 0;
     auto mc = std::make_shared<CtranMulticast>(lRank, nLocalRanks, lRank);
     std::vector<CtranIpcHandle> handles(nLocalRanks);
@@ -121,13 +122,16 @@ class MulticastDistTest : public ctran::CtranDistTestFixture {
               rootHandle, handles[lRank], /*isFabric=*/true));
     }
     allGatherNvlDomain(comm_.get(), handles);
-    if (rank != kRoot) {
-      CUmemGenericAllocationHandle imported{};
-      COMMCHECK_TEST(
-          ctran::utils::importShareableHandle(
-              handles[kRoot], imported, /*isFabric=*/true));
-      mc->adoptImported(imported);
-    }
+    // Every rank adopts an IMPORTED handle, root included -- production relies
+    // on uniform provenance to keep the multicast write off the copy engines
+    // that service host transfers. For the root this is a same-process
+    // self-import that also drops its createRoot reference, so the broadcast
+    // below doubles as the check that the object outlives that release.
+    CUmemGenericAllocationHandle imported{};
+    COMMCHECK_TEST(
+        ctran::utils::importShareableHandle(
+            handles[kRoot], imported, /*isFabric=*/true));
+    mc->adoptImported(imported);
 
     // Each rank retains its own buffer's segments (self-detect + retain its own
     // handles), then binds them and maps the multicast VA. Both are local ops
