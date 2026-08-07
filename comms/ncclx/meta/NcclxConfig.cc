@@ -179,21 +179,101 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
+  // Per-communicator Prims transport overrides.
   {
-    std::string val = getHintStr("pipesIbgdaDataBufferSize");
+    // Tri-state: absent leaves the optional unset so ctranPrimsEnabled() falls
+    // back to NCCL_CTRAN_USE_PIPES. When present, accept the same spellings as
+    // every other boolean hint (1/0, true/false, yes/no, y/n, t/f) rather than
+    // digits only -- 'enablePrims=true' silently doing nothing is the kind of
+    // per-rank divergence that surfaces only as a comm-init hang.
+    //
+    // An UNPARSEABLE value leaves the optional unset, degrading to the global
+    // default with a WARN, which matches how every other bool hint in this
+    // file behaves. Note this does NOT make a typo safe: if only some ranks
+    // carry it, those ranks fall back to the CVAR while the rest honour the
+    // hint, and a transport mismatch across a communicator hangs comm init.
+    // Cross-rank hint consistency remains the caller's responsibility.
+    // parseHintBool cannot express the tri-state (its default doubles as the
+    // absent value), so parse the spellings directly here. Unlike
+    // parseHintBool there is deliberately no numeric fallback, so
+    // 'enablePrims=2' is rejected rather than treated as true.
+    std::string val = getHintStr("enablePrims");
+    if (!val.empty()) {
+      std::string lower(val.size(), '\0');
+      std::transform(val.begin(), val.end(), lower.begin(), ::tolower);
+      if (lower == "1" || lower == "yes" || lower == "true" || lower == "y" ||
+          lower == "t") {
+        enablePrims = 1;
+      } else if (
+          lower == "0" || lower == "no" || lower == "false" || lower == "n" ||
+          lower == "f") {
+        enablePrims = 0;
+      } else {
+        WARN(
+            "NCCLX hint 'enablePrims': invalid value '%s'; falling back to NCCL_CTRAN_USE_PIPES",
+            val.c_str());
+      }
+    }
+  }
+  {
+    std::string val = getHintStr("primsChannelBufferSize");
     if (!val.empty()) {
       try {
-        auto parsed = std::stoull(val);
-        if (parsed > 0) {
-          pipesIbgdaDataBufferSize = parsed;
+        // std::stoull silently wraps a leading '-', so "-1" would parse as
+        // 2^64-1 and pass the positivity check. Reject the sign explicitly.
+        if (val.find('-') != std::string::npos) {
+          WARN(
+              "NCCLX hint 'primsChannelBufferSize': value must be positive, got '%s'",
+              val.c_str());
+        } else if (auto parsed = std::stoull(val); parsed > 0) {
+          primsChannelBufferSize = parsed;
         } else {
-          WARN("NCCLX hint 'pipesIbgdaDataBufferSize': value must be positive");
+          WARN("NCCLX hint 'primsChannelBufferSize': value must be positive");
         }
       } catch (const std::exception&) {
         WARN(
-            "NCCLX hint 'pipesIbgdaDataBufferSize': invalid value '%s'",
+            "NCCLX hint 'primsChannelBufferSize': invalid value '%s'",
             val.c_str());
       }
+    }
+  }
+  {
+    std::string val = getHintStr("primsChannelPipelineDepth");
+    if (!val.empty()) {
+      try {
+        auto parsed = std::stoll(val);
+        if (parsed > 0) {
+          primsChannelPipelineDepth = static_cast<int64_t>(parsed);
+        } else {
+          WARN(
+              "NCCLX hint 'primsChannelPipelineDepth': value must be positive");
+        }
+      } catch (const std::exception&) {
+        WARN(
+            "NCCLX hint 'primsChannelPipelineDepth': invalid value '%s'",
+            val.c_str());
+      }
+    }
+  }
+
+  for (const auto& [key, field] :
+       {std::pair<const char*, std::optional<int64_t>*>{
+            "primsMaxChannels", &primsMaxChannels},
+        std::pair<const char*, std::optional<int64_t>*>{
+            "primsMaxBlocks", &primsMaxBlocks}}) {
+    std::string val = getHintStr(key);
+    if (val.empty()) {
+      continue;
+    }
+    try {
+      auto parsed = std::stoll(val);
+      if (parsed > 0) {
+        *field = static_cast<int64_t>(parsed);
+      } else {
+        WARN("NCCLX hint '%s': value must be positive", key);
+      }
+    } catch (const std::exception&) {
+      WARN("NCCLX hint '%s': invalid value '%s'", key, val.c_str());
     }
   }
 
@@ -419,7 +499,11 @@ void ncclxLogCommConfig(ncclComm_t comm) {
       append(fmt::format("vCliqueSize={}", xCfg->vCliqueSize));
     }
     appendIfSet("pipesNvlChunkSize", xCfg->pipesNvlChunkSize);
-    appendIfSet("pipesIbgdaDataBufferSize", xCfg->pipesIbgdaDataBufferSize);
+    appendIfSet("enablePrims", xCfg->enablePrims);
+    appendIfSet("primsChannelBufferSize", xCfg->primsChannelBufferSize);
+    appendIfSet("primsChannelPipelineDepth", xCfg->primsChannelPipelineDepth);
+    appendIfSet("primsMaxChannels", xCfg->primsMaxChannels);
+    appendIfSet("primsMaxBlocks", xCfg->primsMaxBlocks);
     appendIfSet("ncclBuffSize", xCfg->ncclBuffSize);
     appendIfSet("ibSplitDataOnQps", xCfg->ibSplitDataOnQps);
     appendIfSet("ibQpsPerConnection", xCfg->ibQpsPerConnection);

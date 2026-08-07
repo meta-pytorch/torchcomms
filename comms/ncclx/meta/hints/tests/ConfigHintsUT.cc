@@ -480,3 +480,274 @@ TEST(ConfigHintsUT, InvalidAlgoHintFallsBackToDefault) {
   EXPECT_EQ(NCCLX_CONFIG_FIELD(config, sendrecvAlgo), NCCL_SENDRECV_ALGO::orig);
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
+
+// ----- Per-communicator Prims transport overrides -----
+//
+// These three hints override MCCL_CHANNEL_BUFFER_SIZE,
+// MCCL_CHANNEL_PIPELINE_DEPTH and NCCL_CTRAN_USE_PIPES for a single
+// communicator. `primsChannelBufferSize` is per-channel, per-direction --
+// the same unit as the CVAR it overrides.
+
+TEST(ConfigHintsUT, PrimsChannelBufferSizeSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsChannelBufferSize", "4194304");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->primsChannelBufferSize.has_value());
+  EXPECT_EQ(ncclxCfg->primsChannelBufferSize.value(), 4194304U);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelBufferSizeDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsChannelBufferSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelBufferSizeRejectsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsChannelBufferSize", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsChannelBufferSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelBufferSizeRejectsInvalidString) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsChannelBufferSize", "four-megabytes");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsChannelBufferSize.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelPipelineDepthSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsChannelPipelineDepth", "4");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->primsChannelPipelineDepth.has_value());
+  EXPECT_EQ(ncclxCfg->primsChannelPipelineDepth.value(), 4);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelPipelineDepthDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsChannelPipelineDepth.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsChannelPipelineDepthRejectsZeroAndNegative) {
+  for (const char* bad : {"0", "-4"}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("primsChannelPipelineDepth", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+    auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+    EXPECT_FALSE(ncclxCfg->primsChannelPipelineDepth.has_value()) << bad;
+
+    delete ncclxCfg;
+  }
+}
+
+// enablePrims is tri-state: absent leaves the optional unset so
+// ctranPrimsEnabled() falls back to NCCL_CTRAN_USE_PIPES; 0 is an explicit
+// disable and must NOT be confused with absent.
+TEST(ConfigHintsUT, EnablePrimsAcceptsBooleanSpellings) {
+  const std::vector<std::pair<const char*, int64_t>> cases = {
+      {"1", 1},
+      {"0", 0},
+      {"true", 1},
+      {"false", 0},
+      {"yes", 1},
+      {"no", 0},
+      {"t", 1},
+      {"f", 0},
+  };
+  for (const auto& [text, expected] : cases) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("enablePrims", text);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+    auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+    EXPECT_TRUE(ncclxCfg->enablePrims.has_value()) << text;
+    if (ncclxCfg->enablePrims.has_value()) {
+      EXPECT_EQ(ncclxCfg->enablePrims.value(), expected) << text;
+    }
+
+    delete ncclxCfg;
+  }
+}
+
+TEST(ConfigHintsUT, EnablePrimsDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->enablePrims.has_value());
+
+  delete ncclxCfg;
+}
+
+// The torchcomms bootstrap only forwards "ncclx::"-prefixed hints; Hints::set
+// strips the prefix. A mismatch between the prefixed and bare spelling would
+// silently drop the hint, so pin both to the same result.
+TEST(ConfigHintsUT, PrimsPrefixedKeysMatchBareKeys) {
+  ncclConfig_t prefixed = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints prefixedHints;
+  prefixedHints.set("ncclx::enablePrims", "1");
+  prefixedHints.set("ncclx::primsChannelBufferSize", "4194304");
+  prefixedHints.set("ncclx::primsChannelPipelineDepth", "4");
+  prefixedHints.set("ncclx::primsMaxChannels", "8");
+  prefixedHints.set("ncclx::primsMaxBlocks", "12");
+  prefixed.hints = &prefixedHints;
+  EXPECT_EQ(ncclxParseCommConfig(&prefixed), ncclSuccess);
+
+  ncclConfig_t bare = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints bareHints;
+  bareHints.set("enablePrims", "1");
+  bareHints.set("primsChannelBufferSize", "4194304");
+  bareHints.set("primsChannelPipelineDepth", "4");
+  bareHints.set("primsMaxChannels", "8");
+  bareHints.set("primsMaxBlocks", "12");
+  bare.hints = &bareHints;
+  EXPECT_EQ(ncclxParseCommConfig(&bare), ncclSuccess);
+
+  auto* p = static_cast<ncclx::Config*>(prefixed.ncclxConfig);
+  auto* b = static_cast<ncclx::Config*>(bare.ncclxConfig);
+  EXPECT_EQ(p->enablePrims, b->enablePrims);
+  EXPECT_EQ(p->primsChannelBufferSize, b->primsChannelBufferSize);
+  EXPECT_EQ(p->primsChannelPipelineDepth, b->primsChannelPipelineDepth);
+  EXPECT_EQ(p->primsMaxChannels, b->primsMaxChannels);
+  EXPECT_EQ(p->primsMaxBlocks, b->primsMaxBlocks);
+  ASSERT_TRUE(p->primsChannelBufferSize.has_value());
+  EXPECT_EQ(p->primsChannelBufferSize.value(), 4194304U);
+
+  delete p;
+  delete b;
+}
+
+// An unparseable enablePrims must leave the optional UNSET so every rank falls
+// back to the same CVAR. Resolving a typo to an explicit disable on only the
+// ranks carrying it is what produces a mismatched-transport comm-init hang.
+TEST(ConfigHintsUT, EnablePrimsInvalidLeavesUnset) {
+  for (const char* bad : {"maybe", "2x", ""}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("enablePrims", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+    auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+    EXPECT_FALSE(ncclxCfg->enablePrims.has_value()) << bad;
+
+    delete ncclxCfg;
+  }
+}
+
+// std::stoull wraps a leading '-', so "-1" would otherwise parse as 2^64-1 and
+// pass the positivity check.
+TEST(ConfigHintsUT, PrimsChannelBufferSizeRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsChannelBufferSize", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsChannelBufferSize.has_value());
+
+  delete ncclxCfg;
+}
+
+// primsMaxChannels / primsMaxBlocks override MCCL_MAX_NCHANNELS /
+// MCCL_MAX_NBLOCKS for one communicator. Both the transport (comm init) and
+// the collective launch geometry resolve through the same helpers.
+TEST(ConfigHintsUT, PrimsMaxChannelsAndBlocksSetViaHint) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("primsMaxChannels", "8");
+  hints.set("primsMaxBlocks", "12");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->primsMaxChannels.has_value());
+  EXPECT_EQ(ncclxCfg->primsMaxChannels.value(), 8);
+  ASSERT_TRUE(ncclxCfg->primsMaxBlocks.has_value());
+  EXPECT_EQ(ncclxCfg->primsMaxBlocks.value(), 12);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsMaxChannelsAndBlocksDefaultUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->primsMaxChannels.has_value());
+  EXPECT_FALSE(ncclxCfg->primsMaxBlocks.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, PrimsMaxChannelsAndBlocksRejectBadValues) {
+  for (const char* key : {"primsMaxChannels", "primsMaxBlocks"}) {
+    for (const char* bad : {"0", "-1", "lots"}) {
+      ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+      ncclx::Hints hints;
+      hints.set(key, bad);
+      config.hints = &hints;
+
+      EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+      auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+      EXPECT_FALSE(ncclxCfg->primsMaxChannels.has_value()) << key << "=" << bad;
+      EXPECT_FALSE(ncclxCfg->primsMaxBlocks.has_value()) << key << "=" << bad;
+
+      delete ncclxCfg;
+    }
+  }
+}

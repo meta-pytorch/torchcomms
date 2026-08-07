@@ -43,13 +43,26 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
     const auto* ncclxCfg =
         static_cast<ncclx::Config*>(comm->config.ncclxConfig);
     if (ncclxCfg->pipesNvlChunkSize.has_value()) {
-      tconfig.pipesConfig.nvlChunkSize =
+      tconfig.primsConfig.nvlChunkSize =
           static_cast<int64_t>(ncclxCfg->pipesNvlChunkSize.value());
     }
-    tconfig.pipesConfig.ibLazyConnect = ncclxCfg->deviceIbLazyConnect;
-    if (ncclxCfg->pipesIbgdaDataBufferSize.has_value()) {
-      tconfig.pipesConfig.ibgdaDataBufferSize =
-          static_cast<int64_t>(ncclxCfg->pipesIbgdaDataBufferSize.value());
+    tconfig.primsConfig.ibLazyConnect = ncclxCfg->deviceIbLazyConnect;
+    if (ncclxCfg->enablePrims.has_value()) {
+      tconfig.primsConfig.enablePrims = ncclxCfg->enablePrims.value();
+    }
+    if (ncclxCfg->primsChannelBufferSize.has_value()) {
+      tconfig.primsConfig.channelBufferSize =
+          static_cast<int64_t>(ncclxCfg->primsChannelBufferSize.value());
+    }
+    if (ncclxCfg->primsChannelPipelineDepth.has_value()) {
+      tconfig.primsConfig.channelPipelineDepth =
+          ncclxCfg->primsChannelPipelineDepth.value();
+    }
+    if (ncclxCfg->primsMaxChannels.has_value()) {
+      tconfig.primsConfig.maxChannels = ncclxCfg->primsMaxChannels.value();
+    }
+    if (ncclxCfg->primsMaxBlocks.has_value()) {
+      tconfig.primsConfig.maxBlocks = ncclxCfg->primsMaxBlocks.value();
     }
   }
   return tconfig;

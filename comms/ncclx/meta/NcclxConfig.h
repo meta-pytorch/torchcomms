@@ -55,10 +55,23 @@ class Config {
   enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
   enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
-  // Per-communicator MultiPeerTransport (pipes) NVL config overrides.
-  // When set, override the corresponding CVARs for this communicator.
+  // Per-communicator Prims (MultiPeerTransport) overrides. When set, each
+  // overrides the corresponding CVAR for this communicator only.
+  // enablePrims overrides NCCL_CTRAN_USE_PIPES, so Prims -- and the IB staging
+  // it allocates -- can be turned on for one process group without paying the
+  // memory on every other communicator in the job.
   std::optional<size_t> pipesNvlChunkSize;
-  std::optional<size_t> pipesIbgdaDataBufferSize;
+  std::optional<int64_t> enablePrims;
+  // Per-channel, per-direction. Same unit as MCCL_CHANNEL_BUFFER_SIZE.
+  std::optional<size_t> primsChannelBufferSize;
+  // chunk = primsChannelBufferSize / primsChannelPipelineDepth.
+  std::optional<int64_t> primsChannelPipelineDepth;
+  // Override MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS for this communicator.
+  // Total IB staging is primsChannelBufferSize * primsMaxChannels per peer per
+  // direction. primsMaxBlocks is both the NVL channel count and the collective
+  // launch-geometry block cap, matching the CVAR it overrides.
+  std::optional<int64_t> primsMaxChannels;
+  std::optional<int64_t> primsMaxBlocks;
   int vCliqueSize = 0;
 
   // Per-communicator buffer size override (Simple protocol).
@@ -93,11 +106,15 @@ inline const std::vector<std::string>& knownHintKeys() {
       "sendrecvAlgo",
       "allgatherAlgo",
       "allreduceAlgo",
-      "pipesIbgdaDataBufferSize",
       "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
       "pipesNvlChunkSize",
+      "enablePrims",
+      "primsChannelBufferSize",
+      "primsChannelPipelineDepth",
+      "primsMaxChannels",
+      "primsMaxBlocks",
       "vCliqueSize",
       "ncclBuffSize",
       "ibSplitDataOnQps",
