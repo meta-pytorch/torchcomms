@@ -22,8 +22,6 @@ Two regressions guarded against:
 from __future__ import annotations
 
 import os
-import tempfile
-import time
 import unittest
 
 import torch
@@ -55,63 +53,20 @@ def _local_rank() -> int:
     return int(os.environ.get("LOCAL_RANK", get_rank_and_size()[0]))
 
 
-def _store_port_file(store_name: str) -> str:
-    return os.path.join(
-        tempfile.gettempdir(),
-        f"torchcomms_backend_wrapper_shutdown_{os.environ['MASTER_PORT']}_{store_name}.port",
-    )
+_root_store = None
 
 
-def _create_store_on_free_port(store_name: str) -> dist.TCPStore:
-    rank, world_size = get_rank_and_size()
-    host = os.environ["MASTER_ADDR"]
-    port_file = _store_port_file(store_name)
-
-    if rank == 0:
-        try:
-            os.unlink(port_file)
-        except FileNotFoundError:
-            pass
-
-        store = dist.TCPStore(
-            host_name=host,
-            port=0,
-            world_size=world_size,
-            is_master=True,
+def _create_isolated_store(store_name: str) -> dist.Store:
+    global _root_store
+    if _root_store is None:
+        rank, _ = get_rank_and_size()
+        _root_store = dist.TCPStore(
+            host_name=os.environ["MASTER_ADDR"],
+            port=int(os.environ["MASTER_PORT"]),
+            is_master=(rank == 0),
             wait_for_workers=False,
         )
-        with open(port_file, "w", encoding="utf-8") as f:
-            f.write(str(store.port))
-        return store
-
-    deadline = time.monotonic() + 120
-    while True:
-        try:
-            with open(port_file, encoding="utf-8") as f:
-                port = int(f.read().strip())
-            break
-        except (FileNotFoundError, ValueError):
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Timed out waiting for store port file {port_file}")
-            time.sleep(0.05)
-
-    return dist.TCPStore(
-        host_name=host,
-        port=port,
-        world_size=world_size,
-        is_master=False,
-        wait_for_workers=False,
-    )
-
-
-def _cleanup_store_port_file(store_name: str) -> None:
-    if get_rank_and_size()[0] != 0:
-        return
-
-    try:
-        os.unlink(_store_port_file(store_name))
-    except FileNotFoundError:
-        pass
+    return dist.PrefixStore(store_name, _root_store)
 
 
 @unittest.skipUnless(
@@ -138,7 +93,7 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         dist.config.use_torchcomms = True
         dist.init_process_group(
             backend=backend,
-            store=_create_store_on_free_port(store_name),
+            store=_create_isolated_store(store_name),
             rank=rank,
             world_size=world_size,
         )
@@ -155,7 +110,6 @@ class TestBackendWrapperShutdown(unittest.TestCase):
             self.assertEqual(tensor[0].item(), float(dist.get_world_size()))
         finally:
             dist.destroy_process_group()
-            _cleanup_store_port_file(store_name)
 
     def test_mixed_backend_destroy_idempotent(self):
         """Mixed ``cpu:gloo,cuda:nccl`` PG: ``destroy_process_group``
@@ -182,7 +136,7 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         local_device_str = f"{device_str}:{local_rank}"
         dist.init_process_group(
             backend=f"cpu:gloo,{device_str}:{backend_str}",
-            store=_create_store_on_free_port(store_name),
+            store=_create_isolated_store(store_name),
             rank=rank,
             world_size=world_size,
             device_id=torch.device(local_device_str),
@@ -198,7 +152,6 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         finally:
             # Must not raise even though both sub-backends share the comm.
             dist.destroy_process_group()
-            _cleanup_store_port_file(store_name)
 
 
 if __name__ == "__main__":
