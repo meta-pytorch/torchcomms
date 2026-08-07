@@ -24,7 +24,7 @@ namespace torch::comms {
 
 // Maximum number of IBGDA NICs per GPU surfaced through RegisteredBuffer.
 // Must match NCCLX_MAX_NICS_PER_GPU in nccl.h and comms::prims::kMaxNicsPerGpu
-// — verified by static_assert at the bridge layer (PipesDeviceBackend.cpp,
+// — verified by static_assert at the bridge layer (PrimsDeviceBackend.cpp,
 // the only translation unit that pulls in all three headers). Increase
 // only if a future platform supports > 2 NICs per GPU; update all three
 // constants in lockstep.
@@ -43,7 +43,7 @@ struct RegisteredBuffer {
   size_t size{0};
   void* backend_window{
       nullptr}; // Backend-specific window handle (e.g., ncclWindow_t)
-  // Per-NIC RDMA local keys for IBGDA puts (PipesDeviceBackend). One entry
+  // Per-NIC RDMA local keys for IBGDA puts (PrimsDeviceBackend). One entry
   // per NIC up to kMaxNicsPerGpu; the device-side put selects
   // lkey_per_device.values[nic] based on the slot. `size` is the actual NIC
   // count populated by the backend (0 for backends that do not use IBGDA,

@@ -78,16 +78,16 @@ def run_send_recv_perf(
 
         # Measure ping-pong latency
         timer = PerfTimer()
-        sync_device(device)
+        sync_device()
         timer.start()
 
         for i in range(params.measure_iterations):
             _do_ping_pong(comm, tensor, rank, peer, params.async_op)
 
             if params.iteration_window > 0 and (i + 1) % params.iteration_window == 0:
-                sync_device(device)
+                sync_device()
 
-        sync_device(device)
+        sync_device()
         timer.stop()
 
         total = timer.elapsed_us()

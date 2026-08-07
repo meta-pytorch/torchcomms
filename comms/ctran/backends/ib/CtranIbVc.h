@@ -8,12 +8,12 @@
 #include <optional>
 #include <unordered_map>
 #include <vector>
-#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
-#include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -1908,6 +1908,10 @@ class CtranIbVirtualConn {
   const int igetFastQpIdx_{0};
 
   bool isReady_{false};
+  // Local OOO_RQ eligibility: user set NCCL_CTRAN_IB_ENABLE_OOO_RQ=true AND
+  // every active device exposes ooo_recv_wrs_caps.max_rc >= MAX_RECV_WR.
+  // Advertised to the peer via BusCard::oooRq and cross-checked in setupVc.
+  bool localOooRq_{false};
   std::vector<CtranIbDevice> devices_;
   // Set of IB device indices this VC owns QPs on (precomputed by
   // ctran::ib::VcLayout and supplied by CtranIb). For legacy

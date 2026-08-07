@@ -5,6 +5,9 @@
 #include <torch/csrc/distributed/c10d/Backend.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
+#ifdef C10D_BACKEND_HAS_WINDOW
+#include <torch/csrc/distributed/c10d/Window.hpp> // @manual=//caffe2:torch-cpp-cpu
+#endif
 
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
@@ -148,6 +151,12 @@ class BackendWrapper : public c10d::Backend {
   // Returns the symmetric (VMM-backed) CUDA allocator associated with this
   // communicator's backend. See `TorchComm::getMemAllocator()`.
   std::shared_ptr<c10::Allocator> getMemAllocator() override;
+
+#ifdef C10D_BACKEND_HAS_WINDOW
+  bool supportsWindow() const override;
+  c10::intrusive_ptr<c10d::Window> new_window(
+      const std::optional<at::Tensor>& tensor = std::nullopt) override;
+#endif
 
   c10::intrusive_ptr<Options> getOptions() {
     return options_;

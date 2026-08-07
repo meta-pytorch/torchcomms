@@ -1977,6 +1977,17 @@ cvars:
      Number of main IB QPs owned by each physical CUDA block on each NIC.
      Puts from a block round-robin across its NIC-first QP lanes.
 
+ - name        : NCCL_CTRAN_IB_ENABLE_OOO_RQ
+   type        : bool
+   default     : false
+   description : |-
+     Enable out-of-order receive queue for ctran IB backend. When true,
+     ctran data QPs are created with MLX5DV_QP_CREATE_OOO_DP so
+     WRITE_WITH_IMM traffic can benefit from fabric packet spraying on CX8+
+     adaptive-routing fabrics. Fail-closed: if the local NIC doesn't
+     expose ooo_recv_wrs_caps.max_rc >= 128 or the peer doesn't advertise
+     support, the connection is aborted.
+
  - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
    type        : uint64_t
    default     : 1
@@ -3306,19 +3317,19 @@ cvars:
 
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t
-   default     : 2097152
+   default     : 4194304
    description : |-
      Per-channel, per-direction prims IB send/recv staging size in bytes,
      shared by the IBGDA and IBRC backends. Total staging per peer and
      direction is this value multiplied by MCCL_MAX_NCHANNELS. Combined with
      MCCL_CHANNEL_PIPELINE_DEPTH: channel chunk size = this / depth.
-     The default is 2MiB per channel per direction; with the default pipeline
-     depth of 4 this yields 512KiB chunks, or 4MiB combined send+recv staging
+     The default is 4MiB per channel per direction; with the default pipeline
+     depth of 8 this yields 512KiB chunks, or 8MiB combined send+recv staging
      per channel.
 
  - name        : MCCL_CHANNEL_PIPELINE_DEPTH
    type        : int
-   default     : 4
+   default     : 8
    description : |-
      Number of staging slots per prims IB channel, shared by the IBGDA and
      IBRC backends. Each slot carries one channel chunk. Channel chunk size is
@@ -3361,6 +3372,11 @@ cvars:
      Enable MCCL Scuba structured logging. When enabled, MCCL will log
      events to dedicated MCCL Scuba tables for observability and debugging.
      This is separate from NCCLX logging to minimize risk.
+
+ - name        : MCCL_COLLECTIVE_STATS_ENABLE
+   type        : bool
+   default     : true
+   description : Enable per-(collective_op, algorithm, msg_size) host-drive timing stats accumulated by the GPE thread and drained each training step.
 
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum

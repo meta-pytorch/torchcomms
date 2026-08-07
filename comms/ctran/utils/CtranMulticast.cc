@@ -6,7 +6,9 @@
 #include "comms/ctran/utils/Alloc.h" // isCuMemFabricEnabled
 #include "comms/ctran/utils/Checks.h" // FB_COMMCHECK
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace ctran::utils {
 
@@ -57,7 +59,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
         FB_CUPFN(cuMulticastBindMem) == nullptr ||
         FB_CUPFN(cuMulticastGetGranularity) == nullptr ||
         FB_CUPFN(cuMulticastUnbind) == nullptr) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- driver multicast entry points unavailable (needs a newer CUDA driver)");
       return false;
@@ -71,7 +74,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
             &sup, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, cuDev),
         false);
     if (sup == 0) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- device {} reports no multicast support",
           cudaDev);
@@ -90,7 +94,8 @@ bool CtranMulticast::isSupported(int cudaDev) {
     // cannot be shared across the domain -> declare unsupported so the group
     // falls back to unicast.
     if (!isCuMemFabricEnabled()) {
-      CLOGF(
+      COMMS_LOG_CONTEXT(
+          ctran::logging::kCtranSpdlogContext,
           WARN,
           "CTRAN-MC: multicast disabled -- device {} reports multicast support but fabric memory handles are unavailable (IMEX channel not enabled?); the multicast object cannot be shared across the NVL domain",
           cudaDev);
@@ -122,10 +127,11 @@ commResult_t CtranMulticast::createRoot(
     size_t mcSize,
     CUmemAllocationHandleType handleType,
     CUmemGenericAllocationHandle& outHandle) {
-  // Single-use, symmetric with adoptImported(): release any handle we already
-  // hold before creating a new one, so a misuse (double createRoot, or
-  // createRoot after adoptImported) cannot silently drop -- and leak -- the
-  // previously-held multicast object.
+  // Release any handle we already hold before creating a new one, so a misuse
+  // (double createRoot, or createRoot after adoptImported) cannot silently drop
+  // -- and leak -- the previously-held multicast object. The reverse order
+  // (createRoot then adoptImported) is NOT a misuse: it is the root's
+  // self-import.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
     mcHandle_ = 0; // so a cuMulticastCreate failure below can't double-release
@@ -142,10 +148,11 @@ commResult_t CtranMulticast::createRoot(
 }
 
 void CtranMulticast::adoptImported(CUmemGenericAllocationHandle handle) {
-  // Single-use: an instance is either the root (createRoot) or a non-root
-  // (adoptImported), each exactly once. Release any handle we already hold
-  // before overwriting so a misuse (double-adopt, or adopt after createRoot)
-  // cannot silently drop -- and leak -- the previously-held multicast object.
+  // Release any handle we already hold before overwriting, so neither a misuse
+  // (double-adopt) nor the root's create-then-self-import sequence silently
+  // drops -- and leaks -- the previously-held multicast object. Each successful
+  // import carries its own reference and the caller imports before calling
+  // here, so the incoming handle keeps the object alive across the release.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
   }

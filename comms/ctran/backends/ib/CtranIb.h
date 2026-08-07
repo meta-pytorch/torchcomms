@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "comms/common/fault_tolerance/Abort.h"
-#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/BootstrapInternal.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"

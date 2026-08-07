@@ -18,6 +18,8 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/ibverbx/Mlx5dv.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
@@ -1281,6 +1283,47 @@ TEST_P(CtranIbTestParam, GpuMemPutNotify) {
   runPutNotify(
       /* bufCount */ 8192,
       /* numPuts*/ 1000,
+      /*localSignal*/ true,
+      NotifyMode::notifyAll,
+      /*isGpuMem*/ true);
+}
+
+// End-to-end put+notify with NCCL_CTRAN_IB_ENABLE_OOO_RQ=true. Verifies the
+// full OOO_RQ path on real HW: cap detection populates devices[i].oooRqSize,
+// getLocalBusCard advertises OOO_RQ via BusCard.oooRq, setupVc symmetrically
+// checks the negotiation and either accepts or fail-closes, data QPs are
+// created with MLX5DV_QP_CREATE_OOO_DP, and RDMA put+notify completes
+// correctly.
+//
+// Skips when the local device doesn't advertise OOO_RECV_WRS caps
+// (max_rc >= 128), avoiding false failures on hosts without CX8 hardware.
+TEST_F(CtranIbTest, GpuMemPutNotifyWithOooRq) {
+  // Cap probe on device 0 as a proxy for what CtranIbSingleton will see.
+  ASSERT_TRUE(ibverbx::ibvInit());
+  auto devices = ibverbx::IbvDevice::ibvGetDeviceList({std::string("mlx5_")});
+  if (!devices || devices->empty()) {
+    GTEST_SKIP() << "No mlx5 devices present; OOO_RQ not applicable";
+  }
+  auto maybeCtx = ibverbx::Mlx5dv::queryDevice(
+      devices->at(0).context(), ibverbx::MLX5DV_CONTEXT_MASK_OOO_RECV_WRS);
+  if (maybeCtx.hasError()) {
+    GTEST_SKIP() << "mlx5dv_query_device unavailable: "
+                 << maybeCtx.error().errStr;
+  }
+  if (!(maybeCtx->comp_mask & ibverbx::MLX5DV_CONTEXT_MASK_OOO_RECV_WRS) ||
+      maybeCtx->ooo_recv_wrs_caps.max_rc < 128) {
+    GTEST_SKIP() << "Device does not advertise sufficient OOO recv-wrs "
+                    "capability (need max_rc >= 128)";
+  }
+
+  EnvRAII<bool> enableOooRq(NCCL_CTRAN_IB_ENABLE_OOO_RQ, /*newValue=*/true);
+  this->printTestDesc(
+      "GpuMemPutNotifyWithOooRq",
+      "Verify OOO_RQ end-to-end: OOO_DP data QPs, BusCard negotiation, "
+      "and put+notify semantics all work correctly with real CX8 hardware.");
+  runPutNotify(
+      /* bufCount */ 8192,
+      /* numPuts*/ 100,
       /*localSignal*/ true,
       NotifyMode::notifyAll,
       /*isGpuMem*/ true);

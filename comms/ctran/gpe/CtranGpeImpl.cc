@@ -277,6 +277,10 @@ commResult_t CtranGpe::Impl::submit(
         cmd->coll.collHandle = colltraceHandle;
       }
       cmd->coll.comm = comm;
+      if (MCCL_COLLECTIVE_STATS_ENABLE) {
+        cmd->coll.statsKey =
+            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig.algoName);
+      }
     }
 
     FB_COMMCHECK(maybeAcquireWorkStreamScope());
@@ -609,6 +613,10 @@ commResult_t CtranGpe::Impl::submitHost(
       cmd->coll.opGroup = std::move(opGroup);
       cmd->coll.func = func;
       cmd->coll.comm = comm;
+      if (MCCL_COLLECTIVE_STATS_ENABLE) {
+        cmd->coll.statsKey =
+            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig.algoName);
+      }
       auto colltraceHandle = meta::comms::colltrace::getCollTraceHandle(
           comm, cmd->coll.opGroup, kernelConfig, false /* ifChecksum */);
       if (colltraceHandle != nullptr) {
@@ -809,6 +817,15 @@ void CtranGpe::Impl::gpeThreadFn() {
       }
       gpeProfiler_->mark(ctran::GpeTracePoint::WAIT_KERNEL);
 
+      // Keyed off statsKey, not the cvar: re-reading the cvar at the record
+      // site would let a false->true flip mid-collective time from a
+      // default-constructed start point.
+      const bool collectiveStatsEnabled = !cmd->coll.statsKey.key.empty();
+      std::chrono::steady_clock::time_point collectiveStatsStart;
+      if (collectiveStatsEnabled) {
+        collectiveStatsStart = std::chrono::steady_clock::now();
+      }
+
       if (cmd->coll.collHandle != nullptr) {
         cmd->coll.collHandle->trigger(
             CollTraceHandleTriggerState::KernelStarted);
@@ -889,6 +906,19 @@ void CtranGpe::Impl::gpeThreadFn() {
                 static_cast<int>(cmd->coll.opGroup.front()->type),
                 cmd->coll.opGroup.front()->opCount);
           }
+        }
+
+        // Aborted collectives are recorded too: duration-until-abort is
+        // still useful.
+        if (collectiveStatsEnabled && comm != nullptr) {
+          const auto durationUs =
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - collectiveStatsStart)
+                  .count();
+          collectiveStats_.record(
+              cmd->coll.statsKey.collective,
+              cmd->coll.statsKey.key,
+              static_cast<uint64_t>(durationUs));
         }
 
         if (cmd->persistent) {

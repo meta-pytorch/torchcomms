@@ -57,10 +57,12 @@ commResult_t VcState::setupAndPublishVc(
 
   // Setup each VC under its own per-VC lock. The VC is not yet exposed
   // to local rank; the lock is taken to follow VC thread-safety semantics.
+  // Use return-style propagation (not throw) so that failures such as
+  // NCCL_CTRAN_IB_ENABLE_OOO_RQ fail-closed surface as commSystemError to
+  // the caller
   for (size_t i = 0; i < vcs.size(); ++i) {
     const std::lock_guard<std::mutex> lock(vcs[i]->mutex);
-    FB_COMMCHECKTHROW_EX(
-        vcs[i]->setupVc((void*)remoteVcIdentifiers[i].data()), *logData_);
+    FB_COMMCHECK(vcs[i]->setupVc((void*)remoteVcIdentifiers[i].data()));
   }
 
   {

@@ -17,6 +17,7 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 class CtranUtilsLogTest : public ::testing::Test {
  public:
@@ -67,6 +68,20 @@ TEST_F(CtranUtilsLogTest, TestCLOGF) {
 
   std::string expectedContent = "Test message with value: 42";
   EXPECT_NE(messages[0].find(expectedContent), std::string::npos);
+}
+
+TEST_F(CtranUtilsLogTest, TestSpdlogContextPreservesLastError) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranSpdlogContext);
+  EXPECT_EQ(logger.name(), ctran::logging::kCtranSpdlogContext);
+  logger.set_level(spdlog::level::info);
+
+  COMMS_LOG_CONTEXT(
+      ctran::logging::kCtranSpdlogContext, ERR, "Spdlog CTRAN error {}", 42);
+
+  EXPECT_THAT(
+      meta::comms::logger::getLastCommsError(),
+      testing::HasSubstr("Spdlog CTRAN error 42"));
 }
 
 TEST_F(CtranUtilsLogTest, TestCLOGF_IF) {

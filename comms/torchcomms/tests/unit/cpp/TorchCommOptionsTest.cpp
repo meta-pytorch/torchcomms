@@ -144,4 +144,37 @@ TEST_F(BackendWrapperTagTest, RecvThreadsTagToBackend) {
   EXPECT_EQ(fake->getLastRecvSrcForTest(), 2);
 }
 
+#ifdef C10D_BACKEND_HAS_WINDOW
+TEST_F(BackendWrapperTagTest, WindowOperationsDelegateToTorchComm) {
+  EXPECT_TRUE(wrapper_->supportsWindow());
+
+  auto tensor = at::ones({4}, at::kFloat);
+  auto window = wrapper_->new_window(tensor);
+  ASSERT_NE(window, nullptr);
+
+  auto putWork = window->put(
+      tensor,
+      /*dstRank=*/0,
+      /*targetOffsetNelems=*/0,
+      /*asyncOp=*/false);
+  ASSERT_NE(putWork, nullptr);
+  EXPECT_TRUE(putWork->wait());
+
+  auto signalWork = window->signal(/*peerRank=*/0, /*asyncOp=*/false);
+  ASSERT_NE(signalWork, nullptr);
+  EXPECT_TRUE(signalWork->wait());
+
+  auto waitWork = window->wait_signal(/*peerRank=*/0, /*asyncOp=*/false);
+  ASSERT_NE(waitWork, nullptr);
+  EXPECT_TRUE(waitWork->wait());
+
+  EXPECT_FALSE(window->map_remote_tensor(/*rank=*/0).defined());
+  EXPECT_EQ(
+      window->get_attr(/*peerRank=*/0).access_type,
+      c10d::WindowAccessType::UNIFIED);
+
+  EXPECT_NO_THROW(window->tensor_deregister());
+}
+#endif
+
 } // namespace torch::comms::test
