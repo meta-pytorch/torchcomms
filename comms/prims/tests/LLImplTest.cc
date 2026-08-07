@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "comms/prims/core/LlxPacket.cuh"
+#include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/tests/LLImplTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -14,6 +15,12 @@
 using meta::comms::DeviceBuffer;
 
 namespace comms::prims {
+
+// Memcpy opts into the LL protocol: it provides packet-aware sendLL/recvLL over
+// LlxPacket geometry, so the detection traits used by the IBGDA transport's LL
+// dispatch report it as LL-capable.
+static_assert(has_sendLL_v<Memcpy, LlxPacketGeometry>);
+static_assert(has_recvLL_v<Memcpy, LlxPacketGeometry>);
 
 namespace {
 
