@@ -2,9 +2,10 @@
 
 #include "comms/utils/RankUtils.h"
 
+#include <cctype>
 #include <cstdlib>
-
-#include <folly/Conv.h>
+#include <cstring>
+#include <string>
 
 namespace {
 
@@ -41,8 +42,26 @@ RunType getRunType() {
 std::optional<int64_t> RankUtils::getInt64FromEnv(const char* envVar) {
   char* envVarValue = getenv(envVar);
   if (envVarValue && strlen(envVarValue)) {
-    if (auto result = folly::tryTo<int64_t>(envVarValue); result.hasValue()) {
-      return result.value();
+    // Parse with std::stoll rather than folly::tryTo so this shared utility
+    // (and the backends that link it, e.g. XCCL) does not pull in a folly
+    // build dependency just for an env-var-to-int conversion.
+    try {
+      size_t pos = 0;
+      std::string value(envVarValue);
+      int64_t parsed = std::stoll(value, &pos);
+      // std::stoll already skips leading whitespace, so trim trailing
+      // whitespace too before the comparison so that values like "  42  "
+      // are accepted. This matches folly::tryTo's behavior: it tolerates
+      // surrounding whitespace but rejects other garbage.
+      while (!value.empty() &&
+             std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+      }
+      if (pos == value.size()) {
+        return parsed;
+      }
+    } catch (const std::exception&) {
+      // Not a valid integer; fall through to nullopt.
     }
   }
   return std::nullopt;

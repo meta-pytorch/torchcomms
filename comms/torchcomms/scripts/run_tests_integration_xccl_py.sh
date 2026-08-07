@@ -48,6 +48,7 @@ run_tests () {
         SendRecvTest.py
         ScatterTest.py
         SplitTest.py
+        NodeRankLayoutTest.py
         TPCommTest.py
         WaitBlockingTest.py
     )
