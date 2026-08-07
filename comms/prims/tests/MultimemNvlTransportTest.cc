@@ -175,67 +175,176 @@ TEST_F(
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesUserOnlyConfiguration) {
-  EXPECT_EQ(checked_multimem_internal_signal_count(makeConfig(256), 4), 0);
+  const auto validation =
+      validate_multimem_nvl_transport_config(makeConfig(256), 4);
+  EXPECT_TRUE(validation);
+  EXPECT_EQ(validation.internalSignalCount, 0);
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesStagingOnlyConfiguration) {
-  EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(256, 0, 2, 2), 4), 48);
+  const auto validation =
+      validate_multimem_nvl_transport_config(makeConfig(256, 0, 2, 2), 4);
+  EXPECT_TRUE(validation);
+  EXPECT_EQ(validation.internalSignalCount, 48);
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesMixedConfiguration) {
-  EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(256, 7, 2, 2), 4), 48);
+  const auto validation =
+      validate_multimem_nvl_transport_config(makeConfig(256, 7, 2, 2), 4);
+  EXPECT_TRUE(validation);
+  EXPECT_EQ(validation.internalSignalCount, 48);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsPartialStagingGeometry) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(256, 1, 2, 0), 4),
-      std::nullopt);
+      validate_multimem_nvl_transport_config(makeConfig(256, 1, 2, 0), 4).error,
+      MultimemNvlTransportConfigError::PartialStagingGeometry);
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(256, 1, 0, 2), 4),
-      std::nullopt);
+      validate_multimem_nvl_transport_config(makeConfig(256, 1, 0, 2), 4).error,
+      MultimemNvlTransportConfigError::PartialStagingGeometry);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInvalidRankCount) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(256, 1, 1, 1), 0),
-      std::nullopt);
+      validate_multimem_nvl_transport_config(makeConfig(256, 1, 1, 1), 0).error,
+      MultimemNvlTransportConfigError::InvalidRankCount);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsMissingDataBuffer) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(
-          makeConfig(std::numeric_limits<std::size_t>::max(), 1, 1, 1),
-          std::numeric_limits<int>::max()),
-      std::nullopt);
+      validate_multimem_nvl_transport_config(makeConfig(0, 1), 4).error,
+      MultimemNvlTransportConfigError::MissingDataBuffer);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsNoSignalSlots) {
+  EXPECT_EQ(
+      validate_multimem_nvl_transport_config(makeConfig(256, 0), 4).error,
+      MultimemNvlTransportConfigError::NoSignalSlots);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsMaxGroupsOutOfRange) {
+  EXPECT_EQ(
+      validate_multimem_nvl_transport_config(
+          makeConfig(
+              std::numeric_limits<std::size_t>::max(),
+              1,
+              1,
+              static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) +
+                  1),
+          4)
+          .error,
+      MultimemNvlTransportConfigError::GeometryOutOfRange);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInsufficientDataCapacity) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(makeConfig(255, 1, 2, 2), 4),
-      std::nullopt);
+      validate_multimem_nvl_transport_config(makeConfig(255, 1, 2, 2), 4).error,
+      MultimemNvlTransportConfigError::InsufficientDataCapacity);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInternalSignalOverflow) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(
+      validate_multimem_nvl_transport_config(
           makeConfig(
               std::numeric_limits<std::size_t>::max(),
               1,
               std::numeric_limits<std::size_t>::max(),
               2),
-          4),
-      std::nullopt);
+          4)
+          .error,
+      MultimemNvlTransportConfigError::GeometryOutOfRange);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsTotalSignalOverflow) {
   EXPECT_EQ(
-      checked_multimem_internal_signal_count(
+      validate_multimem_nvl_transport_config(
           makeConfig(
               std::numeric_limits<std::size_t>::max(),
               std::numeric_limits<uint32_t>::max(),
               1,
               1),
-          4),
-      std::nullopt);
+          4)
+          .error,
+      MultimemNvlTransportConfigError::SignalCountOverflow);
+}
+
+TEST(MultimemNvlTransportConfigTest, ResolvesExplicitOverride) {
+  const auto overrideConfig = makeConfig(8192, 3, 2, 2);
+  const auto fallbackConfig = makeConfig(4096, 1, 1, 1);
+  const auto resolved = resolve_multimem_nvl_transport_config(
+      overrideConfig, fallbackConfig, 2048, 4);
+
+  EXPECT_TRUE(resolved);
+  EXPECT_EQ(resolved.config, overrideConfig);
+  EXPECT_EQ(resolved.internalSignalCount, 48);
+}
+
+TEST(MultimemNvlTransportConfigTest, ResolvesAbsentOverrideFromFallback) {
+  const auto fallbackConfig = makeConfig(4096, 1, 1, 1);
+  const auto resolved = resolve_multimem_nvl_transport_config(
+      std::nullopt, fallbackConfig, 2048, 4);
+
+  EXPECT_TRUE(resolved);
+  EXPECT_EQ(resolved.config, fallbackConfig);
+}
+
+TEST(MultimemNvlTransportConfigTest, ResolvesTopologyDataBufferSize) {
+  const auto overrideConfig = makeConfig(0, 1, 1, 1);
+  const auto resolved = resolve_multimem_nvl_transport_config(
+      overrideConfig, makeConfig(4096, 1, 1, 1), 2048, 4);
+
+  EXPECT_TRUE(resolved);
+  EXPECT_EQ(resolved.config.dataBufferSize, 2048);
+}
+
+TEST(MultimemNvlTransportConfigTest, ReturnsAttemptedConfigOnError) {
+  const auto overrideConfig = makeConfig(8192, 1, 0, 1);
+  const auto resolved = resolve_multimem_nvl_transport_config(
+      overrideConfig, makeConfig(4096, 1, 1, 1), 2048, 4);
+
+  EXPECT_FALSE(resolved);
+  EXPECT_EQ(resolved.config, overrideConfig);
+  EXPECT_EQ(
+      resolved.error, MultimemNvlTransportConfigError::PartialStagingGeometry);
+}
+
+TEST(MultimemNvlTransportConfigTest, DescribesEveryError) {
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::None),
+      "none");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::MissingDataBuffer),
+      "data buffer size must be non-zero");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::InvalidRankCount),
+      "NVL rank count must be positive");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::PartialStagingGeometry),
+      "pipeline depth and maximum groups must both be zero or non-zero");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::GeometryOutOfRange),
+      "pipeline depth or maximum groups exceeds UINT32_MAX");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::InsufficientDataCapacity),
+      "data buffer is too small for the staging geometry");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::SignalCountOverflow),
+      "signal count exceeds INT_MAX");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          MultimemNvlTransportConfigError::NoSignalSlots),
+      "at least one signal slot is required");
+  EXPECT_STREQ(
+      multimem_nvl_transport_config_error_string(
+          static_cast<MultimemNvlTransportConfigError>(-1)),
+      "unknown configuration error");
 }
 
 TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {

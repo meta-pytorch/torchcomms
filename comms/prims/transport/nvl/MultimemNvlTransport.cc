@@ -83,31 +83,21 @@ MultimemNvlTransport::MultimemNvlTransport(
   // are exercisable on CPU-only hosts (see MultimemNvlTransportValidationTest).
   validateRankMap(commRank_, nvlRankToCommRank_);
 
-  if (config_.dataBufferSize == 0) {
+  const auto validation =
+      validate_multimem_nvl_transport_config(config_, nvlRanks_);
+  if (!validation) {
     throw std::runtime_error(
-        "MultimemNvlTransport: dataBufferSize must be non-zero");
+        std::string("MultimemNvlTransport: ") +
+        multimem_nvl_transport_config_error_string(validation.error));
   }
-  const auto internalSignalCount =
-      checked_multimem_internal_signal_count(config_, nvlRanks_);
-  if (!internalSignalCount.has_value()) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: invalid staging geometry or capacity");
-  }
-  internalSignalCount_ = *internalSignalCount;
+  internalSignalCount_ = validation.internalSignalCount;
   if (config_.pipelineDepth != 0) {
     signalsPerLane_ =
         multimem_staging_signals_per_lane(static_cast<uint32_t>(nvlRanks_));
   }
   const uint64_t totalSignalCount =
       static_cast<uint64_t>(config_.userSignalCount) + internalSignalCount_;
-  if (totalSignalCount == 0) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: at least one signal slot is required");
-  }
-  if (totalSignalCount >
-      static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-    throw std::runtime_error("MultimemNvlTransport: signalCount too large");
-  }
+  // The shared validator bounds the combined user and internal signal count.
 
   // commRank presence in the map is already verified by validateRankMap.
   int nvlRank = -1;

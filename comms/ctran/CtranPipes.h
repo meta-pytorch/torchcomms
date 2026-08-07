@@ -8,12 +8,14 @@
 
 #if defined(ENABLE_PRIMS)
 #include "comms/prims/trace/PipesTraceTypes.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #endif // defined(ENABLE_PRIMS)
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 class CtranComm;
 class CtranAlgo;
+struct ctranPipesConfig;
 
 inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
   uint64_t size = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
@@ -28,8 +30,8 @@ inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
 // exchange() is deferred to ctranInitPipesResources().
 commResult_t ctranInitializePipes(CtranComm* comm);
 
-// Resolve the per-communicator override, falling back to the legacy CTRAN
-// CVAR for NCCLX and standalone Ctran callers.
+// Resolve the per-communicator override, falling back to the process-wide
+// CTRAN CVAR for NCCLX and standalone Ctran callers.
 bool ctranPrimsEnabled(const CtranComm* comm);
 
 // Wire SharedResource staging buffers as external data buffers to
@@ -39,6 +41,13 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo);
 
 #if defined(ENABLE_PRIMS)
 namespace ctran {
+
+commResult_t ctranApplyMultimemConfig(
+    const ctranPipesConfig& config,
+    const comms::prims::MultimemNvlTransportConfig& fallbackConfig,
+    size_t topologyDataBufferSize,
+    int nLocalRanks,
+    comms::prims::MultiPeerNvlTransportConfig& nvlConfig);
 
 commResult_t ctranPreparePipesTrace(
     CtranComm* comm,
