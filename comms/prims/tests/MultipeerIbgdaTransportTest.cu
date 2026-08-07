@@ -356,7 +356,7 @@ __global__ void sendRecvKernel(
     std::size_t maxSignalBytes,
     bool send) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  Timeout timeout;
   timeout.start();
   if (send) {
     transport->send(group, buffer, nbytes, maxSignalBytes, timeout);
@@ -373,7 +373,7 @@ __global__ void twoCallSendThenRecvKernel(
     std::size_t secondBytes,
     std::size_t maxSignalBytes) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  Timeout timeout;
   timeout.start();
   auto* sendBytes = static_cast<const char*>(sendBuffer);
   auto* recvBytes = static_cast<char*>(recvBuffer);
@@ -435,7 +435,7 @@ __global__ void progressSendRecvKernel(
     bool send,
     uint64_t* waitingCount) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  Timeout timeout;
   timeout.start();
   uint64_t waits = 0;
   if (send) {

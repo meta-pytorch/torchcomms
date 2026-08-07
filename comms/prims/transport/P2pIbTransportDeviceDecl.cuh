@@ -230,21 +230,21 @@ __device__ __forceinline__ ProgressChunk next_chunk(
     const IbChannelProgress& state,
     const ProgressGeometry& geometry);
 
-template <typename Transport>
+template <typename Transport, typename TimeoutLike = Timeout>
 __device__ __forceinline__ bool try_prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const TimeoutLike& timeout = TimeoutLike());
 
-template <typename Transport>
+template <typename Transport, typename TimeoutLike = Timeout>
 __device__ __forceinline__ void prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const TimeoutLike& timeout = TimeoutLike());
 
 template <typename Transport>
 __device__ __forceinline__ void record_send_completion(
@@ -415,14 +415,18 @@ __device__ __forceinline__ void init_recv_progress(
  * @param timeout Optional device timeout checked while dependencies wait.
  * @param args Additional arguments forwarded to `CopyOp::send`.
  */
-template <typename Transport, typename CopyOp = Memcpy, typename... Args>
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename TimeoutLike = Timeout,
+    typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const TimeoutLike& timeout = TimeoutLike(),
     Args... args) {
   // The progress API drives the FIXED-size protocol only: it signals in wire
   // bytes and ignores CopyOp::send()'s returned wire size, so a variable-size
@@ -513,7 +517,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
             transport.read_signal(localSlotFree));
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_TRAP_IF_ABORTED_SINGLE(
               timeout,
               "progress_send_once waiting for SLOT_FREE expected>=%llu, "
               "current=%llu",
@@ -605,14 +609,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
  * on lane 0. On success the leader advances `recvDataReadyLaneCursor` and this
  * lane's `recvLaneExpected` by exactly one chunk.
  */
-template <typename Transport>
+template <typename Transport, typename TimeoutLike>
 __device__ __forceinline__ void wait_recv_data_ready(
     Transport& transport,
     ThreadGroup& group,
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     std::size_t chunkBytes,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   const uint32_t numLanes =
       static_cast<uint32_t>(transport.channel_layout().numLanes);
@@ -720,14 +724,18 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  * @param timeout Optional device timeout checked while dependencies wait.
  * @param args Additional arguments forwarded to `CopyOp::recv`.
  */
-template <typename Transport, typename CopyOp = Memcpy, typename... Args>
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename TimeoutLike = Timeout,
+    typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const TimeoutLike& timeout = TimeoutLike(),
     Args... args) {
   // Mirror of progress_send_once: the progress API is fixed-size only. A
   // variable-size policy would mis-size the DATA_READY/SLOT_FREE protocol and
@@ -787,7 +795,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
         ? 1U
         : 0U;
     if (!ready) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
@@ -950,6 +958,7 @@ template <
     typename Transport,
     typename CopyOp = Memcpy,
     typename Proto = protocol::Simple,
+    typename TimeoutLike = Timeout,
     typename... Args>
 __device__ __forceinline__ void send(
     Transport& transport,
@@ -957,7 +966,7 @@ __device__ __forceinline__ void send(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const TimeoutLike& timeout = TimeoutLike(),
     Args... args) {
 #if !PIPES_IS_DEVICE_COMPILE
   (void)transport;
@@ -1338,6 +1347,7 @@ template <
     typename Transport,
     typename CopyOp = Memcpy,
     typename Proto = protocol::Simple,
+    typename TimeoutLike = Timeout,
     typename... Args>
 __device__ __forceinline__ void recv(
     Transport& transport,
@@ -1345,7 +1355,7 @@ __device__ __forceinline__ void recv(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const TimeoutLike& timeout = TimeoutLike(),
     Args... args) {
 #if !PIPES_IS_DEVICE_COMPILE
   (void)transport;
@@ -1655,6 +1665,7 @@ template <
     typename CopyOp = Memcpy,
     typename Transport,
     typename Proto = protocol::Simple,
+    typename TimeoutLike = Timeout,
     typename... Args>
 __device__ __forceinline__ void forward(
     Transport& transport,
@@ -1663,7 +1674,7 @@ __device__ __forceinline__ void forward(
     Transport& fwdTransport,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const TimeoutLike& timeout = TimeoutLike(),
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
@@ -2362,13 +2373,13 @@ __device__ __forceinline__ ProgressChunk next_chunk(
   };
 }
 
-template <typename Transport>
+template <typename Transport, typename TimeoutLike>
 __device__ __forceinline__ bool try_prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
@@ -2395,7 +2406,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
         slot.generation = generation;
       } else {
         ready = 0;
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "send slot local completion timed out slot=%u generation=%llu "
             "pending=0x%llx",
@@ -2417,13 +2428,13 @@ __device__ __forceinline__ bool try_prepare_send_slot(
 #endif
 }
 
-template <typename Transport>
+template <typename Transport, typename TimeoutLike>
 __device__ __forceinline__ void prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const TimeoutLike& timeout) {
   if (group.is_leader()) {
     auto& slot =
         transport.local_channel(group.group_id).sendCompletionSlots[slotId];
@@ -2523,27 +2534,31 @@ struct P2pIbTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1);
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
   __device__ void reset_signal(ThreadGroup& group, int signalId);
 
@@ -2606,32 +2621,37 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout());
+      const TimeoutLike& timeout = TimeoutLike());
 
   __device__ void reset_signal(
       ThreadGroup& group,
@@ -2658,32 +2678,41 @@ struct P2pIbTransportDevice {
   __device__ void fence();
 
   // Pipelined send/recv — forwarded to the active backend's shared helpers.
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args);
 
   // Total staging bytes for one channel, forwarded to the active backend.
@@ -2705,22 +2734,28 @@ struct P2pIbTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args);
 };
 

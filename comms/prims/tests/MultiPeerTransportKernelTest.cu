@@ -18,6 +18,16 @@ __global__ void test_device_handle_type_map_kernel(
   }
 }
 
+__global__ void test_device_handle_abort_kernel(
+    MultiPeerDeviceHandle handle,
+    int* observed,
+    int* observedReason) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *observed = handle.abort.checkExpired() ? 1 : 0;
+    *observedReason = static_cast<int>(handle.abort.reason());
+  }
+}
+
 __global__ void test_multi_peer_self_put_kernel(
     MultiPeerDeviceHandle handle,
     void* dst_d,
@@ -44,6 +54,14 @@ void test_device_handle_type_map(
     int blockSize) {
   test_device_handle_type_map_kernel<<<numBlocks, blockSize>>>(
       handle, output_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void test_device_handle_abort(
+    MultiPeerDeviceHandle handle,
+    int* observed,
+    int* observedReason) {
+  test_device_handle_abort_kernel<<<1, 1>>>(handle, observed, observedReason);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

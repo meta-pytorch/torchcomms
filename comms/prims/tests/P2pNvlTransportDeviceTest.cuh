@@ -55,6 +55,18 @@ void testDeviceSignalThenWait(
     int blockSize,
     GroupType groupType = GroupType::WARP);
 
+// Signal then wait using a disabled AbortDevice as the wait guard.
+void testDeviceSignalThenWaitWithDisabledAbort(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    SignalOp signalOp,
+    uint64_t signalValue,
+    CmpOp waitOp,
+    uint64_t waitValue,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP);
+
 // =============================================================================
 // Direct Signal struct test helpers
 // These test the Signal struct directly without P2pNvlTransportDevice

@@ -77,10 +77,12 @@ struct alignas(128) BarrierState {
    *
    * @param timeout Optional timeout (default: no timeout, infinite wait)
    */
-  __device__ __forceinline__ void wait(const Timeout& timeout = Timeout()) {
+  template <typename TimeoutLike = Timeout>
+  __device__ __forceinline__ void wait(
+      const TimeoutLike& timeout = TimeoutLike()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      ABORT_TRAP_IF_ABORTED_SINGLE(
           timeout,
           "BarrierState::wait timed out (expected=%llu, current=%llu)",
           static_cast<unsigned long long>(expected),
@@ -118,9 +120,10 @@ struct alignas(128) BarrierState {
    *
    * All threads in the group must call this function (collective operation).
    */
+  template <typename TimeoutLike = Timeout>
   __device__ __forceinline__ void wait(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       wait(timeout);
     }

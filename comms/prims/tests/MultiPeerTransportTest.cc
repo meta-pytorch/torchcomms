@@ -12,6 +12,7 @@
 #include <folly/init/Init.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/tests/TopologyTestUtils.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
@@ -43,7 +44,8 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
     detectLocalSize();
   }
 
-  std::unique_ptr<MultiPeerTransport> createTransport() {
+  std::unique_ptr<MultiPeerTransport> createTransport(
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
@@ -62,7 +64,9 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
         numRanks,
         localRank,
         std::make_shared<MpiBootstrap>(),
-        config);
+        config,
+        std::nullopt,
+        std::move(abort));
   }
 
   std::unique_ptr<MultiPeerTransport> createDisableIbTransport() {
@@ -223,11 +227,23 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
+  EXPECT_FALSE(handle.abort.isEnabled());
   EXPECT_GT(handle.numNvlPeers, 0);
   // Every remote rank is classified either as NVL or IB (see
   // TopologyDiscovery). Old assertion `numIbPeers == numRanks-1` held only on
   // non-MNNVL topologies where NVL was intra-host and everything remote was IB.
   EXPECT_EQ(handle.numNvlPeers + handle.numIbPeers, numRanks - 1);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DeviceHandleCarriesEnabledAbort) {
+  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  auto transport = createTransport(abort);
+  transport->exchange();
+
+  auto handle = transport->get_device_handle(transport->ib_peer_ranks());
+  EXPECT_TRUE(handle.abort.isEnabled());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }

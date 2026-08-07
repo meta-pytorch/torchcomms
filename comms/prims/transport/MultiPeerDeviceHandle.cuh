@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
 
@@ -56,6 +57,10 @@ struct MultiPeerDeviceHandle {
   // Unified transport array indexed by global rank.
   // transports[rank].type gives the transport type for that rank.
   DeviceSpan<Transport> transports;
+
+  // Communicator-scoped abort handle. Kernels should copy this value and start
+  // per-operation timeout state on the copy, not on persistent transports.
+  comms::fault_tolerance::AbortDevice abort;
 
   // Number of NVL peers (excluding self)
   int numNvlPeers{0};

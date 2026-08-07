@@ -367,19 +367,21 @@ class P2pIbgdaTransportDevice {
    * @param timeout   Optional spin timeout. On expiry, prints diagnostic and
    *                  __trap()s.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_signal(group, local_signal_slot(signalId), expected, timeout);
   }
 
   /** wait_signal (thread-scope, slot-index) - Single-thread variant. */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, timeout);
   }
@@ -393,19 +395,21 @@ class P2pIbgdaTransportDevice {
    * @param expected  Threshold; wait returns when slot value >= expected.
    * @param timeout   Optional spin timeout.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_counter(group, counter_slot(counterId), expected, timeout);
   }
 
   /** wait_counter (thread-scope, slot-index) - Single-thread variant. */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, timeout);
   }
@@ -636,19 +640,21 @@ class P2pIbgdaTransportDevice {
    * @param timeout   Optional spin timeout. On expiry, prints diagnostic and
    *                  __trap()s.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_signal_impl(group, signalBuf, expected, timeout);
   }
 
   /** wait_signal (thread-scope) - Single-thread variant. */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, timeout);
   }
@@ -661,18 +667,20 @@ class P2pIbgdaTransportDevice {
    * @param expected   Threshold; returns when slot value >= expected.
    * @param timeout    Optional spin timeout.
    */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     wait_counter_impl(group, counterBuf, expected, timeout);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       IbgdaLane lane = lane_from_ordinal(
           group.group_id, IbDirection::Send, ticket.completionId);
@@ -705,10 +713,11 @@ class P2pIbgdaTransportDevice {
     return false;
   }
 
+  template <typename TimeoutLike>
   __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout) {
+      const TimeoutLike& timeout) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
     wait_local_on_qp(lane.qp, ticket.value, timeout);
@@ -719,10 +728,11 @@ class P2pIbgdaTransportDevice {
   }
 
   /** wait_counter (thread-scope) - Single-thread variant. */
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, timeout);
   }
@@ -1068,10 +1078,11 @@ class P2pIbgdaTransportDevice {
     record_flush_wqe(lane, ticket);
   }
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_local_on_qp(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_ticket_t ticket,
-      Timeout timeout = Timeout()) {
+      TimeoutLike timeout = TimeoutLike()) {
     if (!timeout.isEnabled()) {
       doca_gpu_dev_verbs_wait<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
@@ -1083,7 +1094,7 @@ class P2pIbgdaTransportDevice {
             DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
             doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_TRAP_IF_ABORTED_SINGLE(
               timeout,
               "wait_local_on_qp timed out (ticket=%llu)",
               static_cast<unsigned long long>(ticket));
@@ -1242,15 +1253,16 @@ class P2pIbgdaTransportDevice {
   // Signal waits use system-scope acquire loads. This matches NCCLX GIN's
   // waitSignal path and avoids the heavier post-poll __threadfence_system().
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_signal_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(signalBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
@@ -1263,15 +1275,16 @@ class P2pIbgdaTransportDevice {
 
   // --- wait_counter_impl ---
 
+  template <typename TimeoutLike = Timeout>
   __device__ void wait_counter_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
+      const TimeoutLike& timeout = TimeoutLike()) {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(counterBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        ABORT_TRAP_IF_ABORTED_SINGLE(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
@@ -2143,13 +2156,16 @@ class P2pIbgdaTransportDevice {
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::send`.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
@@ -2184,13 +2200,16 @@ class P2pIbgdaTransportDevice {
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::recv`.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
@@ -2235,25 +2254,31 @@ class P2pIbgdaTransportDevice {
    * perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     sendWithTrace<CopyOp>(
         group, src, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void sendWithTrace(
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const TimeoutLike& timeout,
       PipesTraceHandle trace,
       uint8_t self_rank,
       Args... args) {
@@ -2317,25 +2342,31 @@ class P2pIbgdaTransportDevice {
    * perBlockSlot. Must match the sender's value.
    * @param timeout         Optional timeout for wait operations.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     recvWithTrace<CopyOp>(
         group, dst, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void recvWithTrace(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const TimeoutLike& timeout,
       PipesTraceHandle trace,
       uint8_t self_rank,
       Args... args) {
@@ -2424,27 +2455,33 @@ class P2pIbgdaTransportDevice {
    * @param timeout         Optional timeout for wait operations.
    * @param args            Extra args forwarded to CopyOp::forward.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbgdaTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const TimeoutLike& timeout = TimeoutLike(),
       Args... args) {
     forwardWithTrace<CopyOp>(
         group, dst, fwd, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename TimeoutLike = Timeout,
+      typename... Args>
   __device__ __forceinline__ void forwardWithTrace(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbgdaTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const TimeoutLike& timeout,
       PipesTraceHandle trace,
       uint8_t self_rank,
       Args... args) {

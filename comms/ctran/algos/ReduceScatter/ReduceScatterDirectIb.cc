@@ -304,7 +304,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
         statex->rank());
     params.num_blocks = numBlocks;
     params.use_tma = MCCL_PRIMS_TMA;
-    params.timeout_ms = MCCL_ABORT_TIMEOUT_MS;
+    params.abort = comm->getAbort()->getDeviceHandle();
     params.stream = stream;
 
     for (int peer : peers) {
