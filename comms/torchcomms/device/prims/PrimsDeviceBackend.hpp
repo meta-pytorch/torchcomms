@@ -1,11 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API - Pipes Backend Traits
+// TorchComms Device API - Prims Backend Traits
 //
-// Defines the PipesDeviceBackend trait type for compile-time polymorphism
-// in TorchCommDeviceWindow. Uses Pipes IBGDA and NVLink transports via the
+// Defines the PrimsDeviceBackend trait type for compile-time polymorphism
+// in TorchCommDeviceWindow. Uses Prims IBGDA and NVLink transports via the
 // ctran window infrastructure (accessed through opaque ncclx APIs).
 //
-// This backend replaces GIN (GPU Initiated Networking) with Pipes for
+// This backend replaces GIN (GPU Initiated Networking) with Prims for
 // device-side P2P operations:
 //   - NVLink peers (same node): direct memcpy with NVLink-mapped pointers
 //   - IBGDA peers (cross-node): RDMA writes via DOCA GPUNetIO
@@ -45,20 +45,20 @@ template <typename Backend>
 class TorchCommDeviceWindow;
 
 // =============================================================================
-// PipesDeviceBackend - IBGDA + NVLink backend
+// PrimsDeviceBackend - IBGDA + NVLink backend
 // =============================================================================
 //
 // Types:
-//   - Comm:   void* — unused for Pipes (no separate communicator handle).
+//   - Comm:   void* — unused for Prims (no separate communicator handle).
 //   - Window: comms::prims::DeviceWindow* — typed device pointer to the
 //             transport window allocated by ncclx via winCreateDeviceWin().
 
-struct PipesDeviceBackend {
-  // Comm is unused for Pipes: there is no separate communicator handle.
+struct PrimsDeviceBackend {
+  // Comm is unused for Prims: there is no separate communicator handle.
   // Set to nullptr in the TorchCommDeviceWindow constructor.
   using Comm = void*;
 
-  // Typed device pointer to the Pipes DeviceWindow. Device-side code accesses
+  // Typed device pointer to the Prims DeviceWindow. Device-side code accesses
   // transport handles, NVLink-mapped remote pointers, and IBGDA descriptors
   // directly through this pointer without casting.
   using Window = comms::prims::DeviceWindow*;
@@ -67,7 +67,7 @@ struct PipesDeviceBackend {
   // DeviceWindowDeleter - Custom deleter for device window cleanup
   // =========================================================================
   //
-  // Frees both the TorchCommDeviceWindow<PipesDeviceBackend> struct in device
+  // Frees both the TorchCommDeviceWindow<PrimsDeviceBackend> struct in device
   // memory AND the separate DeviceWindow allocation.
   struct DeviceWindowDeleter {
     torch::comms::NcclxApi* nccl_api{nullptr};
@@ -76,7 +76,7 @@ struct PipesDeviceBackend {
     // winCreateDeviceWin(). Must be freed via winDestroyDeviceWin() since
     // it cannot be reached through ptr from host code (ptr is in device
     // memory).
-    void* pipes_device_window{nullptr};
+    void* prims_device_window{nullptr};
 
     DeviceWindowDeleter() = default;
     DeviceWindowDeleter(
@@ -85,13 +85,13 @@ struct PipesDeviceBackend {
         void* win_dev)
         : nccl_api(nccl_api),
           cuda_api(cuda_api),
-          pipes_device_window(win_dev) {}
+          prims_device_window(win_dev) {}
 
-    void operator()(TorchCommDeviceWindow<PipesDeviceBackend>* ptr) const;
+    void operator()(TorchCommDeviceWindow<PrimsDeviceBackend>* ptr) const;
   };
 
   using Ptr = std::unique_ptr<
-      TorchCommDeviceWindow<PipesDeviceBackend>,
+      TorchCommDeviceWindow<PrimsDeviceBackend>,
       DeviceWindowDeleter>;
 
   // Create fully initialized device window struct in DEVICE memory.
@@ -103,7 +103,7 @@ struct PipesDeviceBackend {
   // winCreateDeviceWin() performs an allGather internally.
   //
   // Signature matches NCCLDeviceBackend::create_device_window for unified
-  // call sites. nccl_comm is unused for Pipes (no separate communicator).
+  // call sites. nccl_comm is unused for Prims (no separate communicator).
   //
   // Parameters:
   //   - nccl_comm:  NCCL communicator (unused, for API consistency with GIN)
@@ -136,7 +136,7 @@ struct PipesDeviceBackend {
   // Backend-specific hooks called from TorchCommWindowNCCLX
   // =========================================================================
 
-  // No additional window registration needed for Pipes.
+  // No additional window registration needed for Prims.
   static void register_extra_window(
       torch::comms::NcclxApi*,
       ncclComm_t,
@@ -144,19 +144,19 @@ struct PipesDeviceBackend {
       void*,
       size_t) {}
 
-  // No additional window to deregister for Pipes.
+  // No additional window to deregister for Prims.
   static void
   deregister_extra_window(torch::comms::NcclxApi*, ncclComm_t, NcclWin*) {}
 
-  // Pipes deleter handles all cleanup via winDestroyDeviceWin.
+  // Prims deleter handles all cleanup via winDestroyDeviceWin.
   static void destroy_device_comm(Ptr&) {}
 
-  // Pipes uses the regular ctran window for device window creation.
+  // Prims uses the regular ctran window for device window creation.
   static NcclWin select_device_win(NcclWin win, NcclWin /* nccl_orig_win */) {
     return win;
   }
 
-  // Register a local buffer for device-side put operations (Pipes/IBGDA path).
+  // Register a local buffer for device-side put operations (Prims/IBGDA path).
   // Uses MultiPeerTransport::localRegisterIbgdaBuffer for non-collective
   // local memory registration. Returns RegisteredBuffer with lkey.
   static torch::comms::RegisteredBuffer register_local_buffer(
@@ -165,7 +165,7 @@ struct PipesDeviceBackend {
       void* ptr,
       size_t size);
 
-  // Deregister a previously registered local buffer (Pipes/IBGDA path).
+  // Deregister a previously registered local buffer (Prims/IBGDA path).
   static void deregister_local_buffer(
       torch::comms::NcclxApi* nccl_api,
       ncclComm_t nccl_comm,
@@ -191,14 +191,14 @@ struct PipesDeviceBackend {
       torch::comms::CudaApi* cuda_api);
 
  private:
-  // Get the pipes transport device handle from the communicator.
+  // Get the Prims transport device handle from the communicator.
   // NON-COLLECTIVE — reads already-exchanged state.
   //
   // Returns a MultiPeerDeviceHandle by value. The handle contains a
   // device pointer to the Transport[] array (already GPU-allocated by
   // MultiPeerTransport::exchange() during ctran init).
   //
-  // Throws std::runtime_error if pipes transport is not initialized.
+  // Throws std::runtime_error if Prims transport is not initialized.
   static comms::prims::MultiPeerDeviceHandle fetch_transport_handle(
       ncclComm_t nccl_comm,
       torch::comms::NcclxApi* nccl_api);
