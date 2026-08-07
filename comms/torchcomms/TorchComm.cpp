@@ -3,6 +3,10 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
+#include <c10/core/Allocator.h>
+#include <c10/core/Device.h>
+#include <c10/util/intrusive_ptr.h>
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <atomic>
 #include <limits>
 

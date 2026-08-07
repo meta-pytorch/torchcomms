@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include <ATen/ATen.h>
-#include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
@@ -11,6 +9,9 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+
+// IWYU pragma: no_include <ATen/ATen.h>
+// IWYU pragma: no_include <c10/core/Device.h>
 
 namespace torch::comms {
 
@@ -158,7 +159,7 @@ class CommOptions {
   bool abort_process_on_timeout_or_error{true};
   std::chrono::milliseconds timeout{kDefaultTimeout};
   bool is_high_priority_stream{false};
-  c10::intrusive_ptr<c10d::Store> store{nullptr};
+  c10::intrusive_ptr<c10d::Store> store;
   /**
    * If true, enables reconfigure() for fault tolerance.
    * With reconfigure enabled, the communicator is not initialized until
@@ -169,6 +170,11 @@ class CommOptions {
 
  public:
   CommOptions();
+  ~CommOptions();
+  CommOptions(const CommOptions& other);
+  CommOptions(CommOptions&& other) noexcept;
+  CommOptions& operator=(const CommOptions& other);
+  CommOptions& operator=(CommOptions&& other) noexcept;
 
   bool operator==(const CommOptions& other) const;
 
