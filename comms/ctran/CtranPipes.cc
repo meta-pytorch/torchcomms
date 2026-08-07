@@ -17,7 +17,7 @@
 #include "comms/utils/logger/LogUtils.h"
 
 bool ctranPrimsEnabled(const CtranComm* comm) {
-  const auto enablePrims = comm->config_.pipesConfig.enablePrims;
+  const auto enablePrims = comm->config_.primsConfig.enablePrims;
   return enablePrims < 0 ? NCCL_CTRAN_USE_PIPES : enablePrims != 0;
 }
 
@@ -33,8 +33,16 @@ bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
 }
 
-int ctranPipesNvlMaxNumChannels() {
-  return std::max(1, MCCL_MAX_NBLOCKS);
+// Resolves the per-communicator override first, MCCL_MAX_NBLOCKS second. As
+// with the CVAR this is both the NVL channel count and the collective
+// launch-geometry block cap -- see ctranPrimsResolvedMaxBlocks().
+// Clamped into int range before narrowing: an int64 hint of 2^32 would
+// otherwise truncate to 0 and 2^31 to INT_MIN, both silently collapsing to a
+// single channel.
+int ctranPipesNvlMaxNumChannels(const ctranPrimsConfig& pc) {
+  const int64_t resolved = std::min<int64_t>(
+      ctranPrimsResolvedMaxBlocks(pc), std::numeric_limits<int>::max());
+  return std::max(1, static_cast<int>(resolved));
 }
 
 size_t roundDownToMultiple(size_t value, size_t multiple) {
@@ -86,7 +94,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->bootstrap_.get(),
         [](meta::comms::IBootstrap*) {}); // no-op deleter
 
-    const auto& pc = comm->config_.pipesConfig;
+    const auto& pc = comm->config_.primsConfig;
     comms::prims::MultiPeerTransportConfig config{};
 
     config.nvlConfig.pipelineDepth =
@@ -96,7 +104,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && comm->statex_->nLocalRanks() > 1;
     const size_t nvlSharedDevbufSize =
         ctranEffectiveP2pNvlSharedDevbufSize(comm->statex_->nLocalRanks());
-    config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels();
+    config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels(pc);
     const size_t nvlMaxNumChannels =
         static_cast<size_t>(config.nvlConfig.maxNumChannels);
     const size_t nvlChannelAlign = 16ULL * config.nvlConfig.pipelineDepth;
@@ -126,9 +134,10 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
       const uint32_t multimemPipelineDepth = static_cast<uint32_t>(
           std::max<size_t>(1, config.nvlConfig.pipelineDepth));
-      // Reuse the already-computed channel count (== std::max(1,
-      // MCCL_MAX_NBLOCKS)) as the group count so the signal sizing cannot drift
-      // from the transport's actual channel count.
+      // Reuse the already-computed channel count (config.nvlConfig
+      // .maxNumChannels, resolved from primsConfig.maxBlocks or
+      // MCCL_MAX_NBLOCKS) as the group count so the signal sizing cannot drift
+      // from the transport's actual channel count. Do not re-derive it here.
       const uint32_t multimemMaxGroups =
           static_cast<uint32_t>(config.nvlConfig.maxNumChannels);
       // Per-lane signal region, sized from the shared source of truth
@@ -205,43 +214,70 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       }
       config.ibConfig.ibHca = std::move(hcaStr);
     }
-    if (MCCL_MAX_NCHANNELS <= 0) {
+    const bool channelsFromHint = pc.maxChannels > 0;
+    const char* const channelsSource =
+        channelsFromHint ? "primsConfig.maxChannels" : "MCCL_MAX_NCHANNELS";
+    const int64_t requestedMaxChannels = ctranPrimsResolvedMaxChannels(pc);
+    if (requestedMaxChannels <= 0 ||
+        requestedMaxChannels >
+            static_cast<int64_t>(std::numeric_limits<int>::max())) {
       CLOGF(
           ERR,
-          "MCCL_MAX_NCHANNELS must be positive, got {}",
-          MCCL_MAX_NCHANNELS);
+          "max channels must be in [1, {}], got {} (from {})",
+          std::numeric_limits<int>::max(),
+          requestedMaxChannels,
+          channelsSource);
       return commInvalidArgument;
     }
-    const int maxChannels = static_cast<int>(MCCL_MAX_NCHANNELS);
-    const int channelPipelineDepth =
-        static_cast<int>(MCCL_CHANNEL_PIPELINE_DEPTH);
-    if (channelPipelineDepth <= 0) {
+    const int maxChannels = static_cast<int>(requestedMaxChannels);
+    // Each knob resolves per-communicator hint first, global CVAR second. The
+    // source is carried into every diagnostic below so a bad value points at
+    // the setting that produced it rather than at an internal constant.
+    const bool depthFromHint = pc.channelPipelineDepth > 0;
+    const char* const depthSource = depthFromHint
+        ? "primsConfig.channelPipelineDepth"
+        : "MCCL_CHANNEL_PIPELINE_DEPTH";
+    // Range-check before narrowing: an int64 hint of 2^32+8 would otherwise
+    // truncate to a silently-different depth of 8, and 2^32 would truncate to 0
+    // and be reported as "got 0" rather than as the value the user set.
+    const int64_t requestedPipelineDepth = depthFromHint
+        ? pc.channelPipelineDepth
+        : static_cast<int64_t>(MCCL_CHANNEL_PIPELINE_DEPTH);
+    if (requestedPipelineDepth <= 0 ||
+        requestedPipelineDepth >
+            static_cast<int64_t>(std::numeric_limits<int>::max())) {
       CLOGF(
           ERR,
-          "MCCL_CHANNEL_PIPELINE_DEPTH must be positive, got {}",
-          channelPipelineDepth);
+          "channel pipeline depth must be in [1, {}], got {} (from {})",
+          std::numeric_limits<int>::max(),
+          requestedPipelineDepth,
+          depthSource);
       return commInvalidArgument;
     }
+    const int channelPipelineDepth = static_cast<int>(requestedPipelineDepth);
 
-    size_t ibgdaDataBufferSize = 0;
-    if (pc.ibgdaDataBufferSize > 0) {
-      ibgdaDataBufferSize = static_cast<size_t>(pc.ibgdaDataBufferSize);
-    } else {
-      const auto perDirectionChannelBuffer =
-          static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
-      if (perDirectionChannelBuffer > std::numeric_limits<size_t>::max() /
-              static_cast<size_t>(maxChannels)) {
-        CLOGF(
-            ERR,
-            "MCCL_CHANNEL_BUFFER_SIZE={} overflows total size for {} channels",
-            perDirectionChannelBuffer,
-            maxChannels);
-        return commInvalidArgument;
-      }
-      ibgdaDataBufferSize =
-          perDirectionChannelBuffer * static_cast<size_t>(maxChannels);
+    // Both sources are per-channel, per-direction, so the total is always an
+    // exact multiple of the channel count -- no divisibility check needed.
+    const bool bufferFromHint = pc.channelBufferSize > 0;
+    const char* const bufferSource = bufferFromHint
+        ? "primsConfig.channelBufferSize"
+        : "MCCL_CHANNEL_BUFFER_SIZE";
+    const size_t perDirectionChannelBuffer = bufferFromHint
+        ? static_cast<size_t>(pc.channelBufferSize)
+        : static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
+    if (perDirectionChannelBuffer >
+        std::numeric_limits<size_t>::max() / static_cast<size_t>(maxChannels)) {
+      CLOGF(
+          ERR,
+          "channel buffer size {} (from {}) overflows total size for {} channels (from {})",
+          perDirectionChannelBuffer,
+          bufferSource,
+          maxChannels,
+          channelsSource);
+      return commInvalidArgument;
     }
-    config.ibConfig.dataBufferSize = ibgdaDataBufferSize;
+    config.ibConfig.dataBufferSize =
+        perDirectionChannelBuffer * static_cast<size_t>(maxChannels);
     config.ibConfig.qpDepth = MCCL_IB_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
@@ -280,42 +316,65 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (config.ibConfig.dataBufferSize == 0) {
       CLOGF(
           ERR,
-          "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or pipesIbgdaDataBufferSize");
+          "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or primsConfig.channelBufferSize");
       return commInvalidArgument;
     }
-    if (config.ibConfig.dataBufferSize % static_cast<size_t>(maxChannels) !=
-        0) {
-      CLOGF(
-          ERR,
-          "IB data-buffer size {} must be divisible by channel count {}",
-          config.ibConfig.dataBufferSize,
-          maxChannels);
-      return commInvalidArgument;
-    }
-    const size_t perDirectionChannelBuffer =
-        config.ibConfig.dataBufferSize / static_cast<size_t>(maxChannels);
     const auto pipelineDepth = static_cast<size_t>(channelPipelineDepth);
     if (perDirectionChannelBuffer % pipelineDepth != 0) {
       CLOGF(
           ERR,
-          "IB per-direction channel buffer {} must be divisible by pipeline depth {}",
+          "IB per-direction channel buffer {} (from {}) must be divisible by pipeline depth {}",
           perDirectionChannelBuffer,
+          bufferSource,
           channelPipelineDepth);
+      return commInvalidArgument;
+    }
+    // MultiPeerIbTransport enforces these too, but it throws
+    // std::invalid_argument which the catch below turns into commInternalError
+    // with no mention of the offending setting. Now that both values are
+    // settable per communicator, check them here so a bad hint is reported as
+    // what it is.
+    const size_t channelChunkSize = perDirectionChannelBuffer / pipelineDepth;
+    auto check16ByteAligned =
+        [](const char* what, size_t value, const std::string& source) {
+          if (value >= 16 && value % 16 == 0) {
+            return true;
+          }
+          CLOGF(
+              ERR,
+              "IB {} must be >= 16 and 16-byte aligned, got {} (from {})",
+              what,
+              value,
+              source);
+          return false;
+        };
+    // The chunk is derived from both knobs, so name both: a bad depth must not
+    // report the buffer as the culprit.
+    if (!check16ByteAligned(
+            "per-direction channel buffer",
+            perDirectionChannelBuffer,
+            bufferSource) ||
+        !check16ByteAligned(
+            "channel chunk (buffer / pipeline depth)",
+            channelChunkSize,
+            fmt::format("{} / {}", bufferSource, depthSource))) {
       return commInvalidArgument;
     }
 
     config.ibConfig.perChannelSize = perDirectionChannelBuffer;
     config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
     config.ibConfig.pipelineDepth = channelPipelineDepth;
-    const size_t channelChunkSize = config.ibConfig.perChannelSize /
-        static_cast<size_t>(config.ibConfig.pipelineDepth);
     CLOGF(
         INFO,
-        "Prims IB sendRecv configured: perChannelSize={}, channelChunkSize={}, maxNumChannels={}, pipelineDepth={}, dataBufferSize={}",
+        "Prims IB sendRecv configured: rank={}, commDesc={}, perChannelSize={} (from {}), channelChunkSize={}, maxNumChannels={}, pipelineDepth={} (from {}), dataBufferSize={}",
+        comm->statex_->rank(),
+        comm->config_.commDesc,
         config.ibConfig.perChannelSize,
+        bufferSource,
         channelChunkSize,
         config.ibConfig.max_num_channels,
         config.ibConfig.pipelineDepth,
+        depthSource,
         config.ibConfig.dataBufferSize);
 
     if (MCCL_IB_MODE == MCCL_IB_MODE::ibrc) {

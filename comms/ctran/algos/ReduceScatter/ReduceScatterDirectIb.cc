@@ -283,9 +283,15 @@ static commResult_t ctranReduceScatterDirectIbImpl(
       return commInvalidArgument;
     }
 
+    // Resolve through the same helpers the transport used at comm init, so a
+    // communicator that overrides these does not end up with a launch geometry
+    // that disagrees with its staging layout.
+    const auto& primsConfig = comm->config_.primsConfig;
     const int numBlocks =
         ctran::reducescatter::direct_ib::numBlocksForTotalBytes(
-            wireTotalBytes, MCCL_MAX_NCHANNELS, MCCL_MAX_NBLOCKS);
+            wireTotalBytes,
+            static_cast<int>(ctranPrimsResolvedMaxChannels(primsConfig)),
+            static_cast<int>(ctranPrimsResolvedMaxBlocks(primsConfig)));
 
     comms::prims::DirectReduceScatterIbLaunchParams params{};
     params.my_rank = statex->rank();
