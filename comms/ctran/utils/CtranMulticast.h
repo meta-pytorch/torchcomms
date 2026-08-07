@@ -66,7 +66,9 @@ class CtranMulticast {
       CUmemAllocationHandleType handleType,
       CUmemGenericAllocationHandle& outHandle);
 
-  // Non-root: adopt the object handle the caller imported from the root.
+  // Adopt an object handle the caller imported from the root, releasing the
+  // previously-held one, if any. Callable after createRoot(), which is how a
+  // root swaps its created handle for a self-imported one.
   void adoptImported(CUmemGenericAllocationHandle handle);
 
   // Every rank: enumerate the physical VMM segments backing [dptr, dptr+len)

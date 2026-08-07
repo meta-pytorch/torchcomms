@@ -127,10 +127,11 @@ commResult_t CtranMulticast::createRoot(
     size_t mcSize,
     CUmemAllocationHandleType handleType,
     CUmemGenericAllocationHandle& outHandle) {
-  // Single-use, symmetric with adoptImported(): release any handle we already
-  // hold before creating a new one, so a misuse (double createRoot, or
-  // createRoot after adoptImported) cannot silently drop -- and leak -- the
-  // previously-held multicast object.
+  // Release any handle we already hold before creating a new one, so a misuse
+  // (double createRoot, or createRoot after adoptImported) cannot silently drop
+  // -- and leak -- the previously-held multicast object. The reverse order
+  // (createRoot then adoptImported) is NOT a misuse: it is the root's
+  // self-import.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
     mcHandle_ = 0; // so a cuMulticastCreate failure below can't double-release
@@ -147,10 +148,11 @@ commResult_t CtranMulticast::createRoot(
 }
 
 void CtranMulticast::adoptImported(CUmemGenericAllocationHandle handle) {
-  // Single-use: an instance is either the root (createRoot) or a non-root
-  // (adoptImported), each exactly once. Release any handle we already hold
-  // before overwriting so a misuse (double-adopt, or adopt after createRoot)
-  // cannot silently drop -- and leak -- the previously-held multicast object.
+  // Release any handle we already hold before overwriting, so neither a misuse
+  // (double-adopt) nor the root's create-then-self-import sequence silently
+  // drops -- and leaks -- the previously-held multicast object. Each successful
+  // import carries its own reference and the caller imports before calling
+  // here, so the incoming handle keeps the object alive across the release.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
   }
