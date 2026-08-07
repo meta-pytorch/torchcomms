@@ -192,6 +192,7 @@ class RegisteredSegment : public SegmentBase<RegisteredSegment> {
         : TSpan(segment, offset, length), handles_(segment.handles_) {}
 
     friend class MultiTransport;
+    friend class TcpTransport;
     friend class NvLinkTransport;
     friend class RdmaTransport;
 
@@ -240,6 +241,7 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
           nvlinkOffset_(offset) {}
 
     friend class MultiTransport;
+    friend class TcpTransport;
     friend class NVLinkTransport;
     friend class RdmaTransport;
     friend class P2pTransport;

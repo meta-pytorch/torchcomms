@@ -3,6 +3,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "comms/uniflow/Connection.h"
@@ -22,6 +23,18 @@ struct UniflowAgentConfig {
   std::string listenAddress{};
   int connectRetries{10};
   int connectTimeoutMs{1000};
+  // Transport selection for the underlying MultiTransportFactory. TCP is opt-in
+  // and must bind a routable address to work cross-host; leave tcpBindHost
+  // empty to auto-resolve one. Set preferredTransport to force a specific
+  // transport (e.g. TCP) even when RDMA is also available.
+  bool enableTcp{false};
+  std::string tcpBindHost{};
+  std::optional<TransportType> preferredTransport;
+  // Per-topology transport selection (see MultiTransport::selectTransport):
+  // intra-node defaults to NVLink/P2P, inter-node to RDMA. Set these to switch
+  // a case's first choice (intra-node -> RDMA/TCP; inter-node -> TCP).
+  std::optional<TransportType> intraNodeTransport;
+  std::optional<TransportType> interNodeTransport;
 };
 
 class UniflowAgent {

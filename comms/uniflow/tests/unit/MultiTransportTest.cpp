@@ -388,6 +388,7 @@ TEST_F(MultiTransportFactoryTest, DefaultOptionsUseBoundedNumaLocalCpuNics) {
   EXPECT_EQ(
       options.cpuNicSelectionPolicy, CpuNicSelectionPolicy::kNumaLocalBounded);
   EXPECT_EQ(options.maxCpuNics, 2u);
+  EXPECT_FALSE(options.preferredTransport.has_value());
 }
 
 TEST_F(MultiTransportFactoryTest, RegisterSegmentSingleFactory) {
@@ -840,6 +841,74 @@ TEST_F(MultiTransportTest, DramPutRoutesToRdma) {
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
   EXPECT_EQ(nvlink->putCount, 0);
+}
+
+TEST_F(MultiTransportTest, PreferredTcpOverridesRdma) {
+  MultiTransport mt(
+      0,
+      nullptr,
+      /*intraNodeTransport=*/std::nullopt,
+      /*preferredTransport=*/TransportType::TCP);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+  auto* tcp = addMock(mt, TransportType::TCP);
+
+  TestSegments local(
+      MemoryType::DRAM, -1, {TransportType::RDMA, TransportType::TCP});
+  TestSegments remote(
+      MemoryType::DRAM, -1, {TransportType::RDMA, TransportType::TCP});
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  auto future = mt.put(reqs);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_EQ(tcp->putCount, 1);
+  EXPECT_EQ(rdma->putCount, 0);
+}
+
+TEST_F(MultiTransportTest, IntraNodeTransportOverrideRoutesVramToTcp) {
+  MultiTransport mt(0, nullptr, /*intraNodeTransport=*/TransportType::TCP);
+  auto* nvlink = addMock(mt, TransportType::NVLink);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+  auto* tcp = addMock(mt, TransportType::TCP);
+
+  const std::vector<TransportType> h = {
+      TransportType::NVLink, TransportType::RDMA, TransportType::TCP};
+  TestSegments local(MemoryType::VRAM, 0, h);
+  TestSegments remote(MemoryType::VRAM, 0, h);
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  EXPECT_TRUE(mt.put(reqs).get().hasValue());
+  EXPECT_EQ(tcp->putCount, 1);
+  EXPECT_EQ(nvlink->putCount, 0);
+  EXPECT_EQ(rdma->putCount, 0);
+}
+
+TEST_F(MultiTransportTest, InterNodeTransportOverrideRoutesToTcp) {
+  // Inter-node transfer (DRAM, not VRAM<->VRAM-same-device);
+  // interNodeTransport=TCP switches the inter-node default RDMA -> TCP.
+  MultiTransport mt(
+      0,
+      nullptr,
+      /*intraNodeTransport=*/std::nullopt,
+      /*preferredTransport=*/std::nullopt,
+      /*interNodeTransport=*/TransportType::TCP);
+  auto* rdma = addMock(mt, TransportType::RDMA);
+  auto* tcp = addMock(mt, TransportType::TCP);
+
+  const std::vector<TransportType> h = {
+      TransportType::RDMA, TransportType::TCP};
+  TestSegments local(MemoryType::DRAM, -1, h);
+  TestSegments remote(MemoryType::DRAM, -1, h);
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  EXPECT_TRUE(mt.put(reqs).get().hasValue());
+  EXPECT_EQ(tcp->putCount, 1);
+  EXPECT_EQ(rdma->putCount, 0);
 }
 
 TEST_F(MultiTransportTest, VramGetRoutesToNvLink) {
