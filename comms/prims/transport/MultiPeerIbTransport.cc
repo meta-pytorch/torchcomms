@@ -432,6 +432,7 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
       .localCounterBuf = pb.counter,
       .localCounterCompletionBuf = pb.counterCompletion,
       .maxChannels = config_.max_num_channels,
+      .numChannels = config_.max_num_channels,
       .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,
       .perChannelSize = config_.perChannelSize,
