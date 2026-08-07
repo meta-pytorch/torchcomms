@@ -151,6 +151,26 @@ __device__ __forceinline__ void init_send_progress(
 #endif
 }
 
+template <typename Transport>
+__device__ __forceinline__ void init_registered_send_progress(
+    Transport& transport,
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (nbytes > 0) {
+    __threadfence_system();
+    group.sync();
+  }
+  init_send_progress(transport, group, nbytes, max_signal_bytes);
+#else
+  (void)transport;
+  (void)group;
+  (void)nbytes;
+  (void)max_signal_bytes;
+#endif
+}
+
 /**
  * Initialize transport-owned state for one pipelined recv operation.
  *
@@ -409,6 +429,245 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   (void)max_signal_bytes;
   (void)timeout;
   return IbgdaSendRecvProgressStatus::Done;
+#endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  auto& channelLayout = transport.channel_layout();
+  auto& progressSlot = progress_send_slot(transport, group);
+  IbChannelProgress state = progressSlot;
+  if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
+    return IbgdaRegisteredSendProgressStatus::Posted;
+  }
+
+  const ProgressGeometry geometry = make_progress_geometry(
+      channelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "progress_registered_send_once");
+  if (active_payload_offset(state) >= geometry.protocolBytes) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: progress_registered_send_once payloadOffset=%llu "
+          ">= protocolBytes=%llu without Done stage\n",
+          static_cast<unsigned long long>(active_payload_offset(state)),
+          static_cast<unsigned long long>(geometry.protocolBytes));
+    }
+    PIPES_DEVICE_TRAP();
+  }
+  validate_send_progress_stage(group, state);
+
+  const detail::IbSendRecvProgressStage initialStage = state.activeStage;
+  const std::size_t initialNextByte = state.activeNextByte;
+  const std::size_t pipelineBytes =
+      geometry.perBlockSlot * static_cast<std::size_t>(geometry.pipelineDepth);
+  IbLocalChannel& localChannel =
+      transport.local_channel(static_cast<uint32_t>(geometry.groupId));
+  const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
+  const IbRemoteChannel remoteChannel =
+      makeIbRemoteChannel(channelLayout, geometry.groupId);
+
+  if (state.activeStage ==
+      detail::IbSendRecvProgressStage::WaitLocalCompletion) {
+    const ProgressChunk chunk = next_chunk(channelLayout, state, geometry);
+    if (!try_prepare_send_slot(
+            transport,
+            group,
+            chunk.slotId,
+            chunk.pipelineGeneration,
+            timeout)) {
+      return IbgdaRegisteredSendProgressStatus::Waiting;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
+  }
+
+  if (state.activeStage == detail::IbSendRecvProgressStage::WaitSlotFree) {
+    const ProgressChunk chunk = next_chunk(channelLayout, state, geometry);
+    const bool isFinalChunk =
+        chunk.dataOff + chunk.bytes >= geometry.protocolBytes;
+    const uint64_t protocolStreamEnd =
+        chunk.streamEnd + (isFinalChunk ? state.activeTailPadding : 0);
+    if (protocolStreamEnd > pipelineBytes) {
+      const uint64_t expected = protocolStreamEnd - pipelineBytes;
+      uint32_t ready = 1;
+      unsigned long long current = 0;
+      if (group.is_leader()) {
+        current = static_cast<unsigned long long>(
+            transport.read_signal(localSlotFree));
+        ready = current >= expected ? 1U : 0U;
+        if (!ready) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "progress_registered_send_once waiting for SLOT_FREE "
+              "expected>=%llu, current=%llu",
+              static_cast<unsigned long long>(expected),
+              current);
+        }
+      }
+      ready = group.broadcast<uint32_t>(ready);
+      if (!ready) {
+        if (state.activeStage != initialStage ||
+            state.activeNextByte != initialNextByte) {
+          store_progress_state(group, progressSlot, state);
+          return IbgdaRegisteredSendProgressStatus::Progressed;
+        }
+        return IbgdaRegisteredSendProgressStatus::Waiting;
+      }
+    }
+
+    const std::size_t validBytes =
+        valid_payload_bytes(chunk.dataOff, chunk.bytes, geometry.payloadBytes);
+    const std::size_t protocolBytesThis =
+        chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
+
+    group.sync();
+    if (group.is_leader()) {
+      __threadfence_system();
+      ThreadGroup solo{
+          0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+      const auto completion = transport.put(
+          solo,
+          src.subBuffer(chunk.dataOff),
+          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+          validBytes,
+          remoteChannel.dataReady,
+          protocolBytesThis,
+          {},
+          0,
+          true);
+      record_send_completion(
+          transport,
+          static_cast<uint32_t>(geometry.groupId),
+          chunk.slotId,
+          chunk.pipelineGeneration,
+          completion);
+    }
+    group.sync();
+
+    state.activeNextByte += chunk.bytes;
+    if (active_payload_offset(state) >= geometry.protocolBytes) {
+      transition_progress_stage(
+          group, state, detail::IbSendRecvProgressStage::Done);
+      store_progress_state(group, progressSlot, state);
+      return IbgdaRegisteredSendProgressStatus::Posted;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::WaitLocalCompletion);
+  }
+
+  if (state.activeStage != initialStage ||
+      state.activeNextByte != initialNextByte) {
+    store_progress_state(group, progressSlot, state);
+    return IbgdaRegisteredSendProgressStatus::Progressed;
+  }
+  return IbgdaRegisteredSendProgressStatus::Waiting;
+#else
+  (void)transport;
+  (void)group;
+  (void)src;
+  (void)nbytes;
+  (void)max_signal_bytes;
+  (void)timeout;
+  return IbgdaRegisteredSendProgressStatus::Drained;
+#endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_drain_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t result =
+      static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Drained);
+  if (group.is_leader()) {
+    bool foundPending = false;
+    bool madeProgress = false;
+    auto& channel = transport.local_channel(group.group_id);
+    const uint32_t numLanes = transport.send_completion_lane_count();
+    const int pipelineDepth = transport.channel_layout().pipelineDepth;
+
+    for (int slotId = 0; slotId < pipelineDepth; ++slotId) {
+      auto& slot = channel.sendCompletionSlots[slotId];
+      uint64_t pending = slot.laneMask;
+      for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+        const uint64_t laneBit = 1ULL << laneId;
+        if ((pending & laneBit) == 0) {
+          continue;
+        }
+        const IbLocalCompletionTicket ticket{
+            .completionId = laneId,
+            .value = slot.values[laneId],
+        };
+        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+          pending &= ~laneBit;
+          madeProgress = true;
+          continue;
+        }
+        foundPending = true;
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            timeout,
+            "registered send local completion timed out slot=%d lane=%u",
+            slotId,
+            laneId);
+      }
+      slot.laneMask = pending;
+    }
+
+    if (foundPending) {
+      result = static_cast<uint32_t>(
+          madeProgress ? IbgdaRegisteredSendProgressStatus::Progressed
+                       : IbgdaRegisteredSendProgressStatus::Waiting);
+    }
+  }
+  result = group.broadcast<uint32_t>(result);
+  return static_cast<IbgdaRegisteredSendProgressStatus>(result);
+#else
+  (void)transport;
+  (void)group;
+  (void)timeout;
+  return IbgdaRegisteredSendProgressStatus::Drained;
+#endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ void send_registered(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  init_registered_send_progress(transport, group, nbytes, max_signal_bytes);
+  IbgdaRegisteredSendProgressStatus status;
+  do {
+    status = progress_registered_send_once(
+        transport, group, src, nbytes, max_signal_bytes, timeout);
+  } while (status != IbgdaRegisteredSendProgressStatus::Posted &&
+           status != IbgdaRegisteredSendProgressStatus::Drained);
+  while (status != IbgdaRegisteredSendProgressStatus::Drained) {
+    status = progress_registered_send_drain_once(transport, group, timeout);
+  }
+#else
+  (void)transport;
+  (void)group;
+  (void)src;
+  (void)nbytes;
+  (void)max_signal_bytes;
+  (void)timeout;
 #endif
 }
 

@@ -29,6 +29,50 @@ enum class IbgdaSendRecvProgressStatus : uint8_t {
   Done,
 };
 
+enum class IbgdaRegisteredSendProgressStatus : uint8_t {
+  Waiting,
+  Progressed,
+  Posted,
+  Drained,
+};
+
+namespace detail {
+
+template <typename Transport>
+__device__ __forceinline__ void init_registered_send_progress(
+    Transport& transport,
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0);
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout());
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_drain_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const Timeout& timeout = Timeout());
+
+template <typename Transport>
+__device__ __forceinline__ void send_registered(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout());
+
+} // namespace detail
+
 struct P2pIbTransportDevice {
   P2pIbBackendType type{P2pIbBackendType::IBGDA};
   union {
@@ -213,6 +257,10 @@ struct P2pIbTransportDevice {
 
   __device__ void fence();
 
+  __device__ __forceinline__ void require_ibgda(
+      ThreadGroup& group,
+      const char* operation) const;
+
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
@@ -221,6 +269,13 @@ struct P2pIbTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args);
+
+  __device__ __forceinline__ void send_registered(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
@@ -253,6 +308,11 @@ struct P2pIbTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
+  __device__ __forceinline__ void init_registered_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0);
+
   template <typename = void>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
@@ -267,6 +327,19 @@ struct P2pIbTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args);
+
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_once(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout());
+
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_drain_once(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(

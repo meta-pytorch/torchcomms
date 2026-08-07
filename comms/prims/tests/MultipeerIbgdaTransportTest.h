@@ -122,6 +122,31 @@ void testPutOnly(
  */
 bool supportsProgressSendRecv();
 
+struct RegisteredSendObservation {
+  uint64_t waitingCount{0};
+  uint64_t progressedCount{0};
+  uint64_t postedCount{0};
+  uint64_t drainedCount{0};
+
+  template <typename Status>
+  IBGDA_HOST_DEVICE void record(Status status) {
+    switch (status) {
+      case Status::Waiting:
+        ++waitingCount;
+        break;
+      case Status::Progressed:
+        ++progressedCount;
+        break;
+      case Status::Posted:
+        ++postedCount;
+        break;
+      case Status::Drained:
+        ++drainedCount;
+        break;
+    }
+  }
+};
+
 /**
  * Test kernel: snapshot send/recv pipeline geometry through the unified IB
  * transport wrapper. Output: pipelineDepth, pipelineWindow, pipelineChunk.
@@ -197,6 +222,44 @@ void testProgressReservations(
     int64_t* output,
     std::size_t sendBytes,
     std::size_t recvBytes,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: registered-source send progress or the matching staged recv.
+ */
+void testRegisteredSendRecv(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    void* recvBuffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize,
+    RegisteredSendObservation* observation = nullptr,
+    bool blocking = false,
+    bool overwriteAfterDrain = false,
+    uint8_t overwriteValue = 0,
+    bool zeroByteAfterPosted = false);
+
+/** Fill or verify a byte range in this channel's transport staging. */
+void testFillTransportStaging(
+    P2pIbgdaTransportDevice* transport,
+    bool sendStaging,
+    std::size_t offset,
+    std::size_t nbytes,
+    uint8_t value,
+    int numBlocks,
+    int blockSize);
+
+void testVerifyTransportStaging(
+    P2pIbgdaTransportDevice* transport,
+    bool sendStaging,
+    std::size_t offset,
+    std::size_t nbytes,
+    uint8_t expected,
+    int* errorCount,
     int numBlocks,
     int blockSize);
 
