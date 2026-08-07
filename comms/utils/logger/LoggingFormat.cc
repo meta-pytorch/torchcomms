@@ -20,7 +20,9 @@
 #include "comms/utils/logger/ErrorStackUtil.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/NcclScubaSample.h"
+#if !defined(__HIP_PLATFORM_AMD__)
 #include "comms/utils/logger/SpdlogLogger.h"
+#endif
 
 namespace {
 std::string getHostName(const char delim) {
@@ -248,7 +250,9 @@ void initThreadMetaData(std::string_view threadName) {
   static thread_local folly::once_flag threadNameFlag;
   folly::call_once(threadNameFlag, [&]() {
     myThreadName = threadName;
+#if !defined(__HIP_PLATFORM_AMD__)
     setSpdlogThreadName(threadName);
+#endif
   });
 }
 

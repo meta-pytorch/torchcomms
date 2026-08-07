@@ -1081,6 +1081,8 @@ set(COMMON_FILES
   comms/utils/logger/alloc.h
   comms/utils/logger/BackendTopologyUtil.cc
   comms/utils/logger/BackendTopologyUtil.h
+  comms/utils/logger/CommsLogFormatter.cc
+  comms/utils/logger/CommsLogFormatter.h
   comms/utils/logger/DataSink.h
   comms/utils/logger/DataTable.cc
   comms/utils/logger/DataTable.h

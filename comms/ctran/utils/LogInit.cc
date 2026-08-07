@@ -10,7 +10,9 @@
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#if !defined(__HIP_PLATFORM_AMD__)
 #include "comms/utils/logger/SpdlogLogger.h"
+#endif
 
 namespace ctran::logging {
 
@@ -30,6 +32,7 @@ std::string getHipCtranCategory() {
   return fullFilePath.substr(0, ctranComponentIdx + kCtranComponent.size());
 };
 
+#if !defined(__HIP_PLATFORM_AMD__)
 spdlog::level::level_enum loggerLevelToSpdlogLevel(
     meta::comms::logger::LogLevel level) {
   switch (level) {
@@ -50,6 +53,7 @@ spdlog::level::level_enum loggerLevelToSpdlogLevel(
   }
   return spdlog::level::off;
 }
+#endif
 
 } // namespace
 
@@ -100,6 +104,7 @@ void initCtranLoggingImpl() {
             return cudaDev;
           }});
 #endif
+#if !defined(__HIP_PLATFORM_AMD__)
   meta::comms::logger::configureSpdlogLogger(
       kCtranSpdlogContext,
       "CTRAN",
@@ -115,6 +120,7 @@ void initCtranLoggingImpl() {
   meta::comms::logger::getSpdlogLogger(kCtranSpdlogContext)
       .set_level(loggerLevelToSpdlogLevel(
           meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
+#endif
 }
 } // anonymous namespace
 
