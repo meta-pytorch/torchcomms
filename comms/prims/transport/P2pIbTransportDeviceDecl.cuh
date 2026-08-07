@@ -415,6 +415,65 @@ __device__ __forceinline__ void init_recv_progress(
  * @param timeout Optional device timeout checked while dependencies wait.
  * @param args Additional arguments forwarded to `CopyOp::send`.
  */
+// What the leader put hands to the wire: the DATA_READY signal slot + credit.
+// protocol::Simple returns the remote DATA_READY slot + credit; protocol::LL
+// returns an empty buffer (its inline flag is the readiness mark, so the put
+// carries data only).
+struct SendSignal {
+  IbgdaRemoteBuffer buf;
+  uint64_t val;
+};
+
+// ---- Resumable-progress protocol seams (tag-dispatched) ------------------
+// These isolate the four protocol-specific steps of progress_send_once() /
+// progress_recv_once() so the resumable state machine stays protocol-agnostic.
+// Only the protocol::Simple overloads exist here (behavior identical to the
+// former inline code); later protocols (e.g. protocol::LL) add their own
+// overloads without touching the state machine. Split differently from the
+// blocking prepareSendBuf()/consumeRecvBuf(): encode and signal are issued at
+// different stages, and recv needs a non-blocking readiness check.
+
+// Encode one send chunk into send-staging (Simple: contiguous CopyOp::send).
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ void progress_send_prepare_buf(
+    protocol::Simple,
+    ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
+    const void* __restrict__ src,
+    std::size_t payloadBytes,
+    Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t validBytes =
+      valid_payload_bytes(chunk.dataOff, chunk.bytes, payloadBytes);
+  if (validBytes > 0) {
+    CopyOp::send(
+        channelLayout.sendStagingPtr + chunk.stagingOff,
+        static_cast<const char*>(src) + chunk.dataOff,
+        validBytes,
+        group,
+        chunk.dataOff,
+        args...);
+  }
+#else
+  (void)group;
+  (void)channelLayout;
+  (void)chunk;
+  (void)src;
+  (void)payloadBytes;
+  ((void)args, ...);
+#endif
+}
+
+// The DATA_READY signal the leader put piggybacks (Simple: remote slot +
+// cumulative-bytes credit).
+__device__ __forceinline__ SendSignal progress_send_signal(
+    protocol::Simple,
+    const IbRemoteChannel& remoteChannel,
+    uint64_t signalVal) {
+  return SendSignal{remoteChannel.dataReady, signalVal};
+}
+
 template <typename Transport, typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
@@ -481,17 +540,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       return IbgdaSendRecvProgressStatus::Waiting;
     }
 
-    const std::size_t validBytes = valid_payload_bytes(
-        chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
-    if (validBytes > 0) {
-      CopyOp::send(
-          channelLayout.sendStagingPtr + chunk.stagingOff,
-          static_cast<const char*>(src) + chunk.dataOff,
-          validBytes,
-          group,
-          chunk.dataOff,
-          args...);
-    }
+    progress_send_prepare_buf<CopyOp>(
+        protocol::Simple{},
+        group,
+        channelLayout,
+        chunk,
+        src,
+        progress_params.payloadBytes,
+        args...);
     group.sync();
     transition_progress_stage(
         group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
@@ -539,13 +595,15 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const std::size_t protocolBytesThis =
           chunk.bytes + (isFinalChunk ? state.activeTailPadding : 0);
+      const SendSignal sig = progress_send_signal(
+          protocol::Simple{}, remoteChannel, protocolBytesThis);
       const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           chunk.bytes,
-          remoteChannel.dataReady,
-          protocolBytesThis,
+          sig.buf,
+          sig.val,
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
@@ -720,6 +778,85 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  * @param timeout Optional device timeout checked while dependencies wait.
  * @param args Additional arguments forwarded to `CopyOp::recv`.
  */
+// Non-blocking readiness check for one recv chunk (Simple: poll the round-robin
+// DATA_READY lane that carried this chunk; leader-only + broadcast, no spin).
+template <typename Transport>
+__device__ __forceinline__ bool progress_recv_ready(
+    protocol::Simple,
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    uint64_t waitCredit,
+    const Timeout& timeout) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t ready = 1;
+  if (group.is_leader()) {
+    unsigned long long current = 0;
+    unsigned long long expected = 0;
+    ready = poll_recv_data_ready(
+                transport,
+                localChannel,
+                localDataReady,
+                waitCredit,
+                current,
+                expected)
+        ? 1U
+        : 0U;
+    if (!ready) {
+      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          timeout,
+          "progress_recv_once waiting for DATA_READY expected>=%llu, "
+          "current=%llu",
+          expected,
+          current);
+    }
+  }
+  return group.broadcast<uint32_t>(ready) != 0U;
+#else
+  (void)transport;
+  (void)group;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)waitCredit;
+  (void)timeout;
+  return true;
+#endif
+}
+
+// Decode one ready recv chunk from recv-staging into dst (Simple: contiguous
+// CopyOp::recv).
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ void progress_recv_consume_buf(
+    protocol::Simple,
+    ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
+    void* __restrict__ dst,
+    std::size_t payloadBytes,
+    Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t validBytes =
+      valid_payload_bytes(chunk.dataOff, chunk.bytes, payloadBytes);
+  if (validBytes > 0) {
+    CopyOp::recv(
+        static_cast<char*>(dst) + chunk.dataOff,
+        channelLayout.recvStagingPtr + chunk.stagingOff,
+        validBytes,
+        group,
+        chunk.dataOff,
+        args...);
+  }
+#else
+  (void)group;
+  (void)channelLayout;
+  (void)chunk;
+  (void)dst;
+  (void)payloadBytes;
+  ((void)args, ...);
+#endif
+}
+
 template <typename Transport, typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
@@ -771,46 +908,25 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
   const IbRemoteChannel remoteChannel =
       makeIbRemoteChannel(channelLayout, progress_params.groupId);
-  uint32_t ready = 1;
-  if (group.is_leader()) {
-    // Poll the specific round-robin lane that carried this chunk and commit
-    // recvDataReadyLaneCursor/recvLaneExpected only on a ready result.
-    unsigned long long current = 0;
-    unsigned long long expected = 0;
-    ready = poll_recv_data_ready(
-                transport,
-                localChannel,
-                localDataReady,
-                protocolBytesThis,
-                current,
-                expected)
-        ? 1U
-        : 0U;
-    if (!ready) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-          timeout,
-          "progress_recv_once waiting for DATA_READY expected>=%llu, "
-          "current=%llu",
-          expected,
-          current);
-    }
-  }
-  ready = group.broadcast<uint32_t>(ready);
-  if (!ready) {
+  if (!progress_recv_ready(
+          protocol::Simple{},
+          transport,
+          group,
+          localChannel,
+          localDataReady,
+          protocolBytesThis,
+          timeout)) {
     return IbgdaSendRecvProgressStatus::Waiting;
   }
 
-  const std::size_t validBytes = valid_payload_bytes(
-      chunk.dataOff, chunk.bytes, progress_params.payloadBytes);
-  if (validBytes > 0) {
-    CopyOp::recv(
-        static_cast<char*>(dst) + chunk.dataOff,
-        channelLayout.recvStagingPtr + chunk.stagingOff,
-        validBytes,
-        group,
-        chunk.dataOff,
-        args...);
-  }
+  progress_recv_consume_buf<CopyOp>(
+      protocol::Simple{},
+      group,
+      channelLayout,
+      chunk,
+      dst,
+      progress_params.payloadBytes,
+      args...);
   group.sync();
 
   transport.signal(
@@ -945,11 +1061,6 @@ __device__ __forceinline__ SendRecvGeometry calcGeometry(
       .payloadProtocolBytes = payloadProtocolBytes,
   };
 }
-
-struct SendSignal {
-  IbgdaRemoteBuffer buf;
-  uint64_t val;
-};
 
 template <typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ SendSignal prepareSendBuf(
