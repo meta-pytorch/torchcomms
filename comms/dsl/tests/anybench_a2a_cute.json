@@ -1,0 +1,32 @@
+{
+  "mast_job_request": {
+    "user_label": "AnyBench comms/dsl CuTe a2a (copy) vs NCCL (8x GB300)",
+    "hpc_cluster": "MastProdCluster",
+    "scheduler": "MAST",
+    "num_hosts": [2],
+    "entitlement": "infra_projects",
+    "hardware": "T20_CIC_GB300_278GB_HBM3E_NVLSO_DSF",
+    "benchmark_config": {
+      "anybench_test_config": [
+        {
+          "fbpkg_name": "comms.dsl.benchmark_a2a.aarch64.gb300",
+          "binary_path": "penv.par",
+          "binary_args": "",
+          "env_vars": {
+            "A2A_CAPS": "32",
+            "DISABLE_OILFS": "1",
+            "TRITON_CACHE_DIR": "/tmp/triton_cache"
+          },
+          "iteration": 1,
+          "timeout": 1800,
+          "ppn": 4,
+          "parser": {
+            "command": "python3 $ANYBENCH_PARSER",
+            "parser_path": "comms/dsl/tests/anybench_a2a_cute_parser.py",
+            "timeout": 120
+          }
+        }
+      ]
+    }
+  }
+}
