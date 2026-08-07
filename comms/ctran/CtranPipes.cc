@@ -146,7 +146,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         nvlMaxNumChannels * config.nvlConfig.perChannelSize;
 
     // The multimem staging window is decoupled from the P2P shared devbuf: a
-    // larger window means fewer staging rounds, which is the dominant cnvlmm
+    // larger window means fewer staging rounds, which is the dominant nvlmm
     // throughput lever at large sizes. Falls back to the P2P size when the
     // dedicated cvar is 0. Computed before the enable guard so setting only the
     // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the

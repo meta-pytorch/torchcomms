@@ -1579,10 +1579,10 @@ cvars:
    type        : uint64_t
    default     : 33554432
    description : |-
-    Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
+    Size in bytes of the nvlmm (NVLink multimem) staging window, per rank.
     Decoupled from NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE so the multimem path can
     use a larger window without growing the P2P staging buffers. A larger window
-    means fewer staging rounds, which is the dominant cnvlmm throughput lever at
+    means fewer staging rounds, which is the dominant nvlmm throughput lever at
     large message sizes. 0 falls back to the effective P2P NVL shared devbuf
     size (the larger of the P2P and hier-AG NVL devbuf sizes when hier-AG
     overlap is enabled). Default 32 MiB.
@@ -3346,11 +3346,11 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
- - name        : MCCL_CNVLMM_PIPELINE_DEPTH
+ - name        : MCCL_NVLMM_PIPELINE_DEPTH
    type        : size_t
    default     : 2
    description : |-
-     Number of staging lanes used by MCCL CNVLMM copy collectives. Values must
+     Number of staging lanes used by MCCL NVLMM copy collectives. Values must
      be in [1, UINT32_MAX].
 
  - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
