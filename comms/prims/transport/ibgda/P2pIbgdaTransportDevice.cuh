@@ -31,6 +31,7 @@
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
+#include "comms/prims/transport/P2pIbTransportDeviceImpl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -43,7 +44,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // is intentionally available across all `comms/prims` device headers.
 //
 // `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
-// private shared helpers in P2pIbTransportDeviceDecl.cuh; backend-owned
+// private shared helpers in P2pIbTransportDeviceImpl.cuh; backend-owned
 // `channelLayout_` carries the actual protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
@@ -2071,11 +2072,24 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to send for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename = void>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_send_progress(*this, group, nbytes, max_signal_bytes);
+  }
+
+  /**
+   * Initialize a registered-source send that shares the normal send protocol
+   * cursor but bypasses local send staging.
+   */
+  __device__ __forceinline__ void init_registered_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0) {
+    detail::init_registered_send_progress(
+        *this, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2104,6 +2118,7 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to receive for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename = void>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
@@ -2153,6 +2168,32 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+  }
+
+  /**
+   * Post registered-source send chunks without copying through send staging.
+   * `Posted` does not release the source; callers must later drain.
+   */
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_once(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+    return detail::progress_registered_send_once(
+        *this, group, src, nbytes, max_signal_bytes, timeout);
+  }
+
+  /**
+   * Poll all outstanding send completion tickets for this channel. `Drained`
+   * means registered source ranges posted before the call are reusable.
+   */
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_send_drain_once(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout()) {
+    return detail::progress_registered_send_drain_once(*this, group, timeout);
   }
 
   /**
@@ -2245,6 +2286,19 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     sendWithTrace<CopyOp>(
         group, src, nbytes, max_signal_bytes, timeout, {}, 0, args...);
+  }
+
+  /**
+   * Blocking registered-source send. Returns only after local NIC completion.
+   */
+  __device__ __forceinline__ void send_registered(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+    detail::send_registered(
+        *this, group, src, nbytes, max_signal_bytes, timeout);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
