@@ -3346,6 +3346,13 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_CNVLMM_PIPELINE_DEPTH
+   type        : size_t
+   default     : 2
+   description : |-
+     Number of staging lanes used by MCCL CNVLMM copy collectives. Values must
+     be in [1, UINT32_MAX].
+
  - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
    type        : bool
    default     : true

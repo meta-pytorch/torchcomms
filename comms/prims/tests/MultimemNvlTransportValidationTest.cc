@@ -112,14 +112,13 @@ TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroDataBufferSize) {
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "dataBufferSize must be non-zero");
+      "data buffer size must be non-zero");
 }
 
 TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroSignalCount) {
   MultimemNvlTransportConfig config{};
   config.dataBufferSize = 1024;
   config.userSignalCount = 0;
-  config.internalSignalCount = 0;
   expectRuntimeErrorContains(
       [&] {
         MultimemNvlTransport(
@@ -138,7 +137,8 @@ TEST(
   MultimemNvlTransportConfig config{};
   config.dataBufferSize = 1024;
   config.userSignalCount = std::numeric_limits<uint32_t>::max();
-  config.internalSignalCount = std::numeric_limits<uint32_t>::max();
+  config.pipelineDepth = 1;
+  config.maxGroups = 1;
   expectRuntimeErrorContains(
       [&] {
         MultimemNvlTransport(
@@ -147,7 +147,7 @@ TEST(
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "signalCount too large");
+      "signal count exceeds INT_MAX");
 }
 
 TEST(

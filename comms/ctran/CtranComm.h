@@ -23,6 +23,7 @@
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
+#include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
@@ -35,8 +36,6 @@ struct Transport;
 
 using meta::comms::CommBackend;
 
-// Per-communicator Prims transport overrides.
-// -1 means use CVAR default.
 struct ctranPipesConfig {
   // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
   // policy does not affect NCCLX or standalone Ctran communicators.
@@ -44,9 +43,11 @@ struct ctranPipesConfig {
   int64_t nvlChunkSize{-1};
   bool ibLazyConnect{true};
   int64_t ibgdaDataBufferSize{-1};
+  std::optional<comms::prims::MultimemNvlTransportConfig> multimemConfig;
 
   bool operator==(const ctranPipesConfig& other) const {
     return enablePrims == other.enablePrims &&
+        multimemConfig == other.multimemConfig &&
         nvlChunkSize == other.nvlChunkSize &&
         ibLazyConnect == other.ibLazyConnect &&
         ibgdaDataBufferSize == other.ibgdaDataBufferSize;

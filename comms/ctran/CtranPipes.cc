@@ -43,6 +43,37 @@ size_t roundDownToMultiple(size_t value, size_t multiple) {
 
 } // namespace
 
+commResult_t ctran::ctranApplyMultimemConfig(
+    const ctranPipesConfig& config,
+    const comms::prims::MultimemNvlTransportConfig& fallbackConfig,
+    size_t topologyDataBufferSize,
+    int nLocalRanks,
+    comms::prims::MultiPeerNvlTransportConfig& nvlConfig) {
+  if (nLocalRanks <= 2) {
+    return commSuccess;
+  }
+  const auto resolved = comms::prims::resolve_multimem_nvl_transport_config(
+      config.multimemConfig,
+      fallbackConfig,
+      topologyDataBufferSize,
+      nLocalRanks);
+  if (!resolved) {
+    CLOGF(
+        ERR,
+        "CTRAN-PRIMS: invalid multimem config: {} (dataBufferSize={} userSignalCount={} pipelineDepth={} maxGroups={})",
+        comms::prims::multimem_nvl_transport_config_error_string(
+            resolved.error),
+        resolved.config.dataBufferSize,
+        resolved.config.userSignalCount,
+        resolved.config.pipelineDepth,
+        resolved.config.maxGroups);
+    return commInvalidArgument;
+  }
+  nvlConfig.enableMultimem = true;
+  nvlConfig.multimem = resolved.config;
+  return commSuccess;
+}
+
 commResult_t ctran::ctranPreparePipesTrace(
     CtranComm* comm,
     comms::prims::PipesTraceHandle& trace) {
@@ -120,53 +151,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // dedicated cvar is 0. Computed before the enable guard so setting only the
     // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the
     // path.
-    const size_t multimemDevbufSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
+    const size_t fallbackMultimemDataBufferSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
         ? static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE)
         : nvlSharedDevbufSize;
-    if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
-      const uint32_t multimemPipelineDepth = static_cast<uint32_t>(
-          std::max<size_t>(1, config.nvlConfig.pipelineDepth));
-      // Reuse the already-computed channel count (== std::max(1,
-      // MCCL_MAX_NBLOCKS)) as the group count so the signal sizing cannot drift
-      // from the transport's actual channel count.
-      const uint32_t multimemMaxGroups =
-          static_cast<uint32_t>(config.nvlConfig.maxNumChannels);
-      // Per-lane signal region, sized from the shared source of truth
-      // `multimem_staging_signals_per_lane` (MultimemNvlTransportDevice.cuh).
-      // The device-side `make_stage_layout` (MultimemNvlStageLayout.cuh, added
-      // by the ReduceScatter copy prereq stacked on this diff) is updated to
-      // call the same helper, so the host sizing here and the device layout
-      // stay in lockstep off one definition rather than duplicated literals.
-      const uint32_t multimemSignalsPerLane =
-          comms::prims::multimem_staging_signals_per_lane(
-              comm->statex_->nLocalRanks());
-      // Evaluate the product in u64 (all three factors are hardware-bounded to
-      // small values, so it cannot realistically overflow u64) and bound it
-      // against the transport's signal-count limit (INT_MAX; see
-      // MultimemNvlTransport's ctor) before narrowing into the u32 field, so a
-      // future large maxGroups/pipelineDepth/nLocalRanks fails loudly here with
-      // context rather than silently wrapping or throwing deeper in the ctor.
-      const uint64_t multimemInternalSignalCount =
-          static_cast<uint64_t>(multimemMaxGroups) * multimemPipelineDepth *
-          multimemSignalsPerLane;
-      if (multimemInternalSignalCount >
-          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-        CLOGF(
-            ERR,
-            "CTRAN-PRIMS: multimem internalSignalCount {} exceeds the transport signal-count limit (INT_MAX); maxGroups={} pipelineDepth={} signalsPerLane={}",
-            multimemInternalSignalCount,
-            multimemMaxGroups,
-            multimemPipelineDepth,
-            multimemSignalsPerLane);
-        return commInvalidArgument;
-      }
-      config.nvlConfig.enableMultimem = true;
-      config.nvlConfig.multimem = comms::prims::MultimemNvlTransportConfig{
-          .dataBufferSize = multimemDevbufSize,
-          .userSignalCount = 1,
-          .internalSignalCount =
-              static_cast<uint32_t>(multimemInternalSignalCount),
-      };
+    const comms::prims::MultimemNvlTransportConfig fallbackConfig{
+        .dataBufferSize = fallbackMultimemDataBufferSize,
+        .userSignalCount = 1,
+        .pipelineDepth = std::max<size_t>(1, config.nvlConfig.pipelineDepth),
+        .maxGroups = static_cast<size_t>(config.nvlConfig.maxNumChannels),
+    };
+    if (const auto result = ctran::ctranApplyMultimemConfig(
+            pc,
+            fallbackConfig,
+            nvlSharedDevbufSize,
+            comm->statex_->nLocalRanks(),
+            config.nvlConfig);
+        result != commSuccess) {
+      return result;
     }
 
     // LL128 buffer allocation for DeviceAllToAllv
@@ -332,7 +333,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemSignals={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPipelineDepth={} multimemMaxGroups={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
@@ -341,8 +342,10 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.nvlConfig.perChannelSize,
         config.nvlConfig.enableMultimem,
         config.nvlConfig.enableMultimem
-            ? config.nvlConfig.multimem.internalSignalCount
+            ? config.nvlConfig.multimem.pipelineDepth
             : 0,
+        config.nvlConfig.enableMultimem ? config.nvlConfig.multimem.maxGroups
+                                        : 0,
         hierAgOverlapEnabled,
         config.disableIb,
         config.topoConfig.p2pDisable,
