@@ -470,9 +470,10 @@ __global__ void progressReservationKernel(
   transport->init_recv_progress(group, recvBytes);
 
   if (group.is_leader()) {
-    const auto& channel = transport->local_channel(group.group_id);
-    output[0] = channel.sendProgress.nextStep;
-    output[1] = channel.recvProgress.nextStep;
+    const auto& protoSlot =
+        transport->local_channel_slot<protocol::Simple>(group.group_id);
+    output[0] = protoSlot.sendProgress.nextStep;
+    output[1] = protoSlot.recvProgress.nextStep;
   }
 }
 

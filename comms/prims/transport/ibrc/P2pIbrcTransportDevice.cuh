@@ -573,6 +573,25 @@ class P2pIbrcTransportDevice {
     return local_channel(group.group_id);
   }
 
+  // Per-protocol resources on a channel. `P::kProtoSlot` is a compile-time
+  // constant, so this resolves to a fixed offset. What stays on the channel
+  // itself is the state every protocol shares: sendQp, recvQp, and
+  // recvDataReadyLaneCursor.
+  //
+  // No default on P: omitting the protocol must be a compile error, not a
+  // silent read of the default protocol's cursors.
+  template <typename P>
+  __device__ __forceinline__ IbChannelProtoSlot& local_channel_slot(
+      uint32_t channelId) {
+    return local_channel(channelId).protos[P::kProtoSlot];
+  }
+
+  template <typename P>
+  __device__ __forceinline__ IbChannelProtoSlot& local_channel_slot(
+      ThreadGroup& group) {
+    return local_channel_slot<P>(group.group_id);
+  }
+
   __host__ __device__ IbChannelLayout& channel_layout() {
     return channelLayout_;
   }
