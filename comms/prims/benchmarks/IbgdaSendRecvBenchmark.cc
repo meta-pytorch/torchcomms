@@ -39,6 +39,15 @@ constexpr int kWarmupIters = 5;
 constexpr const char* kDefaultBenchmarkIters = "20";
 constexpr const char* kDefaultBenchmarkMaxIters = "21";
 
+// Sub-1MB transfers finish below folly's ~100us timing floor at the default
+// iteration count, so folly drops their counters (printing
+// 0.00fs/Infinity/NaN). Override just those sizes with a high, deterministic
+// count: both ranks derive it identically from nbytes, so the paired send/recv
+// stays in lockstep. Larger messages already clear the floor and keep folly's
+// count.
+constexpr std::size_t kSmallMessageThreshold = 1ULL << 20; // 1 MiB
+constexpr uint32_t kSmallMessageIters = 2048;
+
 enum class SendRecvApi {
   Blocking,
   Progress,
@@ -416,12 +425,17 @@ class IbgdaSendRecvBenchmarkContext {
 
 static unsigned int ibgdaSendRecv(
     IbgdaSendRecvBenchmarkContext& context,
-    uint32_t iters,
+    uint32_t follyIters,
     std::size_t nbytes,
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
     folly::UserCounters& counters) {
+  // Small messages would run too briefly at folly's count and be dropped as
+  // NaN; use a deterministic high count for them (identical on both ranks, so
+  // the paired transfer stays in lockstep). Larger messages keep folly's count.
+  const uint32_t iters =
+      nbytes < kSmallMessageThreshold ? kSmallMessageIters : follyIters;
   CHECK_GT(iters, 0);
 
   BENCHMARK_SUSPEND {
@@ -505,9 +519,17 @@ int main(int argc, char** argv) {
   comms::prims::benchmark::setDefaultBenchmarkFlags();
   comms::prims::benchmark::DistributedBenchmarkEnvironment environment;
   auto bootstrap = comms::prims::benchmark::makeBootstrap();
+  const int globalRank = bootstrap->getGlobalRank();
   comms::prims::benchmark::IbgdaSendRecvBenchmarkContext context(
       std::move(bootstrap), comms::prims::benchmark::kMaxBenchmarkBytes);
   comms::prims::benchmark::registerBenchmarks(context);
-  folly::runBenchmarks();
+  // Both ranks must run every benchmark in lockstep (paired send/recv), but
+  // only rank 0 prints the results table. Rank 1 runs and discards its output.
+  if (globalRank == 0) {
+    folly::runBenchmarks();
+  } else {
+    // NOLINTNEXTLINE(facebook-hte-DetailCall)
+    (void)folly::detail::runBenchmarksWithResults();
+  }
   return 0;
 }
