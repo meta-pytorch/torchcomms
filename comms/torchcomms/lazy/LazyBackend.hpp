@@ -370,8 +370,13 @@ class LazyBackend : public TorchCommBackend {
   // Window & one-sided ops
   // ---------------------------------------------------------------
 
+  bool supportsWindow() const override {
+    return initialized_ && primary_->supportsWindow();
+  }
+
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override {
+    checkInitialized();
     return primary_->new_window(tensor);
   }
 

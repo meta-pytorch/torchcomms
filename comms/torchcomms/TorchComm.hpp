@@ -185,6 +185,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return impl_;
   }
 
+  bool supportsWindow() const;
+
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt);
 

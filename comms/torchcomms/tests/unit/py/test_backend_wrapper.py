@@ -4,8 +4,7 @@
 
 """
 Tests that BackendWrapper (the c10d::Backend shim around TorchComm) routes
-collectives through TorchComm so that pre/post hooks registered on the
-underlying TorchComm fire.
+c10d operations through the underlying TorchComm.
 """
 
 import unittest
@@ -29,12 +28,27 @@ def _make_wrapped_pg(name: str) -> tuple[torchcomms.TorchComm, dist.ProcessGroup
         # pyre-fixme[6]: _BackendWrapper implements dist.Backend but stubs aren't aware
         wrapper,
     )
+    pg._set_default_backend(dist.ProcessGroup.BackendType.CUSTOM)
     # pyre-fixme[6]: _set_group_name expects GroupName, which is an alias for str
     pg._set_group_name(name)
     return comm, pg
 
 
-class TestBackendWrapperHooks(unittest.TestCase):
+class TestBackendWrapper(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(dist.ProcessGroup, "new_window"),
+        "PyTorch does not expose the c10d window API",
+    )
+    def test_window_dispatches_through_backend_wrapper(self) -> None:
+        comm, pg = _make_wrapped_pg("test_window_dispatch")
+
+        self.assertTrue(pg.supports_window)
+        window = pg.new_window(torch.ones(4))
+        self.assertIsNotNone(window)
+        window.tensor_deregister()
+
+        comm.finalize()
+
     def test_hooks_fire_when_invoked_through_backend_wrapper(self) -> None:
         """Pre/post hooks on TorchComm fire when collectives go through the wrapper."""
         comm, pg = _make_wrapped_pg("test_hooks_fire")

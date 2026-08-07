@@ -242,6 +242,9 @@ class TorchCommNCCLX : public TorchCommBackend,
       const GatherOptions& options = {}) override;
 
   // Window & One-sided Operations
+  bool supportsWindow() const override {
+    return true;
+  }
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
