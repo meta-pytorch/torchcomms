@@ -134,6 +134,8 @@ class CtranGpeCmd {
     opFunc func;
     std::shared_ptr<meta::comms::colltrace::ICollTraceHandle> collHandle;
     CtranComm* comm;
+    // Stats bucket, resolved at submit. Empty when stats are disabled.
+    CtranCollectiveStatsKey statsKey;
   } coll;
 
   // kernelFlag to assist device mem communication
@@ -277,6 +279,9 @@ class CtranGpe::Impl {
 
   // Used only by the GPE thread.
   std::unique_ptr<ctran::GpeProfiler> gpeProfiler_;
+
+  // Written by the GPE thread per collective; drained via getAndClear.
+  comms::CollectiveStats collectiveStats_;
 
  private:
   struct CmdQueue {

@@ -6,10 +6,13 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include <fmt/format.h>
 
+#include "comms/common/CollectiveStats.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
@@ -18,6 +21,7 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
+#include "comms/ctran/algos/common/AlgoShortName.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
@@ -357,6 +361,101 @@ struct fmt::formatter<KernelConfig::KernelType> : fmt::formatter<int> {
   }
 };
 
+inline const char* ctranCollectiveOpName(OpElem::opType t) {
+  switch (t) {
+    case OpElem::ALLGATHER:
+      return "allgather";
+    case OpElem::ALLGATHERP_INIT:
+      return "allgatherp_init";
+    case OpElem::ALLGATHERP:
+      return "allgatherp";
+    case OpElem::ALLREDUCE:
+      return "allreduce";
+    case OpElem::SEND:
+      return "send";
+    case OpElem::RECV:
+      return "recv";
+    case OpElem::ALLTOALL:
+      return "alltoall";
+    case OpElem::ALLTOALLP:
+      return "alltoallp";
+    case OpElem::ALLTOALLV:
+      return "alltoallv";
+    case OpElem::DEVICE_ALLTOALLV:
+      return "device_alltoallv";
+    case OpElem::ALLTOALLV_DEDUP:
+      return "alltoallv_dedup";
+    case OpElem::BROADCAST:
+      return "broadcast";
+    case OpElem::REDUCESCATTER:
+      return "reducescatter";
+    case OpElem::PUTNOTIFY:
+      return "putnotify";
+    case OpElem::WAITNOTIFY:
+      return "waitnotify";
+    case OpElem::PUTSIGNAL:
+      return "putsignal";
+    case OpElem::WAITSIGNAL:
+      return "waitsignal";
+    case OpElem::SIGNAL:
+      return "signal";
+    case OpElem::GET:
+      return "get";
+  }
+  return "unknown";
+}
+
+// Bytes moved by a single op; 0 for the variable-size and one-sided ops,
+// whose extent is not on the OpElem. Those share a "<op>.<algo>.0" bucket.
+inline size_t ctranCollectiveMsgSize(const OpElem& op) {
+  switch (op.type) {
+    case OpElem::ALLGATHER:
+      return op.allgather.sendcount * commTypeSize(op.allgather.datatype);
+    case OpElem::ALLREDUCE:
+      return op.allreduce.count * commTypeSize(op.allreduce.datatype);
+    case OpElem::REDUCESCATTER:
+      return op.reducescatter.recvcount *
+          commTypeSize(op.reducescatter.datatype);
+    case OpElem::ALLTOALL:
+      return op.alltoall.count * commTypeSize(op.alltoall.datatype);
+    case OpElem::SEND:
+      return op.send.count * commTypeSize(op.send.datatype);
+    case OpElem::RECV:
+      return op.recv.count * commTypeSize(op.recv.datatype);
+    case OpElem::BROADCAST:
+      return op.broadcast.count * commTypeSize(op.broadcast.datatype);
+    default:
+      return 0;
+  }
+}
+
+struct CtranCollectiveStatsKey {
+  std::string collective;
+  // "<collective>.<algo>.<bytes>", e.g. "allreduce.ctring.1048576".
+  std::string key;
+};
+
+// Built once at submit and cached on the cmd: the GPE thread re-runs on every
+// graph replay, and the key is identical across replays.
+// A grouped submit is attributed to opGroup.front() and timed as a whole.
+inline CtranCollectiveStatsKey ctranCollectiveStatsKey(
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup,
+    std::string_view algoName) {
+  if (opGroup.empty()) {
+    return {};
+  }
+  const auto& op = *opGroup.front();
+  const char* collective = ctranCollectiveOpName(op.type);
+  return {
+      collective,
+      fmt::format(
+          "{}.{}.{}",
+          collective,
+          algoName.empty() ? std::string_view{"unknown"}
+                           : ctran::algoShortName(algoName),
+          ctranCollectiveMsgSize(op))};
+}
+
 class CtranGpe {
  public:
   // Optional reporter injection for tests. The cvar
@@ -426,6 +525,8 @@ class CtranGpe {
   // The mapper enforces this by clearing its per-peer host-transport
   // cache in setAtDestruction() before gpe is torn down.
   GpeKernelSyncPool* gpeKernelSyncPool();
+
+  comms::CollectiveStatsMap getAndClearCollectiveStats();
 
  private:
   class Impl;

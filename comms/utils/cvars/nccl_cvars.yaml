@@ -3373,6 +3373,11 @@ cvars:
      events to dedicated MCCL Scuba tables for observability and debugging.
      This is separate from NCCLX logging to minimize risk.
 
+ - name        : MCCL_COLLECTIVE_STATS_ENABLE
+   type        : bool
+   default     : true
+   description : Enable per-(collective_op, algorithm, msg_size) host-drive timing stats accumulated by the GPE thread and drained each training step.
+
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
    default     : NORMAL

@@ -319,6 +319,10 @@ CtranGpe::~CtranGpe() {
   this->pimpl->terminate();
 }
 
+comms::CollectiveStatsMap CtranGpe::getAndClearCollectiveStats() {
+  return this->pimpl->collectiveStats_.getAndClear();
+}
+
 namespace {
 inline size_t getMsgSizeFromOpGroup(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
