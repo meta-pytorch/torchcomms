@@ -5,8 +5,10 @@
 
 #include <folly/init/Init.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "nccl.h"
@@ -23,8 +25,8 @@
 // Distributed test for the NVL CE-multicast registration mechanism, driven the
 // way production drives it: one rank per GPU. The root createRoot()s the
 // multicast object and broadcasts its fabric handle over allGatherNvlDomain;
-// EVERY rank -- the root included, which self-imports and drops its create
-// reference -- importShareableHandle()s + adoptImported()s it; each rank
+// EVERY rank -- the root included, which self-imports its own exported handle
+// -- importShareableHandle()s + adoptImported()s it; each rank
 // retainSegments() its own buffer -- self-detecting + retaining its own segment
 // handles -- then addDeviceAndBind()s and mapVA()s. A single multicast write
 // from the root must then fan out (via NVSwitch) into every rank's own buffer
@@ -124,9 +126,8 @@ class MulticastDistTest : public ctran::CtranDistTestFixture {
     allGatherNvlDomain(comm_.get(), handles);
     // Every rank adopts an IMPORTED handle, root included -- production relies
     // on uniform provenance to keep the multicast write off the copy engines
-    // that service host transfers. For the root this is a same-process
-    // self-import that also drops its createRoot reference, so the broadcast
-    // below doubles as the check that the object outlives that release.
+    // that service host transfers. The root's create reference stays alive
+    // until teardown; RootCreateRefOutlivesPeerImports covers why.
     CUmemGenericAllocationHandle imported{};
     COMMCHECK_TEST(
         ctran::utils::importShareableHandle(
@@ -184,6 +185,100 @@ TEST_F(MulticastDistTest, CreateBindBroadcast) {
 // fan out across both segments.
 TEST_F(MulticastDistTest, CreateBindBroadcastMultiSegment) {
   runCreateBindBroadcast(/*numSegments=*/2);
+}
+
+// The root's create reference must outlive every peer's import. An exported
+// fabric handle stops resolving to the multicast object once that reference is
+// gone, and a peer importing afterwards gets a fresh, EMPTY object rather than
+// an error -- so each rank binds a different object and every rank blocks
+// forever in cuMulticastBindMem waiting for a device count it can never reach.
+//
+// The production rendezvous puts an all-gather immediately before every rank's
+// import, so the racy window is microseconds wide and a regression here almost
+// always wins it. This test loses it deliberately: the root imports (and would
+// release) first, then peers stall kPeerImportStallSec before importing. A
+// regression therefore shows up as this test HANGING in addDeviceAndBind, not
+// as a clean assertion failure -- there is no CUDA API that reports the empty
+// object, which is exactly why the ordering needs a test at all.
+TEST_F(MulticastDistTest, RootCreateRefOutlivesPeerImports) {
+  const int rank = comm_->statex_->rank();
+  const int lRank = comm_->statex_->localRank();
+  const int nLocalRanks = comm_->statex_->nLocalRanks();
+  if (comm_->statex_->nRanks() < 2 || comm_->statex_->nNodes() > 1) {
+    GTEST_SKIP() << "requires >= 2 ranks in a single NVL domain";
+  }
+  if (!ctran::utils::getCuMemSysSupported() ||
+      !CtranMulticast::isSupported(lRank)) {
+    GTEST_SKIP() << "cuMem + multicast not supported on this device";
+  }
+  if ((ctran::utils::getCuMemAllocHandleType() & CU_MEM_HANDLE_TYPE_FABRIC) ==
+      0) {
+    GTEST_SKIP() << "FABRIC handle type required to share the multicast object";
+  }
+  constexpr int kPeerImportStallSec = 5;
+  constexpr int kRoot = 0;
+
+  size_t gran = 0;
+  COMMCHECK_TEST(CtranMulticast::granularity(lRank, nLocalRanks, gran));
+  const size_t total = roundUp(2 * 1024 * 1024, gran);
+  std::vector<size_t> segSizes(1, total);
+  void* buf = nullptr;
+  std::vector<TestMemSegment> allocSegs;
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(
+          &buf,
+          segSizes,
+          allocSegs,
+          true,
+          ctran::utils::getCuMemAllocHandleType()));
+
+  auto mc = std::make_shared<CtranMulticast>(lRank, nLocalRanks, lRank);
+  std::vector<CtranIpcHandle> handles(nLocalRanks);
+  std::memset(handles.data(), 0, handles.size() * sizeof(CtranIpcHandle));
+  if (rank == kRoot) {
+    CUmemGenericAllocationHandle rootHandle{};
+    COMMCHECK_TEST(
+        mc->createRoot(total, CU_MEM_HANDLE_TYPE_FABRIC, rootHandle));
+    COMMCHECK_TEST(
+        ctran::utils::exportShareableHandle(
+            rootHandle, handles[lRank], /*isFabric=*/true));
+  }
+  allGatherNvlDomain(comm_.get(), handles);
+
+  // Root adopts first (dropping its create reference would happen here), peers
+  // only well afterwards.
+  if (rank != kRoot) {
+    std::this_thread::sleep_for(std::chrono::seconds(kPeerImportStallSec));
+  }
+  CUmemGenericAllocationHandle imported{};
+  COMMCHECK_TEST(
+      ctran::utils::importShareableHandle(
+          handles[kRoot], imported, /*isFabric=*/true));
+  mc->adoptImported(imported);
+
+  // Hangs here on a regression: bind blocks until all nLocalRanks devices are
+  // added to the SAME object.
+  COMMCHECK_TEST(mc->retainSegments(buf, total));
+  COMMCHECK_TEST(mc->addDeviceAndBind());
+  COMMCHECK_TEST(mc->mapVA(total, gran));
+  barrierNvlDomain(comm_.get());
+
+  constexpr uint8_t kPattern = 0x5A;
+  if (rank == kRoot) {
+    CUDACHECK_TEST(cudaMemset(mc->getMulticastPtr(), kPattern, total));
+  }
+  barrierNvlDomain(comm_.get());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  std::vector<uint8_t> observed(total, 0x00);
+  CUDACHECK_TEST(
+      cudaMemcpy(observed.data(), buf, total, cudaMemcpyDeviceToHost));
+  EXPECT_EQ(observed, std::vector<uint8_t>(total, kPattern))
+      << "rank " << rank
+      << " missed the fan-out, so the late import resolved to a different "
+         "multicast object";
+
+  mc.reset();
+  ctran::commMemFreeDisjoint(buf, segSizes);
 }
 
 int main(int argc, char* argv[]) {
