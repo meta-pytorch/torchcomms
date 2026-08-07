@@ -56,21 +56,27 @@ class P2pIbTransportBuildContractTest(unittest.TestCase):
                 "P2pIbTransportProgressImpl.cuh", path.read_text(), path.name
             )
 
-    def test_header_ownership_adds_no_production_target(self) -> None:
+    def test_progress_header_has_a_separate_build_owner(self) -> None:
         buck = (self.package / "BUCK").read_text()
-        target_start = buck.index('name = "p2p_ib_transport_device_impl"')
+        core_start = buck.index('name = "p2p_ib_transport_device_impl"')
+        progress_start = buck.index(
+            'name = "p2p_ib_transport_progress_impl"', core_start
+        )
         contract_start = buck.index(
-            'name = "p2p_ib_transport_build_contract_test"', target_start
+            'name = "p2p_ib_transport_build_contract_test"', progress_start
         )
-        implementation_target = buck[target_start:contract_start]
+        core_target = buck[core_start:progress_start]
+        progress_target = buck[progress_start:contract_start]
         self.assertEqual(
-            implementation_target.count('"transport/P2pIbTransportDeviceImpl.cuh"'),
+            core_target.count('"transport/P2pIbTransportDeviceImpl.cuh"'),
             1,
         )
+        self.assertNotIn("P2pIbTransportProgressImpl.cuh", core_target)
         self.assertEqual(
-            implementation_target.count('"transport/P2pIbTransportProgressImpl.cuh"'),
+            progress_target.count('"transport/P2pIbTransportProgressImpl.cuh"'),
             1,
         )
+        self.assertIn('":p2p_ib_transport_device_impl"', progress_target)
 
 
 if __name__ == "__main__":
