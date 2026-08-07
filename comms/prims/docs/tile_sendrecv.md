@@ -121,11 +121,24 @@ the channel index and the per-channel staging slice index are `group.group_id`.
 ### IB: `IbLocalChannel`, `IbRemoteChannel`, and `IbChannelLayout`
 
 ```cpp
-struct IbLocalChannel {
+// One protocol's resources on a channel. Duplicated per protocol because these
+// cursors are resumable across kernel launches. Reach it through
+// acquire_channel<P>(), never by naming a slot index.
+struct IbChannelProtoSlot {
   IbChannelProgress sendProgress;
   IbChannelProgress recvProgress;
-  // Local DATA_READY, SLOT_FREE, and NIC_DONE endpoints.
-  // Local send staging and channel-owned QP state.
+  // Local DATA_READY, SLOT_FREE, and NIC_DONE endpoints for this protocol.
+  // Per-lane receiver DATA_READY expectations for this protocol.
+};
+
+struct IbLocalChannel {
+  // Shared by every protocol on the channel: a channel is one QP pair, and
+  // recvDataReadyLaneCursor mirrors sendQp.cursor.
+  IbQpState sendQp;
+  IbQpState recvQp;
+  uint64_t recvDataReadyLaneCursor;
+
+  IbChannelProtoSlot protos[kNumProtoSlots];
 };
 
 struct IbRemoteChannel {
