@@ -83,21 +83,21 @@ MultimemNvlTransport::MultimemNvlTransport(
   // are exercisable on CPU-only hosts (see MultimemNvlTransportValidationTest).
   validateRankMap(commRank_, nvlRankToCommRank_);
 
-  if (config_.dataBufferSize == 0) {
+  const auto validation =
+      validate_multimem_nvl_transport_config(config_, nvlRanks_);
+  if (!validation) {
     throw std::runtime_error(
-        "MultimemNvlTransport: dataBufferSize must be non-zero");
+        std::string("MultimemNvlTransport: ") +
+        multimem_nvl_transport_config_error_string(validation.error));
+  }
+  internalSignalCount_ = validation.internalSignalCount;
+  if (config_.pipelineDepth != 0) {
+    signalsPerLane_ =
+        multimem_staging_signals_per_lane(static_cast<uint32_t>(nvlRanks_));
   }
   const uint64_t totalSignalCount =
-      static_cast<uint64_t>(config_.userSignalCount) +
-      static_cast<uint64_t>(config_.internalSignalCount);
-  if (totalSignalCount == 0) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: at least one signal slot is required");
-  }
-  if (totalSignalCount >
-      static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-    throw std::runtime_error("MultimemNvlTransport: signalCount too large");
-  }
+      static_cast<uint64_t>(config_.userSignalCount) + internalSignalCount_;
+  // The shared validator bounds the combined user and internal signal count.
 
   // commRank presence in the map is already verified by validateRankMap.
   int nvlRank = -1;
@@ -222,7 +222,7 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
   auto* multimemSignals =
       reinterpret_cast<SignalState*>(multimemBase + signalRegionOffset_);
   const auto userSignalCount = config_.userSignalCount;
-  const auto internalSignalCount = config_.internalSignalCount;
+  const auto internalSignalCount = internalSignalCount_;
 
   return MultimemNvlTransportDevice{
       .localData = localBase,
@@ -236,6 +236,9 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .internalMultimemSignals = DeviceSpan<SignalState>(
           multimemSignals + userSignalCount, internalSignalCount),
       .dataBufferSize = config_.dataBufferSize,
+      .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
+      .maxGroups = static_cast<uint32_t>(config_.maxGroups),
+      .signalsPerLane = signalsPerLane_,
       .nvlRank = nvlRank_,
       .nvlRanks = nvlRanks_,
   };
@@ -252,7 +255,7 @@ std::size_t MultimemNvlTransport::getAllocatedSignalBufferSize() const {
   // granularity, so combinedHandler_->getAllocatedSize() - signalRegionOffset_
   // would include trailing padding that is not addressable as SignalState.
   return getSignalBufferSize(
-      static_cast<int>(config_.userSignalCount + config_.internalSignalCount));
+      static_cast<int>(config_.userSignalCount + internalSignalCount_));
 }
 
 } // namespace comms::prims

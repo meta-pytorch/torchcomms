@@ -9,22 +9,10 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
 
 namespace comms::prims {
-
-struct MultimemNvlTransportConfig {
-  // Size in bytes of the multicast staging data window.
-  std::size_t dataBufferSize{0};
-
-  // Signal slots exposed through signal(), read_signal(), and
-  // wait_signal_until().
-  uint32_t userSignalCount{1};
-
-  // Signal slots reserved for transport-internal protocols. These are not
-  // addressable through the public signal API.
-  uint32_t internalSignalCount{0};
-};
 
 /**
  * Host-side owner for a copy-based NVL multimem transport.
@@ -109,6 +97,8 @@ class MultimemNvlTransport {
   // rank-map preconditions on CPU-only hosts).
   int cudaDevice_{-1};
   const MultimemNvlTransportConfig config_;
+  uint32_t internalSignalCount_{0};
+  uint32_t signalsPerLane_{0};
   bool exchanged_{false};
   // Set when exchange() throws; subsequent calls throw instead of silently
   // retrying. Multicast object create/import/bind failures can leave partial
