@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <climits>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -27,7 +28,96 @@ void expectRuntimeErrorContains(Fn&& fn, const std::string& expected) {
   }
 }
 
+MultimemNvlTransportConfig makeConfig(
+    std::size_t dataBufferSize,
+    uint32_t userSignalCount = 1,
+    std::size_t pipelineDepth = 0,
+    std::size_t maxGroups = 0) {
+  MultimemNvlTransportConfig config{};
+  config.dataBufferSize = dataBufferSize;
+  config.userSignalCount = userSignalCount;
+  config.pipelineDepth = pipelineDepth;
+  config.maxGroups = maxGroups;
+  return config;
+}
+
 } // namespace
+
+TEST(MultimemNvlTransportConfigTest, DerivesUserOnlyConfiguration) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(makeConfig(256), 4), 0);
+}
+
+TEST(MultimemNvlTransportConfigTest, DerivesStagingOnlyConfiguration) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(256, 0, 2, 2), 4),
+      48);
+}
+
+TEST(MultimemNvlTransportConfigTest, DerivesMixedConfiguration) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(256, 7, 2, 2), 4),
+      48);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsPartialStagingGeometry) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(256, 1, 2, 0), 4),
+      std::nullopt);
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(256, 1, 0, 2), 4),
+      std::nullopt);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsInvalidRankCount) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(256, 1, 1, 1), 0),
+      std::nullopt);
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(std::numeric_limits<std::size_t>::max(), 1, 1, 1),
+          std::numeric_limits<int>::max()),
+      std::nullopt);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsInsufficientDataCapacity) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(255, 1, 2, 2), 4),
+      std::nullopt);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsInternalSignalOverflow) {
+  constexpr std::size_t kRanks = 4;
+  constexpr std::size_t kSignalsPerLane =
+      multimem_staging_signals_per_lane(static_cast<uint32_t>(kRanks));
+  const std::size_t pipelineDepth =
+      std::numeric_limits<int>::max() / kSignalsPerLane + 1;
+  const std::size_t requiredDataBytes = pipelineDepth * kRanks * 16;
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(requiredDataBytes, 1, pipelineDepth, 1), kRanks),
+      std::nullopt);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsTotalSignalOverflow) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(64, std::numeric_limits<int>::max(), 1, 1), 4),
+      std::nullopt);
+}
+
+TEST(MultimemNvlTransportConfigTest, RejectsUserSignalCountOutsideSignedRange) {
+  EXPECT_EQ(
+      detail::checked_multimem_internal_signal_count(
+          makeConfig(64, std::numeric_limits<uint32_t>::max(), 0, 0), 4),
+      std::nullopt);
+}
 
 // validateRankMap runs before any GPU access in the constructor; these cases
 // must reject bad topologies on CPU-only hosts.
@@ -96,7 +186,7 @@ TEST(MultimemNvlTransportValidationTest, CompatCtorRejectsOutOfRangeNvlRank) {
       "nvlRank must be in [0, nvlRanks)");
 }
 
-// Config-validation guards. All three run in the primary ctor body BEFORE
+// These config-validation guards run in the primary ctor body before
 // cudaGetDevice, so they are exercisable on CPU-only hosts with a null
 // bootstrap: none of the code paths past these throws is reached.
 
@@ -115,11 +205,12 @@ TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroDataBufferSize) {
       "dataBufferSize must be non-zero");
 }
 
-TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroSignalCount) {
+TEST(
+    MultimemNvlTransportValidationTest,
+    PrimaryCtorRejectsDefaultZeroSignalCount) {
   MultimemNvlTransportConfig config{};
   config.dataBufferSize = 1024;
-  config.userSignalCount = 0;
-  config.internalSignalCount = 0;
+  EXPECT_EQ(config.userSignalCount, 0);
   expectRuntimeErrorContains(
       [&] {
         MultimemNvlTransport(
@@ -133,12 +224,12 @@ TEST(MultimemNvlTransportValidationTest, PrimaryCtorRejectsZeroSignalCount) {
 
 TEST(
     MultimemNvlTransportValidationTest,
-    PrimaryCtorRejectsSignalCountOverflow) {
-  // Sum of two uint32_t maxes overflows the int32 clamp used downstream.
+    PrimaryCtorRejectsTotalSignalCountOverflow) {
   MultimemNvlTransportConfig config{};
-  config.dataBufferSize = 1024;
-  config.userSignalCount = std::numeric_limits<uint32_t>::max();
-  config.internalSignalCount = std::numeric_limits<uint32_t>::max();
+  config.dataBufferSize = 64;
+  config.userSignalCount = std::numeric_limits<int>::max();
+  config.pipelineDepth = 1;
+  config.maxGroups = 1;
   expectRuntimeErrorContains(
       [&] {
         MultimemNvlTransport(
@@ -147,7 +238,7 @@ TEST(
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "signalCount too large");
+      "invalid staging geometry or capacity");
 }
 
 TEST(

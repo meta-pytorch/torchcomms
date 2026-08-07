@@ -4,7 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -19,12 +21,66 @@ struct MultimemNvlTransportConfig {
 
   // Signal slots exposed through signal(), read_signal(), and
   // wait_signal_until().
-  uint32_t userSignalCount{1};
+  uint32_t userSignalCount{0};
 
-  // Signal slots reserved for transport-internal protocols. These are not
-  // addressable through the public signal API.
-  uint32_t internalSignalCount{0};
+  // Immutable staging geometry. Both values must be zero when staging is not
+  // used, or both must be non-zero when staging is enabled. `maxGroups` is the
+  // maximum supported `ThreadGroup::total_groups`; each group, pipeline lane,
+  // and NVLink rank requires one 16-byte-aligned data unit. Construction
+  // derives and reserves the corresponding internal signal region after the
+  // user-visible signal slots.
+  std::size_t pipelineDepth{0};
+  std::size_t maxGroups{0};
 };
+
+namespace detail {
+
+inline std::optional<uint32_t> checked_multimem_internal_signal_count(
+    const MultimemNvlTransportConfig& config,
+    int nvlRanks) {
+  if (nvlRanks <= 0 ||
+      config.userSignalCount > std::numeric_limits<int>::max()) {
+    return std::nullopt;
+  }
+
+  const auto signalsPerLaneWide =
+      multimem_staging_signals_per_lane_wide(static_cast<uint64_t>(nvlRanks));
+  if (signalsPerLaneWide > std::numeric_limits<uint32_t>::max()) {
+    return std::nullopt;
+  }
+
+  const bool hasPipelineDepth = config.pipelineDepth != 0;
+  const bool hasMaxGroups = config.maxGroups != 0;
+  if (hasPipelineDepth != hasMaxGroups) {
+    return std::nullopt;
+  }
+  if (!hasPipelineDepth) {
+    return 0;
+  }
+
+  constexpr std::size_t kDataAlignment = 16;
+  const std::size_t alignedUnits = config.dataBufferSize / kDataAlignment;
+  const auto ranks = static_cast<std::size_t>(nvlRanks);
+  if (config.maxGroups > alignedUnits ||
+      config.pipelineDepth > alignedUnits / config.maxGroups ||
+      ranks > alignedUnits / config.maxGroups / config.pipelineDepth) {
+    return std::nullopt;
+  }
+
+  const auto maxInternalSignals = static_cast<std::size_t>(
+      std::numeric_limits<int>::max() - config.userSignalCount);
+  const auto signalsPerLane = static_cast<std::size_t>(signalsPerLaneWide);
+  if (config.maxGroups > maxInternalSignals / signalsPerLane) {
+    return std::nullopt;
+  }
+  const auto signalsPerRound = config.maxGroups * signalsPerLane;
+  if (config.pipelineDepth > maxInternalSignals / signalsPerRound) {
+    return std::nullopt;
+  }
+  return static_cast<uint32_t>(config.pipelineDepth * signalsPerRound);
+}
+
+} // namespace detail
 
 /**
  * Host-side owner for a copy-based NVL multimem transport.
@@ -109,6 +165,8 @@ class MultimemNvlTransport {
   // rank-map preconditions on CPU-only hosts).
   int cudaDevice_{-1};
   const MultimemNvlTransportConfig config_;
+  uint32_t internalSignalCount_{0};
+  uint32_t signalsPerLane_{0};
   bool exchanged_{false};
   // Set when exchange() throws; subsequent calls throw instead of silently
   // retrying. Multicast object create/import/bind failures can leave partial
