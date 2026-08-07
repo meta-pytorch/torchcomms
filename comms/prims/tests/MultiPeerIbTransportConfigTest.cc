@@ -131,5 +131,32 @@ TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   EXPECT_TRUE(config.ibLazyConnect);
 }
 
+// PeerQpPayload is the lazy (ibLazyConnect) bilateral wire format: one is sent
+// and one received per peer on every materializePeer(), and both live on the
+// stack while in flight. Its qpns[] array is dimensioned by
+// kMaxIbQpsPerPeerPerNic, so that constant must stay a QP budget in its own
+// right rather than being derived from the kMaxIbGroups index space -- growing
+// the group index space must not grow what every lazy peer exchange costs. The
+// footprint bound is kMaxNicsPerGpu * 8192 QPNs, ~64KB.
+TEST(MultiPeerIbTransportConfigTest, LazyQpPayloadDoesNotScaleWithGroupLimit) {
+  EXPECT_LT(kMaxIbQpsPerPeerPerNic, kMaxIbGroups * kMaxIbQpsPerBlockPerNic);
+  EXPECT_LE(sizeof(PeerQpPayload), 72u * 1024u);
+}
+
+// The shape this limit exists for -- SendRecvTile's 256 channels, both
+// directions -- must fit the QP budget while landing above the eager exchange
+// cap, i.e. it is reachable only with ibLazyConnect=true.
+TEST(MultiPeerIbTransportConfigTest, MaxGroupShapeFitsBudgetAndRequiresLazy) {
+  MultipeerIbTransportConfig config;
+  config.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape
+  config.max_num_channels = kMaxIbGroups;
+  config.qpsPerConnection = 1;
+
+  const int mainQps = config.fixedChannelMainQpsPerPeerPerNic();
+  EXPECT_EQ(mainQps, kMaxIbGroups * kIbDirections);
+  EXPECT_LE(mainQps, kMaxIbQpsPerPeerPerNic);
+  EXPECT_GT(mainQps, kMaxEagerExchangeQpsPerPeerPerNic);
+}
+
 } // namespace
 } // namespace comms::prims

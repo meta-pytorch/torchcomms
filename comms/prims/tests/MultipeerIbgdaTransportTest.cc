@@ -2867,9 +2867,13 @@ class LazyModeTestFixture
     return GetParam();
   }
 
-  std::unique_ptr<TestIbTransport> createLazyTransport() {
+  std::unique_ptr<TestIbTransport> createLazyTransport(
+      int maxChannels = 64,
+      std::size_t perChannelSize = 0) {
     MultipeerIbTransportConfig config{
         .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = maxChannels,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
@@ -2918,6 +2922,93 @@ TEST_P(LazyModeTestFixture, QueueThenConnect) {
 
     transport->connectPeers();
     EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+// A full kMaxIbGroups channel count is reachable only through lazy peer
+// materialization: kMaxIbGroups channels x kIbDirections is far past
+// kMaxEagerExchangeQpsPerPeerPerNic. Materializes that shape for real and moves
+// data over it, so the bilateral PeerQpPayload exchange is exercised at the
+// widest group count the index space allows.
+TEST_P(LazyModeTestFixture, MaterializeAndTransferAboveEagerQpLimit) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  ASSERT_GT(kMaxIbGroups * kIbDirections, kMaxEagerExchangeQpsPerPeerPerNic);
+
+  constexpr std::size_t perChannelSize = 4 * 1024;
+  constexpr std::size_t nbytes = 64 * 1024;
+  constexpr int numBlocks = 1;
+  constexpr int blockSize = 32;
+  constexpr uint8_t testPattern = 0x5a;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  try {
+    auto transport = createLazyTransport(kMaxIbGroups, perChannelSize);
+    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testPutAndSignal(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          /*signalId=*/0,
+          /*signalVal=*/1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testWaitSignal(
+          peerTransport,
+          /*signalId=*/0,
+          /*expected=*/1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* dErrorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(dErrorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          dErrorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int hErrorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &hErrorCount, dErrorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(hErrorCount, 0)
+          << "Rank " << globalRank << ": " << hErrorCount
+          << " byte mismatches over a " << kMaxIbGroups << "-group lazy peer";
+    }
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }

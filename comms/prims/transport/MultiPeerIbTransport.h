@@ -281,9 +281,28 @@ constexpr int kMaxRanksForAllGather = 128;
 // block-owned QP shapes must use lazy peer materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
-constexpr int kMaxIbGroups = 64;
+// Group (channel) index space: device-side IB QP selection uses
+// ThreadGroup::block_id and requires block_id < maxGroups. This is an index
+// space only — per-group QP state is materialized lazily per group actually
+// used. Groups beyond kMaxEagerExchangeQpsPerPeerPerNic are NOT eligible for
+// the compact eager QPN-exchange wire format and therefore require lazy peer
+// materialization (ibLazyConnect=true); collectives that stay within that cap
+// pay no extra QP registration cost.
+constexpr int kMaxIbGroups = 256;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
-constexpr int kMaxIbQpsPerPeerPerNic = kMaxIbGroups * kMaxIbQpsPerBlockPerNic;
+
+// Budget for QPs actually created per (peer, NIC): max_num_channels *
+// direction_count * qpsPerConnection. Must stay independent of kMaxIbGroups:
+// it dimensions the PeerQpPayload::NicQpInfo::qpns wire array below, so
+// deriving it from the group index space would grow every lazy peer exchange
+// whenever that space grows. kMaxIbGroups * kMaxIbQpsPerBlockPerNic is also
+// not a meaningful bound — it multiplies two limits no configuration reaches
+// simultaneously.
+constexpr int kMaxIbQpsPerPeerPerNic = 8192;
+
+static_assert(
+    kMaxIbQpsPerPeerPerNic >= kMaxEagerExchangeQpsPerPeerPerNic,
+    "the eager-exchange QP cap must fit inside the created-QP budget");
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -344,6 +363,17 @@ struct PeerQpPayload {
   int maxGroups{0};
   int qpsPerBlockPerNic{0};
 };
+
+// This payload is sent and received once per peer on every materializePeer(),
+// and both copies are stack-resident while in flight, so its size is a
+// bootstrap cost every lazy collective pays per peer -- not only the ones that
+// ask for a large group count. It must stay within kMaxNicsPerGpu * 8192 QPNs
+// (~64KB) however large the group index space becomes; widening a QP-shape
+// limit past this has to revisit the wire format rather than silently scale
+// it.
+static_assert(
+    sizeof(PeerQpPayload) <= 72 * 1024,
+    "PeerQpPayload is exchanged and stack-allocated per peer; keep it small");
 
 struct PeerBufferPayload {
   IbgdaBufferExchInfo recvStaging;
