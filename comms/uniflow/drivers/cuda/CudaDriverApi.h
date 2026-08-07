@@ -7,10 +7,17 @@
 #include "comms/uniflow/Result.h"
 
 #if defined(__HIP_PLATFORM_AMD__)
-// hipify-perl does not map this newer VMM dma-buf handle type; alias the CUDA
-// spelling (which survives hipification untranslated) to the HIP type so the
-// hipified interface still names a valid type on AMD. The dma-buf export path
-// that uses it is implemented for AMD in a later diff.
+// hipify-perl does not map the VMM dma-buf handle type; alias the CUDA spelling
+// (which survives hipification untranslated) to the HIP type so the hipified
+// interface still names a valid type on AMD. This is a hipify mapping gap, not
+// a ROCm version gate: hipMemRangeHandleTypeDmaBufFd exists with the same value
+// (0x1) in ROCm 7.0 and 7.2.
+//
+// The dma-buf export path that consumes it is implemented for AMD:
+// CudaDeviceAdapter::exportDmaBuff calls cuMemGetHandleForAddressRange, gated
+// by amdGpuDirectRdmaSupported() (amdkfd peer-mem sysfs + kallsyms probe, see
+// CudaDriverApi.cpp); RdmaTransport::registerSegment falls back to plain
+// ibv_reg_mr when the probe reports no peer-mem support.
 using CUmemRangeHandleType = hipMemRangeHandleType;
 // Same hipify gap for the dma-buf-fd enumerator used by callers of
 // cuMemGetHandleForAddressRange.
