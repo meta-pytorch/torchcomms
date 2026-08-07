@@ -63,11 +63,8 @@ struct StageLayout {
 template <typename T>
 __device__ __forceinline__ StageLayout make_stage_layout(
     const comms::prims::MultimemNvlTransportDevice& transport,
-    uint32_t pipelineDepth,
     comms::prims::ThreadGroup& group) {
-  if (pipelineDepth == 0) {
-    pipelineDepth = 1;
-  }
+  const uint32_t pipelineDepth = transport.pipelineDepth;
 
   // 16-byte (uint4) alignment for every staging-window slice, so the per-rank
   // lane offsets are 128-bit aligned and the v4 multimem.ld_reduce / store fast
@@ -88,6 +85,18 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     printf(
         "NvlMultimem staging layout: invalid group_id=%u total_groups=%u\n",
         static_cast<unsigned>(group.group_id),
+        static_cast<unsigned>(group.total_groups));
+    __trap();
+  }
+  if (pipelineDepth == 0 || transport.maxGroups == 0 ||
+      transport.signalsPerLane == 0 ||
+      group.total_groups > transport.maxGroups) {
+    printf(
+        "NvlMultimem staging layout: invalid geometry depth=%u "
+        "maxGroups=%u signalsPerLane=%u total_groups=%u\n",
+        static_cast<unsigned>(pipelineDepth),
+        static_cast<unsigned>(transport.maxGroups),
+        static_cast<unsigned>(transport.signalsPerLane),
         static_cast<unsigned>(group.total_groups));
     __trap();
   }
@@ -139,14 +148,25 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     __trap();
   }
 #endif
-  const uint64_t signalsPerLane = multimem_staging_signals_per_lane(
+  const uint64_t expectedSignalsPerLane = multimem_staging_signals_per_lane(
       static_cast<uint32_t>(transport.nvlRanks));
+  const uint64_t signalsPerLane = transport.signalsPerLane;
+#if defined(__CUDA_ARCH__)
+  if (signalsPerLane != expectedSignalsPerLane) {
+    printf(
+        "NvlMultimem staging layout: signalsPerLane=%llu expected=%llu\n",
+        static_cast<unsigned long long>(signalsPerLane),
+        static_cast<unsigned long long>(expectedSignalsPerLane));
+    __trap();
+  }
+#endif
   const uint64_t signalsPerGroup = detail::checked_signal_product(
       static_cast<uint64_t>(pipelineDepth), signalsPerLane);
   const uint64_t requiredSignals = detail::checked_signal_product(
       static_cast<uint64_t>(group.total_groups), signalsPerGroup);
 #if defined(__CUDA_ARCH__)
-  if (requiredSignals > transport.internalLocalSignals.size()) {
+  if (requiredSignals > transport.internalLocalSignals.size() ||
+      requiredSignals > transport.internalMultimemSignals.size()) {
     printf(
         "NvlMultimem requires %llu internal signals "
         "(available=%u, groups=%u, pipelineDepth=%u, nvlRanks=%d)\n",
