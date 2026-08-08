@@ -21,6 +21,7 @@ struct CommsLogMetadata {
   std::string_view prefix;
 };
 
+// The first byte is the legacy severity initial used by stderr routing.
 std::string formatCommsLogMessage(
     std::string_view levelName,
     std::string_view message,
