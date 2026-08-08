@@ -3205,6 +3205,14 @@ cvars:
      with per-message-size optimal values. Set to 0 to use static CVAR
      values instead.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_LARGE_CHUNK_RANK_THRESHOLD
+   type        : int
+   default     : 32
+   description : |-
+     Prefer larger chunks with fewer staging slots for Blackwell AllReduceRing
+     communicators with more ranks than this threshold. Set to 0 or a negative
+     value to disable the heuristic.
+
  - name        : NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN
    type        : int64_t
    default     : 262144
