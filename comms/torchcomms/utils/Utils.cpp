@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/utils/Utils.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <stdexcept>
 #include <string>
