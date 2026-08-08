@@ -95,6 +95,42 @@ TEST(NvlMemExchangeTest, SelectShareableHandleTypeReturnsSupported) {
       type == ShareableHandleType::kPosixFd);
 }
 
+TEST(NvlMemExchangeTest, ExportTrialFabricHandleRoundTripsLoopback) {
+  CUdevice cuDev = 0;
+  int cudaDevice = 0;
+  if (!vmmDevice(cuDev, cudaDevice)) {
+    GTEST_SKIP() << "VMM / CUDA 12.3+ unavailable";
+  }
+  if (selectShareableHandleType(cudaDevice) != ShareableHandleType::kFabric) {
+    GTEST_SKIP() << "fabric handles unsupported on this device";
+  }
+
+  auto exported = exportTrialFabricHandle(cudaDevice);
+  ASSERT_TRUE(exported.has_value());
+  EXPECT_TRUE(exported->allocation->supportsFabric());
+
+  // A same-process import proves only that a node-local IMEX channel exists.
+  // Cross-host importability is what MCCL's initNvlFabricTopos establishes via
+  // a peer handshake; this asserts the loopback baseline that probe builds on.
+  EXPECT_TRUE(tryImportPeerFabricHandle(exported->handle));
+}
+
+TEST(NvlMemExchangeTest, TryImportPeerFabricHandleRejectsBogusHandle) {
+  CUdevice cuDev = 0;
+  int cudaDevice = 0;
+  if (!vmmDevice(cuDev, cudaDevice)) {
+    GTEST_SKIP() << "VMM / CUDA 12.3+ unavailable";
+  }
+  // A handle that was never exported must be rejected, not throw: the caller
+  // relies on a false return to fall back to per-host NVL groups.
+  const FabricHandle bogus = {};
+  EXPECT_FALSE(tryImportPeerFabricHandle(bogus));
+}
+
+TEST(NvlMemExchangeTest, ExportTrialFabricHandleRejectsInvalidDevice) {
+  EXPECT_FALSE(exportTrialFabricHandle(-1).has_value());
+}
+
 TEST(NvlMemExchangeTest, PosixFdExportImportRoundTripSharesMemory) {
   CUdevice cuDev = 0;
   int cudaDevice = 0;

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -450,6 +451,104 @@ CUmemGenericAllocationHandle importShareableHandle(const ShareableHandle& h) {
   }
 #endif
   return imported;
+}
+
+std::optional<TrialFabricExport> exportTrialFabricHandle(int cudaDevice) {
+#if CUDART_VERSION < 12030
+  (void)cudaDevice;
+  return std::nullopt;
+#else
+  // Every failure path below logs its stage. The caller folds a nullopt into a
+  // communicator-wide "fabric unusable" verdict, so an unexpected driver fault
+  // must stay distinguishable from a genuine no-IMEX rejection.
+  if (cudaDevice < 0) {
+    LOG_FIRST_N(WARNING, 1)
+        << "exportTrialFabricHandle: invalid cudaDevice " << cudaDevice;
+    return std::nullopt;
+  }
+  if (cuda_driver_lazy_init() != 0) {
+    LOG_FIRST_N(WARNING, 1)
+        << "exportTrialFabricHandle: CUDA driver lazy init failed";
+    return std::nullopt;
+  }
+  CUdevice cuDev = 0;
+  if (pfn_cuDeviceGet(&cuDev, cudaDevice) != CUDA_SUCCESS) {
+    LOG_FIRST_N(WARNING, 1)
+        << "exportTrialFabricHandle: cuDeviceGet failed for device "
+        << cudaDevice;
+    return std::nullopt;
+  }
+
+  // catch(...) is deliberate, not lazy: this runs immediately before a
+  // collective all-gather, so ANY escaping exception would drop this rank out
+  // of the collective while its peers block in it. CuMemAllocation::create
+  // rethrows std::bad_alloc, which is not a std::runtime_error.
+  try {
+    TrialFabricExport result;
+    result.allocation = CuMemAllocation::create(
+        cuDev, kTrialAllocSize, CU_MEM_HANDLE_TYPE_FABRIC);
+    // create() drops FABRIC and retries when the driver refuses it, so the
+    // allocation can come back without fabric support; exporting it as fabric
+    // would then fail with a misleading error.
+    if (!result.allocation->supportsFabric()) {
+      LOG_FIRST_N(WARNING, 1)
+          << "exportTrialFabricHandle: allocation has no fabric support "
+             "(cuMemCreate refused CU_MEM_HANDLE_TYPE_FABRIC)";
+      return std::nullopt;
+    }
+    result.handle =
+        exportShareableHandle(
+            result.allocation->handle(), ShareableHandleType::kFabric)
+            .fabric;
+    return result;
+  } catch (const std::exception& e) {
+    LOG_FIRST_N(WARNING, 1)
+        << "exportTrialFabricHandle: trial fabric export failed: " << e.what();
+    return std::nullopt;
+  } catch (...) {
+    LOG_FIRST_N(WARNING, 1)
+        << "exportTrialFabricHandle: trial fabric export failed with a "
+           "non-std exception";
+    return std::nullopt;
+  }
+#endif
+}
+
+bool tryImportPeerFabricHandle(const FabricHandle& handle) {
+#if CUDART_VERSION < 12030
+  (void)handle;
+  return false;
+#else
+  if (cuda_driver_lazy_init() != 0) {
+    LOG_FIRST_N(WARNING, 1)
+        << "tryImportPeerFabricHandle: CUDA driver lazy init failed";
+    return false;
+  }
+  // Local copy: cuMemImportFromShareableHandle takes a non-const void*.
+  FabricHandle local = handle;
+  CUmemGenericAllocationHandle imported = 0;
+  const CUresult err = pfn_cuMemImportFromShareableHandle(
+      &imported, &local, CU_MEM_HANDLE_TYPE_FABRIC);
+  if (err != CUDA_SUCCESS) {
+    const char* errStr = nullptr;
+    (void)pfn_cuGetErrorString(err, &errStr);
+    LOG_FIRST_N(WARNING, 1)
+        << "tryImportPeerFabricHandle: cuMemImportFromShareableHandle failed: "
+        << static_cast<int>(err) << " '" << (errStr ? errStr : "unknown")
+        << "'";
+    return false;
+  }
+  // A release failure is a leak worth reporting, but it does not change the
+  // verdict: the import -- the thing being measured -- already succeeded, and
+  // disabling MNNVL fleet-wide over a cleanup fault would be the wrong trade.
+  const CUresult releaseErr = pfn_cuMemRelease(imported);
+  if (releaseErr != CUDA_SUCCESS) {
+    LOG_FIRST_N(WARNING, 1)
+        << "tryImportPeerFabricHandle: cuMemRelease leaked the probe handle: "
+        << static_cast<int>(releaseErr);
+  }
+  return true;
+#endif
 }
 
 NvlPeerMem nvlMemExchangeVmm(

@@ -18,9 +18,12 @@
 #include <sys/types.h>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/memory/CuMemMapping.h"
 
 namespace comms::prims {
@@ -123,6 +126,49 @@ ShareableHandle exportShareableHandle(
  * eventually cuMemRelease it). Throws std::runtime_error on any failure.
  */
 CUmemGenericAllocationHandle importShareableHandle(const ShareableHandle& h);
+
+/**
+ * A live fabric-capable trial allocation together with its exported handle.
+ *
+ * selectShareableHandleType() proves only that this rank can import its OWN
+ * exported fabric handle, which succeeds whenever a node-local IMEX channel
+ * exists. It cannot observe whether two hosts share an IMEX domain, which is
+ * what importing a PEER's CU_MEM_HANDLE_TYPE_FABRIC handle requires. Pair this
+ * with tryImportPeerFabricHandle() on the far side to establish that.
+ *
+ * `allocation` keeps the exported handle importable; it must outlive every
+ * peer's import attempt.
+ */
+struct TrialFabricExport {
+  std::unique_ptr<CuMemAllocation> allocation;
+  FabricHandle handle{};
+};
+
+/**
+ * Creates a small fabric-capable allocation on `cudaDevice` and exports its
+ * fabric handle.
+ *
+ * Returns std::nullopt (without throwing) when the device cannot create or
+ * export a fabric handle, so a caller can report itself as not exportable
+ * rather than failing communicator init.
+ *
+ * Requires a CUDA context current on the calling thread for `cudaDevice`.
+ */
+std::optional<TrialFabricExport> exportTrialFabricHandle(int cudaDevice);
+
+/**
+ * Attempts to import a fabric handle exported by another process or host.
+ *
+ * Returns false (without throwing) when the import fails, which is what happens
+ * with CUDA_ERROR_INVALID_HANDLE when the exporting and importing hosts do not
+ * share an IMEX domain. On success the imported handle is released before
+ * returning; a release failure is logged but does not change the verdict, since
+ * the import itself is what is being measured. Does not map the imported
+ * allocation -- the guarantee is import viability only.
+ *
+ * Requires a CUDA context current on the calling thread.
+ */
+bool tryImportPeerFabricHandle(const FabricHandle& handle);
 
 /**
  * The per-rank peer memory state produced by an NVLink-domain exchange.
