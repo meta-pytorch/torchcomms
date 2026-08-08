@@ -220,6 +220,17 @@ __device__ __forceinline__ void validate_recv_progress_stage(
     ThreadGroup& group,
     const IbChannelProgress& state);
 
+__device__ __forceinline__ void validate_forward_progress_stage(
+    ThreadGroup& group,
+    const IbChannelProgress& state);
+
+__device__ __forceinline__ void validate_forward_paired_slots(
+    ThreadGroup& group,
+    const IbChannelProgress& recvState,
+    const IbChannelProgress& fwdSlot,
+    uint64_t recvExpectedEnd,
+    uint64_t fwdExpectedEnd);
+
 __device__ __forceinline__ void transition_progress_stage(
     ThreadGroup& group,
     IbChannelProgress& state,
@@ -2161,6 +2172,419 @@ __device__ __forceinline__ void forward(
 }
 
 /**
+ * Initialize transport-owned state for one resumable fused forward.
+ *
+ * A forward acts as a recv on `transport` and a send on `fwdTransport` for the
+ * same `group.group_id`. The combined progress lives in this transport's recv
+ * slot (driven through the `Fwd*` stages); `fwdTransport`'s send slot is held
+ * `Busy` for the whole op so a concurrent send on that group traps instead of
+ * silently sharing the fwd staging cursor.
+ *
+ * Init is all-or-nothing: both slots must be idle and both staging geometries
+ * are validated before either byte cursor is reserved. Zero-byte forwards mark
+ * both slots `Done` without reserving, matching blocking `forward()`.
+ */
+template <typename Transport>
+__device__ __forceinline__ void init_forward_progress(
+    Transport& transport,
+    ThreadGroup& group,
+    Transport& fwdTransport,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  /*
+   * NOTE: deliberately NO `static_assert(!AMD)` here, unlike progress_*_once.
+   * That asymmetry is required, not an oversight: the public wrapper
+   * P2pIbgdaTransportDevice::init_forward_progress() is a NON-template member,
+   * so it is instantiated in every AMD translation unit that merely includes
+   * the header -- a fail-closed assert here breaks the whole AMD build rather
+   * than only AMD *users* of the resumable API. The progress_*_once wrappers
+   * are templates (on CopyOp), so their guards fire only on real instantiation.
+   * NVIDIA-only enforcement therefore lives on the progress calls; an op cannot
+   * be driven to completion without them.
+   */
+  auto& recvChannelLayout = transport.channel_layout();
+  auto& fwdChannelLayout = fwdTransport.channel_layout();
+  auto& recvSlot = progress_recv_slot(transport, group);
+  auto& fwdSlot = progress_send_slot(fwdTransport, group);
+  assert_progress_slot_idle(group, recvSlot, "forward recv");
+  assert_progress_slot_idle(group, fwdSlot, "forward send");
+
+  IbChannelProgress recvState{};
+  IbChannelProgress fwdState{};
+  if (nbytes == 0) {
+    recvState.activeStage = detail::IbSendRecvProgressStage::Done;
+    fwdState.activeStage = detail::IbSendRecvProgressStage::Done;
+    store_progress_state(group, recvSlot, recvState);
+    store_progress_state(group, fwdSlot, fwdState);
+    return;
+  }
+  // All-or-nothing: validate both geometries (each traps on invalid) before
+  // reserving either transport byte cursor.
+  const ProgressGeometry recvGeometry = make_progress_geometry(
+      recvChannelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "init_forward_progress recv");
+  const ProgressGeometry fwdGeometry = make_progress_geometry(
+      fwdChannelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "init_forward_progress send");
+  reserve_progress_step(group, recvSlot, recvState, recvGeometry);
+  reserve_progress_step(group, fwdSlot, fwdState, fwdGeometry);
+  recvState.activeStage = detail::IbSendRecvProgressStage::FwdWaitDataReady;
+  fwdState.activeStage = detail::IbSendRecvProgressStage::Busy;
+  store_progress_state(group, recvSlot, recvState);
+  store_progress_state(group, fwdSlot, fwdState);
+#else
+  (void)transport;
+  (void)group;
+  (void)fwdTransport;
+  (void)nbytes;
+  (void)max_signal_bytes;
+#endif
+}
+
+/**
+ * Attempt bounded progress on one initialized fused forward.
+ *
+ * One call advances at most one chunk through the three `Fwd*` stages,
+ * mirroring the blocking `forward()` per-chunk ordering (recv DATA_READY -> fwd
+ * NIC_DONE -> CopyOp::forward -> recv SLOT_FREE -> fwd SLOT_FREE -> put). It
+ * never spins: each dependency check returns `Waiting`/`Progressed` so a
+ * scheduler can drive another lane. Non-idempotent side effects (DATA_READY
+ * consumption, the reduce, the recv SLOT_FREE signal, the fwd put) run during a
+ * stage transition and the new stage is persisted only after them, so a resume
+ * never replays them.
+ *
+ * The combined state is the recv slot; `fwdTransport`'s send slot stays `Busy`
+ * for the whole op, holding the fwd side's (constant) base cursor + tail
+ * padding and an `activeNextByte` that is advanced and validated in lockstep
+ * with the recv cursor after every put (`validate_forward_paired_slots`), so a
+ * corrupted or reused paired slot traps instead of silently desyncing.
+ * `bytesThis` is the min over both sides' chunk geometries, so the wire
+ * protocol stays compatible with `send()`/`recv()`/`forward()` in a homogeneous
+ * ring.
+ */
+template <typename Transport, typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_forward_once(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    Transport& fwdTransport,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout(),
+    Args... args) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifdef __HIP_PLATFORM_AMD__
+  static_assert(
+      sizeof(CopyOp) == 0,
+      "detail::progress_forward_once() requires NVIDIA GPU");
+#endif
+  auto& recvChannelLayout = transport.channel_layout();
+  auto& fwdChannelLayout = fwdTransport.channel_layout();
+  auto& recvSlot = progress_recv_slot(transport, group);
+  auto& fwdSlot = progress_send_slot(fwdTransport, group);
+  IbChannelProgress state = recvSlot; // combined forward state (recv slot)
+  if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
+    // A Done recv slot must pair with an idle (Done) fwd send slot; a
+    // still-Busy fwd slot here is a desync, not a benign early-out.
+    assert_progress_slot_idle(
+        group, fwdSlot, "forward send (paired, recv Done)");
+    return IbgdaSendRecvProgressStatus::Done;
+  }
+  validate_forward_progress_stage(group, state);
+
+  const ProgressGeometry recvGeom = make_progress_geometry(
+      recvChannelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "progress_forward_once recv");
+  const ProgressGeometry fwdGeom = make_progress_geometry(
+      fwdChannelLayout,
+      group,
+      nbytes,
+      max_signal_bytes,
+      "progress_forward_once send");
+  if (active_payload_offset(state) >= recvGeom.protocolBytes) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: progress_forward_once payloadOffset=%llu >= "
+          "protocolBytes=%llu without Done stage\n",
+          static_cast<unsigned long long>(active_payload_offset(state)),
+          static_cast<unsigned long long>(recvGeom.protocolBytes));
+    }
+    PIPES_DEVICE_TRAP();
+  }
+
+  const detail::IbSendRecvProgressStage initialStage = state.activeStage;
+  const std::size_t initialNextByte = state.activeNextByte;
+
+  // Per-side constants. The recv side's base/tail live in the (loaded) combined
+  // state; the fwd side's live in the still-Busy fwd send slot (set at init,
+  // constant for the op). The shared payload cursor is state.activeNextByte.
+  const uint64_t recvBase = static_cast<uint64_t>(state.activeBaseStep);
+  const std::size_t recvTailPadding = state.activeTailPadding;
+  const std::size_t recvPipelineBytes = recvGeom.perChannelBufferSize;
+  const uint64_t fwdBase = static_cast<uint64_t>(fwdSlot.activeBaseStep);
+  const std::size_t fwdTailPadding = fwdSlot.activeTailPadding;
+  const std::size_t fwdPipelineBytes = fwdGeom.perChannelBufferSize;
+
+  // The paired fwd send slot must still be the same Busy op, cursor-locked to
+  // the recv side, with both reserved ranges intact (see
+  // init_forward_progress).
+  validate_forward_paired_slots(
+      group,
+      state,
+      fwdSlot,
+      recvBase + recvGeom.protocolBytes + recvTailPadding,
+      fwdBase + fwdGeom.protocolBytes + fwdTailPadding);
+
+  IbLocalChannel& recvLocalChannel =
+      transport.local_channel(static_cast<uint32_t>(recvGeom.groupId));
+  const IbgdaLocalBuffer recvDataReady = recvLocalChannel.dataReady;
+  const IbRemoteChannel recvRemoteChannel =
+      makeIbRemoteChannel(recvChannelLayout, recvGeom.groupId);
+  IbLocalChannel& fwdLocalChannel =
+      fwdTransport.local_channel(static_cast<uint32_t>(fwdGeom.groupId));
+  const IbgdaLocalBuffer fwdSlotFree = fwdLocalChannel.slotFree;
+  const IbRemoteChannel fwdRemoteChannel =
+      makeIbRemoteChannel(fwdChannelLayout, fwdGeom.groupId);
+
+  // Dual-geometry chunk offsets from the shared payload cursor (mirrors the
+  // blocking forward loop; bytesThis is the min across both sides and slots).
+  const std::size_t payloadOff = state.activeNextByte;
+  const uint64_t recvStreamStart = recvBase + payloadOff;
+  const std::size_t recvPipelineOff =
+      static_cast<std::size_t>(recvStreamStart % recvPipelineBytes);
+  const int recvSlotIdx =
+      static_cast<int>(recvPipelineOff / recvGeom.perBlockSlot);
+  const std::size_t recvSlotOff =
+      static_cast<std::size_t>(recvSlotIdx) * recvGeom.perBlockSlot;
+  const std::size_t recvChunkOff = recvPipelineOff - recvSlotOff;
+  const std::size_t recvSlotRemaining = recvGeom.perBlockSlot - recvChunkOff;
+  const std::size_t recvStagingOff =
+      static_cast<std::size_t>(recvGeom.groupId) * recvPipelineBytes +
+      recvSlotOff + recvChunkOff;
+
+  const uint64_t fwdStreamStart = fwdBase + payloadOff;
+  // Pipeline generation (ring-buffer pass) of this chunk's fwd send slot -- the
+  // key for the per-slot completion-ticket mechanism (mirrors the blocking
+  // forward's fwdPipelineCycle), so a preceding progress_send_once on this slot
+  // is correctly awaited before staging reuse.
+  const uint64_t fwdPipelineGeneration = fwdStreamStart / fwdPipelineBytes;
+  const std::size_t fwdPipelineOff =
+      static_cast<std::size_t>(fwdStreamStart % fwdPipelineBytes);
+  const int fwdSlotIdx =
+      static_cast<int>(fwdPipelineOff / fwdGeom.perBlockSlot);
+  const std::size_t fwdSlotOff =
+      static_cast<std::size_t>(fwdSlotIdx) * fwdGeom.perBlockSlot;
+  const std::size_t fwdChunkOff = fwdPipelineOff - fwdSlotOff;
+  const std::size_t fwdSlotRemaining = fwdGeom.perBlockSlot - fwdChunkOff;
+  const std::size_t fwdStagingOff =
+      static_cast<std::size_t>(fwdGeom.groupId) * fwdPipelineBytes +
+      fwdSlotOff + fwdChunkOff;
+
+  const std::size_t dataRemaining = recvGeom.protocolBytes - payloadOff;
+  std::size_t bytesThis = recvGeom.chunkSize < fwdGeom.chunkSize
+      ? recvGeom.chunkSize
+      : fwdGeom.chunkSize;
+  bytesThis = bytesThis < dataRemaining ? bytesThis : dataRemaining;
+  bytesThis = bytesThis < recvSlotRemaining ? bytesThis : recvSlotRemaining;
+  bytesThis = bytesThis < fwdSlotRemaining ? bytesThis : fwdSlotRemaining;
+  const bool isFinalChunk = payloadOff + bytesThis >= recvGeom.protocolBytes;
+  const std::size_t recvProtocolBytesThis =
+      bytesThis + (isFinalChunk ? recvTailPadding : 0);
+  const std::size_t fwdProtocolBytesThis =
+      bytesThis + (isFinalChunk ? fwdTailPadding : 0);
+  const uint64_t fwdProtocolStreamEnd = fwdStreamStart + fwdProtocolBytesThis;
+
+  // Stage 1: wait for the upstream sender's DATA_READY on this chunk's lane.
+  if (state.activeStage == detail::IbSendRecvProgressStage::FwdWaitDataReady) {
+    uint32_t ready = 1;
+    if (group.is_leader()) {
+      unsigned long long current = 0;
+      unsigned long long expected = 0;
+      ready = poll_recv_data_ready(
+                  transport,
+                  recvLocalChannel,
+                  recvDataReady,
+                  recvProtocolBytesThis,
+                  current,
+                  expected)
+          ? 1U
+          : 0U;
+      if (!ready) {
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+            timeout,
+            "progress_forward_once waiting for DATA_READY expected>=%llu, "
+            "current=%llu",
+            expected,
+            current);
+      }
+    }
+    ready = group.broadcast<uint32_t>(ready);
+    if (!ready) {
+      // Nothing consumed (poll left receiver state untouched) -> Waiting.
+      return IbgdaSendRecvProgressStatus::Waiting;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::FwdWaitNicDone);
+  }
+
+  // Stage 2: wait for LOCAL COMPLETION of the fwd send slot (staging reuse),
+  // then reduce recv-staging into fwd-staging and release the upstream sender
+  // (recv SLOT_FREE) BEFORE waiting on the fwd receiver (ring-deadlock
+  // avoidance). Completion is tracked with the per-slot completion-ticket
+  // mechanism (try_prepare_send_slot), identical to ordinary
+  // progress_send_once and the blocking forward. Sharing that one mechanism is
+  // what lets a forward reuse a slot an ordinary send released (the ring's
+  // per-round seed send followed by a forward across a pipeline-window
+  // boundary).
+  if (state.activeStage == detail::IbSendRecvProgressStage::FwdWaitNicDone) {
+    if (!try_prepare_send_slot(
+            fwdTransport,
+            group,
+            static_cast<uint32_t>(fwdSlotIdx),
+            fwdPipelineGeneration,
+            timeout)) {
+      // Local completion not ready. If DATA_READY was consumed this call,
+      // persist the FwdWaitNicDone stage so the resume does not re-poll (and
+      // re-consume) DATA_READY.
+      if (state.activeStage != initialStage ||
+          state.activeNextByte != initialNextByte) {
+        store_progress_state(group, recvSlot, state);
+        return IbgdaSendRecvProgressStatus::Progressed;
+      }
+      return IbgdaSendRecvProgressStatus::Waiting;
+    }
+
+    const std::size_t validBytes =
+        valid_payload_bytes(payloadOff, bytesThis, recvGeom.payloadBytes);
+    if (validBytes > 0) {
+      CopyOp::forward(
+          dst ? static_cast<char*>(dst) + payloadOff : nullptr,
+          fwdChannelLayout.sendStagingPtr + fwdStagingOff,
+          recvChannelLayout.recvStagingPtr + recvStagingOff,
+          validBytes,
+          group,
+          payloadOff,
+          args...);
+    }
+    group.sync();
+    transport.signal(
+        group,
+        recvRemoteChannel.slotFree,
+        recvProtocolBytesThis,
+        IbDirection::Recv);
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::FwdWaitSlotFree);
+  }
+
+  // Stage 3: wait for the fwd receiver's SLOT_FREE, then put onto the next
+  // peer.
+  if (state.activeStage == detail::IbSendRecvProgressStage::FwdWaitSlotFree) {
+    if (fwdProtocolStreamEnd > fwdPipelineBytes) {
+      const uint64_t expected = fwdProtocolStreamEnd - fwdPipelineBytes;
+      uint32_t ready = 1;
+      unsigned long long current = 0;
+      if (group.is_leader()) {
+        current = static_cast<unsigned long long>(
+            fwdTransport.read_signal(fwdSlotFree));
+        ready = current >= expected ? 1U : 0U;
+        if (!ready) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "progress_forward_once waiting for SLOT_FREE expected>=%llu, "
+              "current=%llu",
+              static_cast<unsigned long long>(expected),
+              current);
+        }
+      }
+      ready = group.broadcast<uint32_t>(ready);
+      if (!ready) {
+        if (state.activeStage != initialStage ||
+            state.activeNextByte != initialNextByte) {
+          store_progress_state(group, recvSlot, state);
+          return IbgdaSendRecvProgressStatus::Progressed;
+        }
+        return IbgdaSendRecvProgressStatus::Waiting;
+      }
+    }
+
+    __threadfence_system();
+    group.sync();
+    if (group.is_leader()) {
+      ThreadGroup solo{
+          0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+      const auto completion = fwdTransport.put(
+          solo,
+          fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+          fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
+          bytesThis,
+          fwdRemoteChannel.dataReady,
+          fwdProtocolBytesThis,
+          /*counterBuf=*/{},
+          /*counterVal=*/0,
+          /*signalPerLane=*/true);
+      // Record the send completion on the fwd slot's ticket (same mechanism as
+      // ordinary/blocking sends), so a later op reusing this slot awaits it via
+      // try_prepare_send_slot in Stage 2.
+      record_send_completion(
+          fwdTransport,
+          static_cast<uint32_t>(fwdGeom.groupId),
+          static_cast<uint32_t>(fwdSlotIdx),
+          fwdPipelineGeneration,
+          completion);
+      // Keep the paired fwd send slot's cursor lockstep with the recv cursor
+      // (state.activeNextByte advances by the same bytesThis just below).
+      fwdSlot.activeNextByte += bytesThis;
+    }
+    group.sync();
+
+    state.activeNextByte += bytesThis;
+    if (active_payload_offset(state) >= recvGeom.protocolBytes) {
+      transition_progress_stage(
+          group, state, detail::IbSendRecvProgressStage::Done);
+      // reserve_progress_step already advanced both slots' nextStep at init and
+      // the final put advanced fwdSlot.activeNextByte in lockstep, so
+      // completion only releases the fwd send slot's Busy hold. The next init
+      // resets both slots' active* fields via reserve_progress_step.
+      if (group.is_leader()) {
+        fwdSlot.activeStage = detail::IbSendRecvProgressStage::Done;
+      }
+      store_progress_state(group, recvSlot, state);
+      return IbgdaSendRecvProgressStatus::Done;
+    }
+    transition_progress_stage(
+        group, state, detail::IbSendRecvProgressStage::FwdWaitDataReady);
+  }
+
+  // Advanced at least one stage/byte this call but did not complete.
+  if (state.activeStage != initialStage ||
+      state.activeNextByte != initialNextByte) {
+    store_progress_state(group, recvSlot, state);
+    return IbgdaSendRecvProgressStatus::Progressed;
+  }
+  return IbgdaSendRecvProgressStatus::Waiting;
+#else
+  (void)transport;
+  (void)group;
+  (void)dst;
+  (void)fwdTransport;
+  (void)nbytes;
+  (void)max_signal_bytes;
+  (void)timeout;
+  return IbgdaSendRecvProgressStatus::Done;
+#endif
+}
+
+/**
  * Maximum bytes one channel can send without blocking on pipeline backpressure.
  */
 __device__ __forceinline__ std::size_t pipeline_window(
@@ -2546,6 +2970,90 @@ __device__ __forceinline__ void validate_recv_progress_stage(
 }
 
 /**
+ * Trap if a forward progress state is not in a forward-owned stage.
+ *
+ * The resumable forward drives the recv slot through the `Fwd*` stages only.
+ * Any send/recv-owned stage here is protocol misuse.
+ *
+ * `Done` is accepted for defensiveness only: the sole caller
+ * (`progress_forward_once`) already returns early on `Done`, so this validator
+ * is never reached in that stage today. It stays in the accepted set so that a
+ * future caller which validates before the early-out does not trap on a
+ * legitimately-completed op.
+ */
+__device__ __forceinline__ void validate_forward_progress_stage(
+    ThreadGroup& group,
+    const IbChannelProgress& state) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (state.activeStage != detail::IbSendRecvProgressStage::FwdWaitDataReady &&
+      state.activeStage != detail::IbSendRecvProgressStage::FwdWaitNicDone &&
+      state.activeStage != detail::IbSendRecvProgressStage::FwdWaitSlotFree &&
+      state.activeStage != detail::IbSendRecvProgressStage::Done) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: progress_forward_once invalid stage=%d\n",
+          static_cast<int>(state.activeStage));
+    }
+    PIPES_DEVICE_TRAP();
+  }
+#endif
+}
+
+/**
+ * Trap if the recv slot's forward op and its paired fwd send slot have drifted.
+ *
+ * The resumable forward keeps the fwd send slot `Busy` and advances its byte
+ * cursor in lockstep with the recv slot after every put. This validates that
+ * pairing every progress call: the fwd slot is still the same `Busy` op, its
+ * in-flight cursor matches the recv side exactly, and both reserved byte ranges
+ * still end where init left them. A mismatch means the fwd slot was corrupted
+ * or reused (e.g. a stray send on the same group), which would otherwise desync
+ * the two staging streams silently.
+ */
+__device__ __forceinline__ void validate_forward_paired_slots(
+    ThreadGroup& group,
+    const IbChannelProgress& recvState,
+    const IbChannelProgress& fwdSlot,
+    uint64_t recvExpectedEnd,
+    uint64_t fwdExpectedEnd) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t ok = 1;
+  if (group.is_leader()) {
+    ok = (fwdSlot.activeStage == detail::IbSendRecvProgressStage::Busy &&
+          fwdSlot.activeNextByte == recvState.activeNextByte &&
+          static_cast<uint64_t>(recvState.nextStep) == recvExpectedEnd &&
+          static_cast<uint64_t>(fwdSlot.nextStep) == fwdExpectedEnd)
+        ? 1U
+        : 0U;
+    if (!ok) {
+      printf(
+          "[PIPES] FATAL: progress_forward_once paired-slot desync "
+          "fwdStage=%d fwdNextByte=%llu recvNextByte=%llu "
+          "recvNextStep=%llu recvExpectedEnd=%llu "
+          "fwdNextStep=%llu fwdExpectedEnd=%llu\n",
+          static_cast<int>(fwdSlot.activeStage),
+          static_cast<unsigned long long>(fwdSlot.activeNextByte),
+          static_cast<unsigned long long>(recvState.activeNextByte),
+          static_cast<unsigned long long>(recvState.nextStep),
+          static_cast<unsigned long long>(recvExpectedEnd),
+          static_cast<unsigned long long>(fwdSlot.nextStep),
+          static_cast<unsigned long long>(fwdExpectedEnd));
+    }
+  }
+  ok = group.broadcast<uint32_t>(ok);
+  if (!ok) {
+    PIPES_DEVICE_TRAP();
+  }
+#else
+  (void)group;
+  (void)recvState;
+  (void)fwdSlot;
+  (void)recvExpectedEnd;
+  (void)fwdExpectedEnd;
+#endif
+}
+
+/**
  * Return whether `current -> next` is a valid progress-state transition.
  */
 __device__ __forceinline__ bool is_valid_progress_transition(
@@ -2559,6 +3067,16 @@ __device__ __forceinline__ bool is_valid_progress_transition(
           next == detail::IbSendRecvProgressStage::Done;
     case detail::IbSendRecvProgressStage::WaitDataReady:
       return next == detail::IbSendRecvProgressStage::Done;
+    // Resumable fused forward: recv one chunk (FwdWaitDataReady), then wait for
+    // the fwd send-staging to drain (FwdWaitNicDone), then wait fwd SLOT_FREE +
+    // put (FwdWaitSlotFree), then loop to the next chunk or complete.
+    case detail::IbSendRecvProgressStage::FwdWaitDataReady:
+      return next == detail::IbSendRecvProgressStage::FwdWaitNicDone;
+    case detail::IbSendRecvProgressStage::FwdWaitNicDone:
+      return next == detail::IbSendRecvProgressStage::FwdWaitSlotFree;
+    case detail::IbSendRecvProgressStage::FwdWaitSlotFree:
+      return next == detail::IbSendRecvProgressStage::FwdWaitDataReady ||
+          next == detail::IbSendRecvProgressStage::Done;
     case detail::IbSendRecvProgressStage::Done:
       return false;
     case detail::IbSendRecvProgressStage::Busy:

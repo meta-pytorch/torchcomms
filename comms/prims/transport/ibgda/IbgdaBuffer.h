@@ -429,6 +429,12 @@ namespace detail {
  * Send operations use `WaitLocalCompletion` and `WaitSlotFree`; recv
  * operations use `WaitDataReady`. Blocking send/recv temporarily use `Busy` to
  * make same-direction overlap fail explicitly instead of sharing a cursor.
+ *
+ * The `Fwd*` stages drive one resumable fused forward (recv-into-staging,
+ * reduce, then RDMA put on to the next peer). Their combined state lives in the
+ * recv slot's `activeStage`; the fwd transport's send slot stays `Busy` for the
+ * whole op. They are appended so the on-HBM encoding of the existing values is
+ * unchanged. Ordinary (non-forward) send/recv progress rejects them.
  */
 enum class IbSendRecvProgressStage : uint8_t {
   Done,
@@ -436,6 +442,9 @@ enum class IbSendRecvProgressStage : uint8_t {
   WaitSlotFree,
   WaitDataReady,
   Busy,
+  FwdWaitDataReady,
+  FwdWaitNicDone,
+  FwdWaitSlotFree,
 };
 
 } // namespace detail

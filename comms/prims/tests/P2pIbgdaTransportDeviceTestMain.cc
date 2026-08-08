@@ -392,6 +392,143 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
 
 #endif // !__HIP_PLATFORM_AMD__
 
+// =============================================================================
+// Resumable-forward no-QP tests
+// Exercise the no-NIC control paths of init_forward_progress /
+// progress_forward_once: init state, the Done/idle pairing, and the paired-slot
+// desync trap. End-to-end correctness (real RDMA) is covered by
+// recv_forward_chain_test.
+// =============================================================================
+#ifndef __HIP_PLATFORM_AMD__
+
+namespace {
+constexpr int kFwdMaxChannels = 1;
+constexpr int kFwdPipelineDepth = 2;
+constexpr unsigned long long kFwdPerChannelBufferSize = 4096;
+constexpr unsigned long long kFwdNbytes = 1024;
+constexpr std::size_t kFwdChannelsBytes =
+    kFwdMaxChannels * sizeof(IbLocalChannel);
+} // namespace
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressZeroByteInit) {
+  DeviceBuffer selfCh(kFwdChannelsBytes);
+  DeviceBuffer fwdCh(kFwdChannelsBytes);
+  CUDACHECK_TEST(cudaMemset(selfCh.get(), 0, kFwdChannelsBytes));
+  CUDACHECK_TEST(cudaMemset(fwdCh.get(), 0, kFwdChannelsBytes));
+  runAndVerify([&](bool* d_success) {
+    runTestForwardProgressNoQp(
+        /*scenario=*/0,
+        static_cast<IbLocalChannel*>(selfCh.get()),
+        static_cast<IbLocalChannel*>(fwdCh.get()),
+        kFwdMaxChannels,
+        kFwdPipelineDepth,
+        kFwdPerChannelBufferSize,
+        kFwdNbytes,
+        d_success);
+  });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressInitLayout) {
+  DeviceBuffer selfCh(kFwdChannelsBytes);
+  DeviceBuffer fwdCh(kFwdChannelsBytes);
+  CUDACHECK_TEST(cudaMemset(selfCh.get(), 0, kFwdChannelsBytes));
+  CUDACHECK_TEST(cudaMemset(fwdCh.get(), 0, kFwdChannelsBytes));
+  runAndVerify([&](bool* d_success) {
+    runTestForwardProgressNoQp(
+        /*scenario=*/1,
+        static_cast<IbLocalChannel*>(selfCh.get()),
+        static_cast<IbLocalChannel*>(fwdCh.get()),
+        kFwdMaxChannels,
+        kFwdPipelineDepth,
+        kFwdPerChannelBufferSize,
+        kFwdNbytes,
+        d_success);
+  });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, ForwardProgressCompletedDone) {
+  DeviceBuffer selfCh(kFwdChannelsBytes);
+  DeviceBuffer fwdCh(kFwdChannelsBytes);
+  CUDACHECK_TEST(cudaMemset(selfCh.get(), 0, kFwdChannelsBytes));
+  CUDACHECK_TEST(cudaMemset(fwdCh.get(), 0, kFwdChannelsBytes));
+  runAndVerify([&](bool* d_success) {
+    runTestForwardProgressNoQp(
+        /*scenario=*/2,
+        static_cast<IbLocalChannel*>(selfCh.get()),
+        static_cast<IbLocalChannel*>(fwdCh.get()),
+        kFwdMaxChannels,
+        kFwdPipelineDepth,
+        kFwdPerChannelBufferSize,
+        kFwdNbytes,
+        d_success);
+  });
+}
+
+// Trap fixture: resets the device after each test to clear __trap() state.
+class P2pIbgdaForwardProgressTrapTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    CUDACHECK_TEST(cudaSetDevice(0));
+  }
+
+  void TearDown() override {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaDeviceReset();
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaSetDevice(0);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaGetLastError();
+  }
+
+  bool isExpectedTrapError(cudaError_t err) {
+    return err == cudaErrorIllegalInstruction || err == cudaErrorAssert ||
+        err == cudaErrorLaunchFailure;
+  }
+
+  // Raw cudaMalloc (not DeviceBuffer): after the expected trap, cudaFree would
+  // report the launch failure before TearDown can reset the device.
+  IbLocalChannel* allocZeroedChannels() {
+    IbLocalChannel* p = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&p, kFwdChannelsBytes));
+    CUDACHECK_TEST(cudaMemset(p, 0, kFwdChannelsBytes));
+    return p;
+  }
+};
+
+TEST_F(P2pIbgdaForwardProgressTrapTest, PairedSlotDesyncTraps) {
+  IbLocalChannel* selfCh = allocZeroedChannels();
+  IbLocalChannel* fwdCh = allocZeroedChannels();
+  const cudaError_t err = runTestForwardProgressTrap(
+      /*scenario=*/0,
+      selfCh,
+      fwdCh,
+      kFwdMaxChannels,
+      kFwdPipelineDepth,
+      kFwdPerChannelBufferSize,
+      kFwdNbytes);
+  EXPECT_TRUE(isExpectedTrapError(err))
+      << "Expected trap from paired-slot desync, got: "
+      << cudaGetErrorString(err);
+}
+
+TEST_F(P2pIbgdaForwardProgressTrapTest, DoneRecvWithBusyFwdTraps) {
+  IbLocalChannel* selfCh = allocZeroedChannels();
+  IbLocalChannel* fwdCh = allocZeroedChannels();
+  const cudaError_t err = runTestForwardProgressTrap(
+      /*scenario=*/1,
+      selfCh,
+      fwdCh,
+      kFwdMaxChannels,
+      kFwdPipelineDepth,
+      kFwdPerChannelBufferSize,
+      kFwdNbytes);
+  EXPECT_TRUE(isExpectedTrapError(err))
+      << "Expected trap from Done recv paired with Busy fwd, got: "
+      << cudaGetErrorString(err);
+}
+
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests
 
 int main(int argc, char** argv) {

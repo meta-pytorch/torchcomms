@@ -2197,6 +2197,74 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * Initialize transport-owned state for one resumable fused forward.
+   *
+   * A forward acts as a recv on `*this` and a send on `fwd` for the same
+   * `group.group_id`. The combined progress lives in this transport's recv slot
+   * (driven through the `Fwd*` stages); `fwd`'s send slot is held `Busy` for
+   * the whole op. Init is all-or-nothing across both slots and validates both
+   * geometries before reserving either cursor. Zero-byte forwards mark both
+   * slots `Done`, matching blocking `forward()`. IBGDA-only.
+   *
+   * @param group Thread group that will execute all later progress calls.
+   * @param fwd Forward transport (sends to the next peer in the ring).
+   * @param nbytes Number of user-buffer bytes to receive and forward.
+   * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
+   *
+   * @pre Every `progress_forward_once()` call driving this op must pass the
+   *      same `group`, `fwd`, `nbytes` and `max_signal_bytes`. Per-call
+   *      geometry is recomputed in registers rather than persisted alongside
+   *      the cursor (see `detail::ProgressGeometry`), so this is NOT
+   *      validated: changing any of them mid-op silently reinterprets the
+   *      reserved byte cursor against a different chunk layout.
+   */
+  __device__ __forceinline__ void init_forward_progress(
+      ThreadGroup& group,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0) {
+    detail::init_forward_progress(*this, group, fwd, nbytes, max_signal_bytes);
+  }
+
+  /**
+   * Attempt bounded progress on one initialized fused forward.
+   *
+   * One call advances at most one chunk through the three `Fwd*` stages,
+   * mirroring the blocking `forward()` per-chunk ordering (recv DATA_READY ->
+   * fwd NIC_DONE -> `CopyOp::forward` -> recv SLOT_FREE -> fwd SLOT_FREE ->
+   * put). It never spins: each dependency check returns `Waiting`/`Progressed`
+   * so a scheduler can drive another lane. Returning `Done` means the reserved
+   * protocol byte range has completed. `CopyOp` must expose
+   * `forward(dst, fwd_staging, staging, bytes, group, dataOffset, args...)`;
+   * `dst` may be nullptr for fused reduce-scatter. IBGDA-only.
+   *
+   * @param group Thread group matching the one used during initialization.
+   * @param dst Application destination, or nullptr if `CopyOp` handles it.
+   * @param fwd Forward transport matching the one used during initialization.
+   * @param nbytes Number of user-buffer bytes from the matching init call.
+   * @param max_signal_bytes Maximum signaled sub-chunk size from init.
+   * @param timeout Optional device timeout checked while dependencies wait.
+   * @param args Additional arguments forwarded to `CopyOp::forward`.
+   *
+   * @pre `group`, `fwd`, `nbytes` and `max_signal_bytes` must be identical on
+   *      every call for this op and equal to those given to
+   *      `init_forward_progress()`. This is NOT validated -- see that
+   *      function's precondition for why.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_forward_once(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+    return detail::progress_forward_once<P2pIbgdaTransportDevice, CopyOp>(
+        *this, group, dst, fwd, nbytes, max_signal_bytes, timeout, args...);
+  }
+
+  /**
    * send — send one block's tile via pipelined RDMA.
    *
    * Copies src → sendStaging, then RDMA puts sendStaging → peer's recvStaging.

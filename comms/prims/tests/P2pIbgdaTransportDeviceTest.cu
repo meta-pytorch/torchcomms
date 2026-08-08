@@ -416,4 +416,212 @@ void runTestWaitSignalNoTimeout(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+// =============================================================================
+// Resumable-forward (init_forward_progress / progress_forward_once) no-QP tests
+//
+// These exercise ONLY the no-NIC control paths: zero-byte init, init state
+// layout, the Done/idle-pairing early-return, and the paired-slot desync trap.
+// They never reach a signal wait or RDMA put (which need real QPs); those are
+// covered by the distributed recv_forward_chain_test. A geometry-only
+// IbChannelLayout + a zeroed IbLocalChannel array is enough because the trap
+// and init paths touch only progress-slot state, not staging/signal buffers.
+// Guarded NVIDIA-only because progress_forward_once carries a dependent
+// static_assert(sizeof(CopyOp)==0) on AMD.
+// =============================================================================
+#ifndef __HIP_PLATFORM_AMD__
+namespace {
+
+// Build a QP-less transport over a caller-provided (zeroed) IbLocalChannel
+// array with a geometry-only channel layout.
+__device__ __forceinline__ P2pIbgdaTransportDevice makeNoQpForwardTransport(
+    IbLocalChannel* channels,
+    int maxChannels,
+    int pipelineDepth,
+    std::size_t perChannelBufferSize) {
+  IbChannelLayout layout{};
+  layout.maxChannels = maxChannels;
+  layout.numLanes = 1;
+  layout.pipelineDepth = pipelineDepth;
+  layout.perChannelBufferSize = perChannelBufferSize;
+  layout.perChannelSize = perChannelBufferSize;
+  return P2pIbgdaTransportDevice(
+      DeviceSpan<NicDeviceIbgdaResources>{}, // empty NIC span => no QPs
+      IbgdaRemoteBuffer{},
+      IbgdaLocalBuffer{},
+      IbgdaLocalBuffer{},
+      /*numSignalSlots=*/0,
+      /*numCounterSlots=*/0,
+      maxChannels,
+      /*qpsPerConnection=*/1,
+      /*qpDirectionCount=*/kIbDirections,
+      DeviceSpan<IbLocalChannel>(channels, static_cast<uint32_t>(maxChannels)),
+      layout);
+}
+
+} // namespace
+
+// scenario: 0 = zero-byte init -> both slots Done, both nextStep preserved;
+// 1 = non-zero init state layout; 2 = completed op (both slots Done, equal
+// cursors) -> progress_forward_once returns Done.
+__global__ void testForwardProgressNoQp(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes,
+    bool* success) {
+  auto group = make_block_group();
+  P2pIbgdaTransportDevice self = makeNoQpForwardTransport(
+      self_channels,
+      maxChannels,
+      pipelineDepth,
+      static_cast<std::size_t>(perChannelBufferSize));
+  P2pIbgdaTransportDevice fwd = makeNoQpForwardTransport(
+      fwd_channels,
+      maxChannels,
+      pipelineDepth,
+      static_cast<std::size_t>(perChannelBufferSize));
+  IbLocalChannel& selfCh = self.local_channel(0u);
+  IbLocalChannel& fwdCh = fwd.local_channel(0u);
+  const std::size_t proto = (static_cast<std::size_t>(nbytes) + 15ULL) & ~15ULL;
+
+  bool ok = true;
+  if (scenario == 0) {
+    if (group.is_leader()) {
+      selfCh.recvProgress.nextStep = 777;
+      fwdCh.sendProgress.nextStep = 888;
+    }
+    group.sync();
+    self.init_forward_progress(group, fwd, /*nbytes=*/0);
+    if (group.is_leader()) {
+      ok = selfCh.recvProgress.activeStage ==
+              detail::IbSendRecvProgressStage::Done &&
+          fwdCh.sendProgress.activeStage ==
+              detail::IbSendRecvProgressStage::Done &&
+          selfCh.recvProgress.nextStep == 777 &&
+          fwdCh.sendProgress.nextStep == 888;
+    }
+  } else if (scenario == 1) {
+    self.init_forward_progress(group, fwd, static_cast<std::size_t>(nbytes));
+    if (group.is_leader()) {
+      ok = selfCh.recvProgress.activeStage ==
+              detail::IbSendRecvProgressStage::FwdWaitDataReady &&
+          fwdCh.sendProgress.activeStage ==
+              detail::IbSendRecvProgressStage::Busy &&
+          selfCh.recvProgress.activeNextByte == 0 &&
+          fwdCh.sendProgress.activeNextByte == 0 &&
+          static_cast<std::size_t>(selfCh.recvProgress.nextStep) >= proto &&
+          static_cast<std::size_t>(fwdCh.sendProgress.nextStep) >= proto;
+    }
+  } else if (scenario == 2) {
+    if (group.is_leader()) {
+      selfCh.recvProgress.activeStage = detail::IbSendRecvProgressStage::Done;
+      selfCh.recvProgress.activeNextByte = proto;
+      fwdCh.sendProgress.activeStage = detail::IbSendRecvProgressStage::Done;
+      fwdCh.sendProgress.activeNextByte = proto;
+    }
+    group.sync();
+    const IbgdaSendRecvProgressStatus st = self.progress_forward_once(
+        group, nullptr, fwd, static_cast<std::size_t>(nbytes));
+    if (group.is_leader()) {
+      ok = st == IbgdaSendRecvProgressStatus::Done &&
+          selfCh.recvProgress.activeNextByte ==
+              fwdCh.sendProgress.activeNextByte;
+    }
+  }
+  if (group.is_leader()) {
+    *success = ok;
+  }
+}
+
+// scenario: 0 = paired-slot cursor desync (init, then corrupt the fwd send
+// slot's cursor) -> validate_forward_paired_slots traps; 1 = Done recv slot
+// paired with a still-Busy fwd slot -> Done-pairing assert traps.
+__global__ void testForwardProgressTrap(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes) {
+  auto group = make_block_group();
+  P2pIbgdaTransportDevice self = makeNoQpForwardTransport(
+      self_channels,
+      maxChannels,
+      pipelineDepth,
+      static_cast<std::size_t>(perChannelBufferSize));
+  P2pIbgdaTransportDevice fwd = makeNoQpForwardTransport(
+      fwd_channels,
+      maxChannels,
+      pipelineDepth,
+      static_cast<std::size_t>(perChannelBufferSize));
+  IbLocalChannel& selfCh = self.local_channel(0u);
+  IbLocalChannel& fwdCh = fwd.local_channel(0u);
+
+  if (scenario == 0) {
+    self.init_forward_progress(group, fwd, static_cast<std::size_t>(nbytes));
+    if (group.is_leader()) {
+      fwdCh.sendProgress.activeNextByte += 16; // desync the paired cursor
+    }
+    group.sync();
+    self.progress_forward_once(
+        group, nullptr, fwd, static_cast<std::size_t>(nbytes));
+  } else if (scenario == 1) {
+    if (group.is_leader()) {
+      selfCh.recvProgress.activeStage = detail::IbSendRecvProgressStage::Done;
+      fwdCh.sendProgress.activeStage = detail::IbSendRecvProgressStage::Busy;
+    }
+    group.sync();
+    self.progress_forward_once(
+        group, nullptr, fwd, static_cast<std::size_t>(nbytes));
+  }
+}
+
+void runTestForwardProgressNoQp(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes,
+    bool* d_success) {
+  testForwardProgressNoQp<<<1, 1>>>(
+      scenario,
+      self_channels,
+      fwd_channels,
+      maxChannels,
+      pipelineDepth,
+      perChannelBufferSize,
+      nbytes,
+      d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+cudaError_t runTestForwardProgressTrap(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes) {
+  // Intentionally unchecked - we expect the kernel to trap.
+  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
+  testForwardProgressTrap<<<1, 1>>>(
+      scenario,
+      self_channels,
+      fwd_channels,
+      maxChannels,
+      pipelineDepth,
+      perChannelBufferSize,
+      nbytes);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  return cudaDeviceSynchronize();
+}
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests

@@ -94,4 +94,35 @@ void runTestWaitSignalNoTimeout(
     uint32_t timeout_ms,
     bool* d_success);
 
+// =============================================================================
+// Resumable-forward no-QP tests (NVIDIA-only). `self_channels`/`fwd_channels`
+// are zeroed device IbLocalChannel arrays of length `maxChannels`.
+// =============================================================================
+#ifndef __HIP_PLATFORM_AMD__
+// scenario 0/1/2: zero-byte init / init layout / completed-Done. Sets
+// *d_success.
+void runTestForwardProgressNoQp(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes,
+    bool* d_success);
+
+// scenario 0/1: paired-slot cursor desync / Done-recv-with-Busy-fwd. Expected
+// to
+// __trap(); returns the cudaError from cudaDeviceSynchronize for trap
+// detection.
+cudaError_t runTestForwardProgressTrap(
+    int scenario,
+    IbLocalChannel* self_channels,
+    IbLocalChannel* fwd_channels,
+    int maxChannels,
+    int pipelineDepth,
+    unsigned long long perChannelBufferSize,
+    unsigned long long nbytes);
+#endif // !__HIP_PLATFORM_AMD__
+
 } // namespace comms::prims::tests
