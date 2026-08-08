@@ -26,16 +26,45 @@ if(EXISTS "${CONDA_INCLUDE}/glog/logging.h")
     set_target_properties(glog::glog_headers PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${CONDA_INCLUDE}"
     )
+    set(_glog_defs)
+    if(EXISTS "${CONDA_INCLUDE}/glog/export.h")
+        list(APPEND _glog_defs GLOG_USE_GLOG_EXPORT)
+    endif()
+    file(STRINGS "${CONDA_INCLUDE}/glog/logging.h" _glog_public_init
+        REGEX "bool[ \t]+IsGoogleLoggingInitialized\\(\\)")
+    if(_glog_public_init)
+        list(APPEND _glog_defs TORCHCOMMS_GLOG_HAS_PUBLIC_INIT_CHECK)
+    endif()
+    if(_glog_defs)
+        set_target_properties(glog::glog PROPERTIES
+            INTERFACE_COMPILE_DEFINITIONS "${_glog_defs}")
+        set_target_properties(glog::glog_headers PROPERTIES
+            INTERFACE_COMPILE_DEFINITIONS "${_glog_defs}")
+    endif()
     message(STATUS "Using glog: ${_GLOG_LIB}")
 else()
     find_package(glog 0.4.0 QUIET CONFIG NO_CMAKE_PACKAGE_REGISTRY)
     if(glog_FOUND)
         message(STATUS "Found system glog: ${glog_VERSION}")
         get_target_property(_glog_inc glog::glog INTERFACE_INCLUDE_DIRECTORIES)
+        get_target_property(_glog_defs glog::glog INTERFACE_COMPILE_DEFINITIONS)
+        if(NOT _glog_defs OR _glog_defs MATCHES "-NOTFOUND$")
+            set(_glog_defs)
+        endif()
+        if(glog_VERSION VERSION_GREATER_EQUAL "0.6.0")
+            set_property(TARGET glog::glog APPEND PROPERTY
+                INTERFACE_COMPILE_DEFINITIONS
+                TORCHCOMMS_GLOG_HAS_PUBLIC_INIT_CHECK)
+            list(APPEND _glog_defs TORCHCOMMS_GLOG_HAS_PUBLIC_INIT_CHECK)
+        endif()
         add_library(glog::glog_headers INTERFACE IMPORTED GLOBAL)
         set_target_properties(glog::glog_headers PROPERTIES
             INTERFACE_INCLUDE_DIRECTORIES "${_glog_inc}"
         )
+        if(_glog_defs AND NOT _glog_defs MATCHES "-NOTFOUND$")
+            set_target_properties(glog::glog_headers PROPERTIES
+                INTERFACE_COMPILE_DEFINITIONS "${_glog_defs}")
+        endif()
     else()
         message(STATUS "System glog not found, fetching v0.4.0 via FetchContent")
         include(FetchContent)
