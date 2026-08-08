@@ -119,6 +119,7 @@ if has_triton():  # noqa: C901
 
             # -- Wait for slot reuse (NIC must have finished reading this slot) --
             if step >= pipeline_depth:
+                # pyrefly: ignore [bad-argument-type]
                 wait_counter(win, 0, base + step - pipeline_depth + 1)
 
             # -- Phase 1: Local copy src -> send_staging (all send blocks) --
@@ -147,7 +148,12 @@ if has_triton():  # noqa: C901
                 # Last block: wait for receiver to free recv_staging[slot].
                 if step >= pipeline_depth:
                     wait_signal_from(
-                        win, peer_rank, 1, base + step - pipeline_depth + 1
+                        # pyrefly: ignore [bad-argument-type]
+                        win,
+                        peer_rank,
+                        # pyrefly: ignore [bad-argument-type]
+                        1,
+                        base + step - pipeline_depth + 1,
                     )
 
                 # Compute actual bytes for this section (last section may be
@@ -170,7 +176,9 @@ if has_triton():  # noqa: C901
                     staging_byte_offset,  # src_offset (bytes)
                     peer_rank,
                     actual_section_bytes,
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # signal_id = DATA_READY
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # counter_id = NIC_DONE
                 )
 
@@ -211,6 +219,7 @@ if has_triton():  # noqa: C901
             slot = step % pipeline_depth
 
             # -- Wait for data to arrive from sender --
+            # pyrefly: ignore [bad-argument-type]
             wait_signal_from(win, peer_rank, 0, base + step + 1)
 
             # -- Local copy: recv_staging[slot] -> dst (all recv blocks) --
@@ -235,6 +244,7 @@ if has_triton():  # noqa: C901
             expected = num_recv_blocks * (step // pipeline_depth + 1)
 
             if old_count + 1 == expected:
+                # pyrefly: ignore [bad-argument-type]
                 signal_block(win, peer_rank, 1, 1)  # SLOT_FREE += 1
 
     @requires_torchcomms

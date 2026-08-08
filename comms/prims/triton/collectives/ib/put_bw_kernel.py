@@ -113,7 +113,9 @@ if has_triton():  # noqa: C901
                     staging_byte_offset,  # src_offset in our staging
                     peer_rank,
                     section_bytes,
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # signal_id = DATA_READY
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # counter_id = NIC_DONE
                 )
 
@@ -123,13 +125,16 @@ if has_triton():  # noqa: C901
             # ALL_DONE increments by 1 per iteration (not per step), so
             # use iteration+1, NOT base+1 (base = iteration * total_steps
             # would grow too fast and deadlock on iteration >= 1).
+            # pyrefly: ignore [bad-argument-type]
             wait_signal_from(win, peer_rank, 1, iteration + 1)
         else:
             # -- Recv block --
             # Wait for all data to arrive.
+            # pyrefly: ignore [bad-argument-type]
             wait_signal_from(win, peer_rank, 0, base + total_steps)
             # Signal sender that all data was delivered.
             fence(win)
+            # pyrefly: ignore [bad-argument-type]
             signal_block(win, peer_rank, 1, 1)  # ALL_DONE
 
     # ------------------------------------------------------------------
@@ -184,9 +189,15 @@ if has_triton():  # noqa: C901
 
                 # Wait for NIC + receiver to free the slot before reuse.
                 if step >= pipeline_depth:
+                    # pyrefly: ignore [bad-argument-type]
                     wait_counter(win, 0, base + step - pipeline_depth + 1)
                     wait_signal_from(
-                        win, peer_rank, 1, base + step - pipeline_depth + 1
+                        # pyrefly: ignore [bad-argument-type]
+                        win,
+                        peer_rank,
+                        # pyrefly: ignore [bad-argument-type]
+                        1,
+                        base + step - pipeline_depth + 1,
                     )
 
                 staging_byte_offset = slot * section_elements * elem_size_bytes
@@ -207,16 +218,20 @@ if has_triton():  # noqa: C901
                     staging_byte_offset,  # src_offset in our staging
                     peer_rank,
                     section_bytes,
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # signal_id = DATA_READY
+                    # pyrefly: ignore [bad-argument-type]
                     0,  # counter_id = NIC_DONE
                 )
         else:
             # -- Recv block --
             for step in range(total_steps):
                 # Wait for data to arrive for this step.
+                # pyrefly: ignore [bad-argument-type]
                 wait_signal_from(win, peer_rank, 0, base + step + 1)
                 fence(win)
                 # Signal sender that the slot is free for reuse.
+                # pyrefly: ignore [bad-argument-type]
                 signal_block(win, peer_rank, 1, 1)  # SLOT_FREE += 1
 
     # ------------------------------------------------------------------
@@ -321,6 +336,7 @@ if has_triton():  # noqa: C901
                 else:
                     # No data for this tile in the last (partial) section.
                     # Still signal DATA_READY so the receiver doesn't deadlock.
+                    # pyrefly: ignore [bad-argument-type]
                     signal_block(win, peer_rank, pid, 1)
         else:
             # -- Recv block --
@@ -331,4 +347,5 @@ if has_triton():  # noqa: C901
                 wait_signal_from(win, peer_rank, recv_pid, base + step + 1)
                 fence(win)
                 # Signal sender that my tile's slot is free.
+                # pyrefly: ignore [bad-argument-type]
                 signal_block(win, peer_rank, num_blocks + recv_pid, 1)
