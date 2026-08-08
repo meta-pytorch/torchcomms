@@ -583,6 +583,7 @@ __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_chunk()
   return ibgda->pipeline_chunk();
 }
 
+template <typename>
 __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
     ThreadGroup& group,
     std::size_t nbytes,
@@ -594,6 +595,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
   }
 }
 
+template <typename>
 __device__ __forceinline__ void P2pIbTransportDevice::init_recv_progress(
     ThreadGroup& group,
     std::size_t nbytes,
