@@ -2,6 +2,7 @@
 
 #include "comms/ctran/ibverbx/IbvDevice.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/Exception.h"
 
 namespace ibverbx {
 
@@ -186,8 +187,9 @@ IbvDevice::IbvDevice(ibv_device* ibvDevice, int port, bool dataDirect)
   context_ = ibvSymbols.ibv_internal_open_device(device_);
   if (!context_) {
     XLOGF(ERR, "Failed to open device {}", device_->name);
-    throw std::runtime_error(
-        fmt::format("Failed to open device {}", device_->name));
+    throw ctran::utils::Exception(
+        fmt::format("Failed to open device {}", device_->name),
+        commSystemError);
   }
   if (dataDirect && (mlx5dvDmaBufDataDirectLinkCapable(device_, context_))) {
     dataDirect_ = true;
