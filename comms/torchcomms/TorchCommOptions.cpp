@@ -32,7 +32,10 @@ bool CommOptions::operator==(const CommOptions& other) const {
 }
 
 template <typename T>
-T CommOptions::getHint(std::string_view key, const T& default_value) const {
+T detail::getHint(
+    const std::unordered_map<std::string, std::string>& hints,
+    std::string_view key,
+    const T& default_value) {
   auto it = hints.find(std::string(key));
   if (it == hints.end()) {
     return default_value;
@@ -55,6 +58,24 @@ T CommOptions::getHint(std::string_view key, const T& default_value) const {
     return result;
   }
 }
+
+template <typename T>
+T CommOptions::getHint(std::string_view key, const T& default_value) const {
+  return detail::getHint(hints, key, default_value);
+}
+
+template bool detail::getHint<bool>(
+    const std::unordered_map<std::string, std::string>&,
+    std::string_view,
+    const bool&);
+template size_t detail::getHint<size_t>(
+    const std::unordered_map<std::string, std::string>&,
+    std::string_view,
+    const size_t&);
+template std::string detail::getHint<std::string>(
+    const std::unordered_map<std::string, std::string>&,
+    std::string_view,
+    const std::string&);
 
 template bool CommOptions::getHint<bool>(std::string_view, const bool&) const;
 template size_t CommOptions::getHint<size_t>(std::string_view, const size_t&)
