@@ -1,0 +1,190 @@
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+# pyre-unsafe
+
+"""GPU-free interface tests for the composable send/recv framework.
+
+Asserts the *contract* (types, signatures, transport abstraction, reserved
+stubs) without compiling or launching any kernel, so this runs in CI with no
+GPU. The real end-to-end path is exercised by ``test_minimal_sendrecv``.
+"""
+
+import dataclasses
+import inspect
+import unittest
+from typing import Any, cast
+
+from torch.utils._triton import has_triton
+
+
+class ContractTest(unittest.TestCase):
+    def test_ctx_fields(self) -> None:
+        from comms.dsl import Ctx
+
+        names = {f.name for f in dataclasses.fields(Ctx)}
+        for expected in (
+            "in_ptr",
+            "out_ptr",
+            "region_ptr",
+            "tile_idx",
+            "block_id",
+            "flat_tid",
+            "num_blocks",
+            "peer",
+            "recv_peer",
+            "shard_idx",
+            "in_strides",
+            "out_strides",
+            "extra",
+        ):
+            self.assertIn(expected, names)
+        # Construct + extension point works.
+        ctx = Ctx(in_ptr=1, extra={"scales": 7})
+        self.assertEqual(ctx.in_ptr, 1)
+        self.assertEqual(ctx.extra["scales"], 7)
+
+    def test_hook_aliases_importable(self) -> None:
+        from comms.dsl import ConsumeFn, ProduceFn
+
+        self.assertIsNotNone(ProduceFn)
+        self.assertIsNotNone(ConsumeFn)
+
+    def test_exports(self) -> None:
+        import comms.dsl as fw
+
+        for name in (
+            "Ctx",
+            "NvlTransport",
+            "nvl_rendezvous",
+            "MeshTransport",
+            "LinkKind",
+        ):
+            self.assertIn(name, fw.__all__)
+
+
+class TransportTest(unittest.TestCase):
+    def test_rendezvous_signature(self) -> None:
+        from comms.dsl import nvl_rendezvous
+
+        params = list(inspect.signature(nvl_rendezvous).parameters)
+        for expected in ("group", "device", "per_peer_bytes"):
+            self.assertIn(expected, params)
+
+    def test_nvl_link_kind(self) -> None:
+        from comms.dsl import LinkKind, NvlTransport
+
+        # handle is not touched by link_kind, so we can build this GPU-free.
+        t = NvlTransport(
+            handle=cast(Any, None), world_size=4, local_rank=0, per_peer_bytes=1024
+        )
+        self.assertIs(t.link_kind(1), LinkKind.NVLINK)
+
+    def test_check_transfer_guards(self) -> None:
+        import torch
+        from comms.dsl import check_transfer, NvlTransport
+
+        # per_peer_bytes=4096, fp32 -> 1024 elems per peer; 4 signal slots.
+        t = NvlTransport(
+            handle=cast(Any, None),
+            world_size=2,
+            local_rank=0,
+            per_peer_bytes=4096,
+            max_blocks_per_peer=4,
+        )
+        # Valid transfer: no raise.
+        check_transfer(t, numel=512, dtype=torch.float32, num_blocks=2)
+        # numel exceeds per-peer capacity -> raise (would corrupt the next peer).
+        with self.assertRaises(ValueError):
+            check_transfer(t, numel=2000, dtype=torch.float32, num_blocks=2)
+        # num_blocks exceeds signal slots -> raise (would OOB-write the pad).
+        with self.assertRaises(ValueError):
+            check_transfer(t, numel=512, dtype=torch.float32, num_blocks=8)
+        # num_blocks must be >= 1.
+        with self.assertRaises(ValueError):
+            check_transfer(t, numel=512, dtype=torch.float32, num_blocks=0)
+        # MeshTransport delegates max_blocks_per_peer to intra, so the
+        # num_blocks guard still fires through a mesh.
+        from comms.dsl import MeshTransport
+
+        mesh = MeshTransport(intra=t)
+        check_transfer(mesh, numel=512, dtype=torch.float32, num_blocks=2)
+        with self.assertRaises(ValueError):
+            check_transfer(mesh, numel=512, dtype=torch.float32, num_blocks=8)
+
+    def test_ib_reserved(self) -> None:
+        from comms.dsl import ib_rendezvous, IbTransport
+
+        ib = IbTransport(world_size=8, per_peer_bytes=1024)
+        with self.assertRaises(NotImplementedError):
+            ib.endpoint(1, dtype=cast(Any, None))
+        with self.assertRaises(NotImplementedError):
+            ib_rendezvous(cast(Any, None), cast(Any, None), 1024)
+
+    def test_mesh_routes_by_domain(self) -> None:
+        from comms.dsl import IbTransport, LinkKind, MeshTransport, NvlTransport
+
+        intra = NvlTransport(
+            handle=cast(Any, None), world_size=8, local_rank=0, per_peer_bytes=1024
+        )
+        # No inter transport yet -> everything is NVLINK.
+        mesh = MeshTransport(intra=intra)
+        self.assertIs(mesh.link_kind(3), LinkKind.NVLINK)
+
+        # With an inter transport + domain size 4: peers 0-3 NVLINK, 4-7 IB.
+        mesh2 = MeshTransport(
+            intra=intra,
+            inter=IbTransport(world_size=8, per_peer_bytes=1024),
+            local_domain_size=4,
+        )
+        self.assertIs(mesh2.link_kind(2), LinkKind.NVLINK)
+        self.assertIs(mesh2.link_kind(5), LinkKind.IB)
+
+
+@unittest.skipUnless(has_triton(), "Triton not available")
+class TritonInterfaceTest(unittest.TestCase):
+    def _arg_names(self, jit_fn: object) -> list[str]:
+        names = getattr(jit_fn, "arg_names", None)
+        if names is not None:
+            return list(names)
+        return list(inspect.signature(getattr(jit_fn, "fn", jit_fn)).parameters)
+
+    def test_send_recv_are_jit(self) -> None:
+        from comms.dsl.triton import recv_tiles as recv, send_tiles as send
+        from triton.runtime.jit import JITFunction
+
+        self.assertIsInstance(send, JITFunction)
+        self.assertIsInstance(recv, JITFunction)
+        for p in ("in_ptr", "produce", "put", "signal"):
+            self.assertIn(p, self._arg_names(send))
+        for p in ("out_ptr", "consume", "get", "wait"):
+            self.assertIn(p, self._arg_names(recv))
+
+    def test_nvl_and_ib_ops_present(self) -> None:
+        from comms.dsl.triton import ib_ops, nvl_ops
+        from triton.runtime.jit import JITFunction
+
+        for ops in (nvl_ops, ib_ops):
+            for name in ("put", "get", "signal", "wait"):
+                self.assertIsInstance(getattr(ops, name), JITFunction)
+
+    def test_hook_ctx_contract(self) -> None:
+        # Hooks take a single Ctx aggregate; consume also gets the tile payload.
+        from comms.dsl.triton import hooks
+        from comms.dsl.triton.ctx import Ctx
+        from triton.runtime.jit import JITFunction
+
+        self.assertIsInstance(hooks.copy_produce, JITFunction)
+        self.assertIsInstance(hooks.copy_consume, JITFunction)
+        self.assertEqual(self._arg_names(hooks.copy_produce), ["ctx"])
+        self.assertEqual(self._arg_names(hooks.copy_consume), ["ctx", "regs"])
+        self.assertIsNotNone(Ctx)
+
+
+class CuteInterfaceTest(unittest.TestCase):
+    def test_cute_stubs_reserved(self) -> None:
+        from comms.dsl.cute import recv, send
+
+        with self.assertRaises(NotImplementedError):
+            send(None, None, 1)
+        with self.assertRaises(NotImplementedError):
+            recv(None, None, 1)
