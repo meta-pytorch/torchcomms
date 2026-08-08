@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include <ATen/ATen.h>
-#include <c10/core/Device.h>
+// IWYU pragma: no_include <ATen/ATen.h>
+#include <ATen/core/Tensor.h> // @manual=//caffe2:ATen-core
 #include <c10/util/intrusive_ptr.h>
 #include <memory>
 #include "comms/torchcomms/TorchCommOptions.hpp"

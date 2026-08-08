@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/TorchCommOptions.hpp"
 
+#include <ATen/ATen.h>
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <sstream>
 #include <type_traits>
 
@@ -9,7 +11,7 @@
 
 namespace torch::comms {
 
-CommOptions::CommOptions() {
+CommOptions::CommOptions() : store(nullptr) {
   // Check environment variables for options
   abort_process_on_timeout_or_error =
       env_to_value<bool>("TORCHCOMM_ABORT_ON_ERROR", true);
@@ -23,6 +25,12 @@ CommOptions::CommOptions() {
   // Initialize hints to empty map (don't read from environment)
   hints = std::unordered_map<std::string, std::string>();
 }
+
+CommOptions::~CommOptions() = default;
+CommOptions::CommOptions(const CommOptions& other) = default;
+CommOptions::CommOptions(CommOptions&& other) noexcept = default;
+CommOptions& CommOptions::operator=(const CommOptions& other) = default;
+CommOptions& CommOptions::operator=(CommOptions&& other) noexcept = default;
 
 bool CommOptions::operator==(const CommOptions& other) const {
   return (
