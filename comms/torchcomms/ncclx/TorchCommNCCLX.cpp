@@ -207,6 +207,7 @@ void TorchCommNCCLX::init(
   device_ = device;
   name_ = name;
   options_ = options;
+  comm_abort_requested_ = false;
 
   if (init_state_ == InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommNCCLX already initialized");
@@ -425,6 +426,10 @@ void TorchCommNCCLX::finalize() {
   } else if (work_status == TorchWorkNCCLX::WorkStatus::ERROR) {
     TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
+    if (!nccl_comm_) {
+      throw std::runtime_error(
+          "NCCLX communicator was already aborted due to a previous error");
+    }
     ncclResult_t asyncErr;
     NCCLX_CHECK(
         nccl_api_,
@@ -494,19 +499,36 @@ void TorchCommNCCLX::finalize() {
 }
 
 void TorchCommNCCLX::abortNcclComm() {
+  if (comm_abort_requested_.exchange(true)) {
+    return;
+  }
+
   // Both runAbortHooks and detachMemoryHook must run before commAbort:
   // - Abort hooks may need to inspect the live NCCL comm for debug info.
   // - detachMemoryHook deregisters this comm from CachingAllocator so that
   //   subsequent alloc/free callbacks do not reference a destroyed comm.
   TC_LOG(INFO, this) << "Calling abort hooks before commAbort.";
   runAbortHooks();
-  if (nccl_comm_) {
+  ncclComm_t comm = nccl_comm_;
+  nccl_comm_ = nullptr;
+  if (comm) {
     NCCLX_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commAbort(nccl_comm_),
-        "NCCLX Abort failed");
-    nccl_comm_ = nullptr;
+        nccl_api_, comm, nccl_api_->commAbort(comm), "NCCLX Abort failed");
+  }
+}
+
+void TorchCommNCCLX::abortNcclCommNoThrow() noexcept {
+  if (comm_abort_requested_.exchange(true)) {
+    return;
+  }
+
+  TC_LOG(INFO, this) << "Calling abort hooks before commAbort.";
+  runAbortHooks();
+  ncclComm_t comm = nccl_comm_;
+  nccl_comm_ = nullptr;
+  if (comm && nccl_api_) {
+    NCCLX_CHECK_IGNORE(
+        nccl_api_, nccl_api_->commAbort(comm), "NCCLX Abort failed");
   }
 }
 
