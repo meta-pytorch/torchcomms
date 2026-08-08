@@ -11,6 +11,7 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -400,7 +401,7 @@ waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
     // Other errors (e.g., INVALID_VALUE) may indicate prior async failures
     // that could cause the spinning kernel to hang, so propagate them
     if (result == CUDA_ERROR_NOT_SUPPORTED) {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN RMA: Hardware wait not supported ({}), falling back to spinning kernel",
           errStr ? errStr : "unknown error");
@@ -601,7 +602,7 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
   }
 
   // Fallback to spinning kernel implementation
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN RMA: WaitSignal falling back to spinning kernel (peer={})",
       peer);
