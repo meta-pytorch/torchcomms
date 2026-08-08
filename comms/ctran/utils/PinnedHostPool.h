@@ -7,8 +7,10 @@ using cudaHostAlloc. It is NOT thread-safe.
 
 #pragma once
 
+#include <chrono>
 #include <list>
 #include <stack>
+#include <thread>
 #include <vector>
 
 #include "comms/ctran/utils/Checks.h"
@@ -45,16 +47,7 @@ class PinnedHostPool {
   }
 
   ~PinnedHostPool() {
-    this->reclaim();
-    if (this->inuseItems_.size()) {
-      CLOGF(
-          WARNING,
-          "CTRAN-GPE: Internal {} pool has {} inuse items at destruction. "
-          "In CUDA graph mode this indicates an async cmdDestroy race: "
-          "the graph was not fully destroyed before communicator teardown.",
-          T::name(),
-          this->inuseItems_.size());
-    }
+    drainUntilEmpty();
     for (void* chunk : chunks_) {
       FB_CUDACHECKIGNORE(cudaFreeHost(chunk));
     }
@@ -62,6 +55,38 @@ class PinnedHostPool {
     // Do not throw exception in destructor to avoid early termination in stack
     // unwind. See discussion in
     // https://stackoverflow.com/questions/130117/if-you-shouldnt-throw-exceptions-in-a-destructor-how-do-you-handle-errors-in-i
+  }
+
+  // Spin until all in-use items are returned to the pool, logging a warning
+  // every 5s. Needed before freeing pinned memory to avoid use-after-free when
+  // CUDA async cmdDestroy callbacks (cudaUserObjectNoDestructorSync) are still
+  // in flight.
+  void drainUntilEmpty() {
+    const auto start = std::chrono::steady_clock::now();
+    auto nextLog = start + std::chrono::seconds(5);
+    while (true) {
+      this->reclaim();
+      if (this->inuseItems_.empty()) {
+        break;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= nextLog) {
+        const auto elapsedSec =
+            std::chrono::duration_cast<std::chrono::seconds>(now - start)
+                .count();
+        CLOGF(
+            WARNING,
+            "CTRAN-GPE: {} pool drain spin-wait: {} inuse / {} total after {}s."
+            " Most likely cudaGraphDestroy() was not called on all CUDA graphs"
+            " that captured CTranGPE operations.",
+            T::name(),
+            this->inuseItems_.size(),
+            capacity_,
+            elapsedSec);
+        nextLog = now + std::chrono::seconds(5);
+      }
+      std::this_thread::yield();
+    }
   }
 
   T* pop() {
