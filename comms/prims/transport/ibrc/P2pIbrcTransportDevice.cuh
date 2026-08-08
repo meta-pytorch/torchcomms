@@ -19,6 +19,7 @@
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
+#include "comms/prims/transport/P2pIbTransportDeviceImpl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
 
@@ -560,7 +561,7 @@ class P2pIbrcTransportDevice {
   // ===========================================================================
   //
   // The send/recv algorithm is transport-agnostic and lives in private helpers
-  // in P2pIbTransportDeviceDecl.cuh. The protocol state is owned by this
+  // in P2pIbTransportDeviceImpl.cuh. The protocol state is owned by this
   // backend device; each method routes every transport op through `*this`, so
   // IBRC reuses IBGDA's send/recv unchanged.
 
@@ -605,6 +606,7 @@ class P2pIbrcTransportDevice {
         static_cast<std::size_t>(channelLayout_.pipelineDepth);
   }
 
+  template <typename = void>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
@@ -612,6 +614,7 @@ class P2pIbrcTransportDevice {
     detail::init_send_progress(*this, group, nbytes, max_signal_bytes);
   }
 
+  template <typename = void>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
