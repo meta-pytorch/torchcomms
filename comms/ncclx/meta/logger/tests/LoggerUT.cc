@@ -16,6 +16,9 @@
 #include "LoggerUtil.h"
 #include "ScubaLoggerTestMixin.h"
 #include "debug.h" // @manual
+#include "nccl.h" // @manual
+
+#include "meta/wrapper/NcclxRuntime.h"
 
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -96,7 +99,12 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
     ncclDebugLevel = -1;
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void CommEventWriteLog() {
