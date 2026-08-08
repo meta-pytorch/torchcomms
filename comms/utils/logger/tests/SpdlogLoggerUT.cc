@@ -82,10 +82,10 @@ TEST(SpdlogLoggerTest, SynchronousFileDeliveryMatchesLegacyRouting) {
   logger.set_level(spdlog::level::info);
 
   testing::internal::CaptureStderr();
-  COMMS_LOG_CONTEXT(kContext, CRITICAL, "critical file message");
-  COMMS_LOG_CONTEXT(kContext, WARN, "warning mirrored message");
+  COMMS_LOG_NAMED(kContext, CRITICAL, "critical file message");
+  COMMS_LOG_NAMED(kContext, WARN, "warning mirrored message");
   logger.set_level(spdlog::level::off);
-  COMMS_LOG_CONTEXT(kContext, INFO, "filtered synchronous message");
+  COMMS_LOG_NAMED(kContext, INFO, "filtered synchronous message");
   const auto stderrOutput = testing::internal::GetCapturedStderr();
 
   std::ifstream logFile{logPath};
@@ -172,7 +172,7 @@ TEST(SpdlogLoggerTest, ErrorCallbackReceivesFormattedUserMessage) {
       []() { return 0; },
       [&](std::string_view message) { errorMessage = message; });
 
-  COMMS_LOG_CONTEXT("comms.callback_test", ERR, "error message: {}", 9);
+  COMMS_LOG_NAMED("comms.callback_test", ERR, "error message: {}", 9);
   EXPECT_EQ(errorMessage, "error message: 9");
   logger.configure("TEST", []() { return 0; }, {});
 }
@@ -186,10 +186,10 @@ TEST(SpdlogLoggerTest, ErrorCallbackDoesNotReenter) {
       []() { return 0; },
       [&](std::string_view) {
         ++callbackCount;
-        COMMS_LOG_CONTEXT(kContext, ERR, "nested error");
+        COMMS_LOG_NAMED(kContext, ERR, "nested error");
       });
 
-  COMMS_LOG_CONTEXT(kContext, ERR, "outer error");
+  COMMS_LOG_NAMED(kContext, ERR, "outer error");
   EXPECT_EQ(callbackCount, 1);
   logger.configure("TEST", []() { return 0; }, {});
 }
@@ -210,10 +210,10 @@ TEST(SpdlogLoggerTest, ErrorCallbackGuardSpansContexts) {
       []() { return 0; },
       [&](std::string_view) {
         ++outerCallbackCount;
-        COMMS_LOG_CONTEXT(kInnerContext, ERR, "nested error");
+        COMMS_LOG_NAMED(kInnerContext, ERR, "nested error");
       });
 
-  COMMS_LOG_CONTEXT(kOuterContext, ERR, "outer error");
+  COMMS_LOG_NAMED(kOuterContext, ERR, "outer error");
   EXPECT_EQ(outerCallbackCount, 1);
   EXPECT_EQ(innerCallbackCount, 0);
   outerLogger.configure("TEST", []() { return 0; }, {});
@@ -232,8 +232,8 @@ TEST(SpdlogLoggerTest, ErrorCallbackExceptionDoesNotEscapeLogCall) {
         throw std::runtime_error{"callback failure"};
       });
 
-  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "first error"));
-  EXPECT_NO_THROW(COMMS_LOG_CONTEXT(kContext, ERR, "second error"));
+  EXPECT_NO_THROW(COMMS_LOG_NAMED(kContext, ERR, "first error"));
+  EXPECT_NO_THROW(COMMS_LOG_NAMED(kContext, ERR, "second error"));
   EXPECT_EQ(callbackCount, 2);
   logger.configure("TEST", []() { return 0; }, {});
 }
