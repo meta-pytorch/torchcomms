@@ -48,6 +48,9 @@ constexpr int kGb300CudaArch = 1030;
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
 
 bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
+  if (NCCL_CTRAN_NET_LOCAL_FLUSH_MODE >= 0) {
+    return NCCL_CTRAN_NET_LOCAL_FLUSH_MODE != 0;
+  }
 #if defined(USE_ROCM)
   // AMD GPUs always require local flush.
   // https://ontrack.amd.com/browse/FBA-633

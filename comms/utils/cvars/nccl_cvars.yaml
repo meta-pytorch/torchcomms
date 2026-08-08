@@ -1752,6 +1752,13 @@ cvars:
      GPU visibility for DMA writes, the flush drains pending writes before
      received data is forwarded or read by GPU copy engines/kernels.
 
+ - name        : NCCL_CTRAN_NET_LOCAL_FLUSH_MODE
+   type        : int
+   default     : -1
+   description : |-
+     Override CTRAN local receive flush selection for controlled experiments.
+     -1 uses the platform default, 0 disables local flush, and 1 enables it.
+
  - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
    type        : int
    default     : 1
@@ -2922,6 +2929,14 @@ cvars:
      The default value is /tmp/, and the trace file will be stored in /tmp/ctran_trace_log.*.log.
      If want to upload to manifold, set this as /tmp/{uuid}, then manually upload to manifold.
 
+ - name        : NCCL_CTRAN_PERFTRACE_RANKS
+   type        : string
+   default     : ""
+   description : |-
+     Comma-separated communicator ranks to include in CTRAN PerfTrace output.
+     An empty value traces every rank. This only applies when
+     NCCL_CTRAN_ENABLE_PERFTRACE is enabled.
+
  - name        : NCCL_DEBUG_LOGGING_ASYNC
    type        : bool
    default     : true
@@ -3189,6 +3204,14 @@ cvars:
      When enabled, overrides MAX_NUM_THREAD_BLOCKS and pipeline parameters
      with per-message-size optimal values. Set to 0 to use static CVAR
      values instead.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_LARGE_CHUNK_RANK_THRESHOLD
+   type        : int
+   default     : 32
+   description : |-
+     Prefer larger chunks with fewer staging slots for Blackwell AllReduceRing
+     communicators with more ranks than this threshold. Set to 0 or a negative
+     value to disable the heuristic.
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_QP_SCALING_TH_MIN
    type        : int64_t
