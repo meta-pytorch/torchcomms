@@ -17,7 +17,6 @@
 #include <utility>
 
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
-#include "comms/prims/benchmarks/IbgdaSendRecvAns.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/testinfra/ITestBootstrap.h"
 #include "comms/testinfra/TcpStoreBootstrap.h"
@@ -50,12 +49,12 @@ enum class SendRecvDirection {
   Unidirectional,
 };
 
-// CopyOp policy driven through the transport. `Memcpy` is the fixed-size path;
-// `Ans` drives the variable-size (compressed) `AnsCompress` CopyOp, exercising
-// the compressed send/recv branch added in D111967119.
+// CopyOp policy driven through the transport. Only the fixed-size `Memcpy`
+// path is wired here. Kept as an enum so benchmark names stay stable across
+// the removal of the ANS variant and a second policy can be re-added without
+// renaming every benchmark.
 enum class SendRecvCopyOp {
   Memcpy,
-  Ans,
 };
 
 bool isTcpEnvironment() {
@@ -212,13 +211,6 @@ constexpr std::array<BenchmarkSize, 33> kBenchmarkSizes{{
 
 constexpr std::size_t kMaxBenchmarkBytes = 4ULL << 30;
 
-// ANS (variable-size) benchmarks run only over this size window. Below 1MB the
-// per-chunk compress/decompress cost dominates (see AnsCompress
-// kActivationThreshold), and the window is capped so the compressed sweep
-// stays bounded in wall-clock time.
-constexpr std::size_t kAnsMinBytes = 1ULL << 20;
-constexpr std::size_t kAnsMaxBytes = 256ULL << 20;
-
 const char* apiName(SendRecvApi api) {
   switch (api) {
     case SendRecvApi::Blocking:
@@ -243,8 +235,6 @@ const char* copyOpName(SendRecvCopyOp copyOp) {
   switch (copyOp) {
     case SendRecvCopyOp::Memcpy:
       return "memcpy";
-    case SendRecvCopyOp::Ans:
-      return "ans";
   }
   return "unknown";
 }
@@ -382,20 +372,6 @@ class IbgdaSendRecvBenchmarkContext {
     auto* sendBuf = static_cast<char*>(sendBuf_->get());
     auto* recvBuf = static_cast<char*>(recvBuf_->get());
 
-    if (copyOp == SendRecvCopyOp::Ans) {
-      // ANS is a variable-size CopyOp: only the blocking, unidirectional path
-      // is wired here (the resumable progress API static_asserts against
-      // variable-size CopyOps). rank 0 compresses+sends, rank 1 recvs+decomp.
-      if (globalRank_ == 0) {
-        launch_ibgda_send_ans(
-            deviceTransport_, sendBuf, nbytes, kNumBlocks, stream_);
-      } else {
-        launch_ibgda_recv_ans(
-            deviceTransport_, recvBuf, nbytes, kNumBlocks, stream_);
-      }
-      return;
-    }
-
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
         launch_ibgda_send_recv(
@@ -514,17 +490,6 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
         SendRecvApi::Progress,
         SendRecvDirection::Unidirectional,
         SendRecvCopyOp::Memcpy);
-    // ANS (variable-size CopyOp): blocking + unidirectional only, over a
-    // bounded size window. This is the transport benchmark's coverage of the
-    // compressed send/recv path from D111967119.
-    if (size.nbytes >= kAnsMinBytes && size.nbytes <= kAnsMaxBytes) {
-      registerBenchmark(
-          context,
-          size,
-          SendRecvApi::Blocking,
-          SendRecvDirection::Unidirectional,
-          SendRecvCopyOp::Ans);
-    }
   }
 }
 

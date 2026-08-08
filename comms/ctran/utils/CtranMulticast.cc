@@ -8,7 +8,9 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/logger/LogUtils.h"
+#if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12010
 #include "comms/utils/logger/SpdlogLogger.h"
+#endif
 
 namespace ctran::utils {
 
@@ -34,6 +36,12 @@ CtranMulticast::~CtranMulticast() {
   }
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
+  }
+  // The root's create reference, held all along so it outlived every peer's
+  // import (see its declaration). By now every domain rank is done with the
+  // object -- teardown is past the window's barriers -- so it is safe to drop.
+  if (createdHandle_ != 0) {
+    FB_CUCHECKIGNORE(cuMemRelease(createdHandle_));
   }
   // Release our own retained segment handles (from retainSegments()). Because
   // these are
@@ -127,32 +135,41 @@ commResult_t CtranMulticast::createRoot(
     size_t mcSize,
     CUmemAllocationHandleType handleType,
     CUmemGenericAllocationHandle& outHandle) {
-  // Release any handle we already hold before creating a new one, so a misuse
+  // Release anything we already hold before creating a new one, so a misuse
   // (double createRoot, or createRoot after adoptImported) cannot silently drop
-  // -- and leak -- the previously-held multicast object. The reverse order
-  // (createRoot then adoptImported) is NOT a misuse: it is the root's
-  // self-import.
+  // -- and leak -- the previously-held multicast object. Zero each first so a
+  // cuMulticastCreate failure below cannot double-release. createRoot followed
+  // by adoptImported is NOT a misuse: it is the root's self-import.
+  if (createdHandle_ != 0) {
+    FB_CUCHECKIGNORE(cuMemRelease(createdHandle_));
+    createdHandle_ = 0;
+  }
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
-    mcHandle_ = 0; // so a cuMulticastCreate failure below can't double-release
+    mcHandle_ = 0;
   }
   CUmulticastObjectProp prop = {};
   prop.numDevices = static_cast<unsigned int>(nLocalRanks_);
   prop.size = mcSize;
   prop.handleTypes = handleType;
   prop.flags = 0;
-  FB_CUCHECK(cuMulticastCreate(&mcHandle_, &prop));
+  // Straight into createdHandle_, leaving mcHandle_ at 0 until adoptImported(),
+  // so mcHandle_ == 0 means "nothing adopted yet". createdHandle_ and mcHandle_
+  // are independent REFERENCES; the driver is free to hand back the same handle
+  // value for the self-import, which is harmless because each release drops one
+  // reference (measured drivers do mint a distinct value).
+  FB_CUCHECK(cuMulticastCreate(&createdHandle_, &prop));
   mcSize_ = mcSize;
-  outHandle = mcHandle_;
+  outHandle = createdHandle_;
   return commSuccess;
 }
 
 void CtranMulticast::adoptImported(CUmemGenericAllocationHandle handle) {
-  // Release any handle we already hold before overwriting, so neither a misuse
-  // (double-adopt) nor the root's create-then-self-import sequence silently
-  // drops -- and leaks -- the previously-held multicast object. Each successful
-  // import carries its own reference and the caller imports before calling
-  // here, so the incoming handle keeps the object alive across the release.
+  // mcHandle_ is only ever non-zero once we have already adopted, so this is a
+  // double-adopt: release the old reference rather than silently dropping --
+  // and leaking -- it. A root's create reference lives in createdHandle_ and is
+  // untouched here; it must outlive every peer's import (see its declaration),
+  // so the dtor releases it.
   if (mcHandle_ != 0) {
     FB_CUCHECKIGNORE(cuMemRelease(mcHandle_));
   }
@@ -218,6 +235,11 @@ bool CtranMulticast::segmentsAlignedTo(size_t gran) const {
 }
 
 commResult_t CtranMulticast::addDeviceAndBind() {
+  // Every rank, the root included, binds and maps through its IMPORTED handle,
+  // so adoptImported() must have run: createRoot() alone leaves mcHandle_ at 0.
+  if (mcHandle_ == 0) {
+    return commInvalidUsage;
+  }
   FB_CUCHECK(cuDeviceGet(&cuDev_, cudaDev_));
   FB_CUCHECK(cuMulticastAddDevice(mcHandle_, cuDev_));
   size_t offset = 0;

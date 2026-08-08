@@ -167,7 +167,7 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
   // Preserve the compatibility setting through the standalone Ctran path.
   // Peer materialization remains on demand for either value.
-  comm->config_.pipesConfig.ibLazyConnect = ibLazyConnect;
+  comm->config_.primsConfig.ibLazyConnect = ibLazyConnect;
   // Consumed during ctranInit (inside CtranAlgo's ctor), so must be set on the
   // comm before ctranInit runs.
   comm->tmpbufEagerAlloc_ = tmpbufEagerAlloc;

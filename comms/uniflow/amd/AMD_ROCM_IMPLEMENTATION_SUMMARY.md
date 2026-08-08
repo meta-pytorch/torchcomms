@@ -9,8 +9,22 @@ sources. The **same `//comms/uniflow:uniflow` target builds for both NVIDIA and
 AMD** — platform selection is the `ovr_config//gpu:amd` constraint (set by the
 AMD build modes / modifier), not a separate library.
 
-On AMD the GPU transport is **RDMA (RoCEv2) with GPUDirect**; the NVLink
-transport is NVIDIA-only and is compiled out on AMD.
+On AMD, uniflow supports **two transport types**: **P2P (XGMI)** for the intra-node
+GPU tier and **RDMA (RoCEv2) with GPUDirect**. Only the NVLink transport is
+NVIDIA-only and compiled out on AMD.
+
+Both are registered by capability check rather than unconditionally, so a given
+process may end up with one, both, or neither:
+
+| Transport | Registered when |
+|---|---|
+| P2P (XGMI) | `deviceId >= 0` **and** `P2pTransportFactory::supported()` returns no error (the all-to-all-XGMI arch allowlist below). Otherwise `MultiTransportFactory` logs `P2P transport disabled for device N: <reason>` and continues. |
+| RDMA | `selectNics()` returns a non-empty NIC list (after `NicFilter` / `netdevPrefix` filtering). |
+
+If a transfer finds no transport common to all its local and remote segments,
+`selectTransport` fails rather than silently degrading — so a missing registration
+surfaces as a transfer error, and the `UNIFLOW_LOG_INFO` line above is the first
+place to look.
 
 ## Build-time translation (hipify-first)
 
@@ -69,19 +83,49 @@ Ordered from base to top matching the stacked diff series:
 | D107220749 | AMD build documentation. Adds `AMD_BUILD.md` and initial `AMD_ROCM_IMPLEMENTATION_SUMMARY.md` describing unified target build, ROCm versions, modes, and troubleshooting. |
 | D108381013 | Freeze neutral zones with GPU dep-guards. Adds `amd/neutral_zones.bzl` + `amd/BUCK` emitting per-target `check_dependencies_test` in blocklist mode for platform-agnostic modules (executor, controller, core result/segment, logging, sysfs, ibverbs core). Blocks first-party GPU seams (`drivers/cuda/*`: cuda-api, cuda-driver-api, cuda-device-adapter, cuda-topology-discovery; `drivers/nvml/*`) and external runtime libs (`cuda-lazy`, `nvml-lazy`, `amdhip64-lazy`, `amdsmi`). Documents architecture in `NEUTRAL_ZONES.md`. |
 | D108675437 | RoCE GID auto-selection, netdev-prefix NIC selection, and MultiTransportFactoryOptions consolidation. Wires `ibv_query_gid_ex` via `IbvApi`/`IbvCore`/`MockIbvApi` for GID table introspection. `RdmaResources` auto-selects RoCEv2 GID skipping link-local (fe80::/10 IPv6 and 169.254 IPv4-mapped), preferring IPv4-mapped then first global. Configuration via `MultiTransportFactoryOptions` struct (NicFilter, netdevPrefix, gidIndex, trafficClass) — no library-internal env vars. Topology captures backing netdev name; netdev-prefix NIC selection defaults to `"beth"` with predicate skipped when netdev names unknown. Makes single-host RDMA test vendor-agnostic. Unit tests for GID selection and netdev-prefix. |
-| D108942542 | Migrate landed uniflow GPU tests to `oss_gpu_cpp_unittest`. Migrates pre-existing GPU C++ test targets from `comms_gpu_cpp_unittest` to `oss_gpu_cpp_unittest` (=`comms_gpu_cpp_unittest` + OSS dep guard) for parity with production `oss_gpu_cpp_library` and CPU `oss_cpp_unittest`. AMD/HIP compile path, GPU CI labels, and RE config unchanged. Migrated: `drivers/cuda/tests`, `drivers/ibverbs/tests`, `drivers/nvml/tests`, `tests/integration`, `transport/tests/integration`. In-stack GPU test BUCKs folded into owning diffs (peer-to-peer test in D107346920, RDMA unit tests in D107220757/D108675437). Distributed rule left as-is. |
+| D108942542 | Migrate landed uniflow GPU tests to `oss_gpu_cpp_unittest`. Migrates pre-existing GPU C++ test targets from `comms_gpu_cpp_unittest` to `oss_gpu_cpp_unittest` (=`comms_gpu_cpp_unittest` + OSS dep guard) for parity with production `oss_gpu_cpp_library` and CPU `oss_cpp_unittest`. AMD/HIP compile path, GPU CI labels, and RE config unchanged. Migrated: `drivers/cuda/tests`, `drivers/ibverbs/tests`, `drivers/nvml/tests`, `tests/integration`, `transport/tests/integration`. Distributed rule left as-is. |
+| D114457575 | Intra-node transport selection. Adds the `intraNodeTransport` override to `MultiTransportFactoryOptions`, letting a caller flip the intra-node VRAM<->VRAM first choice (on-host tier -> RDMA) without unregistering a tier. |
 
 ## Transports on AMD
 
-### RDMA / GPUDirect (the AMD GPU transport)
+`MultiTransport::selectTransport` resolves in this order:
 
-RDMA is the GPU transport on AMD as well as NVIDIA (`transport/rdma/`):
+1. intra-node VRAM<->VRAM: `[intraNodeTransport]` -> on-host tier -> RDMA, where
+   the on-host tier is NVLink on NVIDIA and **P2P/XGMI on AMD**;
+2. otherwise: RDMA.
+
+Each tier falls through to the next when unavailable for a given request, so
+`intraNodeTransport` is a selection preference rather than a kill-switch.
+
+### P2P / XGMI (the AMD intra-node tier)
+
+`transport/p2p` serves the on-host GPU tier on AMD, in place of NVLink.
+`MultiTransport.cpp` registers `P2pTransportFactory` under
+`__HIP_PLATFORM_AMD__`; cross-process imports use `hipIpcOpenMemHandle`
+(`P2pRegistrationHandle`). Notably it does **not** use the cuMem VMM allocator.
+
+`P2pTransportFactory::supported()` gates on an all-to-all-XGMI architecture
+allowlist — `gfx942` (MI300), `gfx950` (MI350), `gfx1250` (MI450) — matching an
+exact gfx token while allowing a feature-flag suffix (`gfx942:sramecc+:xnack-`)
+but not a longer digit run (`gfx12500`). Without this gate, a non-XGMI part could
+let presence-driven selection prefer a slow PCIe-P2P link over RDMA, because
+`hipDeviceCanAccessPeer` conflates the two.
+
+### RDMA / GPUDirect
+
+RDMA is a GPU transport on AMD as well as NVIDIA (`transport/rdma/`):
 
 - **GPUDirect RDMA** registers GPU (VRAM) memory with the NIC via a dma-buf fd
   exported with `cuMemGetHandleForAddressRange` (hipified to
-  `hipMemGetHandleForAddressRange` on AMD).
+  `hipMemGetHandleForAddressRange` on AMD). AMD support is detected by
+  `amdGpuDirectRdmaSupported()` — an amdkfd peer-mem sysfs probe
+  (`/sys/kernel/mm/memory_peers/amdkfd/version` and two path variants) with an
+  `ib_register_peer_memory_client` `/proc/kallsyms` fallback, mirroring
+  `comms/ctran/utils/HipGdrCheck.h`. When the probe reports no support,
+  `RdmaTransport::registerSegment` falls back to plain `ibv_reg_mr`.
 - **RoCEv2 GID auto-selection** picks a valid RoCEv2 GID, with caller-supplied
-  options (via MultiTransportFactoryOptions) and **netdev-prefix (`beth`) NIC selection** (D108675437).
+  options (via `MultiTransportFactoryOptions`) and **netdev-prefix (`beth`) NIC
+  selection** (D108675437).
 - **GPU↔NIC PCIe affinity** (`selectGpuNics`) maps each GPU to its
   topologically-closest NIC, so per-GPU bandwidth tracks per-NIC bandwidth.
 - The `CopyEngine` VRAM path uses `streamWriteValue64` for completion signaling.
@@ -94,10 +138,12 @@ single-pair and 8-GPU-pair aggregate).
 
 `NVLinkTransport` (NVML-backed topology, fabric/FD IPC) is NVIDIA-only and is
 compiled out on AMD via `#ifndef __HIP_PLATFORM_AMD__` in `MultiTransport.cpp`,
-with its BUCK deps `select()`'d out on AMD. Intra-node GPU-to-GPU P2P over the
-GPU interconnect (XGMI on AMD, NVLink on NVIDIA) is exercised at the `CudaApi`
-level by `PeerToPeerTransferTest` (`hipMemcpyPeerAsync` on AMD), but it is not a
-registered uniflow transport on AMD.
+with its BUCK deps `select()`'d out on AMD; `P2pTransportFactory` takes its place
+when its capability checks pass. `NVLinkTransport` and the NVLink bandwidth benchmark are also the
+**only** consumers of the cuMem VMM allocator (`cuMemCreate`, `AddressReserve`,
+`Map`, `SetAccess`, `ExportToShareableHandle`, `ImportFromShareableHandle`), so
+that allocator never executes on AMD. The NVIDIA-only fabric-handle / IMEX path
+likewise does not apply — AMD uses POSIX-FD / dma-buf sharing.
 
 ## Build
 
@@ -122,8 +168,8 @@ troubleshooting.
   * `drivers/cuda/tests:cuda_device_adapter_test`, `:cuda_driver_api_test` — driver seam and device adapter via oss_gpu_cpp_library path
   * `drivers/ibverbs/tests:ibv_api_test` — ibverbs core verbs mocked
   * `drivers/nvml/tests:nvml_api_test` — NVML factory mocked, AMD stub covered
-  * `transport/nvlink/tests/integration:peer_to_peer_transfer_test` — intra-node P2P (XGMI/NVLink) via CudaApi, hip_ci enabled (D107346920)
-  * `transport/rdma/tests/integration:cross_host_test` — 2-host RDMA real NICs
+  * `transport/nvlink/tests/integration:peer_to_peer_transfer_test` — intra-node P2P (XGMI/NVLink) at the `CudaApi` level via `memcpyPeerAsync`, hip_ci enabled (D107346920)
+  * `transport/rdma/tests/integration:cross_host_test` — 2-host RDMA real NICs; `:cross_host_test_amd` is the AMD variant (`disable_nvidia_ci` flips it to the HIP-only, `opt-amd-gpu` CI path), run on baremetal with `-c comms.hosts=hostA,hostB`
   * `transport/rdma/tests/unit/*` — RDMA transport, slab pool, registration mocked; includes GID selection and netdev-prefix unit tests from D108675437
 - Neutral zone dependency guards: `buck2 test @fbcode//mode/opt fbcode//comms/uniflow/amd:` runs `check_dependencies_test` per neutral target to ensure no GPU dep leakage (D108381013).
 
@@ -144,11 +190,40 @@ real NVML on NVIDIA, no-op stub on AMD).
 - `cuda-driver-api` remains on `hipify-perl` (see the blocker above); migrating
   it to `oss_gpu_cpp_library` requires moving the RDMA consumers
   (`transport/rdma`) to `gpu_cpp_library` so both ends hipify consistently.
-- NVLink/XGMI is not exposed as a uniflow transport on AMD.
-- `resolveGidIndex` readability: extract GID-table scan into a separate
-  helper to de-duplicate the fallback logic (non-blocking, noted by reviewer).
-- Forced GID index path does not bound `configuredGidIndex` to <= 255
-  before `static_cast<uint8_t>` (follow-up to add the same guard as the auto path).
+- `drivers/nvml` has no amdsmi backend; `createNvmlApi()` returns a no-op stub on
+  AMD, so NVML-derived topology is empty there.
+- `comms_gpu_cpp_distributed_unittest` has no AMD remote-execution branch. Every RE
+  path in `comms_launch_distributed_binary` uses `platform = "gpu-remote-execution"`
+  (or `-multihost`), unlike `comms_gpu_cpp_unittest`, which selects
+  `platform = "amd-gpu"` + `subplatform = amd_gpu_name` under `ovr_config//gpu:amd`.
+  Consequences for the AMD RDMA tests:
+  * They are baremetal-oriented — run them with `-c comms.hosts=hostA,hostB`, where
+    the target GPUs come from the host list. This works on any AMD part
+    (MI300/MI350/MI355X) with no target change; AMD-ness comes from
+    `disable_nvidia_ci` -> `amd_only` (`target_compatible_with` HIP-only +
+    `amd_ci(mode = "fbcode//mode/opt-amd-gpu")`), not from `gpu_name`.
+  * `gpu_name` is the RE `subplatform` on three of the branches in
+    `comms_launch_distributed_binary` \u2014 baremetal/MAST, gang-RE, and single-host-RE \u2014
+    and is ignored only on the multihost-RE branch (`enable_multinode_re`, which
+    `nnodes >= 2` selects). Since the documented way to run these is the baremetal
+    path (`-c comms.hosts=...`), `gpu_name` **is** read in normal use.
+  * It therefore must **not** simply be deleted: the macro default is `"H100"`, so
+    dropping `gpu_name = "MI300"` would make an AMD-only target request an H100
+    subplatform. The value is load-bearing; the defect is the `platform`, not the
+    `subplatform`.
+  * Making these RE-schedulable on AMD requires adding the `platform = "amd-gpu"`
+    select to `comms_launch_distributed_binary` (and switching these callers to
+    `amd_gpu_name`), mirroring `comms_gpu_cpp_unittest`. Until then the AMD
+    subplatform is being requested against the NVIDIA pool. Note `MI300` is the only
+    AMD subplatform token present anywhere under `comms/`, so any MI350/MI355 token
+    needs confirming against the RE pool rather than inferred from source.
+  * **Observed consequence:** on an MI300X devgpu, `:single_host_test_amd` could not be
+    run at all. It resolves to RE-only with `platform = "gpu-remote-execution"` +
+    `subplatform = "MI300"`, and `global:tpx-default` has no quota for that pair;
+    `--local-only` is rejected ("desired execution strategy (LocalOnly) is incompatible
+    with the executor config"), and invoking the test binary directly hangs at
+    rendezvous. So the missing `amd-gpu` select is not cosmetic — it currently leaves
+    these targets unrunnable without an RE quota grant or a target-config change.
 
 ## References
 

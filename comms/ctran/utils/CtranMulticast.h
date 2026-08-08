@@ -60,7 +60,8 @@ class CtranMulticast {
 
   // NVL-team root only: create the multicast object (mcSize bytes, agreed
   // handle type) and return the raw object handle for the caller to
-  // export+broadcast.
+  // export+broadcast. Does NOT make the object usable on its own -- the root
+  // still adoptImported()s its own exported handle before binding/mapping.
   commResult_t createRoot(
       size_t mcSize,
       CUmemAllocationHandleType handleType,
@@ -91,7 +92,7 @@ class CtranMulticast {
 
   // Every rank: add the local device to the object, then bind each imported
   // backing segment at its running multicast offset (address order). Requires a
-  // prior retainSegments() and createRoot()/adoptImported().
+  // prior retainSegments() and adoptImported().
   commResult_t addDeviceAndBind();
 
   // Every rank: reserve + map + grant device access to one contiguous
@@ -138,7 +139,22 @@ class CtranMulticast {
   const int cudaDev_{-1};
   CUdevice cuDev_{0}; // driver device handle for this cudaDev_
 
-  CUmemGenericAllocationHandle mcHandle_{0}; // the multicast object
+  // The IMPORTED reference every rank binds and maps through -- 0 until
+  // adoptImported(), which is the invariant addDeviceAndBind() checks.
+  CUmemGenericAllocationHandle mcHandle_{0};
+
+  // Root only: the reference cuMulticastCreate handed back, kept ALIVE for this
+  // object's whole lifetime and released in the dtor. It must outlive every
+  // peer's import: an exported fabric handle stops resolving to the multicast
+  // object once the create reference is gone, and a peer importing after that
+  // silently gets a fresh, EMPTY object instead of an error -- each rank then
+  // adds its device to a different object and every rank blocks forever in
+  // cuMulticastBindMem waiting for a device count it will never reach.
+  //
+  // Independent of mcHandle_ even if the driver hands back the same handle
+  // value for the self-import: each is one reference, so each needs its own
+  // release.
+  CUmemGenericAllocationHandle createdHandle_{0};
   CUdeviceptr mcVA_{0}; // mapped multicast VA (0 until mapVA)
   size_t mcSize_{0};
 

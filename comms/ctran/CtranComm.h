@@ -26,6 +26,7 @@
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 namespace comms::prims {
 class MultiPeerTransport;
@@ -37,33 +38,64 @@ using meta::comms::CommBackend;
 
 // Per-communicator Prims transport overrides.
 // -1 means use CVAR default.
-struct ctranPipesConfig {
+struct ctranPrimsConfig {
   // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
   // policy does not affect NCCLX or standalone Ctran communicators.
   int64_t enablePrims{-1};
   int64_t nvlChunkSize{-1};
   bool ibLazyConnect{true};
-  int64_t ibgdaDataBufferSize{-1};
+  // Per-channel, per-direction IB staging size. Same unit as
+  // MCCL_CHANNEL_BUFFER_SIZE, which it overrides for this communicator.
+  int64_t channelBufferSize{-1};
+  // -1 uses MCCL_CHANNEL_PIPELINE_DEPTH. Together with channelBufferSize this
+  // fixes the per-chunk size: chunk = channelBufferSize / channelPipelineDepth.
+  int64_t channelPipelineDepth{-1};
+  // -1 uses MCCL_MAX_NCHANNELS. Total IB staging for this communicator is
+  // channelBufferSize * maxChannels per peer per direction.
+  int64_t maxChannels{-1};
+  // -1 uses MCCL_MAX_NBLOCKS. As with the CVAR, this is both the NVL channel
+  // count and the collective launch-geometry block cap; the two must move
+  // together or the multimem signal sizing drifts from the transport's actual
+  // channel count.
+  int64_t maxBlocks{-1};
 
-  bool operator==(const ctranPipesConfig& other) const {
+  bool operator==(const ctranPrimsConfig& other) const {
     return enablePrims == other.enablePrims &&
         nvlChunkSize == other.nvlChunkSize &&
         ibLazyConnect == other.ibLazyConnect &&
-        ibgdaDataBufferSize == other.ibgdaDataBufferSize;
+        channelBufferSize == other.channelBufferSize &&
+        channelPipelineDepth == other.channelPipelineDepth &&
+        maxChannels == other.maxChannels && maxBlocks == other.maxBlocks;
   }
 };
+
+// Per-communicator override first, global CVAR second. Both the transport
+// (comm init) and the collective launch geometry (per call) must resolve these
+// the same way, so they share these helpers rather than reading the CVAR
+// directly. NOTE: mccl's own launch-geometry validation still reads
+// MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS globally; a communicator that overrides
+// these and also runs mccl collectives would be validated against the global.
+inline int64_t ctranPrimsResolvedMaxChannels(const ctranPrimsConfig& pc) {
+  return pc.maxChannels > 0 ? pc.maxChannels
+                            : static_cast<int64_t>(MCCL_MAX_NCHANNELS);
+}
+
+inline int64_t ctranPrimsResolvedMaxBlocks(const ctranPrimsConfig& pc) {
+  return pc.maxBlocks > 0 ? pc.maxBlocks
+                          : static_cast<int64_t>(MCCL_MAX_NBLOCKS);
+}
 
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
   std::vector<enum CommBackend> backends = {};
-  ctranPipesConfig pipesConfig;
+  ctranPrimsConfig primsConfig;
   bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        backends == other.backends && pipesConfig == other.pipesConfig &&
+        backends == other.backends && primsConfig == other.primsConfig &&
         enableProfiler == other.enableProfiler);
   }
 };

@@ -9,20 +9,47 @@ selected through `__HIP_PLATFORM_AMD__` and the CUDA runtime deps are swapped fo
 ROCm/HIP — there is no separate AMD library target.
 
 > **AMD transport status:** The unified `uniflow` target builds and runs on AMD
-> with **RDMA (RoCEv2) + GPUDirect** as the GPU transport. Features from the
-> Phase 2 stack (D107220750 D107220748 D107220757 D107346920 D107220749 D108381013
-> D108675437 D108942542):
+> supporting **two transport types**: **P2P (XGMI)** intra-node and **RDMA (RoCEv2)
+> + GPUDirect**. Neither is registered unconditionally — `MultiTransportFactory`
+> registers P2P only when `deviceId >= 0` and `P2pTransportFactory::supported()`
+> passes (it logs "P2P transport disabled for device N" otherwise), and RDMA only
+> when `selectNics()` returns a non-empty NIC list. Only NVLink is NVIDIA-only.
+>
+> `MultiTransport::selectTransport` resolves in this order:
+> 1. intra-node VRAM<->VRAM: `[intraNodeTransport]` -> on-host tier -> RDMA,
+>    where the on-host tier is NVLink on NVIDIA and **P2P/XGMI on AMD**;
+> 2. otherwise: RDMA.
+>
+> `intraNodeTransport` flips the intra-node first choice; both tiers stay
+> registered, so it is a per-transfer selection override rather than a
+> kill-switch.
+>
+> **P2P (XGMI)** — `transport/p2p`, takes the NVLink tier's place on AMD when its
+> capability checks pass
+> (`MultiTransport.cpp` registers `P2pTransportFactory` under
+> `__HIP_PLATFORM_AMD__`). Uses `hipIpc` memory handles.
+> `P2pTransportFactory::supported()` gates on an all-to-all-XGMI arch allowlist
+> (`gfx942` MI300, `gfx950` MI350, `gfx1250` MI450) so a non-XGMI part cannot let
+> presence-driven selection prefer a slow PCIe-P2P link over RDMA
+> (`hipDeviceCanAccessPeer` conflates the two).
+>
+> **RDMA / GPUDirect** — features from the Phase 2 stack (D107220750 D107220748
+> D107220757 D107346920 D107220749 D108381013 D108675437 D108942542):
 > - GPU-NIC PCIe affinity via `selectGpuNics` mapping each GPU to topologically-closest NIC
 > - RoCEv2 GID auto-selection skipping link-local (fe80::/10, 169.254/16), preferring IPv4-mapped then first global RoCEv2, with validation against gid_tbl_len
 > - Caller-configurable tunables via `MultiTransportFactoryOptions`: NicFilter (HCA selection), gidIndex (force GID, default auto-select), netdevPrefix (default `"beth"` for Broadcom bnxt NIC selection), trafficClass
 > - Netdev-prefix NIC selection capturing backing netdev name in topology
+> - GPUDirect registration probes AMD peer-mem support (`amdGpuDirectRdmaSupported()`:
+>   amdkfd sysfs + `/proc/kallsyms` fallback) and falls back to plain `ibv_reg_mr`
+>   when dma-buf export is unavailable
 > - Validated 2-host on MI350 (gfx950, ROCm 7.0) over Broadcom bnxt NICs with `cross_host_test` and `rdma_bandwidth` benchmarks
 >
 > The **NVLink** transport is NVIDIA-only and is compiled out on AMD (guarded by
-> `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, BUCK deps select'd out).
-> Intra-node GPU-to-GPU P2P over XGMI is exercised at `CudaApi` level by
-> `PeerToPeerTransferTest` (`hipMemcpyPeerAsync` on AMD via `oss_gpu_cpp_unittest`),
-> but is not a registered uniflow transport on AMD.
+> `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, BUCK deps select'd out). Note
+> that the **cuMem VMM allocator** (`cuMemCreate`/`AddressReserve`/`Map`/
+> `SetAccess`/`Export`/`Import`) is reached only by `NVLinkTransport` and the
+> NVLink benchmark, so it never executes on AMD; the AMD P2P tier uses `hipIpc`
+> handles instead.
 
 ## Prerequisites
 
@@ -63,28 +90,36 @@ buck2 build 'fbcode//comms/uniflow:uniflow?ovr_config//gpu:amd'
 
 ### Available ROCm Versions
 
-The `-m` flag selects the ROCm toolchain version:
+The `-m` flag selects the ROCm toolchain version. The authoritative version set
+is `ROCM_TP2_VERSIONS` in
+`fbsource/tools/build_defs/third_party/rocm_tp2_versions.bzl`:
 
-| Version | Flag | Description |
-|---------|------|-------------|
-| ROCm 7.0 | `-m rocm70` | Latest stable (recommended) |
-| ROCm 6.0 | `-m rocm60` | Previous stable |
-| ROCm 6.1 | `-m rocm61` | Previous stable |
+| Version | Flag | Status |
+|---------|------|--------|
+| ROCm 7.0 | `-m rocm70` | **Default and recommended.** `ROCM_DEFAULT_VERSION`; the version AMD ships backported fixes for. Required for MI350X+. Resolves to 7.0.2. |
+| ROCm 7.2 | `-m rocm_latest` | The `latest` tp2 label. Newest available and receives upstream test patches, but **explicitly not guaranteed stable** — intended for early enablement work (e.g. MI450X). Prefer asking AMD to backport into 7.0 over adopting it. |
+| ROCm 7.0.2.2 | — | Imported but **not publicly reachable**: its `constraint_value` visibility is restricted to buck infrastructure (see `arvr/tools/build_defs/config/third-party/rocm/constraints/BUCK`). |
+| ROCm 6.2.1 / 6.4.0 / 6.4.2 | `-m rocm621` / `rocm640` / `rocm642` | Legacy, do not use — scheduled for removal and no longer receiving patches. |
+
+There is no ROCm 6.0 or 6.1 in fbcode. Version policy is owned by AI Software
+Platform; see the "ROCm Version Strategy" posts in the ROCm Users group for the
+current plan of record.
 
 ### Default Behavior
 
-If `-m` is not specified, Buck uses the system default ROCm version configured in the build environment.
+If `-m` is not specified, Buck uses `ROCM_DEFAULT_VERSION` from
+`rocm_tp2_versions.bzl`, which is currently **7.0**.
 
 ### Examples
 
 ```bash
-# ROCm 7.0 (recommended)
+# ROCm 7.0 (default, recommended)
 buck build @//mode/opt-amd-gpu -m rocm70 fbcode//comms/uniflow:uniflow
 
-# ROCm 6.0
-buck build @//mode/opt-amd-gpu -m rocm60 fbcode//comms/uniflow:uniflow
+# ROCm 7.2, for early-enablement work only
+buck build @//mode/opt-amd-gpu -m rocm_latest fbcode//comms/uniflow:uniflow
 
-# System default
+# Default version (7.0)
 buck build @//mode/opt-amd-gpu fbcode//comms/uniflow:uniflow
 ```
 
@@ -179,8 +214,9 @@ NVML linkage.
 ```bash
 # Verify platform-agnostic modules stay free of GPU deps
 buck2 test @fbcode//mode/opt fbcode//comms/uniflow/amd:
-# 20 tests: per-target check_dependencies_test blocklisting drivers/cuda/*,
-# drivers/nvml/*, and external runtime libs (cuda-lazy, nvml-lazy, amdhip64-lazy)
+# One check_dependencies_test per neutral-zone target (10 targets in
+# NEUTRAL_ZONE_TARGETS), blocklisting drivers/cuda/*, drivers/nvml/*, and
+# external runtime libs (cuda-lazy, nvml-lazy, amdhip64-lazy, amdsmi)
 ```
 
 See `NEUTRAL_ZONES.md` for full architecture description of frozen modules

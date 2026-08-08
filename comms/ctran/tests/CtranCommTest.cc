@@ -72,11 +72,47 @@ TEST(CtranCommTest, PrimsPolicyIsPerCommunicator) {
   auto restoreUsePipes = folly::makeGuard(
       [savedUsePipes] { NCCL_CTRAN_USE_PIPES = savedUsePipes; });
 
-  CtranComm mcclComm(abort, ctranConfig{.pipesConfig = {.enablePrims = 1}});
+  CtranComm mcclComm(abort, ctranConfig{.primsConfig = {.enablePrims = 1}});
   CtranComm ncclxComm(abort);
 
   EXPECT_TRUE(ctranPrimsEnabled(&mcclComm));
   EXPECT_FALSE(ctranPrimsEnabled(&ncclxComm));
+}
+
+// The transport binds its staging geometry at comm init while the collective
+// resolves its launch geometry per call. Both go through these helpers so the
+// two cannot disagree -- pin that hint-first / CVAR-second contract here.
+TEST(CtranCommTest, PrimsGeometryResolvesHintBeforeCvar) {
+  const int64_t savedChannels = MCCL_MAX_NCHANNELS;
+  const int64_t savedBlocks = MCCL_MAX_NBLOCKS;
+  auto restore = folly::makeGuard([savedChannels, savedBlocks] {
+    MCCL_MAX_NCHANNELS = savedChannels;
+    MCCL_MAX_NBLOCKS = savedBlocks;
+  });
+  MCCL_MAX_NCHANNELS = 32;
+  MCCL_MAX_NBLOCKS = 16;
+
+  // Unset (-1) falls back to the CVAR.
+  const ctranPrimsConfig unset{};
+  EXPECT_EQ(ctranPrimsResolvedMaxChannels(unset), 32);
+  EXPECT_EQ(ctranPrimsResolvedMaxBlocks(unset), 16);
+
+  // Set overrides the CVAR, independently per knob.
+  ctranPrimsConfig channelsOnly{};
+  channelsOnly.maxChannels = 8;
+  EXPECT_EQ(ctranPrimsResolvedMaxChannels(channelsOnly), 8);
+  EXPECT_EQ(ctranPrimsResolvedMaxBlocks(channelsOnly), 16);
+
+  ctranPrimsConfig blocksOnly{};
+  blocksOnly.maxBlocks = 12;
+  EXPECT_EQ(ctranPrimsResolvedMaxChannels(blocksOnly), 32);
+  EXPECT_EQ(ctranPrimsResolvedMaxBlocks(blocksOnly), 12);
+
+  ctranPrimsConfig both{};
+  both.maxChannels = 8;
+  both.maxBlocks = 12;
+  EXPECT_EQ(ctranPrimsResolvedMaxChannels(both), 8);
+  EXPECT_EQ(ctranPrimsResolvedMaxBlocks(both), 12);
 }
 
 TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
@@ -86,7 +122,7 @@ TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
   auto restoreUsePipes = folly::makeGuard(
       [savedUsePipes] { NCCL_CTRAN_USE_PIPES = savedUsePipes; });
 
-  CtranComm mcclComm(abort, ctranConfig{.pipesConfig = {.enablePrims = 0}});
+  CtranComm mcclComm(abort, ctranConfig{.primsConfig = {.enablePrims = 0}});
   CtranComm ncclxComm(abort);
 
   EXPECT_FALSE(ctranPrimsEnabled(&mcclComm));

@@ -376,7 +376,7 @@ Status P2pTransportFactory::supported(std::shared_ptr<CudaApi> cudaApi) {
   // all-to-all XGMI intra-node. Gate on this arch family so a non-XGMI part
   // never lets MultiTransport's presence-driven selectTransport prefer a slow
   // PCIe-P2P link over RDMA (hipDeviceCanAccessPeer conflates the two). See
-  // comms/uniflow/amd/AMD_SUPPORT_DESIGN.md §5.6.
+  // comms/uniflow/amd/AMD_ROCM_IMPLEMENTATION_SUMMARY.md ("P2P / XGMI").
   //
   // Match an exact gfx token, allowing a feature-flag suffix after ':'
   // (e.g. "gfx942:sramecc+:xnack-") but not a longer digit run ("gfx12500").

@@ -424,7 +424,7 @@ unset (_glog_USE_WINDOWS_PORT)
 if (WIN32)
   # Do not define min and max as macros
   target_compile_definitions (glog PRIVATE NOMINMAX)
-  # Exclude unnecessary funcitonality
+  # Exclude unnecessary functionality
   target_compile_definitions (glog PRIVATE WIN32_LEAN_AND_MEAN)
 endif (WIN32)
 
