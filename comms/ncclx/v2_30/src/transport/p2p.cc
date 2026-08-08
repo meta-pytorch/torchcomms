@@ -7,6 +7,7 @@
 
 #include "checks.h"
 #include "comm.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "graph.h"
 #include "utils.h"
@@ -137,7 +138,7 @@ extern int64_t ncclParamMNNVLEnable();
 ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* info1, struct ncclPeerInfo* info2) {
   initCeOperation();
 
-  if (comm->noLocal_) {
+  if (comm->ncclxExt->noLocal) {
     *ret = 0;
     return ncclSuccess;
   }
