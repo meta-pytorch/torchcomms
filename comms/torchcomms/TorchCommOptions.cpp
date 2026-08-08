@@ -56,6 +56,10 @@ T CommOptions::getHint(std::string_view key, const T& default_value) const {
   }
 }
 
+bool CommOptions::isHighPriorityStreamEnabled() const {
+  return getHint<bool>("is_high_priority_stream", is_high_priority_stream);
+}
+
 template bool CommOptions::getHint<bool>(std::string_view, const bool&) const;
 template size_t CommOptions::getHint<size_t>(std::string_view, const size_t&)
     const;
