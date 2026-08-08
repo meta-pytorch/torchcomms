@@ -202,6 +202,14 @@ class WaitSignalOptions {
   WaitSignalOptions() : timeout(kNoTimeout) {}
 };
 
+class GetOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  GetOptions() : timeout(kNoTimeout) {}
+};
+
 class AllGatherPInitOptions {
  public:
   std::unordered_map<std::string, std::string> hints;

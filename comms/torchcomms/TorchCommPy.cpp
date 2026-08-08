@@ -912,6 +912,53 @@ Example:
           py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "get",
+          [](TorchCommWindow& self,
+             at::Tensor& tensor,
+             int src_rank,
+             size_t source_offset_nelems,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            GetOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.get(
+                tensor, src_rank, source_offset_nelems, async_op, opts);
+          },
+          R"(
+Read data from a remote rank's window buffer into a local tensor (one-sided get).
+
+The remote rank does not participate; use ``signal``/``wait_signal`` to
+synchronize if needed.
+
+Args:
+    tensor (torch.Tensor): Local buffer to receive data into.
+    src_rank (int): Source rank to read from.
+    source_offset_nelems (int): Offset in source buffer (in elements).
+    async_op (bool): If True, returns TorchWork for async completion.
+    hints (Dict[str, str], optional): Backend-specific hints.
+    timeout (timedelta, optional): Operation timeout.
+
+Returns:
+    TorchWork: Work object for synchronization.
+
+Raises:
+    RuntimeError: If request exceeds window buffer size.
+
+      )",
+          py::arg("tensor"),
+          py::arg("src_rank"),
+          py::arg("source_offset_nelems"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_attr",
           &TorchCommWindow::get_attr,
           R"(
