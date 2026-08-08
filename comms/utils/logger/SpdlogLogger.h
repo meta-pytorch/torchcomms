@@ -142,6 +142,9 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
     }                                                                      \
   } while (false)
 
+#define COMMS_LOGGER_DEBUG(logger, ...) \
+  SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
+
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)               \
   do {                                                             \
     auto& _comms_logger = (logger_expression);                     \
@@ -157,13 +160,13 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   COMMS_LOG_IMPL(                               \
       ::meta::comms::logger::getSpdlogLogger(), \
       ::spdlog::level::debug,                   \
-      SPDLOG_LOGGER_DEBUG,                      \
+      COMMS_LOGGER_DEBUG,                       \
       __VA_ARGS__)
 #define COMMS_LOG_NAMED_DBG(logger_name, ...)              \
   COMMS_LOG_IMPL(                                          \
       ::meta::comms::logger::getSpdlogLogger(logger_name), \
       ::spdlog::level::debug,                              \
-      SPDLOG_LOGGER_DEBUG,                                 \
+      COMMS_LOGGER_DEBUG,                                  \
       __VA_ARGS__)
 
 #define COMMS_LOG_INFO(...)                     \
