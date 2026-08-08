@@ -135,10 +135,8 @@ class BackendWrapper : public c10d::Backend {
   recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) override;
 
   // Coalescing hooks: c10d's _coalescing_manager (used by
-  // dist.batch_isend_irecv) calls these around a sequence of send/recv ops so
-  // the backend can issue them as one ncclGroupStart/End. Without them, mixed
-  // P2P batches on a single PG (e.g. PP 1F1B middle stage) deadlock because
-  // each tc.send/tc.recv is enqueued ungrouped on the same NCCL stream.
+  // dist.batch_isend_irecv) calls these around send/recv operations so the
+  // backend can issue them as one group and avoid mixed-P2P deadlocks.
   bool supportsCoalescing() const override {
     return true;
   }
@@ -200,10 +198,7 @@ class BackendWrapper : public c10d::Backend {
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
 
-  // Active coalescing batch. Engaged between startCoalescing() and
-  // endCoalescing(); send()/recv() append into it instead of issuing
-  // immediately. c10d's coalescing manager serializes per-PG, so a single
-  // slot suffices.
+  // Active coalescing batch. c10d serializes one window per process group.
   std::optional<BatchSendRecv> coalescing_batch_;
 
   // Per-call tag sequence for monitoredBarrier's check-in/ack P2P. Kept

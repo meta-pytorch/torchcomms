@@ -2341,16 +2341,15 @@ Args:
 Split communicator into a subgroup.
 
 Args:
-    ranks: List of ranks to include in the new subgroup. If the list is empty,
-        None will be returned. If the list is non-empty but does not include
-        the current rank, an exception will be thrown.
+    ranks: Parent-local ranks to include in the new subgroup. Backends define
+        whether nonmembers pass the same list or an empty list.
     name: Name for the new communicator.
     hints: Dictionary of string hints for backend-specific options.
     timeout: Timeout for the operation.
 
-Returns: A new communicator for the subgroup, or None if the ranks list is empty.
+Returns: A new communicator for subgroup members, or None for nonmembers.
 
-Raises: RuntimeError if the ranks list is non-empty and the current rank is not included.
+Raises: RuntimeError if the ranks violate the backend's split contract.
           )",
           py::arg("ranks"),
           py::arg("name"),

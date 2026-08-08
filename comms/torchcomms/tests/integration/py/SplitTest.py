@@ -217,6 +217,9 @@ class SplitTest(unittest.TestCase):
             equal = torch.all(output.eq(expected)).item()
             self.assertTrue(equal, f"Tensors are not equal for {description}")
 
+    def _ranks_for_split(self, ranks, current_rank):
+        return ranks if current_rank in ranks else []
+
     def test_contiguous_group(self):
         """Test contiguous group with first half of ranks."""
         split_size = self.num_ranks // 2
@@ -224,13 +227,7 @@ class SplitTest(unittest.TestCase):
             split_size = 1  # Ensure at least one rank
 
         rank_in_group = self.rank < split_size
-        ranks = []
-
-        if rank_in_group:
-            # Only fill ranks if current rank is in the group
-            for i in range(split_size):
-                ranks.append(i)
-        # Otherwise, ranks remains empty
+        ranks = self._ranks_for_split(list(range(split_size)), self.rank)
 
         # Call split function
         new_torchcomm = self.torchcomm.split(ranks, name="contiguous_split_comm")
@@ -268,13 +265,7 @@ class SplitTest(unittest.TestCase):
     def test_non_contiguous_group(self):
         """Test non-contiguous group with even ranks only."""
         rank_in_group = self.rank % 2 == 0  # Even ranks only
-        ranks = []
-
-        if rank_in_group:
-            # Only fill ranks if current rank is in the group (even ranks)
-            for i in range(0, self.num_ranks, 2):
-                ranks.append(i)
-        # Otherwise, ranks remains empty
+        ranks = self._ranks_for_split(list(range(0, self.num_ranks, 2)), self.rank)
 
         # Call split function
         new_torchcomm = self.torchcomm.split(ranks, name="noncontig_child_comm")
@@ -345,13 +336,9 @@ class SplitTest(unittest.TestCase):
             first_split_size = 1
 
         rank_in_first_level = self.rank < first_split_size
-        first_level_ranks = []
-
-        if rank_in_first_level:
-            # Only fill ranks if current rank is in the first level
-            for i in range(first_split_size):
-                first_level_ranks.append(i)
-        # Otherwise, first_level_ranks remains empty
+        first_level_ranks = self._ranks_for_split(
+            list(range(first_split_size)), self.rank
+        )
 
         # Call split function to create first-level child communicator
         first_level_comm = self.torchcomm.split(
@@ -390,13 +377,9 @@ class SplitTest(unittest.TestCase):
             second_split_size = 1
 
         rank_in_second_level = first_level_rank < second_split_size
-        second_level_ranks = []
-
-        if rank_in_second_level:
-            # Only fill ranks if current rank is in the second level
-            for i in range(second_split_size):
-                second_level_ranks.append(i)
-        # Otherwise, second_level_ranks remains empty
+        second_level_ranks = self._ranks_for_split(
+            list(range(second_split_size)), first_level_rank
+        )
 
         # Call split function to create second-level child communicator
         second_level_comm = first_level_comm.split(

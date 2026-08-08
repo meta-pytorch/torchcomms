@@ -45,6 +45,7 @@ torchcomms_use_torch_pybind11(torchcomms_comms_xccl)
 target_compile_features(torchcomms_comms_xccl PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms_xccl PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_xccl PRIVATE
+    glog::glog_headers
     fmt::fmt
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}

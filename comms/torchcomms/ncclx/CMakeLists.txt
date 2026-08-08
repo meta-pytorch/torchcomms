@@ -137,6 +137,7 @@ endif()
 
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_ncclx PRIVATE
+    glog::glog_headers
     fmt::fmt
     torchcomms
     ${TORCH_LIBRARIES}
