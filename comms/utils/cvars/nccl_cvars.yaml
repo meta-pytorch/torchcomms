@@ -1936,6 +1936,20 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
+ - name        : MCCL_NVL_FABRIC_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Recognize the MNNVL cross-host NVL fabric domain when initializing an MCCL
+     communicator's topology. When true, ranks sharing an NVL fabric clusterUuid
+     collapse into a single NVL domain, so nLocalRanks spans hosts and cross-host
+     peers are classified as NVL rather than IB. When false, the NVL logical
+     group is constrained to same-host ranks and cross-host peers route over IB.
+     Defaults to false because the collapse is only valid where fabric handles
+     are importable between the peers: a fleet that advertises fabric without a
+     shared IMEX domain fails communicator init outright. Set true on fleets
+     known to share an IMEX domain.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
