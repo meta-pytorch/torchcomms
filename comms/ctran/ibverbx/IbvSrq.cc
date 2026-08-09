@@ -2,8 +2,8 @@
 
 #include "comms/ctran/ibverbx/IbvSrq.h"
 
-#include <folly/logging/xlog.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -28,7 +28,7 @@ IbvSrq::~IbvSrq() {
   if (srq_) {
     int rc = ibvSymbols.ibv_internal_destroy_srq(srq_);
     if (rc != 0) {
-      XLOGF(ERR, "Failed to destroy SRQ rc: {}, {}", rc, strerror(errno));
+      CTRAN_LOG(ERR, "Failed to destroy SRQ rc: {}, {}", rc, strerror(errno));
     }
   }
 }
