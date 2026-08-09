@@ -12,8 +12,8 @@
 #include <vector>
 
 #include <folly/ScopeGuard.h>
-#include <folly/logging/xlog.h>
 #include "comms/ctran/bootstrap/NcclSocketNameFilter.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -37,7 +37,7 @@ folly::SocketAddress getSocketAdddress(int fd) {
   if (::getsockname(fd, (struct sockaddr*)&localAddr, &localLen) == 0) {
     sa.setFromSockaddr((struct sockaddr*)&localAddr, localLen);
   } else {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Failed to get local socket address after connect for fd={}. errno={}, {}",
         fd,
@@ -56,7 +56,7 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
     std::string* resolvedIfName) {
   struct ifaddrs* ifaddrs = nullptr;
 
-  XLOGF(
+  CTRAN_LOG(
       DBG,
       "getInterfaceAddress called with ifName=\"{}\" addrPrefix=\"{}\" preferV6={}",
       ifName,
@@ -75,30 +75,30 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
   std::vector<std::pair<folly::IPAddress, std::string>> addrs;
   for (auto ifa = ifaddrs; ifa != nullptr; ifa = ifa->ifa_next) {
     if (ifa->ifa_addr == nullptr) {
-      XLOGF(DBG, "  skip {}: no address", ifa->ifa_name);
+      CTRAN_LOG(DBG, "  skip {}: no address", ifa->ifa_name);
       continue;
     }
     if (!matchesIfName(ifNameFilter, ifa->ifa_name)) {
-      XLOGF(DBG, "  skip {}: ifname filter mismatch", ifa->ifa_name);
+      CTRAN_LOG(DBG, "  skip {}: ifname filter mismatch", ifa->ifa_name);
       continue;
     }
     if (ifa->ifa_flags & IFA_F_DEPRECATED) {
-      XLOGF(DBG, "  skip {}: deprecated address", ifa->ifa_name);
+      CTRAN_LOG(DBG, "  skip {}: deprecated address", ifa->ifa_name);
       continue;
     }
 
     auto addr = folly::IPAddress::tryFromSockAddr(ifa->ifa_addr);
     if (addr.hasError()) {
-      XLOGF(DBG, "  skip {}: failed to parse address", ifa->ifa_name);
+      CTRAN_LOG(DBG, "  skip {}: failed to parse address", ifa->ifa_name);
       continue;
     }
     if (addr->isLinkLocal()) {
-      XLOGF(
+      CTRAN_LOG(
           DBG, "  skip {}: link-local address {}", ifa->ifa_name, addr->str());
       continue;
     }
     if (!addrPrefix.empty() && addr->str().find(addrPrefix) != 0) {
-      XLOGF(
+      CTRAN_LOG(
           DBG,
           "  skip {}: address {} does not match prefix \"{}\"",
           ifa->ifa_name,
@@ -106,12 +106,12 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
           addrPrefix);
       continue;
     }
-    XLOGF(DBG, "  accept {}: {}", ifa->ifa_name, addr->str());
+    CTRAN_LOG(DBG, "  accept {}: {}", ifa->ifa_name, addr->str());
     addrs.emplace_back(addr.value(), std::string(ifa->ifa_name));
   }
 
   if (addrs.empty()) {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "getInterfaceAddress: no matching address found for ifName=\"{}\" addrPrefix=\"{}\" preferV6={}",
         ifName,
@@ -198,11 +198,11 @@ int Socket::connect(
   const auto sockLen = addr.getAddress(&sockAddr);
   size_t retryCount{0};
   do {
-    XLOGF(DBG, "Connecting to {} via {}", addr.describe(), ifName);
+    CTRAN_LOG(DBG, "Connecting to {} via {}", addr.describe(), ifName);
     if (::connect(fd_, (const struct sockaddr*)&sockAddr, sockLen) == 0) {
       break;
     }
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Failed to connect to {} via {}. errno={}, {}",
         addr.describe(),
@@ -212,20 +212,21 @@ int Socket::connect(
 
     // Break the loop on non-retryable errors
     if (!shouldRetry(errno)) {
-      XLOGF(ERR, "Connection attempt terminating on non-retryable error");
+      CTRAN_LOG(ERR, "Connection attempt terminating on non-retryable error");
       break;
     }
 
     // Break the loop if we've exhausted all retries
     if (retryCount >= numRetries) {
-      XLOGF(ERR, "Connection attempt terminating as we exhausted all retries");
+      CTRAN_LOG(
+          ERR, "Connection attempt terminating as we exhausted all retries");
       close();
       return errno;
     }
 
     // Retry after a delay
     const auto retryTimeout = retryCount * timeout;
-    XLOGF(INFO, "Will retry connecting in {}ms", retryTimeout.count());
+    CTRAN_LOG(INFO, "Will retry connecting in {}ms", retryTimeout.count());
     // Wait for a bit before retrying
     retryCount++;
     std::this_thread::sleep_for(retryCount * timeout);
@@ -234,7 +235,8 @@ int Socket::connect(
   peerAddr_ = addr;
   localAddr_ = getSocketAdddress(fd_);
 
-  XLOGF(INFO, "Connected to {} via {}, fd={}", addr.describe(), ifName, fd_);
+  CTRAN_LOG(
+      INFO, "Connected to {} via {}, fd={}", addr.describe(), ifName, fd_);
   return 0;
 }
 
@@ -289,7 +291,7 @@ int Socket::send(const void* buf, const size_t len) {
     int sent = ::send(fd_, (uint8_t*)buf + totalSent, len - totalSent, 0);
     if (sent == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to write to socket fd={}. errno={}, {}",
           fd_,
@@ -311,7 +313,7 @@ int Socket::recv(void* buf, const size_t len) {
     int rcvd = ::recv(fd_, (uint8_t*)buf + totalRecvd, len - totalRecvd, 0);
     if (rcvd == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to read from socket fd={}. errno={}, {}",
           fd_,
@@ -331,7 +333,7 @@ int Socket::recvAsync(void* buf, const size_t len) {
   int rcvd = ::recv(fd_, (uint8_t*)buf, len, 0);
   if (rcvd == -1 &&
       (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to read from socket fd={}. errno={}, {}",
         fd_,
@@ -339,7 +341,7 @@ int Socket::recvAsync(void* buf, const size_t len) {
         strerror(errno));
     return -1;
   } else if (rcvd == 0) {
-    XLOGF(WARN, "Connection closed by peer");
+    CTRAN_LOG(WARN, "Connection closed by peer");
   }
   return rcvd;
 }
@@ -376,11 +378,12 @@ int ServerSocket::bind(
     const folly::SocketAddress& addr,
     const std::string& ifName,
     bool reusePort) {
-  XLOGF(INFO, "Binding ServerSocket to {} via {}", addr.describe(), ifName);
+  CTRAN_LOG(INFO, "Binding ServerSocket to {} via {}", addr.describe(), ifName);
   // Create socket
   fd_ = ::socket(addr.getFamily(), SOCK_STREAM, 0);
   if (fd_ < 0) {
-    XLOGF(ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
+    CTRAN_LOG(
+        ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
     return errno;
   }
 
@@ -389,7 +392,7 @@ int ServerSocket::bind(
     if (setsockopt(
             fd_, SOL_SOCKET, SO_BINDTODEVICE, ifName.c_str(), ifName.size()) <
         0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to bind socket to interface {}. errno={}, {}",
           ifName.c_str(),
@@ -408,7 +411,7 @@ int ServerSocket::bind(
             SO_REUSEADDR | SO_REUSEPORT,
             &reuse,
             sizeof(reuse)) < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to set SO_REUSEADDR | SO_REUSEPORT. errno={}, {}",
           errno,
@@ -422,7 +425,7 @@ int ServerSocket::bind(
   sockaddr_storage sockAddr;
   const auto sockLen = addr.getAddress(&sockAddr);
   if (::bind(fd_, reinterpret_cast<sockaddr*>(&sockAddr), sockLen) < 0) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to bind socket on {}. errno={}, {}",
         addr.describe(),
@@ -449,7 +452,7 @@ int ServerSocket::bind(
           fd_, IPPROTO_IP, IP_TOS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int));
     }
     if (setSockRet < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to set socket TOS. errno={}, {}",
           errno,
@@ -457,7 +460,7 @@ int ServerSocket::bind(
       return errno;
     }
   }
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "ServerSocket is bound on {} via {}, fd={}",
       getListenAddress()->describe(),
@@ -469,7 +472,7 @@ int ServerSocket::bind(
 int ServerSocket::listen() {
   // Listen for incoming connections
   if (::listen(fd_, SOMAXCONN) < 0) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to listen on socket. errno={}, {}",
         errno,
@@ -477,7 +480,7 @@ int ServerSocket::listen() {
     return errno;
   }
 
-  XLOGF(INFO, "ServerSocket Started listening, fd={}", fd_);
+  CTRAN_LOG(INFO, "ServerSocket Started listening, fd={}", fd_);
   return 0;
 }
 
@@ -496,7 +499,7 @@ folly::Expected<folly::SocketAddress, int> ServerSocket::getListenAddress() {
   socklen_t sockLen =
       isV4_ ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
   if (getsockname(fd_, (struct sockaddr*)&sockAddr, &sockLen) == -1) {
-    XLOGF(
+    CTRAN_LOG(
         ERR, "Failed to get socket name. errno={}, {}", errno, strerror(errno));
     return folly::makeUnexpected(errno);
   }
@@ -507,7 +510,11 @@ folly::Expected<folly::SocketAddress, int> ServerSocket::getListenAddress() {
 
 folly::Expected<Socket, int> ServerSocket::accept(bool async) {
   int retryCnt = 0;
-  XCHECK(acceptRetryCnt_ > 0) << "accept retry count must be positive";
+  if (acceptRetryCnt_ <= 0) {
+    CTRAN_LOG(
+        FATAL,
+        "Check failed: acceptRetryCnt_ > 0 accept retry count must be positive");
+  }
   sockaddr_storage sockAddr;
   socklen_t sockLen =
       isV4_ ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
@@ -523,7 +530,7 @@ folly::Expected<Socket, int> ServerSocket::accept(bool async) {
        * retried
        */
       ++retryCnt;
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "Received {} in attempt {}/{}",
           strerror(errno),
@@ -533,7 +540,7 @@ folly::Expected<Socket, int> ServerSocket::accept(bool async) {
     }
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
       if (!hasShutDown_) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "Failed to accept connection. errno={}, {}",
             errno,
@@ -541,12 +548,13 @@ folly::Expected<Socket, int> ServerSocket::accept(bool async) {
       }
       return folly::makeUnexpected(errno);
     } else {
-      XLOGF(INFO, "Received {} and will perform a free retry", strerror(errno));
+      CTRAN_LOG(
+          INFO, "Received {} and will perform a free retry", strerror(errno));
     }
   }
   folly::SocketAddress addr;
   addr.setFromSockaddr((struct sockaddr*)&sockAddr);
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Accepted a new incoming connection {}, fd={}",
       addr.describe(),
@@ -569,7 +577,7 @@ int ServerSocket::shutdown() {
   // error logging at accept failure, mark intentional shutdown
   hasShutDown_ = true;
   if (fd_ >= 0) {
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "ServerSocket is shutting down on {}, fd={}",
         getListenAddress()->describe(),
