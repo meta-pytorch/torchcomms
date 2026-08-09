@@ -13,6 +13,7 @@
 #endif
 #include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -580,7 +581,7 @@ void ctran::RegCache::registerExternalRegMemFn(
     externalRegMemFn_ = std::move(regMem);
     externalDeregMemFn_ = std::move(deregMem);
   } else {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "RegCache: registerExternalRegMemFn called with null callback(s), "
         "both regMem and deregMem are required — ignoring");
