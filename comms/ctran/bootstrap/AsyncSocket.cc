@@ -2,8 +2,9 @@
 
 #include "AsyncSocket.h"
 
-#include <folly/logging/xlog.h>
 #include <cstring>
+
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ctran::bootstrap {
 
@@ -56,7 +57,7 @@ void AsyncClientSocket::start(
 void AsyncClientSocket::connectSuccess() noexcept {
   folly::SocketAddress peer;
   sock_->getPeerAddress(&peer);
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Connected to {}, fd={}",
       peer.describe(),
@@ -66,7 +67,7 @@ void AsyncClientSocket::connectSuccess() noexcept {
 
 void AsyncClientSocket::connectErr(
     const folly::AsyncSocketException& ex) noexcept {
-  XLOGF(ERR, "AsyncClientSocket connect failed: {}", ex.what());
+  CTRAN_LOG(ERR, "AsyncClientSocket connect failed: {}", ex.what());
   cancelTimeout();
   finish(&ex);
 }
@@ -79,7 +80,7 @@ void AsyncClientSocket::writeSuccess() noexcept {
 void AsyncClientSocket::writeErr(
     size_t bytesWritten,
     const folly::AsyncSocketException& ex) noexcept {
-  XLOGF(
+  CTRAN_LOG(
       ERR,
       "AsyncClientSocket write failed after {} bytes: {}",
       bytesWritten,
@@ -89,7 +90,7 @@ void AsyncClientSocket::writeErr(
 }
 
 void AsyncClientSocket::timeoutExpired() noexcept {
-  XLOGF(ERR, "AsyncClientSocket operation timed out");
+  CTRAN_LOG(ERR, "AsyncClientSocket operation timed out");
   auto ex = folly::AsyncSocketException(
       folly::AsyncSocketException::TIMED_OUT, "Operation timed out");
   finish(&ex);
@@ -145,7 +146,7 @@ folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
     server_->listen(1024 /* backlog */);
     server_->startAccepting();
     auto addr = server_->getAddress();
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "AsyncServerSocket started listening on {}, fd={}",
         addr.describe(),
@@ -176,7 +177,7 @@ folly::SemiFuture<folly::Unit> AsyncServerSocket::stop() {
   evb_.runInEventBaseThread([this, p = std::move(p)]() mutable {
     if (server_) {
       auto addr = server_->getAddress();
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "AsyncServerSocket is shutting down on {}, fd={}",
           addr.describe(),
@@ -205,7 +206,7 @@ void AsyncServerSocket::connectionAccepted(
   auto sock = folly::AsyncSocket::UniquePtr(new folly::AsyncSocket(&evb_, ns));
   folly::SocketAddress localAddr;
   localAddr.setFromLocalAddress(ns);
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Accepted a new connection fd={}, local={}, peer={}. Waiting for 1 message to arrive.",
       ns.toFd(),
@@ -230,7 +231,7 @@ void AsyncServerSocket::connectionAccepted(
 }
 
 void AsyncServerSocket::acceptError(const std::exception& ex) noexcept {
-  XLOGF(ERR, "AsyncServerSocket accept failed: {}", ex.what());
+  CTRAN_LOG(ERR, "AsyncServerSocket accept failed: {}", ex.what());
 }
 
 //
@@ -291,7 +292,7 @@ void AsyncServerSocket::OneShotRecv::readEOF() noexcept {
 
 void AsyncServerSocket::OneShotRecv::readErr(
     const folly::AsyncSocketException& ex) noexcept {
-  XLOGF(ERR, "AsyncServerSocket read error: {}", ex.what());
+  CTRAN_LOG(ERR, "AsyncServerSocket read error: {}", ex.what());
   cancelTimeout();
   closeNow();
 }
@@ -305,7 +306,7 @@ void AsyncServerSocket::OneShotRecv::closeNow() {
 }
 
 void AsyncServerSocket::OneShotRecv::timeoutExpired() noexcept {
-  XLOGF(ERR, "AsyncServerSocket receive operation timed out");
+  CTRAN_LOG(ERR, "AsyncServerSocket receive operation timed out");
   closeNow();
 }
 
