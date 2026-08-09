@@ -1439,7 +1439,7 @@ TEST(evaluate_ast, counter_reduction_dimension)
 
             rec.id = rec.id | mask_dim;
             rec.id = rec.id ^ mask_dim;
-            if(groups_dim.find(rec.id) == groups_dim.end())
+            if(!groups_dim.contains(rec.id))
             {
                 groups_dim[rec.id] = rec;
             }
