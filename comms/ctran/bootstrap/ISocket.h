@@ -13,7 +13,6 @@
 #include <string>
 
 #include <folly/ScopeGuard.h>
-#include <folly/logging/xlog.h>
 
 namespace ctran::bootstrap {
 
