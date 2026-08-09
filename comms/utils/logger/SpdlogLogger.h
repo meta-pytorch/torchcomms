@@ -114,14 +114,14 @@ class CommsSpdlogLogger {
 };
 
 CommsSpdlogLogger& getSpdlogLogger();
-CommsSpdlogLogger& getSpdlogLogger(std::string_view contextName);
+CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 
 void configureSpdlogLogger(
     std::string prefix,
     std::function<int(void)> threadContextFn);
 
 void configureSpdlogLogger(
-    std::string_view contextName,
+    std::string_view loggerName,
     std::string prefix,
     std::string_view logFilePath,
     std::function<int(void)> threadContextFn,
@@ -142,6 +142,9 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
     }                                                                      \
   } while (false)
 
+#define COMMS_LOGGER_DEBUG(logger, ...) \
+  SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
+
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)               \
   do {                                                             \
     auto& _comms_logger = (logger_expression);                     \
@@ -157,13 +160,13 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   COMMS_LOG_IMPL(                               \
       ::meta::comms::logger::getSpdlogLogger(), \
       ::spdlog::level::debug,                   \
-      SPDLOG_LOGGER_DEBUG,                      \
+      COMMS_LOGGER_DEBUG,                       \
       __VA_ARGS__)
-#define COMMS_LOG_CONTEXT_DBG(context, ...)            \
-  COMMS_LOG_IMPL(                                      \
-      ::meta::comms::logger::getSpdlogLogger(context), \
-      ::spdlog::level::debug,                          \
-      SPDLOG_LOGGER_DEBUG,                             \
+#define COMMS_LOG_NAMED_DBG(logger_name, ...)              \
+  COMMS_LOG_IMPL(                                          \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), \
+      ::spdlog::level::debug,                              \
+      COMMS_LOGGER_DEBUG,                                  \
       __VA_ARGS__)
 
 #define COMMS_LOG_INFO(...)                     \
@@ -193,34 +196,34 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 #define COMMS_LOG_FATAL(...) \
   COMMS_LOG_FATAL_IMPL(::meta::comms::logger::getSpdlogLogger(), __VA_ARGS__)
 
-#define COMMS_LOG_CONTEXT_INFO(context, ...)           \
-  COMMS_LOG_IMPL(                                      \
-      ::meta::comms::logger::getSpdlogLogger(context), \
-      ::spdlog::level::info,                           \
-      SPDLOG_LOGGER_INFO,                              \
+#define COMMS_LOG_NAMED_INFO(logger_name, ...)             \
+  COMMS_LOG_IMPL(                                          \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), \
+      ::spdlog::level::info,                               \
+      SPDLOG_LOGGER_INFO,                                  \
       __VA_ARGS__)
-#define COMMS_LOG_CONTEXT_WARN(context, ...)           \
-  COMMS_LOG_IMPL(                                      \
-      ::meta::comms::logger::getSpdlogLogger(context), \
-      ::spdlog::level::warn,                           \
-      SPDLOG_LOGGER_WARN,                              \
+#define COMMS_LOG_NAMED_WARN(logger_name, ...)             \
+  COMMS_LOG_IMPL(                                          \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), \
+      ::spdlog::level::warn,                               \
+      SPDLOG_LOGGER_WARN,                                  \
       __VA_ARGS__)
-#define COMMS_LOG_CONTEXT_ERR(context, ...)            \
-  COMMS_LOG_IMPL(                                      \
-      ::meta::comms::logger::getSpdlogLogger(context), \
-      ::spdlog::level::err,                            \
-      SPDLOG_LOGGER_ERROR,                             \
+#define COMMS_LOG_NAMED_ERR(logger_name, ...)              \
+  COMMS_LOG_IMPL(                                          \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), \
+      ::spdlog::level::err,                                \
+      SPDLOG_LOGGER_ERROR,                                 \
       __VA_ARGS__)
-#define COMMS_LOG_CONTEXT_CRITICAL(context, ...)       \
-  COMMS_LOG_IMPL(                                      \
-      ::meta::comms::logger::getSpdlogLogger(context), \
-      ::spdlog::level::critical,                       \
-      SPDLOG_LOGGER_CRITICAL,                          \
+#define COMMS_LOG_NAMED_CRITICAL(logger_name, ...)         \
+  COMMS_LOG_IMPL(                                          \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), \
+      ::spdlog::level::critical,                           \
+      SPDLOG_LOGGER_CRITICAL,                              \
       __VA_ARGS__)
-#define COMMS_LOG_CONTEXT_FATAL(context, ...) \
-  COMMS_LOG_FATAL_IMPL(                       \
-      ::meta::comms::logger::getSpdlogLogger(context), __VA_ARGS__)
+#define COMMS_LOG_NAMED_FATAL(logger_name, ...) \
+  COMMS_LOG_FATAL_IMPL(                         \
+      ::meta::comms::logger::getSpdlogLogger(logger_name), __VA_ARGS__)
 
 #define COMMS_LOG(level, ...) COMMS_LOG_##level(__VA_ARGS__)
-#define COMMS_LOG_CONTEXT(context, level, ...) \
-  COMMS_LOG_CONTEXT_##level(context, __VA_ARGS__)
+#define COMMS_LOG_NAMED(logger_name, level, ...) \
+  COMMS_LOG_NAMED_##level(logger_name, __VA_ARGS__)

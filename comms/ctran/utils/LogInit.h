@@ -4,18 +4,7 @@
 
 #include <string_view>
 
-//
-// This file defines Logging APIs modelled atop `folly/log.h`. Atop it intends
-// to add some additional features like GPU index prefixing and conditional
-// logging per sub-system
-//
-// Use this API specifically for logging in the context of GPU code. Otherwise,
-// prefer using `folly/log.h` directly for performance reasons.
-//
-
 namespace ctran::logging {
-
-constexpr std::string_view kCtranSpdlogContext = "comms.ctran";
 
 // AKA Ctran file path. This needs to be changed in refactoring
 constexpr std::string_view kCtranCategory = "comms.ncclx.v2_25.comms.ctran";

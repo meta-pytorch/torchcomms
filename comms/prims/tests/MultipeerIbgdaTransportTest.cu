@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
+
 namespace comms::prims::test {
 
 // =============================================================================

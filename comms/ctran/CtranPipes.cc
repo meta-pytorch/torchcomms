@@ -13,6 +13,7 @@
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -76,11 +77,11 @@ commResult_t ctran::ctranPreparePipesTrace(
 
 commResult_t ctranInitializePipes(CtranComm* comm) {
   if (!ctranPrimsEnabled(comm)) {
-    CLOGF(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
+    CTRAN_LOG(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
     return commSuccess;
   }
   try {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: initialization started rank={} nRanks={} cudaDev={}",
         comm->statex_->rank(),
@@ -439,7 +440,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.topoConfig.mnnvlCliqueId = static_cast<int>(NCCL_MNNVL_CLIQUE_ID);
     }
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: constructing MultiPeerTransport rank={}",
         comm->statex_->rank());
@@ -455,7 +456,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     primsOrderedWorkStreamGuard->init(
         comm->logMetaData_, false /* synchronizeEagerAfterCapturedWork */);
     comm->primsOrderedWorkStreamGuard_ = std::move(primsOrderedWorkStreamGuard);
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "Prims MultiPeerTransport initialized: nvlPeers={}, ibPeers={}, p2pDisable={}",
         comm->multiPeerTransport_->nvl_n_ranks() - 1,
@@ -468,12 +469,12 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
   // Wire staging buffers and build nvlTransports now that both CtranAlgo
   // (SharedResource) and MultiPeerTransport have been created.
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: starting resource initialization rank={}",
       comm->statex_->rank());
   auto ret = ctranInitPipesResources(comm->ctran_->algo.get());
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: resource initialization finished rank={} status={}",
       comm->statex_->rank(),

@@ -31,6 +31,7 @@
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
+#include "comms/prims/transport/P2pIbTransportDeviceImpl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -43,7 +44,7 @@ inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 // is intentionally available across all `comms/prims` device headers.
 //
 // `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
-// private shared helpers in P2pIbTransportDeviceDecl.cuh; backend-owned
+// private shared helpers in P2pIbTransportDeviceImpl.cuh; backend-owned
 // `channelLayout_` carries the actual protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
@@ -2071,6 +2072,7 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to send for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename = void>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
@@ -2104,6 +2106,7 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to receive for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
+  template <typename = void>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
