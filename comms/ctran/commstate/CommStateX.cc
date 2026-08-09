@@ -1,13 +1,13 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
 #include <string>
 
 #include "CommStateX.h"
 #include "comms/ctran/commstate/Topology.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ncclx {
@@ -310,7 +310,7 @@ void CommStateX::setNvlFabricTopos(
       state.cliqueRankToRank = cliqueRanks_.at(state.cliqueIndex);
     }
     myNvlFabricRankState_ = nvlFabricRankStates_.at(rank_);
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "CommStateX: effectiveVCliqueSize={} override NVL fabric topology",
         effectiveVCliqueSize);
@@ -406,7 +406,7 @@ void CommStateX::setRankStatesTopologies(
     state.nLocalRanks = state.localRankToRanks.size();
   }
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "CommStateX: set rankTopology with {}",
       topoNameMap[NCCL_COMM_STATE_DEBUG_TOPO]);
