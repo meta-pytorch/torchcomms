@@ -3,6 +3,7 @@
 #include "comms/ctran/ibverbx/IbvPd.h"
 #include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -34,7 +35,7 @@ IbvPd::~IbvPd() {
   if (pd_) {
     int rc = ibvSymbols.ibv_internal_dealloc_pd(pd_);
     if (rc != 0) {
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "Failed to deallocate pd rc: {}, {}. "
           "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
