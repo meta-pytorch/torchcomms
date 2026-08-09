@@ -8,6 +8,7 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
 
 namespace comms::prims::benchmark {
 
