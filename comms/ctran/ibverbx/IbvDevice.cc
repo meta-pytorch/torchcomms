@@ -2,6 +2,7 @@
 
 #include "comms/ctran/ibverbx/IbvDevice.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -45,7 +46,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   ibv_pd* pd = nullptr;
   pd = ibvSymbols.ibv_internal_alloc_pd(context);
   if (!pd) {
-    XLOG(ERR) << "ibv_alloc_pd failed: " << folly::errnoStr(errno);
+    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", folly::errnoStr(errno));
     return false;
   }
 
@@ -66,7 +67,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   // supported (EBADF otherwise)
   dev_fail |= (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   if (ibvSymbols.ibv_internal_dealloc_pd(pd) != 0) {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "ibv_dealloc_pd failed: {} DMA-BUF support status: {}",
         folly::errnoStr(errno),
@@ -74,7 +75,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     return false;
   }
   if (dev_fail) {
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "MLX5DV Kernel DMA-BUF is not supported on device {}",
         device->name);
@@ -185,13 +186,13 @@ IbvDevice::IbvDevice(ibv_device* ibvDevice, int port, bool dataDirect)
   port_ = port;
   context_ = ibvSymbols.ibv_internal_open_device(device_);
   if (!context_) {
-    XLOGF(ERR, "Failed to open device {}", device_->name);
+    CTRAN_LOG(ERR, "Failed to open device {}", device_->name);
     throw std::runtime_error(
         fmt::format("Failed to open device {}", device_->name));
   }
   if (dataDirect && (mlx5dvDmaBufDataDirectLinkCapable(device_, context_))) {
     dataDirect_ = true;
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "NET/IB: Data Direct DMA Interface is detected for device: {} dataDirect: {}",
         device_->name,
@@ -203,7 +204,7 @@ IbvDevice::~IbvDevice() {
   if (context_) {
     int rc = ibvSymbols.ibv_internal_close_device(context_);
     if (rc != 0) {
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "Failed to close device rc: {}, {}. "
           "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
