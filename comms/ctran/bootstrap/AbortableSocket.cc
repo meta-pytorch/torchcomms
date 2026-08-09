@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #include <folly/ScopeGuard.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace std::literals::chrono_literals;
@@ -39,7 +39,7 @@ folly::SocketAddress getSocketAddress(int fd) {
   if (::getsockname(fd, (struct sockaddr*)&localAddr, &localLen) == 0) {
     sa.setFromSockaddr((struct sockaddr*)&localAddr, localLen);
   } else {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Failed to get local socket address for fd={}. errno={}, {}",
         fd,
@@ -101,14 +101,15 @@ int AbortableSocket::connect(
     size_t numRetries,
     bool async) {
   if (!async) {
-    XLOG(
+    CTRAN_LOG(
         DBG,
         "AbortableSocket::connect() called with async=false; ignoring flag.");
   }
   // Create socket
   fd_.store(::socket(addr.getFamily(), SOCK_STREAM, 0));
   if (fd_.load() < 0) {
-    XLOGF(ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
+    CTRAN_LOG(
+        ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
     return errno;
   }
   prepareSocket();
@@ -121,7 +122,7 @@ int AbortableSocket::connect(
             SO_BINDTODEVICE,
             ifName.c_str(),
             ifName.size()) < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to bind socket to interface {}. errno={}, {}",
           ifName,
@@ -136,7 +137,7 @@ int AbortableSocket::connect(
   size_t retryCount{0};
 
   while (!abort_->isAborted()) {
-    XLOGF(DBG, "Connecting to {} via {}", addr.describe(), ifName);
+    CTRAN_LOG(DBG, "Connecting to {} via {}", addr.describe(), ifName);
     int ret = ::connect(fd_.load(), (const struct sockaddr*)&sockAddr, sockLen);
 
     if (ret == 0) {
@@ -147,7 +148,7 @@ int AbortableSocket::connect(
       break; // Connected successfully.
     }
 
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Failed to connect to {} via {}. errno={}, {}",
         addr.describe(),
@@ -156,7 +157,7 @@ int AbortableSocket::connect(
         strerror(errno));
 
     if (!shouldRetry(errno)) {
-      XLOGF(ERR, "Connection attempt terminating on non-retryable error");
+      CTRAN_LOG(ERR, "Connection attempt terminating on non-retryable error");
       int err = errno;
       close();
       return err;
@@ -173,7 +174,7 @@ int AbortableSocket::connect(
   peerAddr_ = addr;
   localAddr_ = getSocketAddress(fd_.load());
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Connected to {} via {}, fd={}",
       addr.describe(),
@@ -246,7 +247,7 @@ int AbortableSocket::send(const void* buf, const size_t len) {
         ::send(fd_.load(), (const uint8_t*)buf + totalSent, len - totalSent, 0);
     if (sent == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to write to socket fd={}. errno={}, {}",
           fd_.load(),
@@ -286,7 +287,7 @@ int AbortableSocket::recv(void* buf, const size_t len) {
 
     if (rcvd == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to read from socket fd={}. errno={}, {}",
           fd_.load(),
@@ -323,7 +324,7 @@ bool AbortableSocket::waitForEvent(
     const std::chrono::milliseconds timeout) {
   int fd = fd_.load();
   if (fd < 0) {
-    XLOG(INFO, "fd_ is < 0");
+    CTRAN_LOG(INFO, "fd_ is < 0");
     return false;
   }
 
@@ -355,7 +356,7 @@ bool AbortableSocket::waitForEvent(
 
     int ret = ::poll(&pfd, 1, remaining.count());
     if (ret < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "poll failed on fd={}. errno={}, {}",
           fd,
@@ -370,7 +371,7 @@ bool AbortableSocket::waitForEvent(
     }
 
     if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-      XLOGF(WARN, "poll returned error events: {}", pfd.revents);
+      CTRAN_LOG(WARN, "poll returned error events: {}", pfd.revents);
       return false;
     }
 
@@ -391,7 +392,7 @@ int AbortableSocket::waitForConnect(const std::chrono::milliseconds timeout) {
   int error = 0;
   socklen_t len = sizeof(error);
   if (getsockopt(fd_.load(), SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to get socket error status. errno={}, {}",
         errno,
@@ -400,7 +401,7 @@ int AbortableSocket::waitForConnect(const std::chrono::milliseconds timeout) {
   }
 
   if (error != 0) {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Connection failed with error: errno={}, {}",
         error,
@@ -447,7 +448,7 @@ int AbortableServerSocket::bind(
     const folly::SocketAddress& addr,
     const std::string& ifName,
     bool reusePort) {
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Binding AbortableServerSocket to {} via {}",
       addr.describe(),
@@ -455,7 +456,8 @@ int AbortableServerSocket::bind(
   // Create socket
   fd_ = ::socket(addr.getFamily(), SOCK_STREAM, 0);
   if (fd_ < 0) {
-    XLOGF(ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
+    CTRAN_LOG(
+        ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
     return errno;
   }
 
@@ -465,7 +467,7 @@ int AbortableServerSocket::bind(
     if (setsockopt(
             fd_, SOL_SOCKET, SO_BINDTODEVICE, ifName.c_str(), ifName.size()) <
         0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to bind socket to interface {}. errno={}, {}",
           ifName.c_str(),
@@ -484,7 +486,7 @@ int AbortableServerSocket::bind(
             SO_REUSEADDR | SO_REUSEPORT,
             &reuse,
             sizeof(reuse)) < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to set SO_REUSEADDR | SO_REUSEPORT. errno={}, {}",
           errno,
@@ -498,7 +500,7 @@ int AbortableServerSocket::bind(
   sockaddr_storage sockAddr;
   const auto sockLen = addr.getAddress(&sockAddr);
   if (::bind(fd_, reinterpret_cast<sockaddr*>(&sockAddr), sockLen) < 0) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to bind socket on {}. errno={}, {}",
         addr.describe(),
@@ -525,7 +527,7 @@ int AbortableServerSocket::bind(
           fd_, IPPROTO_IP, IP_TOS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int));
     }
     if (setSockRet < 0) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to set socket TOS. errno={}, {}",
           errno,
@@ -533,7 +535,7 @@ int AbortableServerSocket::bind(
       return errno;
     }
   }
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "AbortableServerSocket is bound on {} via {}, fd={}",
       getListenAddress()->describe(),
@@ -545,7 +547,7 @@ int AbortableServerSocket::bind(
 int AbortableServerSocket::listen() {
   // Listen for incoming connections
   if (::listen(fd_, SOMAXCONN) < 0) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to listen on socket. errno={}, {}",
         errno,
@@ -553,7 +555,7 @@ int AbortableServerSocket::listen() {
     return errno;
   }
 
-  XLOGF(INFO, "AbortableServerSocket Started listening, fd={}", fd_);
+  CTRAN_LOG(INFO, "AbortableServerSocket Started listening, fd={}", fd_);
   return 0;
 }
 
@@ -573,7 +575,7 @@ AbortableServerSocket::getListenAddress() {
   socklen_t sockLen =
       isV4_ ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
   if (getsockname(fd_, (struct sockaddr*)&sockAddr, &sockLen) == -1) {
-    XLOGF(
+    CTRAN_LOG(
         ERR, "Failed to get socket name. errno={}, {}", errno, strerror(errno));
     return folly::makeUnexpected(errno);
   }
@@ -596,7 +598,7 @@ AbortableServerSocket::acceptAsync() {
        * retried
        */
       ++retryCnt;
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "Received {} in attempt {}/{}",
           strerror(errno),
@@ -606,7 +608,7 @@ AbortableServerSocket::acceptAsync() {
     }
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
       if (!hasShutDown_) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "Failed to accept connection. errno={}, {}",
             errno,
@@ -614,7 +616,7 @@ AbortableServerSocket::acceptAsync() {
       }
       return folly::makeUnexpected(errno);
     } else {
-      XLOGF(
+      CTRAN_LOG(
           DBG,
           "Received error \"{}\" and will perform a free retry",
           strerror(errno));
@@ -624,7 +626,7 @@ AbortableServerSocket::acceptAsync() {
 
   folly::SocketAddress addr;
   addr.setFromSockaddr((struct sockaddr*)&sockAddr);
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Accepted a new incoming connection {}, fd={}",
       addr.describe(),
@@ -651,7 +653,7 @@ AbortableServerSocket::acceptSocket() {
 
     if (ret < 0) {
       if (!hasShutDown_) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "poll failed on fd={}. errno={}, {}",
             fd_,
@@ -663,7 +665,7 @@ AbortableServerSocket::acceptSocket() {
     }
 
     if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-      XLOGF(WARN, "poll returned error events: {}", pfd.revents);
+      CTRAN_LOG(WARN, "poll returned error events: {}", pfd.revents);
       return folly::makeUnexpected(EIO);
     }
   }
@@ -684,13 +686,13 @@ int AbortableServerSocket::shutdown() {
   // shutdown fd_ would fail accept on the listen thread. To avoid misleading
   // error logging at accept failure, mark intentional shutdown
   if (fd_ >= 0) {
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "AbortableServerSocket is shutting down on {}, fd={}",
         getListenAddress()->describe(),
         fd_);
     if (::shutdown(fd_, SHUT_RDWR) < 0 && errno != ENOTCONN) {
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "Failed to cleanly shutdown AbortableServerSocket. errno={}, {}",
           errno,
