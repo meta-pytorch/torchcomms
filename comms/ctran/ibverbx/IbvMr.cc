@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #include "comms/ctran/ibverbx/IbvMr.h"
 
-#include <folly/logging/xlog.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -27,7 +27,7 @@ IbvMr::~IbvMr() {
   if (mr_) {
     int rc = ibvSymbols.ibv_internal_dereg_mr(mr_);
     if (rc != 0) {
-      XLOGF(ERR, "Failed to deregister mr rc: {}, {}", rc, strerror(errno));
+      CTRAN_LOG(ERR, "Failed to deregister mr rc: {}, {}", rc, strerror(errno));
     }
   }
 }
