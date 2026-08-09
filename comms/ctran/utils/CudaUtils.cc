@@ -4,7 +4,6 @@
 #include <cuda_runtime.h>
 #include <folly/Singleton.h>
 #include <folly/SocketAddress.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/ctran/utils/CudaUtils.h"
 
