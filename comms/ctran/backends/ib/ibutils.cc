@@ -12,6 +12,7 @@
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -111,9 +112,9 @@ void IbUtils::timeoutHandler(
     std::string errorMessage = fmt::format(
         "Link down timeout reached for {} ({} ms).", devName, duration.count());
     CERR(commSystemError, "{}", errorMessage);
-    XLOGF(
+    CTRAN_LOG(
         WARN,
-        "ctranCommSetAsyncError: error comm NULL sets state %d",
+        "ctranCommSetAsyncError: error comm NULL sets state {}",
         commSystemError);
 
     ibutils->setLinkFlapState(
@@ -234,9 +235,9 @@ commResult_t IbUtils::triageIbAsyncEvents(
       CERR(commSystemError, "{}", msg);
       // preserve baseline functionality by not sending async error
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
-        XLOGF(
+        CTRAN_LOG(
             WARN,
-            "ctranCommSetAsyncError: error comm NULL sets state %d",
+            "ctranCommSetAsyncError: error comm NULL sets state {}",
             commSystemError);
       }
       break;
