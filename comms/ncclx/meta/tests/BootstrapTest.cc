@@ -8,12 +8,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <future>
 
 #include <gtest/gtest.h>
 
 #include "bootstrap.h"
 #include "meta/NcclxConfig.h"
+#include "meta/ctran-integration/BootstrapCleanup.h"
 
 namespace {
 
@@ -85,6 +87,52 @@ thread_local RecvFaultState* activeRecvFault = nullptr;
 // NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 std::atomic<int> injectedFaults{0};
 
+struct NetCloseState {
+  int sendCalls{0};
+  int receiveCalls{0};
+  int listenCalls{0};
+
+  bool operator==(const NetCloseState& other) const {
+    return sendCalls == other.sendCalls && receiveCalls == other.receiveCalls &&
+        listenCalls == other.listenCalls;
+  }
+};
+
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+NetCloseState netCloseState;
+
+ncclResult_t closeSend(void*) {
+  ++netCloseState.sendCalls;
+  return ncclSuccess;
+}
+
+ncclResult_t failCloseSend(void*) {
+  ++netCloseState.sendCalls;
+  return ncclSystemError;
+}
+
+ncclResult_t closeReceive(void*) {
+  ++netCloseState.receiveCalls;
+  return ncclSuccess;
+}
+
+ncclResult_t closeListen(void*) {
+  ++netCloseState.listenCalls;
+  return ncclSuccess;
+}
+
+bootstrapState*
+allocateBootstrapState(ncclNet_t* net, bool fastInitMode, bool ringUsesOobNet) {
+  auto* state =
+      static_cast<bootstrapState*>(std::calloc(1, sizeof(bootstrapState)));
+  if (state != nullptr) {
+    state->net = net;
+    state->fastInitMode = fastInitMode;
+    state->ringUsesOobNet = ringUsesOobNet;
+  }
+  return state;
+}
+
 class ScopedRecvFault {
  public:
   explicit ScopedRecvFault(RecvFaultState& state) {
@@ -119,7 +167,87 @@ recv(int socket, void* buffer, std::size_t length, int flags) {
 
 namespace {
 
-TEST(BootstrapInitTest, DISABLED_RingAllGatherFailureClosesPeerSockets) {
+TEST(BootstrapCleanupTest, OobNetFailureStillClosesRemainingEndpoints) {
+  netCloseState = {};
+  ncclNet_t net{};
+  net.closeSend = failCloseSend;
+  net.closeRecv = closeReceive;
+  net.closeListen = closeListen;
+
+  auto* state = allocateBootstrapState(&net, true, true);
+  if (state == nullptr) {
+    FAIL() << "Failed to allocate bootstrap state";
+  }
+
+  EXPECT_EQ(bootstrapAbort(state), ncclSystemError);
+  const NetCloseState expected{1, 1, 1};
+  EXPECT_EQ(netCloseState, expected);
+}
+
+TEST(BootstrapCleanupTest, NormalCloseUsesStoredOobNetTransport) {
+  netCloseState = {};
+  ncclNet_t net{};
+  net.closeSend = closeSend;
+  net.closeRecv = closeReceive;
+  net.closeListen = closeListen;
+
+  auto* state = allocateBootstrapState(&net, true, true);
+  if (state == nullptr) {
+    FAIL() << "Failed to allocate bootstrap state";
+  }
+
+  EXPECT_EQ(bootstrapClose(state), ncclSuccess);
+  const NetCloseState expected{1, 1, 1};
+  EXPECT_EQ(netCloseState, expected);
+}
+
+TEST(BootstrapCleanupTest, StoredSocketTransportDoesNotUseNetCleanup) {
+  netCloseState = {};
+  ncclNet_t net{};
+  net.closeSend = closeSend;
+  net.closeRecv = closeReceive;
+  net.closeListen = closeListen;
+
+  auto* state = allocateBootstrapState(&net, false, false);
+  if (state == nullptr) {
+    FAIL() << "Failed to allocate bootstrap state";
+  }
+
+  EXPECT_EQ(bootstrapAbort(state), ncclSuccess);
+  const NetCloseState expected{};
+  EXPECT_EQ(netCloseState, expected);
+}
+
+TEST(BootstrapCleanupTest, RingFailureCleanupIsIdempotent) {
+  netCloseState = {};
+  ncclNet_t net{};
+  net.closeSend = closeSend;
+  net.closeRecv = closeReceive;
+  net.closeListen = closeListen;
+
+  ncclComm comm{};
+  comm.bootstrap = allocateBootstrapState(&net, true, true);
+  if (comm.bootstrap == nullptr) {
+    FAIL() << "Failed to allocate bootstrap state";
+  }
+  auto* proxySocket =
+      static_cast<ncclSocket*>(std::calloc(1, sizeof(ncclSocket)));
+  if (proxySocket == nullptr) {
+    std::free(comm.bootstrap);
+    FAIL() << "Failed to allocate proxy socket";
+  }
+
+  ncclx::abortBootstrapAfterRingAllInfoFailure(&comm, proxySocket);
+  EXPECT_EQ(comm.bootstrap, nullptr);
+  EXPECT_EQ(proxySocket, nullptr);
+  const NetCloseState expected{1, 1, 1};
+  EXPECT_EQ(netCloseState, expected);
+
+  ncclx::abortBootstrapAfterRingAllInfoFailure(&comm, proxySocket);
+  EXPECT_EQ(netCloseState, expected);
+}
+
+TEST(BootstrapInitTest, RingAllGatherFailureClosesPeerSockets) {
   ASSERT_EQ(bootstrapNetInit(), ncclSuccess);
 
   ncclBootstrapHandle handle{};
