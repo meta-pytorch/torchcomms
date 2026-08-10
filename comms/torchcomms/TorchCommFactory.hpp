@@ -8,11 +8,12 @@
 #include <string>
 #include <unordered_map>
 
-#include <ATen/ATen.h>
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
+
+// IWYU pragma: no_include <ATen/ATen.h>
 
 namespace torch::comms {
 

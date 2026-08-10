@@ -2,12 +2,19 @@
 
 #pragma once
 
-#include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
+// IWYU pragma: no_include <ATen/ATen.h>
 #include <c10/util/intrusive_ptr.h>
 #include <chrono>
 #include <functional>
 #include <future>
 #include <vector>
+
+namespace at {
+class Tensor;
+} // namespace at
+namespace c10::ivalue {
+struct Future;
+} // namespace c10::ivalue
 
 namespace torch::comms {
 

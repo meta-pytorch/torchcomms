@@ -2,7 +2,8 @@
 
 #pragma once
 
-#include <ATen/ATen.h>
+// IWYU pragma: no_include <ATen/ATen.h>
+#include <ATen/core/Tensor.h> // @manual=//caffe2:ATen-core
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommBatch.hpp>
@@ -12,6 +13,7 @@
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace torch::comms {

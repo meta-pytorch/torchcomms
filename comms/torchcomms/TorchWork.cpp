@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/TorchWork.hpp"
 
+#include <ATen/ATen.h>
+#include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
 
 namespace torch::comms {
