@@ -4,8 +4,9 @@
 
 #include <dlfcn.h>
 #include <folly/ScopeGuard.h>
-#include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
+
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -562,7 +563,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   if (!ibvhandle) {
     ibvhandle = dlopen("libibverbs.so.1", RTLD_NOW);
     if (!ibvhandle) {
-      XLOG(ERR) << "Failed to open libibverbs.so.1";
+      CTRAN_LOG(ERR, "Failed to open libibverbs.so.1");
       return 1;
     }
   }
@@ -572,21 +573,26 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   if (!mlx5dvhandle) {
     mlx5dvhandle = dlopen("libmlx5.so.1", RTLD_NOW);
     if (!mlx5dvhandle) {
-      XLOG(WARN)
-          << "Failed to open libmlx5.so[.1]. Advance features like CX-8 Direct-NIC will be disabled.";
+      CTRAN_LOG(
+          WARN,
+          "Failed to open libmlx5.so[.1]. Advance features like CX-8 Direct-NIC will be disabled.");
     }
   }
 
-#define LOAD_SYM(handle, symbol, funcptr, version)                            \
-  {                                                                           \
-    cast = (void**)&funcptr;                                                  \
-    tmp = dlvsym(handle, symbol, version);                                    \
-    if (tmp == nullptr) {                                                     \
-      XLOG(ERR) << fmt::format(                                               \
-          "dlvsym failed on {} - {} version {}", symbol, dlerror(), version); \
-      return 1;                                                               \
-    }                                                                         \
-    *cast = tmp;                                                              \
+#define LOAD_SYM(handle, symbol, funcptr, version) \
+  {                                                \
+    cast = (void**)&funcptr;                       \
+    tmp = dlvsym(handle, symbol, version);         \
+    if (tmp == nullptr) {                          \
+      CTRAN_LOG(                                   \
+          ERR,                                     \
+          "dlvsym failed on {} - {} version {}",   \
+          symbol,                                  \
+          dlerror(),                               \
+          version);                                \
+      return 1;                                    \
+    }                                              \
+    *cast = tmp;                                   \
   }
 
 #define LOAD_SYM_WARN_ONLY(handle, symbol, funcptr, version) \
@@ -594,7 +600,8 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     cast = (void**)&funcptr;                                 \
     tmp = dlvsym(handle, symbol, version);                   \
     if (tmp == nullptr) {                                    \
-      XLOG(WARN) << fmt::format(                             \
+      CTRAN_LOG(                                             \
+          WARN,                                              \
           "dlvsym failed on {} - {} version {}, set null",   \
           symbol,                                            \
           dlerror(),                                         \
@@ -615,7 +622,8 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     tmp = dlsym(handle, symbol);                           \
     if (tmp == nullptr) {                                  \
       const char* dlErr = dlerror();                       \
-      XLOG(WARN) << fmt::format(                           \
+      CTRAN_LOG(                                           \
+          WARN,                                            \
           "dlsym failed on {} - {}, set null",             \
           symbol,                                          \
           dlErr ? dlErr : "unknown");                      \
