@@ -16,6 +16,9 @@ namespace comms::prims {
 
 namespace {
 
+constexpr uint64_t kMultimemNvlTransportProtocol = 0x4D4D4E564CULL;
+constexpr uint64_t kMultimemNvlTransportProtocolVersion = 1;
+
 int getCurrentCudaDevice() {
   int cudaDevice = 0;
   const auto err = cudaGetDevice(&cudaDevice);
@@ -87,9 +90,19 @@ MultimemNvlTransport::MultimemNvlTransport(
     throw std::runtime_error(
         "MultimemNvlTransport: dataBufferSize must be non-zero");
   }
+  const auto internalSignalCount =
+      detail::checked_multimem_internal_signal_count(config_, nvlRanks_);
+  if (!internalSignalCount.has_value()) {
+    throw std::runtime_error(
+        "MultimemNvlTransport: invalid staging geometry or capacity");
+  }
+  internalSignalCount_ = *internalSignalCount;
+  if (config_.pipelineDepth != 0) {
+    signalsPerLane_ =
+        multimem_staging_signals_per_lane(static_cast<uint32_t>(nvlRanks_));
+  }
   const uint64_t totalSignalCount =
-      static_cast<uint64_t>(config_.userSignalCount) +
-      static_cast<uint64_t>(config_.internalSignalCount);
+      static_cast<uint64_t>(config_.userSignalCount) + internalSignalCount_;
   if (totalSignalCount == 0) {
     throw std::runtime_error(
         "MultimemNvlTransport: at least one signal slot is required");
@@ -198,8 +211,19 @@ void MultimemNvlTransport::exchange() {
         "a partial multicast setup)");
   }
   try {
+    const MulticastExchangeContract contract{
+        .protocol = kMultimemNvlTransportProtocol,
+        .version = kMultimemNvlTransportProtocolVersion,
+        .parameters =
+            {
+                config_.dataBufferSize,
+                config_.userSignalCount,
+                config_.pipelineDepth,
+                config_.maxChannels,
+            },
+    };
     combinedHandler_->exchangeMulticast(
-        commRank_, nvlRankToCommRank_, cudaDevice_);
+        commRank_, nvlRankToCommRank_, cudaDevice_, contract);
   } catch (...) {
     broken_ = true;
     throw;
@@ -222,7 +246,7 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
   auto* multimemSignals =
       reinterpret_cast<SignalState*>(multimemBase + signalRegionOffset_);
   const auto userSignalCount = config_.userSignalCount;
-  const auto internalSignalCount = config_.internalSignalCount;
+  const auto internalSignalCount = internalSignalCount_;
 
   return MultimemNvlTransportDevice{
       .localData = localBase,
@@ -238,6 +262,9 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .dataBufferSize = config_.dataBufferSize,
       .nvlRank = nvlRank_,
       .nvlRanks = nvlRanks_,
+      .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
+      .maxChannels = static_cast<uint32_t>(config_.maxChannels),
+      .signalsPerLane = signalsPerLane_,
   };
 }
 
@@ -252,7 +279,7 @@ std::size_t MultimemNvlTransport::getAllocatedSignalBufferSize() const {
   // granularity, so combinedHandler_->getAllocatedSize() - signalRegionOffset_
   // would include trailing padding that is not addressable as SignalState.
   return getSignalBufferSize(
-      static_cast<int>(config_.userSignalCount + config_.internalSignalCount));
+      static_cast<int>(config_.userSignalCount + internalSignalCount_));
 }
 
 } // namespace comms::prims

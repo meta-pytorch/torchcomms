@@ -240,11 +240,13 @@ class GpuMemHandler {
    * @param commRank This process's rank in the global communicator
    * @param nvlRankToCommRank Maps each NVLink-local rank to its global rank
    * @param cudaDevice CUDA device ordinal (already current)
+   * @param contract Protocol identity that must match across the NVLink team
    */
   void exchangeMulticast(
       int32_t commRank,
       std::vector<int> nvlRankToCommRank,
-      int cudaDevice);
+      int cudaDevice,
+      MulticastExchangeContract contract = {});
 
   /**
    * Returns this rank's multicast VA. PRECONDITION: exchangeMulticast() done.
@@ -329,6 +331,7 @@ class GpuMemHandler {
   int32_t multimemCommRank_{-1};
   std::vector<int> multimemNvlRankToCommRank_;
   int multimemCudaDevice_{-1};
+  MulticastExchangeContract multimemContract_;
 #endif
 
   // ---- CudaIpc mode state ----

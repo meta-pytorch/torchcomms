@@ -316,7 +316,8 @@ const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
 void GpuMemHandler::exchangeMulticast(
     int32_t commRank,
     std::vector<int> nvlRankToCommRank,
-    int cudaDevice) {
+    int cudaDevice,
+    MulticastExchangeContract contract) {
   // PRECONDITION: VMM allocation + unicast mapping must already exist (the
   // constructor does this for kFabric/kPosixFd modes). The multicast object
   // binds into this rank's physical handle and shares its VA with peers.
@@ -341,10 +342,10 @@ void GpuMemHandler::exchangeMulticast(
     // and surface as a multicast collective desync at runtime.
     if (commRank != multimemCommRank_ ||
         nvlRankToCommRank != multimemNvlRankToCommRank_ ||
-        cudaDevice != multimemCudaDevice_) {
+        cudaDevice != multimemCudaDevice_ || !(contract == multimemContract_)) {
       throw std::runtime_error(
           "GpuMemHandler::exchangeMulticast: re-entered with different "
-          "(commRank, nvlRankToCommRank, cudaDevice) than the existing "
+          "(commRank, nvlRankToCommRank, cudaDevice, contract) than the existing "
           "multicast overlay; the overlay is bound to the first call's "
           "topology");
     }
@@ -357,12 +358,18 @@ void GpuMemHandler::exchangeMulticast(
   // `if (multimem_) { return; }` would silently no-op while
   // getMultimemDeviceMemPtr() dereferenced an unexchanged overlay.
   auto pending = std::make_unique<MultimemHandler>(
-      allocation_, bootstrap_, commRank, nvlRankToCommRank, cudaDevice);
+      allocation_,
+      bootstrap_,
+      commRank,
+      nvlRankToCommRank,
+      cudaDevice,
+      contract);
   pending->exchange();
   multimem_ = std::move(pending);
   multimemCommRank_ = commRank;
   multimemNvlRankToCommRank_ = std::move(nvlRankToCommRank);
   multimemCudaDevice_ = cudaDevice;
+  multimemContract_ = contract;
 }
 
 void* GpuMemHandler::getMultimemDeviceMemPtr() const {
@@ -376,7 +383,8 @@ void* GpuMemHandler::getMultimemDeviceMemPtr() const {
 void GpuMemHandler::exchangeMulticast(
     int32_t /*commRank*/,
     std::vector<int> /*nvlRankToCommRank*/,
-    int /*cudaDevice*/) {
+    int /*cudaDevice*/,
+    MulticastExchangeContract /*contract*/) {
   throw std::runtime_error(
       "GpuMemHandler::exchangeMulticast: multicast is not supported on AMD");
 }
