@@ -11,6 +11,7 @@
 #include "comms/ctran/utils/Utils.h"
 
 #include "comms/utils/logger/EventsScubaUtil.h"
+#include "meta/NcclxLogUtils.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
@@ -569,7 +570,7 @@ ncclResult_t transportReConnect(
         myReconnInfo,
         sizeof(ncclxPeerReConnInfo)));
 
-    CLOGF_SUBSYS(
+    NCCLX_LOG_SUBSYS(
         INFO,
         ALLOC,
         "rank-{} sent reconnect state to peer-{} (tag {}): [{}]",
@@ -609,7 +610,7 @@ ncclResult_t transportReConnect(
         &peerReconnInfo,
         sizeof(ncclxPeerReConnInfo)));
 
-    CLOGF_SUBSYS(
+    NCCLX_LOG_SUBSYS(
         INFO,
         ALLOC,
         "rank-{} received reconnect state from peer-{} (tag {}): [{}]",
@@ -644,7 +645,7 @@ ncclResult_t transportReConnect(
 
   if (collNeedReConnect || p2pNeedReConnect) {
     NCCLCHECK(setupTransports(comm, p2pNeedReConnect, algoNeedReConnect));
-    CLOGF_SUBSYS(
+    NCCLX_LOG_SUBSYS(
         INFO,
         ALLOC,
         "{}: comm {} re-connected all peers for current plan",

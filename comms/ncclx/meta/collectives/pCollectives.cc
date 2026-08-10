@@ -8,6 +8,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/utils/checks.h"
 
+#include "meta/NcclxLogUtils.h"
 #include "meta/wrapper/MetaFactory.h"
 
 namespace ncclx {
@@ -112,7 +113,7 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
 __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {
   CtranPersistentRequest* pReq = nullptr;
   GET_VALID_PREQ_OR_ERRRETURN(request, &pReq);
-  CLOGF(
+  NCCLX_LOG(
       INFO,
       "Executing persistent request {} comm {}",
       (void*)pReq,
