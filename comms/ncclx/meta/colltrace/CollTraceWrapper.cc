@@ -4,6 +4,9 @@
 
 #include <algorithm>
 
+#include <folly/Conv.h>
+#include <folly/Unit.h>
+
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
@@ -17,6 +20,7 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/NcclxLogger.h"
 #include "meta/hints/GlobalHints.h"
 #include "meta/wrapper/DataTypeConv.h"
 
@@ -27,7 +31,6 @@
 #include "comms/utils/colltrace/AlgoStats.h"
 
 #include <fmt/core.h>
-#include <folly/logging/xlog.h>
 
 namespace meta::comms::ncclx {
 
@@ -62,12 +65,11 @@ bool isCapturingStream(cudaStream_t stream) {
   auto res = cudaStreamGetCaptureInfo(stream, &status);
 
   if (res != cudaSuccess) {
-    XLOG_FIRST_N(
+    NCCLX_LOG_FIRST_N(
         WARN,
         1,
-        fmt::format(
-            "Internal error: cudaStreamGetCaptureInfo failed by {}",
-            static_cast<int>(res)));
+        "Internal error: cudaStreamGetCaptureInfo failed by {}",
+        static_cast<int>(res));
     return false;
   }
   return status != cudaStreamCaptureStatusNone;
@@ -81,7 +83,7 @@ bool shouldCheckAsyncError() {
     if (checkAsyncError.hasValue()) {
       return checkAsyncError.value();
     } else {
-      XLOGF(
+      NCCLX_LOG(
           ERR,
           "CollTrace: Failed to parse {} as valid async error value, skip async error check in colltrace",
           checkAsyncErrorHintStr.value());
@@ -98,7 +100,7 @@ bool shouldCheckTimeout() {
     if (checkTimeout.hasValue()) {
       return checkTimeout.value();
     } else {
-      XLOGF(
+      NCCLX_LOG(
           ERR,
           "CollTrace: Failed to parse {} as valid timeout value, skip timeout check in colltrace",
           checkTimeoutHintStr.value());
@@ -115,7 +117,7 @@ std::chrono::milliseconds getCollTraceWatchdogTimeout() {
     if (timeoutSeconds.hasValue()) {
       return std::chrono::milliseconds{timeoutSeconds.value()};
     } else {
-      XLOGF(
+      NCCLX_LOG(
           ERR,
           "CollTrace: Failed to parse {} as valid timeout value, fallback to default timeout value.",
           timeoutSecondsHintStr.value());
@@ -301,7 +303,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     }
   }
 
-  XLOGF(
+  NCCLX_LOG(
       INFO,
       "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}]",
       algoStatEnabled,
@@ -321,7 +323,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     return ncclSuccess;
   }
 
-  XLOG(INFO, "Initializing new CollTrace");
+  NCCLX_LOG(INFO, "Initializing new CollTrace");
 
   auto plugins =
       std::vector<std::unique_ptr<meta::comms::colltrace::ICollTracePlugin>>{};
@@ -337,7 +339,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
   auto ifCheckAsync = shouldCheckAsyncError();
   auto ifCheckTimeout = shouldCheckTimeout();
   auto timeout = getCollTraceWatchdogTimeout();
-  XLOGF(
+  NCCLX_LOG(
       INFO,
       "CollTrace watchdog config: checkAsyncError: {}, checkTimeout: {}, timeout: {} sec",
       ifCheckAsync,
@@ -400,7 +402,7 @@ getMetadataFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
   // Handle invalid cases
   if (planInfo.collType == KernelPlanType::none &&
       planInfo.p2pType == KernelPlanType::none) {
-    XLOG_FIRST_N(
+    NCCLX_LOG_FIRST_N(
         ERR, 3, "CollTrace: No coll or p2p task in the NCCL Kenrel Plan!");
     if (isCapturingStream(stream)) {
       // Deadlock safety: a graph-captured plan with no coll/p2p task has no
@@ -454,8 +456,11 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
   auto res = colltrace->recordCollective(std::move(metadata), makeWaitEvent());
 
   if (res.hasError()) {
-    XLOG_FIRST_N(
-        ERR, 1, "Failed to get colltrace handle due to: ", res.error().message);
+    NCCLX_LOG_FIRST_N(
+        ERR,
+        1,
+        "Failed to get colltrace handle due to: {}",
+        res.error().message);
     return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
   return res.value();
