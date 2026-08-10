@@ -45,6 +45,11 @@ cudaError_t launchDeviceReadCheckExpired(
     int* observedReason,
     cudaStream_t stream);
 
+cudaError_t launchDeviceReadCheckResult(
+    AbortDevice abort,
+    int* observedCheckResult,
+    cudaStream_t stream);
+
 cudaError_t launchDeviceWaitForTimeout(
     AbortDevice abort,
     int* observedMode,
