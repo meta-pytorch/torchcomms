@@ -146,7 +146,11 @@ __device__ __forceinline__ void init_recv_progress(
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
-template <typename Transport, typename CopyOp, typename... Args>
+template <
+    typename Transport,
+    typename CopyOp,
+    typename Proto = protocol::Simple,
+    typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
@@ -156,7 +160,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     const Timeout& timeout,
     Args... args);
 
-template <typename Transport, typename CopyOp, typename... Args>
+template <
+    typename Transport,
+    typename CopyOp,
+    typename Proto = protocol::Simple,
+    typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
