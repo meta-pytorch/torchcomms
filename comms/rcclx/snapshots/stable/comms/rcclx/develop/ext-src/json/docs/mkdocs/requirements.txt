@@ -39,7 +39,7 @@ pytz==2023.3.post1
 PyYAML==6.0.1
 pyyaml_env_tag==0.1
 regex==2023.10.3
-requests==2.31.0
+requests==2.32.4
 six==1.16.0
 smmap==5.0.1
 tornado==6.3.3
