@@ -1,4 +1,7 @@
 #include "meta/commstate/FactoryCommStateX.h"
+
+#include <folly/logging/xlog.h>
+
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/CtranComm.h"

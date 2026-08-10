@@ -3,23 +3,22 @@
 #pragma once
 
 #include <folly/Synchronized.h>
-#include <folly/logging/xlog.h>
 
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
 namespace ctran::utils {
-// NOTE: use XLOGF instead of CLOGF to avoid dependency on logging util. It
-// should use the same format (e.g., CTRAN ERROR prefix) following the logging
-// initialized in the caller file.
+// Use the named CTRAN logger so these header macros do not inherit the caller's
+// logging category.
 #define CTRAN_ASYNC_ERR_HANDLE_IMPL(asyncErr, e)                    \
   do {                                                              \
     const auto errLog = fmt::format(                                \
         "{}: Encountered exception: {}", asyncErr->desc, e.what()); \
     if (asyncErr->abortOnError) {                                   \
       /* FATAL will abort with error stack */                       \
-      XLOGF(FATAL, "{}; aborting", errLog);                         \
+      CTRAN_LOG(FATAL, "{}; aborting", errLog);                     \
     } else {                                                        \
-      XLOGF(ERR, "{}; setting async error flag", errLog);           \
+      CTRAN_LOG(ERR, "{}; setting async error flag", errLog);       \
       /* TODO: expose also error stack to user */                   \
       asyncErr->setAsyncException(e);                               \
     }                                                               \
@@ -40,7 +39,7 @@ namespace ctran::utils {
   do {                                                                        \
     CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);                    \
     if (comm->abortEnabled()) {                                               \
-      XLOGF(                                                                  \
+      CTRAN_LOG(                                                              \
           ERR,                                                                \
           "Fault tolerance enabled; marking communicator aborted "            \
           "(opType={}, opCount={}) on rank {} commHash {:x}",                 \
