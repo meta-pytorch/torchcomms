@@ -276,6 +276,9 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   ncclResetDebugInit();
 
   initLogging();
+  EXPECT_FALSE(
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+          .should_log(spdlog::level::debug));
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
@@ -295,6 +298,29 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   sleep(1);
   output = testing::internal::GetCapturedStdout();
   checkStringHasLogging(output, TestStr, "INFO");
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, SpdlogDebugMatchesLegacyDbg2) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_TRUE(logger.should_log(spdlog::level::debug));
+
+  constexpr std::string_view legacyMessage = "LEGACY DBG2 MESSAGE";
+  constexpr std::string_view spdlogMessage = "SPDLOG DEBUG MESSAGE";
+  testing::internal::CaptureStdout();
+  XLOGF(DBG2, "{}", legacyMessage);
+  NCCLX_LOG(DBG, "{}", spdlogMessage);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, legacyMessage, "VERBOSE");
+  checkStringHasLogging(output, spdlogMessage, "VERBOSE");
 
   finishLogging();
 }
