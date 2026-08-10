@@ -14,6 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "meta/NcclxLogger.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
@@ -134,12 +135,20 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
   EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg2));
   EXPECT_THAT(lastError, ::testing::HasSubstr("NCCL Stack trace:"));
 
+  constexpr std::string_view spdlogErrorMsg = "SPDLOG ERROR MESSAGE";
+  NCCLX_LOG(ERR, "{}", spdlogErrorMsg);
+  meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+      .flush();
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::HasSubstr(spdlogErrorMsg));
+  EXPECT_THAT(lastError, ::testing::HasSubstr("NCCL Stack trace:"));
+
   // Log info and warn - last error should remain unchanged
   INFO(NCCL_ALL, "Another info");
   WARN("Another warn");
   sleep(1);
   lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg2));
+  EXPECT_THAT(lastError, ::testing::HasSubstr(spdlogErrorMsg));
 
   finishLogging();
 }
@@ -203,6 +212,11 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
   ncclResetDebugInit();
 
   initLogging();
+  auto& spdlogLogger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_TRUE(spdlogLogger.should_log(spdlog::level::err));
+  EXPECT_TRUE(spdlogLogger.should_log(spdlog::level::warn));
+  EXPECT_FALSE(spdlogLogger.should_log(spdlog::level::info));
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
@@ -340,6 +354,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
 
   constexpr std::string_view TestStr = "RAW TESTING";
   constexpr std::string_view TestStr2 = "TESTING";
+  constexpr std::string_view SpdlogTestStr = "SPDLOG TESTING";
 
   testing::internal::CaptureStderr();
 
@@ -350,6 +365,14 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   INFO(NCCL_ALL, "%s", TestStr2.data());
   WARN("%s", TestStr2.data());
   ERR(ncclInternalError, "%s", TestStr2.data());
+
+  NCCLX_LOG(INFO, "{}", SpdlogTestStr);
+  NCCLX_LOG(WARN, "{}", SpdlogTestStr);
+  NCCLX_LOG(ERR, "{}", SpdlogTestStr);
+  auto& spdlogLogger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_EQ(spdlogLogger.usesAsyncLogging(), NCCL_DEBUG_LOGGING_ASYNC);
+  spdlogLogger.flush();
 
   auto stderrOutput = testing::internal::GetCapturedStderr();
 
@@ -363,6 +386,9 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
     EXPECT_THAT(
         fileContents,
         testing::HasSubstr(fmt::format("NCCL {} {}", level, TestStr2)));
+    EXPECT_THAT(
+        fileContents,
+        testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
     if (level != "INFO") {
       // When logging to file, we should also log to stderr for WARN and ERROR
       EXPECT_THAT(
@@ -371,6 +397,9 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
       EXPECT_THAT(
           stderrOutput,
           testing::HasSubstr(fmt::format("NCCL {} {}", level, TestStr2)));
+      EXPECT_THAT(
+          stderrOutput,
+          testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
     }
   }
 }
