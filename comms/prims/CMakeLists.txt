@@ -57,6 +57,7 @@ target_include_directories(prims PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
+    ${CUDA_INCLUDE_DIRS}/cccl
 )
 
 # prims is only compiled when the top level does add_subdirectory(comms/prims),
