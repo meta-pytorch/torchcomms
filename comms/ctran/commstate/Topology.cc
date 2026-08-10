@@ -4,8 +4,8 @@
 #include <fstream>
 
 #include "comms/ctran/commstate/Topology.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::commstate {
 
@@ -43,7 +43,7 @@ void parseTopologyValue(
 
   // Validate format - should have exactly 4 parts
   if (topologyParts.size() != 4) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "Invalid topology format: expected 4 parts separated by '/', got {} parts in '{}' from file: {}",
         topologyParts.size(),
@@ -90,7 +90,7 @@ std::optional<TopologyResult> loadTopology(
       parseTopologyValue(value, filepath, dc, zone, isBackendTopologyValid);
     } else if (key == kDeviceRackSerial) {
       if (value.size() >= ncclx::kMaxNameLen) {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "DEVICE_RACK_SERIAL '{}' exceeds max length {}, ignoring to avoid truncation-based false matches",
             value,
@@ -106,19 +106,19 @@ std::optional<TopologyResult> loadTopology(
     if (gethostname(hostname, sizeof(hostname) - 1) == 0 &&
         hostname[0] != '\0') {
       host = hostname;
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "DEVICE_NAME not found in {}. Falling back to gethostname()={}",
           filepath,
           host);
     } else if (!NCCL_IGNORE_TOPO_LOAD_FAILURE) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "Failed to load hostname (DEVICE_NAME) from {} and gethostname() fallback failed",
           filepath);
       return std::nullopt;
     } else {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "DEVICE_NAME not found in {} and gethostname() fallback failed. "
           "Continuing because NCCL_IGNORE_TOPO_LOAD_FAILURE=1",
@@ -128,7 +128,7 @@ std::optional<TopologyResult> loadTopology(
 
   if (!NCCL_IGNORE_TOPO_LOAD_FAILURE) {
     if (!backendNetworkTopology.empty() && !isBackendTopologyValid) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "CTRAN cannot be enabled due to missing topology information. "
           "If you think it is safe to proceed, set NCCL_IGNORE_TOPO_LOAD_FAILURE=1 "
@@ -136,7 +136,7 @@ std::optional<TopologyResult> loadTopology(
       return std::nullopt;
     }
     if (rackSerial.empty()) {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "DEVICE_RACK_SERIAL not found in {}. "
           "isSameDeviceRack() will always return false, which may affect NVL fabric topology detection",

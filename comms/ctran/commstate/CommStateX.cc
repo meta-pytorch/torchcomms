@@ -7,7 +7,7 @@
 #include "comms/ctran/commstate/Topology.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ncclx {
@@ -118,7 +118,7 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
         fmt::format("Failed to load topology from {}", NCCL_TOPO_FILE_PATH));
   } else {
     networkTopo_ = std::move(myTopo->networkTopo);
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "Load topology for rank {} commHash {:x} commDesc {}, nRanks {}, host {}, dc {} zone {} rackSerial {} networkTopo {}",
@@ -147,7 +147,7 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
   // Create statex variable
   setRankStatesTopologies(std::move(allTopos));
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "Rank topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}",
@@ -316,7 +316,7 @@ void CommStateX::setNvlFabricTopos(
         effectiveVCliqueSize);
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "NVL fabric topology for rank {} commHash {:x} commDesc {}, nRanks {}, nLocalRanks {}, nNodes {}, nvlFabricEnabled {}, nvlFabricCliqueEnabled {}, nvlDomainIndex {}, nvlDomainRank {}, nNvlDomainRanks {}, nNvlDomains {}, clusterId {}, cliqueIndex {}, cliqueRank {}, nCliqueRanks {}, nCliques {}",
