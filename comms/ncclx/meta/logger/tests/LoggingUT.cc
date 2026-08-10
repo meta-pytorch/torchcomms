@@ -240,6 +240,36 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
   finishLogging();
 }
 
+TEST_F(NcclLoggerTest, SpdlogFirstNDoesNotConsumeWhileDisabled) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  auto logFirstN = [](int value) {
+    NCCLX_LOG_FIRST_N(WARN, 2, "NCCLX FIRST N {}", value);
+  };
+
+  testing::internal::CaptureStdout();
+  logger.set_level(spdlog::level::err);
+  logFirstN(0);
+  logFirstN(1);
+  logger.set_level(spdlog::level::warn);
+  logFirstN(2);
+  logFirstN(3);
+  logFirstN(4);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 0")));
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 1")));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 2"));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 3"));
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 4")));
+
+  finishLogging();
+}
+
 TEST_F(NcclLoggerTest, InfoLogTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
