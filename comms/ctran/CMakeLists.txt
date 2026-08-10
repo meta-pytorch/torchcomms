@@ -36,7 +36,9 @@ add_library(ctran OBJECT
 )
 
 target_compile_features(ctran PRIVATE cxx_std_20)
-target_compile_definitions(ctran PRIVATE
+# CTRAN public headers expose the logger, so consumers need the same spdlog
+# configuration when compiling those headers.
+target_compile_definitions(ctran PUBLIC
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
     SPDLOG_FMT_EXTERNAL
 )
