@@ -68,6 +68,7 @@ struct bootstrapState {
   // Reference to CommLogData to object to facilicate logging
   struct CommLogData *logMetaDataPtr{nullptr};
   bool fastInitMode{false};
+  bool ringUsesOobNet{false};
 };
 
 ncclResult_t bootstrapNetInit();
