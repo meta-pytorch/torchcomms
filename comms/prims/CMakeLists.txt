@@ -67,14 +67,14 @@ target_include_directories(prims PRIVATE
 # top-level CMakeLists.txt.)
 target_compile_definitions(prims PRIVATE ENABLE_PRIMS=1)
 
-# spdlog config for transport/rdma/NicDiscovery.cc (the only spdlog consumer in
-# prims; no prims header includes spdlog). Consume spdlog header-only:
-# SPDLOG_FMT_EXTERNAL uses the build's external fmt (not spdlog's bundled copy,
-# an ODR hazard), while NOT defining SPDLOG_COMPILED_LIB inlines all spdlog code
-# into NicDiscovery.o, so no libspdlog.a is linked. This sidesteps the static-
-# archive ordering trap that otherwise left compiled-lib symbols (e.g.
-# spdlog::logger::err_handler_) undefined in the shared module at dlopen.
-target_compile_definitions(prims PRIVATE SPDLOG_FMT_EXTERNAL)
+# Some prims translation units include CTRAN public headers that use spdlog.
+# Keep their active level consistent with the CTRAN target. Consume spdlog
+# header-only with the build's external fmt: leaving SPDLOG_COMPILED_LIB unset
+# avoids the static-archive ordering failure at module load.
+target_compile_definitions(prims PRIVATE
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+    SPDLOG_FMT_EXTERNAL
+)
 
 # Third-party link deps every consumer of the prims transports needs, declared
 # here so they propagate automatically to any target that links the `prims`
