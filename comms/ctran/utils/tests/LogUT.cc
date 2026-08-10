@@ -83,6 +83,37 @@ TEST_F(CtranUtilsLogTest, TestCtranLoggerPreservesLastError) {
       testing::HasSubstr("Spdlog CTRAN error 42"));
 }
 
+TEST_F(CtranUtilsLogTest, TestCtranLogFirstNPreservesEnabledBudget) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  std::vector<std::string> errors;
+  logger.configure(
+      "CTRAN",
+      []() { return 0; },
+      [&](std::string_view error) { errors.emplace_back(error); },
+      false);
+
+  int evaluated = 0;
+  auto log = [&] {
+    CTRAN_LOG_FIRST_N(ERR, 2, "rate-limited error {}", ++evaluated);
+  };
+
+  logger.set_level(spdlog::level::off);
+  log();
+  log();
+  EXPECT_TRUE(errors.empty());
+  EXPECT_EQ(evaluated, 0);
+
+  logger.set_level(spdlog::level::err);
+  log();
+  log();
+  log();
+  EXPECT_THAT(
+      errors,
+      testing::ElementsAre("rate-limited error 1", "rate-limited error 2"));
+  EXPECT_EQ(evaluated, 2);
+}
+
 TEST_F(CtranUtilsLogTest, TestCLOGF_IF) {
   CLOGF_IF(INFO, true, "Conditional message with value: {}", 42);
 

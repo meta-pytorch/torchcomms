@@ -4,8 +4,7 @@
 
 #include <set>
 
-#include <folly/logging/xlog.h>
-
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/colltrace/CPUWaitEvent.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
@@ -25,11 +24,8 @@ bool isCapturingStream(cudaStream_t stream) {
   auto res = cudaStreamGetCaptureInfo(stream, &status, nullptr);
 
   if (res != cudaSuccess) {
-    XLOG_FIRST_N(
-        WARN,
-        1,
-        fmt::format(
-            "Internal error: cudaStreamGetCaptureInfo failed by {}", res));
+    CTRAN_LOG_FIRST_N(
+        WARN, 1, "Internal error: cudaStreamGetCaptureInfo failed by {}", res);
     return false;
   }
   return status != cudaStreamCaptureStatusNone;
@@ -94,7 +90,7 @@ GroupedP2PMetaData getGroupedP2PMetaData(
         break;
       }
       default: {
-        XLOG_FIRST_N(
+        CTRAN_LOG_FIRST_N(
             WARN,
             5,
             "COLLTRACE: Should not encounter anything other than OpElem::SEND/RECV in collTraceRecordCtranCollective. Encountered internal error.");
@@ -317,7 +313,8 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_P2P:
-      XLOG_FIRST_N(ERR, 3, "P2P kernel types being handled by collective path");
+      CTRAN_LOG_FIRST_N(
+          ERR, 3, "P2P kernel types being handled by collective path");
       break;
   }
   return CollectiveMetadata{
@@ -403,8 +400,11 @@ std::shared_ptr<ICollTraceHandle> getNewCollTraceHandle(
       std::move(metadata), getWaitEvent(opGroup, kernelConfig.stream));
 
   if (res.hasError()) {
-    XLOG_FIRST_N(
-        ERR, 5, "Failed to get colltrace handle due to: ", res.error().message);
+    CTRAN_LOG_FIRST_N(
+        ERR,
+        5,
+        "Failed to get colltrace handle due to: {}",
+        res.error().message);
     return std::make_unique<DummyCollTraceHandle>();
   }
   return res.value();
