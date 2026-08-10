@@ -40,7 +40,12 @@ struct ProgressChunk {
  * HBM-backed progress state.
  */
 struct ProgressGeometry {
+  // Two independent coordinates, never merged: `groupId` is the LOGICAL channel
+  // (and therefore the QP channel); `slotIndex` is this protocol's flat
+  // resource slot, addressing slot-indexed storage. Merging them would force a
+  // division to recover one from the other on the QP path.
   int groupId;
+  int slotIndex;
   std::size_t payloadBytes; // raw nbytes, for valid-byte masking
   std::size_t
       protocolBytes; // payload rounded up to Proto::kData (cursor bound)
@@ -92,7 +97,7 @@ __device__ __forceinline__ ProgressChunk next_chunk(
     const IbChannelProgress& state,
     const ProgressGeometry& geometry);
 
-template <typename Transport>
+template <typename P, typename Transport>
 __device__ __forceinline__ bool try_prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
@@ -134,7 +139,7 @@ __device__ __forceinline__ void init_send_progress(
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
-  auto& slot = progress_send_slot(transport, group);
+  auto& slot = progress_send_slot<protocol::Simple>(transport, group);
   assert_progress_slot_idle(group, slot, "send");
   IbChannelProgress state{};
   state.activeStage = nbytes == 0
@@ -189,7 +194,7 @@ __device__ __forceinline__ void init_recv_progress(
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
-  auto& slot = progress_recv_slot(transport, group);
+  auto& slot = progress_recv_slot<protocol::Simple>(transport, group);
   assert_progress_slot_idle(group, slot, "recv");
   IbChannelProgress state{};
   state.activeStage = nbytes == 0
@@ -318,7 +323,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       sizeof(CopyOp) == 0, "detail::progress_send_once() requires NVIDIA GPU");
 #endif
   auto& channelLayout = transport.channel_layout();
-  auto& progressSlot = progress_send_slot(transport, group);
+  auto& progressSlot = progress_send_slot<Proto>(transport, group);
   IbChannelProgress state = progressSlot;
   if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
     return IbgdaSendRecvProgressStatus::Done;
@@ -341,17 +346,16 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   const std::size_t initialNextByte = state.activeNextByte;
   const std::size_t pipelineBytesWire = progress_params.perBlockSlotWire *
       static_cast<std::size_t>(channelLayout.pipelineDepth);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
-  const IbgdaLocalBuffer localSlotFree = localChannel.slotFree;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, progress_params.groupId);
+  const ChannelSlotView ch =
+      acquire_channel<Proto>(transport, channelLayout, group);
+  const IbgdaLocalBuffer localSlotFree = ch.local.slotFree;
+  const IbRemoteChannel remoteChannel = ch.remote;
 
   if (state.activeStage ==
       detail::IbSendRecvProgressStage::WaitLocalCompletion) {
     const ProgressChunk chunk =
         next_chunk<Proto>(channelLayout, state, progress_params);
-    if (!try_prepare_send_slot(
+    if (!try_prepare_send_slot<Proto>(
             transport,
             group,
             chunk.slotId,
@@ -427,7 +431,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
-      record_send_completion(
+      record_send_completion<Proto>(
           transport,
           static_cast<uint32_t>(progress_params.groupId),
           chunk.slotId,
@@ -489,11 +493,14 @@ __device__ __forceinline__ bool poll_recv_data_ready(
   const uint32_t numLanes =
       static_cast<uint32_t>(transport.channel_layout().numLanes);
   const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  // Simple's slot unconditionally -- see wait_recv_data_ready.
+  IbChannelProtoSlot& protoSlot =
+      localChannel.protos[protocol::Simple::kProtoSlot];
   // Truncate to 32 bits before the modulo to match the sender's uint32 cursor
   // wrap (see wait_recv_data_ready).
   const uint32_t lane =
       static_cast<uint32_t>(localChannel.recvDataReadyLaneCursor) % lanes;
-  const uint64_t expected = localChannel.recvLaneExpected[lane] + chunkBytes;
+  const uint64_t expected = protoSlot.recvLaneExpected[lane] + chunkBytes;
   const IbgdaLocalBuffer laneBuf = localDataReady.subBuffer(
       sendRecvSignalSlotOffset(static_cast<int>(lane)));
   const uint64_t current = transport.read_signal(laneBuf);
@@ -502,7 +509,7 @@ __device__ __forceinline__ bool poll_recv_data_ready(
   if (current < expected) {
     return false;
   }
-  localChannel.recvLaneExpected[lane] = expected;
+  protoSlot.recvLaneExpected[lane] = expected;
   ++localChannel.recvDataReadyLaneCursor;
   return true;
 #else
@@ -645,7 +652,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       sizeof(CopyOp) == 0, "detail::progress_recv_once() requires NVIDIA GPU");
 #endif
   auto& channelLayout = transport.channel_layout();
-  auto& progressSlot = progress_recv_slot(transport, group);
+  auto& progressSlot = progress_recv_slot<Proto>(transport, group);
   IbChannelProgress state = progressSlot;
   if (state.activeStage == detail::IbSendRecvProgressStage::Done) {
     return IbgdaSendRecvProgressStatus::Done;
@@ -670,11 +677,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       chunk.dataOff + chunk.payloadBytes >= progress_params.protocolBytes;
   const std::size_t protocolBytesThis = chunk.wireBytes +
       (isFinalChunk ? Proto::wire_bytes(state.activeTailPadding) : 0);
-  IbLocalChannel& localChannel =
-      transport.local_channel(static_cast<uint32_t>(progress_params.groupId));
-  const IbgdaLocalBuffer localDataReady = localChannel.dataReady;
-  const IbRemoteChannel remoteChannel =
-      makeIbRemoteChannel(channelLayout, progress_params.groupId);
+  const ChannelSlotView ch =
+      acquire_channel<Proto>(transport, channelLayout, group);
+  IbLocalChannel& localChannel = ch.channel;
+  const IbgdaLocalBuffer localDataReady = ch.local.dataReady;
+  const IbRemoteChannel remoteChannel = ch.remote;
   if (!progress_recv_ready(
           Proto{},
           transport,
@@ -822,6 +829,7 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
   }
   return ProgressGeometry{
       .groupId = groupId,
+      .slotIndex = channelLayout.protoChannelSlot(groupId, Proto::kProtoSlot),
       .payloadBytes = nbytes,
       .protocolBytes = protocolBytes,
       .perBlockSlotWire = perBlockSlotWire,
@@ -1021,7 +1029,7 @@ __device__ __forceinline__ ProgressChunk next_chunk(
       : dataRemaining;
   payloadBytes = payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
   return ProgressChunk{
-      .stagingOff = static_cast<std::size_t>(geometry.groupId) *
+      .stagingOff = static_cast<std::size_t>(geometry.slotIndex) *
               geometry.perChannelBufferSize +
           static_cast<std::size_t>(slot) * geometry.perBlockSlotWire +
           Proto::wire_bytes(chunkOff),
@@ -1036,7 +1044,7 @@ __device__ __forceinline__ ProgressChunk next_chunk(
   };
 }
 
-template <typename Transport>
+template <typename P, typename Transport>
 __device__ __forceinline__ bool try_prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
@@ -1046,8 +1054,8 @@ __device__ __forceinline__ bool try_prepare_send_slot(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
-    auto& slot =
-        transport.local_channel(group.group_id).sendCompletionSlots[slotId];
+    auto& slot = transport.template local_channel_slot<P>(group.group_id)
+                     .sendCompletionSlots[slotId];
     if (slot.generation != generation) {
       uint64_t pending = slot.laneMask;
       const uint32_t numLanes = transport.send_completion_lane_count();

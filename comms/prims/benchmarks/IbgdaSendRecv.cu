@@ -320,9 +320,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
   if (expectedBytes == 0) {
     return;
   }
-  auto& channel = transport->local_channel(static_cast<uint32_t>(groupId));
-  transport->wait_counter(group, channel.nicDoneWait, expectedBytes, timeout);
-  transport->wait_signal(group, channel.slotFree, expectedBytes, timeout);
+  auto& protoSlot = transport->local_channel_slot<protocol::Simple>(
+      static_cast<uint32_t>(groupId));
+  transport->wait_counter(group, protoSlot.nicDoneWait, expectedBytes, timeout);
+  transport->wait_signal(group, protoSlot.slotFree, expectedBytes, timeout);
 }
 
 void launch_ibgda_drain_send_recv(
@@ -361,17 +362,23 @@ __global__ void __launch_bounds__(256, 1) ibgda_reset_send_recv_kernel(
     if (SignalState* signal = layout.localSignalState(static_cast<int>(slot))) {
       signal->signal_ = 0;
     }
-    if (slot < static_cast<uint32_t>(maxGroups)) {
+    if (slot < static_cast<uint32_t>(layout.numChannels)) {
       auto& channel = transport->local_channel(slot);
-      channel.sendProgress = IbChannelProgress{};
-      channel.recvProgress = IbChannelProgress{};
-      // Zero the per-lane receiver DATA_READY expectations so they stay aligned
-      // with the DATA_READY slots zeroed above. recvDataReadyLaneCursor is
-      // deliberately NOT reset here: it mirrors the sender's free-running
-      // IbQpState::cursor, which this kernel also leaves untouched, so zeroing
-      // it would desync the round-robin lane mapping on the next stream.
-      for (int lane = 0; lane < kIbMaxQpLanesPerChannelDirection; ++lane) {
-        channel.recvLaneExpected[lane] = 0;
+      // Every protocol slot on this channel: the signal region zeroed above
+      // spans all of them.
+      for (int protoSlot = 0; protoSlot < kNumProtoSlots; ++protoSlot) {
+        auto& proto = channel.protos[protoSlot];
+        proto.sendProgress = IbChannelProgress{};
+        proto.recvProgress = IbChannelProgress{};
+        // Zero the per-lane receiver DATA_READY expectations so they stay
+        // aligned with the DATA_READY slots zeroed above.
+        // recvDataReadyLaneCursor is deliberately NOT reset here: it mirrors
+        // the channel-shared sendQp.cursor, which this kernel also leaves
+        // untouched, so zeroing it would desync the round-robin lane mapping
+        // on the next stream.
+        for (int lane = 0; lane < kIbMaxQpLanesPerChannelDirection; ++lane) {
+          proto.recvLaneExpected[lane] = 0;
+        }
       }
     }
   }
@@ -513,12 +520,14 @@ __global__ void ibgda_snapshot_step_state_kernel(
   const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < count) {
     const auto& layout = transport->channel_layout();
-    const auto maxChannels = static_cast<uint32_t>(layout.maxChannels);
-    if (idx < maxChannels) {
-      dst[idx] = transport->local_channel(idx).sendProgress.nextStep;
+    const auto numChannels = static_cast<uint32_t>(layout.numChannels);
+    if (idx < numChannels) {
+      dst[idx] = transport->local_channel_slot<protocol::Simple>(idx)
+                     .sendProgress.nextStep;
     } else {
       dst[idx] =
-          transport->local_channel(idx - maxChannels).recvProgress.nextStep;
+          transport->local_channel_slot<protocol::Simple>(idx - numChannels)
+              .recvProgress.nextStep;
     }
   }
 }
