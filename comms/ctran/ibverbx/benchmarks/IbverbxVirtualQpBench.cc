@@ -10,6 +10,7 @@
 #include <folly/logging/Init.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
@@ -59,7 +60,7 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         // Initialize ibverbx first
         auto initResult = ibvInit();
         if (!initResult) {
-          throw std::runtime_error("ibvInit() failed");
+          throw ctran::utils::Exception("ibvInit() failed", commSystemError);
         }
 
         // TODO: Currently, we use NCCL_IB_HCA to obtain the list of InfiniBand
@@ -69,11 +70,13 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         auto devices =
             IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
         if (!devices) {
-          throw std::runtime_error("Failed to get device list");
+          throw ctran::utils::Exception(
+              "Failed to get device list", commSystemError);
         }
 
         if (devices->empty()) {
-          throw std::runtime_error("No InfiniBand devices available");
+          throw ctran::utils::Exception(
+              "No InfiniBand devices available", commSystemError);
         }
 
         if (nicDevId >= static_cast<int>(devices->size())) {
@@ -85,7 +88,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
       pd(([this]() {
         auto maybePd = device.allocPd();
         if (!maybePd) {
-          throw std::runtime_error("Failed to allocate protection domain");
+          throw ctran::utils::Exception(
+              "Failed to allocate protection domain", commSystemError);
         }
         return std::move(*maybePd);
       })()),
@@ -93,7 +97,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         auto maybeVirtualCq =
             device.createVirtualCq(32768, nullptr, nullptr, 0);
         if (!maybeVirtualCq) {
-          throw std::runtime_error("Failed to create virtual completion queue");
+          throw ctran::utils::Exception(
+              "Failed to create virtual completion queue", commSystemError);
         }
         return std::move(*maybeVirtualCq);
       })()),
@@ -108,7 +113,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
             kMaxMsgSize,
             loadBalancingScheme);
         if (!maybeVirtualQp) {
-          throw std::runtime_error("Failed to create virtual queue pair");
+          throw ctran::utils::Exception(
+              "Failed to create virtual queue pair", commSystemError);
         }
         return std::move(*maybeVirtualQp);
       }()) {}
@@ -195,7 +201,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
         &qpAttr,
         IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
     if (!result) {
-      throw std::runtime_error("Failed to modify virtual QP to INIT state");
+      throw ctran::utils::Exception(
+          "Failed to modify virtual QP to INIT state", commSystemError);
     }
   }
   {
@@ -207,7 +214,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
             IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER,
         remoteVirtualQpBusinessCard);
     if (!result) {
-      throw std::runtime_error("Failed to modify virtual QP to RTR state");
+      throw ctran::utils::Exception(
+          "Failed to modify virtual QP to RTR state", commSystemError);
     }
   }
   {
@@ -218,7 +226,8 @@ void IbvEndPoint::changeVirtualQpStateToRts(
         IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
             IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
     if (!result) {
-      throw std::runtime_error("Failed to modify virtual QP to RTS state");
+      throw ctran::utils::Exception(
+          "Failed to modify virtual QP to RTS state", commSystemError);
     }
   }
 }
@@ -253,7 +262,8 @@ struct BenchmarkSetup {
     // Change sender and receiver QP state
     auto receiverGid = receiver->device.queryGid(kPortNum, kGidIndex);
     if (!receiverGid) {
-      throw std::runtime_error("Failed to query receiver GID");
+      throw ctran::utils::Exception(
+          "Failed to query receiver GID", commSystemError);
     }
     auto receiverVirtualQpBusinessCard =
         receiver->qp.getVirtualQpBusinessCard();
@@ -262,7 +272,8 @@ struct BenchmarkSetup {
 
     auto senderGid = sender->device.queryGid(kPortNum, kGidIndex);
     if (!senderGid) {
-      throw std::runtime_error("Failed to query sender GID");
+      throw ctran::utils::Exception(
+          "Failed to query sender GID", commSystemError);
     }
     auto senderVirtualQpBusinessCard = sender->qp.getVirtualQpBusinessCard();
     receiver->changeVirtualQpStateToRts(
@@ -278,7 +289,8 @@ struct BenchmarkSetup {
     CHECK_EQ(cudaGetDeviceCount(&deviceCount), cudaSuccess);
 
     if (cudaDev0 >= deviceCount || cudaDev1 >= deviceCount) {
-      throw std::runtime_error("Required CUDA devices not available");
+      throw ctran::utils::Exception(
+          "Required CUDA devices not available", commSystemError);
     }
 
     CHECK_EQ(cudaSetDevice(cudaDev0), cudaSuccess);
@@ -286,7 +298,8 @@ struct BenchmarkSetup {
     CHECK_NOTNULL(sendBuffer);
     auto sendMrExpected = sender->pd.regMr(sendBuffer, bufferSize, access);
     if (!sendMrExpected) {
-      throw std::runtime_error("Failed to register send memory region");
+      throw ctran::utils::Exception(
+          "Failed to register send memory region", commSystemError);
     }
     sendMr = std::move(*sendMrExpected);
 
@@ -295,7 +308,8 @@ struct BenchmarkSetup {
     CHECK_NOTNULL(recvBuffer);
     auto recvMrExpected = receiver->pd.regMr(recvBuffer, bufferSize, access);
     if (!recvMrExpected) {
-      throw std::runtime_error("Failed to register receive memory region");
+      throw ctran::utils::Exception(
+          "Failed to register receive memory region", commSystemError);
     }
     recvMr = std::move(*recvMrExpected);
   }
