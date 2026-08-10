@@ -1,10 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/perftrace/Tracer.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
 #include <fstream>
 #include <sstream>
 
@@ -35,7 +35,7 @@ void Tracer::reportTracing() {
   }
   auto lockedRecords = records_.wlock();
   if (lockedRecords->empty()) {
-    XLOG(INFO) << "No trace records to report; skip reporting";
+    CTRAN_LOG(INFO, "No trace records to report; skip reporting");
     return;
   }
 
@@ -52,7 +52,7 @@ void Tracer::reportTracing() {
       outputDir + "/" + std::string("ctran_trace_log.") + std::to_string(pid) +
       std::string(".rank") + std::to_string(this->rank_) + std::string(".") +
       std::to_string(reportCnt++) + std::string(".json"));
-  XLOG(INFO) << "Dumping logging output to " << filename;
+  CTRAN_LOG(INFO, "Dumping logging output to {}", filename);
 
   int id = 0;
   stream << "[" << std::endl;
@@ -63,7 +63,7 @@ void Tracer::reportTracing() {
   stream << folly::join(",", jsonEntries) << std::endl;
   stream << "]" << std::endl;
 
-  XLOG(INFO) << "Dumped logging output to " << filename << " with id " << id;
+  CTRAN_LOG(INFO, "Dumped logging output to {} with id {}", filename, id);
   std::ofstream f(filename);
   f << stream.str();
   f.close();

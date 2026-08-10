@@ -13,6 +13,7 @@
 #include "comms/ctran/ibverbx/IbvQp.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -874,7 +875,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
   // First error wins
   if (wr->aggregatedStatus == IBV_WC_SUCCESS && status != IBV_WC_SUCCESS) {
     wr->aggregatedStatus = status;
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "[Ibverbx] Physical WC error: status={}, WR internalId={}",
         static_cast<int>(status),
