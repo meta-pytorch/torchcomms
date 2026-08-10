@@ -5,8 +5,8 @@
 
 #include <folly/Singleton.h>
 #include <folly/Synchronized.h>
-#include "comms/utils/logger/LogUtils.h"
 
+#include "meta/NcclxLogUtils.h"
 #include "meta/hints/GlobalHints.h"
 #include "nccl.h"
 
@@ -25,7 +25,7 @@ GlobalHints::GlobalHints() {
 bool GlobalHints::setHint(std::string key, std::string val) {
   for (const auto& dep : kDeprecatedCommHintKeys) {
     if (key == dep.first) {
-      CLOGF(
+      NCCLX_LOG(
           WARN,
           "GLOBAL-HINTS: GlobalHint key '{}' is deprecated and no longer affects communicator behavior. Use per-comm ncclx::Hints with key '{}' instead.",
           key,
@@ -35,7 +35,7 @@ bool GlobalHints::setHint(std::string key, std::string val) {
   }
   auto entry = getHintEntry(key);
   if (!entry) {
-    CLOGF(
+    NCCLX_LOG(
         WARN,
         "GLOBAL-HINTS: Hint key {} is not registered. Ignore setHint.",
         key);
@@ -73,7 +73,7 @@ bool GlobalHints::resetHint(const std::string& key) {
   }
   auto entry = getHintEntry(key);
   if (!entry) {
-    CLOGF(
+    NCCLX_LOG(
         WARN,
         "GLOBAL-HINTS: Hint key {} is not registered. Ignore resetHint.",
         key);
@@ -118,7 +118,7 @@ bool GlobalHints::regHintEntry(std::string key) {
   auto entries = hintEntries_.wlock();
   // If entry is not provided, create a default entry with no hooks
   auto entry_ = GlobalHintEntry{};
-  CLOGF(INFO, "GLOBAL-HINTS: Hint key {} is registered.", key);
+  NCCLX_LOG(INFO, "GLOBAL-HINTS: Hint key {} is registered.", key);
   const auto& res = entries->insert({std::move(key), std::move(entry_)});
   return res.second; // insert success or already exists
 }

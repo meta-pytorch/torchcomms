@@ -14,7 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "meta/NcclxLogger.h"
+#include "meta/NcclxLogUtils.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
@@ -266,6 +266,56 @@ TEST_F(NcclLoggerTest, SpdlogFirstNDoesNotConsumeWhileDisabled) {
   EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 2"));
   EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 3"));
   EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 4")));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, SpdlogIfPreservesLevelAndSubsystemGates) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  int filteredConditionEvaluations = 0;
+  int fatalConditionEvaluations = 0;
+  int conditionEvaluations = 0;
+  int argumentEvaluations = 0;
+  auto logIf = [&] {
+    NCCLX_LOG_IF(
+        INFO,
+        ++conditionEvaluations == 1,
+        "NCCLX IF {}",
+        ++argumentEvaluations);
+  };
+
+  testing::internal::CaptureStdout();
+  logger.set_level(spdlog::level::off);
+  NCCLX_LOG_IF(DBG, ++filteredConditionEvaluations, "FILTERED DBG");
+  NCCLX_LOG_IF(WARN, ++filteredConditionEvaluations, "FILTERED WARN");
+  NCCLX_LOG_IF(ERR, ++filteredConditionEvaluations, "FILTERED ERR");
+  NCCLX_LOG_IF(CRITICAL, ++filteredConditionEvaluations, "FILTERED CRITICAL");
+  NCCLX_LOG_IF(FATAL, ++fatalConditionEvaluations == 0, "DISABLED FATAL");
+  logger.set_level(spdlog::level::warn);
+  logIf();
+  logger.set_level(spdlog::level::info);
+  logIf();
+  logIf();
+
+  meta::comms::logger::setSubSystemMask(meta::comms::logger::SubSystem::ENV);
+  NCCLX_LOG_SUBSYS(INFO, ENV, "NCCLX ENABLED SUBSYSTEM");
+  NCCLX_LOG_SUBSYS(INFO, COLL, "NCCLX DISABLED SUBSYSTEM");
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_EQ(filteredConditionEvaluations, 0);
+  EXPECT_EQ(fatalConditionEvaluations, 1);
+  EXPECT_EQ(conditionEvaluations, 2);
+  EXPECT_EQ(argumentEvaluations, 1);
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX IF 1"));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX ENABLED SUBSYSTEM"));
+  EXPECT_THAT(
+      output, testing::Not(testing::HasSubstr("NCCLX DISABLED SUBSYSTEM")));
 
   finishLogging();
 }

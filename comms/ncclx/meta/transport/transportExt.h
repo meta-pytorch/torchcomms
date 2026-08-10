@@ -5,8 +5,8 @@
 #include "comm.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "meta/NcclMemoryUtils.h"
+#include "meta/NcclxLogUtils.h"
 
 // [META]: Extension to store local/remote memory for synchronization, i.e.,
 // fifo information, used in p2p.cc
@@ -25,7 +25,7 @@ inline enum NCCL_CHANNEL_METADATA_LOCATION getChannelMetadataLoc() {
     val = (NCCL_USE_MEM_CACHE) ? NCCL_CHANNEL_METADATA_LOCATION::host
                                : NCCL_CHANNEL_METADATA_LOCATION::device;
   }
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO, ENV, "NCCL_CHANNEL_METADATA_LOCATION={}", static_cast<int>(val));
   return val;
 }
