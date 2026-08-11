@@ -70,6 +70,12 @@ TEST_F(CtranUtilsLogTest, TestCLOGF) {
   EXPECT_NE(messages[0].find(expectedContent), std::string::npos);
 }
 
+// These assert spdlog-specific semantics: the last-error callback, spdlog level
+// gating of the rate-limit / CTRAN_LOG_IF / CTRAN_LOG_EVERY_MS budgets, and the
+// CTRAN_LOG_TRACE format. On AMD, CTRAN_LOG maps to folly XLOG and none of them
+// are reachable, so the assertions do not apply there.
+#if !defined(__HIP_PLATFORM_AMD__)
+
 TEST_F(CtranUtilsLogTest, TestCtranLoggerPreservesLastError) {
   auto& logger =
       meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
@@ -214,6 +220,8 @@ TEST_F(CtranUtilsLogTest, TestCtranTraceFormat) {
 
   EXPECT_THAT(output, testing::HasSubstr("[TRACE] TestBody: trace value 42"));
 }
+
+#endif
 
 TEST_F(CtranUtilsLogTest, TestCLOGF_IF) {
   CLOGF_IF(INFO, true, "Conditional message with value: {}", 42);
