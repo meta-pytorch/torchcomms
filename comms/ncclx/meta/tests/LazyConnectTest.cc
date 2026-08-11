@@ -293,7 +293,7 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
   prepBuffers(sendBytes, recvBytes, rootComm);
 
   // run small alltoall
-  auto res = ncclAllToAll(sendBuf, recvBuf, 2, dataType, rootComm, stream);
+  auto res = ncclAlltoAll(sendBuf, recvBuf, 2, dataType, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
@@ -309,7 +309,7 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
   }
 
   // run large alltoall
-  res = ncclAllToAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
+  res = ncclAlltoAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
@@ -343,7 +343,7 @@ TEST_P(NcclxLazyConnectTestFixture, AlltoallAndAllGather) {
   prepBuffers(sendBytes, recvBytes, rootComm);
 
   // run alltoall
-  auto res = ncclAllToAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
+  auto res = ncclAlltoAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
   // run allgather
   res = ncclAllGather(sendBuf, recvBuf, count, dataType, rootComm, stream);
@@ -387,7 +387,7 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
   prepBuffers(sendBytes, recvBytes, rootComm);
 
   // run alltoall
-  auto res = ncclAllToAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
+  auto res = ncclAlltoAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
   EXPECT_EQ(res, ncclSuccess);
   // run allgather
   res = ncclAllGather(

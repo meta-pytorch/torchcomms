@@ -66,7 +66,7 @@ class ProxyTraceTest : public NcclxBaseTestFixture {
     CUDACHECK_TEST(cudaMalloc(&recvBuf, count * comm->nRanks * sizeof(int)));
     for (int i = 0; i < nColl; i++) {
       NCCLCHECK_TEST(
-          ncclAllToAll(sendBuf, recvBuf, count, ncclInt, comm, stream));
+          ncclAlltoAll(sendBuf, recvBuf, count, ncclInt, comm, stream));
     }
   }
 

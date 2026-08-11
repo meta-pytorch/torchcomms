@@ -166,7 +166,7 @@ TEST_P(MultiStreamAllToAllTestParam, Test) {
   for (int x = 0; x < numIter; x++) {
     for (int i = 0; i < numStreams; i++) {
       ASSERT_EQ(
-          ncclAllToAll(
+          ncclAlltoAll(
               sbufs[i], rbufs[i], counts[i], ncclInt, comm, streams[i]),
           ncclSuccess);
     }
