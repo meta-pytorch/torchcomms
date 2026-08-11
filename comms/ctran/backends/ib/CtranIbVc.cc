@@ -126,7 +126,8 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
     maxQpMsgs_ = MAX_SEND_WR;
   }
 
-  pendingWqeQs_.resize(maxNumQps_);
+  putWqesByQp_.resize(maxNumQps_);
+  getWqesByQp_.resize(maxNumQps_);
 
   // Cache the per-device QP count now that maxNumQps_ is finalized.
   // maxNumQps_ is guaranteed to be a multiple of activeDevices_.size() above.
