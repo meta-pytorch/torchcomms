@@ -15,6 +15,7 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -33,7 +34,7 @@ commResult_t ctranAllToAllCudagraphAware(
   const auto statex = comm->statex_.get();
   const int nRanks = statex->nRanks();
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-A2AP: AllToAll cudagraph-aware: algo {} "

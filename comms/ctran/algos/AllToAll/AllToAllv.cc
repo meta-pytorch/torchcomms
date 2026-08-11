@@ -7,9 +7,9 @@
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #ifdef ENABLE_META_COMPRESSION
 #include "comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h"
@@ -269,7 +269,7 @@ commResult_t ctranAllToAllv(
       stream);
   const auto statex = comm->statex_.get();
   for (int i = 0; i < statex->nRanks(); i++) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "{}: opCount {} - sendcounts[{}] {} sdispls[{}] {} recvcounts[{}] {} rdispls[{}] {}",

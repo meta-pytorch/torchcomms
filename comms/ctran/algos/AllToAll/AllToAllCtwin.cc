@@ -14,10 +14,10 @@
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using ctran::alltoallp::AlgoImpl;
 using ctran::alltoallp::destroyPersistentRequest;
@@ -113,7 +113,7 @@ bool checkCtranAllToAllCtwinSupport(
   }
   // Dormant until a caller passes a non-empty recvbuff.
   if (recvbuff == nullptr || recvBytes == 0) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllToAll {} unsupported: needs a non-empty recvbuff (recvbuff={}, recvBytes={}).",
@@ -126,7 +126,7 @@ bool checkCtranAllToAllCtwinSupport(
   // computes each peer's recvbuf as its window buffer at the same offset).
   auto* win = comm->findWindowForBuffer(recvbuff, recvBytes);
   if (win == nullptr || !win->isSymmetric() || !ctran::AllToAllPSupport(comm)) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllToAll {} unsupported: recvbuff {} ({} bytes) is not covered by a symmetric AllToAllP window.",
@@ -173,7 +173,7 @@ commResult_t ctranAllToAllCtwin(
 
   // Log the resolved window id so a rank-divergent window pick (all ranks must
   // resolve a buffer to the same window) is debuggable.
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "AllToAll ctwin: rank {} resolved recvbuff {} ({} bytes, offset {}) to window id {}",
