@@ -10,6 +10,7 @@
 #include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/NcclxLogUtils.h"
 #include "meta/commstate/FactoryCommStateX.h"
 #include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -119,7 +120,7 @@ ncclResult_t destroyCtranComm(ncclComm* comm) {
     comm->ctranComm_->destroy();
     comm->ctranComm_.reset();
   } catch (const std::exception& e) {
-    CLOGF(ERR, "CtranComm destruction failed: {}", e.what());
+    NCCLX_LOG(ERR, "CtranComm destruction failed: {}", e.what());
     return ncclInternalError;
   }
   return ncclSuccess;

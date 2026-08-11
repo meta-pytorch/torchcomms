@@ -9,8 +9,8 @@
 #include "comms/ctran/utils/Utils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/trainer/TrainerContext.h"
+#include "meta/NcclxLogUtils.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
@@ -25,7 +25,8 @@ inline enum NCCL_USE_TRANSPORT_PROXY getTransportProxyMode() {
     val = (NCCL_USE_MEM_CACHE) ? NCCL_USE_TRANSPORT_PROXY::shared
                                : NCCL_USE_TRANSPORT_PROXY::none;
   }
-  CLOGF_SUBSYS(INFO, ENV, "NCCL_USE_TRANSPORT_PROXY={}", static_cast<int>(val));
+  NCCLX_LOG_SUBSYS(
+      INFO, ENV, "NCCL_USE_TRANSPORT_PROXY={}", static_cast<int>(val));
   return val;
 }
 }; // namespace
@@ -97,7 +98,7 @@ void TransportProxy::shutdown() {
     cv_.notify_one();
   }
   if (getTransportProxyMode() != NCCL_USE_TRANSPORT_PROXY::none) {
-    CLOGF_SUBSYS(
+    NCCLX_LOG_SUBSYS(
         INFO,
         INIT,
         "Shutting down NCCLX transport worker: join worker thread...");
@@ -135,7 +136,7 @@ inline bool TransportProxy::canSkipPrepBufs(ncclComm* comm, uint64_t opCount) {
   // Early return if buffers are not shared, or we reach a pre-defined limit to
   // skip exchanging info
   if (!NCCL_USE_SHARED_BUFFER_POOL || skipReconnect) {
-    CLOGF_SUBSYS(
+    NCCLX_LOG_SUBSYS(
         INFO,
         COLL,
         "Rank-{} skip re-connect check: NCCL_TRANSPORT_PREP_TRAINER_ITERATION_LIMIT={} and ncclxGetIteration={} "
@@ -163,7 +164,7 @@ commResult_t TransportProxy::getNextChannelsReadyPtr(
 
   *channelsReadyPtr = ptr;
 
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       COLL,
       "Transport proxy thread: get next sync flag pointer {:x}",
@@ -193,7 +194,7 @@ commResult_t TransportProxy::enqueuePrepRequest(
   reqQueue_.push_back(req);
   cv_.notify_one();
 
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       COLL,
       "{}: Enqueued request to prepare resources for current kernel plan: "
@@ -217,7 +218,7 @@ commResult_t TransportProxy::enqueueP2pPreconnect(ncclComm* comm) {
   cv_.notify_one();
   preconnReqQueue_.push_back(req);
 
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       INIT,
       "Enqueue p2p preconnect request ({} in queue) for comm {:x}",
@@ -239,7 +240,7 @@ commResult_t TransportProxy::enqueueCollPreconnect(
 
   preconnReqQueue_.push_back(req);
 
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       INIT,
       "Enqueue coll preconnect request ({} in queue) for comm {:x}",
@@ -258,7 +259,7 @@ commResult_t TransportProxy::waitPreconnect() {
     preconnCv_.wait(lock, [&] { return req->state != commInProgress; });
     FB_COMMCHECK(req->state);
   }
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       INIT,
       "Waited for {} preconnect requests to complete",
@@ -274,7 +275,7 @@ void TransportProxy::testAny() {
     auto ptr = req->channelsReadyPtr;
     if (*ptr == 0) {
       FB_COMMCHECKTHROW(req->comm->memCache->release(req->bufKeys));
-      CLOGF_SUBSYS(
+      NCCLX_LOG_SUBSYS(
           INFO,
           COLL,
           "Releasing {} bufKeys for comm {}",
@@ -282,7 +283,7 @@ void TransportProxy::testAny() {
           NCCLX_CONFIG_FIELD(req->comm->config, commDesc).c_str());
       syncFlagPool_.push_back(ptr);
       req->state = commSuccess;
-      CLOGF_SUBSYS(
+      NCCLX_LOG_SUBSYS(
           INFO,
           COLL,
           "Garbage collect sync flag pointer {:x}, {} collectives in progress",
@@ -334,7 +335,7 @@ void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
   // ready to start collectives
   *req->channelsReadyPtr = req->channelMask;
 
-  CLOGF_SUBSYS(
+  NCCLX_LOG_SUBSYS(
       INFO,
       COLL,
       "{}: Transport is ready for reqCount={}, req->channelMask={:x}, req->channelsReadyPtr={:x} ({:#x})",
@@ -399,7 +400,7 @@ void TransportProxy::workerThreadFn() {
     } else if (req->type == TransportRequestType::TERNIMATE) {
       break;
     } else {
-      CLOGF(
+      NCCLX_LOG(
           ERR,
           "Unknown request type {} in transport worker thread",
           static_cast<int>(req->type));
