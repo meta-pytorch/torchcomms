@@ -67,6 +67,21 @@ class CudaEvent {
   cudaEvent_t event_{nullptr};
 };
 
+class CudaDeviceGuard {
+ public:
+  explicit CudaDeviceGuard(int device);
+  ~CudaDeviceGuard();
+
+  CudaDeviceGuard(const CudaDeviceGuard&) = delete;
+  CudaDeviceGuard& operator=(const CudaDeviceGuard&) = delete;
+  CudaDeviceGuard(CudaDeviceGuard&&) = delete;
+  CudaDeviceGuard& operator=(CudaDeviceGuard&&) = delete;
+
+ private:
+  int previousDevice_{-1};
+  bool restore_{false};
+};
+
 // RAII guard that sets the calling thread's CUDA stream capture interaction
 // mode and restores the previous mode on destruction.
 //

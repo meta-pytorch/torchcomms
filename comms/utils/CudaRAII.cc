@@ -3,6 +3,9 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
 
+#include <stdexcept>
+#include <string>
+
 namespace meta::comms {
 
 DeviceBuffer::DeviceBuffer(std::size_t size) : size_(size) {
@@ -95,6 +98,47 @@ CudaEvent& CudaEvent::operator=(CudaEvent&& other) noexcept {
 
 cudaEvent_t CudaEvent::get() const {
   return event_;
+}
+
+CudaDeviceGuard::CudaDeviceGuard(int device) {
+  auto status = cudaGetDevice(&previousDevice_);
+  if (status != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("failed to query current CUDA device: ") +
+        cudaGetErrorString(status));
+  }
+  if (previousDevice_ == device) {
+    return;
+  }
+
+  status = cudaSetDevice(device);
+  if (status == cudaSuccess) {
+    restore_ = true;
+    return;
+  }
+
+  const auto selectionStatus = status;
+  const auto restoreStatus = cudaSetDevice(previousDevice_);
+  if (restoreStatus != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("failed to select and restore CUDA device: ") +
+        cudaGetErrorString(selectionStatus) + "; " +
+        cudaGetErrorString(restoreStatus));
+  }
+  throw std::runtime_error(
+      std::string("failed to select CUDA device: ") +
+      cudaGetErrorString(selectionStatus));
+}
+
+CudaDeviceGuard::~CudaDeviceGuard() {
+  if (!restore_) {
+    return;
+  }
+  const auto status = cudaSetDevice(previousDevice_);
+  if (status != cudaSuccess) {
+    XLOG(ERR) << "CudaDeviceGuard: failed to restore CUDA device "
+              << previousDevice_ << ": " << cudaGetErrorString(status);
+  }
 }
 
 StreamCaptureModeGuard::StreamCaptureModeGuard(
