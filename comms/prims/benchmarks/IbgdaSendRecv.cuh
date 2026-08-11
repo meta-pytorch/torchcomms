@@ -86,6 +86,19 @@ __global__ void ibgda_progress_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
+    Timeout timeout,
+    bool waitForSlotFree);
+
+/**
+ * Unidirectional registered-source progress send kernel.
+ * Grid: numBlocks. Block: 512 threads.
+ */
+__global__ void ibgda_registered_progress_send_kernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
     Timeout timeout);
 
 /**
