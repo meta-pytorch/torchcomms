@@ -4,8 +4,8 @@
 
 #include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -146,7 +146,7 @@ commResult_t setupKernelConfig(
 
   // Build local rank -> global rank mapping
   if (kernArgs.nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "DeviceAllToAllvPipes: nLocalRanks {} exceeds CTRAN_MAX_NVL_PEERS {}",
         kernArgs.nLocalRanks,

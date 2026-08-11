@@ -3,7 +3,7 @@
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #include <folly/ScopeGuard.h>
 
@@ -62,7 +62,7 @@ commResult_t AllToAllPInit(
     request = nullptr;
   });
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "AllToAllPInit: rank {} initialized request {}, recvbuff {}, comm {} commHash {:x} commDesc {} [nranks={}, localRanks={}] stream={}",
@@ -87,7 +87,7 @@ commResult_t AllToAllPExec(
     CtranPersistentRequest* request) {
   CHECK_VALID_PREQ(request);
   auto* algo = reinterpret_cast<AlgoImpl*>(request->algo);
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "AllToAllPExec: rank {} started executing request {}, sendbuff {} recvbuff {} count {} ",
       request->comm_->statex_->rank(),
@@ -121,7 +121,7 @@ commResult_t AllToAllPDestroy(CtranPersistentRequest* request) {
   ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
   ipcRegCache->cleanupInvalidImports();
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "AllToAllPDestroy: rank {} destroyed request {}",

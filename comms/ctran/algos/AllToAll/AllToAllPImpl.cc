@@ -11,6 +11,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -293,7 +294,7 @@ commResult_t ctranAllToAllPIbImpl(
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(hdl));
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "AllToAllPIbImpl: rank {} completed AllToAllP execution sendbuff {} recvbuff {} count {} size {} ibPeers {}",
@@ -410,7 +411,7 @@ commResult_t createPersistentRequest(
     bool waitForInit,
     bool skipCtrlMsg) {
   if (out == nullptr) {
-    CERR(commInvalidArgument, "AllToAllP: output buffer must not be null");
+    CTRAN_ERR(commInvalidArgument, "AllToAllP: output buffer must not be null");
     return commInvalidArgument;
   }
   *out = nullptr;
@@ -488,7 +489,7 @@ commResult_t createPersistentRequest(
     FB_COMMCHECK(algoPtr->waitInit());
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-A2AP: Rank {} createPersistentRequest ({}): comm {} recvbuff {} recvHdl {} nLocalRanks {} commHash {:x}",
@@ -617,7 +618,7 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
     op->alltoallP.sendbuff = sendbuff;
     op->alltoallP.count = count;
     opGroup.push_back(std::move(op));
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "AllToAllPExec: rank {} submit op sendbuff {} count {}",
         comm_->statex_->rank(),

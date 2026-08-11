@@ -16,6 +16,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -219,7 +220,7 @@ bool ctranAllToAllSupport(
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
     if (err != cudaSuccess ||
         captureInfo.status != cudaStreamCaptureStatusActive) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           COLL,
           "AllToAll {}: not in capture mode. "
@@ -270,7 +271,7 @@ commResult_t ctranDeviceAllToAllv(
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
   if (!ctranDeviceAllToAllvSupport(comm)) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "DeviceAllToAllvPipes requires an initialized NVLink-only communicator");
     return commInvalidArgument;
@@ -289,7 +290,7 @@ commResult_t ctranDeviceAllToAllv(
   ctran::device_alltoallv_pipes::CollectiveConfig collConfig(
       comm->statex_->nLocalRanks(), &hints);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "DeviceAllToAllvPipes: opCount {} numBlocks {} numThreads {} "
