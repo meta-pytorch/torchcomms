@@ -73,7 +73,10 @@ struct Buffers {
     auto freeOne = [this](void* p) {
       if (p) {
         if (useGpu) {
-          cudaFree(p);
+          // hipFree and hipStreamDestroy are [[nodiscard]] on HIP, unlike their
+          // CUDA counterparts. These are best-effort cleanup/error paths, so
+          // explicitly discard their status at all three sites in this file.
+          (void)cudaFree(p);
         } else {
           std::free(p);
         }
@@ -105,7 +108,7 @@ allocateBuffers(size_t maxSize, int cudaDevice, int rank) {
         UNIFLOW_LOG_ERROR(
             "SendRecvBandwidthBenchmark: cudaMemset failed: {}",
             cudaGetErrorString(ret));
-        cudaFree(*out);
+        (void)cudaFree(*out);
         *out = nullptr;
         return false;
       }
@@ -178,7 +181,7 @@ struct MultiTransportSession {
         pt.transport->shutdown();
       }
       if (pt.stream) {
-        cudaStreamDestroy(pt.stream);
+        (void)cudaStreamDestroy(pt.stream);
       }
     }
   }
