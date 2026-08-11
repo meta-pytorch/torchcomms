@@ -2,13 +2,13 @@
 
 #include "comms/ctran/memory/Utils.h"
 
-#include <folly/Format.h>
 #include <sstream>
 
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 
 namespace ncclx::memory {
@@ -74,10 +74,9 @@ commResult_t allocateShareableBuffer(
     }
   }
 
-  // TODO: refactor this to CLOGF_SUBSYS once it supports oneof multiple masks
-  CLOGF_IF(
+  CTRAN_LOG_SUBSYS(
       INFO,
-      CLOGF_ENABLED(ALLOC) || CLOGF_ENABLED(P2P),
+      ALLOC | P2P,
       "commHash: {:x} Allocated shareable buffer {} size {} ipcDesc {} for {}",
       commHash,
       *ptr,
