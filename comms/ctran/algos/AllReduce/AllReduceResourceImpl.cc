@@ -5,6 +5,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceDevTypes.h"
 #include "comms/ctran/algos/AllReduce/AllReduceNetTypes.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #define SET_BUFF(bufMngr_, memType, bufName)                          \
   {                                                                   \
@@ -13,7 +14,7 @@
     auto ret = bufMngr_->assignBuf(                                   \
         memType, AllReduceResourceBufName::bufName, basicBuf);        \
     FB_CHECKABORT(ret, "Failed to assign buf {}", ARGTOSTR(bufName)); \
-    CLOGF_SUBSYS(                                                     \
+    CTRAN_LOG_SUBSYS(                                                 \
         INFO,                                                         \
         INIT,                                                         \
         "Rank {} assigned {} = {}",                                   \
@@ -29,7 +30,7 @@
     auto ret = bufMngr_->assignRegBuf(                                   \
         memType, AllReduceResourceBufName::bufName, regBuf);             \
     FB_CHECKABORT(ret, "Failed to assign regbuf {}", ARGTOSTR(bufName)); \
-    CLOGF_SUBSYS(                                                        \
+    CTRAN_LOG_SUBSYS(                                                    \
         INFO,                                                            \
         INIT,                                                            \
         "Rank {} assigned {} = {}",                                      \
@@ -48,7 +49,7 @@
     FB_CHECKABORT(                                                            \
         ret, "Failed to assign remote regbuf {}", ARGTOSTR(bufName));         \
     for (int i = 0; i < peerRanks.size(); i++) {                              \
-      CLOGF_SUBSYS(                                                           \
+      CTRAN_LOG_SUBSYS(                                                       \
           INFO,                                                               \
           INIT,                                                               \
           "Rank {} assigned {} remRegBufVec[{}] = {}",                        \
@@ -136,14 +137,14 @@ commResult_t AllReduceResourceImpl::initAllReduceDirectResourceAsync(
 
   // allocate memory
   FB_COMMCHECK(bufMngr_->commit());
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "AllReduceResourceImpl: Rank {} committed buffer allocation",
       statex_->rank());
 
   FB_COMMCHECK(bufMngr_->exchange(peers, statex_->nRanks()));
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "AllReduceResourceImpl: Rank {} exchanged with peer {}",
