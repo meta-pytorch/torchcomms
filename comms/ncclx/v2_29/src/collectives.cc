@@ -118,8 +118,30 @@ NCCL_API(ncclResult_t, ncclAlltoAll, const void* sendbuff, void* recvbuff, size_
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream) {
+  if (count == 0) {
+    return ncclSuccess;
+  }
+
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
   NVTX3_FUNC_WITH_PARAMS(AlltoAll, NcclNvtxParamsAlltoAll,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype)));
+
+  NCCLCHECK(CudaPtrCheck(sendbuff, comm, "sendbuff", "ncclAlltoAll"));
+  NCCLCHECK(CudaPtrCheck(recvbuff, comm, "recvbuff", "ncclAlltoAll"));
+  if (sendbuff == recvbuff) {
+    ERR(
+        ncclInvalidArgument,
+        "Found sendbuff %p == recvbuff %p. In-place ncclAlltoAll is not supported.",
+        sendbuff,
+        recvbuff);
+    return ncclInvalidArgument;
+  }
+
+  auto alltoallAlgo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
+  if ((alltoallAlgo != NCCL_ALLTOALL_ALGO::orig) &&
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), alltoallAlgo, stream, recvbuff)) {
+    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, alltoallAlgo));
+  }
 
   struct ncclInfo info = { ncclFuncAlltoAll, "AlltoAll",
     sendbuff, recvbuff, count, datatype, ncclSum, 0, comm, stream, /* Args */
