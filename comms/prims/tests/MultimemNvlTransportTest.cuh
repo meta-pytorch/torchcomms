@@ -14,6 +14,14 @@ namespace comms::prims::test {
 
 enum class MultimemReductionTestType { Float, Int32, Float16, Bfloat16 };
 
+struct StageLayoutResult {
+  std::size_t groupBeginBytes;
+  std::size_t stagingBytes;
+  uint64_t signalBase;
+  uint64_t signalsPerLane;
+  uint32_t pipelineDepth;
+};
+
 // Each launch is one warp -> one ThreadGroup. The leader performs the
 // multimem PTX store; the remaining lanes sync alongside it. Callers must
 // cudaStreamSynchronize (or cudaDeviceSynchronize) before observing effects
@@ -93,6 +101,12 @@ void launchLoadReduce(
     void* output,
     std::size_t elems,
     std::size_t sourceOffsetElems,
+    cudaStream_t stream = nullptr);
+
+void launchStageLayout(
+    MultimemNvlTransportDevice transport,
+    StageLayoutResult* results,
+    uint32_t numGroups,
     cudaStream_t stream = nullptr);
 
 } // namespace comms::prims::test

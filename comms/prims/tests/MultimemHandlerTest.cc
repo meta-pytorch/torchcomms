@@ -161,7 +161,7 @@ std::shared_ptr<StrictMockBootstrap> makeDelegatingMock(
 // Identifies one of the four bootstrap call sites inside
 // `MultimemHandler::exchange`. `ordinal` is the 0-based occurrence of the
 // chosen `Api` within a single `exchange()` invocation:
-//   (kAllGatherNvlDomain, 0) -> agreeOnHandleType
+//   (kAllGatherNvlDomain, 0) -> agreeOnSetup
 //   (kAllGatherNvlDomain, 1) -> exchangeMulticastHandle
 //   (kBarrierNvlDomain,   0) -> synchronizeRanks("pre-bind")
 //   (kBarrierNvlDomain,   1) -> synchronizeRanks("post-map")
@@ -186,7 +186,7 @@ enum class FailureMode {
 };
 
 constexpr FailureCase kAllFailureCases[] = {
-    {"agreeOnHandleType", FailureCase::Api::kAllGatherNvlDomain, 0},
+    {"agreeOnSetup", FailureCase::Api::kAllGatherNvlDomain, 0},
     {"exchangeMulticastHandle", FailureCase::Api::kAllGatherNvlDomain, 1},
     {"preBindBarrier", FailureCase::Api::kBarrierNvlDomain, 0},
     {"postMapBarrier", FailureCase::Api::kBarrierNvlDomain, 1},
@@ -231,8 +231,23 @@ auto allGatherFailureAction(FailureMode mode) {
   };
 }
 
-auto barrierFailureAction(FailureMode mode) {
-  return [mode](int, int, const std::vector<int>&) -> folly::SemiFuture<int> {
+auto barrierFailureAction(
+    FailureMode mode,
+    const std::shared_ptr<meta::comms::IBootstrap>& real,
+    bool rendezvousBeforeFailure) {
+  return [mode, real, rendezvousBeforeFailure](
+             int rank,
+             int nRanks,
+             const std::vector<int>& rankMap) -> folly::SemiFuture<int> {
+    // Symmetric injection must let every rank reach the target before the
+    // first throw starts tearing down their shared multicast object.
+    if (rendezvousBeforeFailure) {
+      const int rendezvousResult =
+          real->barrierNvlDomain(rank, nRanks, rankMap).get();
+      if (rendezvousResult != 0) {
+        return folly::makeSemiFuture(rendezvousResult);
+      }
+    }
     switch (mode) {
       case FailureMode::kReturnNonZero:
         return folly::makeSemiFuture(-1);
@@ -262,7 +277,8 @@ void programFailureInjection(
     const std::shared_ptr<meta::comms::IBootstrap>& real,
     const FailureCase& fail,
     FailureMode mode,
-    bool injectOnThisRank = true) {
+    bool injectOnThisRank,
+    bool rendezvousBeforeFailure) {
   using ::testing::_;
   using ::testing::AnyNumber;
   using ::testing::InSequence;
@@ -323,7 +339,7 @@ void programFailureInjection(
       EXPECT_CALL(mock, barrierNvlDomain(_, _, _)).WillOnce(delegateBarrierNvl);
     }
     EXPECT_CALL(mock, barrierNvlDomain(_, _, _))
-        .WillOnce(barrierFailureAction(mode));
+        .WillOnce(barrierFailureAction(mode, real, rendezvousBeforeFailure));
   }
 }
 
@@ -334,13 +350,13 @@ void programFailureInjection(
 enum class RankPattern {
   kAllRanks,
   kRank0Only,
-  kAllExceptRank0,
+  kRank1Only,
 };
 
 constexpr RankPattern kAllRankPatterns[] = {
     RankPattern::kAllRanks,
     RankPattern::kRank0Only,
-    RankPattern::kAllExceptRank0,
+    RankPattern::kRank1Only,
 };
 
 const char* describePattern(RankPattern p) {
@@ -349,8 +365,8 @@ const char* describePattern(RankPattern p) {
       return "AllRanks";
     case RankPattern::kRank0Only:
       return "Rank0Only";
-    case RankPattern::kAllExceptRank0:
-      return "AllExceptRank0";
+    case RankPattern::kRank1Only:
+      return "Rank1Only";
   }
   return "Unknown";
 }
@@ -361,8 +377,8 @@ bool shouldInject(RankPattern p, int globalRank) {
       return true;
     case RankPattern::kRank0Only:
       return globalRank == 0;
-    case RankPattern::kAllExceptRank0:
-      return globalRank != 0;
+    case RankPattern::kRank1Only:
+      return globalRank == 1;
   }
   return false;
 }
@@ -482,6 +498,98 @@ TEST_F(MultimemHandlerTestFixture, ExchangeSupportsNonIdentityRankMap) {
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
+TEST_F(MultimemHandlerTestFixture, ExchangeRejectsMismatchedBackingSize) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "CUDA multimem transport is only useful for 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("multimem_mismatched_backing_size");
+  if (!allRanksMultimemSupported(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not supported";
+  }
+
+  const std::size_t granularity =
+      MultimemHandler::backingGranularity(localRank, numRanks);
+  ASSERT_GT(granularity, 0u);
+  const std::size_t requestedSize =
+      globalRank == 0 ? granularity : 2 * granularity;
+  auto backing = makeMulticastBacking(localRank, numRanks, requestedSize);
+  MultimemHandler handler(
+      backing, bootstrap, globalRank, identityRankMap(numRanks), localRank);
+
+  try {
+    handler.exchange();
+    FAIL() << "expected setup agreement to reject mismatched backing size";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_NE(
+        std::string(ex.what()).find("ranks disagree on multicast setup"),
+        std::string::npos)
+        << ex.what();
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(MultimemHandlerTestFixture, ExchangeRejectsMismatchedProtocol) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "CUDA multimem transport is only useful for 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("multimem_mismatched_protocol");
+  if (!allRanksMultimemSupported(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not supported";
+  }
+
+  auto backing = makeMulticastBacking(localRank, numRanks, 4096);
+  const MulticastExchangeContract contract{
+      .protocol = globalRank == 0 ? 1u : 2u, .version = 1};
+  MultimemHandler handler(
+      backing,
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      localRank,
+      contract);
+  try {
+    handler.exchange();
+    FAIL() << "expected setup agreement to reject mismatched protocol";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_NE(
+        std::string(ex.what()).find("ranks disagree on multicast setup"),
+        std::string::npos)
+        << ex.what();
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(MultimemHandlerTestFixture, ExchangeRejectsMismatchedVersion) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "CUDA multimem transport is only useful for 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("multimem_mismatched_version");
+  if (!allRanksMultimemSupported(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not supported";
+  }
+
+  auto backing = makeMulticastBacking(localRank, numRanks, 4096);
+  const MulticastExchangeContract contract{
+      .protocol = 1, .version = globalRank == 0 ? 1u : 2u};
+  MultimemHandler handler(
+      backing,
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      localRank,
+      contract);
+  try {
+    handler.exchange();
+    FAIL() << "expected setup agreement to reject mismatched version";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_NE(
+        std::string(ex.what()).find("ranks disagree on multicast setup"),
+        std::string::npos)
+        << ex.what();
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
 TEST_F(MultimemHandlerTestFixture, SharingRejectsNullBacking) {
   auto bootstrap = makeBootstrap("multimem_null_backing_test");
   // A null backing must fail fast.
@@ -547,7 +655,7 @@ TEST_F(
 }
 
 // Locks down the bootstrap API surface used by `MultimemHandler::exchange()`:
-//   - allGatherNvlDomain: exactly 2 calls per exchange (agreeOnHandleType,
+//   - allGatherNvlDomain: exactly 2 calls per exchange (agreeOnSetup,
 //     then exchangeMulticastHandle).
 //   - barrierNvlDomain:   exactly 2 calls per exchange (pre-bind, post-map).
 //   - allGather/barrier/send/recv: never called by MultimemHandler itself.
@@ -596,36 +704,15 @@ TEST_F(MultimemHandlerTestFixture, SuccessPathCoversAllBootstrapApis) {
 }
 
 // Parameterized failure-injection suite. The product is
-//   {4 phases of exchange()} x {3 failure modes} = 12 cases.
+//   {4 phases} x {3 failure modes} x {all, rank 0, rank 1} = 36 cases.
 //
 // For each case:
-//   - A real bootstrap is created with a per-case prefix so prior keys cannot
-//     leak between cases.
-//   - A StrictMockBootstrap is built that delegates every call to the real
-//     bootstrap, then the (api, ordinal) call site under test is overridden
-//     to fail with the chosen mode (return -1, throw std::runtime_error, or
-//     throw a non-std exception).
-//   - All ranks inject the same failure at the same ordinal, so every rank's
-//     exchange() throws together -- avoiding the asymmetric-failure deadlock
-//     scenario that would require a peer-side timeout to remain deterministic.
-//
-// Assertions per case:
-//   1. exchange() throws std::runtime_error.
-//   2. The message tags the right failedPhase (`failedPhase=<name>`), which
-//      proves `describeState` ran with the right phase label.
-//   3. The message contains the phase-specific substring (e.g. "pre-bind").
-//   4. For kSyncThrowsNonStd: the message contains the `catch (...)` prefix
-//      "MultimemHandler::exchange failed with unknown exception", confirming
-//      the unknown-exception fallback is reached. For std-throw / non-zero
-//      cases, the message uses the "MultimemHandler::exchange failed: " prefix.
-//   5. After the throw, both getters still throw "exchange() must complete",
-//      proving the partial-init state was not committed.
-//   6. The realBootstrap is still healthy: a subsequent barrier() returns 0.
-//      Proves cleanup() didn't leave any bootstrap state poisoned.
-//   7. Constructing a fresh handler over the *same* `backing` shared_ptr with
-//      a fresh bootstrap (different prefix) lets exchange() complete cleanly.
-//      Proves cleanup() released only the handler-owned multicast state and
-//      left the caller-owned physical backing intact and bindable.
+//   - The target API returns an error, throws std::runtime_error, or throws a
+//     non-std exception on every rank, rank 0 only, or rank 1 only.
+//   - exchange() and both post-exchange getters must throw.
+//   - Symmetric cases must leave the failure bootstrap usable.
+//   - Every case must reuse the same physical backing successfully through a
+//     fresh handler and bootstrap after cleanup.
 class MultimemHandlerFailureInjectionTest
     : public ::testing::TestWithParam<
           std::tuple<FailureCase, FailureMode, RankPattern>>,
@@ -659,6 +746,7 @@ TEST_P(MultimemHandlerFailureInjectionTest, ExchangeReportsAndCleansUp) {
     GTEST_SKIP() << "asymmetric failure tests require TCPStore env";
   }
 
+  std::shared_ptr<CuMemAllocation> backing;
   {
     std::optional<ScopedShortTimeoutBootstrap> shortBs;
     std::shared_ptr<meta::comms::IBootstrap> bootstrap;
@@ -676,7 +764,7 @@ TEST_P(MultimemHandlerFailureInjectionTest, ExchangeReportsAndCleansUp) {
       GTEST_SKIP() << "CUDA multimem/NVLS multicast is not supported";
     }
 
-    auto backing = makeMulticastBacking(localRank, numRanks, 4096);
+    backing = makeMulticastBacking(localRank, numRanks, 4096);
 
     {
       auto mock = makeDelegatingMock(bootstrap);
@@ -685,7 +773,9 @@ TEST_P(MultimemHandlerFailureInjectionTest, ExchangeReportsAndCleansUp) {
           bootstrap,
           failCase,
           failMode,
-          /*injectOnThisRank=*/shouldInject(rankPattern, globalRank));
+          /*injectOnThisRank=*/shouldInject(rankPattern, globalRank),
+          /*rendezvousBeforeFailure=*/
+          rankPattern == RankPattern::kAllRanks);
 
       MultimemHandler handler(
           backing,
@@ -722,7 +812,7 @@ TEST_P(MultimemHandlerFailureInjectionTest, ExchangeReportsAndCleansUp) {
   // overlap with the failed exchange's keys.
   auto recoveryBootstrap = makeBootstrap(casePrefix + "_recovery");
   MultimemHandler recovery(
-      makeMulticastBacking(localRank, numRanks, 4096),
+      backing,
       recoveryBootstrap,
       globalRank,
       identityRankMap(numRanks),

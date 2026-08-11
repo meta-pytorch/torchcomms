@@ -437,6 +437,51 @@ TEST_F(
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
+TEST_F(
+    GpuMemHandlerMulticastTestFixture,
+    ExchangeMulticastMismatchedReentryContractThrows) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "multimem requires >=3 NVL ranks";
+  }
+  auto bootstrap = makeBootstrap("gpumem_multicast_mismatch_contract");
+  if (!allRanksMultimemSupported(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "multimem unsupported on this host";
+  }
+  const auto modeOpt = bestVmmModeForMulticast();
+  if (!modeOpt) {
+    GTEST_SKIP() << "multicast requires VMM mode (kFabric/kPosixFd); "
+                    "detectBestMode returned kCudaIpc";
+  }
+  const std::size_t allocSize = multicastBackingSize(localRank, numRanks);
+  GpuMemHandler handler(
+      bootstrap,
+      globalRank,
+      numRanks,
+      allocSize,
+      *modeOpt,
+      /*alignFloor=*/allocSize);
+  handler.exchangeMemPtrs();
+
+  const MulticastExchangeContract contract{
+      .protocol = 1, .version = 1, .parameters = {1, 2, 3, 4}};
+  handler.exchangeMulticast(
+      globalRank, identityRankMap(numRanks), localRank, contract);
+  auto changedContract = contract;
+  changedContract.parameters[3]++;
+  try {
+    handler.exchangeMulticast(
+        globalRank, identityRankMap(numRanks), localRank, changedContract);
+    FAIL() << "expected std::runtime_error on contract mismatch";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_NE(
+        std::string(ex.what()).find("re-entered with different"),
+        std::string::npos)
+        << ex.what();
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char* argv[]) {

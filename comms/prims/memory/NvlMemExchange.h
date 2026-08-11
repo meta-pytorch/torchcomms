@@ -16,6 +16,7 @@
 #endif
 
 #include <sys/types.h>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -24,6 +25,26 @@
 #include "comms/prims/memory/CuMemMapping.h"
 
 namespace comms::prims {
+
+/**
+ * Fixed-width identity for a protocol layered over a multicast allocation.
+ *
+ * Every rank in an NVLink team must supply the same value. The owning protocol
+ * assigns `protocol`, versions its parameter schema with `version`, and owns
+ * the interpretation of `parameters`. The all-zero default identifies raw
+ * multicast users with no additional protocol contract; it is still compared
+ * across ranks.
+ */
+struct MulticastExchangeContract {
+  uint64_t protocol{0};
+  uint64_t version{0};
+  std::array<uint64_t, 4> parameters{};
+
+  bool operator==(const MulticastExchangeContract& other) const {
+    return protocol == other.protocol && version == other.version &&
+        parameters == other.parameters;
+  }
+};
 
 #if defined(__HIP_PLATFORM_AMD__)
 // Stub the one CUDA driver-API type unique to this header (the shared

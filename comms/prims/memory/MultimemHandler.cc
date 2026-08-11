@@ -177,7 +177,8 @@ MultimemHandler::MultimemHandler(
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     int32_t commRank,
     std::vector<int> nvlRankToCommRank,
-    int cudaDevice)
+    int cudaDevice,
+    MulticastExchangeContract contract)
     : bootstrap_(std::move(bootstrap)),
       commRank_(commRank),
       nvlRank_(computeNvlRankAndValidate(commRank, nvlRankToCommRank)),
@@ -185,6 +186,7 @@ MultimemHandler::MultimemHandler(
       nvlRankToCommRank_(std::move(nvlRankToCommRank)),
       cudaDevice_(cudaDevice),
       requestedSize_(requireBacking(backing)->size()),
+      contract_(contract),
       backing_(std::move(backing)) {
   if (requestedSize_ == 0) {
     throw std::runtime_error("MultimemHandler: backing size must be non-zero");
@@ -354,8 +356,8 @@ void MultimemHandler::exchange() {
     // (which embeds handleType_). A silent mismatch would surface as a
     // confusing export/import failure on the next phase; fail fast with a clear
     // message.
-    failedPhase = "agreeOnHandleType";
-    agreeOnHandleType();
+    failedPhase = "agreeOnSetup";
+    agreeOnSetup();
     completedPhase = failedPhase;
 
     failedPhase = "computeAllocationLayout";
@@ -604,10 +606,22 @@ void MultimemHandler::synchronizeRanks(const char* phase) {
   }
 }
 
-void MultimemHandler::agreeOnHandleType() {
-  std::vector<int> selections(static_cast<std::size_t>(nvlRanks_), 0);
-  selections[static_cast<std::size_t>(nvlRank_)] =
-      static_cast<int>(handleType_);
+void MultimemHandler::agreeOnSetup() {
+  struct SetupRecord {
+    uint64_t handleType{0};
+    uint64_t requestedSize{0};
+    MulticastExchangeContract contract;
+  };
+  static_assert(std::is_trivially_copyable_v<SetupRecord>);
+  static_assert(std::is_standard_layout_v<SetupRecord>);
+
+  const SetupRecord local{
+      .handleType = static_cast<uint64_t>(handleType_),
+      .requestedSize = requestedSize_,
+      .contract = contract_,
+  };
+  std::vector<SetupRecord> records(static_cast<std::size_t>(nvlRanks_));
+  records[static_cast<std::size_t>(nvlRank_)] = local;
   // Use the NVL-domain allGather (not the global one): nvlRank_/nvlRanks_ are
   // the NVLink-team indices, and the bootstrap's plain allGather expects
   // global comm ranks. Mirrors exchangeMulticastHandle's allGatherNvlDomain
@@ -616,28 +630,39 @@ void MultimemHandler::agreeOnHandleType() {
   // peers outside the NVL team contributed zeros).
   auto gatherResult = bootstrap_
                           ->allGatherNvlDomain(
-                              selections.data(),
-                              sizeof(int),
+                              records.data(),
+                              sizeof(SetupRecord),
                               nvlRank_,
                               nvlRanks_,
                               nvlRankToCommRank_)
                           .get();
   if (gatherResult != 0) {
     throw std::runtime_error(
-        "MultimemHandler::agreeOnHandleType allGatherNvlDomain failed");
+        "MultimemHandler::agreeOnSetup allGatherNvlDomain failed");
   }
   for (int32_t r = 0; r < nvlRanks_; ++r) {
-    const auto peerType = static_cast<HandleType>(selections[r]);
-    if (peerType != handleType_) {
+    const auto& peer = records[static_cast<std::size_t>(r)];
+    if (peer.handleType != local.handleType ||
+        peer.requestedSize != local.requestedSize ||
+        !(peer.contract == local.contract)) {
       throw std::runtime_error(
           fmt::format(
-              "MultimemHandler: ranks disagree on multicast handle type "
-              "(this rank nvl={} chose {}, peer nvl={} chose {}); all ranks "
-              "must select the same fabric / POSIX FD handle type",
+              "MultimemHandler: ranks disagree on multicast setup "
+              "(this rank nvl={} type={} size={} protocol={} version={} "
+              "parameters=[{}], peer nvl={} type={} size={} protocol={} "
+              "version={} parameters=[{}])",
               nvlRank_,
               handleTypeName(handleType_),
+              local.requestedSize,
+              local.contract.protocol,
+              local.contract.version,
+              fmt::join(local.contract.parameters, ", "),
               r,
-              handleTypeName(peerType)));
+              handleTypeName(static_cast<HandleType>(peer.handleType)),
+              peer.requestedSize,
+              peer.contract.protocol,
+              peer.contract.version,
+              fmt::join(peer.contract.parameters, ", ")));
     }
   }
 }
