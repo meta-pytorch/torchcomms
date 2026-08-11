@@ -12,7 +12,6 @@
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgrHelperTypes.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ncclx::colltrace {
 
@@ -239,13 +238,13 @@ void MapperTrace::recordMapperEventImpl(
   if (collStart.coll == nullptr) {
     return;
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "MapperTrace: Received CollStart for collId {}",
       collStart.coll->getCollId());
   if (curCollInfo.currentColl != nullptr) {
-    CLOGF_FIRST_N(
+    CTRAN_LOG_FIRST_N(
         WARN,
         kDebugRepeatLogCount,
         "MapperTrace: Received the start event of collective w/ opCount {} when collective w/ opCount {} is still active",
@@ -274,20 +273,20 @@ void MapperTrace::recordMapperEventImpl(
     MapperRequestEnd mapperRequestEnd,
     CurCollInfo& curCollInfo) {
   if (curCollInfo.unfinishedRequests.count(mapperRequestEnd.req) == 0) {
-    CLOGF_FIRST_N(
+    CTRAN_LOG_FIRST_N(
         WARN,
         kDebugRepeatLogCount,
-        "MapperTrace: Received MapperRequestEnd %p but it was not found in unfinishedRequests",
+        "MapperTrace: Received MapperRequestEnd {:#x} but it was not found in unfinishedRequests",
         reinterpret_cast<uintptr_t>(mapperRequestEnd.req));
     return;
   }
   const auto& eventIndex =
       curCollInfo.unfinishedRequests.at(mapperRequestEnd.req);
   if (eventHistorySizeAtomic_.load(std::memory_order_relaxed) <= eventIndex) {
-    CLOGF_FIRST_N(
+    CTRAN_LOG_FIRST_N(
         WARN,
         kDebugRepeatLogCount,
-        "MapperTrace Internal Error: Received MapperRequestEnd %p but eventIndex %lu is out of range of eventHistory",
+        "MapperTrace Internal Error: Received MapperRequestEnd {:#x} but eventIndex {} is out of range of eventHistory",
         reinterpret_cast<uintptr_t>(mapperRequestEnd.req),
         eventIndex);
     return;

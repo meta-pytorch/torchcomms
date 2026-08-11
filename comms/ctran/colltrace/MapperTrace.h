@@ -11,6 +11,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/TypeUtils.h"
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -168,7 +169,7 @@ class MapperTrace {
   void recordMapperEvent(T event) {
     if constexpr (std::is_same_v<T, CollEnd>) {
       if (callback_.has_value()) {
-        CLOGF_SUBSYS(INFO, COLL, "MapperTrace: Callback triggered");
+        CTRAN_LOG_SUBSYS(INFO, COLL, "MapperTrace: Callback triggered");
         (*callback_)();
       }
       shouldMapperTraceCurrentThread = false;
