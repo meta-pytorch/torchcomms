@@ -7,10 +7,14 @@ from pathlib import Path
 
 _PROGRESS_ONLY_FUNCTIONS = (
     "init_send_progress",
+    "init_registered_send_progress",
     "init_recv_progress",
     "progress_send_once",
+    "progress_registered_send_once",
+    "progress_registered_send_drain_once",
     "poll_recv_data_ready",
     "progress_recv_once",
+    "send_registered",
     "store_progress_state",
     "make_progress_geometry",
     "active_payload_offset",
