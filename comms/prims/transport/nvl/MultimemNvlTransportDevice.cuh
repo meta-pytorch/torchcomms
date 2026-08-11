@@ -16,15 +16,22 @@
 namespace comms::prims {
 
 // Per-lane internal-signal count for the staging pipeline: the single source of
-// truth shared by the host-side signal-region sizing (MCCL) and the
-// device-side `make_stage_layout` (MultimemNvlStageLayout.cuh) so the region is
-// sized identically on both sides. Layout per lane: `nvlRanks` per-peer ready[]
+// truth shared by the host-side signal-region sizing (MultimemNvlTransport)
+// and the device-side `make_stage_layout` (MultimemNvlStageLayout.cuh) so the
+// region is sized identically on both sides. Layout per lane: `nvlRanks`
+// per-peer ready[]
 // + `nvlRanks` per-peer ack[] + 4 staging arrival-barrier slots (ready/ack
 // counter+epoch, laid out past the SET-mode slots so ADD residue never
 // contaminates a later SET-mode CMP_GE wait) => 2 * nvlRanks + 4.
+__host__ __device__ constexpr uint64_t multimem_staging_signals_per_lane_wide(
+    uint64_t nvlRanks) {
+  return 2 * nvlRanks + 4;
+}
+
 __host__ __device__ constexpr uint32_t multimem_staging_signals_per_lane(
     uint32_t nvlRanks) {
-  return 2 * nvlRanks + 4;
+  return static_cast<uint32_t>(
+      multimem_staging_signals_per_lane_wide(nvlRanks));
 }
 
 namespace detail {
@@ -86,6 +93,9 @@ struct MultimemNvlTransportDevice {
   std::size_t dataBufferSize{0};
   int nvlRank{0};
   int nvlRanks{1};
+  uint32_t pipelineDepth{0};
+  uint32_t maxChannels{0};
+  uint32_t signalsPerLane{0};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;

@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
+#include <c10/core/Allocator.h>
+#include <c10/core/Device.h>
 #include <dlfcn.h>
 
 #include "comms/torchcomms/utils/Logging.hpp"

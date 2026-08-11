@@ -2,9 +2,8 @@
 
 #pragma once
 
-#include <ATen/ATen.h>
-#include <c10/core/Device.h>
-#include <c10/util/intrusive_ptr.h>
+// IWYU pragma: no_include <ATen/ATen.h>
+#include <ATen/core/Tensor.h> // @manual=//caffe2:ATen-core
 #include <chrono>
 #include <optional>
 #include <unordered_map>

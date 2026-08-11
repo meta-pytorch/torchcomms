@@ -6,6 +6,7 @@
 #include <folly/logging/Init.h>
 #include <unistd.h>
 #include <chrono>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <vector>

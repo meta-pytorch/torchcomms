@@ -12,7 +12,7 @@
 #include <gmock/gmock.h>
 #include "TestLogCategory.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -81,6 +81,138 @@ TEST_F(CtranUtilsLogTest, TestCtranLoggerPreservesLastError) {
   EXPECT_THAT(
       meta::comms::logger::getLastCommsError(),
       testing::HasSubstr("Spdlog CTRAN error 42"));
+}
+
+TEST_F(CtranUtilsLogTest, TestCtranErrEvaluatesArgumentsOnce) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  logger.set_level(spdlog::level::err);
+
+  int evaluated = 0;
+  CTRAN_ERR(commInternalError, "CTRAN error {}", ++evaluated);
+
+  EXPECT_EQ(evaluated, 1);
+  EXPECT_THAT(
+      meta::comms::logger::getLastCommsError(),
+      testing::HasSubstr("CTRAN error 1"));
+}
+
+TEST_F(CtranUtilsLogTest, TestCtranLogFirstNPreservesEnabledBudget) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  std::vector<std::string> errors;
+  logger.configure(
+      "CTRAN",
+      []() { return 0; },
+      [&](std::string_view error) { errors.emplace_back(error); },
+      false);
+
+  int evaluated = 0;
+  auto log = [&] {
+    CTRAN_LOG_FIRST_N(ERR, 2, "rate-limited error {}", ++evaluated);
+  };
+
+  logger.set_level(spdlog::level::off);
+  log();
+  log();
+  EXPECT_TRUE(errors.empty());
+  EXPECT_EQ(evaluated, 0);
+
+  logger.set_level(spdlog::level::err);
+  log();
+  log();
+  log();
+  EXPECT_THAT(
+      errors,
+      testing::ElementsAre("rate-limited error 1", "rate-limited error 2"));
+  EXPECT_EQ(evaluated, 2);
+}
+
+TEST_F(CtranUtilsLogTest, TestCtranLogIfPreservesLevelAndSubsystemGates) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  logger.configure("CTRAN", []() { return 0; }, {}, false);
+
+  int filteredConditionEvaluations = 0;
+  int fatalConditionEvaluations = 0;
+  int conditionEvaluations = 0;
+  int argumentEvaluations = 0;
+  auto logIf = [&] {
+    CTRAN_LOG_IF(
+        INFO,
+        ++conditionEvaluations == 1,
+        "CTRAN IF {}",
+        ++argumentEvaluations);
+  };
+
+  testing::internal::CaptureStdout();
+  logger.set_level(spdlog::level::off);
+  CTRAN_LOG_IF(DBG, ++filteredConditionEvaluations, "FILTERED DBG");
+  CTRAN_LOG_IF(WARN, ++filteredConditionEvaluations, "FILTERED WARN");
+  CTRAN_LOG_IF(ERR, ++filteredConditionEvaluations, "FILTERED ERR");
+  CTRAN_LOG_IF(CRITICAL, ++filteredConditionEvaluations, "FILTERED CRITICAL");
+  CTRAN_LOG_IF(FATAL, ++fatalConditionEvaluations == 0, "DISABLED FATAL");
+  logger.set_level(spdlog::level::warn);
+  logIf();
+  logger.set_level(spdlog::level::info);
+  logIf();
+  logIf();
+
+  meta::comms::logger::setSubSystemMask(meta::comms::logger::SubSystem::ENV);
+  CTRAN_LOG_SUBSYS(INFO, ENV, "CTRAN ENABLED SUBSYSTEM");
+  CTRAN_LOG_SUBSYS(INFO, COLL, "CTRAN DISABLED SUBSYSTEM");
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_EQ(filteredConditionEvaluations, 0);
+  EXPECT_EQ(fatalConditionEvaluations, 1);
+  EXPECT_EQ(conditionEvaluations, 2);
+  EXPECT_EQ(argumentEvaluations, 1);
+  EXPECT_THAT(output, testing::HasSubstr("CTRAN IF 1"));
+  EXPECT_THAT(output, testing::HasSubstr("CTRAN ENABLED SUBSYSTEM"));
+  EXPECT_THAT(
+      output, testing::Not(testing::HasSubstr("CTRAN DISABLED SUBSYSTEM")));
+}
+
+TEST_F(CtranUtilsLogTest, TestCtranLogEveryMsPreservesEnabledBudget) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  std::vector<std::string> errors;
+  logger.configure(
+      "CTRAN",
+      []() { return 0; },
+      [&](std::string_view error) { errors.emplace_back(error); },
+      false);
+
+  int evaluated = 0;
+  auto log = [&] {
+    CTRAN_LOG_EVERY_MS(ERR, 60'000, "rate-limited error {}", ++evaluated);
+  };
+
+  logger.set_level(spdlog::level::off);
+  log();
+  logger.set_level(spdlog::level::err);
+  log();
+  log();
+
+  EXPECT_THAT(errors, testing::ElementsAre("rate-limited error 1"));
+  EXPECT_EQ(evaluated, 1);
+}
+
+TEST_F(CtranUtilsLogTest, TestCtranTraceFormat) {
+  auto traceGuard = EnvRAII(NCCL_CTRAN_ENABLE_TRACE_LOG, true);
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  logger.configure("CTRAN", []() { return 0; }, {}, false);
+  logger.set_level(spdlog::level::info);
+  meta::comms::logger::setSubSystemMask(meta::comms::logger::SubSystem::COLL);
+
+  testing::internal::CaptureStdout();
+  CTRAN_LOG_TRACE(COLL, "trace value {}", 42);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_THAT(output, testing::HasSubstr("[TRACE] TestBody: trace value 42"));
 }
 
 TEST_F(CtranUtilsLogTest, TestCLOGF_IF) {

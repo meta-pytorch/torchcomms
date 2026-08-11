@@ -5,12 +5,12 @@
 #include "info.h"
 #include "nccl.h"
 
+#include "meta/NcclxLogger.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 #include "meta/wrapper/MetaFactory.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/utils/ExtUtils.h"
-#include "folly/logging/xlog.h"
 
 // For any nccl version that supports ncclReduceScatterQuantize, it should
 // define NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED in the nccl.h header file.
@@ -23,7 +23,7 @@ static ncclResult_t validateReduceScatterQuantizeArgs(
     ncclRedOp_t op,
     uint64_t* seedPtr) {
   if (inputType != ncclFloat32) {
-    XLOGF(
+    NCCLX_LOG(
         ERR,
         "ncclReduceScatterQuantize: Unsupported input type: {}, input type must be FP32",
         ncclDatatypeToString(inputType));
@@ -31,7 +31,7 @@ static ncclResult_t validateReduceScatterQuantizeArgs(
   }
 
   if (transportType != ncclBfloat16) {
-    XLOGF(
+    NCCLX_LOG(
         ERR,
         "ncclReduceScatterQuantize: Unsupported transport type: {}, transport type must be BF16",
         ncclDatatypeToString(transportType));
@@ -39,7 +39,7 @@ static ncclResult_t validateReduceScatterQuantizeArgs(
   }
 
   if (op != ncclSum && op != ncclAvg) {
-    XLOGF(
+    NCCLX_LOG(
         ERR,
         "ncclReduceScatterQuantize: Unsupported reduction operation: {}",
         getRedOpStr(op));
@@ -59,11 +59,12 @@ static ncclResult_t validateReduceScatterQuantizeArgs(
         (err == cudaSuccess) && (attr.memoryType == cudaMemoryTypeDevice);
 #endif
     if (!isDevicePtr) {
-      XLOGF(ERR, "ncclReduceScatterQuantize: seedPtr must point to GPU memory");
+      NCCLX_LOG(
+          ERR, "ncclReduceScatterQuantize: seedPtr must point to GPU memory");
       return ncclInvalidArgument;
     }
   } else {
-    XLOGF(ERR, "ncclReduceScatterQuantize: seedPtr is null");
+    NCCLX_LOG(ERR, "ncclReduceScatterQuantize: seedPtr is null");
     return ncclInvalidArgument;
   }
 

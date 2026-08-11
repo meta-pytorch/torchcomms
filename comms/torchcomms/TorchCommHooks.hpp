@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <ATen/ATen.h>
+// IWYU pragma: no_include <ATen/ATen.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
@@ -13,6 +13,10 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+namespace at {
+class Tensor;
+} // namespace at
 
 namespace torch::comms {
 

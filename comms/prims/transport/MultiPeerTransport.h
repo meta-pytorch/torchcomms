@@ -19,6 +19,7 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/memory/NvlMemExchange.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
@@ -28,6 +29,10 @@
 #include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
+
+namespace comms::fault_tolerance {
+class Abort;
+} // namespace comms::fault_tolerance
 
 namespace comms::prims {
 
@@ -76,13 +81,17 @@ class MultiPeerTransport {
  public:
   /// When topo is provided, bypasses TopologyDiscovery and uses the
   /// pre-computed topology directly (primarily for unit testing).
+  ///
+  /// @throws std::runtime_error on topology discovery, transport construction,
+  /// or enabled FT abort-device handle creation failure.
   MultiPeerTransport(
       int myRank,
       int nRanks,
       int deviceId,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultiPeerTransportConfig& config,
-      std::optional<TopologyResult> topo = std::nullopt);
+      std::optional<TopologyResult> topo = std::nullopt,
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr);
 
   ~MultiPeerTransport();
 
@@ -237,6 +246,8 @@ class MultiPeerTransport {
    * Use with lazy mode for DeviceWindow or direct Transport[] access.
    *
    * @param peers List of peer ranks to materialize
+   * @throws std::runtime_error if called before exchange() or if peer
+   * materialization fails.
    */
   MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
 
@@ -325,6 +336,8 @@ class MultiPeerTransport {
   const int nRanks_;
   const int deviceId_;
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+  std::shared_ptr<comms::fault_tolerance::Abort> abort_;
+  comms::fault_tolerance::AbortDevice abortDevice_;
 
   // --- Topology (populated in constructor) ---
   std::vector<int> nvlPeerRanks_;

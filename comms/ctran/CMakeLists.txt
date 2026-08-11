@@ -67,6 +67,7 @@ target_include_directories(ctran PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
+    ${CUDA_INCLUDE_DIRS}/cccl
 )
 
 # ctran is the primary prims consumer: enabling this activates the (otherwise

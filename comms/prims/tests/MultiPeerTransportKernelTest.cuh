@@ -26,6 +26,19 @@ void test_device_handle_type_map(
     int blockSize);
 
 /**
+ * Verify that the abort handle embedded in MultiPeerDeviceHandle is visible on
+ * device.
+ *
+ * @param handle Device handle to test.
+ * @param observed GPU int set to 1 when the handle observes an abort.
+ * @param observedReason GPU int set to the observed AbortReason value.
+ */
+void test_device_handle_abort(
+    MultiPeerDeviceHandle handle,
+    int* observed,
+    int* observedReason);
+
+/**
  * Test self-transport put via MultiPeerDeviceHandle.
  *
  * @param handle Device handle.

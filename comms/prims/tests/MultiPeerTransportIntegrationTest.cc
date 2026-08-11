@@ -6,6 +6,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/tests/MultiPeerTransportKernelTest.cuh"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/MultiPeerTransport.h"
@@ -29,7 +30,8 @@ class MultiPeerIntegrationTestFixture : public MpiBaseTestFixture {
     CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
-  std::unique_ptr<MultiPeerTransport> create_and_exchange() {
+  std::unique_ptr<MultiPeerTransport> create_and_exchange(
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
@@ -45,7 +47,13 @@ class MultiPeerIntegrationTestFixture : public MpiBaseTestFixture {
     };
     auto bootstrap = std::make_shared<MpiBootstrap>();
     auto states = std::make_unique<MultiPeerTransport>(
-        globalRank, numRanks, localRank, bootstrap, config);
+        globalRank,
+        numRanks,
+        localRank,
+        bootstrap,
+        config,
+        std::nullopt,
+        std::move(abort));
     states->exchange();
     return states;
   }
@@ -89,6 +97,39 @@ TEST_F(MultiPeerIntegrationTestFixture, DeviceHandleTypeMap) {
   }
 
   CUDACHECK_TEST(cudaFree(output_d));
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerIntegrationTestFixture, DeviceHandleAbortObservesHostAbort) {
+  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  auto states = create_and_exchange(abort);
+  auto handle = states->get_device_handle(states->ib_peer_ranks());
+
+  abort->setAbort();
+
+  int* observed_d = nullptr;
+  int* observedReason_d = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&observed_d, sizeof(int)));
+  CUDACHECK_TEST(cudaMalloc(&observedReason_d, sizeof(int)));
+  CUDACHECK_TEST(cudaMemset(observed_d, 0, sizeof(int)));
+  CUDACHECK_TEST(cudaMemset(observedReason_d, 0, sizeof(int)));
+
+  test::test_device_handle_abort(handle, observed_d, observedReason_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int observed = 0;
+  int observedReason = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&observed, observed_d, sizeof(int), cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      &observedReason, observedReason_d, sizeof(int), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(observed, 1);
+  EXPECT_EQ(
+      observedReason,
+      static_cast<int>(comms::fault_tolerance::AbortReason::ABORTED));
+
+  CUDACHECK_TEST(cudaFree(observed_d));
+  CUDACHECK_TEST(cudaFree(observedReason_d));
   MPI_Barrier(MPI_COMM_WORLD);
 }
 

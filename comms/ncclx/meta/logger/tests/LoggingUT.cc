@@ -14,6 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "meta/NcclxLogUtils.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
@@ -134,12 +135,20 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
   EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg2));
   EXPECT_THAT(lastError, ::testing::HasSubstr("NCCL Stack trace:"));
 
+  constexpr std::string_view spdlogErrorMsg = "SPDLOG ERROR MESSAGE";
+  NCCLX_LOG(ERR, "{}", spdlogErrorMsg);
+  meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+      .flush();
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::HasSubstr(spdlogErrorMsg));
+  EXPECT_THAT(lastError, ::testing::HasSubstr("NCCL Stack trace:"));
+
   // Log info and warn - last error should remain unchanged
   INFO(NCCL_ALL, "Another info");
   WARN("Another warn");
   sleep(1);
   lastError = meta::comms::logger::getLastCommsError();
-  EXPECT_THAT(lastError, ::testing::HasSubstr(errorMsg2));
+  EXPECT_THAT(lastError, ::testing::HasSubstr(spdlogErrorMsg));
 
   finishLogging();
 }
@@ -203,6 +212,11 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
   ncclResetDebugInit();
 
   initLogging();
+  auto& spdlogLogger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_TRUE(spdlogLogger.should_log(spdlog::level::err));
+  EXPECT_TRUE(spdlogLogger.should_log(spdlog::level::warn));
+  EXPECT_FALSE(spdlogLogger.should_log(spdlog::level::info));
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
@@ -226,12 +240,95 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
   finishLogging();
 }
 
+TEST_F(NcclLoggerTest, SpdlogFirstNDoesNotConsumeWhileDisabled) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  auto logFirstN = [](int value) {
+    NCCLX_LOG_FIRST_N(WARN, 2, "NCCLX FIRST N {}", value);
+  };
+
+  testing::internal::CaptureStdout();
+  logger.set_level(spdlog::level::err);
+  logFirstN(0);
+  logFirstN(1);
+  logger.set_level(spdlog::level::warn);
+  logFirstN(2);
+  logFirstN(3);
+  logFirstN(4);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 0")));
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 1")));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 2"));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX FIRST N 3"));
+  EXPECT_THAT(output, testing::Not(testing::HasSubstr("NCCLX FIRST N 4")));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, SpdlogIfPreservesLevelAndSubsystemGates) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  int filteredConditionEvaluations = 0;
+  int fatalConditionEvaluations = 0;
+  int conditionEvaluations = 0;
+  int argumentEvaluations = 0;
+  auto logIf = [&] {
+    NCCLX_LOG_IF(
+        INFO,
+        ++conditionEvaluations == 1,
+        "NCCLX IF {}",
+        ++argumentEvaluations);
+  };
+
+  testing::internal::CaptureStdout();
+  logger.set_level(spdlog::level::off);
+  NCCLX_LOG_IF(DBG, ++filteredConditionEvaluations, "FILTERED DBG");
+  NCCLX_LOG_IF(WARN, ++filteredConditionEvaluations, "FILTERED WARN");
+  NCCLX_LOG_IF(ERR, ++filteredConditionEvaluations, "FILTERED ERR");
+  NCCLX_LOG_IF(CRITICAL, ++filteredConditionEvaluations, "FILTERED CRITICAL");
+  NCCLX_LOG_IF(FATAL, ++fatalConditionEvaluations == 0, "DISABLED FATAL");
+  logger.set_level(spdlog::level::warn);
+  logIf();
+  logger.set_level(spdlog::level::info);
+  logIf();
+  logIf();
+
+  meta::comms::logger::setSubSystemMask(meta::comms::logger::SubSystem::ENV);
+  NCCLX_LOG_SUBSYS(INFO, ENV, "NCCLX ENABLED SUBSYSTEM");
+  NCCLX_LOG_SUBSYS(INFO, COLL, "NCCLX DISABLED SUBSYSTEM");
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_EQ(filteredConditionEvaluations, 0);
+  EXPECT_EQ(fatalConditionEvaluations, 1);
+  EXPECT_EQ(conditionEvaluations, 2);
+  EXPECT_EQ(argumentEvaluations, 1);
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX IF 1"));
+  EXPECT_THAT(output, testing::HasSubstr("NCCLX ENABLED SUBSYSTEM"));
+  EXPECT_THAT(
+      output, testing::Not(testing::HasSubstr("NCCLX DISABLED SUBSYSTEM")));
+
+  finishLogging();
+}
+
 TEST_F(NcclLoggerTest, InfoLogTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
   setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
+  EXPECT_FALSE(
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+          .should_log(spdlog::level::debug));
   std::string TestStr = "TESTING";
 
   testing::internal::CaptureStdout();
@@ -251,6 +348,29 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   sleep(1);
   output = testing::internal::GetCapturedStdout();
   checkStringHasLogging(output, TestStr, "INFO");
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, SpdlogDebugMatchesLegacyDbg2) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+
+  initLogging();
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_TRUE(logger.should_log(spdlog::level::debug));
+
+  constexpr std::string_view legacyMessage = "LEGACY DBG2 MESSAGE";
+  constexpr std::string_view spdlogMessage = "SPDLOG DEBUG MESSAGE";
+  testing::internal::CaptureStdout();
+  XLOGF(DBG2, "{}", legacyMessage);
+  NCCLX_LOG(DBG, "{}", spdlogMessage);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, legacyMessage, "VERBOSE");
+  checkStringHasLogging(output, spdlogMessage, "VERBOSE");
 
   finishLogging();
 }
@@ -340,6 +460,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
 
   constexpr std::string_view TestStr = "RAW TESTING";
   constexpr std::string_view TestStr2 = "TESTING";
+  constexpr std::string_view SpdlogTestStr = "SPDLOG TESTING";
 
   testing::internal::CaptureStderr();
 
@@ -350,6 +471,14 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   INFO(NCCL_ALL, "%s", TestStr2.data());
   WARN("%s", TestStr2.data());
   ERR(ncclInternalError, "%s", TestStr2.data());
+
+  NCCLX_LOG(INFO, "{}", SpdlogTestStr);
+  NCCLX_LOG(WARN, "{}", SpdlogTestStr);
+  NCCLX_LOG(ERR, "{}", SpdlogTestStr);
+  auto& spdlogLogger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  EXPECT_EQ(spdlogLogger.usesAsyncLogging(), NCCL_DEBUG_LOGGING_ASYNC);
+  spdlogLogger.flush();
 
   auto stderrOutput = testing::internal::GetCapturedStderr();
 
@@ -363,6 +492,9 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
     EXPECT_THAT(
         fileContents,
         testing::HasSubstr(fmt::format("NCCL {} {}", level, TestStr2)));
+    EXPECT_THAT(
+        fileContents,
+        testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
     if (level != "INFO") {
       // When logging to file, we should also log to stderr for WARN and ERROR
       EXPECT_THAT(
@@ -371,6 +503,9 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
       EXPECT_THAT(
           stderrOutput,
           testing::HasSubstr(fmt::format("NCCL {} {}", level, TestStr2)));
+      EXPECT_THAT(
+          stderrOutput,
+          testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
     }
   }
 }
