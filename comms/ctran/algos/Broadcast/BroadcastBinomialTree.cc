@@ -8,8 +8,8 @@
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
 
@@ -253,7 +253,7 @@ static commResult_t impl(
       if (waitNotifyMap.contains(parent)) {
         elem = waitNotifyMap[parent];
       } else {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "Expecting NVLink waitNotify for parent {}. Something bad probably happened.",
             parent);
@@ -303,7 +303,7 @@ static commResult_t impl(
         if (putNotifyMap.contains(peer)) {
           elem = putNotifyMap[peer];
         } else {
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "Expecting NVLink putNotify for peer {}. Something bad probably happened.",
               peer);
