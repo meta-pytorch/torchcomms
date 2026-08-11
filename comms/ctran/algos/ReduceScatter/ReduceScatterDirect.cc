@@ -7,7 +7,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 CTRAN_DATATYPE_REDOP_TO_FUNC_MAPPER(
     reduceScatterKerns,
@@ -184,7 +184,7 @@ commResult_t ctranReduceScatterDirect(
       stream);
 
   if (comm->statex_->nNodes() > 1) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "ctranReduceScatterDirect supports only single node, but nNodes={}",
         comm->statex_->nNodes());
