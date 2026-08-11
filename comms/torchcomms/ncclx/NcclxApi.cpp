@@ -266,7 +266,7 @@ ncclResult_t DefaultNcclxApi::allToAll(
     ncclComm_t comm,
     cudaStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ncclAllToAll(sendbuff, recvbuff, count, datatype, comm, stream);
+  return ncclAlltoAll(sendbuff, recvbuff, count, datatype, comm, stream);
 }
 
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
