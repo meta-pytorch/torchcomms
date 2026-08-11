@@ -25,11 +25,11 @@
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 // Key for kernel function lookup: (datatype, redOp, enableBidirAg, unpack)
 using KernelFuncKey = std::tuple<commDataType_t, commRedOp_t, bool, bool>;
@@ -80,7 +80,7 @@ commResult_t getGpuArch(ctran::allreduce::ring::GpuArch* arch) {
   FB_CUDACHECK(cudaGetDevice(&cudaDev));
   auto cudaArch = ctran::utils::getCudaArch(cudaDev);
   if (!cudaArch.hasValue()) {
-    CERR(commUnhandledCudaError, "{}", cudaArch.error());
+    CTRAN_ERR(commUnhandledCudaError, "{}", cudaArch.error());
     return commUnhandledCudaError;
   }
   if (cudaArch.value() < 1000) {
@@ -175,7 +175,7 @@ inline bool progressSendCheckSendBuf(const AlgoContext& algoCtx) {
 
   bool done = algoCtx.opRounds[Op::kSendTrans].done > prevRound;
   if (done) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "{} waited tmpChunkId {} algoCtx.numChunks {} prevRound {}",
         roundLogPrefix<Op::kSendCopy>(round, step, algoCtx),
@@ -230,7 +230,7 @@ inline bool progressSendCheckRemRecvBuf(
         resource.comm->logMetaData_);
     if (isComplete) {
       int tmpChunkId = getTmpChunkId(algoCtx, round);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "{} done tmpChunkId {}",
           roundLogPrefix<Op::kSendTrans>(round, step, algoCtx),
@@ -260,7 +260,7 @@ inline void progressSendCheckTrans(
           resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
           resource.comm->logMetaData_);
       if (isComplete) {
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "progressSendCheckTrans {} done",
             roundLogPrefix<Op::kSendTrans>(r, step, algoCtx));
@@ -276,7 +276,7 @@ inline void progressSendPostCopyKern(
     const AlgoContext& algoCtx) {
   int round = algoCtx.opRounds[Op::kSendCopy].post;
   int step = algoCtx.opRounds[Op::kSendCopy].postStep.step;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL, "{} posted", roundLogPrefix<Op::kSendCopy>(round, step, algoCtx));
   resource.sendCopySync->post(round);
 }
@@ -292,7 +292,7 @@ inline bool progressSendCheckCopyKern(
   bool done = resource.sendCopySync->isComplete(round);
 
   if (done) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "{} done: tmpChunkId {}",
         roundLogPrefix<Op::kSendCopy>(round, step, algoCtx),
@@ -342,7 +342,7 @@ inline void progressSendPostTrans(
       resource.comm->logMetaData_);
   dataSResps.at(round).reset(req);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "{} from tmpSendBuf {} to tmpRemoteRecvBuf {} shardId {} shardDataChunkId {} dataOffsetElem {} tmpChunkId {} numel {}",
       roundLogPrefix<Op::kSendTrans>(round, step, algoCtx),
@@ -373,7 +373,7 @@ inline bool progressRecvCheckTrans(
       resource.comm->ctran_->mapper->checkNotify(args.leftNotify.get(), &done),
       resource.comm->logMetaData_);
   if (done) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "{} to tmpRecvBuf {} shardId {} shardDataChunkId {} dataOffsetElem {} tmpChunkId {}",
         roundLogPrefix<Op::kRecvTrans>(round, step, algoCtx),
@@ -432,7 +432,7 @@ inline bool progressRecvCheckFlush(
       resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
       resource.comm->logMetaData_);
   if (isComplete) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "{} done", roundLogPrefix<Op::kRecvFlush>(round, step, algoCtx));
   }
   return isComplete;
@@ -455,7 +455,7 @@ inline bool progressRecvCheckSendBuf(const AlgoContext& algoCtx) {
 
   bool done = algoCtx.opRounds[Op::kSendTrans].done > prevRound;
   if (done) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "{} waited tmpChunkId {} algoCtx.numChunks {} prevRound {}",
         roundLogPrefix<Op::kRecvRedCopy>(round, step, algoCtx),
@@ -473,7 +473,7 @@ inline void progressRecvPostRedCopyKern(
   int round = algoCtx.opRounds[Op::kRecvRedCopy].post;
   int step = algoCtx.opRounds[Op::kRecvRedCopy].postStep.step;
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "{} posted",
       roundLogPrefix<Op::kRecvRedCopy>(round, step, algoCtx));
@@ -494,7 +494,7 @@ inline bool progressRecvCheckRedCopyKern(
     int fwdRound = isRecvFwd_ ? getRecvFwdSendRound(algoCtx, round) : -1;
     int tmpFwdChunkId = isRecvFwd_ ? getTmpChunkId(algoCtx, fwdRound) : -1;
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "{} done: tmpChunkId {} fwdRound {} tmpFwdChunkId {} ",
         roundLogPrefix<Op::kRecvRedCopy>(round, opStep.step, algoCtx),
@@ -514,7 +514,7 @@ inline void progressRecvPostRecvBuf(
   int step = algoCtx.opRounds[Op::kRecvRedCopy].doneStep.step;
   int tmpChunkId = getTmpChunkId(algoCtx, round);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "{} posted tmpChunkId {}",
       roundLogPrefix<Op::kRecvRedCopy>(round, step, algoCtx),
@@ -1116,7 +1116,7 @@ static commResult_t impl(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         ALGO_CXT_LOG_FMT_HOST,
         ALGO_CXT_LOG_FIELDS(algoCtx, args.numBlocks));
@@ -1320,7 +1320,7 @@ commResult_t ctranAllReduceRing(
         count,
         count * typeSize,
         typeSize);
-    CERR(commInvalidArgument, "{}", errorMsg);
+    CTRAN_ERR(commInvalidArgument, "{}", errorMsg);
     throw ctran::utils::Exception(errorMsg, commInvalidArgument);
   }
 
