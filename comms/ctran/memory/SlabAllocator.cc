@@ -5,6 +5,7 @@
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
@@ -83,7 +84,7 @@ commResult_t SlabAllocator::allocateMem(
     if (newSlabSize != nullptr) {
       *newSlabSize = slabSize;
     }
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "{}: allocate a slab with size {} (granularity_={}), freeSize_={}",
