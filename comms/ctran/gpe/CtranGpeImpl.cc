@@ -19,6 +19,7 @@
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
@@ -27,7 +28,6 @@
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
 using namespace ncclx::colltrace;
@@ -100,7 +100,7 @@ CtranGpeCmd::~CtranGpeCmd() {
 void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   CtranGpeCmd* cmd = reinterpret_cast<CtranGpeCmd*>(data);
   if (!cmd->persistent) {
-    CLOGF(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
+    CTRAN_LOG(WARN, "CTranGPE: cmd desctructor called for non-persistent cmd");
   }
   // Erase the registry entry BEFORE waiting on inFlight: erase() and the
   // worker's lookupAndFire() are mutually exclusive under the registry lock, so
@@ -135,7 +135,7 @@ commResult_t CtranGpe::Impl::submit(
 
   // Error checking before GPE cmd and kernel submission
   if (kernelConfig.args.devState_d == nullptr) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "COMM internally passed invalid devState_d (nullptr) to kernel {}",
         kernelTypeToName[kernelConfig.type]);
@@ -303,7 +303,7 @@ commResult_t CtranGpe::Impl::submit(
           auto result =
               comm->ctran_->mapper->teardownUnpackConsumer(unpackPool);
           if (result != commSuccess) {
-            CLOGF_SUBSYS(
+            CTRAN_LOG_SUBSYS(
                 WARN,
                 COLL,
                 "CTRAN-GPE: failed to teardown graph unpack pool {}: result {}",
@@ -434,7 +434,7 @@ commResult_t CtranGpe::Impl::submit(
     launchConfig.hStream = launchStream;
     CUfunction cuFn;
     FB_CUDACHECKGOTO(cudaGetFuncBySymbol(&cuFn, ncclKernel), res, fail);
-    CLOGF_TRACE(COLL, "CTranGPE: submit {}", kernelConfig.toString());
+    CTRAN_LOG_TRACE(COLL, "CTranGPE: submit {}", kernelConfig.toString());
 
     if (colltraceHandle != nullptr) {
       colltraceHandle->trigger(
@@ -451,7 +451,7 @@ commResult_t CtranGpe::Impl::submit(
     dim3 grid = {kernelConfig.numBlocks, 1, 1};
     dim3 blocks = {kernelConfig.numThreads, 1, 1};
 
-    CLOGF_TRACE(COLL, "CTranGPE: submit {}", kernelConfig.toString());
+    CTRAN_LOG_TRACE(COLL, "CTranGPE: submit {}", kernelConfig.toString());
 
     if (colltraceHandle != nullptr) {
       colltraceHandle->trigger(
@@ -503,7 +503,7 @@ commResult_t CtranGpe::Impl::submit(
           launchStream);
       if (res != cudaSuccess && checksumItem != nullptr) {
         // Do not return error if the internal checksum fails
-        CLOGF(WARN, "CTranGPE: Failed to launch checksum kernel");
+        CTRAN_LOG(WARN, "CTranGPE: Failed to launch checksum kernel");
         checksumItem->reset();
       } else if (colltraceHandle != nullptr) {
         folly::dynamic dynamicObj = folly::dynamic::object();
@@ -521,7 +521,7 @@ commResult_t CtranGpe::Impl::submit(
     colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "CTRAN-GPE: Launched kernelType {} (opGroup size {}) with kernelFlag={}",
@@ -680,8 +680,8 @@ void CtranGpe::Impl::terminate() {
     if (now >= nextLog) {
       const auto elapsedSec =
           std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-      CLOGF_SUBSYS(
-          WARNING,
+      CTRAN_LOG_SUBSYS(
+          WARN,
           INIT,
           "terminate() spin-wait: pools still draining after {}s on rank {} commHash {:x}"
           " -- kernelFlag {}/{} kernelElem {}/{} gpeKernelSync {}/{}."
@@ -701,7 +701,7 @@ void CtranGpe::Impl::terminate() {
     std::this_thread::yield();
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTranGPE thread joined on rank {} commHash {:x} commDesc {}",
@@ -765,7 +765,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           }
 
           const std::string_view phase = isTerminateCmd ? " now TERMINATE" : "";
-          CLOGF(
+          CTRAN_LOG(
               ERR,
               "Communicator aborted ({}){} on rank {} commHash {:x} {}",
               reason,
@@ -789,7 +789,7 @@ void CtranGpe::Impl::gpeThreadFn() {
             pending->inFlight.fetch_sub(1, std::memory_order_release);
           }
         }
-        CLOGF_SUBSYS(
+        CTRAN_LOG_SUBSYS(
             INFO,
             INIT,
             "[COMM THREAD] CTranGPE thread terminated on rank {} commHash {:x} commDesc {}",
@@ -865,7 +865,7 @@ void CtranGpe::Impl::gpeThreadFn() {
           // Comm already aborted — skip collective to prevent
           // progressInternal() from accessing stale VC queue entries
           // left by a previously aborted collective (double-complete bug).
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "Communicator aborted, skipping collective (opType={}, opCount={}) on rank {} commHash {:x}",
               cmd->coll.opGroup.empty()
@@ -1005,7 +1005,7 @@ void KernelElem::unuse() {
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-GPE: elem {} set to unuse with ngroups {}",
       (void*)this,
@@ -1017,7 +1017,7 @@ void KernelElem::setStatus(KernelElem::ElemStatus s) {
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = s;
   }
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-GPE: elem {} set to {} with ngroups {}",
       (void*)this,
@@ -1055,7 +1055,7 @@ void KernelElem::free() {
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::RESET;
   }
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-GPE: elem {} freed with ngroups {}",
       (void*)this,
@@ -1072,7 +1072,7 @@ bool KernelElem::isFree() {
     allFree &= (this->status[i] == KernelElem::ElemStatus::RESET);
   }
   if (allFree) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-GPE: elem {} isFree = true with ngroups {}",
         (void*)this,
@@ -1093,7 +1093,7 @@ void KernelElem::post(int groupId) {
     for (int i = 0; i < this->ngroups; i++) {
       this->status[i] = KernelElem::ElemStatus::POSTED;
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-GPE: elem {} posted with ngroups {}",
         (void*)this,
@@ -1103,7 +1103,7 @@ void KernelElem::post(int groupId) {
 
     // Ring doorbell to each thread block on kernel side
     this->status[groupId] = KernelElem::ElemStatus::POSTED;
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-GPE: elem {} posted with groupId {}",
         (void*)this,
@@ -1120,7 +1120,7 @@ void KernelElem::revoke() {
   for (int i = 0; i < this->ngroups; i++) {
     this->status[i] = KernelElem::ElemStatus::REVOKED;
   }
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-GPE: elem {} revoked with ngroups {}",
       (void*)this,
@@ -1141,7 +1141,7 @@ bool KernelElem::isComplete(int groupId) {
     complete = (this->status[groupId] == KernelElem::ElemStatus::DONE);
   }
   if (complete) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-GPE: elem {} completed at step {}",
         (void*)this,
@@ -1185,7 +1185,7 @@ KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
 KernelElemPool::~KernelElemPool() {
   this->reclaim();
   if (this->inuseWorkElems_.size()) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-GPE: Internal KernelElem pool has {} inuse elements",
         this->inuseWorkElems_.size());
@@ -1216,7 +1216,7 @@ size_t KernelElemPool::capacity() {
 
 KernelElem* KernelElemPool::pop(int ngroups) {
   if (ngroups > CTRAN_ALGO_MAX_THREAD_BLOCKS) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-GPE: ngroups {} exceeds max thread blocks {}",
         ngroups,
@@ -1231,7 +1231,7 @@ KernelElem* KernelElemPool::pop(int ngroups) {
     workElem->status[i] = KernelElem::ElemStatus::INUSE;
   }
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-GPE: elem {} popped with ngroups {}",
       (void*)workElem,
@@ -1290,7 +1290,7 @@ std::optional<ChecksumArgs> ctranFillChecksumArgs(
       return ChecksumHandler<KT::RECV>::ctranFillChecksumArgs(
           kernelConfig, checksumItem, comm);
     default:
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-GPE: Unsupported kernel type {} for checksum",
           kernelConfig.type);
