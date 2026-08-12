@@ -634,12 +634,19 @@ def _patch_var_getattr() -> None:
     """
     from torch._dynamo.source import AttrSource
 
-    # PyTorch 2.14+ renamed var_getattr to getattro_impl
-    # (pytorch/pytorch#186013); patch whichever the installed version has.
-    if hasattr(TorchScriptObjectVariable, "getattro_impl"):
-        getattr_method_name = "getattro_impl"
-    else:
-        getattr_method_name = "var_getattr"
+    # PyTorch renamed this hook twice: var_getattr -> getattro_impl
+    # (pytorch/pytorch#186013) -> tp_getattro_impl; patch whichever the
+    # installed version has.
+    getattr_method_name: str | None = None
+    for candidate in ("tp_getattro_impl", "getattro_impl", "var_getattr"):
+        if hasattr(TorchScriptObjectVariable, candidate):
+            getattr_method_name = candidate
+            break
+    if getattr_method_name is None:
+        raise RuntimeError(
+            "torchcomms: no known dynamo attribute hook on "
+            f"{TorchScriptObjectVariable.__name__}; unsupported PyTorch version"
+        )
 
     # Store the original method
     original_var_getattr = getattr(TorchScriptObjectVariable, getattr_method_name)
