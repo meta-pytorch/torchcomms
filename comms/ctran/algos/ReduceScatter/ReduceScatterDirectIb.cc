@@ -14,13 +14,13 @@
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterDirectIbConfig.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/prims/collectives/ReduceScatterDirectIbLauncher.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 static const auto myAlgo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
 
@@ -113,7 +113,7 @@ commResult_t validateDirectIbReduceScatter(
   const int nRanks = statex->nRanks();
 
   if (datatype != commFloat32) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} supports commFloat32 only; got {}",
         reduceScatterAlgoName(myAlgo),
@@ -121,7 +121,7 @@ commResult_t validateDirectIbReduceScatter(
     return commInvalidArgument;
   }
   if (redOp != commSum) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} supports commSum only; got {}",
         reduceScatterAlgoName(myAlgo),
@@ -129,7 +129,7 @@ commResult_t validateDirectIbReduceScatter(
     return commInvalidArgument;
   }
   if (nRanks <= 1) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} requires multiple ranks, got nRanks={}",
         reduceScatterAlgoName(myAlgo),
@@ -137,7 +137,7 @@ commResult_t validateDirectIbReduceScatter(
     return commInvalidArgument;
   }
   if (nRanks > comms::prims::kDirectReduceScatterIbMaxRanks) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} nRanks={} exceeds max {}",
         reduceScatterAlgoName(myAlgo),
@@ -146,14 +146,14 @@ commResult_t validateDirectIbReduceScatter(
     return commInvalidArgument;
   }
   if (!comm->multiPeerTransport_) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} requires MultiPeerTransport (NCCL_CTRAN_USE_PIPES=1)",
         reduceScatterAlgoName(myAlgo));
     return commInvalidArgument;
   }
   if (!comm->primsOrderedWorkStreamGuard_) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "ReduceScatter {} requires the PRIMS ordered work stream guard",
         reduceScatterAlgoName(myAlgo));
@@ -164,7 +164,7 @@ commResult_t validateDirectIbReduceScatter(
   size_t totalBytes = 0;
   if (!reduceScatterByteSizes(
           recvcount, nRanks, datatype, recvBytes, totalBytes)) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} byte size overflows size_t for recvcount={} nRanks={}",
         reduceScatterAlgoName(myAlgo),
@@ -178,7 +178,7 @@ commResult_t validateDirectIbReduceScatter(
   uintptr_t recvEnd = 0;
   if (!checkedAdd(sendAddr, totalBytes, sendEnd) ||
       !checkedAdd(recvAddr, recvBytes, recvEnd)) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} buffer range overflows address space",
         reduceScatterAlgoName(myAlgo));
@@ -187,7 +187,7 @@ commResult_t validateDirectIbReduceScatter(
   const bool inPlace = isExactReduceScatterInPlace(
       sendAddr, recvAddr, recvBytes, statex->rank());
   if (!inPlace && rangesOverlap(sendAddr, totalBytes, recvAddr, recvBytes)) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} supports out-of-place buffers or exact ReduceScatter in-place aliasing only",
         reduceScatterAlgoName(myAlgo));
@@ -198,14 +198,14 @@ commResult_t validateDirectIbReduceScatter(
   if (!ctranReduceScatterDirectIbSupport(comm, &unsupportedPeer)) {
     if (unsupportedPeer >= 0) {
       const auto* mpt = comm->multiPeerTransport_.get();
-      CERR(
+      CTRAN_ERR(
           commInvalidArgument,
           "ReduceScatter {} requires IBGDA transport for peer {}, has_ibgda={}",
           reduceScatterAlgoName(myAlgo),
           unsupportedPeer,
           mpt->has_ibgda(unsupportedPeer));
     } else {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "ReduceScatter {} is unsupported for this communicator",
           reduceScatterAlgoName(myAlgo));
@@ -252,7 +252,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
   size_t totalBytes = 0;
   if (!reduceScatterByteSizes(
           recvcount, nRanks, datatype, recvBytes, totalBytes)) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "ReduceScatter {} byte size overflows size_t for recvcount={} nRanks={}",
         reduceScatterAlgoName(myAlgo),
@@ -333,7 +333,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
     } catch (...) {
       const auto releaseResult = orderedScope.release();
       if (releaseResult != commSuccess) {
-        CLOGF(
+        CTRAN_LOG(
             ERR,
             "ReduceScatter {} ordering release also failed: {}",
             reduceScatterAlgoName(myAlgo),
@@ -345,14 +345,14 @@ static commResult_t ctranReduceScatterDirectIbImpl(
     FB_COMMCHECK(orderedScope.release());
     FB_CUDACHECK(launchError);
   } catch (const std::exception& e) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "ReduceScatter {} failed: {}",
         reduceScatterAlgoName(myAlgo),
         e.what());
     return commInternalError;
   } catch (...) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "ReduceScatter {} failed with an unknown exception",
         reduceScatterAlgoName(myAlgo));
@@ -411,7 +411,7 @@ commResult_t ctranReduceScatterQuantizeDirectIb(
 #else // !ENABLE_PRIMS
 
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 commResult_t ctranReduceScatterDirectIb(
     const void* /*sendbuff*/,
@@ -421,7 +421,7 @@ commResult_t ctranReduceScatterDirectIb(
     commRedOp_t /*redOp*/,
     CtranComm* /*comm*/,
     cudaStream_t /*stream*/) {
-  CERR(
+  CTRAN_ERR(
       commInvalidArgument,
       "ReduceScatter CtranReduceScatterDirectIb requires ENABLE_PRIMS");
   return commInvalidArgument;
@@ -437,7 +437,7 @@ commResult_t ctranReduceScatterQuantizeDirectIb(
     const uint64_t* /*seedPtr*/,
     CtranComm* /*comm*/,
     cudaStream_t /*stream*/) {
-  CLOGF(
+  CTRAN_LOG(
       ERR,
       "ReduceScatter CtranReduceScatterQuantizeDirectIb requires ENABLE_PRIMS");
   return commInvalidArgument;
