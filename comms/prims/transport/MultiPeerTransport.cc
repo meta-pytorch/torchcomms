@@ -25,6 +25,7 @@
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
+#include "comms/utils/CudaRAII.h"
 
 namespace comms::prims {
 
@@ -52,38 +53,13 @@ namespace {
     }                                                                          \
   } while (0)
 
-class ScopedCudaDevice {
- public:
-  explicit ScopedCudaDevice(int device) : targetDevice_(device) {
-    CUDA_CHECK(cudaGetDevice(&previousDevice_));
-    if (previousDevice_ != targetDevice_) {
-      CUDA_CHECK(cudaSetDevice(targetDevice_));
-    }
-  }
-
-  ScopedCudaDevice(const ScopedCudaDevice&) = delete;
-  ScopedCudaDevice& operator=(const ScopedCudaDevice&) = delete;
-  ScopedCudaDevice(ScopedCudaDevice&&) = delete;
-  ScopedCudaDevice& operator=(ScopedCudaDevice&&) = delete;
-
-  ~ScopedCudaDevice() {
-    if (previousDevice_ != targetDevice_) {
-      (void)cudaSetDevice(previousDevice_);
-    }
-  }
-
- private:
-  int previousDevice_{-1};
-  int targetDevice_{-1};
-};
-
 comms::fault_tolerance::AbortDevice makeAbortDeviceHandle(
     const std::shared_ptr<comms::fault_tolerance::Abort>& abort,
     int deviceId) {
   if (abort == nullptr || !abort->isEnabled()) {
     return comms::fault_tolerance::AbortDevice{};
   }
-  ScopedCudaDevice guard{deviceId};
+  meta::comms::CudaDeviceGuard guard{deviceId};
   return abort->getDeviceHandle();
 }
 
@@ -403,6 +379,56 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
   }
   throw std::runtime_error(
       "localRegisterIbgdaBuffer: IB transport not available");
+}
+
+IbBufferRegistrationLease MultiPeerTransport::registerIbBulkBuffer(
+    void* ptr,
+    std::size_t size) {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->registerIbBulkBuffer(ptr, size);
+  }
+  if (ibrcTransport_) {
+    return ibrcTransport_->registerIbBulkBuffer(ptr, size);
+  }
+  throw std::runtime_error("registerIbBulkBuffer: IB transport not available");
+}
+
+std::optional<IbBufferRegistrationView> MultiPeerTransport::lookupIbBulkBuffer(
+    const IbBufferRegistrationLease& lease,
+    void* ptr,
+    std::size_t size) const {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->lookupIbBulkBuffer(lease, ptr, size);
+  }
+  if (ibrcTransport_) {
+    return ibrcTransport_->lookupIbBulkBuffer(lease, ptr, size);
+  }
+  return std::nullopt;
+}
+
+void MultiPeerTransport::deregisterIbBulkBuffer(
+    IbBufferRegistrationLease& lease) {
+  if (ibgdaTransport_) {
+    ibgdaTransport_->deregisterIbBulkBuffer(lease);
+    return;
+  }
+  if (ibrcTransport_) {
+    ibrcTransport_->deregisterIbBulkBuffer(lease);
+    return;
+  }
+  throw std::runtime_error(
+      "deregisterIbBulkBuffer: IB transport not available");
+}
+
+bool MultiPeerTransport::isIbBulkBufferViewActive(
+    const IbBufferRegistrationView& view) const {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->isIbBulkBufferViewActive(view);
+  }
+  if (ibrcTransport_) {
+    return ibrcTransport_->isIbBulkBufferViewActive(view);
+  }
+  return false;
 }
 
 void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {

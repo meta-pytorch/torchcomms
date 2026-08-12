@@ -104,6 +104,44 @@ __global__ void progressReservationKernel(
     int64_t* output,
     std::size_t sendBytes,
     std::size_t recvBytes);
+
+__global__ void registeredSendRecvKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer source,
+    void* recvBuffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    RegisteredSendObservation* observation,
+    bool blocking,
+    bool overwriteAfterDrain,
+    uint8_t overwriteValue,
+    bool zeroByteAfterPosted);
+
+__global__ void mixedRegisteredAndStagedSendRecvKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t thirdBytes,
+    std::size_t maxSignalBytes,
+    bool send);
+
+__global__ void fillTransportStagingKernel(
+    P2pIbgdaTransportDevice* transport,
+    bool sendStaging,
+    std::size_t offset,
+    std::size_t nbytes,
+    uint8_t value);
+
+__global__ void verifyTransportStagingKernel(
+    P2pIbgdaTransportDevice* transport,
+    bool sendStaging,
+    std::size_t offset,
+    std::size_t nbytes,
+    uint8_t expected,
+    int* errorCount);
 #endif
 
 __global__ void

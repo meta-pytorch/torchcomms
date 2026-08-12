@@ -70,7 +70,7 @@ class AllToAllTest : public NcclxBaseTestFixture {
 
     // run alltoall
     for (int i = 0; i < kTotalColls; i++) {
-      auto res = ncclAllToAll(sendBuf, recvBuf, count, ncclInt, comm, stream);
+      auto res = ncclAlltoAll(sendBuf, recvBuf, count, ncclInt, comm, stream);
       ASSERT_EQ(res, ncclSuccess);
     }
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -170,7 +170,7 @@ TEST_F(AllToAllTest, InvalidSendbuf) {
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
 
   // run alltoall
-  auto res = ncclAllToAll(nullptr, buf, count, ncclInt, comm, stream);
+  auto res = ncclAlltoAll(nullptr, buf, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
 #endif
@@ -183,7 +183,7 @@ TEST_F(AllToAllTest, InvalidRecvbuf) {
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
 
   // run alltoall
-  auto res = ncclAllToAll(buf, nullptr, count, ncclInt, comm, stream);
+  auto res = ncclAlltoAll(buf, nullptr, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
 #endif
@@ -196,7 +196,7 @@ TEST_F(AllToAllTest, InvalidInPlace) {
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
 
   // run alltoall
-  auto res = ncclAllToAll(buf, buf, count, ncclInt, comm, stream);
+  auto res = ncclAlltoAll(buf, buf, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
 #endif

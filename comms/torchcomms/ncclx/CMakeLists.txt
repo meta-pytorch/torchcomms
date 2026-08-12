@@ -118,6 +118,8 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
     ${ROOT}
     ${NCCLX_INCLUDE}
     ${CONDA_INCLUDE}
+    ${CUDA_INCLUDE_DIRS}
+    ${CUDA_INCLUDE_DIRS}/cccl
     ${Python3_INCLUDE_DIRS}
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)

@@ -227,8 +227,9 @@ class CtranIbVirtualConn {
   // Caller needs to call this function before posting a put. If it returns
   // false, progress needs to be made to poll CQE completion.
   inline bool canTransferData() {
-    for (const auto& q : pendingWqeQs_) {
-      if (q.size() < maxQpMsgs_) {
+    for (int qpIdx = 0; qpIdx < static_cast<int>(putWqesByQp_.size());
+         qpIdx++) {
+      if (qpWqeDepth(qpIdx) < maxQpMsgs_) {
         return true;
       }
     }
@@ -495,8 +496,8 @@ class CtranIbVirtualConn {
   // numQpsPerDevice (= K) = maxNumQps_ / numActive.
   // For numActive == 1 this is the identity. The result is always
   // < numActive * numQpsPerDevice (== maxNumQps_) for any logical < maxNumQps_,
-  // so it stays in-bounds for pendingWqeQs_ even when the free-running qpIdxRR_
-  // briefly exceeds a smaller per-op qps.
+  // so it stays in-bounds for putWqesByQp_/getWqesByQp_ even when the
+  // free-running qpIdxRR_ briefly exceeds a smaller per-op qps.
   static inline int
   interleaveQpIdx(int logical, int numActive, int numQpsPerDevice) {
     return (logical % numActive) * numQpsPerDevice + (logical / numActive);
@@ -1375,6 +1376,15 @@ class CtranIbVirtualConn {
     }
   }
 
+  // Total WQEs in flight on one data QP. Puts and gets are tracked in separate
+  // maps but share that QP's single send queue, so both must be counted
+  // against maxQpMsgs_ (itself clamped to MAX_SEND_WR). Counting only one op
+  // type would let puts and gets each fill the queue independently and
+  // overrun it.
+  inline size_t qpWqeDepth(int qpIdx) const {
+    return putWqesByQp_.at(qpIdx).size() + getWqesByQp_.at(qpIdx).size();
+  }
+
   template <typename PendingOpQueue, typename FastOpQueue, typename QueueOpFunc>
   inline commResult_t tryToPostOp(
       PendingOpQueue& pendingOpQueue,
@@ -1404,7 +1414,7 @@ class CtranIbVirtualConn {
         const int qpIdx = doInterleave
             ? interleaveQpIdx(qpIdxRR_, numActive, numQpsPerDevice_)
             : qpIdxRR_;
-        auto pendingWqeSize = pendingWqeQs_.at(qpIdx).size();
+        auto pendingWqeSize = qpWqeDepth(qpIdx);
         if (qpIdx == fastQpIdx) {
           pendingWqeSize += outstandingFastQueue.size();
         }
@@ -1470,7 +1480,7 @@ class CtranIbVirtualConn {
       }
     }
 
-    pendingWqeQs_.at(i).emplace_back(sendPutWr_.wr_id, put.get());
+    putWqesByQp_.at(i).emplace(sendPutWr_.wr_id, put.get());
     put->outstandingWqes++;
     CLOGF_TRACE(
         COLL,
@@ -1533,7 +1543,7 @@ class CtranIbVirtualConn {
         get->sbuf,
         get->offset);
 
-    pendingWqeQs_.at(i).emplace_back(sendGetWr_.wr_id, get.get());
+    getWqesByQp_.at(i).emplace(sendGetWr_.wr_id, get.get());
     get->outstandingWqes++;
     auto maybeSend = ibvDataQps_[i].postSend(&sendGetWr_, &badSendGetWr_);
     FOLLY_EXPECTED_CHECK(maybeSend);
@@ -1608,25 +1618,23 @@ class CtranIbVirtualConn {
         // Post next data if exists
         FB_COMMCHECK(queueWriteOnQp(qpIdx));
       } else {
-        auto& q = pendingWqeQs_.at(qpIdx);
-        FB_CHECKABORT(q.size() > 0, "Unexpected empty pendingWqeQs");
-
-        auto wqeInfo = dequeFront(q);
-        auto& putInfo = *wqeInfo.putInfo;
+        auto& q = putWqesByQp_.at(qpIdx);
+        auto it = q.find(wrId);
         FB_CHECKABORT(
-            wqeInfo.wrId == wrId,
-            "wrId mismatch: {} != {}, qpIdx={}, outstandingFastPuts={}, outstandingPuts={}, pendingWqeQs={}",
-            wqeInfo.wrId,
+            it != q.end(),
+            "wrId {} not found in putWqesByQp[{}], size={}, outstandingFastPuts={}, outstandingPuts={}",
             wrId,
             qpIdx,
+            q.size(),
             outstandingFastPuts_.size(),
-            outstandingPuts_.size(),
-            pendingWqeQs_.size());
+            outstandingPuts_.size());
+        auto& putInfo = *it->second;
         FB_CHECKABORT(
             putInfo.outstandingWqes > 0,
             "Got CQE for put with 0 outstanding WQEs");
 
         --putInfo.outstandingWqes;
+        q.erase(it);
 
         // Check if put is complete and, if so, update req status
         FB_COMMCHECK(burnDownPuts());
@@ -1663,18 +1671,21 @@ class CtranIbVirtualConn {
       // Post next data if exists
       FB_COMMCHECK(queueReadOnQp(qpIdx));
     } else {
-      auto& q = pendingWqeQs_.at(qpIdx);
-      FB_CHECKABORT(q.size() > 0, "Unexpected empty pendingWqeQs");
-
-      auto wqeInfo = dequeFront(q);
-      auto& getInfo = *wqeInfo.getInfo;
+      auto& q = getWqesByQp_.at(qpIdx);
+      auto it = q.find(wrId);
       FB_CHECKABORT(
-          wqeInfo.wrId == wrId, "wrId mismatch: {} != {}", wqeInfo.wrId, wrId);
+          it != q.end(),
+          "wrId {} not found in getWqesByQp[{}], size={}",
+          wrId,
+          qpIdx,
+          q.size());
+      auto& getInfo = *it->second;
       FB_CHECKABORT(
           getInfo.outstandingWqes > 0,
-          "Got CQE for put with 0 outstanding WQEs");
+          "Got CQE for get with 0 outstanding WQEs");
 
       --getInfo.outstandingWqes;
+      q.erase(it);
 
       // Check if get is complete and, if so, update req status
       FB_COMMCHECK(burnDownGets());
@@ -1895,14 +1906,24 @@ class CtranIbVirtualConn {
   std::deque<std::unique_ptr<NotifyInfo>> pendingNotifies_;
   std::deque<std::unique_ptr<NotifyInfo>> outstandingNotifies_;
 
-  struct WqeInfo {
-    WqeInfo(uint64_t wrId, PutInfo* putInfo) : wrId(wrId), putInfo(putInfo) {}
-    WqeInfo(uint64_t wrId, GetInfo* getInfo) : wrId(wrId), getInfo(getInfo) {}
-    uint64_t wrId;
-    PutInfo* putInfo;
-    GetInfo* getInfo;
-  };
-  std::vector<std::deque<WqeInfo>> pendingWqeQs_;
+  // Per-QP WQEs that have been posted but whose CQE has not arrived yet, keyed
+  // by wr_id. Keyed rather than ordered so writeComplete/readComplete do not
+  // depend on per-QP FIFO CQE order, which no longer holds once data QPs are
+  // created with MLX5DV_QP_CREATE_OOO_DP.
+  //
+  // Puts and gets are tracked separately: the CQE opcode already selects the
+  // handler (IBV_WC_RDMA_WRITE -> writeComplete, IBV_WC_RDMA_READ ->
+  // readComplete), so an entry needs no discriminator and can hold the bare
+  // PutInfo/GetInfo pointer. The pointee is owned by pendingPuts_/
+  // outstandingPuts_ (resp. gets) and outlives every WQE referencing it; one
+  // op fans out to many WQEs across many QPs, tracked by
+  // PutInfo::outstandingWqes.
+  //
+  // NOTE: both maps index the same hardware send queue per QP, so the
+  // maxQpMsgs_ cap must be taken against their combined size -- see
+  // qpWqeDepth().
+  std::vector<std::unordered_map<uint64_t, PutInfo*>> putWqesByQp_;
+  std::vector<std::unordered_map<uint64_t, GetInfo*>> getWqesByQp_;
   int qpIdxRR_{0};
   const int iputFastQpIdx_{0};
   const int igetFastQpIdx_{0};

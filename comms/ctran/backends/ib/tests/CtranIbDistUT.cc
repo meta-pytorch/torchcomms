@@ -1487,6 +1487,48 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyNoSignalMultiQp) {
       /*isGpuMem*/ true);
 }
 
+// Stresses the wr_id-keyed `putWqesByQp_` map that backs `writeComplete`.
+// A small qpScalingThreshold splits each PUT into many WQEs which are then
+// round-robined across many QPs, so every QP holds several concurrent
+// outstanding entries in the map and each CQE must be resolved via find(wrId)
+// rather than front-of-queue.
+TEST_P(CtranIbTestParam, GpuMemPutManyWqePerQpMapLookup) {
+  this->printTestDesc(
+      "GpuMemPutManyWqePerQpMapLookup",
+      "Stress writeComplete's wr_id-keyed putWqesByQp_ lookup by "
+      "issuing many puts that each fan out to multiple WQEs on multiple QPs.");
+
+  EnvRAII env1(NCCL_CTRAN_IB_MAX_QPS, 16);
+  EnvRAII env2(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, 512UL);
+  EnvRAII env3(NCCL_CTRAN_IB_VC_MODE, GetParam());
+
+  runPutNotify(
+      /* bufCount */ 8192,
+      /* numPuts */ 500,
+      /* localSignal */ false,
+      NotifyMode::notifyAll,
+      /* isGpuMem */ true);
+}
+
+// Symmetric stress for readComplete's wr_id-keyed lookup: many gets, each
+// split into multiple WQEs across many QPs.
+TEST_P(CtranIbTestParam, GpuMemGetManyWqePerQpMapLookup) {
+  this->printTestDesc(
+      "GpuMemGetManyWqePerQpMapLookup",
+      "Stress readComplete's wr_id-keyed getWqesByQp_ lookup by "
+      "issuing many gets that each fan out to multiple WQEs on multiple QPs.");
+
+  EnvRAII env1(NCCL_CTRAN_IB_MAX_QPS, 16);
+  EnvRAII env2(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, 512UL);
+  EnvRAII env3(NCCL_CTRAN_IB_VC_MODE, GetParam());
+
+  runGet(
+      /* bufCount */ 8192,
+      /* numGets */ 500,
+      /* localSignal */ true,
+      /* isGpuMem */ true);
+}
+
 TEST_P(CtranIbTestParam, GpuMemPutNoNotify) {
   EnvRAII env1(NCCL_CTRAN_IB_VC_MODE, GetParam());
   this->printTestDesc(

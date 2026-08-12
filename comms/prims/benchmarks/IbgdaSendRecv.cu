@@ -416,7 +416,8 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout) {
+    Timeout timeout,
+    bool waitForSlotFree) {
   auto group = make_block_group();
 
   const std::size_t sectionBytes = section_bytes(transport, totalBytes);
@@ -430,6 +431,50 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
            IbgdaSendRecvProgressStatus::Done) {
     }
   }
+
+  if (waitForSlotFree) {
+    auto& channel = transport->local_channel(group.group_id);
+    transport->wait_signal(
+        group,
+        channel.slotFree,
+        static_cast<uint64_t>(channel.sendProgress.nextStep),
+        timeout);
+  }
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_registered_progress_send_kernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  auto status = IbgdaRegisteredSendProgressStatus::Waiting;
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    const auto section = src.subBuffer(s * sectionBytes);
+    transport->init_registered_send_progress(
+        group, sectionBytes, maxSignalBytes);
+    status = IbgdaRegisteredSendProgressStatus::Waiting;
+    while (status != IbgdaRegisteredSendProgressStatus::Posted &&
+           status != IbgdaRegisteredSendProgressStatus::Drained) {
+      status = transport->progress_registered_send_once(
+          group, section, sectionBytes, maxSignalBytes, timeout);
+    }
+  }
+  while (status != IbgdaRegisteredSendProgressStatus::Drained) {
+    status = transport->progress_registered_send_drain_once(group, timeout);
+  }
+
+  auto& channel = transport->local_channel(group.group_id);
+  transport->wait_signal(
+      group,
+      channel.slotFree,
+      static_cast<uint64_t>(channel.sendProgress.nextStep),
+      timeout);
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
@@ -474,11 +519,69 @@ void launch_ibgda_progress_send(
   printf("[PIPES] progress send benchmark is NVIDIA-only\n");
 #else
   ibgda_progress_send_kernel<<<numBlocks, 512, 0, stream>>>(
-      transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout, false);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
         "[PIPES] progress send kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
+}
+
+void launch_ibgda_progress_send_complete(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress send benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_send_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout, true);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress send kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
+}
+
+void launch_ibgda_registered_progress_send(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] registered progress send benchmark is NVIDIA-only\n");
+#else
+  ibgda_registered_progress_send_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] registered progress send kernel launch failed: %s\n",
         cudaGetErrorString(err));
   }
 #endif

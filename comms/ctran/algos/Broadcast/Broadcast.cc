@@ -6,6 +6,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 commResult_t ctranBroadcast(
     const void* sendbuff,
@@ -27,7 +28,7 @@ commResult_t ctranBroadcast(
       stream);
 
   if (algo == NCCL_BROADCAST_ALGO::ctran) {
-    CLOGF_SUBSYS(INFO, COLL, "Running Broadcast ctbtree algorithm");
+    CTRAN_LOG_SUBSYS(INFO, COLL, "Running Broadcast ctbtree algorithm");
     algo = NCCL_BROADCAST_ALGO::ctbtree;
   }
 

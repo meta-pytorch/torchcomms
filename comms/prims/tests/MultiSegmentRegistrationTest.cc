@@ -5,6 +5,7 @@
 
 #include <folly/init/Init.h>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -151,12 +152,39 @@ struct TransportHandle {
       ibrc->deregisterBuffer(ptr);
     }
   }
+
+  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size) {
+    return ibgda ? ibgda->registerIbBulkBuffer(ptr, size)
+                 : ibrc->registerIbBulkBuffer(ptr, size);
+  }
+
+  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
+      const IbBufferRegistrationLease& lease,
+      void* ptr,
+      std::size_t size) const {
+    return ibgda ? ibgda->lookupIbBulkBuffer(lease, ptr, size)
+                 : ibrc->lookupIbBulkBuffer(lease, ptr, size);
+  }
+
+  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease) {
+    if (ibgda) {
+      ibgda->deregisterIbBulkBuffer(lease);
+    } else {
+      ibrc->deregisterIbBulkBuffer(lease);
+    }
+  }
+
+  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const {
+    return ibgda ? ibgda->isIbBulkBufferViewActive(view)
+                 : ibrc->isIbBulkBufferViewActive(view);
+  }
 };
 
-TransportHandle createTransport(IbTestBackend backend) {
+TransportHandle createTransport(
+    IbTestBackend backend,
+    const MultipeerIbTransportConfig& config) {
   auto bootstrap = std::make_shared<
       testing::NiceMock<meta::comms::testing::MockBootstrap>>();
-  auto config = makeConfig();
   TransportHandle handle;
   if (backend == IbTestBackend::Ibgda) {
     handle.ibgda = std::make_unique<MultipeerIbgdaTransport>(
@@ -166,6 +194,10 @@ TransportHandle createTransport(IbTestBackend backend) {
         0, 2, std::move(bootstrap), config);
   }
   return handle;
+}
+
+TransportHandle createTransport(IbTestBackend backend) {
+  return createTransport(backend, makeConfig());
 }
 
 class MultiSegmentRegistrationTest
@@ -249,6 +281,161 @@ TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
 
   transport.deregisterBuffer(devPtr);
   CUDACHECK_TEST(cudaFree(devPtr));
+}
+
+TEST_P(MultiSegmentRegistrationTest, BulkLeaseBoundsContainedViews) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kAllocationSize = 4 * 1024 * 1024;
+  constexpr std::size_t kLeaseOffset = 512 * 1024;
+  constexpr std::size_t kLeaseSize = 2 * 1024 * 1024;
+  constexpr std::size_t kViewOffset = 128 * 1024;
+  constexpr std::size_t kViewSize = 256 * 1024;
+  void* allocation = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&allocation, kAllocationSize));
+  auto* const leasePtr = static_cast<char*>(allocation) + kLeaseOffset;
+
+  EXPECT_THROW(
+      transport.registerIbBulkBuffer(leasePtr, 0), std::invalid_argument);
+  auto lease = transport.registerIbBulkBuffer(leasePtr, kLeaseSize);
+  EXPECT_THROW(
+      transport.lookupIbBulkBuffer(lease, leasePtr, 0), std::invalid_argument);
+  EXPECT_THROW(
+      transport.lookupIbBulkBuffer(
+          lease, leasePtr, std::numeric_limits<std::size_t>::max()),
+      std::invalid_argument);
+  auto exact = transport.lookupIbBulkBuffer(lease, leasePtr, kLeaseSize);
+  auto contained =
+      transport.lookupIbBulkBuffer(lease, leasePtr + kViewOffset, kViewSize);
+  auto tail = transport.lookupIbBulkBuffer(lease, leasePtr + kLeaseSize - 1, 1);
+  auto before = transport.lookupIbBulkBuffer(lease, leasePtr - 1, kViewSize);
+  auto after = transport.lookupIbBulkBuffer(
+      lease, leasePtr + kLeaseSize - kViewSize + 1, kViewSize);
+
+  ASSERT_TRUE(exact.has_value());
+  ASSERT_TRUE(contained.has_value());
+  ASSERT_TRUE(tail.has_value());
+  EXPECT_EQ(exact->localBuffer.ptr, leasePtr);
+  EXPECT_EQ(contained->localBuffer.ptr, leasePtr + kViewOffset);
+  EXPECT_EQ(contained->size, kViewSize);
+  EXPECT_EQ(contained->leaseGeneration, lease.generation());
+  EXPECT_FALSE(before.has_value());
+  EXPECT_FALSE(after.has_value());
+  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*contained));
+
+  transport.deregisterIbBulkBuffer(lease);
+  EXPECT_FALSE(lease.valid());
+  EXPECT_FALSE(
+      transport.lookupIbBulkBuffer(lease, leasePtr, kViewSize).has_value());
+  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*contained));
+  EXPECT_THROW(transport.deregisterIbBulkBuffer(lease), std::invalid_argument);
+  CUDACHECK_TEST(cudaFree(allocation));
+}
+
+TEST_P(MultiSegmentRegistrationTest, BulkLeaseReportsEffectiveStrictOrdering) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  auto config = makeConfig();
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Disabled;
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam(), config);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kSize = 2 * 1024 * 1024;
+  void* allocation = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&allocation, kSize));
+
+  auto lease = transport.registerIbBulkBuffer(allocation, kSize);
+  auto view = transport.lookupIbBulkBuffer(lease, allocation, kSize);
+  ASSERT_TRUE(view.has_value());
+  EXPECT_FALSE(view->relaxedOrdering);
+
+  transport.deregisterIbBulkBuffer(lease);
+  CUDACHECK_TEST(cudaFree(allocation));
+}
+
+TEST_P(MultiSegmentRegistrationTest, OverlappingBulkLeasesRemainDistinct) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kAllocationSize = 4 * 1024 * 1024;
+  constexpr std::size_t kOuterSize = 3 * 1024 * 1024;
+  constexpr std::size_t kInnerOffset = 1024 * 1024;
+  constexpr std::size_t kInnerSize = 1024 * 1024;
+  void* allocation = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&allocation, kAllocationSize));
+  auto* const base = static_cast<char*>(allocation);
+
+  auto outer = transport.registerIbBulkBuffer(base, kOuterSize);
+  auto inner = transport.registerIbBulkBuffer(base + kInnerOffset, kInnerSize);
+  auto outerView =
+      transport.lookupIbBulkBuffer(outer, base + kInnerOffset, kInnerSize);
+  auto innerView =
+      transport.lookupIbBulkBuffer(inner, base + kInnerOffset, kInnerSize);
+
+  ASSERT_TRUE(outerView.has_value());
+  ASSERT_TRUE(innerView.has_value());
+  EXPECT_NE(outer.generation(), inner.generation());
+  EXPECT_EQ(outerView->leaseGeneration, outer.generation());
+  EXPECT_EQ(innerView->leaseGeneration, inner.generation());
+
+  transport.deregisterIbBulkBuffer(inner);
+  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*innerView));
+  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*outerView));
+  transport.deregisterIbBulkBuffer(outer);
+  CUDACHECK_TEST(cudaFree(allocation));
+}
+
+TEST_P(MultiSegmentRegistrationTest, ReregistrationChangesLeaseGeneration) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kSize = 2 * 1024 * 1024;
+  void* allocation = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&allocation, kSize));
+
+  auto first = transport.registerIbBulkBuffer(allocation, kSize);
+  auto firstView = transport.lookupIbBulkBuffer(first, allocation, kSize);
+  ASSERT_TRUE(firstView.has_value());
+  const uint64_t firstGeneration = first.generation();
+  transport.deregisterIbBulkBuffer(first);
+
+  auto second = transport.registerIbBulkBuffer(allocation, kSize);
+  auto secondView = transport.lookupIbBulkBuffer(second, allocation, kSize);
+  ASSERT_TRUE(secondView.has_value());
+  EXPECT_NE(firstGeneration, second.generation());
+  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*firstView));
+  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*secondView));
+
+  transport.deregisterIbBulkBuffer(second);
+  CUDACHECK_TEST(cudaFree(allocation));
 }
 
 } // namespace comms::prims::tests

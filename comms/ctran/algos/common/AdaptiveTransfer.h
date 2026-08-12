@@ -7,6 +7,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 
 namespace ctran {
@@ -42,7 +43,7 @@ inline commResult_t checkAndSetTransferMode(
   if (backend == CtranMapperBackend::IB) {
     auto regCache = ctran::RegCache::getInstance();
     if (!regCache) {
-      CERR(
+      CTRAN_ERR(
           commInternalError, "CTRAN-ADAPTIVE: Failed to get RegCache instance");
       return commInternalError;
     }
@@ -55,7 +56,7 @@ inline commResult_t checkAndSetTransferMode(
       // Store the handle directly to avoid lookup in collective
       dirConfig->mode = TransferMode::ZERO_COPY;
       dirConfig->memHdl = regHdl;
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           ALLOC,
           "CTRAN-ADAPTIVE: Buffer {} len {} is registered, using zero-copy (direction={})",
           buf,
@@ -71,7 +72,7 @@ inline commResult_t checkAndSetTransferMode(
     // Step 3: Trigger async registration for future calls
     FB_COMMCHECK(comm->ctran_->mapper->regAsync(buf, len));
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         ALLOC,
         "CTRAN-ADAPTIVE: Buffer {} len {} not registered, using copy-based, "
         "triggered async registration (direction={})",

@@ -7,8 +7,8 @@
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 static unsigned int bestThreadBlockSize = 0;
 static const auto myAlgo = NCCL_BROADCAST_ALGO::ctdirect;
@@ -175,7 +175,7 @@ static commResult_t impl(
             if (putNotifyMap.contains(peer)) {
               elem = putNotifyMap[peer];
             } else {
-              CLOGF(
+              CTRAN_LOG(
                   WARN,
                   "Expecting NVLink putNotify for peer {}. Something bad probably happened.",
                   peer);
@@ -217,7 +217,7 @@ static commResult_t impl(
       if (waitNotifyMap.contains(root)) {
         elem = waitNotifyMap[root];
       } else {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "Expecting NVLink waitNotify for root {}. Something bad probably happened.",
             root);

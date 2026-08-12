@@ -126,7 +126,7 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
   });
   for (int i = 0; i < nColl; i++) {
     NCCLCHECK_TEST(
-        ncclAllToAll(sendBuf, recvBuf, count, ncclInt, comm, stream));
+        ncclAlltoAll(sendBuf, recvBuf, count, ncclInt, comm, stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   ASSERT_EQ(dumpBaton.try_wait_for(std::chrono::seconds(1)), true);

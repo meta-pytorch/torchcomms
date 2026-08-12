@@ -720,31 +720,16 @@ ncclResult_t pncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
     const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
 
 /*
- * [NCCLX] All-To-All
- * Device (i) sends count of data from offset sendbuff+count*j to device (j).
- * At the same time, device (i) receives count of data from device (j)
- * to be placed at recvbuff+count*j. Only out-of-place operation is allowed
- * (i.e., sendbuff != recvbuff).
- * Arguments:
- *    IN  sendbuff    - Pointer to sendbuf
- *    OUT recvbuff    - Pointer to recvbuf
- *    IN  count       - count of elements to send to (receive from) each rank
- *    IN  datatype      - Type of each data element
- *    IN  ncclComm* comm
- *    IN  cudaStream_t stream
- */
-ncclResult_t  ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
-ncclResult_t  pncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
-
-/*
  * All-to-All
  *
  * Each device sends count values to all other devices and receives count values
  * from all other devices. Data to send to destination rank j is taken from
  * sendbuff+j*count and data received from source rank i is placed at
  * recvbuff+i*count.
+ *
+ * [NCCLX] Only out-of-place operation is allowed (i.e., sendbuff != recvbuff);
+ * an in-place call returns ncclInvalidArgument. Dispatches to CTRAN when
+ * NCCL_ALLTOALL_ALGO selects it and the operation is supported there.
  */
 ncclResult_t  ncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
@@ -1360,7 +1345,7 @@ ncclResult_t allToAllvDedupExec(
 ncclResult_t pExec(void* request);
 
 /*
- * Persistent AllToAll similar to ncclAllToAll, the key difference is that
+ * Persistent AllToAll similar to ncclAlltoAll, the key difference is that
  * AllToAllP requires user to stick with the same recvbuff so that NCCL can exchange
  * recvbuff and hdl once and skip control msg in the future.
  * Arguments:

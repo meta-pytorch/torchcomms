@@ -8,6 +8,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 
 extern __global__ void
@@ -111,7 +112,7 @@ inline commResult_t copyToSelf(
     const size_t size,
     cudaStream_t stream) {
   if (dst != src) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "Rank {} CE copy to self, src {} -> dst {}, size {}",
         comm->statex_->rank(),
@@ -158,7 +159,7 @@ inline commResult_t nvlCeBcast(
   // captured as exactly one Memcpy node (vs numOps per-peer nodes below).
   if (mcWrite) {
     void* recvPtr = static_cast<char*>(*mcWrite) + recvOffset;
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "Rank {} CE multicast bcast, sendBuff {} -> mcRecvBuff {} (mcWrite {} + recvOffset {}), sendSize {}",
         rank,
@@ -194,7 +195,7 @@ inline commResult_t nvlCeBcast(
     }
 
     void* recvPtr = static_cast<char*>(remoteRecvBuffs[peer]) + recvOffset;
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "Rank {} CE copy to peer {}, sendBuff {} -> recvBuff {} ({} + recvOffset {}), sendSize {}",
         rank,
@@ -257,7 +258,7 @@ inline commResult_t nvlCeAllToAll(
     auto* dst = static_cast<char*>(remoteRecvBuffs[peer]) + recvOffset;
     auto* src = const_cast<char*>(
         static_cast<const char*>(sendbuff) + peer * chunkSize);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "Rank {} CE copy to peer {}, sendBuff {} -> recvBuff {} ({} + recvOffset {}), chunkSize {}",
         myRank,

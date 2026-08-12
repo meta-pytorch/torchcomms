@@ -278,6 +278,17 @@ class MultiPeerTransport {
    */
   IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
 
+  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size);
+
+  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
+      const IbBufferRegistrationLease& lease,
+      void* ptr,
+      std::size_t size) const;
+
+  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease);
+
+  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const;
+
   /**
    * Deregister a previously registered IBGDA buffer.
    *

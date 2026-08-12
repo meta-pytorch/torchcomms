@@ -488,7 +488,7 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
   prepareCtranAllToAll(this->comm, count);
 
   for (int i = 0; i < nColl; i++) {
-    NCCLCHECK_TEST(ncclAllToAll(
+    NCCLCHECK_TEST(ncclAlltoAll(
         this->sendBuf,
         this->recvBuf,
         count,

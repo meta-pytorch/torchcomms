@@ -248,6 +248,27 @@ void checkSendRecvSignalAlignment(const void* ptr, const char* label) {
         fmt::format("{} must be {}-byte aligned", label, alignof(SignalState)));
   }
 }
+
+bool rangeContains(
+    uintptr_t outerBegin,
+    std::size_t outerSize,
+    uintptr_t innerBegin,
+    std::size_t innerSize) {
+  return innerSize != 0 && innerBegin >= outerBegin && innerSize <= outerSize &&
+      innerBegin - outerBegin <= outerSize - innerSize;
+}
+
+uintptr_t
+checkedRangeEnd(const void* ptr, std::size_t size, const char* operation) {
+  const auto begin = reinterpret_cast<uintptr_t>(ptr);
+  if (ptr == nullptr || size == 0 ||
+      size > std::numeric_limits<uintptr_t>::max() - begin) {
+    throw std::invalid_argument(
+        fmt::format(
+            "{}: invalid buffer range ptr={} size={}", operation, ptr, size));
+  }
+  return begin + size;
+}
 } // namespace
 
 MultiPeerIbTransportBase::MultiPeerIbTransportBase(
@@ -1081,6 +1102,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
 
+  const auto addr = reinterpret_cast<uintptr_t>(ptr);
+  [[maybe_unused]] const auto requestedEnd =
+      checkedRangeEnd(ptr, size, "registerBuffer");
+
   // Resolve the effective Relaxed Ordering once, up front: the caller's request
   // gated by config (NCCL_IB_PCI_RELAXED_ORDERING) AND by NIC capability probed
   // during openNics. Gating on capability means a NIC whose driver rejects
@@ -1094,11 +1119,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   // Fast path: containment lookup — if [ptr, ptr+size) falls entirely within an
   // existing registration with the same effective ordering, return the cached
   // per-NIC lkeys with no driver call.
-  const auto addr = reinterpret_cast<uintptr_t>(ptr);
   auto it = registeredBuffers_.upper_bound(addr);
   if (it != registeredBuffers_.begin()) {
     --it;
-    if (addr + size <= it->first + it->second.allocSize) {
+    if (rangeContains(it->first, it->second.allocSize, addr, size)) {
       // The cache holds one MR set per allocation; its access flags (including
       // Relaxed Ordering) are fixed at registration, so the effective ordering
       // is part of the cache key. A containment hit resolving to different
@@ -1155,7 +1179,6 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   // covers the full contiguous VA — ibv_reg_dmabuf_mr handles the underlying
   // physical discontinuity transparently.
   {
-    const auto requestedEnd = reinterpret_cast<uintptr_t>(ptr) + size;
     const auto allocEnd = static_cast<uintptr_t>(allocBase) + allocSize;
     if (requestedEnd > allocEnd) {
       allocBase = reinterpret_cast<CUdeviceptr>(ptr);
@@ -1317,6 +1340,113 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     keys[n] = NetworkLKey(HostLKey(cached.mrs[n]->lkey));
   }
   return IbgdaLocalBuffer(ptr, keys);
+}
+
+IbBufferRegistrationLease MultiPeerIbTransportBase::registerIbBulkBuffer(
+    void* ptr,
+    std::size_t size) {
+  checkedRangeEnd(ptr, size, "registerIbBulkBuffer");
+  const auto localBuffer = registerBuffer(ptr, size, /*relaxedOrdering=*/true);
+
+  try {
+    const auto addr = reinterpret_cast<uintptr_t>(ptr);
+    auto mrIt = registeredBuffers_.upper_bound(addr);
+    if (mrIt == registeredBuffers_.begin()) {
+      throw std::logic_error(
+          "registerIbBulkBuffer: MR missing after registration");
+    }
+    --mrIt;
+    if (!rangeContains(mrIt->first, mrIt->second.allocSize, addr, size)) {
+      throw std::logic_error(
+          "registerIbBulkBuffer: MR does not contain registered range");
+    }
+    if (nextBulkBufferGeneration_ == std::numeric_limits<uint64_t>::max()) {
+      throw std::overflow_error(
+          "registerIbBulkBuffer: lease generation exhausted");
+    }
+
+    const uint64_t generation = nextBulkBufferGeneration_++;
+    bulkBufferRegistrations_.emplace(
+        generation,
+        BulkBufferRegistration{
+            .ptr = ptr,
+            .size = size,
+            .localBuffer = localBuffer,
+            .relaxedOrdering = mrIt->second.relaxedOrdering,
+        });
+    return IbBufferRegistrationLease(generation);
+  } catch (...) {
+    deregisterBuffer(ptr);
+    throw;
+  }
+}
+
+std::optional<IbBufferRegistrationView>
+MultiPeerIbTransportBase::lookupIbBulkBuffer(
+    const IbBufferRegistrationLease& lease,
+    void* ptr,
+    std::size_t size) const {
+  checkedRangeEnd(ptr, size, "lookupIbBulkBuffer");
+  if (!lease.valid()) {
+    return std::nullopt;
+  }
+
+  const auto registration = bulkBufferRegistrations_.find(lease.generation());
+  if (registration == bulkBufferRegistrations_.end()) {
+    return std::nullopt;
+  }
+
+  const auto& active = registration->second;
+  const auto requestedBegin = reinterpret_cast<uintptr_t>(ptr);
+  const auto registeredBegin = reinterpret_cast<uintptr_t>(active.ptr);
+  if (!rangeContains(registeredBegin, active.size, requestedBegin, size)) {
+    return std::nullopt;
+  }
+
+  return IbBufferRegistrationView{
+      .leaseGeneration = lease.generation(),
+      .localBuffer =
+          active.localBuffer.subBuffer(requestedBegin - registeredBegin),
+      .size = size,
+      .relaxedOrdering = active.relaxedOrdering,
+  };
+}
+
+void MultiPeerIbTransportBase::deregisterIbBulkBuffer(
+    IbBufferRegistrationLease& lease) {
+  if (!lease.valid()) {
+    throw std::invalid_argument(
+        "deregisterIbBulkBuffer: invalid registration lease");
+  }
+
+  const auto registration = bulkBufferRegistrations_.find(lease.generation());
+  if (registration == bulkBufferRegistrations_.end()) {
+    throw std::runtime_error(
+        "deregisterIbBulkBuffer: stale registration lease");
+  }
+
+  void* const ptr = registration->second.ptr;
+  bulkBufferRegistrations_.erase(registration);
+  deregisterBuffer(ptr);
+  lease.reset();
+}
+
+bool MultiPeerIbTransportBase::isIbBulkBufferViewActive(
+    const IbBufferRegistrationView& view) const {
+  if (!view.valid()) {
+    return false;
+  }
+  const auto registration = bulkBufferRegistrations_.find(view.leaseGeneration);
+  if (registration == bulkBufferRegistrations_.end()) {
+    return false;
+  }
+
+  const auto& active = registration->second;
+  return rangeContains(
+      reinterpret_cast<uintptr_t>(active.ptr),
+      active.size,
+      reinterpret_cast<uintptr_t>(view.localBuffer.ptr),
+      view.size);
 }
 
 void MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
