@@ -11,8 +11,8 @@
 #include "comms/ctran/profiler/DefaultGpeProfilerReporter.h"
 #include "comms/ctran/profiler/GpeProfiler.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
 
@@ -387,7 +387,7 @@ commResult_t CtranGpe::allocKernelElems(
     this->pimpl->kernelElemPool->reclaim();
 
     if (numElems > this->pimpl->kernelElemPool->size()) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-GPE: Internal KernelElem pool has unexpected high usage (capacity: {}, available: {}, current request: {}). "
           "It is likely that some COMM kernels are not released properly",
@@ -402,7 +402,7 @@ commResult_t CtranGpe::allocKernelElems(
   if (numElems > 0) {
     *elemsList = this->pimpl->kernelElemPool->pop(ngroups);
     if (!*elemsList) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-GPE: failed to allocate KernelElem from pool (pop returned null)");
       return commInternalError;
@@ -412,7 +412,7 @@ commResult_t CtranGpe::allocKernelElems(
   for (int i = 1; i < numElems; i++) {
     elem->next = this->pimpl->kernelElemPool->pop(ngroups);
     if (!elem->next) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-GPE: failed to allocate chained KernelElem from pool (pop returned null)");
       return commInternalError;
