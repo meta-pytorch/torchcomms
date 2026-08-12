@@ -4,10 +4,12 @@
 
 #include <fmt/format.h>
 #include <folly/Singleton.h>
+#include <cstdint>
 
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 #include "comms/utils/commSpecs.h"
@@ -20,7 +22,7 @@ static folly::Singleton<memCacheAllocator> memCacheAllocatorSingleton;
 std::shared_ptr<memCacheAllocator> memCacheAllocator::getInstance() {
   ctran::utils::commCudaLibraryInit();
   if (!ctran::utils::getCuMemSysSupported()) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "NCCLX memory cache allocator only works with low-level cuMem APIs. Make sure CUDA Toolkit is 11.3 or higher.");
     return nullptr;
@@ -51,17 +53,27 @@ commResult_t memCacheAllocator::init() {
           nullptr,
           &poolHandle_,
           &newSlabSize));
-      CLOGF_SUBSYS(
+#if defined(__HIP_PLATFORM_AMD__)
+      const auto getPoolHandleForLog = [this] {
+        return reinterpret_cast<std::uintptr_t>(
+            ctran::utils::toFormattableHandle(poolHandle_));
+      };
+#else
+      const auto getPoolHandleForLog = [this] {
+        return ctran::utils::toFormattableHandle(poolHandle_);
+      };
+#endif
+      CTRAN_LOG_SUBSYS(
           INFO,
           ALLOC,
           "ncclx::memory::memCacheAllocator::init size {} pointer {} handle {:x}",
           newSlabSize,
           poolPtr_,
-          ctran::utils::toFormattableHandle(poolHandle_));
+          getPoolHandleForLog());
       poolRemainSize_ = newSlabSize;
     }
     initialized_ = true;
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "Initialized NCCLX internal buffer pool, size {}",
@@ -74,7 +86,7 @@ commResult_t memCacheAllocator::init() {
 commResult_t memCacheAllocator::reset() {
   std::unique_lock lock(mutex_);
   if (initialized_) {
-    CLOGF_SUBSYS(INFO, INIT, "Reset NCCLX internal buffer pool");
+    CTRAN_LOG_SUBSYS(INFO, INIT, "Reset NCCLX internal buffer pool");
     printSnapshot();
 
     auto nOccupiedRegions = countOccupiedRegions();
@@ -97,7 +109,7 @@ commResult_t memCacheAllocator::reset() {
 }
 
 memCacheAllocator::~memCacheAllocator() {
-  CLOGF_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
+  CTRAN_LOG_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
   FB_COMMCHECKTHROW_EX_NOCOMM(reset());
 }
 
@@ -116,13 +128,13 @@ std::shared_ptr<memRegion> memCacheAllocator::getFreeMemReg(
     auto region = freeRegions->front();
     freeRegions->pop_front();
     if (region->refCnt > 0) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "Found a free region with size {} is already in use, region={}",
           nBytes,
           region->toString().c_str());
     }
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO, ALLOC, "Reusing free region {}", region->toString().c_str());
     return region;
   }
@@ -142,7 +154,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
     region->cuHandle = poolHandle_;
     poolPtr_ = (char*)poolPtr_ + nBytes;
     poolRemainSize_ -= nBytes;
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "Consume memory from pre-allocated pool ({} + {})",
@@ -156,7 +168,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
         &region->ptr, nBytes, callsite, logMetaData, &handle));
     region->cuHandle = handle;
 
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "Memory Pool is full, pool size {}, allocated new memory {} with size {}",
@@ -169,7 +181,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
   region->size = nBytes;
   region->creatorTid = syscall(SYS_gettid);
   region->bucket = bucket;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO, ALLOC, "Created new region {}", region->toString().c_str());
   return region;
 }
@@ -198,7 +210,7 @@ commResult_t memCacheAllocator::getCachedCuMemById(
     region = getFreeMemReg(alignedSize16, bucket);
     if (region == nullptr) {
       // Need to create a new region
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           ALLOC,
           "No free region with size {} is available, need to create a new region",
@@ -214,7 +226,7 @@ commResult_t memCacheAllocator::getCachedCuMemById(
           key,
           hashKey);
     }
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "Caching new region for key {} hashKey {:x}: {}",
@@ -236,7 +248,7 @@ commResult_t memCacheAllocator::getCachedCuMemById(
   // insert/update the cached region
   cachedRegionMap_[hashKey] = region;
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       ALLOC,
       "Return the cached (requested key={}, hashKey={:x}, size {}) region {}",
@@ -267,7 +279,7 @@ commResult_t memCacheAllocator::reserve(const std::string& key) {
         key,
         hashKey,
         cachedRegion->ownerKey);
-    CLOGF_TRACE(ALLOC, "{}", errStr.c_str());
+    CTRAN_LOG_TRACE(ALLOC, "{}", errStr.c_str());
     return commInProgress;
   }
 
@@ -279,7 +291,7 @@ commResult_t memCacheAllocator::reserve(const std::string& key) {
 
   cachedRegion->refCnt++;
   cachedRegion->ownerKey = key;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "reserved region {} using key {} hash {:x}",
       cachedRegion->toString().c_str(),
@@ -307,7 +319,7 @@ commResult_t memCacheAllocator::release(const std::vector<std::string>& keys) {
     }
     cachedRegion->refCnt--;
     if (cachedRegion->refCnt == 0) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           ALLOC,
           "Releasing region {} back to free list",
@@ -353,7 +365,7 @@ void memCacheAllocator::printSnapshot() const {
   // convert to GiB
   double avai_mem = avai_bytes / (1024 * 1024 * 1024);
   double total_mem = total_bytes / (1024 * 1024 * 1024);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "NCCLX memory allocator snapshot: NCCL used {} bytes, {} allocated regions ({} buckets) {} regions in-use, avai_mem: {:.2f} of {:.2f} GiB",
@@ -365,7 +377,7 @@ void memCacheAllocator::printSnapshot() const {
       total_mem);
   for (const auto& [bucket, regionMap] : freeRegionMaps_) {
     for (const auto& [size, vec] : regionMap) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           ALLOC,
           "\tFree region map size in bucket-{}: {}, count: {}",
@@ -373,7 +385,7 @@ void memCacheAllocator::printSnapshot() const {
           size,
           vec.size());
       for (const auto& region : vec) {
-        CLOGF_SUBSYS(
+        CTRAN_LOG_SUBSYS(
             INFO,
             ALLOC,
             "\t\tFree region with size {}: {}",
@@ -383,7 +395,7 @@ void memCacheAllocator::printSnapshot() const {
     }
   }
   for (const auto& [key, region] : cachedRegionMap_) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "\tCached region map key: {} -> {}",
