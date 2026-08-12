@@ -7,10 +7,10 @@
 #include <memory>
 
 #include "comms/ctran/gpe/CtranGpeImpl.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 ctran::gpe::GpeCmdId GpeDeviceRingCmdRegistry::registerCmd(CtranGpeCmd* cmd) {
   ctran::gpe::GpeCmdId id = nextId_.fetch_add(1, std::memory_order_relaxed);
@@ -88,13 +88,13 @@ void CtranGpe::Impl::initDeviceRing() {
     return major;
   }();
   if (ccMajor < 0) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-GPE: could not query compute capability; leaving device ring disabled");
     return;
   }
   if (ccMajor < 9) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-GPE: device ring requires sm_90+ (found compute capability {}.x); using host-node dispatch",
@@ -106,7 +106,7 @@ void CtranGpe::Impl::initDeviceRing() {
   // allocation. Reject it with a clear diagnostic and fall back to host nodes.
   const int configuredRingSize = NCCL_CTRAN_GPE_DEVICE_RING_SIZE;
   if (configuredRingSize <= 0) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-GPE: NCCL_CTRAN_GPE_DEVICE_RING_SIZE={} must be > 0; using host-node dispatch",
         configuredRingSize);
@@ -115,14 +115,14 @@ void CtranGpe::Impl::initDeviceRing() {
   auto ring = std::make_unique<ctran::gpe::GpeRing>(
       static_cast<uint32_t>(configuredRingSize));
   if (!ring->valid()) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-GPE: device ring allocation failed; falling back to host-node dispatch");
     return;
   }
   deviceRingReader_ = std::make_unique<ctran::gpe::GpeRingReader>(*ring);
   deviceRing_ = std::move(ring);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-GPE: device-ring dispatch enabled (ring size {})",
@@ -185,7 +185,7 @@ CtranGpeCmd* CtranGpe::Impl::acquireNextCmd() {
         // The cmd was destroyed (graph teardown) after publishing, or an id
         // was never registered. Drop it — safe because a destroyed cmd's
         // registry entry is erased before free.
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "CTRAN-GPE: device ring entry cmd_id {} has no live registry entry; skipping",
             entry.data);
@@ -196,7 +196,7 @@ CtranGpeCmd* CtranGpe::Impl::acquireNextCmd() {
     // waiting for us to drain, so device work is being throttled by the GPE
     // consumer. Rate-limited so a sustained stall logs periodically.
     if (pollResult.writerThrottled) {
-      CLOGF_EVERY_MS(
+      CTRAN_LOG_EVERY_MS(
           WARN,
           1000,
           "CTRAN-GPE: device ring full (size {}); kernel writes throttled — GPE consumer not draining fast enough",
