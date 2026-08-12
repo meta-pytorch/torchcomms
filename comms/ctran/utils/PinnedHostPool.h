@@ -12,10 +12,10 @@ using cudaHostAlloc. It is NOT thread-safe.
 #include <vector>
 
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 /*
 PinnedHostItem is the concept/interface for pinned host objects. All pinned host
@@ -47,8 +47,8 @@ class PinnedHostPool {
   ~PinnedHostPool() {
     this->reclaim();
     if (this->inuseItems_.size()) {
-      CLOGF(
-          WARNING,
+      CTRAN_LOG(
+          WARN,
           "CTRAN-GPE: Internal {} pool has {} inuse items at destruction. "
           "In CUDA graph mode this indicates an async cmdDestroy race: "
           "the graph was not fully destroyed before communicator teardown.",
@@ -70,7 +70,7 @@ class PinnedHostPool {
     }
 
     if (this->freeItems_.size() == 0) {
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-GPE: {} pool exhausted ({} capacity), growing by {}",
           T::name(),
@@ -83,7 +83,7 @@ class PinnedHostPool {
     this->freeItems_.pop();
     item->onPop();
     this->inuseItems_.push_back(item);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-GPE: Pop {} {}, {} free, {} inuse",
         T::name(),
@@ -101,7 +101,7 @@ class PinnedHostPool {
         it = this->inuseItems_.erase(it);
         item->reset();
         this->freeItems_.push(item);
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-GPE: Reclaimed {} {}, {} free",
             T::name(),
