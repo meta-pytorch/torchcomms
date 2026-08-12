@@ -243,7 +243,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
         ipcDesc.desc, cudaDev, logMetaData, extraSegments);
   } catch (std::exception& e) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-REGCACHE: failed to import IPC remote registration from peer {} ipcDesc {}, error {}",
         peerId,
@@ -281,7 +281,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
   auto peerIt = lockedMap->find(peerId);
   if (peerIt == lockedMap->end() ||
       peerIt->second.find(key) == peerIt->second.end()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
         peerId,
@@ -393,7 +393,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
     int32_t exportCount) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote release");
     return commInternalError;
@@ -442,7 +442,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
     ctran::regcache::IpcReqCb* reqCb) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote export");
     return commInternalError;
@@ -493,7 +493,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   // Initialize local peer ID (hostname:pid) for IPC communications
   char hostname[256];
   if (gethostname(hostname, sizeof(hostname)) != 0) {
-    CERR(commInternalError, "CTRAN-REGCACHE: Failed to get hostname");
+    CTRAN_ERR(commInternalError, "CTRAN-REGCACHE: Failed to get hostname");
     return commInternalError;
   }
   hostname[sizeof(hostname) - 1] = '\0';
