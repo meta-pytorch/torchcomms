@@ -6,10 +6,10 @@
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "folly/SocketAddress.h"
 #include "folly/synchronization/CallOnce.h"
 
@@ -54,7 +54,7 @@ commResult_t mapBootstrapSocketError(
     uint64_t commHash,
     const std::string& commDesc) {
   if (isPeerDisconnectErrno(err)) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={} (treating as remote error)",
         op,
@@ -95,7 +95,7 @@ void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
 
   std::string line =
       ::comms::tcp_devmem::addrToString(&dev->addr, 0, dev->name.c_str());
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-TCPDM: Rank {} created listen socket based on a self-finding address {} for cuda device {}",
@@ -127,7 +127,7 @@ void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
 
     std::string line = ::comms::tcp_devmem::addrToString(
         &sin->sin6_addr, sin->sin6_port, nullptr);
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO, INIT, "CTRAN-TCPDM: Rank {} bootstrap address {}", i, line);
   }
 
@@ -179,7 +179,7 @@ void CtranTcpDm::bootstrapAccept() {
 
     bootstrapAddRecvPeer(peerRank, recvComm);
 
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-TCPDM: Established data connection: commHash {:x}, "
@@ -190,7 +190,7 @@ void CtranTcpDm::bootstrapAccept() {
         peerRank);
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-TCPDM: Accept thread terminating for commHash {:x}, commDesc {}, rank {}",
@@ -243,7 +243,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
 
   bootstrapAddSendPeer(peerRank, sendComm);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-TCPDM: Established data connection: commHash {:x}, "
@@ -278,7 +278,7 @@ CtranTcpDm::CtranTcpDm(CtranComm* comm, ctran::Profiler* profiler) {
 
   registerProfilerHooks(profiler);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-TCPDM: created TCPDM backend {} for commHash {:x} commDesc {}",
@@ -294,7 +294,7 @@ CtranTcpDm::~CtranTcpDm() {
   const uint32_t closeFlags = comm_ != nullptr && comm_->testAbort()
       ? ::comms::tcp_devmem::kCloseFlagForce
       : 0;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-TCPDM: destroying backend {} commHash {:x} commDesc {} aborted {} closeFlags {:#x}",
@@ -347,7 +347,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
 
   const bool forceClose = closeFlags & ::comms::tcp_devmem::kCloseFlagForce;
   if (forceClose) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {} pendingRecvNotifies {} cancelledPendingRecvNotifies {}",
         (void*)this,
@@ -363,7 +363,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
         pendingRecvNotifyCount,
         cancelledPendingRecvNotifyCount);
   } else {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-TCPDM: closing backend {} rank {} commHash {:x} commDesc {} reason {} flags {:#x} sendComms {} recvComms {} queuedRecvs {} cancelledQueuedRecvs {} pendingRecvNotifies {} cancelledPendingRecvNotifies {}",
         (void*)this,
@@ -384,7 +384,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
   for (auto& [peerRank, comm] : sendComms) {
     auto status = transport->closeSend(comm, closeFlags);
     if (status != ::comms::tcp_devmem::Status::Ok) {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-TCPDM: closeSend failed for peer {} on rank {} commHash {:x} commDesc {} reason {} flags {:#x} status {}",
           peerRank,
@@ -400,7 +400,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
   for (auto& [peerRank, comm] : recvComms) {
     auto status = transport->closeRecv(comm, closeFlags);
     if (status != ::comms::tcp_devmem::Status::Ok) {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-TCPDM: closeRecv failed for peer {} on rank {} commHash {:x} commDesc {} reason {} flags {:#x} status {}",
           peerRank,
@@ -416,7 +416,7 @@ void CtranTcpDm::closeComms(const char* reason, uint32_t closeFlags) {
 
 void CtranTcpDm::abortOutstanding(const char* reason) {
   if (aborted_.exchange(true)) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-TCPDM: backend {} already aborted for rank {} commHash {:x} commDesc {} reason {}",
@@ -853,7 +853,7 @@ void CtranTcpDm::recvNotifyProgress() {
       try {
         complete = pending.front()->isComplete();
       } catch (const std::exception& e) {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "CTRAN-TCPDM: counted recv notify failed for peer {} rank {} commHash {:x} commDesc {} error {}",
             peerRank,
