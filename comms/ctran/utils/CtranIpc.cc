@@ -5,6 +5,7 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/commSpecs.h"
@@ -138,7 +139,7 @@ commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
   std::vector<CtranIpcSegDesc> extraSegments;
   FB_COMMCHECK(ipcExport(ipcDesc, extraSegments));
   if (!extraSegments.empty()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations. [{}]",
         this->toString());
@@ -220,7 +221,7 @@ commResult_t ctran::utils::CtranIpcMem::ipcExport(
   ipcDesc.base = this->getBase();
   ipcDesc.range = this->getRange();
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IPC: exported mem [{}] to ipcDesc (extraSegments={}): {}",
       this->toString(),
@@ -260,7 +261,7 @@ commResult_t ctran::utils::CtranIpcMem::alloc(const size_t size) {
   }
 
   activeIpcMemCount++;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IPC: allocated mem [{}], total IPC mem {}",
       this->toString(),
@@ -276,7 +277,7 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
     bool shouldSupportCudaMalloc) {
   // Should never call load from an instance with allocation mode
   if (this->mode_ != CtranIpcMem::Mode::LOAD) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IPC: try to load a memory range to an instance with allocation mode. It indicates a COMM internal bug.");
     return commInternalError;
@@ -284,7 +285,7 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
 
   // A load instance should manage only one memory range at lifetime
   if (this->pbase_) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IPC: CtranIpcMem already manages an existing memory range: {}. It indicates a COMM internal bug.",
         this->toString().c_str());
@@ -309,7 +310,7 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
     }
     FB_COMMCHECK(this->tryLoadCudaMallocMem(ptr, len, supported));
   } else {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         ALLOC,
         "CTRAN-IPC: failed to load device memory {}, len={}, memType={}",
         ptr,
@@ -319,7 +320,7 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
   }
 
   activeIpcMemCount++;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       DBG,
       ALLOC,
       "CTRAN-IPC: loaded mem [{}], total IPC mem {}",
@@ -378,7 +379,7 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
         (segmentHandleType != cuMemHandleType_);
 
     if (isUnsupportedType) {
-      CERR(
+      CTRAN_ERR(
           commInvalidUsage,
           "CTRAN-IPC: [pbase {} range {}] associated with [ptr {} len {}] "
           "has unsupported allocation properties for IPC export: "
@@ -430,7 +431,7 @@ commResult_t ctran::utils::CtranIpcMem::free() {
   CUcontext pctx;
   FB_CUCHECK(cuCtxGetCurrent(&pctx));
   if (pctx == nullptr) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "CTRAN-IPC: cuda context has already been destroyed. Skip free");
@@ -449,7 +450,7 @@ commResult_t ctran::utils::CtranIpcMem::free() {
   }
 
   activeIpcMemCount--;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IPC: freed mem [{}], total IPC mem {}",
       this->toString(),
@@ -559,7 +560,7 @@ commResult_t ctran::utils::CtranIpcRemMem::import(
   }
 
   activeIpcRemMemCount++;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       DBG,
       ALLOC,
       "CTRAN-IPC: imported remote mem [{}], total IPC remMem {}",
@@ -622,7 +623,7 @@ commResult_t CtranIpcRemMem::importCuMem(const CtranIpcDesc& ipcDesc) {
 
 commResult_t CtranIpcRemMem::importCudaMallocMem(const CtranIpcDesc& ipcDesc) {
   if (ipcDesc.totalSegments != 1) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IPC: Number of segments is expected to be 1, but got {}",
         ipcDesc.totalSegments);
@@ -645,7 +646,7 @@ commResult_t ctran::utils::CtranIpcRemMem::release() {
   CUcontext pctx;
   FB_CUCHECK(cuCtxGetCurrent(&pctx));
   if (pctx == nullptr) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         ALLOC,
         "CTRAN-IPC: cuda context has already been destroyed. Skip release");
@@ -669,7 +670,7 @@ commResult_t ctran::utils::CtranIpcRemMem::release() {
   }
 
   activeIpcRemMemCount--;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IPC: free remote cumem range {}, {}, total IPC remMem {}",
       this->getBase(),
