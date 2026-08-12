@@ -11,6 +11,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::sendrecv {
@@ -76,7 +77,7 @@ inline commResult_t selfSendRecvImpl(
     CtranComm* comm) {
   const auto statex = comm->statex_.get();
   if (selfSends.size() != selfRecvs.size()) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "Invalid usage: number of self ncclSend ({}) and ncclRecv ({}) does not match on rank {}",
         selfSends.size(),
