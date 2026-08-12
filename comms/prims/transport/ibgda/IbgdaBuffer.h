@@ -577,15 +577,15 @@ inline constexpr int kIbDirections = 2;
 inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
 
 // Per-protocol resource slots reserved on every channel, indexed by a protocol
-// tag's kProtoSlot (Simple = 0). Only Simple exists today, so this is 1 and the
-// layout matches the single-protocol one. The diff that adds a second wire
-// protocol raises it, which is what reserves the extra staging, signal, and
-// counter slots.
+// tag's kProtoSlot (Simple = 0, LL = 1). The layout reserves this many
+// channels' worth of staging, signal, and counter slots per peer, so raising it
+// costs memory: at the default 128 KiB x 64 channels, each extra slot is
+// +8 MiB per peer of staging.
 //
 // It does NOT reserve more QPs: a channel is one QP pair regardless of how many
 // protocols address it, which is why IbQpState lives on the channel rather than
 // in a slot.
-inline constexpr int kNumProtoSlots = 1;
+inline constexpr int kNumProtoSlots = 2;
 
 // Identifies a lane-local completion threshold returned by put().
 // completionId is the send-lane ordinal; value is complete once that lane's

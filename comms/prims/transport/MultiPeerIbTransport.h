@@ -128,15 +128,29 @@ struct MultipeerIbTransportConfig {
     return maxGroups * qpsPerBlockPerNic;
   }
 
-  std::size_t fixedChannelDataBufferSize() const {
+  // Slot-indexed storage is reserved per (logical channel, protocol slot).
+  // max_num_channels stays the LOGICAL channel count a caller selects with
+  // group_id; slot p owns [p * max_num_channels, (p+1) * max_num_channels).
+  // The slot count is kNumProtoSlots (IbgdaBuffer.h) rather than runtime
+  // config, so host sizing and device indexing cannot disagree. QPs are NOT
+  // multiplied: a channel is one QP pair shared by every protocol on it.
+  int totalChannelSlots() const {
     if (max_num_channels < 0) {
       throw std::invalid_argument("max_num_channels must be >= 0");
     }
-    const auto channels = static_cast<std::size_t>(max_num_channels);
+    if (max_num_channels > std::numeric_limits<int>::max() / kNumProtoSlots) {
+      throw std::overflow_error(
+          "max_num_channels * kNumProtoSlots overflows int");
+    }
+    return max_num_channels * kNumProtoSlots;
+  }
+
+  std::size_t fixedChannelDataBufferSize() const {
+    const auto channels = static_cast<std::size_t>(totalChannelSlots());
     if (channels != 0 &&
         perChannelSize > std::numeric_limits<std::size_t>::max() / channels) {
       throw std::overflow_error(
-          "perChannelSize * max_num_channels overflows size_t");
+          "perChannelSize * totalChannelSlots overflows size_t");
     }
     return perChannelSize * channels;
   }

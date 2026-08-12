@@ -2279,7 +2279,10 @@ class P2pIbgdaTransportDevice {
    * perBlockSlot.
    * @param timeout         Optional timeout for wait operations.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void send(
       ThreadGroup& group,
       const void* __restrict__ src,
@@ -2287,7 +2290,7 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    sendWithTrace<CopyOp>(
+    sendWithTrace<CopyOp, Proto>(
         group, src, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
@@ -2305,7 +2308,10 @@ class P2pIbgdaTransportDevice {
         *this, group, src, nbytes, max_signal_bytes, timeout);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void sendWithTrace(
       ThreadGroup& group,
       const void* __restrict__ src,
@@ -2335,7 +2341,7 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    detail::send<P2pIbgdaTransportDevice, CopyOp>(
+    detail::send<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
@@ -2375,7 +2381,10 @@ class P2pIbgdaTransportDevice {
    * perBlockSlot. Must match the sender's value.
    * @param timeout         Optional timeout for wait operations.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2383,11 +2392,14 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    recvWithTrace<CopyOp>(
+    recvWithTrace<CopyOp, Proto>(
         group, dst, nbytes, max_signal_bytes, timeout, {}, 0, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void recvWithTrace(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2417,7 +2429,7 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    detail::recv<P2pIbgdaTransportDevice, CopyOp>(
+    detail::recv<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
