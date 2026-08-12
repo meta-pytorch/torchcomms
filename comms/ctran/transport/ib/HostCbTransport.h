@@ -17,6 +17,7 @@
 #include "comms/ctran/transport/ib/HostTransportDev.cuh"
 #include "comms/ctran/transport/ib/HostTransportImpl.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 
 class CtranIb;
@@ -443,7 +444,7 @@ inline commResult_t HostCbTransport::postResourceExchange() {
     return commSuccess;
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: HostCbTransport resource exchange with peer {} (myRank={})",
