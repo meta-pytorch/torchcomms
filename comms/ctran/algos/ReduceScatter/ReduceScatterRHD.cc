@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -85,7 +86,7 @@ static commResult_t impl(
     auto peer = peers[i];
     bool lastStep = i == nSteps - 1;
 
-    CLOGF_TRACE(COLL, "rank {} peer {} step {}", rank, peer, i);
+    CTRAN_LOG_TRACE(COLL, "rank {} peer {} step {}", rank, peer, i);
 
     // Send buffer information to peer, which also signals that this rank
     // is ready to receive
@@ -116,7 +117,7 @@ static commResult_t impl(
           : (char*)tmpRedBuf + tmpBufOffset * recvSize;
       void* putHdl = (i == 0) ? sendHdl : tmpHdl;
 
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "iput rank {} peer {} sendBufOffset: {} tmpBufOffset: {} lastChunkPerStep: {}",
           rank,
@@ -168,7 +169,7 @@ static commResult_t impl(
           ? (char*)sendbuff + sendBufRedOffset * recvSize
           : (char*)tmpRedBuf + tmpRedBufOffset * recvSize;
 
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "Elem post rank {} peer {} tmpRedBufOffset: {} sendBufRedOffset: {} lastChunkPerStep: {}",
           rank,
@@ -201,7 +202,7 @@ static commResult_t impl(
   comm->ctran_->mapper->timestamps.push_back(std::move(timestamp));
   comm->ctran_->mapper->reportProfiling();
 
-  CLOGF_TRACE(COLL, "rank {} reached end of ReduceScatter", rank);
+  CTRAN_LOG_TRACE(COLL, "rank {} reached end of ReduceScatter", rank);
   return commSuccess;
 }
 
@@ -336,14 +337,14 @@ commResult_t ctranReduceScatterRHD(
       stream);
   const size_t totalBufSize = recvcount * typeSize * statex->nRanks();
   if (NCCL_CTRAN_INTERNODE_TMPBUF_SIZE < totalBufSize) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "ctranReduceScatterRHD: data buffer of size {} bytes "
         "is too large to fit in tmpBuf",
         totalBufSize);
     return commInternalError;
   } else if ((statex->nRanks() & (statex->nRanks() - 1)) != 0) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "ctranReduceScatterRHD: current implementation requires"
         "number of ranks to be a power of 2, nRanks: {}",
