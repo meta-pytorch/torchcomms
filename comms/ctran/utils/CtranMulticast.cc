@@ -6,7 +6,6 @@
 #include "comms/ctran/utils/Alloc.h" // isCuMemFabricEnabled
 #include "comms/ctran/utils/Checks.h" // FB_COMMCHECK
 #include "comms/ctran/utils/CudaWrap.h"
-#include "comms/utils/logger/LogUtils.h"
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12010
 #include "comms/ctran/utils/CtranLogger.h"
 #endif
@@ -188,7 +187,7 @@ commResult_t CtranMulticast::retainSegments(const void* dptr, size_t len) {
   DevMemType memType{};
   const commResult_t typeRes = getDevMemType(dptr, cudaDev_, memType);
   if (typeRes != commSuccess) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-MC: cannot set up multicast -- failed to classify memory at {} on cudaDev {}",
         dptr,
@@ -196,7 +195,7 @@ commResult_t CtranMulticast::retainSegments(const void* dptr, size_t len) {
     return typeRes;
   }
   if (memType != DevMemType::kCumem) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-MC: cannot set up multicast over {} -- it is {} memory, but multicast requires a cuMem/VMM allocation (e.g. ncclMemAlloc)",
         dptr,
