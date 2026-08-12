@@ -28,6 +28,7 @@
 #include "comms/ctran/algos/AllGatherP/CommUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -71,7 +72,7 @@ commResult_t ctranAllGatherCudagraphAware(
     algo = selectCtgraphAlgo(sendcount * commTypeSize(datatype), statex);
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-AGP: AllGather cudagraph-aware: algo {} "
