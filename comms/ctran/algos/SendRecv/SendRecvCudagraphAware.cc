@@ -17,6 +17,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 commResult_t ctranSendRecvCudagraphAware(
@@ -27,7 +28,7 @@ commResult_t ctranSendRecvCudagraphAware(
   // Caller (ctranGroupEndHook) already verified active capture mode.
   const auto statex = comm->statex_.get();
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "SendRecv cudagraph-aware: nOps {} commHash {:x} commDesc {} nRanks {} nLocalRanks {} nNodes {}",
