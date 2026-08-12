@@ -543,7 +543,7 @@ commResult_t ctran::RegCache::asyncRegRange(
     const struct CommLogData& logMetaData,
     const std::vector<bool>& backend) {
   if (!asyncRegThread_.joinable()) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "AsyncReg thread is not running. Check whether NCCL_CTRAN_REGISTER=async is set.");
     return commInvalidUsage;
@@ -1344,7 +1344,7 @@ commResult_t ctran::RegCache::acquireScopedRegister(
     const CommLogData& logMetaData,
     ctran::ScopedRegHdl& scopedRegHdl) {
   if (buf == nullptr || len == 0) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "acquireScopedRegister: invalid buf {} len {}",
         (void*)buf,
@@ -1369,7 +1369,7 @@ commResult_t ctran::RegCache::acquireScopedRegister(
       true /* acquireRef */);
 
   if (regResult != commSuccess || regHdl == nullptr) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "acquireScopedRegister: buffer [buf {} len {}] is not backed by a cached "
         "segment. Scoped registration requires the buffer's memory to be pre-registered "
@@ -1576,7 +1576,8 @@ commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
 
     auto it = regHdlToElemMap.find(regHdl);
     if (it == regHdlToElemMap.end()) {
-      CERR(commInvalidUsage, "deregRange: regElem {} not found", (void*)regHdl);
+      CTRAN_ERR(
+          commInvalidUsage, "deregRange: regElem {} not found", (void*)regHdl);
       return commInvalidUsage;
     }
 
@@ -1585,7 +1586,7 @@ commResult_t ctran::RegCache::deregRange(ctran::regcache::RegElem* regHdl) {
       // The caller may already have performed mapper-side remote release, so
       // this error is not a retry contract. Keep regcache state intact and let
       // higher-level failure cleanup or allocator force-free reclaim memory.
-      CERR(
+      CTRAN_ERR(
           commInvalidUsage,
           "deregRange: RegElem {} still has {} live use-side owner(s)",
           (void*)regHdl,
@@ -1691,7 +1692,7 @@ std::vector<std::vector<ctran::regcache::Segment*>> getContiguousRegions(
 commResult_t ctran::RegCache::regAll() {
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
-    CERR(commInternalError, "regAll: RegCache instance not available");
+    CTRAN_ERR(commInternalError, "regAll: RegCache instance not available");
     return commInternalError;
   }
 
@@ -1735,7 +1736,7 @@ commResult_t ctran::RegCache::regAll() {
 
     int cudaDev = contiguousRegions[0].front()->cudaDev;
     if (cudaDev < 0) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "regAll: could not determine cudaDev from cached segments");
       return commInternalError;
@@ -1826,7 +1827,7 @@ commResult_t ctran::RegCache::regAll() {
 commResult_t ctran::RegCache::deregAll() {
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
-    CERR(commInternalError, "deregAll: RegCache instance not available");
+    CTRAN_ERR(commInternalError, "deregAll: RegCache instance not available");
     return commInternalError;
   }
 
