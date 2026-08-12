@@ -1051,14 +1051,15 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
     PIPES_DEVICE_TRAP();
   }
   const int groupId = static_cast<int>(group.group_id);
-  const int maxGroups = channelLayout.maxChannels;
-  if (groupId < 0 || groupId >= maxGroups) {
+  // LOGICAL bound -- see calcGeometry.
+  const int numChannels = channelLayout.numChannels;
+  if (groupId < 0 || groupId >= numChannels) {
     if (group.is_leader()) {
       printf(
-          "[PIPES] FATAL: %s group_id=%d >= maxGroups=%d\n",
+          "[PIPES] FATAL: %s group_id=%d >= numChannels=%d\n",
           opName,
           groupId,
-          maxGroups);
+          numChannels);
     }
     PIPES_DEVICE_TRAP();
   }
