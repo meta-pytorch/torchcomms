@@ -1110,6 +1110,8 @@ set(COMMON_FILES
   comms/utils/logger/ScubaFileUtils.h
   comms/utils/logger/ScubaLogger.cc
   comms/utils/logger/ScubaLogger.h
+  comms/utils/logger/SpdlogLogger.cc
+  comms/utils/logger/SpdlogLogger.h
   comms/utils/MemUtils.cc
   comms/utils/MemUtils.h
   comms/utils/memtrace/MemoryTrace.cc
@@ -1296,6 +1298,25 @@ endif()
 # comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc, which is compiled into
 # librccl. Resolved from CONDA_PREFIX via CMAKE_PREFIX_PATH (env), same as fmt.
 find_package(absl CONFIG REQUIRED)
+find_package(spdlog 1.16.0 CONFIG QUIET)
+if(NOT spdlog_FOUND)
+  include(FetchContent)
+  set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_PIC ON CACHE BOOL "" FORCE)
+  set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    spdlog
+    SOURCE_DIR "${FBCODE_DIR}/../third-party/spdlog"
+  )
+  # spdlog treats BUILD_SHARED_LIBS as an override of SPDLOG_BUILD_SHARED.
+  set(_rccl_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_MakeAvailable(spdlog)
+  set(BUILD_SHARED_LIBS "${_rccl_saved_build_shared_libs}")
+  unset(_rccl_saved_build_shared_libs)
+endif()
 
 set(GEN_DIR "${HIPIFY_DIR}/gensrc")
 set(GEN_SYM_DIR "${GEN_DIR}/symmetric")
@@ -1404,6 +1425,11 @@ list(APPEND HIP_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/git_version.cpp)
 #==================================================================================================
 ## Set RCCL source files
 add_library(rccl ${HIP_SOURCES})
+
+target_compile_definitions(rccl PRIVATE
+  SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+  SPDLOG_FMT_EXTERNAL
+)
 
 ## Set RCCL dependencies
 ## Ensure git version is updated before building rccl
@@ -1871,6 +1897,7 @@ target_link_libraries(rccl PRIVATE   dl)
 target_link_libraries(rccl PRIVATE   atomic)
 target_link_libraries(rccl PRIVATE   ${SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE fmt::fmt-header-only)
+target_link_libraries(rccl PRIVATE spdlog::spdlog)
 target_link_libraries(rccl PRIVATE absl::log absl::check)  # GpuClockCalibration.cc
 if(ENABLE_MSCCLPP)
   target_link_libraries(rccl PRIVATE mscclpp_nccl)
