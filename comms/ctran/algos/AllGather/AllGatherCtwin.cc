@@ -13,11 +13,11 @@
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using ctran::allgatherp::AlgoImpl;
 using ctran::allgatherp::destroyPersistentRequest;
@@ -136,7 +136,7 @@ bool checkCtranAllGatherCtwinSupport(
   }
   // Dormant until a caller passes a non-empty recvbuff.
   if (recvbuff == nullptr || recvBytes == 0) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllGather {} unsupported: needs a non-empty recvbuff (recvbuff={}, recvBytes={}).",
@@ -149,7 +149,7 @@ bool checkCtranAllGatherCtwinSupport(
   // computes each peer's recvbuf as its window buffer at the same offset).
   auto* win = comm->findWindowForBuffer(recvbuff, recvBytes);
   if (win == nullptr || !win->isSymmetric() || !win->allGatherPSupported()) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllGather {} unsupported: recvbuff {} ({} bytes) is not covered by a symmetric AllGatherP window.",
@@ -165,7 +165,7 @@ bool checkCtranAllGatherCtwinSupport(
   if ((algo == NCCL_ALLGATHER_ALGO::ctwin_ring ||
        algo == NCCL_ALLGATHER_ALGO::ctwin_srd) &&
       statex->nLocalRanks() != 1) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllGather {} unsupported: forced dedicated ring/streamed-RD requires nLocalRanks==1, got {}.",
@@ -175,7 +175,7 @@ bool checkCtranAllGatherCtwinSupport(
   }
   if (algo == NCCL_ALLGATHER_ALGO::ctwin_srd &&
       !ctran::utils::isPowerOfTwo(statex->nRanks())) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllGather {} unsupported: forced streamed-RD requires power-of-2 nRanks, got {}.",
@@ -185,7 +185,7 @@ bool checkCtranAllGatherCtwinSupport(
   }
   if (algo == NCCL_ALLGATHER_ALGO::ctwin_rdpipeline &&
       !ctran::utils::isPowerOfTwo(statex->nNodes())) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         COLL,
         "AllGather {} unsupported: forced rdpipeline requires power-of-2 nNodes, got {}.",
@@ -273,7 +273,7 @@ commResult_t ctranAllGatherCtwin(
 
   // Log the resolved window id so a rank-divergent window pick (all ranks must
   // resolve a buffer to the same window) is debuggable.
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "AllGather ctwin: rank {} resolved recvbuff {} ({} bytes, offset {}) to window id {}",

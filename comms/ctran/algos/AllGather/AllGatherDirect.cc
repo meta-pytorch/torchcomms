@@ -8,10 +8,10 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 CTRAN_DATATYPE_TO_FUNC_MAPPER(kernFnMap, ncclKernelAllGatherCtranDirect);
 
@@ -110,7 +110,7 @@ static commResult_t impl(
       // Wait for receiving remote recv buffer from a local peer
       comm->ctran_->mapper->waitRequest(irecvReq[pRank].get());
       if (remoteAccessKeys[pRank].backend != CtranMapperBackend::NVL) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "NVLink backend not available between rank {} and {}",
             rank,
