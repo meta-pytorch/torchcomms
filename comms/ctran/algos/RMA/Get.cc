@@ -9,8 +9,8 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran;
 using ::meta::comms::colltrace::CollTraceHandleTriggerState;
@@ -30,7 +30,7 @@ static commResult_t getImpl(
 
   // IB backend must be available for current Get implementation
   if (!comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "GET only support IB backend for now, and no IB backend found");
     return commInternalError;
@@ -48,7 +48,7 @@ static commResult_t getImpl(
   FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
       op->get.recvbuff, getSize, &localMemHdl, &localReg));
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "getImpl: dstbuf {}, srcbuf {} (base {} + offset {}), size {}",
       op->get.recvbuff,
@@ -111,7 +111,7 @@ commResult_t ctranGet(
   size_t countNbytes = count * commTypeSize(datatype);
   size_t peerWinSize = win->getDataSize(peer);
   if ((targetDispNbytes + countNbytes) > peerWinSize) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "Invalid target displacement from {} bytes to {} bytes exceeding peer {}'s window size {}",
         targetDispNbytes,
