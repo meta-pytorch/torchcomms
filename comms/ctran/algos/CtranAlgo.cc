@@ -9,6 +9,7 @@
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
 #if defined(ENABLE_PRIMS)
@@ -17,7 +18,6 @@
 #endif // defined(ENABLE_PRIMS)
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #if defined(ENABLE_PRIMS)
 using comms::prims::NvlChannelState;
@@ -194,7 +194,7 @@ commResult_t CtranAlgo::initKernelResources() {
   int rank = statex->rank();
 
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN only supports NVL peers up to {}, but nLocalRanks is {}. "
         "This will likely cause seg fault or data corruption! "
@@ -237,7 +237,7 @@ commResult_t CtranAlgo::initKernelResources() {
       statex->cudaDev()));
 
   if (maxSharedMemOptin < sizeof(CtranAlgoDeviceState)) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-ALGO: sharedMemPerBlockOptin {} on device {} is smaller than the size of CtranAlgoDeviceState {}",
         maxSharedMemOptin,
@@ -302,7 +302,7 @@ commResult_t CtranAlgo::initKernelResources() {
       // Next chunk is for bcastBuf
       peerBcastBufsMap[i] = (char*)this->sharedRes_->mappedDevShmPtrs[i] +
           getBcastBufOffset(nLocalRanks, nvlSharedDevbufSize);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           INIT,
           "CTRAN-ALGO: allocated local peerBcastBufsMap[{}] = {}, size {}",
           i,
@@ -339,7 +339,7 @@ commResult_t CtranAlgo::initKernelResources() {
     const size_t nvlMaxNumChannels =
         static_cast<size_t>(std::max(1, CTRAN_ALGO_MAX_THREAD_BLOCKS));
     if (nvlPipelineDepth == 0) {
-      CERR(
+      CTRAN_ERR(
           commInvalidArgument,
           "CTRAN-ALGO: invalid NVL P2P config; pipelineDepth=0");
       return commInvalidArgument;
@@ -348,7 +348,7 @@ commResult_t CtranAlgo::initKernelResources() {
     const size_t nvlPerChannelBuffer =
         alignDown(nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
     if (nvlPerChannelBuffer == 0) {
-      CERR(
+      CTRAN_ERR(
           commInvalidArgument,
           "CTRAN-ALGO: invalid NVL P2P config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned per-channel buffer",
           nvlSharedDevbufSize,
@@ -500,7 +500,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   this->mappedDevShmPtrs.resize(nLocalRanks);
 
   for (int i = 0; i < nLocalRanks; ++i) {
-    CLOGF_TRACE(INIT, "Received ipcDescs[{}]={}", i, ipcDescs[i].toString());
+    CTRAN_LOG_TRACE(
+        INIT, "Received ipcDescs[{}]={}", i, ipcDescs[i].toString());
     if (localRank == i) {
       this->mappedDevShmPtrs[i] = devShmPtr;
     } else {
@@ -560,7 +561,7 @@ CtranAlgoLogger::CtranAlgoLogger(
     std::optional<const ICtran*> ctran)
     : name(name), opCount_(opCount), comm_(comm), ctran_(ctran) {
   auto& statex = comm_->statex_;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "{} GPE-START: opCount {} comm {} commHash {:x} Ctran {}",
@@ -573,7 +574,7 @@ CtranAlgoLogger::CtranAlgoLogger(
 
 CtranAlgoLogger::~CtranAlgoLogger() {
   auto& statex = comm_->statex_;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "{} GPE-DONE: opCount {} comm {} commHash {:x} Ctran {}",
@@ -596,7 +597,7 @@ CtranAlgoRMALogger::CtranAlgoRMALogger(
       win_(win),
       comm_(comm) {
   auto& statex = comm_->statex_;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "{} GPE-START: opCount {} rank {} peer {} win {} comm {} commHash {:x} Ctran {}",
@@ -612,7 +613,7 @@ CtranAlgoRMALogger::CtranAlgoRMALogger(
 
 CtranAlgoRMALogger::~CtranAlgoRMALogger() {
   auto& statex = comm_->statex_;
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       COLL,
       "{} GPE-DONE: opCount {} rank {} peer {} win {} comm {} commHash {:x} Ctran {}",
@@ -684,7 +685,7 @@ enum NCCL_ALLREDUCE_ALGO CtranAlgo::getAllReduceAlgo() {
 commResult_t CtranAlgo::exchangePeerTmpbuf(int peer) {
   // if peer is out of range, we report an error
   if (comm_->statex_->nRanks() < peer) {
-    CERR(commInvalidArgument, "Invalid value for peer: {}", peer);
+    CTRAN_ERR(commInvalidArgument, "Invalid value for peer: {}", peer);
     return commInvalidArgument;
   }
   // if tmpbuffs are already exchanged, we don't need to do anything
@@ -963,7 +964,7 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
     auto coll = getCollType(commAttrKeyValuePair.first);
     auto& statex = comm_->statex_;
     if (coll == CollType::UNKNOWN) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-ALGO: Unknown collective type {} in pimpl {} commHash {:x}, commDesc {}.",
           commAttrKeyValuePair.first,
@@ -989,7 +990,7 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
           commAttrKeyValuePair.second[qpConfigIndex::VC_MODE] == "dqplb") {
         config.vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb;
       } else {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-ALGO: Invalid VC mode {} in pimpl {} commHash {:x}, commDesc {}.",
             commAttrKeyValuePair.second[qpConfigIndex::VC_MODE],
@@ -1000,7 +1001,7 @@ commResult_t CtranAlgo::initializeCommAttributesMap() {
       }
       collToVcConfigMap_[coll] = config;
     } else {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-ALGO: Invalid collective->vc config specified for {} in pimpl {} commHash {:x}, commDesc {}. Expected {} parameters but received only {}",
           commAttrKeyValuePair.first,
