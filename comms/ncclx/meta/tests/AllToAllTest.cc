@@ -44,8 +44,6 @@ class AllToAllTest : public NcclxBaseTestFixture {
   }
 
   void run(bool registFlag = false) {
-#ifdef NCCL_ALLTOALL_SUPPORTED
-
     // create and register buffers
     constexpr int count = 1048576;
     int *sendBuf = nullptr, *recvBuf = nullptr;
@@ -114,7 +112,6 @@ class AllToAllTest : public NcclxBaseTestFixture {
       }
     }
 #endif
-#endif
   }
 
  protected:
@@ -164,7 +161,6 @@ TEST_F(AllToAllTest, AllToAllWithHintOverride) {
 #endif
 
 TEST_F(AllToAllTest, InvalidSendbuf) {
-#ifdef NCCL_ALLTOALL_SUPPORTED
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
@@ -173,11 +169,9 @@ TEST_F(AllToAllTest, InvalidSendbuf) {
   auto res = ncclAlltoAll(nullptr, buf, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
-#endif
 }
 
 TEST_F(AllToAllTest, InvalidRecvbuf) {
-#ifdef NCCL_ALLTOALL_SUPPORTED
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
@@ -186,11 +180,9 @@ TEST_F(AllToAllTest, InvalidRecvbuf) {
   auto res = ncclAlltoAll(buf, nullptr, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
-#endif
 }
 
 TEST_F(AllToAllTest, InvalidInPlace) {
-#ifdef NCCL_ALLTOALL_SUPPORTED
   constexpr int count = 1048576;
   int* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, count * numRanks * sizeof(int)));
@@ -199,7 +191,6 @@ TEST_F(AllToAllTest, InvalidInPlace) {
   auto res = ncclAlltoAll(buf, buf, count, ncclInt, comm, stream);
   ASSERT_EQ(res, ncclInvalidArgument);
   CUDACHECK_TEST(cudaFree(buf));
-#endif
 }
 
 int main(int argc, char* argv[]) {
