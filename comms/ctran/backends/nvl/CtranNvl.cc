@@ -6,9 +6,9 @@
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/utils/StrUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 CtranNvl::CtranNvl(CtranComm* comm) {
   const auto statex = comm->statex_.get();
@@ -43,7 +43,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         bool p2pAccess = comm->statex_->isSameDeviceRack(
             comm->logMetaData_.rank, statex->localRankToRank(i));
         if (!p2pAccess) {
-          CLOGF_SUBSYS(
+          CTRAN_LOG_SUBSYS(
               INFO,
               INIT,
               "NCCL_MNNVL_TRUNK_DISABLE set to True. P2P disabled between rank1: {} rank2: {} because rackserial mismatch",
@@ -75,7 +75,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         supportedInraHostRanksStr.push_back(
             std::to_string(statex->localRankToRank(i)));
       } else {
-        CLOGF_SUBSYS(
+        CTRAN_LOG_SUBSYS(
             INFO,
             INIT,
             "CTRAN-NVL: Rank {} (local rank {} GPU {}) cannot access peer {} (local rank {} GPU {}), disable NVL support",
@@ -89,7 +89,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
     }
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-NVL: Initialized NVL backend on rank {} localRank {}, "
@@ -109,7 +109,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
 }
 
 CtranNvl::~CtranNvl() {
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       INIT,
       "CTRAN-NVL: Destroyed NVL backend on rank {} localRank {}",
       this->pimpl_->comm->statex_->rank(),
