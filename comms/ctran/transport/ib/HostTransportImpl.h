@@ -14,6 +14,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/transport/IP2pHostTransport.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 
 struct CommLogData;
@@ -62,7 +63,7 @@ inline commResult_t importRemoteInfo(
     const ControlMsg& msg,
     RemotePeerInfo* out) {
   if (out == nullptr) {
-    CERR(commInvalidArgument, "CTRAN-IB: importRemoteInfo: out is null");
+    CTRAN_ERR(commInvalidArgument, "CTRAN-IB: importRemoteInfo: out is null");
     return commInvalidArgument;
   }
   if (msg.type == ControlMsgType::IB_EXPORT_MEM) {
@@ -76,7 +77,7 @@ inline commResult_t importRemoteInfo(
     out->remoteKey = CtranIbRemoteAccessKey{};
     return commSuccess;
   }
-  CERR(
+  CTRAN_ERR(
       commInternalError,
       "CTRAN-IB: importRemoteInfo unhandled msg type {}",
       msg.type);
@@ -101,7 +102,7 @@ inline void connectAndPopulateVcs(
       !vcs.empty(),
       "CTRAN-IB: connectAndPopulateVcs got 0 VCs for peerRank=" +
           std::to_string(peerRank));
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: host transport VCs ready, peerRank={} myRank={} numVcs={}",
