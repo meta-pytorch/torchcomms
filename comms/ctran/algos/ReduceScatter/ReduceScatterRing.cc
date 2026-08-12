@@ -6,6 +6,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 CTRAN_DATATYPE_REDOP_TO_FUNC_MAPPER(
     reduceScatterKerns,
@@ -81,7 +82,7 @@ static commResult_t impl(
                   rank * recvSize) ==
       reinterpret_cast<uintptr_t>(op->reducescatter.recvbuff);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "myRank {} (rank {}) left={} (rank {}) right={} (rank {}), stepCount {} (size {}) nRounds {} nSteps {}, inplace {}",
       comm->statex_->rank(),
