@@ -3338,6 +3338,19 @@ cvars:
      ibgda - use GPU-posted IBGDA.
      ibrc - use CPU-posted IBRC.
 
+ - name        : MCCL_IBGDA_RELIABLE_DOORBELL_MODE
+   type        : enum
+   default     : auto
+   choices     : auto, enable, disable
+   description : |-
+     Select the reliable-doorbell policy for the Prims IBGDA transport.
+     auto queries each selected NIC for send_dbr_mode_no_dbr_ext and uses
+     NO_DBR_HW only when supported, falling back to VALID_DBR on unsupported
+     NICs or query failures. enable requires every selected NIC to report
+     support and fails transport initialization otherwise. disable skips the
+     capability query and forces VALID_DBR. Host-only loopback QPs always use
+     VALID_DBR. This policy is NVIDIA-only and ignored on AMD.
+
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t
    default     : 1024
