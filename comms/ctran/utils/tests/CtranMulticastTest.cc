@@ -8,6 +8,7 @@
 
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -25,6 +26,13 @@ using namespace ctran::utils;
 
 class CtranMulticastTest : public ::testing::Test {
  public:
+  static void SetUpTestSuite() {
+    // `multicast_ut` contains only this suite, so its process-wide logger can
+    // be synchronous for deterministic stderr assertions.
+    meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName)
+        .configure("COMMS", []() { return 0; }, {}, false);
+  }
+
   void SetUp() override {
     ncclCvarInit();
     COMMCHECK_TEST(commCudaLibraryInit());
