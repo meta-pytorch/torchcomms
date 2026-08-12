@@ -11,6 +11,7 @@
 #include "comms/ctran/algos/common/NvlUtils.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/logger/ScubaLogger.h"
@@ -70,7 +71,7 @@ inline commResult_t exchangeIpcReg(CtranComm* comm, PersistArgs& pArgs) {
   FB_COMMCHECK(mapper->intraBarrier());
   const double barrierUs = barrierTimer.durationUs();
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-AGP: Rank {} IPC exchange breakdown: intraAllGatherCtrl {} us, intraBarrier {} us, nLocalRanks {}",
@@ -98,7 +99,7 @@ inline commResult_t exchangeIpcReg(CtranComm* comm, PersistArgs& pArgs) {
   const int nLocalRanks = statex->nLocalRanks();
   for (int i = 0; i < nLocalRanks; ++i) {
     const int peerRank = statex->localRankToRank(i);
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-AGP     Peer {}: addr {} ipcImport {}",
