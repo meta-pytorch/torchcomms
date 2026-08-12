@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/utils/CudaRAII.h"
@@ -26,7 +27,7 @@ commResult_t ctran::IpcRegCache::regMem(
 
   FB_COMMCHECK(reg->tryLoad(supported, shouldSupportCudaMalloc));
   if (supported) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "CTRAN-REGCACHE: Registered IPC memory {}", reg->toString());
 
     *ipcRegElem = reinterpret_cast<void*>(reg);
@@ -42,7 +43,7 @@ commResult_t ctran::IpcRegCache::regMem(
 void ctran::IpcRegCache::deregMem(void* ipcRegElem) {
   auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL, "CTRAN-REGCACHE: Deregistered IPC memory {}", reg->toString());
   // Memory handle release in ~CtranIpcMem()
   delete reg;
@@ -184,7 +185,7 @@ commResult_t ctran::IpcRegCache::importMem(
   std::snprintf(remKey->peerId, regcache::kMaxPeerIdLen, "%s", peerId.c_str());
   remKey->basePtr = ipcDesc.desc.base;
   remKey->uid = ipcDesc.uid;
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-REGCACHE: Imported NVL remote mem from peer {}: buf {} (base {} offset {} uid {})",
       peerId,
@@ -226,7 +227,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
       if (outRefCount != nullptr) {
         *outRefCount = newRefCount;
       }
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-REGCACHE: IPC remote registration cache hit peer:base:uid=<{}:{}:{}>, refCount now {}",
           peerId,
@@ -251,7 +252,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
     return commInternalError;
   }
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-REGCACHE: cache IPC remote registration peer:base:uid=<{}:{}:{}> {}",
       peerId,
@@ -295,7 +296,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
       elem->refCount.fetch_sub(exportCount, std::memory_order_acq_rel);
 
   if (prevCount < exportCount) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-REGCACHE: over-release detected for IPC remote registration "
         "peer:base:uid=<{}:{}:{}>, prevCount {} < exportCount {}",
@@ -306,7 +307,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
         exportCount);
     // Fall through to invalidate — the entry is invalid regardless
   } else if (prevCount > exportCount) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-REGCACHE: decremented refCount for IPC remote registration "
         "peer:base:uid=<{}:{}:{}>, refCount now {}",
@@ -317,7 +318,7 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
     return commSuccess;
   }
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-REGCACHE: remove IPC remote registration from cache peer:base:uid=<{}:{}:{}> : {}",
       peerId,
@@ -348,7 +349,7 @@ void ctran::IpcRegCache::clearAllRemReg() {
   auto lockedMap = ipcRemRegMap_.wlock();
 
   for (auto& [peerId, regs] : *lockedMap) {
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         INIT,
         "CTRAN-REGCACHE: clear all {} cached IPC remote registrations from peer {}",
         regs.size(),
@@ -405,7 +406,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
   remReleaseMem(ipcRegElem, reqCb->req.release);
   reqCb->req.release.exportCount = exportCount;
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-REGCACHE: Sending IPC_RELEASE to peerAddr {}: {}",
       peerAddr.describe(),
@@ -420,7 +421,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
       sizeof(ctran::regcache::IpcReq),
       [reqCb, peerAddr](const folly::AsyncSocketException* err) {
         if (err != nullptr) {
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "CTRAN-REGCACHE: Failed to send IpcReq to peerAddr {}: {}",
               peerAddr.describe(),
@@ -458,7 +459,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
   // rather than polluting IpcReqCb which is shared with kRelease.
   auto wireBuf = serializeIpcReq(reqCb->req, extraSegments);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "CTRAN-REGCACHE: Sending IPC_DESC to peerAddr {}: {} (wireSize={}, extraSegments={})",
       peerAddr.describe(),
@@ -475,7 +476,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
       wireBuf->size(),
       [reqCb, peerAddr, wireBuf](const folly::AsyncSocketException* err) {
         if (err != nullptr) {
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "CTRAN-REGCACHE: Failed to send IpcReq (DESC) to peerAddr {}: {}",
               peerAddr.describe(),
@@ -511,7 +512,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
       NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX, true, &resolvedIfName);
   if (maybeAddr.hasError()) {
-    CLOGF(WARN, "CTRAN-REGCACHE: No socket interfaces found");
+    CTRAN_LOG(WARN, "CTRAN-REGCACHE: No socket interfaces found");
     throw ::ctran::utils::Exception(
         "CTRAN-IB : No socket interfaces found", commSystemError);
   }
@@ -541,7 +542,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
             // Handle release request - release the imported NVL memory
             std::string peerId = ipcReq.getPeerId();
 
-            CLOGF_TRACE(
+            CTRAN_LOG_TRACE(
                 COLL,
                 "CTRAN-REGCACHE: Received IPC_RELEASE from peer {}: {}",
                 peerId,
@@ -559,7 +560,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
             // Handle descriptor request - import the remote memory
             std::string peerId = ipcReq.getPeerId();
 
-            CLOGF_TRACE(
+            CTRAN_LOG_TRACE(
                 COLL,
                 "CTRAN-REGCACHE: Received IPC_DESC from peer {}: {}",
                 peerId,
@@ -574,7 +575,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                   reinterpret_cast<const ctran::utils::CtranIpcSegDesc*>(
                       buf->data() + sizeof(ctran::regcache::IpcReq));
               extraSegments.assign(extraData, extraData + numExtra);
-              CLOGF_TRACE(
+              CTRAN_LOG_TRACE(
                   COLL,
                   "CTRAN-REGCACHE: IPC_DESC has {} extra segments beyond inline",
                   numExtra);
@@ -584,7 +585,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
             // the cudaDev is not passed in
             void* mappedBuf = nullptr;
             ctran::regcache::IpcRemHandle remKey;
-            CLOGF(
+            CTRAN_LOG(
                 WARN,
                 "CTRAN-REGCACHE: unsafe path to importMem with cudaDev 0 via async-socket");
             FB_COMMCHECKIGNORE(importMem(
@@ -603,7 +604,7 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
   // Get the server address
   serverAddr_ = std::move(serverAddrFuture).get();
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-REGCACHE: AsyncSocket server started at {} ifname {}",
@@ -617,7 +618,7 @@ void ctran::IpcRegCache::stopAsyncSocket() {
   if (asyncServerSocket_) {
     auto fut = asyncServerSocket_->stop();
     std::move(fut).get();
-    CLOGF_SUBSYS(INFO, INIT, "CTRAN-REGCACHE: AsyncSocket server stopped");
+    CTRAN_LOG_SUBSYS(INFO, INIT, "CTRAN-REGCACHE: AsyncSocket server stopped");
   }
 
   // Destroy the EVB thread BEFORE asyncServerSocket_ to drain pending
