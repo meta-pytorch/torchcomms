@@ -12,6 +12,8 @@
 #include <cuda_fp8.h>
 #endif
 
+#include "comms/ctran/utils/CtranLogUtils.h"
+
 // Use "static const" definitions here.  constness helps disallow []
 // usage of the unordered map, which is risky and causes the key to be
 // automatically created if it doesn't already exist.  Declaring this
@@ -156,7 +158,7 @@ struct CtranTupleHash {
 #define CTRAN_COLL_INFO(                                                         \
     algoStr, sendbuff, recvbuff, count, datatype, peer, comm, stream)            \
   do {                                                                           \
-    CLOGF_SUBSYS(                                                                \
+    CTRAN_LOG_SUBSYS(                                                            \
         INFO,                                                                    \
         COLL,                                                                    \
         "{}: opCount {} sendbuff {} recvbuff {} count {} datatype {} peer {} "   \
@@ -181,7 +183,7 @@ struct CtranTupleHash {
 #define CTRAN_HOST_COLL_INFO(                                                    \
     algoStr, sendbuff, recvbuff, count, datatype, peer, comm, ctran, req)        \
   do {                                                                           \
-    CLOGF_SUBSYS(                                                                \
+    CTRAN_LOG_SUBSYS(                                                            \
         INFO,                                                                    \
         COLL,                                                                    \
         "{}: opCount {} sendbuff {} recvbuff {} count {} datatype {} peer {} "   \
@@ -206,7 +208,7 @@ struct CtranTupleHash {
 #define CTRAN_REDCOLL_INFO(                                                  \
     algoStr, sendbuff, recvbuff, count, datatype, redOp, peer, comm, stream) \
   do {                                                                       \
-    CLOGF_SUBSYS(                                                            \
+    CTRAN_LOG_SUBSYS(                                                        \
         INFO,                                                                \
         COLL,                                                                \
         "{}: opCount {} sendbuff {} recvbuff {} count {} datatype {} "       \
@@ -242,7 +244,7 @@ struct CtranTupleHash {
     comm,                                                                                               \
     stream)                                                                                             \
   do {                                                                                                  \
-    CLOGF_SUBSYS(                                                                                       \
+    CTRAN_LOG_SUBSYS(                                                                                   \
         INFO,                                                                                           \
         COLL,                                                                                           \
         "CTRAN-RMA {}: opCount {} winOpCount {} originBuff {} targetDisp {} count {} "                  \
