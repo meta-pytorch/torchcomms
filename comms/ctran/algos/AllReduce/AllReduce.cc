@@ -6,9 +6,9 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
   if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
@@ -22,7 +22,7 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
       if (comm->statex_->nLocalRanks() == 1) {
         return true;
       }
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "ctring algo currently only supported for nLocalRanks=1 for ctranAllReduce, falling back to baseline");
       return false;

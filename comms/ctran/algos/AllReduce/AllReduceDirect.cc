@@ -8,9 +8,9 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 CTRAN_DATATYPE_REDOP_TO_FUNC_MAPPER(typeToFunc, ncclKernelAllReduceCtranDirect);
 
@@ -163,7 +163,7 @@ static commResult_t impl(
           intraNodeLocalSendbuffReq[lr].get()));
       if (intraNodeRemoteSendAccessKeys[lr].backend !=
           CtranMapperBackend::NVL) {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "NVLink backend not available between rank {} and {}",
             rank,
@@ -199,7 +199,7 @@ static commResult_t impl(
           intraNodeLocalRecvbuffReq[lr].get()));
       if (intraNodeRemoteRecvAccessKeys[lr].backend !=
           CtranMapperBackend::NVL) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "NVLink backend not available between rank {} and {}",
             rank,
@@ -576,7 +576,7 @@ commResult_t ctranAllReduceDirect(
 
   // Prevent buffer overflow in localReduce.srcs array
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "nLocalRanks ({}) exceeds CTRAN_MAX_NVL_PEERS ({}). This will cause buffer overflow in localReduce.srcs array! ",
         nLocalRanks,
