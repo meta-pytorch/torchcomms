@@ -7,6 +7,7 @@
 #include <sstream>
 #include <vector>
 
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/commSpecs.h"
@@ -29,7 +30,7 @@ static inline bool CtranIpcSupport() {
   return true;
 #else
 #if CUDART_VERSION < 11030
-  CLOGF(
+  CTRAN_LOG(
       WARN, "CTRAN-IPC: CTran IPC memory support requires CUDA 11.3 or later");
   return false;
 #endif
