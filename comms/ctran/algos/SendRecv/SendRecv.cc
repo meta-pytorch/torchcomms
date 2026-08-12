@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
@@ -69,7 +70,7 @@ bool ctranSendRecvSupport(
       algo == NCCL_SENDRECV_ALGO::ctgraph) {
     static std::once_flag warnedOnce;
     std::call_once(warnedOnce, []() {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           WARN,
           COLL,
           "CTRAN SendRecv: ctp2p/ctgraph requires comms::prims device transports "
@@ -96,7 +97,7 @@ bool ctranSendRecvSupport(
         ctran::utils::cudagraph::getStreamCaptureInfo(stream, captureInfo);
     if (err != cudaSuccess ||
         captureInfo.status != cudaStreamCaptureStatusActive) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           COLL,
           "SendRecv ctgraph: not in capture mode. "
