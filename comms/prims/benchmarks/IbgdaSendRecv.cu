@@ -433,11 +433,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
   }
 
   if (waitForSlotFree) {
-    auto& channel = transport->local_channel(group.group_id);
+    auto& protoSlot = transport->local_channel_slot<protocol::Simple>(group);
     transport->wait_signal(
         group,
-        channel.slotFree,
-        static_cast<uint64_t>(channel.sendProgress.nextStep),
+        protoSlot.slotFree,
+        static_cast<uint64_t>(protoSlot.sendProgress.nextStep),
         timeout);
   }
 }
@@ -469,11 +469,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_registered_progress_send_kernel(
     status = transport->progress_registered_send_drain_once(group, timeout);
   }
 
-  auto& channel = transport->local_channel(group.group_id);
+  auto& protoSlot = transport->local_channel_slot<protocol::Simple>(group);
   transport->wait_signal(
       group,
-      channel.slotFree,
-      static_cast<uint64_t>(channel.sendProgress.nextStep),
+      protoSlot.slotFree,
+      static_cast<uint64_t>(protoSlot.sendProgress.nextStep),
       timeout);
 }
 
