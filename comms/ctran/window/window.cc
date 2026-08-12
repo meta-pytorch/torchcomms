@@ -12,6 +12,7 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
@@ -256,7 +257,7 @@ commResult_t setupMulticast(
         declined++;
       }
     }
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-MC: rank {} falling back to unicast -- {} of {} NVL-domain ranks declined multicast (unsupported HW/IMEX, or a non-cuMem / unregistered buffer)",
         rank,
@@ -303,7 +304,7 @@ commResult_t setupMulticast(
       "CTRAN-MC: rank {} failed mapVA post-vote",
       rank);
   outMulticast = std::move(mc);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-MC: rank {} bound multicast over {} NVL ranks ({} bytes)",
@@ -528,7 +529,7 @@ commResult_t CtranWin::exchange() {
       remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[exchangeRank];
     }
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} exchanged remote windowInfo in win {} comm {} commHash {:x}:",
@@ -538,7 +539,7 @@ commResult_t CtranWin::exchange() {
       statex->commHash());
 
   for (int i = 0; i < nRanks; ++i) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-WINDOW     Peer {}: addr {} size {} rkey {}",
@@ -570,7 +571,7 @@ commResult_t CtranWin::exchange() {
       mc_ = std::move(mc);
     }
     FB_COMMCHECK(windowBarrier(comm, mapper));
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-WINDOW: Rank {} {} NVL CE-multicast on win {} comm {} commHash {:x} ({} bytes)",
@@ -668,7 +669,7 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
         : nullptr;
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
@@ -701,7 +702,7 @@ commResult_t CtranWin::free(bool skipBarrier) {
   FB_COMMCHECK(getWindowMapper(comm, &mapper));
   CtranMapperEpochRAII epochRAII(mapper);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-WINDOW: Rank {} free win {} comm {} commHash {:x}",
@@ -863,7 +864,7 @@ commResult_t CtranWin::getDeviceWin(
   if (!hostWindow_) {
     const auto myRank = transport->my_rank();
 
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-WINDOW: Rank {} creating HostWindow with signalCount={} "
@@ -880,7 +881,7 @@ commResult_t CtranWin::getDeviceWin(
 
     hostWindow_->exchange();
 
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
   }
 
@@ -896,7 +897,7 @@ commResult_t ctranWinAllocate(
     CtranWin** win,
     const meta::comms::Hints& hints) {
   if (size < CTRAN_MIN_REGISTRATION_SIZE) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "ctranWinAllocate size {} is smaller than {}, resize to CTRAN_MIN_REGISTRATION_SIZE",
@@ -939,7 +940,7 @@ commResult_t checkUserBufType(const DevMemType bufType) {
   if (bufType == DevMemType::kCumem || bufType == DevMemType::kHostPinned ||
       bufType == DevMemType::kHostUnregistered ||
       bufType == DevMemType::kCudaMalloc) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-WINDOW: Buffer Type {} is provided by user while registering window",
