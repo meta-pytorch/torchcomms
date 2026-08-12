@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/utils/commSpecs.h"
@@ -91,9 +92,9 @@ commResult_t commCudaMallocDebug(
 finish:
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0) {
-    CLOGF(WARN, "Failed to CUDA malloc {} bytes", nelem * sizeof(T));
+    CTRAN_LOG(WARN, "Failed to CUDA malloc {} bytes", nelem * sizeof(T));
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       ALLOC,
       "{}:{} Cuda Alloc Size {} pointer {}",
@@ -119,7 +120,7 @@ template <typename T>
 commResult_t commCudaFree(T* ptr, const CommLogData* logMetaData = nullptr) {
   commResult_t result = commSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
-  CLOGF_TRACE(ALLOC, "Cuda Free pointer {}", (void*)ptr);
+  CTRAN_LOG_TRACE(ALLOC, "Cuda Free pointer {}", (void*)ptr);
 
   FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
   if (getCuMemSysSupported()) {
@@ -159,9 +160,9 @@ commResult_t commCudaHostAllocDebug(
 finish:
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0) {
-    CLOGF(WARN, "Failed to cudaHostAlloc {} bytes", nelem * sizeof(T));
+    CTRAN_LOG(WARN, "Failed to cudaHostAlloc {} bytes", nelem * sizeof(T));
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       ALLOC,
       "{}:{} CudaHostAlloc Size {} pointer {}",
@@ -187,7 +188,7 @@ commResult_t commCudaFreeHost(
     const CommLogData* logMetaData = nullptr) {
   commResult_t result = commSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
-  CLOGF_TRACE(ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
+  CTRAN_LOG_TRACE(ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
 
   FB_CUDACHECKGOTO(cudaThreadExchangeStreamCaptureMode(&mode), result, finish);
   if (ptr) {
@@ -199,7 +200,7 @@ finish:
       "",
       "commCudaFreeHost",
       reinterpret_cast<uintptr_t>(ptr));
-  CLOGF_SUBSYS(INFO, ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
+  CTRAN_LOG_SUBSYS(INFO, ALLOC, "CudaFreeHost pointer {}", (void*)ptr);
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   return result;
 }
@@ -239,8 +240,8 @@ commResult_t commCudaCallocAsync(
 finish:
   FB_CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0)
-    CLOGF(WARN, "Failed to CUDA calloc async {} bytes", nelem * sizeof(T));
-  CLOGF_SUBSYS(
+    CTRAN_LOG(WARN, "Failed to CUDA calloc async {} bytes", nelem * sizeof(T));
+  CTRAN_LOG_SUBSYS(
       INFO,
       ALLOC,
       "{}:{} Cuda Alloc Size {} pointer {}",
