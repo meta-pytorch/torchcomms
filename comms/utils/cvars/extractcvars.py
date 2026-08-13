@@ -30,6 +30,14 @@ int_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_INT_CVAR__"
 bool_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_BOOL_CVAR__"
 double_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_DOUBLE_CVAR__"
 
+CPP_ENUM_CHOICE_ESCAPES: dict[str, str] = {
+    "auto": "auto_",
+}
+
+
+def cpp_enum_choice_name(choice: str) -> str:
+    return CPP_ENUM_CHOICE_ESCAPES.get(choice, choice)
+
 
 @functools.lru_cache(maxsize=1)
 def fbsource_root():
@@ -366,7 +374,7 @@ class enum(basetype):
         choiceList = self.choices.replace(" ", "").split(",")
         indent(file, "enum class %s {" % self.name)
         for c in choiceList:
-            indent(file, "%s," % c)
+            indent(file, "%s," % cpp_enum_choice_name(c))
         indent(file, "};")
         indent(file, "extern enum %s %s;" % (self.name, self.name))
         indent(file, "extern enum %s %s_DEFAULTCVARVALUE;" % (self.name, self.name))
@@ -378,7 +386,10 @@ class enum(basetype):
 
     def readenv(self, file):
         indent(file, 'if (getenv("%s") == nullptr) {' % self.envstr)
-        indent(file, "%s = %s::%s;" % (self.name, self.name, self.default))
+        indent(
+            file,
+            "%s = %s::%s;" % (self.name, self.name, cpp_enum_choice_name(self.default)),
+        )
         indent(file, "} else {")
         indent(file, 'std::string str(getenv("%s"));' % self.envstr)
         choices = self.choices.replace(" ", "").split(",")
@@ -387,13 +398,18 @@ class enum(basetype):
                 indent(file, 'if (str == std::string("%s")) {' % c)
             else:
                 indent(file, '} else if (str == std::string("%s")) {' % c)
-            indent(file, "%s = %s::%s;" % (self.name, self.name, c))
+            indent(
+                file,
+                "%s = %s::%s;" % (self.name, self.name, cpp_enum_choice_name(c)),
+            )
         indent(file, "} else {")
         indent(file, '  CVAR_WARN_UNKNOWN_VALUE("%s", str.c_str());' % self.name)
         indent(file, "}")
         indent(file, "}")
         indent(
-            file, "%s_DEFAULTCVARVALUE = %s::%s;" % (self.name, self.name, self.default)
+            file,
+            "%s_DEFAULTCVARVALUE = %s::%s;"
+            % (self.name, self.name, cpp_enum_choice_name(self.default)),
         )
         file.write("\n")
 
@@ -407,7 +423,7 @@ class enumlist(basetype):
         choiceList = self.choices.replace(" ", "").split(",")
         indent(file, "enum class %s {" % self.name)
         for c in choiceList:
-            indent(file, "%s," % c)
+            indent(file, "%s," % cpp_enum_choice_name(c))
         indent(file, "};")
         indent(file, "extern std::vector<enum %s> %s;" % (self.name, self.name))
         indent(
@@ -435,7 +451,11 @@ class enumlist(basetype):
                 indent(file, 'if (token == std::string("%s")) {' % c)
             else:
                 indent(file, '} else if (token == std::string("%s")) {' % c)
-            indent(file, "%s.emplace_back(%s::%s);" % (self.name, self.name, c))
+            indent(
+                file,
+                "%s.emplace_back(%s::%s);"
+                % (self.name, self.name, cpp_enum_choice_name(c)),
+            )
         indent(file, "} else {")
         indent(file, '  CVAR_WARN_UNKNOWN_VALUE("%s", token.c_str());' % self.name)
         indent(file, "}")
@@ -446,7 +466,8 @@ class enumlist(basetype):
         for d in default:
             indent(
                 file,
-                "%s_DEFAULTCVARVALUE.emplace_back(%s::%s);" % (self.name, self.name, d),
+                "%s_DEFAULTCVARVALUE.emplace_back(%s::%s);"
+                % (self.name, self.name, cpp_enum_choice_name(d)),
             )
         file.write("\n")
 

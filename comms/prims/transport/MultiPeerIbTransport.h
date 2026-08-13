@@ -116,6 +116,10 @@ struct MultipeerIbTransportConfig {
   // qpsPerConnection.
   int qpsPerConnection{1};
 
+  // IBGDA-only reliable-doorbell policy; ignored by IBRC and AMD. nullopt
+  // auto-detects NIC support, true requires support, and false disables it.
+  std::optional<bool> enableReliableDoorbell;
+
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
       throw std::invalid_argument(
@@ -308,6 +312,22 @@ struct IbBufferRegistrationView {
     return leaseGeneration != 0 && localBuffer.ptr != nullptr && size != 0;
   }
 };
+
+inline bool reliableDoorbellActiveForNic(
+    const MultipeerIbTransportConfig& config,
+    bool nicReliableDoorbellCapable) {
+  if (config.enableReliableDoorbell.value_or(false) &&
+      !nicReliableDoorbellCapable) {
+    throw std::invalid_argument(
+        "enableReliableDoorbell requires reliable-doorbell NIC support");
+  }
+  return config.enableReliableDoorbell.value_or(nicReliableDoorbellCapable);
+}
+
+inline bool reliableDoorbellNeedsCapabilityQuery(
+    const MultipeerIbTransportConfig& config) {
+  return config.enableReliableDoorbell.value_or(true);
+}
 
 /**
  * Transport connection information for RDMA QP setup.

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -114,6 +115,41 @@ const char* docaErrorToString(doca_error_t err) {
   return "DOCA_ERROR_UNKNOWN_CODE";
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+const char* reliableDoorbellModeName(const std::optional<bool>& enabled) {
+  if (!enabled.has_value()) {
+    return "auto";
+  }
+  return *enabled ? "enable" : "disable";
+}
+
+bool nicSupportsReliableDoorbell(
+    ::ibv_context* ibvContext,
+    const std::string& deviceName) {
+  doca_verbs_device_attr* deviceAttr = nullptr;
+  const doca_error_t queryErr =
+      doca_verbs_query_device(ibvContext, &deviceAttr);
+  if (queryErr != DOCA_SUCCESS) {
+    LOG(WARNING)
+        << "MultipeerIbgdaTransport: reliable doorbell capability query "
+           "failed for NIC "
+        << deviceName << ": " << docaErrorToString(queryErr)
+        << "; treating the NIC as unsupported";
+    return false;
+  }
+
+  const bool supported =
+      doca_verbs_device_attr_get_send_dbr_mode_no_dbr_ext(deviceAttr) != 0;
+  const doca_error_t freeErr = doca_verbs_device_attr_free(deviceAttr);
+  if (freeErr != DOCA_SUCCESS) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: failed to free DOCA device "
+                    "attributes for NIC "
+                 << deviceName << ": " << docaErrorToString(freeErr);
+  }
+  return supported;
+}
+#endif
+
 // Check DOCA error and throw on failure
 void checkDocaError(doca_error_t err, const char* msg) {
   if (err != DOCA_SUCCESS) {
@@ -164,6 +200,22 @@ void MultipeerIbgdaTransport::openIbDevice() {
              ? DOCA_VERBS_ADDR_TYPE_IPv4
              : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
+#ifndef __HIP_PLATFORM_AMD__
+    const bool nicReliableDoorbellCapable =
+        reliableDoorbellNeedsCapabilityQuery(config_)
+        ? nicSupportsReliableDoorbell(
+              reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx),
+              nics_[n].deviceName)
+        : false;
+    nicDoca_[n].useReliableDoorbell =
+        reliableDoorbellActiveForNic(config_, nicReliableDoorbellCapable);
+    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
+              << " reliable_doorbell_mode="
+              << reliableDoorbellModeName(config_.enableReliableDoorbell)
+              << " send_dbr_mode="
+              << (nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
+#endif
+
     doca_error_t err = doca_verbs_ah_attr_create(
         reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx), &nicDoca_[n].ahAttr);
     checkDocaError(err, "Failed to create AH attributes");
@@ -522,9 +574,18 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     mainAttr.sq_nwqe = config_.qpDepth;
     mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
     mainAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
+#ifndef __HIP_PLATFORM_AMD__
+    mainAttr.send_dbr_mode_ext = nicDoca_[nic].useReliableDoorbell
+        ? DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW
+        : DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+#endif
 
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
     loopbackAttr.sq_nwqe = kLoopbackCompanionQpDepth;
+#ifndef __HIP_PLATFORM_AMD__
+    loopbackAttr.send_dbr_mode_ext =
+        DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+#endif
 
     auto& nicQps = nicDoca_[nic].blockQpGroups;
     auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
