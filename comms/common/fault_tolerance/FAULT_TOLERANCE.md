@@ -93,6 +93,12 @@ kernel.
 MCCL and CTRAN already share the same host `Abort`. MCCL collective code should
 not add a second host abort pointer to `CommContext`.
 
+MCCL creates enabled abort controllers with `AbortBehavior::SKIP` by default.
+`McclCommCreateOpts::trapOnDeviceAbort` opts into `AbortBehavior::TRAP` for
+callers that need the legacy device trap behavior. MCCL initializes the shared
+default timeout from the communicator init timeout when provided; otherwise a
+positive `MCCL_ABORT_TIMEOUT_MS` supplies the default device-side abort timeout.
+
 For Prims-backed collectives:
 
 1. Host orchestration gets a `MultiPeerDeviceHandle` from MPT.
