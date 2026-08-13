@@ -1967,7 +1967,9 @@ cvars:
      Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
      compact per-phase events to an HRDW ring buffer and a host background
      thread polls the buffer on an interval, so breadcrumbs are logged while
-     the kernel is still running (including when it hangs).
+     the kernel is still running (including when it hangs). This value is
+     sampled when the communicator initializes; leave it false for the normal
+     untraced kernel path.
 
  - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
    type        : uint64_t

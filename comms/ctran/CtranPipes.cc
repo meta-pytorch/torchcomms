@@ -80,6 +80,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     CTRAN_LOG(INFO, "CTRAN-PRIMS: initialization skipped; prims are disabled");
     return commSuccess;
   }
+  comms::prims::PipesTraceHandle trace;
+  FB_COMMCHECK(ctran::ctranPreparePipesTrace(comm, trace));
   try {
     CTRAN_LOG(
         INFO,
