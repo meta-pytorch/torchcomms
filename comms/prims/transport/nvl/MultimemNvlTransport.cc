@@ -15,7 +15,7 @@ namespace comms::prims {
 namespace {
 
 constexpr uint64_t kMultimemNvlTransportProtocol = 0x4D4D4E564CULL;
-constexpr uint64_t kMultimemNvlTransportProtocolVersion = 4;
+constexpr uint64_t kMultimemNvlTransportProtocolVersion = 5;
 
 int getCurrentCudaDevice() {
   int cudaDevice = 0;
@@ -93,10 +93,7 @@ MultimemNvlTransport::MultimemNvlTransport(
   }
   dataBufferSize_ = validation.dataBufferSize;
   internalSignalCount_ = validation.internalSignalCount;
-  if (config_.pipelineDepth != 0) {
-    signalsPerLane_ =
-        multimem_staging_signals_per_lane(static_cast<uint32_t>(nvlRanks_));
-  }
+  signalsPerChannel_ = validation.signalsPerChannel;
   // commRank presence in the map is already verified by validateRankMap.
   int nvlRank = -1;
   for (int rank = 0; rank < nvlRanks_; ++rank) {
@@ -241,7 +238,7 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .nvlRanks = nvlRanks_,
       .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
       .maxChannels = static_cast<uint32_t>(config_.maxChannels),
-      .signalsPerLane = signalsPerLane_,
+      .signalsPerChannel = signalsPerChannel_,
   };
 }
 

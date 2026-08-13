@@ -99,7 +99,7 @@ class MultimemNvlTransport {
   const MultimemNvlTransportConfig config_;
   std::size_t dataBufferSize_{0};
   uint32_t internalSignalCount_{0};
-  uint32_t signalsPerLane_{0};
+  uint32_t signalsPerChannel_{0};
   bool exchanged_{false};
   // Set when exchange() throws; subsequent calls throw instead of silently
   // retrying. Multicast object create/import/bind failures can leave partial

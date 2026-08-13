@@ -44,6 +44,7 @@ MultimemNvlTransportConfigValidation validate_multimem_nvl_transport_config(
   const std::size_t dataBufferSize = config.perChannelSize * config.maxChannels;
 
   uint32_t internalSignalCount = 0;
+  uint32_t signalsPerChannel = 0;
   if (config.pipelineDepth != 0) {
     constexpr std::size_t kDataAlignment = 16;
     if (config.pipelineDepth >
@@ -62,23 +63,19 @@ MultimemNvlTransportConfigValidation validate_multimem_nvl_transport_config(
           .errorMessage = "data buffer is too small for the staging geometry"};
     }
 
-    const auto signalsPerLaneWide =
-        multimem_staging_signals_per_lane_wide(static_cast<uint64_t>(nvlRanks));
-    if (signalsPerLaneWide > std::numeric_limits<uint32_t>::max()) {
+    const auto signalsPerChannelWide = multimem_staging_signals_per_channel(
+        static_cast<uint64_t>(nvlRanks), config.pipelineDepth);
+    if (signalsPerChannelWide > std::numeric_limits<uint32_t>::max()) {
       return {.errorMessage = "transport geometry exceeds UINT32_MAX"};
     }
     const auto maxInternalSignals = static_cast<std::size_t>(
         std::numeric_limits<int>::max() - config.userSignalCount);
-    const auto signalsPerLane = static_cast<std::size_t>(signalsPerLaneWide);
-    if (config.maxChannels > maxInternalSignals / signalsPerLane) {
+    signalsPerChannel = static_cast<uint32_t>(signalsPerChannelWide);
+    if (config.maxChannels > maxInternalSignals / signalsPerChannel) {
       return {.errorMessage = "signal count exceeds INT_MAX"};
     }
-    const auto signalsPerPipelineLane = config.maxChannels * signalsPerLane;
-    if (config.pipelineDepth > maxInternalSignals / signalsPerPipelineLane) {
-      return {.errorMessage = "signal count exceeds INT_MAX"};
-    }
-    internalSignalCount =
-        static_cast<uint32_t>(config.pipelineDepth * signalsPerPipelineLane);
+    internalSignalCount = static_cast<uint32_t>(
+        config.maxChannels * static_cast<std::size_t>(signalsPerChannel));
   }
 
   constexpr auto kSignalAlignment = detail::kMultimemSignalAlignment;
@@ -107,6 +104,7 @@ MultimemNvlTransportConfigValidation validate_multimem_nvl_transport_config(
 
   return {
       .dataBufferSize = dataBufferSize,
+      .signalsPerChannel = signalsPerChannel,
       .internalSignalCount = internalSignalCount,
       .signalRegionOffset = signalRegionOffset,
       .backingAllocationSize = signalRegionOffset + signalRegionBytes,

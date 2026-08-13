@@ -31,7 +31,7 @@ void expectRuntimeErrorContains(Fn&& fn, const std::string& expected) {
 
 MultimemNvlTransportConfig makeConfig(
     std::size_t perChannelSize,
-    uint32_t userSignalCount = 1,
+    uint32_t userSignalCount = 0,
     std::size_t pipelineDepth = 0,
     std::size_t maxChannels = 1,
     std::size_t maxBlocks = 0) {
@@ -48,7 +48,7 @@ MultimemNvlTransportConfig makeConfig(
 
 TEST(MultimemNvlTransportConfigTest, DerivesUserOnlyConfiguration) {
   const auto validation =
-      validate_multimem_nvl_transport_config(makeConfig(256), 4);
+      validate_multimem_nvl_transport_config(makeConfig(256, 1), 4);
   EXPECT_TRUE(validation);
   EXPECT_EQ(validation.internalSignalCount, 0);
 }
@@ -68,7 +68,15 @@ TEST(
 
   ASSERT_TRUE(validation);
   EXPECT_EQ(validation.dataBufferSize, 8192);
-  EXPECT_EQ(validation.internalSignalCount, 192);
+  EXPECT_EQ(validation.internalSignalCount, 160);
+}
+
+TEST(MultimemNvlTransportConfigTest, DefinesSignalGeometryPerChannel) {
+  EXPECT_EQ(detail::kMultimemSignalsPerPeer, 3);
+  EXPECT_EQ(detail::kMultimemSignalsPerLane, 4);
+  EXPECT_EQ(multimem_staging_signals_per_channel(4, 2), 20);
+  constexpr uint64_t kMax = std::numeric_limits<uint32_t>::max();
+  EXPECT_EQ(multimem_staging_signals_per_channel(kMax, kMax), 7 * kMax);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsDataBufferMultiplicationOverflow) {
@@ -86,7 +94,7 @@ TEST(MultimemNvlTransportConfigTest, RejectsDataBufferMultiplicationOverflow) {
 }
 
 TEST(MultimemNvlTransportConfigTest, PreservesDefaultUserSignalCount) {
-  EXPECT_EQ(MultimemNvlTransportConfig{}.userSignalCount, 1);
+  EXPECT_EQ(MultimemNvlTransportConfig{}.userSignalCount, 0);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsLegacyPositionalConstruction) {
@@ -109,14 +117,14 @@ TEST(MultimemNvlTransportConfigTest, DerivesStagingOnlyConfiguration) {
   const auto validation =
       validate_multimem_nvl_transport_config(makeConfig(128, 0, 2, 2, 2), 4);
   EXPECT_TRUE(validation);
-  EXPECT_EQ(validation.internalSignalCount, 48);
+  EXPECT_EQ(validation.internalSignalCount, 40);
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesMixedConfiguration) {
   const auto validation =
       validate_multimem_nvl_transport_config(makeConfig(128, 7, 2, 2, 2), 4);
   EXPECT_TRUE(validation);
-  EXPECT_EQ(validation.internalSignalCount, 48);
+  EXPECT_EQ(validation.internalSignalCount, 40);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsPartialStagingGeometry) {
@@ -156,12 +164,13 @@ TEST(MultimemNvlTransportConfigTest, RejectsMissingMaxChannels) {
       "maximum channels must be non-zero");
 }
 
-TEST(MultimemNvlTransportConfigTest, AcceptsNoSignalSlots) {
+TEST(MultimemNvlTransportConfigTest, AcceptsSignalFreeConfiguration) {
   const auto validation =
       validate_multimem_nvl_transport_config(makeConfig(256, 0), 4);
 
-  EXPECT_TRUE(validation);
+  ASSERT_TRUE(validation);
   EXPECT_EQ(validation.dataBufferSize, 256);
+  EXPECT_EQ(validation.signalsPerChannel, 0);
   EXPECT_EQ(validation.internalSignalCount, 0);
   EXPECT_EQ(validation.signalRegionOffset, 256);
   EXPECT_EQ(validation.backingAllocationSize, 256);
@@ -203,10 +212,12 @@ TEST(MultimemNvlTransportConfigTest, RejectsMisalignedPerChannelSize) {
 
 TEST(MultimemNvlTransportConfigTest, RejectsInternalSignalOverflow) {
   constexpr std::size_t kRanks = 4;
-  constexpr std::size_t kSignalsPerLane =
-      multimem_staging_signals_per_lane(static_cast<uint32_t>(kRanks));
+  constexpr std::size_t kSignalsPerPeer = detail::kMultimemSignalsPerPeer;
+  constexpr std::size_t kSignalsPerLane = detail::kMultimemSignalsPerLane;
   const std::size_t pipelineDepth =
-      std::numeric_limits<int>::max() / kSignalsPerLane + 1;
+      (std::numeric_limits<int>::max() - kRanks * kSignalsPerPeer) /
+          kSignalsPerLane +
+      1;
   const std::size_t requiredDataBytes = pipelineDepth * kRanks * 16;
   EXPECT_EQ(
       validate_multimem_nvl_transport_config(

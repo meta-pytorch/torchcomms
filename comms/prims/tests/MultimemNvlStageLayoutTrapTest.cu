@@ -13,17 +13,18 @@ namespace {
 
 __global__ void stageLayoutTrapKernel(StageLayoutTrapCase testCase) {
   constexpr uint32_t kNvlRanks = 4;
-  constexpr uint32_t kExpectedSignalsPerLane =
-      multimem_staging_signals_per_lane(kNvlRanks);
+  constexpr uint32_t kPipelineDepth = 1;
+  constexpr uint32_t kExpectedSignalsPerChannel = static_cast<uint32_t>(
+      multimem_staging_signals_per_channel(kNvlRanks, kPipelineDepth));
   SignalState signal;
   const uint32_t localSignalCount =
       testCase == StageLayoutTrapCase::InsufficientLocalSignals
-      ? kExpectedSignalsPerLane - 1
-      : kExpectedSignalsPerLane;
+      ? kExpectedSignalsPerChannel - 1
+      : kExpectedSignalsPerChannel;
   const uint32_t multimemSignalCount =
       testCase == StageLayoutTrapCase::InsufficientMultimemSignals
-      ? kExpectedSignalsPerLane - 1
-      : kExpectedSignalsPerLane;
+      ? kExpectedSignalsPerChannel - 1
+      : kExpectedSignalsPerChannel;
   MultimemNvlTransportDevice transport{
       .localData = reinterpret_cast<char*>(1),
       .multimemData = reinterpret_cast<char*>(1),
@@ -34,9 +35,9 @@ __global__ void stageLayoutTrapKernel(StageLayoutTrapCase testCase) {
       .dataBufferSize = 64,
       .nvlRank = 0,
       .nvlRanks = kNvlRanks,
-      .pipelineDepth = 1,
+      .pipelineDepth = kPipelineDepth,
       .maxChannels = 1,
-      .signalsPerLane = kExpectedSignalsPerLane,
+      .signalsPerChannel = kExpectedSignalsPerChannel,
   };
   switch (testCase) {
     case StageLayoutTrapCase::ZeroGeometry:
@@ -44,8 +45,8 @@ __global__ void stageLayoutTrapKernel(StageLayoutTrapCase testCase) {
       break;
     case StageLayoutTrapCase::TooManyGroups:
       break;
-    case StageLayoutTrapCase::BadSignalsPerLane:
-      transport.signalsPerLane = kExpectedSignalsPerLane - 1;
+    case StageLayoutTrapCase::BadSignalsPerChannel:
+      transport.signalsPerChannel = kExpectedSignalsPerChannel - 1;
       break;
     case StageLayoutTrapCase::InsufficientLocalSignals:
     case StageLayoutTrapCase::InsufficientMultimemSignals:
