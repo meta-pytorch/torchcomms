@@ -10,8 +10,8 @@
 
 #include "comms/ctran/utils/CtranAvlTree.h"
 #include "comms/ctran/utils/CtranAvlTreeElem.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 CtranAvlTree::~CtranAvlTree() {
   if (this->root_) {
@@ -48,7 +48,7 @@ commResult_t CtranAvlTree::remove(void* hdl) {
 
   auto it = handles_.find(hdl);
   if (it == handles_.end()) {
-    CERR(
+    CTRAN_ERR(
         commInvalidUsage,
         "CTRAN-AVL-TREE: Trying to remove hdl {} while the handle is not in the cache, likely double freeing",
         (void*)hdl);

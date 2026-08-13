@@ -6,7 +6,7 @@
 
 #include <folly/system/ThreadName.h>
 
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
 inline void commNamedThreadStart(
@@ -37,6 +37,6 @@ inline void commNamedThreadStart(
   if (metaVec.size()) {
     ss << folly::join(" ", metaVec);
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO, INIT, "[COMM THREAD] Starting {} thread {}", threadName, ss.str());
 }
