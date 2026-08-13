@@ -44,11 +44,13 @@ void waitFor(std::chrono::milliseconds duration) {
 TEST(AbortTest, enabledDefaultNotAbort) {
   Abort abort{/*enabled=*/true};
   EXPECT_FALSE(abort.isAborted());
+  EXPECT_EQ(abort.reason(), AbortReason::NONE);
 }
 
 TEST(AbortTest, disabledNoopDefaultNotAbort) {
   Abort abort{/*enabled=*/false};
   EXPECT_FALSE(abort.isAborted());
+  EXPECT_EQ(abort.reason(), AbortReason::NONE);
 }
 
 TEST(AbortTest, enabled) {
@@ -58,6 +60,7 @@ TEST(AbortTest, enabled) {
   abort.setAbort();
 
   EXPECT_TRUE(abort.isAborted());
+  EXPECT_EQ(abort.reason(), AbortReason::ABORTED);
 }
 
 TEST(AbortTest, disabledNoop) {
@@ -461,6 +464,7 @@ TEST(AbortTest, setAbortTimedOutRecordsTimeout) {
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
 }
 
 TEST(AbortTest, setAbortRejectsNone) {
@@ -491,6 +495,14 @@ TEST(AbortTest, firstTerminalReasonWins) {
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
+}
+
+TEST(AbortTest, abortReasonToString) {
+  EXPECT_EQ(abortReasonToString(AbortReason::NONE), "none");
+  EXPECT_EQ(abortReasonToString(AbortReason::ABORTED), "aborted");
+  EXPECT_EQ(abortReasonToString(AbortReason::TIMED_OUT), "timed_out");
+  EXPECT_EQ(abortReasonToString(static_cast<AbortReason>(99)), "unknown");
 }
 
 TEST(AbortTest, timeRemainingNoTimeout) {

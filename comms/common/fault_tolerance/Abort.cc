@@ -12,8 +12,21 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace comms::fault_tolerance {
+
+std::string_view abortReasonToString(AbortReason reason) {
+  switch (reason) {
+    case AbortReason::NONE:
+      return "none";
+    case AbortReason::ABORTED:
+      return "aborted";
+    case AbortReason::TIMED_OUT:
+      return "timed_out";
+  }
+  return "unknown";
+}
 
 Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   if (!enabled) {
@@ -83,6 +96,13 @@ bool Abort::isAborted() {
   }
 
   return loadAbortReason() != encode(AbortReason::NONE);
+}
+
+AbortReason Abort::reason() const {
+  if (state_ == nullptr) {
+    return AbortReason::NONE;
+  }
+  return static_cast<AbortReason>(loadAbortReason());
 }
 
 bool Abort::isTimeoutActive() const {
