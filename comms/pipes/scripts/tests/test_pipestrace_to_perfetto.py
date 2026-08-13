@@ -60,6 +60,33 @@ def _fine_event_line(
     )
 
 
+def _fine_event_v2_line(
+    name: str,
+    *,
+    rank: int = 3,
+    session: int = 17,
+    op_tag: int = 5,
+    phase: str = "tree_reduce",
+    dependency_step: int = 2,
+    block: int = 4,
+    lane: int = 1,
+    chunk: int = 3,
+    role: str = "forward_reduce",
+    peer: int = 7,
+    qp_lane: int = 6,
+    bytes_: int = 4096,
+    slot: int = 11,
+    ns: int = 100,
+) -> str:
+    return (
+        f"[0]:INFO:root:[stderr] Prims fine trace schema_version=2 "
+        f"trace_session={session} event={name} rank={rank} op_tag={op_tag} "
+        f"phase={phase} dependency_step={dependency_step} block={block} "
+        f"lane={lane} chunk_tag={chunk} role={role} peer={peer} qp_lane={qp_lane} "
+        f"bytes={bytes_} slot={slot} wall_time_ns={ns}\n"
+    )
+
+
 def _mast_event_line(
     local_rank: int,
     name: str,
@@ -158,6 +185,24 @@ class EventRegexTest(unittest.TestCase):
         self.assertEqual(7, event.peer)
         self.assertEqual(5, event.qp_lane)
         self.assertEqual(4096, event.bytes)
+
+    def test_fine_allreduce_v2_line_preserves_correlation_identity(self) -> None:
+        event = ptp._parse_event_line(_fine_event_v2_line(ptp.AR_WQE_SUBMIT_BEGIN))
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(0, event.mpi_rank)
+        self.assertEqual(
+            (2, 17, 5, 4, 1, 3, "forward_reduce"),
+            (
+                event.schema_version,
+                event.trace_session,
+                event.op_tag,
+                event.block,
+                event.lane,
+                event.chunk,
+                event.role,
+            ),
+        )
 
 
 class ParseEventsTest(unittest.TestCase):
@@ -375,6 +420,50 @@ class PairAllReduceTest(unittest.TestCase):
         _, _, unmatched = ptp.pair_events({0: [event]})
         self.assertEqual(1, len(unmatched))
         self.assertIn("without matching end", unmatched[0][1])
+
+    def test_v2_interleaved_chunks_pair_independently(self) -> None:
+        common = {
+            "mpi_rank": 3,
+            "step": 2,
+            "rank": 7,
+            "group": 4,
+            "phase": "tree_reduce",
+            "dependency_step": 2,
+            "lane": 1,
+            "peer": 7,
+            "qp_lane": 6,
+            "bytes": 4096,
+            "schema_version": 2,
+            "trace_session": 17,
+            "op_tag": 5,
+            "block": 4,
+            "role": "forward_reduce",
+        }
+        events = [
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_BEGIN, chunk=0, slot=10, ns=100, **common),
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_BEGIN, chunk=1, slot=11, ns=110, **common),
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_END, chunk=0, slot=12, ns=140, **common),
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_END, chunk=1, slot=13, ns=160, **common),
+        ]
+        slices, _, unmatched = ptp.pair_events({3: events})
+        self.assertEqual([], unmatched)
+        self.assertCountEqual([40, 50], [s.end_ns - s.begin_ns for s in slices])
+
+    def test_fine_tracks_do_not_alias_block_and_lane(self) -> None:
+        common = {
+            "mpi_rank": 0,
+            "name": ptp.AR_WQE_SUBMIT_BEGIN,
+            "step": 0,
+            "rank": 0,
+            "group": 0,
+            "slot": 0,
+            "ns": 0,
+        }
+        block_one = ptp.Event(block=1, lane=0, schema_version=2, **common)
+        lane_two = ptp.Event(block=0, lane=2, schema_version=2, **common)
+        self.assertNotEqual(
+            ptp._fine_allreduce_tid(block_one), ptp._fine_allreduce_tid(lane_two)
+        )
 
 
 class BuildTraceTest(unittest.TestCase):

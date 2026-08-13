@@ -49,6 +49,10 @@ AR_PHASE2_BEGIN = "allreduce_phase2_begin"
 AR_PHASE2_END = "allreduce_phase2_end"
 AR_PHASE3_BEGIN = "allreduce_phase3_begin"
 AR_PHASE3_END = "allreduce_phase3_end"
+AR_RING_RS_BEGIN = "allreduce_ring_rs_begin"
+AR_RING_RS_END = "allreduce_ring_rs_end"
+AR_RING_AG_BEGIN = "allreduce_ring_ag_begin"
+AR_RING_AG_END = "allreduce_ring_ag_end"
 AR_SEND_SYNC_BEGIN = "allreduce_send_sync_begin"
 AR_SEND_SYNC_END = "allreduce_send_sync_end"
 AR_WQE_SUBMIT_BEGIN = "allreduce_wqe_submit_begin"
@@ -69,6 +73,8 @@ AR_STAGE_COPY_BEGIN = "allreduce_stage_copy_begin"
 AR_STAGE_COPY_END = "allreduce_stage_copy_end"
 AR_PATH_STAGED = "allreduce_path_staged"
 AR_PATH_REGISTERED_PROGRESS = "allreduce_path_registered_progress"
+AR_TREE_SCHEDULER_IDLE_BEGIN = "allreduce_tree_scheduler_idle_begin"
+AR_TREE_SCHEDULER_IDLE_END = "allreduce_tree_scheduler_idle_end"
 
 IB_SEND = "ib_send"
 IB_RECV = "ib_recv"
@@ -95,6 +101,8 @@ AR_PAIRS = {
 AR_BEGIN_NAMES = frozenset(v[0] for v in AR_PAIRS.values())
 AR_NAMES = frozenset(AR_PAIRS) | AR_BEGIN_NAMES
 FINE_AR_PAIRS = {
+    AR_RING_RS_END: (AR_RING_RS_BEGIN, "ring reduce-scatter"),
+    AR_RING_AG_END: (AR_RING_AG_BEGIN, "ring all-gather"),
     AR_SEND_SYNC_END: (AR_SEND_SYNC_BEGIN, "send sync"),
     AR_WQE_SUBMIT_END: (AR_WQE_SUBMIT_BEGIN, "WQE submit"),
     AR_DATA_READY_WAIT_END: (AR_DATA_READY_WAIT_BEGIN, "DATA_READY wait"),
@@ -110,6 +118,10 @@ FINE_AR_PAIRS = {
         "remote SLOT_FREE wait",
     ),
     AR_STAGE_COPY_END: (AR_STAGE_COPY_BEGIN, "staging copy"),
+    AR_TREE_SCHEDULER_IDLE_END: (
+        AR_TREE_SCHEDULER_IDLE_BEGIN,
+        "tree scheduler idle",
+    ),
 }
 FINE_AR_PATHS = {
     AR_PATH_STAGED: "path: staged",
@@ -130,6 +142,8 @@ THREAD_KIND_STRIDE = 1 << 16
 THREAD_OFFSET_IB = 100
 THREAD_OFFSET_NVL = THREAD_OFFSET_IB + THREAD_KIND_STRIDE
 THREAD_OFFSET_AR = THREAD_OFFSET_NVL + THREAD_KIND_STRIDE
+THREAD_OFFSET_FINE_AR = THREAD_OFFSET_AR + THREAD_KIND_STRIDE
+FINE_AR_LANE_STRIDE = 1 << 8
 
 _PREFIX = (
     r"^(?:\[1,(?P<mpi_rank>\d+)\]<(?:stderr|stdout)>:"
@@ -151,7 +165,7 @@ EVENT_RE: re.Pattern[str] = re.compile(
     r" wall_time_ns=(?P<ns>\d+)\s*$"
 )
 
-FINE_EVENT_RE: re.Pattern[str] = re.compile(
+FINE_EVENT_V1_RE: re.Pattern[str] = re.compile(
     _PREFIX + rf"[^\[]*?{_MAST_STREAM_WRAPPER}Prims fine trace event=(?P<name>\w+)"
     r" rank=(?P<rank>\d+)"
     r" phase=(?P<phase>\w+)"
@@ -164,6 +178,29 @@ FINE_EVENT_RE: re.Pattern[str] = re.compile(
     r" slot=(?P<slot>\d+)"
     r" wall_time_ns=(?P<ns>\d+)\s*$"
 )
+
+FINE_EVENT_V2_RE: re.Pattern[str] = re.compile(
+    _PREFIX
+    + rf"[^\[]*?{_MAST_STREAM_WRAPPER}Prims fine trace schema_version=(?P<schema_version>\d+)"
+    r" trace_session=(?P<trace_session>\d+)"
+    r" event=(?P<name>\w+)"
+    r" rank=(?P<rank>\d+)"
+    r" op_tag=(?P<op_tag>\d+)"
+    r" phase=(?P<phase>\w+)"
+    r" dependency_step=(?P<dependency_step>\d+)"
+    r" block=(?P<block>\d+)"
+    r" lane=(?P<lane>\d+)"
+    r" chunk_tag=(?P<chunk>\d+)"
+    r" role=(?P<role>\w+)"
+    r" peer=(?P<peer>\d+)"
+    r" qp_lane=(?P<qp_lane>\d+)"
+    r" bytes=(?P<bytes>\d+)"
+    r" slot=(?P<slot>\d+)"
+    r" wall_time_ns=(?P<ns>\d+)\s*$"
+)
+
+# Kept for callers that import the original V1 pattern directly.
+FINE_EVENT_RE = FINE_EVENT_V1_RE
 
 LOSS_RE: re.Pattern[str] = re.compile(
     _PREFIX
@@ -199,6 +236,12 @@ class Event:
     peer: int = 0
     qp_lane: int = 0
     bytes: int = 0
+    schema_version: int = 1
+    trace_session: int = 0
+    op_tag: int = 0
+    block: int = 0
+    chunk: int = 0
+    role: str = "unknown"
 
 
 @dataclasses.dataclass
@@ -257,9 +300,9 @@ class PairState:
     pending_allreduce: dict[tuple[str, int, int], Event] = dataclasses.field(
         default_factory=dict
     )
-    pending_fine_allreduce: dict[
-        tuple[str, str, int, int, int, int, int, int], Event
-    ] = dataclasses.field(default_factory=dict)
+    pending_fine_allreduce: dict[tuple[object, ...], Event] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 def _open_log(path: str) -> TextIO:
@@ -296,7 +339,36 @@ def _parse_event_line(line: str) -> Event | None:
             ns=int(m["ns"]),
         )
 
-    fine = FINE_EVENT_RE.fullmatch(line)
+    fine_v2 = FINE_EVENT_V2_RE.fullmatch(line)
+    if fine_v2 is not None and fine_v2["name"] in FINE_AR_NAMES:
+        dependency_step = int(fine_v2["dependency_step"])
+        block = int(fine_v2["block"])
+        peer = int(fine_v2["peer"])
+        fine_v2_prefix_rank = fine_v2["mpi_rank"] or fine_v2["mast_rank"]
+        return Event(
+            mpi_rank=int(fine_v2_prefix_rank),
+            name=fine_v2["name"],
+            step=dependency_step,
+            rank=peer,
+            group=block,
+            slot=int(fine_v2["slot"]),
+            ns=int(fine_v2["ns"]),
+            phase=fine_v2["phase"],
+            dependency_step=dependency_step,
+            stripe=block,
+            lane=int(fine_v2["lane"]),
+            peer=peer,
+            qp_lane=int(fine_v2["qp_lane"]),
+            bytes=int(fine_v2["bytes"]),
+            schema_version=int(fine_v2["schema_version"]),
+            trace_session=int(fine_v2["trace_session"]),
+            op_tag=int(fine_v2["op_tag"]),
+            block=block,
+            chunk=int(fine_v2["chunk"]),
+            role=fine_v2["role"],
+        )
+
+    fine = FINE_EVENT_V1_RE.fullmatch(line)
     if fine is None or fine["name"] not in FINE_AR_NAMES:
         return None
     dependency_step = int(fine["dependency_step"])
@@ -709,27 +781,45 @@ def _handle_allreduce_event(
     )
 
 
-def _fine_allreduce_key(
-    e: Event, begin_name: str
-) -> tuple[str, str, int, int, int, int, int, int]:
+def _fine_allreduce_key(e: Event, begin_name: str) -> tuple[object, ...]:
     return (
         begin_name,
+        e.schema_version,
+        e.trace_session,
+        e.op_tag,
         e.phase or "unknown",
         e.dependency_step,
-        e.stripe,
+        _fine_allreduce_block(e),
         e.lane,
+        e.chunk,
+        e.role,
         e.peer,
         e.qp_lane,
         e.bytes,
     )
 
 
+def _fine_allreduce_block(e: Event) -> int:
+    return e.block if e.schema_version >= 2 else e.stripe
+
+
+def _fine_allreduce_tid(e: Event) -> int:
+    return (
+        THREAD_OFFSET_FINE_AR + _fine_allreduce_block(e) * FINE_AR_LANE_STRIDE + e.lane
+    )
+
+
 def _fine_allreduce_args(e: Event) -> dict[str, object]:
     return {
+        "schema_version": e.schema_version,
+        "trace_session": e.trace_session,
+        "op_tag": e.op_tag,
         "phase": e.phase or "unknown",
         "dependency_step": e.dependency_step,
-        "stripe": e.stripe,
+        "block": _fine_allreduce_block(e),
         "lane": e.lane,
+        "chunk": e.chunk,
+        "role": e.role,
         "peer": e.peer,
         "qp_lane": e.qp_lane,
         "bytes": e.bytes,
@@ -749,7 +839,7 @@ def _handle_fine_allreduce_event(
         slices.append(
             Slice_(
                 pid=state.mpi_rank,
-                tid=THREAD_OFFSET_AR + e.stripe,
+                tid=_fine_allreduce_tid(e),
                 cat="allreduce_path",
                 name=path_name,
                 begin_ns=e.ns,
@@ -786,7 +876,7 @@ def _handle_fine_allreduce_event(
     slices.append(
         Slice_(
             pid=state.mpi_rank,
-            tid=THREAD_OFFSET_AR + e.stripe,
+            tid=_fine_allreduce_tid(e),
             cat="allreduce_fine",
             name=display_name,
             begin_ns=begin.ns,
@@ -912,19 +1002,32 @@ def _emit_metadata(
             }
         )
         for tid in sorted(used_tids.get(pid, set())):
-            if tid >= THREAD_OFFSET_AR:
+            if tid >= THREAD_OFFSET_FINE_AR:
+                track = tid - THREAD_OFFSET_FINE_AR
+                kind, block = "AllReduce fine", track // FINE_AR_LANE_STRIDE
+                lane = track % FINE_AR_LANE_STRIDE
+            elif tid >= THREAD_OFFSET_AR:
                 kind, block = "AllReduce", tid - THREAD_OFFSET_AR
+                lane = None
             elif tid >= THREAD_OFFSET_NVL:
                 kind, block = "NVL", tid - THREAD_OFFSET_NVL
+                lane = None
             else:
                 kind, block = "IB", tid - THREAD_OFFSET_IB
+                lane = None
             out.append(
                 {
                     "ph": "M",
                     "name": "thread_name",
                     "pid": pid,
                     "tid": tid,
-                    "args": {"name": f"{kind} block {block}"},
+                    "args": {
+                        "name": (
+                            f"{kind} block {block} lane {lane}"
+                            if lane is not None
+                            else f"{kind} block {block}"
+                        )
+                    },
                 }
             )
             out.append(
