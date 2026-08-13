@@ -63,11 +63,17 @@ struct StageLayout {
 template <typename T>
 __device__ __forceinline__ StageLayout make_stage_layout(
     const comms::prims::MultimemNvlTransportDevice& transport,
+    uint32_t pipelineDepth,
     comms::prims::ThreadGroup& group) {
   static_assert(sizeof(T) <= 16, "staging payloads must fit in 16 bytes");
   static_assert(16 % sizeof(T) == 0, "staging payloads must divide 16 bytes");
 
-  const uint32_t pipelineDepth = transport.pipelineDepth;
+#if defined(__CUDA_ARCH__)
+  if (pipelineDepth == 0) {
+    printf("NvlMultimem staging layout: pipelineDepth must be non-zero\n");
+    __trap();
+  }
+#endif
 
   // 16-byte (uint4) alignment for every staging-window slice, so the per-rank
   // lane offsets are 128-bit aligned and the v4 multimem.ld_reduce / store fast
@@ -88,18 +94,6 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     printf(
         "NvlMultimem staging layout: invalid group_id=%u total_groups=%u\n",
         static_cast<unsigned>(group.group_id),
-        static_cast<unsigned>(group.total_groups));
-    __trap();
-  }
-  if (pipelineDepth == 0 || transport.maxChannels == 0 ||
-      transport.signalsPerLane == 0 ||
-      group.total_groups > transport.maxChannels) {
-    printf(
-        "NvlMultimem staging layout: invalid geometry depth=%u "
-        "maxChannels=%u signalsPerLane=%u total_groups=%u\n",
-        static_cast<unsigned>(pipelineDepth),
-        static_cast<unsigned>(transport.maxChannels),
-        static_cast<unsigned>(transport.signalsPerLane),
         static_cast<unsigned>(group.total_groups));
     __trap();
   }
@@ -151,18 +145,8 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     __trap();
   }
 #endif
-  const uint64_t expectedSignalsPerLane = multimem_staging_signals_per_lane(
+  const uint64_t signalsPerLane = multimem_staging_signals_per_lane(
       static_cast<uint32_t>(transport.nvlRanks));
-  const uint64_t signalsPerLane = transport.signalsPerLane;
-#if defined(__CUDA_ARCH__)
-  if (signalsPerLane != expectedSignalsPerLane) {
-    printf(
-        "NvlMultimem staging layout: signalsPerLane=%llu expected=%llu\n",
-        static_cast<unsigned long long>(signalsPerLane),
-        static_cast<unsigned long long>(expectedSignalsPerLane));
-    __trap();
-  }
-#endif
   const uint64_t signalsPerGroup = detail::checked_signal_product(
       static_cast<uint64_t>(pipelineDepth), signalsPerLane);
   const uint64_t requiredSignals = detail::checked_signal_product(
@@ -172,8 +156,7 @@ __device__ __forceinline__ StageLayout make_stage_layout(
       requiredSignals > transport.internalMultimemSignals.size()) {
     printf(
         "NvlMultimem requires %llu internal signals "
-        "(localAvailable=%u, multimemAvailable=%u, groups=%u, "
-        "pipelineDepth=%u, nvlRanks=%d)\n",
+        "(local=%u, multimem=%u, groups=%u, pipelineDepth=%u, nvlRanks=%d)\n",
         static_cast<unsigned long long>(requiredSignals),
         static_cast<unsigned>(transport.internalLocalSignals.size()),
         static_cast<unsigned>(transport.internalMultimemSignals.size()),

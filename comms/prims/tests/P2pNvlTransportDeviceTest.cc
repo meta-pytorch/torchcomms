@@ -37,8 +37,8 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
   static constexpr int kGpu0 = 0;
   static constexpr int kGpu1 = 1;
 
-  cudaStream_t stream0_;
-  cudaStream_t stream1_;
+  cudaStream_t stream0_{nullptr};
+  cudaStream_t stream1_{nullptr};
 
   void SetUp() override {
     int deviceCount = 0;
@@ -79,11 +79,14 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
   }
 
   void TearDown() override {
-    // Cleanup streams
-    CUDACHECK_TEST(cudaSetDevice(kGpu0));
-    CUDACHECK_TEST(cudaStreamDestroy(stream0_));
-    CUDACHECK_TEST(cudaSetDevice(kGpu1));
-    CUDACHECK_TEST(cudaStreamDestroy(stream1_));
+    if (stream0_ != nullptr) {
+      EXPECT_EQ(cudaSetDevice(kGpu0), cudaSuccess);
+      EXPECT_EQ(cudaStreamDestroy(stream0_), cudaSuccess);
+    }
+    if (stream1_ != nullptr) {
+      EXPECT_EQ(cudaSetDevice(kGpu1), cudaSuccess);
+      EXPECT_EQ(cudaStreamDestroy(stream1_), cudaSuccess);
+    }
   }
 
   /**
@@ -399,6 +402,42 @@ TEST_F(P2pNvlTransportDeviceTestFixture, SignalWaitCmpNe) {
   SUCCEED();
 
   CUDACHECK_TEST(cudaFree(signal_d));
+}
+
+TEST_F(P2pNvlTransportDeviceTestFixture, DeviceWaitAcceptsDisabledAbortDevice) {
+  const int numSignals = 1;
+  SignalState* signalBuffer;
+  CUDACHECK_TEST(cudaMalloc(&signalBuffer, numSignals * sizeof(SignalState)));
+  CUDACHECK_TEST(cudaMemset(signalBuffer, 0, numSignals * sizeof(SignalState)));
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = 1024,
+      .pipelineDepth = 2,
+  };
+  LocalState localState{
+      .dataBuffer = nullptr,
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer, numSignals),
+  };
+  RemoteState remoteState{
+      .dataBuffer = nullptr,
+      .signalBuffer = DeviceSpan<SignalState>(signalBuffer, numSignals),
+  };
+  P2pNvlTransportDevice transport(0, 0, options, localState, remoteState);
+
+  P2pNvlTransportDevice* transport_d;
+  CUDACHECK_TEST(cudaMalloc(&transport_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport_d,
+      &transport,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
+  test::testDeviceSignalThenWaitWithDisabledAbort(
+      transport_d, 0, SignalOp::SIGNAL_SET, 7, CmpOp::CMP_EQ, 7, 1, 32);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaFree(transport_d));
+  CUDACHECK_TEST(cudaFree(signalBuffer));
 }
 
 TEST_F(P2pNvlTransportDeviceTestFixture, SignalBlockGroups) {

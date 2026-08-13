@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -28,24 +29,23 @@ void expectRuntimeErrorContains(Fn&& fn, const std::string& expected) {
   }
 }
 
-MultimemNvlTransportConfig makeConfig(
+std::optional<uint32_t> deriveInternalSignals(
     std::size_t dataBufferSize,
     uint32_t userSignalCount = 1,
     std::size_t pipelineDepth = 0,
     std::size_t maxChannels = 0) {
-  MultimemNvlTransportConfig config{};
-  config.dataBufferSize = dataBufferSize;
-  config.userSignalCount = userSignalCount;
-  config.pipelineDepth = pipelineDepth;
-  config.maxChannels = maxChannels;
-  return config;
+  return detail::checked_multimem_internal_signal_count(
+      dataBufferSize,
+      userSignalCount,
+      pipelineDepth,
+      maxChannels,
+      /*nvlRanks=*/4);
 }
 
 } // namespace
 
 TEST(MultimemNvlTransportConfigTest, DerivesUserOnlyConfiguration) {
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(makeConfig(256), 4), 0);
+  EXPECT_EQ(deriveInternalSignals(256), 0);
 }
 
 TEST(MultimemNvlTransportConfigTest, PreservesDefaultUserSignalCount) {
@@ -60,47 +60,35 @@ TEST(MultimemNvlTransportDeviceTest, PreservesLegacyPositionalRankFields) {
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesStagingOnlyConfiguration) {
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(256, 0, 2, 2), 4),
-      48);
+  EXPECT_EQ(deriveInternalSignals(256, 0, 2, 2), 48);
 }
 
 TEST(MultimemNvlTransportConfigTest, DerivesMixedConfiguration) {
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(256, 7, 2, 2), 4),
-      48);
+  EXPECT_EQ(deriveInternalSignals(256, 7, 2, 2), 48);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsPartialStagingGeometry) {
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(256, 1, 2, 0), 4),
-      std::nullopt);
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(256, 1, 0, 2), 4),
-      std::nullopt);
+  EXPECT_EQ(deriveInternalSignals(256, 1, 2, 0), std::nullopt);
+  EXPECT_EQ(deriveInternalSignals(256, 1, 0, 2), std::nullopt);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInvalidRankCount) {
   EXPECT_EQ(
       detail::checked_multimem_internal_signal_count(
-          makeConfig(256, 1, 1, 1), 0),
+          256, 1, 1, 1, /*nvlRanks=*/0),
       std::nullopt);
   EXPECT_EQ(
       detail::checked_multimem_internal_signal_count(
-          makeConfig(std::numeric_limits<std::size_t>::max(), 1, 1, 1),
+          std::numeric_limits<std::size_t>::max(),
+          1,
+          1,
+          1,
           std::numeric_limits<int>::max()),
       std::nullopt);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInsufficientDataCapacity) {
-  EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(255, 1, 2, 2), 4),
-      std::nullopt);
+  EXPECT_EQ(deriveInternalSignals(255, 1, 2, 2), std::nullopt);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsInternalSignalOverflow) {
@@ -111,8 +99,7 @@ TEST(MultimemNvlTransportConfigTest, RejectsInternalSignalOverflow) {
       std::numeric_limits<int>::max() / kSignalsPerLane + 1;
   const std::size_t requiredDataBytes = pipelineDepth * kRanks * 16;
   EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(requiredDataBytes, 1, pipelineDepth, 1), kRanks),
+      deriveInternalSignals(requiredDataBytes, 1, pipelineDepth, 1),
       std::nullopt);
 }
 
@@ -120,13 +107,8 @@ TEST(MultimemNvlTransportConfigTest, RejectsPipelineDepthOutsideDeviceRange) {
   constexpr std::size_t kOutsideDeviceRange =
       static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) + 1;
   EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(
-              std::numeric_limits<std::size_t>::max(),
-              1,
-              kOutsideDeviceRange,
-              1),
-          4),
+      deriveInternalSignals(
+          std::numeric_limits<std::size_t>::max(), 1, kOutsideDeviceRange, 1),
       std::nullopt);
 }
 
@@ -134,27 +116,20 @@ TEST(MultimemNvlTransportConfigTest, RejectsMaxChannelsOutsideDeviceRange) {
   constexpr std::size_t kOutsideDeviceRange =
       static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) + 1;
   EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(
-              std::numeric_limits<std::size_t>::max(),
-              1,
-              1,
-              kOutsideDeviceRange),
-          4),
+      deriveInternalSignals(
+          std::numeric_limits<std::size_t>::max(), 1, 1, kOutsideDeviceRange),
       std::nullopt);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsTotalSignalOverflow) {
   EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(64, std::numeric_limits<int>::max(), 1, 1), 4),
+      deriveInternalSignals(64, std::numeric_limits<int>::max(), 1, 1),
       std::nullopt);
 }
 
 TEST(MultimemNvlTransportConfigTest, RejectsUserSignalCountOutsideSignedRange) {
   EXPECT_EQ(
-      detail::checked_multimem_internal_signal_count(
-          makeConfig(64, std::numeric_limits<uint32_t>::max(), 0, 0), 4),
+      deriveInternalSignals(64, std::numeric_limits<uint32_t>::max(), 0, 0),
       std::nullopt);
 }
 
@@ -265,8 +240,7 @@ TEST(
   MultimemNvlTransportConfig config{};
   config.dataBufferSize = 64;
   config.userSignalCount = std::numeric_limits<int>::max();
-  config.pipelineDepth = 1;
-  config.maxChannels = 1;
+  config.internalSignalCount = 1;
   expectRuntimeErrorContains(
       [&] {
         MultimemNvlTransport(
@@ -275,7 +249,7 @@ TEST(
             /*nvlRankToCommRank=*/std::vector<int>{0, 1, 2, 3},
             config);
       },
-      "invalid staging geometry or capacity");
+      "signalCount too large");
 }
 
 TEST(

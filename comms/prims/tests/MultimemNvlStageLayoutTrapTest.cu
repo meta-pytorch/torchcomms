@@ -34,25 +34,21 @@ __global__ void stageLayoutTrapKernel(StageLayoutTrapCase testCase) {
       .dataBufferSize = 64,
       .nvlRank = 0,
       .nvlRanks = kNvlRanks,
-      .pipelineDepth = 1,
-      .maxChannels = 1,
-      .signalsPerLane = kExpectedSignalsPerLane,
   };
   switch (testCase) {
-    case StageLayoutTrapCase::ZeroGeometry:
-      transport.pipelineDepth = 0;
+    case StageLayoutTrapCase::ZeroPipelineDepth:
       break;
     case StageLayoutTrapCase::TooManyGroups:
-      break;
-    case StageLayoutTrapCase::BadSignalsPerLane:
-      transport.signalsPerLane = kExpectedSignalsPerLane - 1;
       break;
     case StageLayoutTrapCase::InsufficientLocalSignals:
     case StageLayoutTrapCase::InsufficientMultimemSignals:
       break;
   }
+  const uint32_t pipelineDepth =
+      testCase == StageLayoutTrapCase::ZeroPipelineDepth ? 0 : 1;
   auto group = make_block_group();
-  static_cast<void>(multimem::make_stage_layout<uint32_t>(transport, group));
+  static_cast<void>(
+      multimem::make_stage_layout<uint32_t>(transport, pipelineDepth, group));
 }
 
 } // namespace

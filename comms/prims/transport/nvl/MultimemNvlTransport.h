@@ -23,65 +23,63 @@ struct MultimemNvlTransportConfig {
   // wait_signal_until().
   uint32_t userSignalCount{1};
 
-  // Immutable staging geometry. Both values must be zero when staging is not
-  // used, or both must be non-zero when staging is enabled. `maxChannels` is
-  // the maximum supported `ThreadGroup::total_groups`; each group, pipeline
-  // lane, and NVLink rank requires one 16-byte-aligned data unit. Construction
-  // derives and reserves the corresponding internal signal region after the
-  // user-visible signal slots.
-  std::size_t pipelineDepth{0};
-  std::size_t maxChannels{0};
+  // Signal slots reserved for transport-internal protocols. These are not
+  // addressable through the public signal API.
+  uint32_t internalSignalCount{0};
 };
 
 namespace detail {
 
 inline std::optional<uint32_t> checked_multimem_internal_signal_count(
-    const MultimemNvlTransportConfig& config,
+    std::size_t dataBufferSize,
+    uint32_t userSignalCount,
+    std::size_t pipelineDepth,
+    std::size_t maxChannels,
     int nvlRanks) {
-  if (nvlRanks <= 0 ||
-      config.userSignalCount > std::numeric_limits<int>::max()) {
+  if (nvlRanks <= 0 || userSignalCount > std::numeric_limits<int>::max()) {
     return std::nullopt;
   }
 
-  const auto signalsPerLaneWide =
-      multimem_staging_signals_per_lane_wide(static_cast<uint64_t>(nvlRanks));
-  if (signalsPerLaneWide > std::numeric_limits<uint32_t>::max()) {
-    return std::nullopt;
-  }
-
-  const bool hasPipelineDepth = config.pipelineDepth != 0;
-  const bool hasMaxChannels = config.maxChannels != 0;
+  const bool hasPipelineDepth = pipelineDepth != 0;
+  const bool hasMaxChannels = maxChannels != 0;
   if (hasPipelineDepth != hasMaxChannels) {
     return std::nullopt;
   }
   if (!hasPipelineDepth) {
     return 0;
   }
-  if (config.pipelineDepth > std::numeric_limits<uint32_t>::max() ||
-      config.maxChannels > std::numeric_limits<uint32_t>::max()) {
+  if (pipelineDepth > std::numeric_limits<uint32_t>::max() ||
+      maxChannels > std::numeric_limits<uint32_t>::max()) {
     return std::nullopt;
   }
 
   constexpr std::size_t kDataAlignment = 16;
-  const std::size_t alignedUnits = config.dataBufferSize / kDataAlignment;
+  const std::size_t alignedUnits = dataBufferSize / kDataAlignment;
   const auto ranks = static_cast<std::size_t>(nvlRanks);
-  if (config.maxChannels > alignedUnits ||
-      config.pipelineDepth > alignedUnits / config.maxChannels ||
-      ranks > alignedUnits / config.maxChannels / config.pipelineDepth) {
+  if (maxChannels > alignedUnits ||
+      pipelineDepth > alignedUnits / maxChannels ||
+      ranks > alignedUnits / maxChannels / pipelineDepth) {
     return std::nullopt;
   }
 
-  const auto maxInternalSignals = static_cast<std::size_t>(
-      std::numeric_limits<int>::max() - config.userSignalCount);
-  const auto signalsPerLane = static_cast<std::size_t>(signalsPerLaneWide);
-  if (config.maxChannels > maxInternalSignals / signalsPerLane) {
+  const uint64_t ranksWide = static_cast<uint64_t>(nvlRanks);
+  const uint64_t signalsPerLane = 2 * ranksWide + 4;
+  if (signalsPerLane > std::numeric_limits<uint32_t>::max()) {
     return std::nullopt;
   }
-  const auto signalsPerRound = config.maxChannels * signalsPerLane;
-  if (config.pipelineDepth > maxInternalSignals / signalsPerRound) {
+  const uint64_t maxTotalSignals =
+      static_cast<uint64_t>(std::numeric_limits<int>::max());
+  const uint64_t maxInternalSignals = maxTotalSignals - userSignalCount;
+  if (maxChannels > maxInternalSignals / signalsPerLane) {
     return std::nullopt;
   }
-  return static_cast<uint32_t>(config.pipelineDepth * signalsPerRound);
+  const uint64_t signalsPerRound =
+      static_cast<uint64_t>(maxChannels) * signalsPerLane;
+  if (pipelineDepth > maxInternalSignals / signalsPerRound) {
+    return std::nullopt;
+  }
+  return static_cast<uint32_t>(
+      static_cast<uint64_t>(pipelineDepth) * signalsPerRound);
 }
 
 } // namespace detail
@@ -169,8 +167,6 @@ class MultimemNvlTransport {
   // rank-map preconditions on CPU-only hosts).
   int cudaDevice_{-1};
   const MultimemNvlTransportConfig config_;
-  uint32_t internalSignalCount_{0};
-  uint32_t signalsPerLane_{0};
   bool exchanged_{false};
   // Set when exchange() throws; subsequent calls throw instead of silently
   // retrying. Multicast object create/import/bind failures can leave partial

@@ -57,6 +57,8 @@
 #ifdef __HIP_PLATFORM_AMD__
 
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 
 #include <hip/hip_runtime_api.h>
 
@@ -155,6 +157,54 @@ class CudaEvent {
 
  private:
   hipEvent_t event_{nullptr};
+};
+
+class CudaDeviceGuard {
+ public:
+  explicit CudaDeviceGuard(int device) {
+    auto status = hipGetDevice(&previousDevice_);
+    if (status != hipSuccess) {
+      throw std::runtime_error(
+          std::string("failed to query current HIP device: ") +
+          hipGetErrorString(status));
+    }
+    if (previousDevice_ == device) {
+      return;
+    }
+
+    status = hipSetDevice(device);
+    if (status == hipSuccess) {
+      restore_ = true;
+      return;
+    }
+
+    const auto selectionStatus = status;
+    const auto restoreStatus = hipSetDevice(previousDevice_);
+    if (restoreStatus != hipSuccess) {
+      throw std::runtime_error(
+          std::string("failed to select and restore HIP device: ") +
+          hipGetErrorString(selectionStatus) + "; " +
+          hipGetErrorString(restoreStatus));
+    }
+    throw std::runtime_error(
+        std::string("failed to select HIP device: ") +
+        hipGetErrorString(selectionStatus));
+  }
+
+  ~CudaDeviceGuard() {
+    if (restore_) {
+      (void)hipSetDevice(previousDevice_);
+    }
+  }
+
+  CudaDeviceGuard(const CudaDeviceGuard&) = delete;
+  CudaDeviceGuard& operator=(const CudaDeviceGuard&) = delete;
+  CudaDeviceGuard(CudaDeviceGuard&&) = delete;
+  CudaDeviceGuard& operator=(CudaDeviceGuard&&) = delete;
+
+ private:
+  int previousDevice_{-1};
+  bool restore_{false};
 };
 
 } // namespace meta::comms

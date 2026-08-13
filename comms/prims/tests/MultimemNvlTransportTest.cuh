@@ -109,4 +109,11 @@ void launchStageLayout(
     uint32_t numGroups,
     cudaStream_t stream = nullptr);
 
+void launchStageLayout(
+    MultimemNvlTransportDevice transport,
+    StageLayoutResult* results,
+    uint32_t numGroups,
+    uint32_t pipelineDepth,
+    cudaStream_t stream = nullptr);
+
 } // namespace comms::prims::test
