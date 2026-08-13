@@ -70,7 +70,9 @@ commResult_t ctran::ctranPreparePipesTrace(
   }
   comm->pipesTrace_->ensure(
       ringSize,
-      std::chrono::milliseconds(NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS));
+      std::chrono::milliseconds(NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS),
+      nullptr,
+      static_cast<uint32_t>(comm->statex_->rank()));
   trace = comm->pipesTrace_->deviceHandle();
   return commSuccess;
 }

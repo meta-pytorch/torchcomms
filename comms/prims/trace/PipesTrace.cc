@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -108,14 +109,18 @@ const char* pipesTraceEventTypeName(uint8_t type) {
       return "allreduce_path_staged";
     case Type::kAllReducePathRegisteredProgress:
       return "allreduce_path_registered_progress";
+    case Type::kAllReduceTreeSchedulerIdleBegin:
+      return "allreduce_tree_scheduler_idle_begin";
+    case Type::kAllReduceTreeSchedulerIdleEnd:
+      return "allreduce_tree_scheduler_idle_end";
   }
   return "unknown";
 }
 
 bool isFineAllReduceEvent(uint8_t type) {
   using Type = PipesTraceEventType;
-  return type >= static_cast<uint8_t>(Type::kAllReduceSendSyncBegin) &&
-      type <= static_cast<uint8_t>(Type::kAllReducePathRegisteredProgress);
+  return type >= static_cast<uint8_t>(Type::kAllReduceRingReduceScatterBegin) &&
+      type <= static_cast<uint8_t>(Type::kAllReduceTreeSchedulerIdleEnd);
 }
 
 const char* allReducePhaseName(uint32_t phase) {
@@ -133,7 +138,37 @@ const char* allReducePhaseName(uint32_t phase) {
   return "unknown";
 }
 
+const char* allReduceRoleName(uint32_t role) {
+  using Role = PipesTraceAllReduceRole;
+  switch (static_cast<Role>(role)) {
+    case Role::Send:
+      return "send";
+    case Role::RecvCopy:
+      return "recv_copy";
+    case Role::RecvReduce:
+      return "recv_reduce";
+    case Role::ForwardCopy:
+      return "forward_copy";
+    case Role::ForwardReduce:
+      return "forward_reduce";
+    case Role::Scheduler:
+      return "scheduler";
+    case Role::Envelope:
+      return "envelope";
+    case Role::Reserved:
+      return "reserved";
+  }
+  return "unknown";
+}
+
+uint64_t allocatePipesTraceSessionId() {
+  static std::atomic<uint64_t> nextPipesTraceSessionId{1};
+  return nextPipesTraceSessionId.fetch_add(1, std::memory_order_relaxed);
+}
+
 } // namespace
+
+PipesTrace::PipesTrace() : sessionId_(allocatePipesTraceSessionId()) {}
 
 PipesTrace::~PipesTrace() {
   // CTRAN teardown relies on the same lifetime contract as other comm-owned
@@ -172,12 +207,14 @@ uint32_t PipesTrace::normalizeRingSize(uint64_t ringSize) {
 void PipesTrace::ensure(
     uint32_t ringSize,
     std::chrono::milliseconds pollInterval,
-    EventCallback eventCallback) {
+    EventCallback eventCallback,
+    uint32_t rank) {
   if (ringSize == 0) {
     return;
   }
 
   std::lock_guard<std::mutex> lock(drainMutex_);
+  rank_ = rank;
   if (buffer_ != nullptr && reader_ != nullptr) {
     if (buffer_->size() < ringSize) {
       CLOGF(
@@ -207,7 +244,9 @@ void PipesTrace::ensure(
   startPollThread();
   std::fprintf(
       stderr,
-      "Prims trace buffer ready ring_size=%u poll_interval_ms=%lld\n",
+      "Prims trace buffer ready trace_session=%llu rank=%u ring_size=%u poll_interval_ms=%lld\n",
+      static_cast<unsigned long long>(sessionId_),
+      static_cast<unsigned int>(rank_),
       static_cast<unsigned int>(buffer_->size()),
       static_cast<long long>(pollInterval_.count()));
   std::fflush(stderr);
@@ -242,6 +281,7 @@ void PipesTrace::drain() {
       batch.entries.push_back(PendingLogEntry{entry, slot});
     });
     batch.entriesLost = result.entriesLost;
+    batch.rank = rank_;
   }
   logBatch(batch);
 }
@@ -260,17 +300,24 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
       const uint32_t packed = event.step;
       const uint32_t phase =
           (packed >> kPipesTracePhaseShift) & kPipesTracePhaseMask;
+      const uint32_t role =
+          (packed >> kPipesTraceRoleShift) & kPipesTraceRoleMask;
       std::fprintf(
           stderr,
-          "Prims fine trace event=%s rank=%u phase=%s dependency_step=%u stripe=%u lane=%u peer=%u qp_lane=%u bytes=%u slot=%llu wall_time_ns=%lld\n",
+          "Prims fine trace schema_version=%u trace_session=%llu event=%s rank=%u op_tag=%u phase=%s dependency_step=%u block=%u lane=%u chunk_tag=%u role=%s peer=%u qp_lane=%u bytes=%u slot=%llu wall_time_ns=%lld\n",
+          kPipesTraceFineSchemaVersion,
+          static_cast<unsigned long long>(sessionId_),
           pipesTraceEventTypeName(event.type),
-          static_cast<unsigned int>(event.rank),
+          static_cast<unsigned int>(batch.rank),
+          (packed >> kPipesTraceOpTagShift) & kPipesTraceOpTagMask,
           allReducePhaseName(phase),
           (packed >> kPipesTraceDependencyStepShift) &
               kPipesTraceDependencyStepMask,
-          (packed >> kPipesTraceStripeShift) & kPipesTraceStripeMask,
+          (packed >> kPipesTraceBlockShift) & kPipesTraceBlockMask,
           (packed >> kPipesTraceLaneShift) & kPipesTraceLaneMask,
-          (packed >> kPipesTracePeerShift) & kPipesTracePeerMask,
+          (packed >> kPipesTraceChunkShift) & kPipesTraceChunkMask,
+          allReduceRoleName(role),
+          static_cast<unsigned int>(event.rank),
           (packed >> kPipesTraceQpLaneShift) & kPipesTraceQpLaneMask,
           static_cast<unsigned int>(event.detail) * kPipesTraceBytesQuantum,
           static_cast<unsigned long long>(pendingEntry.slot),

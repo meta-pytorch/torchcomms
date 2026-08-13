@@ -57,6 +57,8 @@ enum class PipesTraceEventType : uint8_t {
   kAllReduceStageCopyEnd = 41,
   kAllReducePathStaged = 42,
   kAllReducePathRegisteredProgress = 43,
+  kAllReduceTreeSchedulerIdleBegin = 44,
+  kAllReduceTreeSchedulerIdleEnd = 45,
 };
 
 enum class PipesTraceAllReducePhase : uint8_t {
@@ -64,6 +66,17 @@ enum class PipesTraceAllReducePhase : uint8_t {
   RingAllGather = 1,
   TreeReduce = 2,
   TreeBroadcast = 3,
+};
+
+enum class PipesTraceAllReduceRole : uint8_t {
+  Send = 0,
+  RecvCopy = 1,
+  RecvReduce = 2,
+  ForwardCopy = 3,
+  ForwardReduce = 4,
+  Scheduler = 5,
+  Envelope = 6,
+  Reserved = 7,
 };
 
 struct PipesTraceEvent {
@@ -93,11 +106,13 @@ struct PipesTraceHandle {
 
 struct PipesTraceAllReduceContext {
   PipesTraceHandle trace;
-  uint8_t rank{0};
+  uint32_t traceStep{0};
   uint8_t phase{0};
   uint8_t dependencyStep{0};
-  uint8_t stripe{0};
+  uint8_t block{0};
   uint8_t lane{0};
+  uint8_t chunk{0};
+  uint8_t role{0};
   uint8_t peer{0};
   uint8_t qpLane{0};
   uint32_t bytes{0};
@@ -109,19 +124,51 @@ struct PipesTraceProgressState {
   bool dataReadyWaitOpen{false};
 };
 
-inline constexpr uint32_t kPipesTraceDependencyStepShift = 0;
-inline constexpr uint32_t kPipesTraceStripeShift = 6;
-inline constexpr uint32_t kPipesTraceLaneShift = 10;
-inline constexpr uint32_t kPipesTracePeerShift = 14;
+inline constexpr uint32_t kPipesTraceFineSchemaVersion = 2;
+inline constexpr uint32_t kPipesTraceFineSamplePeriod = 64;
+inline constexpr uint8_t kPipesTracePeerNone = UINT8_MAX;
+inline constexpr uint32_t kPipesTraceChunkShift = 0;
+inline constexpr uint32_t kPipesTraceDependencyStepShift = 2;
+inline constexpr uint32_t kPipesTraceBlockShift = 8;
+inline constexpr uint32_t kPipesTraceLaneShift = 16;
+inline constexpr uint32_t kPipesTracePhaseShift = 17;
+inline constexpr uint32_t kPipesTraceRoleShift = 19;
 inline constexpr uint32_t kPipesTraceQpLaneShift = 22;
-inline constexpr uint32_t kPipesTracePhaseShift = 28;
+inline constexpr uint32_t kPipesTraceOpTagShift = 28;
+inline constexpr uint32_t kPipesTraceChunkMask = 0x03;
 inline constexpr uint32_t kPipesTraceDependencyStepMask = 0x3f;
-inline constexpr uint32_t kPipesTraceStripeMask = 0x0f;
-inline constexpr uint32_t kPipesTraceLaneMask = 0x0f;
-inline constexpr uint32_t kPipesTracePeerMask = 0xff;
+inline constexpr uint32_t kPipesTraceBlockMask = 0xff;
+inline constexpr uint32_t kPipesTraceLaneMask = 0x01;
+inline constexpr uint32_t kPipesTracePhaseMask = 0x03;
+inline constexpr uint32_t kPipesTraceRoleMask = 0x07;
 inline constexpr uint32_t kPipesTraceQpLaneMask = 0x3f;
-inline constexpr uint32_t kPipesTracePhaseMask = 0x07;
+inline constexpr uint32_t kPipesTraceOpTagMask = 0x0f;
 inline constexpr uint32_t kPipesTraceBytesQuantum = 32;
+
+#if defined(__CUDACC__) || defined(__HIPCC__)
+__host__ __device__
+#endif
+    constexpr uint32_t pack_pipes_trace_allreduce_step(
+        const PipesTraceAllReduceContext& context) {
+  const uint32_t opTag =
+      (context.traceStep / kPipesTraceFineSamplePeriod) & kPipesTraceOpTagMask;
+  return ((static_cast<uint32_t>(context.chunk) & kPipesTraceChunkMask)
+          << kPipesTraceChunkShift) |
+      ((static_cast<uint32_t>(context.dependencyStep) &
+        kPipesTraceDependencyStepMask)
+       << kPipesTraceDependencyStepShift) |
+      ((static_cast<uint32_t>(context.block) & kPipesTraceBlockMask)
+       << kPipesTraceBlockShift) |
+      ((static_cast<uint32_t>(context.lane) & kPipesTraceLaneMask)
+       << kPipesTraceLaneShift) |
+      ((static_cast<uint32_t>(context.phase) & kPipesTracePhaseMask)
+       << kPipesTracePhaseShift) |
+      ((static_cast<uint32_t>(context.role) & kPipesTraceRoleMask)
+       << kPipesTraceRoleShift) |
+      ((static_cast<uint32_t>(context.qpLane) & kPipesTraceQpLaneMask)
+       << kPipesTraceQpLaneShift) |
+      (opTag << kPipesTraceOpTagShift);
+}
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ uint64_t read_pipes_trace_globaltimer() {
@@ -196,25 +243,13 @@ __device__ __forceinline__ void write_pipes_trace_allreduce(
     return;
   }
 
-  const uint32_t packed = ((static_cast<uint32_t>(context.dependencyStep) &
-                            kPipesTraceDependencyStepMask)
-                           << kPipesTraceDependencyStepShift) |
-      ((static_cast<uint32_t>(context.stripe) & kPipesTraceStripeMask)
-       << kPipesTraceStripeShift) |
-      ((static_cast<uint32_t>(context.lane) & kPipesTraceLaneMask)
-       << kPipesTraceLaneShift) |
-      ((static_cast<uint32_t>(context.peer) & kPipesTracePeerMask)
-       << kPipesTracePeerShift) |
-      ((static_cast<uint32_t>(context.qpLane) & kPipesTraceQpLaneMask)
-       << kPipesTraceQpLaneShift) |
-      ((static_cast<uint32_t>(context.phase) & kPipesTracePhaseMask)
-       << kPipesTracePhaseShift);
+  const uint32_t packed = pack_pipes_trace_allreduce_step(context);
   const uint64_t byteQuanta =
       (static_cast<uint64_t>(context.bytes) + kPipesTraceBytesQuantum - 1) /
       kPipesTraceBytesQuantum;
   const uint16_t packedBytes =
       static_cast<uint16_t>(byteQuanta > UINT16_MAX ? UINT16_MAX : byteQuanta);
-  write_pipes_trace(context.trace, type, packed, packedBytes, context.rank);
+  write_pipes_trace(context.trace, type, packed, packedBytes, context.peer);
 }
 #endif
 
