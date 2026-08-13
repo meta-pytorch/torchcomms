@@ -103,7 +103,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& timeout = AbortDevice());
 
 /**
  * Initialize transport-owned state for one pipelined send operation.
@@ -326,7 +326,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args) {
   // The progress API drives the FIXED-size protocol only: it signals in wire
   // bytes and ignores CopyOp::send()'s returned wire size, so a variable-size
@@ -499,7 +499,7 @@ progress_registered_send_once(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
   auto& progressSlot = progress_send_slot<protocol::Simple>(transport, group);
@@ -650,7 +650,7 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t result =
       static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Drained);
@@ -712,7 +712,7 @@ __device__ __forceinline__ void send_registered(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   init_registered_send_progress(transport, group, nbytes, max_signal_bytes);
   IbgdaRegisteredSendProgressStatus status;
@@ -824,7 +824,7 @@ __device__ __forceinline__ bool progress_recv_ready(
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     uint64_t waitCredit,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
@@ -900,7 +900,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args) {
   // Mirror of progress_send_once: the progress API is fixed-size only. A
   // variable-size policy would mis-size the DATA_READY/SLOT_FREE protocol and
@@ -1314,7 +1314,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {

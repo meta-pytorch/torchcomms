@@ -182,36 +182,37 @@ class P2pIbrcTransportDevice {
     signal(solo, signalId, signalVal);
   }
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_signal(group, local_signal_slot(signalId), expected, timeout);
+      const AbortDevice& timeout = AbortDevice()) const {
+    return wait_signal(group, local_signal_slot(signalId), expected, timeout);
   }
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_signal(solo, signalId, expected, timeout);
+    return wait_signal(solo, signalId, expected, timeout);
   }
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_counter(group, counter_device_slot(counterId), expected, timeout);
+      const AbortDevice& timeout = AbortDevice()) const {
+    return wait_counter(
+        group, counter_device_slot(counterId), expected, timeout);
   }
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_counter(solo, counterId, expected, timeout);
+    return wait_counter(solo, counterId, expected, timeout);
   }
 
   __device__ void reset_signal(ThreadGroup& group, int signalId) {
@@ -373,27 +374,32 @@ class P2pIbrcTransportDevice {
         counterVal);
   }
 
-  __device__ void wait_local(
+  __device__ bool wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
+    uint32_t complete = 1;
     if (group.is_leader()) {
       const auto& queue = cmdQueues[queue_for_lane(
           group.group_id, IbDirection::Send, ticket.completionId)];
       while (static_cast<int64_t>(
                  load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
         check_status(queue);
-        if (timeout.checkExpired()) {
-          printf(
-              "P2pIbrcTransportDevice: wait_local timed out lane=%u "
-              "expected=%llu\n",
-              ticket.completionId,
-              static_cast<unsigned long long>(ticket.value));
-          PIPES_DEVICE_TRAP();
+        bool aborted = false;
+        TIMEOUT_BREAK_IF_ABORTED_SINGLE(
+            timeout,
+            aborted,
+            "P2pIbrcTransportDevice: wait_local timed out lane=%u "
+            "expected=%llu",
+            ticket.completionId,
+            static_cast<unsigned long long>(ticket.value));
+        if (aborted) {
+          complete = 0;
+          break;
         }
       }
     }
-    group.sync();
+    return group.broadcast<uint32_t>(complete) != 0;
   }
 
   __device__ __forceinline__ bool is_local_completion_ready(
@@ -406,24 +412,23 @@ class P2pIbrcTransportDevice {
                load_acquire_system_u64(queue.ci) - ticket.value) >= 0;
   }
 
-  __device__ __forceinline__ void wait_local_completion(
+  __device__ __forceinline__ bool wait_local_completion(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout) const {
+      const AbortDevice& timeout) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     while (static_cast<int64_t>(
                load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf(
-            "P2pIbrcTransportDevice: local completion timed out lane=%u "
-            "expected=%llu\n",
-            ticket.completionId,
-            static_cast<unsigned long long>(ticket.value));
-        PIPES_DEVICE_TRAP();
-      }
+      TIMEOUT_RETURN_FALSE_IF_ABORTED_SINGLE(
+          timeout,
+          "P2pIbrcTransportDevice: local completion timed out lane=%u "
+          "expected=%llu",
+          ticket.completionId,
+          static_cast<unsigned long long>(ticket.value));
     }
+    return true;
   }
 
   __device__ __forceinline__ uint32_t send_completion_lane_count() const {
@@ -469,20 +474,20 @@ class P2pIbrcTransportDevice {
         counterVal);
   }
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_local(group, signalBuf.ptr, expected, timeout, "signal");
+      const AbortDevice& timeout = AbortDevice()) const {
+    return wait_local(group, signalBuf.ptr, expected, timeout, "signal");
   }
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_signal(solo, signalBuf, expected, timeout);
+    return wait_signal(solo, signalBuf, expected, timeout);
   }
 
   __device__ void reset_signal(
@@ -507,20 +512,20 @@ class P2pIbrcTransportDevice {
     reset_counter(solo, counterBuf);
   }
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_local(group, counterBuf.ptr, expected, timeout, "counter");
+      const AbortDevice& timeout = AbortDevice()) const {
+    return wait_local(group, counterBuf.ptr, expected, timeout, "counter");
   }
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_counter(solo, counterBuf, expected, timeout);
+    return wait_counter(solo, counterBuf, expected, timeout);
   }
 
   __device__ uint64_t read_signal(const IbgdaLocalBuffer& signalBuf) const {
@@ -647,7 +652,7 @@ class P2pIbrcTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args) {
     return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
@@ -659,7 +664,7 @@ class P2pIbrcTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args) {
     return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
@@ -671,7 +676,7 @@ class P2pIbrcTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args) {
     detail::send<P2pIbrcTransportDevice, CopyOp>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
@@ -683,7 +688,7 @@ class P2pIbrcTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args) {
     detail::recv<P2pIbrcTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
@@ -696,7 +701,7 @@ class P2pIbrcTransportDevice {
       P2pIbrcTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args) {
     detail::forward<CopyOp>(
         *this, group, dst, fwd, nbytes, max_signal_bytes, timeout, args...);
@@ -890,29 +895,34 @@ class P2pIbrcTransportDevice {
     }
   }
 
-  __device__ void wait_local(
+  __device__ bool wait_local(
       ThreadGroup& group,
       const void* ptr,
       uint64_t expected,
-      const Timeout& timeout,
+      const AbortDevice& timeout,
       const char* kind) const {
     if (ptr == nullptr) {
       trap("P2pIbrcTransportDevice: wait buffer is null");
     }
+    uint32_t complete = 1;
     if (group.is_leader()) {
       validate_group_scope(group);
       while (load_acquire_system_u64(ptr) < expected) {
         check_channel_status(group.group_id);
-        if (timeout.checkExpired()) {
-          printf(
-              "P2pIbrcTransportDevice: wait_%s timed out expected=%llu\n",
-              kind,
-              static_cast<unsigned long long>(expected));
-          PIPES_DEVICE_TRAP();
+        bool aborted = false;
+        TIMEOUT_BREAK_IF_ABORTED_SINGLE(
+            timeout,
+            aborted,
+            "P2pIbrcTransportDevice: wait_%s timed out expected=%llu",
+            kind,
+            static_cast<unsigned long long>(expected));
+        if (aborted) {
+          complete = 0;
+          break;
         }
       }
     }
-    group.sync();
+    return group.broadcast<uint32_t>(complete) != 0;
   }
 
   __device__ void reset_local(ThreadGroup& group, void* ptr, const char* kind)

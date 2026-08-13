@@ -53,14 +53,14 @@ progress_registered_send_once(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& timeout = AbortDevice());
 
 template <typename Transport>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& timeout = AbortDevice());
 
 template <typename Transport>
 __device__ __forceinline__ void send_registered(
@@ -69,7 +69,7 @@ __device__ __forceinline__ void send_registered(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& timeout = AbortDevice());
 
 } // namespace detail
 
@@ -124,27 +124,27 @@ struct P2pIbTransportDevice {
       int counterId = -1,
       uint64_t counterVal = 1);
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   __device__ void reset_signal(ThreadGroup& group, int signalId);
 
@@ -206,32 +206,32 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1);
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_signal(
+  __device__ bool wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_counter(
+  __device__ bool wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
-  __device__ void wait_local(
+  __device__ bool wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   __device__ void reset_signal(
       ThreadGroup& group,
@@ -267,7 +267,7 @@ struct P2pIbTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args);
 
   template <typename = void>
@@ -276,7 +276,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
@@ -284,7 +284,7 @@ struct P2pIbTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args);
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -294,7 +294,7 @@ struct P2pIbTransportDevice {
       P2pIbTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args);
 
   __device__ __forceinline__ std::size_t pipeline_window() const;
@@ -327,7 +327,7 @@ struct P2pIbTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args);
 
   template <typename = void>
@@ -337,13 +337,13 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   template <typename = void>
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_drain_once(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
@@ -351,7 +351,7 @@ struct P2pIbTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& timeout = AbortDevice(),
       Args... args);
 };
 

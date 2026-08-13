@@ -205,12 +205,12 @@ __device__ __forceinline__ void assert_progress_slot_idle(
     const char* opName);
 
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+__device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& timeout = AbortDevice());
 
 template <typename P, typename Transport>
 __device__ __forceinline__ void record_send_completion(
@@ -245,7 +245,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args);
 
 template <
@@ -259,7 +259,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args);
 
 /**
@@ -296,17 +296,18 @@ struct SendSignal {
  * lane's `recvLaneExpected` by exactly one chunk.
  */
 template <typename Transport>
-__device__ __forceinline__ void wait_recv_data_ready(
+__device__ __forceinline__ bool wait_recv_data_ready(
     Transport& transport,
     ThreadGroup& group,
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     std::size_t chunkBytes,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   const uint32_t numLanes =
       static_cast<uint32_t>(transport.channel_layout().numLanes);
   const uint32_t lanes = numLanes == 0 ? 1U : numLanes;
+  uint32_t complete = 1;
   if (group.is_leader()) {
     // Simple's slot unconditionally: an explicit DATA_READY signal IS Simple's
     // readiness mark. A protocol that carries its flag inline never reaches
@@ -325,11 +326,15 @@ __device__ __forceinline__ void wait_recv_data_ready(
         sendRecvSignalSlotOffset(static_cast<int>(lane)));
     ThreadGroup solo{
         0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-    transport.wait_signal(solo, laneBuf, expected, timeout);
-    protoSlot.recvLaneExpected[lane] = expected;
-    ++localChannel.recvDataReadyLaneCursor;
+    complete =
+        transport.wait_signal(solo, laneBuf, expected, timeout) ? 1U : 0U;
+    if (complete) {
+      protoSlot.recvLaneExpected[lane] = expected;
+      ++localChannel.recvDataReadyLaneCursor;
+    }
   }
-  group.sync();
+  complete = group.broadcast<uint32_t>(complete);
+  return complete != 0;
 #else
   (void)transport;
   (void)group;
@@ -337,6 +342,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
   (void)localDataReady;
   (void)chunkBytes;
   (void)timeout;
+  return true;
 #endif
 }
 
@@ -494,7 +500,7 @@ __device__ __forceinline__ SendSignal prepareSendBuf(
 // Simple decode: wait for the sender's DATA_READY on this chunk's lane, then
 // cooperative CopyOp::recv from contiguous staging.
 template <typename CopyOp = Memcpy, typename Transport, typename... Args>
-__device__ __forceinline__ void consumeRecvBuf(
+__device__ __forceinline__ bool consumeRecvBuf(
     protocol::Simple,
     Transport& transport,
     ThreadGroup& group,
@@ -507,17 +513,25 @@ __device__ __forceinline__ void consumeRecvBuf(
     std::size_t dataOff,
     uint64_t /*flagVal*/,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
-  wait_recv_data_ready(
-      transport, group, localChannel, localDataReady, waitCredit, timeout);
+  if (!wait_recv_data_ready(
+          transport,
+          group,
+          localChannel,
+          localDataReady,
+          waitCredit,
+          timeout)) {
+    return false;
+  }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
     CopyOp::recv(dst, staging, validBytes, group, dataOff, args...);
   }
   group.sync();
+  return true;
 #else
   (void)transport;
   (void)group;
@@ -531,6 +545,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)waitCredit;
   (void)timeout;
   ((void)args, ...);
+  return true;
 #endif
 }
 
@@ -563,7 +578,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     uint64_t fwdSignalVal,
     uint32_t fwdSlot,
     uint64_t fwdPipelineCycle,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
+    bool& ok,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
   // Both waits must clear before CopyOp::forward, which reads recvStaging and
@@ -574,15 +590,21 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   // degenerates to a single completion check instead of a CQ-polling spin.
   // Folded in here rather than left to the caller -- both are correctness
   // requirements of this function, not of its call site.
-  wait_recv_data_ready(
+  ok = wait_recv_data_ready(
       transport,
       group,
       recvLocalChannel,
       recvDataReady,
       recvWaitCredit,
       timeout);
-  prepare_send_slot<protocol::Simple>(
+  if (!ok) {
+    return SendSignal{};
+  }
+  ok = prepare_send_slot<protocol::Simple>(
       fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
+  if (!ok) {
+    return SendSignal{};
+  }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
@@ -590,6 +612,7 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
         dst, fwdStaging, recvStaging, validBytes, group, dataOff, args...);
   }
   group.sync();
+  ok = true;
   return SendSignal{fwdRemoteChannel.dataReady, fwdSignalVal};
 #else
   (void)transport;
@@ -609,6 +632,7 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   (void)fwdSlot;
   (void)fwdPipelineCycle;
   (void)timeout;
+  ok = true;
   ((void)args, ...);
   return SendSignal{};
 #endif
@@ -678,7 +702,7 @@ __device__ __forceinline__ SendSignal prepareSendBuf(
 // LLImpl::unpack. No signal wait; ignores the local channel/credit Simple
 // uses.
 template <typename CopyOp = Memcpy, typename Transport, typename... Args>
-__device__ __forceinline__ void consumeRecvBuf(
+__device__ __forceinline__ bool consumeRecvBuf(
     protocol::LL,
     Transport& transport,
     ThreadGroup& group,
@@ -691,7 +715,7 @@ __device__ __forceinline__ void consumeRecvBuf(
     std::size_t dataOff,
     uint64_t flagVal,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     Args... args) {
   using P = LlxPacket<4, 4>;
   static_assert(
@@ -719,6 +743,7 @@ __device__ __forceinline__ void consumeRecvBuf(
         timeout,
         args...);
   }
+  return true;
 #else
   (void)transport;
   (void)group;
@@ -733,6 +758,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)waitCredit;
   (void)timeout;
   ((void)args, ...);
+  return true;
 #endif
 }
 
@@ -747,7 +773,7 @@ __device__ __forceinline__ void send(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& timeout = AbortDevice(),
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
   // than behind the prepareSendBuf/consumeRecvBuf seam, so it is Simple-shaped
@@ -934,8 +960,10 @@ __device__ __forceinline__ void send(
           (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
-      prepare_send_slot<Proto>(
-          transport, group, ringSlot, pipelineCycle, timeout);
+      if (!prepare_send_slot<Proto>(
+              transport, group, ringSlot, pipelineCycle, timeout)) {
+        return;
+      }
 
       // (2) Cooperative compress: src -> local sendStaging via CopyOp. The
       //     return value is the compressed byte count the leader uses to size
@@ -951,8 +979,13 @@ __device__ __forceinline__ void send(
 
       // (3) Backpressure: wait for receiver to free this slot's recvStaging.
       if (protocolStreamEnd > pipelineBytes) {
-        transport.wait_signal(
-            group, localSlotFree, protocolStreamEnd - pipelineBytes, timeout);
+        if (!transport.wait_signal(
+                group,
+                localSlotFree,
+                protocolStreamEnd - pipelineBytes,
+                timeout)) {
+          return;
+        }
       }
 
       // (4) Leader-only RDMA put with fused signal. The put length is the
@@ -1044,7 +1077,10 @@ __device__ __forceinline__ void send(
       const uint64_t flagVal = streamPayload / pipelineBytesPayload + 1;
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
-      prepare_send_slot<Proto>(transport, group, slot, pipelineCycle, timeout);
+      if (!prepare_send_slot<Proto>(
+              transport, group, slot, pipelineCycle, timeout)) {
+        return;
+      }
 
       // (2) Cooperative copy: src -> local sendStaging via CopyOp.
       const SendSignal sig = prepareSendBuf<CopyOp>(
@@ -1063,11 +1099,13 @@ __device__ __forceinline__ void send(
       // (3) Backpressure: wait for receiver to free this byte range's
       //     recvStaging offset. Symmetric with DATA_READY.
       if (protocolStreamEnd > pipelineBytesWire) {
-        transport.wait_signal(
-            group,
-            localSlotFree,
-            protocolStreamEnd - pipelineBytesWire,
-            timeout);
+        if (!transport.wait_signal(
+                group,
+                localSlotFree,
+                protocolStreamEnd - pipelineBytesWire,
+                timeout)) {
+          return;
+        }
       }
 
       // (4) Leader-only single-WQE RDMA put with fused signal.
@@ -1147,7 +1185,7 @@ __device__ __forceinline__ void recv(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& timeout = AbortDevice(),
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
   // than behind the prepareSendBuf/consumeRecvBuf seam, so it is Simple-shaped
@@ -1310,13 +1348,15 @@ __device__ __forceinline__ void recv(
           (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
       // (1) Wait for sender's DATA_READY (reserved wire stride, gap-carried).
-      wait_recv_data_ready(
-          transport,
-          group,
-          localChannel,
-          localDataReady,
-          protocolBytesThis,
-          timeout);
+      if (!wait_recv_data_ready(
+              transport,
+              group,
+              localChannel,
+              localDataReady,
+              protocolBytesThis,
+              timeout)) {
+        return;
+      }
 
       // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
@@ -1374,21 +1414,23 @@ __device__ __forceinline__ void recv(
 
       // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL,
       //         the inline flag) and cooperatively copy recvStaging -> dst.
-      consumeRecvBuf<CopyOp>(
-          Proto{},
-          transport,
-          group,
-          localChannel,
-          localDataReady,
-          static_cast<char*>(dst) + dataOff,
-          channelLayout.recvStagingPtr + stagingOff,
-          payloadBytes,
-          nbytes,
-          dataOff,
-          flagVal,
-          protocolBytesThis,
-          timeout,
-          args...);
+      if (!consumeRecvBuf<CopyOp>(
+              Proto{},
+              transport,
+              group,
+              localChannel,
+              localDataReady,
+              static_cast<char*>(dst) + dataOff,
+              channelLayout.recvStagingPtr + stagingOff,
+              payloadBytes,
+              nbytes,
+              dataOff,
+              flagVal,
+              protocolBytesThis,
+              timeout,
+              args...)) {
+        return;
+      }
 
       transport.signal(
           group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
@@ -1471,7 +1513,7 @@ __device__ __forceinline__ void forward(
     Transport& fwdTransport,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& timeout = AbortDevice(),
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
@@ -1591,6 +1633,7 @@ __device__ __forceinline__ void forward(
     // (1) prepareForwardBuf: fwd slot-reuse backpressure + recv-side readiness
     //     + fused transform recvStaging -> dst + fwdStaging, returning the
     //     relay SendSignal for the put. Tag-dispatched on Proto.
+    bool forwardReady = true;
     const SendSignal sig = prepareForwardBuf<CopyOp>(
         Proto{},
         transport,
@@ -1610,7 +1653,11 @@ __device__ __forceinline__ void forward(
         static_cast<uint32_t>(fwdSlot),
         fwdPipelineCycle,
         timeout,
+        forwardReady,
         args...);
+    if (!forwardReady) {
+      return;
+    }
 
     transport.signal(
         group,
@@ -1621,11 +1668,13 @@ __device__ __forceinline__ void forward(
     // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
     //     recvStaging).
     if (fwdProtocolStreamEnd > fwdGeo.pipelineBytesWire) {
-      fwdTransport.wait_signal(
-          group,
-          fwdSlotFree,
-          fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire,
-          timeout);
+      if (!fwdTransport.wait_signal(
+              group,
+              fwdSlotFree,
+              fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire,
+              timeout)) {
+        return;
+      }
     }
 
     // (6) Leader-only RDMA put via the forwarding transport.
@@ -1885,12 +1934,13 @@ __device__ __forceinline__ void assert_progress_slot_idle(
 }
 
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+__device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const AbortDevice& timeout) {
+  uint32_t complete = 1;
   if (group.is_leader()) {
     auto& slot = transport.template local_channel_slot<P>(group.group_id)
                      .sendCompletionSlots[slotId];
@@ -1901,19 +1951,25 @@ __device__ __forceinline__ void prepare_send_slot(
         if ((pending & (1ULL << laneId)) == 0) {
           continue;
         }
-        transport.wait_local_completion(
-            group.group_id,
-            IbLocalCompletionTicket{
-                .completionId = laneId,
-                .value = slot.values[laneId],
-            },
-            timeout);
+        if (!transport.wait_local_completion(
+                group.group_id,
+                IbLocalCompletionTicket{
+                    .completionId = laneId,
+                    .value = slot.values[laneId],
+                },
+                timeout)) {
+          complete = 0;
+          break;
+        }
       }
-      slot.laneMask = 0;
-      slot.generation = generation;
+      if (complete) {
+        slot.laneMask = 0;
+        slot.generation = generation;
+      }
     }
   }
-  group.sync();
+  complete = group.broadcast<uint32_t>(complete);
+  return complete != 0;
 }
 
 template <typename P, typename Transport>
