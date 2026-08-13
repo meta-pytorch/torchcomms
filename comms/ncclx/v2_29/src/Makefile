@@ -156,6 +156,7 @@ LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMulticastAllocation.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/MultimemHandler.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
+LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultimemNvlTransportConfig.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultimemNvlTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
 LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
