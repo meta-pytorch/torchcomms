@@ -15,11 +15,11 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/window/CtranWin.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
@@ -64,7 +64,7 @@ commResult_t Ctran::commRegister(void* buff, size_t size, void** handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "Ctran mapper is not initialized, skip commRegister");
     return commInternalError;
@@ -79,7 +79,7 @@ commResult_t Ctran::commDeregister(void* handle) {
   commResult_t res = commSuccess;
 
   if (!this->mapper) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "Ctran mapper is not initialized, skip commDeregister");
     return commInternalError;
@@ -178,7 +178,7 @@ commResult_t ctranInit(
     comm->ctran_ = std::make_shared<Ctran>(
         comm, std::move(reporter), std::move(gpeReporter));
   } catch (std::exception& e) {
-    CLOGF(ERR, "Ctran initialization failed: {}", e.what());
+    CTRAN_LOG(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
   }
 
@@ -291,7 +291,8 @@ commResult_t globalRegisterWithPtr(
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CERR(commInternalError, "globalRegisterWithPtr: RegCache not available");
+    CTRAN_ERR(
+        commInternalError, "globalRegisterWithPtr: RegCache not available");
     return commInternalError;
   }
 
@@ -307,7 +308,8 @@ globalDeregisterWithPtr(void* buff, size_t size, bool skipRemRelease) {
 
   auto regCache = RegCache::getInstance();
   if (!regCache) {
-    CERR(commInternalError, "globalDeregisterWithPtr: RegCache not available");
+    CTRAN_ERR(
+        commInternalError, "globalDeregisterWithPtr: RegCache not available");
     return commInternalError;
   }
 
