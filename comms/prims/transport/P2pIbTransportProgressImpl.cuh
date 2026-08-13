@@ -378,20 +378,21 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       detail::IbSendRecvProgressStage::WaitLocalCompletion) {
     const ProgressChunk chunk =
         next_chunk<Proto>(channelLayout, state, progress_params);
-    if (fine_trace_enabled(traceContext) && traceState != nullptr &&
-        !traceState->localCompletionWaitOpen && group.is_leader()) {
-      trace_allreduce_event(
-          traceContext,
-          PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
-      traceState->localCompletionWaitOpen = true;
-    }
     if (!try_prepare_send_slot<Proto>(
             transport,
             group,
             chunk.slotId,
             chunk.pipelineGeneration,
             timeout)) {
+      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+          !traceState->localCompletionWaitOpen && group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            chunk.wireBytes);
+        traceState->localCompletionWaitOpen = true;
+      }
       return IbgdaSendRecvProgressStatus::Waiting;
     }
     if (fine_trace_enabled(traceContext) && traceState != nullptr &&
@@ -399,7 +400,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          chunk.wireBytes);
       traceState->localCompletionWaitOpen = false;
     }
 
@@ -407,7 +409,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceStageCopyBegin,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          chunk.payloadBytes);
     }
     progress_send_prepare_buf<CopyOp>(
         Proto{},
@@ -421,7 +424,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceStageCopyEnd,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          chunk.payloadBytes);
     }
     group.sync();
     transition_progress_stage(
@@ -436,14 +440,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     const uint64_t protocolStreamEnd = chunk.streamEndWire +
         (isFinalChunk ? Proto::wire_bytes(state.activeTailPadding) : 0);
     if (protocolStreamEnd > pipelineBytesWire) {
-      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
-          !traceState->remoteSlotFreeWaitOpen && group.is_leader()) {
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
-        traceState->remoteSlotFreeWaitOpen = true;
-      }
       const uint64_t expected = protocolStreamEnd - pipelineBytesWire;
       uint32_t ready = 1;
       unsigned long long current = 0;
@@ -462,6 +458,15 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       }
       ready = group.broadcast<uint32_t>(ready);
       if (!ready) {
+        if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+            !traceState->remoteSlotFreeWaitOpen && group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              chunk.wireBytes);
+          traceState->remoteSlotFreeWaitOpen = true;
+        }
         if (state.activeStage != initialStage ||
             state.activeNextByte != initialNextByte) {
           store_progress_state(group, progressSlot, state);
@@ -474,7 +479,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            chunk.wireBytes);
         traceState->remoteSlotFreeWaitOpen = false;
       }
     }
@@ -483,7 +489,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceSendSyncBegin,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          chunk.wireBytes);
     }
     group.sync();
     if (group.is_leader()) {
@@ -491,7 +498,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceSendSyncEnd,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          chunk.wireBytes);
       const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
       const uint8_t qpLane = static_cast<uint8_t>(
           numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
@@ -502,7 +510,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       const SendSignal sig =
           progress_send_signal(Proto{}, remoteChannel, protocolBytesThis);
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceWqeSubmitBegin, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceWqeSubmitBegin,
+          qpLane,
+          protocolBytesThis);
       const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
@@ -514,11 +525,15 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           /*counterVal=*/0,
           /*signalPerLane=*/true);
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceWqeSubmitEnd, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceWqeSubmitEnd,
+          qpLane,
+          protocolBytesThis);
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceBookkeepingBegin,
-          qpLane);
+          qpLane,
+          protocolBytesThis);
       record_send_completion<Proto>(
           transport,
           static_cast<uint32_t>(progress_params.groupId),
@@ -526,7 +541,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           chunk.pipelineGeneration,
           completion);
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceBookkeepingEnd,
+          qpLane,
+          protocolBytesThis);
     }
     group.sync();
 
@@ -948,14 +966,6 @@ __device__ __forceinline__ bool progress_recv_ready(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
-    if (fine_trace_enabled(traceContext) && traceState != nullptr &&
-        !traceState->dataReadyWaitOpen) {
-      trace_allreduce_event(
-          traceContext,
-          PipesTraceEventType::kAllReduceDataReadyWaitBegin,
-          qpLane);
-      traceState->dataReadyWaitOpen = true;
-    }
     unsigned long long current = 0;
     unsigned long long expected = 0;
     ready = poll_recv_data_ready(
@@ -968,6 +978,15 @@ __device__ __forceinline__ bool progress_recv_ready(
         ? 1U
         : 0U;
     if (!ready) {
+      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+          !traceState->dataReadyWaitOpen) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+            qpLane,
+            waitCredit);
+        traceState->dataReadyWaitOpen = true;
+      }
       TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
@@ -980,7 +999,8 @@ __device__ __forceinline__ bool progress_recv_ready(
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceDataReadyWaitEnd,
-          qpLane);
+          qpLane,
+          waitCredit);
       traceState->dataReadyWaitOpen = false;
     }
   }
@@ -1018,7 +1038,10 @@ __device__ __forceinline__ void progress_recv_consume_buf(
   if (validBytes > 0) {
     if (group.is_leader()) {
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceReduceCopyBegin, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceReduceCopyBegin,
+          qpLane,
+          validBytes);
     }
     CopyOp::recv(
         static_cast<char*>(dst) + chunk.dataOff,
@@ -1029,7 +1052,10 @@ __device__ __forceinline__ void progress_recv_consume_buf(
         args...);
     if (group.is_leader()) {
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceReduceCopyEnd, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceReduceCopyEnd,
+          qpLane,
+          validBytes);
     }
   }
 #else
@@ -1129,7 +1155,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
 
   if (group.is_leader()) {
     trace_allreduce_event(
-        traceContext, PipesTraceEventType::kAllReduceBookkeepingBegin, qpLane);
+        traceContext,
+        PipesTraceEventType::kAllReduceBookkeepingBegin,
+        qpLane,
+        protocolBytesThis);
   }
   transport.signal(
       group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
@@ -1141,7 +1170,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     store_progress_state(group, progressSlot, state);
     if (group.is_leader()) {
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceBookkeepingEnd,
+          qpLane,
+          protocolBytesThis);
     }
     return IbgdaSendRecvProgressStatus::Done;
   }
@@ -1149,7 +1181,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
   store_progress_state(group, progressSlot, state);
   if (group.is_leader()) {
     trace_allreduce_event(
-        traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
+        traceContext,
+        PipesTraceEventType::kAllReduceBookkeepingEnd,
+        qpLane,
+        protocolBytesThis);
   }
   return IbgdaSendRecvProgressStatus::Progressed;
 #else

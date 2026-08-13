@@ -33,13 +33,23 @@ __device__ __forceinline__ bool fine_trace_enabled(
 __device__ __forceinline__ void trace_allreduce_event(
     const PipesTraceAllReduceContext* context,
     PipesTraceEventType type,
-    uint8_t qpLane) {
+    uint8_t qpLane,
+    std::size_t bytes) {
   if (!fine_trace_enabled(context)) {
     return;
   }
   auto tagged = *context;
   tagged.qpLane = qpLane;
+  tagged.bytes = bytes > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(bytes);
   write_pipes_trace_allreduce(tagged, type);
+}
+
+__device__ __forceinline__ void trace_allreduce_event(
+    const PipesTraceAllReduceContext* context,
+    PipesTraceEventType type,
+    uint8_t qpLane) {
+  trace_allreduce_event(
+      context, type, qpLane, context == nullptr ? 0 : context->bytes);
 }
 } // namespace detail
 
@@ -516,25 +526,35 @@ __device__ __forceinline__ void consumeRecvBuf(
     trace_allreduce_event(
         traceContext,
         PipesTraceEventType::kAllReduceDataReadyWaitBegin,
-        qpLane);
+        qpLane,
+        waitCredit);
   }
   wait_recv_data_ready(
       transport, group, localChannel, localDataReady, waitCredit, timeout);
   if (group.is_leader()) {
     trace_allreduce_event(
-        traceContext, PipesTraceEventType::kAllReduceDataReadyWaitEnd, qpLane);
+        traceContext,
+        PipesTraceEventType::kAllReduceDataReadyWaitEnd,
+        qpLane,
+        waitCredit);
   }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
     if (group.is_leader()) {
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceReduceCopyBegin, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceReduceCopyBegin,
+          qpLane,
+          validBytes);
     }
     CopyOp::recv(dst, staging, validBytes, group, dataOff, args...);
     if (group.is_leader()) {
       trace_allreduce_event(
-          traceContext, PipesTraceEventType::kAllReduceReduceCopyEnd, qpLane);
+          traceContext,
+          PipesTraceEventType::kAllReduceReduceCopyEnd,
+          qpLane,
+          validBytes);
     }
   }
   group.sync();
@@ -607,7 +627,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     trace_allreduce_event(
         recvTraceContext,
         PipesTraceEventType::kAllReduceDataReadyWaitBegin,
-        recvQpLane);
+        recvQpLane,
+        recvWaitCredit);
   }
   wait_recv_data_ready(
       transport,
@@ -620,11 +641,13 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     trace_allreduce_event(
         recvTraceContext,
         PipesTraceEventType::kAllReduceDataReadyWaitEnd,
-        recvQpLane);
+        recvQpLane,
+        recvWaitCredit);
     trace_allreduce_event(
         sendTraceContext,
         PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
-        static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdSignalVal);
   }
   prepare_send_slot<protocol::Simple>(
       fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
@@ -632,7 +655,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     trace_allreduce_event(
         sendTraceContext,
         PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
-        static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdSignalVal);
   }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
@@ -641,7 +665,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
       trace_allreduce_event(
           recvTraceContext,
           PipesTraceEventType::kAllReduceStageCopyBegin,
-          recvQpLane);
+          recvQpLane,
+          validBytes);
     }
     CopyOp::forward(
         dst, fwdStaging, recvStaging, validBytes, group, dataOff, args...);
@@ -649,7 +674,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
       trace_allreduce_event(
           recvTraceContext,
           PipesTraceEventType::kAllReduceStageCopyEnd,
-          recvQpLane);
+          recvQpLane,
+          validBytes);
     }
   }
   group.sync();
@@ -1105,6 +1131,8 @@ __device__ __forceinline__ void send_impl(
       // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
       const std::size_t protocolBytesThis = bytesThis +
           (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, payloadBytes, nbytes);
       const std::size_t stagingOff = ch.stagingBase +
           static_cast<std::size_t>(slot) * perBlockSlotWire +
           Proto::wire_bytes(chunkOff);
@@ -1120,14 +1148,16 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
       }
       prepare_send_slot<Proto>(transport, group, slot, pipelineCycle, timeout);
       if (group.is_leader()) {
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
       }
 
       // (2) Cooperative copy: src -> local sendStaging via CopyOp.
@@ -1135,7 +1165,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceStageCopyBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            validBytes);
       }
       const SendSignal sig = prepareSendBuf<CopyOp>(
           Proto{},
@@ -1153,7 +1184,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceStageCopyEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            validBytes);
       }
 
       // (3) Backpressure: wait for receiver to free this byte range's
@@ -1163,7 +1195,8 @@ __device__ __forceinline__ void send_impl(
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
-              static_cast<uint8_t>(kPipesTraceQpLaneMask));
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              protocolBytesThis);
         }
         transport.wait_signal(
             group,
@@ -1174,7 +1207,8 @@ __device__ __forceinline__ void send_impl(
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
-              static_cast<uint8_t>(kPipesTraceQpLaneMask));
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              protocolBytesThis);
         }
       }
 
@@ -1183,7 +1217,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceSendSyncBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
       }
       group.sync();
       if (group.is_leader()) {
@@ -1191,7 +1226,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceSendSyncEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
         const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
         const uint8_t qpLane = static_cast<uint8_t>(
             numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
@@ -1200,7 +1236,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceWqeSubmitBegin,
-            qpLane);
+            qpLane,
+            bytesThis);
         const auto completion = transport.put(
             solo,
             channelLayout.sendStagingBuf.subBuffer(stagingOff),
@@ -1212,11 +1249,15 @@ __device__ __forceinline__ void send_impl(
             /*counterVal=*/0,
             /*signalPerLane=*/true);
         trace_allreduce_event(
-            traceContext, PipesTraceEventType::kAllReduceWqeSubmitEnd, qpLane);
+            traceContext,
+            PipesTraceEventType::kAllReduceWqeSubmitEnd,
+            qpLane,
+            bytesThis);
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceBookkeepingBegin,
-            qpLane);
+            qpLane,
+            protocolBytesThis);
         record_send_completion<Proto>(
             transport,
             static_cast<uint32_t>(groupId),
@@ -1226,7 +1267,8 @@ __device__ __forceinline__ void send_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceBookkeepingEnd,
-            qpLane);
+            qpLane,
+            protocolBytesThis);
       }
       group.sync();
       dataOff += payloadBytes;
@@ -1584,7 +1626,8 @@ __device__ __forceinline__ void recv_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceBookkeepingBegin,
-            qpLane);
+            qpLane,
+            protocolBytesThis);
       }
       transport.signal(
           group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
@@ -1593,7 +1636,8 @@ __device__ __forceinline__ void recv_impl(
         trace_allreduce_event(
             traceContext,
             PipesTraceEventType::kAllReduceBookkeepingEnd,
-            qpLane);
+            qpLane,
+            protocolBytesThis);
       }
     }
 
@@ -1885,7 +1929,8 @@ __device__ __forceinline__ void forward_impl(
         trace_allreduce_event(
             sendTraceContext,
             PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            fwdProtocolBytesThis);
       }
       fwdTransport.wait_signal(
           group,
@@ -1896,7 +1941,8 @@ __device__ __forceinline__ void forward_impl(
         trace_allreduce_event(
             sendTraceContext,
             PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            fwdProtocolBytesThis);
       }
     }
 
@@ -1905,7 +1951,8 @@ __device__ __forceinline__ void forward_impl(
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceSendSyncBegin,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          bytesThis);
     }
     group.sync();
     if (group.is_leader()) {
@@ -1913,7 +1960,8 @@ __device__ __forceinline__ void forward_impl(
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceSendSyncEnd,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          bytesThis);
       const uint32_t numLanes =
           static_cast<uint32_t>(fwdChannelLayout.numLanes);
       const uint8_t qpLane = static_cast<uint8_t>(
@@ -1923,7 +1971,8 @@ __device__ __forceinline__ void forward_impl(
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceWqeSubmitBegin,
-          qpLane);
+          qpLane,
+          bytesThis);
       const auto completion = fwdTransport.put(
           solo,
           fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
@@ -1937,11 +1986,13 @@ __device__ __forceinline__ void forward_impl(
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceWqeSubmitEnd,
-          qpLane);
+          qpLane,
+          bytesThis);
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceBookkeepingBegin,
-          qpLane);
+          qpLane,
+          fwdProtocolBytesThis);
       record_send_completion<Proto>(
           fwdTransport,
           static_cast<uint32_t>(groupId),
@@ -1951,7 +2002,8 @@ __device__ __forceinline__ void forward_impl(
       trace_allreduce_event(
           sendTraceContext,
           PipesTraceEventType::kAllReduceBookkeepingEnd,
-          qpLane);
+          qpLane,
+          fwdProtocolBytesThis);
     }
     group.sync();
     dataOff += payloadBytes;
