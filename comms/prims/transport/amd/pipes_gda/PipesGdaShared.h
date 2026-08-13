@@ -62,12 +62,8 @@ using comms::prims::kMultiwarpSize;
 using comms::prims::gpu_clock64;
 using comms::prims::Timeout;
 
-// AMD wall_clock64() clock rate: 100 MHz = 100 ticks per microsecond
-constexpr uint64_t kAmdWallClockTicksPerUs = 100;
-
-// Convenience: create a Timeout from microseconds (AMD wall_clock64 @ 100 MHz)
-inline Timeout make_timeout_us(uint64_t timeoutUs) {
-  return Timeout(timeoutUs * kAmdWallClockTicksPerUs);
+inline Timeout make_timeout_us(uint64_t /*timeoutUs*/) {
+  return Timeout{};
 }
 
 } // namespace pipes_gda

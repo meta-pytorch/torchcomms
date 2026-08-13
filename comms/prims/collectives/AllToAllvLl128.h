@@ -21,9 +21,9 @@ namespace comms::prims {
  *
  * All user buffers and ChunkInfo sizes must be 16-byte aligned.
  *
- * This overload creates a Timeout internally per call. For pipelined usage
- * (multiple back-to-back calls), prefer the Timeout overload below to avoid
- * per-call cudaGetDevice/cudaDeviceGetAttribute overhead.
+ * This compatibility overload accepts only a zero timeout. New callers that
+ * need abort or timeout behavior should pass an externally owned `AbortDevice`
+ * with the overload below.
  *
  * @param recvbuff_d Device pointer to receive buffer
  * @param sendbuff_d Device pointer to send buffer (const)
@@ -32,7 +32,7 @@ namespace comms::prims {
  *                            P2P for others)
  * @param send_chunk_infos DeviceSpan of ChunkInfo for send operations
  * @param recv_chunk_infos DeviceSpan of ChunkInfo for receive operations
- * @param timeout Timeout duration (0ms = no timeout, default)
+ * @param timeout Compatibility timeout; non-zero values are rejected.
  * @param stream CUDA stream for kernel execution
  * @param num_blocks Number of thread blocks to launch (default: 16).
  *                   Must satisfy: num_blocks * (num_threads / 32) >= 2 *
@@ -53,11 +53,8 @@ void all_to_allv_ll128(
     int num_threads = kLl128ThreadsPerBlock);
 
 /**
- * Host wrapper for AllToAllv LL128 with pre-built Timeout.
- *
- * Use this overload for pipelined/multi-call usage (e.g., benchmarks) where
- * Timeout is created once outside the loop (avoids per-call CUDA API
- * queries from makeTimeout).
+ * Host wrapper for AllToAllv LL128 with an externally owned device abort
+ * handle.
  *
  * Flag management is handled internally by the LL128 protocol layer.
  *
@@ -67,7 +64,7 @@ void all_to_allv_ll128(
  * @param transports_per_rank DeviceSpan of Transport objects
  * @param send_chunk_infos DeviceSpan of ChunkInfo for send operations
  * @param recv_chunk_infos DeviceSpan of ChunkInfo for receive operations
- * @param timeout_config Pre-built Timeout (create once with makeTimeout())
+ * @param abort Device abort handle owned by the caller.
  * @param stream CUDA stream for kernel execution
  * @param num_blocks Number of thread blocks to launch (default: 16)
  * @param num_threads Number of threads per block (default: 512)
@@ -79,7 +76,7 @@ void all_to_allv_ll128(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout_config,
+    AbortDevice abort,
     cudaStream_t stream = nullptr,
     int num_blocks = 16,
     int num_threads = kLl128ThreadsPerBlock);

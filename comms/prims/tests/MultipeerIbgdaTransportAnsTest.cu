@@ -46,8 +46,7 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void sendAnsKernel(
     std::size_t maxSignalBytes) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
-  timeout.start();
+  Timeout timeout;
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel (derives a
   // trap-safe chunk size via CopyOp::max_safe_chunk_size_for_slot()); a
@@ -72,8 +71,7 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void recvAnsKernel(
     std::size_t maxSignalBytes) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
-  timeout.start();
+  Timeout timeout;
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel; a non-zero value
   // drives the explicit signaled-chunk-size path. Sender and receiver must pass

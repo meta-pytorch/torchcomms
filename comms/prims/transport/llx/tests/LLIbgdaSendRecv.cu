@@ -61,7 +61,7 @@ __global__ void sendRecvKernel(
     bool send) {
   (void)activeBlocks; // master's detail::send/recv has no active_blocks param
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
+  Timeout timeout;
   timeout.start();
   if (send) {
     detail::send<P2pIbgdaTransportDevice, Memcpy, Proto>(

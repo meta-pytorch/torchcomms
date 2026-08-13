@@ -90,7 +90,6 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
       : nullptr;
   launchParams.num_blocks = num_blocks;
   launchParams.use_tma = params.use_tma;
-  launchParams.timeout_ms = 30000.0f;
   for (int peer = 0; peer < worldSize; ++peer) {
     if (peer == globalRank) {
       continue;

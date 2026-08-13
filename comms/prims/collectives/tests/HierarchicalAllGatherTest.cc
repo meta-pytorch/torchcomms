@@ -96,7 +96,6 @@ class HierarchicalAllGatherTest : public AllGatherTestBase {
     launchParams.recvbuf = static_cast<char*>(recvbuf.get());
     launchParams.in_place = inPlace;
     launchParams.ib_num_blocks = kNumBlocks;
-    launchParams.timeout_ms = 30000.0f;
 
     const auto& ibRing = ibRings[0];
     const int prevGlobal = ibRing.prev_rank * kNvlSize + nvlRank;

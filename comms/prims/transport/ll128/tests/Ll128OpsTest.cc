@@ -2,11 +2,13 @@
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/common/fault_tolerance/Abort.h"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 #include "comms/prims/transport/ll128/tests/Ll128OpsTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -1069,23 +1071,14 @@ TEST_F(Ll128OpsTestFixture, FlagState_AfterMultiStep_NonChunked) {
   }
 }
 
-TEST_F(Ll128OpsTestFixture, Timeout_Constructors) {
-  // Default timeout is disabled
+TEST_F(Ll128OpsTestFixture, AbortDeviceEnabledState) {
   Timeout default_timeout;
   EXPECT_FALSE(default_timeout.isEnabled());
 
-  // Timeout with cycles is enabled
-  Timeout enabled_timeout(1000);
-  EXPECT_TRUE(enabled_timeout.isEnabled());
-
-  // makeTimeout(0) creates disabled timeout
-  auto disabled = makeTimeout(0);
-  EXPECT_FALSE(disabled.isEnabled());
-
-  // makeTimeout(ms) creates enabled timeout with correct cycles
-  auto enabled = makeTimeout(1000);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{1000});
+  auto enabled = abort.getDeviceHandle();
   EXPECT_TRUE(enabled.isEnabled());
-  EXPECT_GT(enabled.timeout_cycles, 0u);
 }
 
 } // namespace comms::prims

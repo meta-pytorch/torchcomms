@@ -107,8 +107,31 @@ For Prims-backed collectives:
 3. Kernel entry creates a local per-block copy and calls `startTimeout()`.
 4. Transport and synchronization waits poll that local abort handle.
 
-The long-term target is to remove the separate Prims `Timeout` type and use
-`AbortDevice` for both explicit abort and abort-based timeout checks.
+## Prims `Timeout` Compatibility
+
+Prims `Timeout` is a source-compatible alias to `AbortDevice` during the
+migration:
+
+```cpp
+using Timeout = comms::fault_tolerance::AbortDevice;
+```
+
+This preserves existing kernel signatures while removing the old standalone
+`Timeout` implementation. There is no per-launch GPU-cycle timeout object and
+no `makeTimeout()` helper. Timeout duration comes from the communicator-owned
+host `Abort` default timeout and is read by `AbortDevice::startTimeout()`.
+
+The behavior change is intentional:
+
+- Default-constructed `Timeout`/`AbortDevice` is disabled and behaves like the
+  previous no-timeout default.
+- Handles borrowed from MPT observe explicit host aborts and timeout-triggered
+  aborts through shared state.
+- Timeout expiry records `AbortReason::TIMED_OUT` once in shared abort state,
+  making the result visible to host code and other device consumers.
+
+New code should name the concrete type `AbortDevice`. `Timeout` spelling is
+only for migration compatibility and should not be used in new Prims APIs.
 
 ## Usage Examples
 

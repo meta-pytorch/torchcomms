@@ -40,9 +40,7 @@ class TimeoutTrapTest : public ::testing::Test {
 // Test that SignalState::wait_until times out and traps
 TEST_F(TimeoutTrapTest, SignalStateWaitUntilTimeout) {
   // Use a short timeout (10ms) - should trigger quickly
-  launchSignalStateTimeoutKernel(0, 10);
-
-  cudaError_t err = cudaGetLastError();
+  cudaError_t err = launchSignalStateTimeoutKernel(0, 10);
   EXPECT_TRUE(isExpectedTrapError(err))
       << "Expected trap error, got: " << cudaGetErrorString(err);
 }
@@ -63,22 +61,9 @@ TEST_F(TimeoutTrapTest, NoTimeoutWhenKernelCompletes) {
 TEST_F(TimeoutTrapTest, SignalStateThreadGroupTimeout) {
   // Use a short timeout (10ms) - should trigger quickly
   // This tests the leader-only check(ThreadGroup&) path
-  launchSignalStateThreadGroupTimeoutKernel(0, 10);
-
-  cudaError_t err = cudaGetLastError();
+  cudaError_t err = launchSignalStateThreadGroupTimeoutKernel(0, 10);
   EXPECT_TRUE(isExpectedTrapError(err))
       << "Expected trap error, got: " << cudaGetErrorString(err);
-}
-
-// Test that calling start() twice traps (programming error detection)
-TEST_F(TimeoutTrapTest, DoubleStartTraps) {
-  // Calling start() twice is a programming error and should trap
-  launchDoubleStartKernel(0, 1000);
-
-  cudaError_t err = cudaGetLastError();
-  EXPECT_TRUE(isExpectedTrapError(err))
-      << "Expected trap error from double-start, got: "
-      << cudaGetErrorString(err);
 }
 
 // Test that when a kernel traps, subsequent kernels on the same stream don't
@@ -86,9 +71,9 @@ TEST_F(TimeoutTrapTest, DoubleStartTraps) {
 TEST_F(TimeoutTrapTest, TrapPreventsSubsequentKernelsOnStream) {
   // Launch two kernels on the same stream - first will trap, second should not
   // run
-  bool secondKernelDidNotRun = launchMultipleKernelsOnStreamTest(0, 10);
-
-  cudaError_t err = cudaGetLastError();
+  bool secondKernelDidNotRun = false;
+  cudaError_t err =
+      launchMultipleKernelsOnStreamTest(0, 10, &secondKernelDidNotRun);
   EXPECT_TRUE(isExpectedTrapError(err))
       << "Expected trap error from first kernel, got: "
       << cudaGetErrorString(err);

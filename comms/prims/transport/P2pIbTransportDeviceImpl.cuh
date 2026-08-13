@@ -3,6 +3,7 @@
 #pragma once
 
 #include <type_traits>
+#include <utility>
 
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
@@ -10,6 +11,39 @@
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
 namespace comms::prims {
+
+template <typename C, typename P, typename = void>
+struct has_sendLL : std::false_type {};
+template <typename C, typename P>
+struct has_sendLL<
+    C,
+    P,
+    std::void_t<decltype(C::template sendLL<P>(
+        std::declval<ThreadGroup&>(),
+        static_cast<char*>(nullptr),
+        static_cast<const char*>(nullptr),
+        std::declval<std::size_t>(),
+        std::declval<std::size_t>(),
+        std::declval<typename P::FlagType>()))>> : std::true_type {};
+template <typename C, typename P>
+inline constexpr bool has_sendLL_v = has_sendLL<C, P>::value;
+
+template <typename C, typename P, typename = void>
+struct has_recvLL : std::false_type {};
+template <typename C, typename P>
+struct has_recvLL<
+    C,
+    P,
+    std::void_t<decltype(C::template recvLL<P>(
+        std::declval<ThreadGroup&>(),
+        static_cast<char*>(nullptr),
+        static_cast<const char*>(nullptr),
+        std::declval<std::size_t>(),
+        std::declval<std::size_t>(),
+        std::declval<typename P::FlagType>(),
+        std::declval<const Timeout&>()))>> : std::true_type {};
+template <typename C, typename P>
+inline constexpr bool has_recvLL_v = has_recvLL<C, P>::value;
 
 namespace detail {
 // Query whether a CopyOp policy is variable-size (e.g. AnsCompress, which
