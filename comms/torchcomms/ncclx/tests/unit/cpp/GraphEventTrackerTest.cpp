@@ -1279,4 +1279,16 @@ TEST_F(
   ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
 }
 
+TEST_F(GraphEventTrackerTest, TryEnableColltraceWatchdog_AcceptsAllAliases) {
+  ::setenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH", "1", 1);
+  for (const auto* mode : {"ALL", "all"}) {
+    SCOPED_TRACE(mode);
+    ::setenv("NCCL_COLLTRACE", mode, 1);
+    EXPECT_TRUE(
+        tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds{5000}));
+  }
+  ::unsetenv("NCCL_COLLTRACE");
+  ::unsetenv("NCCL_COLLTRACE_TRACE_CUDA_GRAPH");
+}
+
 } // namespace torch::comms::test

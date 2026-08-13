@@ -21,6 +21,7 @@ struct GraphCollectiveEntry {
   // Owned by the CollTraceEvent below (unique_ptr), which we also own.
   GraphCudaWaitEvent* graphWaitEvent;
   std::unique_ptr<CollTraceEvent> event;
+  uint64_t replayId{0};
   // Weak reference to the handle returned to the caller. Used to invalidate
   // the handle when the CUDA graph is destroyed, preventing use-after-free
   // of the raw GraphCudaWaitEvent pointer held by the handle.

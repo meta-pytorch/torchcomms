@@ -2545,18 +2545,28 @@ cvars:
      Enable collective trace collection by leveraging cuda events
      and a background thread. Valid options are comma separated list
      of the following features. Leave empty to disable all features.
+     ALL - enable trace, lifecycle, and algostat (also accepted as `all`).
+           It intentionally excludes verbose; add verbose explicitly when
+           per-collective INFO logging is wanted.
      verbose - print every completed event as NCCL INFO log. Mostly for debug.
-     trace - Just enable collective trace.
+     trace - enable collective tracing and communicator dump retention.
+     lifecycle - enable the drainable enqueue/start/end lifecycle event feed.
+                 Consumers can correlate events with
+                 ncclx::colltrace::getCollTraceCommId(comm, commId) and
+                 getLatestCollTraceCollectiveId(comm, collId), then consume
+                 them with drainUnreadLifecycleEvents(events).
      algostat - lightweight algorithm counting (no CUDA events/worker thread).
                 Use ncclx::colltrace::dumpAlgoStat(comm) to retrieve stats.
+     An unrecognized option fails communicator initialization with
+     ncclInvalidArgument instead of silently disabling tracing.
 
  - name        : NCCL_COLLTRACE_PENDING_QUEUE_SIZE
    type        : int
    default     : 4096
    description : |-
      How many pending collectives to keep in the pending queue. If the queue
-     is full, the newest one will be dropped. Currently this only works for new
-     colltrace implementation.
+     is full, the newest one will be dropped. Currently this only works for the
+     new colltrace implementation.
 
  - name        : NCCL_COLLTRACE_TRACE_CUDA_GRAPH
    type        : bool

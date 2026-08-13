@@ -3,6 +3,8 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <optional>
 
 #include <folly/dynamic.h>
 
@@ -17,6 +19,9 @@ struct CollTraceEvent {
   // shared pointer here
   std::shared_ptr<CollRecord> collRecord;
   std::unique_ptr<ICollWaitEvent> waitEvent; // How we wait the event
+  std::optional<uint64_t> replayId;
+  // Graph replay CollRecords get new IDs; this preserves the capture-time ID.
+  std::optional<uint64_t> capturedCollId;
 };
 
 } // namespace meta::comms::colltrace

@@ -35,6 +35,8 @@ class CollTraceTest : public ::testing::Test {
     ON_CALL(*mockPlugin, getName()).WillByDefault(Return("MockPlugin"));
 
     // Set default actions for CommsMaybeVoid methods to return folly::unit
+    ON_CALL(*mockPlugin, afterCollRecorded(_))
+        .WillByDefault(Return(folly::unit));
     ON_CALL(*mockPlugin, beforeCollKernelScheduled(_))
         .WillByDefault(Return(folly::unit));
     ON_CALL(*mockPlugin, afterCollKernelScheduled(_))
@@ -96,6 +98,22 @@ TEST_F(CollTraceTest, ConstructorAndDestructor) {
   trace.reset();
 }
 
+TEST(CollTraceSetupFailureTest, FlushReturnsAfterThreadSetupFailure) {
+  CollTrace trace(
+      CollTraceConfig{},
+      CommLogData{},
+      []() -> CommsMaybeVoid {
+        return folly::makeUnexpected(
+            CommsError("test setup failure", commInternalError));
+      },
+      {});
+
+  const auto firstGeneration = trace.requestFlush();
+  trace.waitFlush(firstGeneration);
+
+  EXPECT_EQ(trace.requestFlush(), firstGeneration + 1);
+}
+
 // Test getPluginByName method
 TEST_F(CollTraceTest, GetPluginByName) {
   // Get the plugin by name
@@ -109,6 +127,15 @@ TEST_F(CollTraceTest, GetPluginByName) {
 
 // Test recordCollective method
 TEST_F(CollTraceTest, RecordCollective) {
+  bool registrationObserved = false;
+  EXPECT_CALL(*mockPluginPtr, afterCollRecorded(_))
+      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+        EXPECT_NE(event.collRecord, nullptr);
+        EXPECT_FALSE(event.capturedCollId.has_value());
+        registrationObserved = true;
+        return folly::unit;
+      }));
+
   // Create metadata and wait event
   auto metadata = std::make_unique<::testing::StrictMock<MockCollMetadata>>();
   auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
@@ -126,6 +153,7 @@ TEST_F(CollTraceTest, RecordCollective) {
   // Verify that the handle was created successfully
   EXPECT_VALUE(handleMaybe);
   EXPECT_NE(handleMaybe.value().get(), nullptr);
+  EXPECT_TRUE(registrationObserved);
 }
 
 // Test triggerEventState method
@@ -269,18 +297,20 @@ TEST_F(CollTraceTest, CompleteWorkflowWithTriggerEvent) {
   EXPECT_VALUE(
       handle1->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
 
-  // Sleep briefly to allow the CollTrace thread to process the events
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  auto flushGeneration = collTrace->requestFlush();
+  collTrace->waitFlush(flushGeneration);
   EXPECT_GT(waitStartCount, 0);
 
-  handle1->trigger(CollTraceHandleTriggerState::KernelStarted);
+  EXPECT_VALUE(handle1->trigger(CollTraceHandleTriggerState::KernelStarted));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  flushGeneration = collTrace->requestFlush();
+  collTrace->waitFlush(flushGeneration);
   EXPECT_GT(waitEndCount, 0);
 
-  handle1->trigger(CollTraceHandleTriggerState::KernelFinished);
+  EXPECT_VALUE(handle1->trigger(CollTraceHandleTriggerState::KernelFinished));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  flushGeneration = collTrace->requestFlush();
+  collTrace->waitFlush(flushGeneration);
 }
 
 // Test plugin callbacks
@@ -319,6 +349,51 @@ TEST_F(CollTraceTest, PluginCallbacks) {
 
   // Sleep briefly to allow the CollTrace thread to process the events
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+TEST_F(CollTraceTest, EpochWaitTimestampsDoNotRepeatLifecycleCallbacks) {
+  constexpr auto kEpoch = ICollWaitEvent::system_clock_time_point{};
+  auto metadata = std::make_unique<StrictMock<MockCollMetadata>>();
+  auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+
+  ON_CALL(*waitEvent, beforeCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*waitEvent, afterCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*waitEvent, waitCollStart(_)).WillByDefault(Return(true));
+  ON_CALL(*waitEvent, waitCollEnd(_)).WillByDefault(Return(true));
+  ON_CALL(*waitEvent, getCollStartTime())
+      .WillByDefault(
+          Return(CommsMaybe<ICollWaitEvent::system_clock_time_point>{kEpoch}));
+  ON_CALL(*waitEvent, getCollEndTime())
+      .WillByDefault(
+          Return(CommsMaybe<ICollWaitEvent::system_clock_time_point>{kEpoch}));
+
+  EXPECT_CALL(*mockPluginPtr, afterCollKernelStart(_))
+      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+        EXPECT_NE(event.collRecord->getTimingInfo().getCollStartTs(), kEpoch);
+        return folly::unit;
+      }));
+  EXPECT_CALL(*mockPluginPtr, afterCollKernelEnd(_))
+      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+        EXPECT_NE(event.collRecord->getTimingInfo().getCollEndTs(), kEpoch);
+        return folly::unit;
+      }));
+
+  auto handleMaybe =
+      collTrace->recordCollective(std::move(metadata), std::move(waitEvent));
+  ASSERT_TRUE(handleMaybe.hasValue());
+  auto handle = handleMaybe.value();
+  EXPECT_VALUE(
+      handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel));
+  EXPECT_VALUE(
+      handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
+
+  for (int i = 0; i < 2; ++i) {
+    const auto flushGeneration = collTrace->requestFlush();
+    collTrace->waitFlush(flushGeneration);
+  }
+  collTrace.reset();
 }
 
 // Test handle invalidation when CollTrace is destroyed

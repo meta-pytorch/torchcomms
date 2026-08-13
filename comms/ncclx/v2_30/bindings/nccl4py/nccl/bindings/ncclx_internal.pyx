@@ -4,11 +4,17 @@
 from libc.stdint cimport intptr_t, uint64_t
 from libcpp.string cimport string
 from libcpp.unordered_map cimport unordered_map
+from libcpp.vector cimport vector
 
 from .ncclx_internal cimport (
     commSetConfig as _commSetConfig,
     cudaStream_t,
+    drainUnreadLifecycleEvents as _drainUnreadLifecycleEvents,
+    getCollTraceCommId as _getCollTraceCommId,
+    getLatestCollTraceCollectiveId as _getLatestCollTraceCollectiveId,
     Hints as CppHints,
+    LifecycleEvent as CppLifecycleEvent,
+    LifecycleEventType as CppLifecycleEventType,
     ncclAllToAllv as _ncclAllToAllv,
     ncclCommDump as _ncclCommDump,
     ncclCommDumpAll as _ncclCommDumpAll,
@@ -164,6 +170,55 @@ cpdef dict comm_dump_all():
         }
         for k, v in result
     }
+
+
+cdef list _colltrace_events_to_python(vector[CppLifecycleEvent]& result):
+    cdef uint64_t invalid_replay_id = <uint64_t>-1
+    cdef list events = []
+    cdef object event_type
+    for event in result:
+        if event.eventType == CppLifecycleEventType.Enqueue:
+            event_type = "enqueue"
+        elif event.eventType == CppLifecycleEventType.Start:
+            event_type = "start"
+        else:
+            event_type = "end"
+        events.append((
+            None if event.replayId == invalid_replay_id else event.replayId,
+            event.commId,
+            event.collId,
+            event.executionCollId,
+            event_type,
+            event.timestamp,
+        ))
+    return events
+
+
+cpdef uint64_t colltrace_get_comm_id(intptr_t comm) except? 0:
+    cdef uint64_t comm_id
+    cdef int status
+    with nogil:
+        status = _getCollTraceCommId(<ncclComm_t>comm, comm_id)
+    check_status(status)
+    return comm_id
+
+
+cpdef uint64_t colltrace_get_latest_coll_id(intptr_t comm) except? 0:
+    cdef uint64_t coll_id
+    cdef int status
+    with nogil:
+        status = _getLatestCollTraceCollectiveId(<ncclComm_t>comm, coll_id)
+    check_status(status)
+    return coll_id
+
+
+cpdef list colltrace_get_unread_events():
+    cdef vector[CppLifecycleEvent] result
+    cdef int status
+    with nogil:
+        status = _drainUnreadLifecycleEvents(result)
+    check_status(status)
+    return _colltrace_events_to_python(result)
 
 
 cpdef comm_set_config(intptr_t comm, intptr_t config):

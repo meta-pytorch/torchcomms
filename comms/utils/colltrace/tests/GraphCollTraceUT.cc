@@ -63,8 +63,26 @@ class SimpleMetadata : public ICollMetadata {
 // Plugin that tracks which collIds had collEventProgressing fired.
 class ProgressTrackingPlugin : public ICollTracePlugin {
  public:
+  struct EventIdentity {
+    uint64_t collId;
+    std::optional<uint64_t> replayId;
+    std::optional<uint64_t> capturedCollId;
+  };
+
   std::string_view getName() const noexcept override {
     return "ProgressTrackingPlugin";
+  }
+
+  meta::comms::CommsMaybeVoid afterCollRecorded(
+      CollTraceEvent& event) noexcept override {
+    std::lock_guard<std::mutex> lock(mu_);
+    recordedEventIdentities_.push_back(
+        EventIdentity{
+            .collId = event.collRecord->getCollId(),
+            .replayId = event.replayId,
+            .capturedCollId = event.capturedCollId,
+        });
+    return folly::unit;
   }
 
   meta::comms::CommsMaybeVoid beforeCollKernelScheduled(
@@ -82,6 +100,12 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     if (event.collRecord) {
       std::lock_guard<std::mutex> lock(mu_);
       startedCollIds_.insert(event.collRecord->getCollId());
+      startedEventIdentities_.push_back(
+          EventIdentity{
+              .collId = event.collRecord->getCollId(),
+              .replayId = event.replayId,
+              .capturedCollId = event.capturedCollId,
+          });
     }
     return folly::unit;
   }
@@ -115,6 +139,16 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     return startedCollIds_;
   }
 
+  std::vector<EventIdentity> getStartedEventIdentities() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return startedEventIdentities_;
+  }
+
+  std::vector<EventIdentity> getRecordedEventIdentities() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return recordedEventIdentities_;
+  }
+
   std::set<int64_t> getCompletedCollIds() const {
     std::lock_guard<std::mutex> lock(mu_);
     return completedCollIds_;
@@ -128,6 +162,8 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     std::lock_guard<std::mutex> lock(mu_);
     progressedCollIds_.clear();
     startedCollIds_.clear();
+    startedEventIdentities_.clear();
+    recordedEventIdentities_.clear();
     completedCollIds_.clear();
     progressCount_.store(0);
   }
@@ -136,6 +172,8 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
   mutable std::mutex mu_;
   std::set<int64_t> progressedCollIds_;
   std::set<int64_t> startedCollIds_;
+  std::vector<EventIdentity> startedEventIdentities_;
+  std::vector<EventIdentity> recordedEventIdentities_;
   std::set<int64_t> completedCollIds_;
   std::atomic<int> progressCount_{0};
 };
@@ -327,6 +365,50 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
   auto completedIds = progressPlugin_->getCompletedCollIds();
   EXPECT_EQ(completedIds.size(), kNumColls)
       << "All collectives should be marked completed after stream sync";
+}
+
+TEST_F(GraphColltraceProgressingTest, PreservesIdentityAcrossReplays) {
+  constexpr uint32_t kNumColls = 2;
+  constexpr uint64_t kNumReplays = 2;
+  auto cg = captureSerial(kNumColls, 0);
+
+  ASSERT_NE(progressPlugin_, nullptr);
+  const auto registrations = progressPlugin_->getRecordedEventIdentities();
+  ASSERT_EQ(registrations.size(), kNumColls);
+  for (uint32_t i = 0; i < kNumColls; ++i) {
+    EXPECT_FALSE(registrations[i].replayId.has_value());
+    EXPECT_EQ(registrations[i].collId, cg.collIds[i]);
+    EXPECT_EQ(registrations[i].capturedCollId, cg.collIds[i]);
+  }
+
+  for (uint64_t replayId = 1; replayId <= kNumReplays; ++replayId) {
+    ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  const auto identities = progressPlugin_->getStartedEventIdentities();
+  ASSERT_EQ(identities.size(), kNumColls * kNumReplays);
+  std::multiset<std::pair<uint64_t, uint64_t>> actual;
+  std::set<uint64_t> replayCollIds;
+  for (const auto& identity : identities) {
+    ASSERT_TRUE(identity.replayId.has_value());
+    ASSERT_TRUE(identity.capturedCollId.has_value());
+    actual.emplace(*identity.capturedCollId, *identity.replayId);
+    replayCollIds.insert(identity.collId);
+  }
+
+  std::multiset<std::pair<uint64_t, uint64_t>> expected;
+  for (const auto collId : cg.collIds) {
+    for (uint64_t replayId = 1; replayId <= kNumReplays; ++replayId) {
+      expected.emplace(collId, replayId);
+    }
+  }
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ(replayCollIds.size(), kNumColls * kNumReplays);
+  for (const auto capturedCollId : cg.collIds) {
+    EXPECT_FALSE(replayCollIds.contains(capturedCollId));
+  }
 }
 
 // Capture concurrent collectives on separate streams so multiple start

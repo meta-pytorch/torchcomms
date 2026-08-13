@@ -52,8 +52,8 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
 
 std::atomic<int> g_graphTimeoutMonitoringState{-1};
 
-// Returns true if NCCL_COLLTRACE enables a full-trace mode ("trace" or
-// "verbose"), i.e. the colltrace worker thread and WatchdogPlugin will actually
+// Returns true if NCCL_COLLTRACE enables a full-trace mode ("trace", "verbose",
+// or "ALL"), i.e. the colltrace worker thread and WatchdogPlugin will actually
 // be created by CollTraceWrapper::newCollTraceInit. NCCL_COLLTRACE is a
 // comma-separated stringlist, so we tokenize and trim exactly like the cvar
 // parser (comms/utils/cvars) and newCollTraceInit do — an exact whole-string
@@ -67,7 +67,8 @@ bool colltraceTraceModeEnabled() {
   folly::split(',', env, tokens, true /* ignoreEmpty */);
   for (const auto& token : tokens) {
     const std::string trimmed = folly::trimWhitespace(token).str();
-    if (trimmed == "trace" || trimmed == "verbose") {
+    if (trimmed == "trace" || trimmed == "verbose" || trimmed == "ALL" ||
+        trimmed == "all") {
       return true;
     }
   }
@@ -86,7 +87,7 @@ bool colltraceCudaGraphTracingRequested() {
 }
 
 // The colltrace cudagraph watchdog only fires when BOTH the cudagraph tracing
-// flag is set AND colltrace itself is in trace/verbose mode — otherwise
+// flag is set AND colltrace itself is in trace/verbose/ALL mode — otherwise
 // CollTraceWrapper::newCollTraceInit short-circuits before installing the
 // WatchdogPlugin. Both conditions must hold before the colltrace watchdog can
 // serve as the fallback when GraphEventTracker monitoring is disabled.
@@ -240,7 +241,8 @@ void TorchCommNCCLX::init(
     LOG(WARNING)
         << "[TC] GraphEventTracker timeout monitoring is disabled and the "
         << "colltrace watchdog is unavailable (needs NCCL_COLLTRACE in a "
-        << "'trace'/'verbose' mode with NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1) — no "
+        << "'trace'/'verbose'/'ALL' mode with "
+        << "NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1) — no "
         << "graph-collective timeout watchdog will be active.";
   }
 
