@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
+
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 
 namespace comms::prims {
@@ -124,6 +126,38 @@ TEST(MultiPeerIbTransportConfigTest, RelaxedOrderingDisabledNeverActive) {
       relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/true));
   EXPECT_FALSE(
       relaxedOrderingActiveForNic(config, /*nicRelaxedOrderingCapable=*/false));
+}
+
+TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellAutoUsesNicCapability) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_FALSE(config.enableReliableDoorbell.has_value());
+  EXPECT_TRUE(reliableDoorbellNeedsCapabilityQuery(config));
+  EXPECT_TRUE(reliableDoorbellActiveForNic(
+      config, /*nicReliableDoorbellCapable=*/true));
+  EXPECT_FALSE(reliableDoorbellActiveForNic(
+      config, /*nicReliableDoorbellCapable=*/false));
+}
+
+TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellEnableRequiresCapability) {
+  MultipeerIbTransportConfig config;
+  config.enableReliableDoorbell = true;
+  EXPECT_TRUE(reliableDoorbellNeedsCapabilityQuery(config));
+  EXPECT_TRUE(reliableDoorbellActiveForNic(
+      config, /*nicReliableDoorbellCapable=*/true));
+  EXPECT_THROW(
+      reliableDoorbellActiveForNic(
+          config, /*nicReliableDoorbellCapable=*/false),
+      std::invalid_argument);
+}
+
+TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
+  MultipeerIbTransportConfig config;
+  config.enableReliableDoorbell = false;
+  EXPECT_FALSE(reliableDoorbellNeedsCapabilityQuery(config));
+  EXPECT_FALSE(reliableDoorbellActiveForNic(
+      config, /*nicReliableDoorbellCapable=*/true));
+  EXPECT_FALSE(reliableDoorbellActiveForNic(
+      config, /*nicReliableDoorbellCapable=*/false));
 }
 
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {

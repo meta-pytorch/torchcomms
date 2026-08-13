@@ -4,6 +4,8 @@
 
 #include <type_traits>
 
+#include "comms/prims/core/LlxPacket.cuh"
+#include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
@@ -69,6 +71,32 @@ struct Simple {
   __host__ __device__ static constexpr std::size_t wire_bytes(
       std::size_t payloadBytes) {
     return (payloadBytes + kData - 1) / kData * kPacketBytes;
+  }
+};
+} // namespace protocol
+
+// Low-latency (data+flag) wire format. Packet-geometry policy is LlxPacket<4,4>
+// (8 B packet = 4 B data + 4 B flag), so wire == 2x payload; readiness is the
+// inline flag (no DATA_READY -- see consumeRecvBuf(LL)). LL reuses the same
+// channel/state as Simple (shared IbChannelLayout, staging, and progress
+// cursor); forward is not implemented for LL yet.
+namespace protocol {
+struct LL {
+  // Slot 1: LL owns its own per-channel resource slot. The two protocols must
+  // not share one -- the progress cursors, staging ring position, and
+  // cumulative signal counters are all persistent across kernel launches, so a
+  // slot left mid-stream by one protocol is meaningless to the other. The
+  // channel's QPs and its lane cursor ARE shared; only slot-indexed state is
+  // duplicated.
+  static constexpr int kProtoSlot = 1;
+  using Packet = LlxPacket<4, 4>;
+  static constexpr std::size_t kData = Packet::kData;
+  static constexpr std::size_t kPacketBytes = Packet::kPacketBytes;
+  __host__ __device__ static std::size_t max_payload(std::size_t wireBytes) {
+    return Packet::max_payload(wireBytes);
+  }
+  __host__ __device__ static std::size_t wire_bytes(std::size_t payloadBytes) {
+    return Packet::wire_bytes(payloadBytes);
   }
 };
 } // namespace protocol
@@ -345,13 +373,16 @@ __device__ __forceinline__ SendRecvGeometry calcGeometry(
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
   const int groupId = group.group_id;
-  const int maxGroups = channelLayout.maxChannels;
-  if (groupId >= maxGroups) {
+  // group_id selects a LOGICAL channel, so bound it by numChannels.
+  // maxChannels counts resource SLOTS (numChannels * kNumProtoSlots) and would
+  // be kNumProtoSlots-times too loose here.
+  const int numChannels = channelLayout.numChannels;
+  if (groupId >= numChannels) {
     if (group.is_leader()) {
       printf(
-          "[PIPES] FATAL: send/recv group_id=%u >= maxGroups=%d\n",
+          "[PIPES] FATAL: send/recv group_id=%u >= numChannels=%d\n",
           groupId,
-          maxGroups);
+          numChannels);
     }
     PIPES_DEVICE_TRAP();
   }
@@ -400,6 +431,7 @@ __device__ __forceinline__ SendSignal prepareSendBuf(
     std::size_t payloadBytes,
     std::size_t nbytes,
     std::size_t dataOff,
+    uint64_t /*flagVal*/,
     const IbRemoteChannel& remoteChannel,
     uint64_t signalVal,
     Args... args) {
@@ -439,6 +471,7 @@ __device__ __forceinline__ void consumeRecvBuf(
     std::size_t payloadBytes,
     std::size_t nbytes,
     std::size_t dataOff,
+    uint64_t /*flagVal*/,
     uint64_t waitCredit,
     const Timeout& timeout,
     Args... args) {
@@ -544,6 +577,128 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   (void)timeout;
   ((void)args, ...);
   return SendSignal{};
+#endif
+}
+// LL encode: pack payload + trailing flag=flagVal into staging via
+// LLImpl::pack; the put carries NO DATA_READY (empty signal) -- the inline
+// flag is the readiness mark. Ignores the remote signal slot/value that
+// Simple uses.
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ SendSignal prepareSendBuf(
+    protocol::LL,
+    ThreadGroup& group,
+    char* staging,
+    const char* src,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t flagVal,
+    const IbRemoteChannel& remoteChannel,
+    uint64_t signalVal,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  static_assert(
+      has_sendLL_v<CopyOp, P>,
+      "LL send path requires a CopyOp with a packet-aware sendLL<P>(); Memcpy "
+      "provides one. A reduce/convert CopyOp must supply its own -- a plain "
+      "contiguous copy cannot address the data+flag interleaved staging");
+#if PIPES_IS_DEVICE_COMPILE
+  (void)remoteChannel;
+  (void)signalVal;
+  // Clamp to the REAL payload before handing it to the codec. payloadBytes is
+  // rounded up to kData for the wire/credit stream, but the caller's src only
+  // holds nbytes -- packing the padded length reads up to kData-1 bytes past
+  // it, which faults on a tightly-sized device allocation. Staging offsets and
+  // the RDMA length stay padded; only the codec is clamped. Both ranks derive
+  // validBytes from values they already agree on, so packet_count() matches on
+  // each side. Mirrors the Simple overload above.
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    CopyOp::template sendLL<P>(
+        group,
+        staging,
+        src,
+        validBytes,
+        dataOff,
+        static_cast<typename P::FlagType>(flagVal),
+        args...);
+  }
+  return SendSignal{IbgdaRemoteBuffer{}, /*val=*/0};
+#else
+  (void)group;
+  (void)staging;
+  (void)src;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)flagVal;
+  (void)remoteChannel;
+  (void)signalVal;
+  ((void)args, ...);
+  return SendSignal{};
+#endif
+}
+
+// LL decode: poll the inline flags == flagVal and copy staging -> dst via
+// LLImpl::unpack. No signal wait; ignores the local channel/credit Simple
+// uses.
+template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+__device__ __forceinline__ void consumeRecvBuf(
+    protocol::LL,
+    Transport& transport,
+    ThreadGroup& group,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    char* dst,
+    const char* staging,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t flagVal,
+    uint64_t waitCredit,
+    const Timeout& timeout,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  static_assert(
+      has_recvLL_v<CopyOp, P>,
+      "LL recv path requires a CopyOp with a packet-aware recvLL<P>(); Memcpy "
+      "provides one. A reduce/convert CopyOp must supply its own -- a plain "
+      "contiguous copy cannot address the data+flag interleaved staging");
+#if PIPES_IS_DEVICE_COMPILE
+  (void)transport;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)waitCredit;
+  // Same clamp as the send side: unpacking the padded length writes up to
+  // kData-1 bytes past the caller's dst, silently corrupting whatever follows.
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    CopyOp::template recvLL<P>(
+        group,
+        dst,
+        staging,
+        validBytes,
+        dataOff,
+        static_cast<typename P::FlagType>(flagVal),
+        timeout,
+        args...);
+  }
+#else
+  (void)transport;
+  (void)group;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)dst;
+  (void)staging;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)flagVal;
+  (void)waitCredit;
+  (void)timeout;
+  ((void)args, ...);
 #endif
 }
 
@@ -850,6 +1005,9 @@ __device__ __forceinline__ void send(
       const uint64_t streamWire = Proto::wire_bytes(streamPayload);
       const uint64_t protocolStreamEnd = streamWire + protocolBytesThis;
       const uint64_t pipelineCycle = streamPayload / pipelineBytesPayload;
+      // flagVal (a per-ring-pass counter) for this chunk's slot; LL stamps it
+      // into every packet flag. Offset by +1 so the flag is never zero.
+      const uint64_t flagVal = streamPayload / pipelineBytesPayload + 1;
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
       prepare_send_slot<Proto>(transport, group, slot, pipelineCycle, timeout);
@@ -863,6 +1021,7 @@ __device__ __forceinline__ void send(
           payloadBytes,
           nbytes,
           dataOff,
+          flagVal,
           remoteChannel,
           protocolBytesThis,
           args...);
@@ -1175,6 +1334,9 @@ __device__ __forceinline__ void recv(
       const std::size_t stagingOff = ch.stagingBase +
           static_cast<std::size_t>(slot) * perBlockSlotWire +
           Proto::wire_bytes(chunkOff);
+      // flagVal (a per-ring-pass counter) for this chunk's slot; LL stamps it
+      // into every packet flag.
+      const uint64_t flagVal = streamPayload / pipelineBytesPayload + 1;
 
       // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL,
       //         the inline flag) and cooperatively copy recvStaging -> dst.
@@ -1189,6 +1351,7 @@ __device__ __forceinline__ void recv(
           payloadBytes,
           nbytes,
           dataOff,
+          flagVal,
           protocolBytesThis,
           timeout,
           args...);
@@ -1589,20 +1752,21 @@ __device__ __forceinline__ void validate_progress_group(
     const IbChannelLayout& channelLayout,
     ThreadGroup& group) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  if (channelLayout.maxChannels <= 0) {
+  // group_id selects a LOGICAL channel; maxChannels counts resource slots.
+  if (channelLayout.numChannels <= 0) {
     if (group.is_leader()) {
       printf(
-          "[PIPES] FATAL: send/recv maxChannels must be > 0, got %d\n",
-          channelLayout.maxChannels);
+          "[PIPES] FATAL: send/recv numChannels must be > 0, got %d\n",
+          channelLayout.numChannels);
     }
     PIPES_DEVICE_TRAP();
   }
-  if (group.group_id >= static_cast<uint32_t>(channelLayout.maxChannels)) {
+  if (group.group_id >= static_cast<uint32_t>(channelLayout.numChannels)) {
     if (group.is_leader()) {
       printf(
           "[PIPES] FATAL: progress group_id=%u out of range [0, %d)\n",
           group.group_id,
-          channelLayout.maxChannels);
+          channelLayout.numChannels);
     }
     PIPES_DEVICE_TRAP();
   }

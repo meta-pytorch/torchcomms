@@ -421,8 +421,10 @@ std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
   //               lane); numLanes must equal the device QP-lane count.
   //   SLOT_FREE:  one slot per channel.
   // See the layout in IbgdaBuffer.h.
+  // Slot-indexed: one DATA_READY block plus one SLOT_FREE slot per
+  // (logical channel, protocol slot).
   const std::size_t maxChannels =
-      static_cast<std::size_t>(config_.max_num_channels);
+      static_cast<std::size_t>(config_.totalChannelSlots());
   const std::size_t numLanes = static_cast<std::size_t>(numNics_) *
       static_cast<std::size_t>(config_.qpsPerConnection);
   const std::size_t dataReadySlots = numLanes * maxChannels;
@@ -431,7 +433,7 @@ std::size_t MultiPeerIbTransportBase::sendRecvSignalBytesPerPeer() const {
 }
 
 std::size_t MultiPeerIbTransportBase::sendRecvCounterBytesPerPeer() const {
-  return static_cast<std::size_t>(config_.max_num_channels) *
+  return static_cast<std::size_t>(config_.totalChannelSlots()) *
       kSendRecvSignalSlotStride;
 }
 
@@ -452,7 +454,7 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
       .remoteSignalBuf = pb.remoteSignal,
       .localCounterBuf = pb.counter,
       .localCounterCompletionBuf = pb.counterCompletion,
-      .maxChannels = config_.max_num_channels,
+      .maxChannels = config_.totalChannelSlots(),
       .numChannels = config_.max_num_channels,
       .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,

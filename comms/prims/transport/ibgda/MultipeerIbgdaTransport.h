@@ -267,6 +267,7 @@ class MultipeerIbgdaTransport
   struct NicDocaResources {
     doca_verbs_ah_attr* ahAttr{nullptr};
     ibverbx::ibv_mr* sinkMr{nullptr};
+    bool useReliableDoorbell{false};
     std::vector<doca_gpu_verbs_qp_group_hl*> blockQpGroups;
     std::vector<doca_gpu_verbs_qp_hl*> extraMainQps;
     std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;

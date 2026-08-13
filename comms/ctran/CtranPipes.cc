@@ -284,6 +284,16 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.maxGroups = maxChannels;
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
+    switch (MCCL_IBGDA_RELIABLE_DOORBELL_MODE) {
+      case MCCL_IBGDA_RELIABLE_DOORBELL_MODE::auto_:
+        break;
+      case MCCL_IBGDA_RELIABLE_DOORBELL_MODE::enable:
+        config.ibConfig.enableReliableDoorbell = true;
+        break;
+      case MCCL_IBGDA_RELIABLE_DOORBELL_MODE::disable:
+        config.ibConfig.enableReliableDoorbell = false;
+        break;
+    }
 
     if (config.ibConfig.dataBufferSize == 0) {
       CLOGF(

@@ -9,6 +9,7 @@
 #include "comms/utils/cvars/nccl_cvars.h" // @manual
 
 #include <string>
+#include <utility>
 #include <vector>
 
 class NCCLCvarInitEnvironment : public ::testing::Environment {
@@ -49,12 +50,38 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("CUDA_LAUNCH_BLOCKING");
     unsetenv("NCCL_MIN_CTAS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
+    unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
   }
 };
 
 TEST_F(CvarInitTest, BasicInitialization) {
   // Test basic ncclCvarInit functionality
   EXPECT_NO_THROW(ncclCvarInit());
+}
+
+TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeDefaultsToAuto) {
+  MCCL_IBGDA_RELIABLE_DOORBELL_MODE =
+      MCCL_IBGDA_RELIABLE_DOORBELL_MODE::disable;
+  ncclCvarInit();
+  EXPECT_EQ(
+      MCCL_IBGDA_RELIABLE_DOORBELL_MODE,
+      MCCL_IBGDA_RELIABLE_DOORBELL_MODE::auto_);
+}
+
+TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeParsesAllModes) {
+  using Mode = decltype(MCCL_IBGDA_RELIABLE_DOORBELL_MODE);
+  const std::vector<std::pair<const char*, Mode>> modes{
+      {"auto", Mode::auto_},
+      {"enable", Mode::enable},
+      {"disable", Mode::disable},
+  };
+  for (const auto& [value, expected] : modes) {
+    MCCL_IBGDA_RELIABLE_DOORBELL_MODE =
+        expected == Mode::auto_ ? Mode::enable : Mode::auto_;
+    setenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_IBGDA_RELIABLE_DOORBELL_MODE, expected);
+  }
 }
 
 TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveDisabledByDefault) {

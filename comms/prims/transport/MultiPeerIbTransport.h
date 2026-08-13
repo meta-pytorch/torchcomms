@@ -116,6 +116,10 @@ struct MultipeerIbTransportConfig {
   // qpsPerConnection.
   int qpsPerConnection{1};
 
+  // IBGDA-only reliable-doorbell policy; ignored by IBRC and AMD. nullopt
+  // auto-detects NIC support, true requires support, and false disables it.
+  std::optional<bool> enableReliableDoorbell;
+
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
       throw std::invalid_argument(
@@ -128,15 +132,29 @@ struct MultipeerIbTransportConfig {
     return maxGroups * qpsPerBlockPerNic;
   }
 
-  std::size_t fixedChannelDataBufferSize() const {
+  // Slot-indexed storage is reserved per (logical channel, protocol slot).
+  // max_num_channels stays the LOGICAL channel count a caller selects with
+  // group_id; slot p owns [p * max_num_channels, (p+1) * max_num_channels).
+  // The slot count is kNumProtoSlots (IbgdaBuffer.h) rather than runtime
+  // config, so host sizing and device indexing cannot disagree. QPs are NOT
+  // multiplied: a channel is one QP pair shared by every protocol on it.
+  int totalChannelSlots() const {
     if (max_num_channels < 0) {
       throw std::invalid_argument("max_num_channels must be >= 0");
     }
-    const auto channels = static_cast<std::size_t>(max_num_channels);
+    if (max_num_channels > std::numeric_limits<int>::max() / kNumProtoSlots) {
+      throw std::overflow_error(
+          "max_num_channels * kNumProtoSlots overflows int");
+    }
+    return max_num_channels * kNumProtoSlots;
+  }
+
+  std::size_t fixedChannelDataBufferSize() const {
+    const auto channels = static_cast<std::size_t>(totalChannelSlots());
     if (channels != 0 &&
         perChannelSize > std::numeric_limits<std::size_t>::max() / channels) {
       throw std::overflow_error(
-          "perChannelSize * max_num_channels overflows size_t");
+          "perChannelSize * totalChannelSlots overflows size_t");
     }
     return perChannelSize * channels;
   }
@@ -294,6 +312,22 @@ struct IbBufferRegistrationView {
     return leaseGeneration != 0 && localBuffer.ptr != nullptr && size != 0;
   }
 };
+
+inline bool reliableDoorbellActiveForNic(
+    const MultipeerIbTransportConfig& config,
+    bool nicReliableDoorbellCapable) {
+  if (config.enableReliableDoorbell.value_or(false) &&
+      !nicReliableDoorbellCapable) {
+    throw std::invalid_argument(
+        "enableReliableDoorbell requires reliable-doorbell NIC support");
+  }
+  return config.enableReliableDoorbell.value_or(nicReliableDoorbellCapable);
+}
+
+inline bool reliableDoorbellNeedsCapabilityQuery(
+    const MultipeerIbTransportConfig& config) {
+  return config.enableReliableDoorbell.value_or(true);
+}
 
 /**
  * Transport connection information for RDMA QP setup.

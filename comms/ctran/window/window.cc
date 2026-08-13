@@ -25,7 +25,6 @@
 #include "comms/prims/window/HostWindow.h"
 #endif
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/ScubaLogger.h"
 
 using ctran::window::RemWinInfo;
@@ -947,7 +946,7 @@ commResult_t checkUserBufType(const DevMemType bufType) {
         devMemTypeStr(bufType));
     return commSuccess;
   }
-  CERR(
+  CTRAN_ERR(
       commInvalidUsage,
       "CTRAN-WINDOW: Unsupported buffer type {} provided when registering window. Supported buffer types are kCumem, kHostPinned, kHostUnregistered, kCudaMalloc",
       devMemTypeStr(bufType));
@@ -1020,7 +1019,7 @@ commResult_t ctranWinSharedQuery(int rank, CtranWin* win, void** addr) {
 
   // Validate rank is within valid bounds
   if (rank < 0 || rank >= comm->statex_->nRanks()) {
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "CTRAN-WINDOW: Invalid rank {} for sharedQuery (valid range: [0, {}))",
         rank,

@@ -1950,6 +1950,16 @@ cvars:
      shared IMEX domain fails communicator init outright. Set true on fleets
      known to share an IMEX domain.
 
+ - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
+   type        : enum
+   default     : "off"
+   choices     : off, force
+   description : |-
+     Select send-side zero-copy for MCCL-native AllReduce.
+     off - Preserve the existing copy-based registration and collective paths.
+     force - Require every rank and the exact Phase-2 source range to be
+             eligible for IBGDA zero-copy; never fall back to the copy path.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -3327,6 +3337,19 @@ cvars:
      Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
      ibgda - use GPU-posted IBGDA.
      ibrc - use CPU-posted IBRC.
+
+ - name        : MCCL_IBGDA_RELIABLE_DOORBELL_MODE
+   type        : enum
+   default     : auto
+   choices     : auto, enable, disable
+   description : |-
+     Select the reliable-doorbell policy for the Prims IBGDA transport.
+     auto queries each selected NIC for send_dbr_mode_no_dbr_ext and uses
+     NO_DBR_HW only when supported, falling back to VALID_DBR on unsupported
+     NICs or query failures. enable requires every selected NIC to report
+     support and fails transport initialization otherwise. disable skips the
+     capability query and forces VALID_DBR. Host-only loopback QPs always use
+     VALID_DBR. This policy is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t
