@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -329,6 +330,42 @@ inline bool reliableDoorbellNeedsCapabilityQuery(
   return config.enableReliableDoorbell.value_or(true);
 }
 
+// Order in which connectPeers() walks a rank's pending peers.
+// doMaterializePeer() is a rendezvous, so an edge only progresses while both
+// ends are working on each other. Deadlock freedom needs a key that is
+// symmetric (k(a,b) == k(b,a)) and injective in the peer for a fixed rank: the
+// globally lowest-keyed pending edge then always has both ends selecting it.
+// Both properties hold for XOR; the caller-side precondition is unchanged and
+// still the one documented on MultiPeerTransport::materializePeers.
+//
+// The key also decides how much of the graph pairs up at once. Ordering by peer
+// rank is equally deadlock-free but serializes a ring into nRanks - 1 rounds,
+// because rank r takes r-1 before r+1 and so edge (r, r+1) cannot start until
+// (r-1, r) has finished. XOR distance instead puts every (2i, 2i+1) edge at
+// key 1 and every (2i+1, 2i+2) edge above it, collapsing a contiguous ring to
+// two rounds when nRanks is even and three when it is odd. Rings the collective
+// layer actually builds are strided (node * nvlSize + nvlRank), and a stride
+// that is not a power of two costs a round or two more; the win is that the
+// round count stays a small constant instead of scaling with nRanks. XOR is not
+// optimal for every graph -- a few strided and irregular shapes need one to
+// three rounds more than rank order -- but no topology in comms regresses more
+// than that, against O(nRanks) rounds saved on every ring.
+//
+// Free function so the schedule is unit-testable without a NIC.
+constexpr int peerMaterializationKey(int myRank, int peerRank) {
+  return myRank ^ peerRank;
+}
+
+// Order a rank's pending peers into the sequence connectPeers() materializes
+// them in. Free function so the schedule the transport actually runs is
+// unit-testable without a NIC.
+inline void sortPendingPeers(int myRank, std::vector<int>& peers) {
+  std::sort(peers.begin(), peers.end(), [myRank](int lhs, int rhs) {
+    return peerMaterializationKey(myRank, lhs) <
+        peerMaterializationKey(myRank, rhs);
+  });
+}
+
 /**
  * Transport connection information for RDMA QP setup.
  *
@@ -551,6 +588,22 @@ class MultiPeerIbTransportBase {
 
   /** Queue a peer for lazy materialization (no network I/O). */
   void queuePeerForMaterialization(int peerRank);
+
+  /**
+   * Report the outcome of a connectPeers() round. Defined out-of-line so this
+   * header, which every IB backend includes, does not pull in glog.
+   */
+  void logPeersMaterialized(
+      std::size_t peerCount,
+      std::int64_t elapsedMs,
+      bool failed) const;
+
+  static std::int64_t elapsedMsSince(
+      std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+  }
 
   /** @return true if the peer is materialized and ready for kernel use. */
   bool isPeerMaterialized(int peerRank) const;
@@ -889,7 +942,10 @@ class MultiPeerIbTransport : public MultiPeerIbTransportBase {
     connectPeers();
   }
 
-  /** Connect all queued peers in sorted order (deadlock-safe for >2 ranks). */
+  /**
+   * Connect all queued peers in peerMaterializationKey order (deadlock-safe for
+   * >2 ranks, given the symmetric request graph materializePeers requires).
+   */
   void connectPeers();
 
  protected:
@@ -929,15 +985,15 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
   if (pendingPeers_.empty()) {
     return;
   }
-  // For a symmetric request graph, ascending local order is deadlock-free: the
-  // lowest remaining rank and its lowest pending neighbor select each other.
-  std::sort(pendingPeers_.begin(), pendingPeers_.end());
+  // Deadlock-free on a symmetric request graph; see peerMaterializationKey.
+  sortPendingPeers(myRank_, pendingPeers_);
 
   std::vector<int> peers;
   peers.swap(pendingPeers_);
   std::vector<int> touchedPeerIndexes;
   touchedPeerIndexes.reserve(peers.size());
 
+  const auto startTime = std::chrono::steady_clock::now();
   try {
     for (int peerRank : peers) {
       if (peerMaterialized_[rankToPeerIndex(peerRank)]) {
@@ -948,11 +1004,20 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
     }
   } catch (...) {
     materializationFailed_ = true;
+    // Report elapsed on the way out too: a rendezvous that stalls and then
+    // errors is the case where the timing matters most.
+    logPeersMaterialized(
+        touchedPeerIndexes.size(), elapsedMsSince(startTime), /*failed=*/true);
     for (int peerIndex : touchedPeerIndexes) {
       backend().cleanupPeerOnFailure(peerIndex);
     }
     throw;
   }
+  // A rank blocks here until each peer reaches the matching rendezvous, so this
+  // reports queue wait as well as local work. Elapsed far above the per-peer
+  // cost means peers are arriving late, not that materialization is slow.
+  logPeersMaterialized(
+      touchedPeerIndexes.size(), elapsedMsSince(startTime), /*failed=*/false);
 }
 
 } // namespace comms::prims
