@@ -14,6 +14,8 @@
 namespace comms::prims {
 
 struct Memcpy;
+struct PipesTraceAllReduceContext;
+struct PipesTraceProgressState;
 
 class P2pIbgdaTransportDevice;
 class P2pIbrcTransportDevice;
@@ -70,6 +72,19 @@ __device__ __forceinline__ void send_registered(
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout());
+
+template <typename Transport, typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+progress_send_once_with_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
+    Args... args);
 
 } // namespace detail
 
@@ -346,12 +361,36 @@ struct P2pIbTransportDevice {
       const Timeout& timeout = Timeout());
 
   template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_send_once_with_trace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
+      Args... args);
+
+  template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
+      Args... args);
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_once_with_trace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
       Args... args);
 };
 

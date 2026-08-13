@@ -320,13 +320,15 @@ __device__ __forceinline__ SendSignal progress_send_signal(
 }
 
 template <typename Transport, typename CopyOp, typename Proto, typename... Args>
-__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
+__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     Transport& transport,
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
+    PipesTraceProgressState* traceState,
     Args... args) {
   // The progress API drives the FIXED-size protocol only: it signals in wire
   // bytes and ignores CopyOp::send()'s returned wire size, so a variable-size
@@ -368,6 +370,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       static_cast<std::size_t>(channelLayout.pipelineDepth);
   const ChannelSlotView ch =
       acquire_channel<Proto>(transport, channelLayout, group);
+  IbLocalChannel& localChannel = ch.channel;
   const IbgdaLocalBuffer localSlotFree = ch.local.slotFree;
   const IbRemoteChannel remoteChannel = ch.remote;
 
@@ -375,6 +378,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       detail::IbSendRecvProgressStage::WaitLocalCompletion) {
     const ProgressChunk chunk =
         next_chunk<Proto>(channelLayout, state, progress_params);
+    if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+        !traceState->localCompletionWaitOpen && group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      traceState->localCompletionWaitOpen = true;
+    }
     if (!try_prepare_send_slot<Proto>(
             transport,
             group,
@@ -383,7 +394,21 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
             timeout)) {
       return IbgdaSendRecvProgressStatus::Waiting;
     }
+    if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+        traceState->localCompletionWaitOpen && group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      traceState->localCompletionWaitOpen = false;
+    }
 
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceStageCopyBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+    }
     progress_send_prepare_buf<CopyOp>(
         Proto{},
         group,
@@ -392,6 +417,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
         src,
         progress_params.payloadBytes,
         args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceStageCopyEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+    }
     group.sync();
     transition_progress_stage(
         group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
@@ -405,6 +436,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     const uint64_t protocolStreamEnd = chunk.streamEndWire +
         (isFinalChunk ? Proto::wire_bytes(state.activeTailPadding) : 0);
     if (protocolStreamEnd > pipelineBytesWire) {
+      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+          !traceState->remoteSlotFreeWaitOpen && group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        traceState->remoteSlotFreeWaitOpen = true;
+      }
       const uint64_t expected = protocolStreamEnd - pipelineBytesWire;
       uint32_t ready = 1;
       unsigned long long current = 0;
@@ -430,17 +469,40 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
         }
         return IbgdaSendRecvProgressStatus::Waiting;
       }
+      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+          traceState->remoteSlotFreeWaitOpen && group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        traceState->remoteSlotFreeWaitOpen = false;
+      }
     }
 
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceSendSyncBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+    }
     group.sync();
     if (group.is_leader()) {
       __threadfence_system();
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceSendSyncEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
+      const uint8_t qpLane = static_cast<uint8_t>(
+          numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const std::size_t protocolBytesThis = chunk.wireBytes +
           (isFinalChunk ? Proto::wire_bytes(state.activeTailPadding) : 0);
       const SendSignal sig =
           progress_send_signal(Proto{}, remoteChannel, protocolBytesThis);
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceWqeSubmitBegin, qpLane);
       const auto completion = transport.put(
           solo,
           channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
@@ -451,12 +513,20 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceWqeSubmitEnd, qpLane);
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceBookkeepingBegin,
+          qpLane);
       record_send_completion<Proto>(
           transport,
           static_cast<uint32_t>(progress_params.groupId),
           chunk.slotId,
           chunk.pipelineGeneration,
           completion);
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
     }
     group.sync();
 
@@ -487,6 +557,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
+  (void)traceContext;
+  (void)traceState;
   return IbgdaSendRecvProgressStatus::Done;
 #endif
 }
@@ -734,6 +806,51 @@ __device__ __forceinline__ void send_registered(
 #endif
 }
 
+template <typename Transport, typename CopyOp, typename Proto, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    Args... args) {
+  return progress_send_once_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      src,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      nullptr,
+      nullptr,
+      args...);
+}
+
+template <typename Transport, typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+progress_send_once_with_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
+    Args... args) {
+  return progress_send_once_impl<Transport, CopyOp, protocol::Simple>(
+      transport,
+      group,
+      src,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      &traceContext,
+      &traceState,
+      args...);
+}
+
 /**
  * Non-blocking poll for one receive chunk's DATA_READY on its round-robin lane.
  *
@@ -824,10 +941,21 @@ __device__ __forceinline__ bool progress_recv_ready(
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     uint64_t waitCredit,
-    const Timeout& timeout) {
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
+    PipesTraceProgressState* traceState,
+    uint8_t qpLane) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = 1;
   if (group.is_leader()) {
+    if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+        !traceState->dataReadyWaitOpen) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+          qpLane);
+      traceState->dataReadyWaitOpen = true;
+    }
     unsigned long long current = 0;
     unsigned long long expected = 0;
     ready = poll_recv_data_ready(
@@ -846,6 +974,14 @@ __device__ __forceinline__ bool progress_recv_ready(
           "current=%llu",
           expected,
           current);
+    } else if (
+        fine_trace_enabled(traceContext) && traceState != nullptr &&
+        traceState->dataReadyWaitOpen) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceDataReadyWaitEnd,
+          qpLane);
+      traceState->dataReadyWaitOpen = false;
     }
   }
   return group.broadcast<uint32_t>(ready) != 0U;
@@ -856,6 +992,9 @@ __device__ __forceinline__ bool progress_recv_ready(
   (void)localDataReady;
   (void)waitCredit;
   (void)timeout;
+  (void)traceContext;
+  (void)traceState;
+  (void)qpLane;
   return true;
 #endif
 }
@@ -870,11 +1009,17 @@ __device__ __forceinline__ void progress_recv_consume_buf(
     const ProgressChunk& chunk,
     void* __restrict__ dst,
     std::size_t payloadBytes,
+    const PipesTraceAllReduceContext* traceContext,
+    uint8_t qpLane,
     Args... args) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   const std::size_t validBytes =
       valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
   if (validBytes > 0) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceReduceCopyBegin, qpLane);
+    }
     CopyOp::recv(
         static_cast<char*>(dst) + chunk.dataOff,
         channelLayout.recvStagingPtr + chunk.stagingOff,
@@ -882,6 +1027,10 @@ __device__ __forceinline__ void progress_recv_consume_buf(
         group,
         chunk.dataOff,
         args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceReduceCopyEnd, qpLane);
+    }
   }
 #else
   (void)group;
@@ -889,18 +1038,22 @@ __device__ __forceinline__ void progress_recv_consume_buf(
   (void)chunk;
   (void)dst;
   (void)payloadBytes;
+  (void)traceContext;
+  (void)qpLane;
   ((void)args, ...);
 #endif
 }
 
 template <typename Transport, typename CopyOp, typename Proto, typename... Args>
-__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
+__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     Transport& transport,
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
+    PipesTraceProgressState* traceState,
     Args... args) {
   // Mirror of progress_send_once: the progress API is fixed-size only. A
   // variable-size policy would mis-size the DATA_READY/SLOT_FREE protocol and
@@ -945,6 +1098,9 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   IbLocalChannel& localChannel = ch.channel;
   const IbgdaLocalBuffer localDataReady = ch.local.dataReady;
   const IbRemoteChannel remoteChannel = ch.remote;
+  const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
+  const uint8_t qpLane = static_cast<uint8_t>(
+      numLanes == 0 ? 0 : localChannel.recvDataReadyLaneCursor % numLanes);
   if (!progress_recv_ready(
           Proto{},
           transport,
@@ -952,7 +1108,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
           localChannel,
           localDataReady,
           protocolBytesThis,
-          timeout)) {
+          timeout,
+          traceContext,
+          traceState,
+          qpLane)) {
     return IbgdaSendRecvProgressStatus::Waiting;
   }
 
@@ -963,9 +1122,15 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       chunk,
       dst,
       progress_params.payloadBytes,
+      traceContext,
+      qpLane,
       args...);
   group.sync();
 
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        traceContext, PipesTraceEventType::kAllReduceBookkeepingBegin, qpLane);
+  }
   transport.signal(
       group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
 
@@ -974,10 +1139,18 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     transition_progress_stage(
         group, state, detail::IbSendRecvProgressStage::Done);
     store_progress_state(group, progressSlot, state);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
+    }
     return IbgdaSendRecvProgressStatus::Done;
   }
 
   store_progress_state(group, progressSlot, state);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        traceContext, PipesTraceEventType::kAllReduceBookkeepingEnd, qpLane);
+  }
   return IbgdaSendRecvProgressStatus::Progressed;
 #else
   (void)transport;
@@ -986,8 +1159,55 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
+  (void)traceContext;
+  (void)traceState;
   return IbgdaSendRecvProgressStatus::Done;
 #endif
+}
+
+template <typename Transport, typename CopyOp, typename Proto, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    Args... args) {
+  return progress_recv_once_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      dst,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      nullptr,
+      nullptr,
+      args...);
+}
+
+template <typename Transport, typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+progress_recv_once_with_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
+    Args... args) {
+  return progress_recv_once_impl<Transport, CopyOp, protocol::Simple>(
+      transport,
+      group,
+      dst,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      &traceContext,
+      &traceState,
+      args...);
 }
 
 /**
