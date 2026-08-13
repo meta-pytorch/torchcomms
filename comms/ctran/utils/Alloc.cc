@@ -46,7 +46,7 @@ commResult_t commCuMemAlloc(
   if (handlep) {
     *handlep = handle;
   }
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CuMem Alloc Size {} pointer {} handle {}",
       size,
@@ -90,7 +90,7 @@ commResult_t commCuMemFree(void* ptr, const CommLogData* logMetaData) {
   // details.
   FB_CUCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
   FB_CUCHECK(cuMemAddressFree(basePtr, size));
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CuMem Free Size {} pointer {} handle {}",
       size,
