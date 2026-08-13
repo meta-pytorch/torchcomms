@@ -12,6 +12,8 @@
 #include <functional>
 #include <vector>
 
+#include "comms/common/fault_tolerance/Abort.h"
+
 // On AMD (`__HIP_PLATFORM_AMD__`), this maps `cuda*` runtime APIs to
 // `hip*` and provides a HIP-backed `meta::comms::DeviceBuffer`. No-op
 // on NVIDIA — the existing CudaRAII / cuda_runtime path stays in use.
@@ -206,6 +208,30 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, targetValue, d_success);
+  });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalAcceptsDisabledAbort) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  runAndVerify([&](bool* d_success) {
+    runTestWaitSignalWithDisabledAbort(d_signalBuf, d_success);
+  });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalSkipsWhenPreAborted) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+  auto abortDevice = abort.getDeviceHandle();
+
+  runAndVerify([&](bool* d_success) {
+    runTestWaitSignalWithPreAbortedSkip(d_signalBuf, abortDevice, d_success);
   });
 }
 

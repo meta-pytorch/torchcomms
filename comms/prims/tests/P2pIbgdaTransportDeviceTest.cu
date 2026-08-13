@@ -129,6 +129,21 @@ __global__ void testWaitSignalWithDisabledAbort(
   *success = true;
 }
 
+__global__ void testWaitSignalWithPreAbortedSkip(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* success) {
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
+
+  *success = !transport.wait_signal(0, 1, abort);
+}
+
 // =============================================================================
 // Wrapper functions to launch the kernels (called from .cc test file)
 // =============================================================================
@@ -166,6 +181,13 @@ void runTestWaitSignalWithDisabledAbort(
     uint64_t* d_signalBuf,
     bool* d_success) {
   testWaitSignalWithDisabledAbort<<<1, 1>>>(d_signalBuf, d_success);
+}
+
+void runTestWaitSignalWithPreAbortedSkip(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* d_success) {
+  testWaitSignalWithPreAbortedSkip<<<1, 1>>>(d_signalBuf, abort, d_success);
 }
 
 // =============================================================================
