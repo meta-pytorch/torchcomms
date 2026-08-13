@@ -37,8 +37,8 @@ class BarrierTwoGpuFixture : public ::testing::Test {
   static constexpr int kGpu0 = 0;
   static constexpr int kGpu1 = 1;
 
-  cudaStream_t stream0_;
-  cudaStream_t stream1_;
+  cudaStream_t stream0_{nullptr};
+  cudaStream_t stream1_{nullptr};
 
   void SetUp() override {
     int deviceCount = 0;
@@ -79,11 +79,14 @@ class BarrierTwoGpuFixture : public ::testing::Test {
   }
 
   void TearDown() override {
-    // Cleanup streams
-    CUDACHECK_TEST(cudaSetDevice(kGpu0));
-    CUDACHECK_TEST(cudaStreamDestroy(stream0_));
-    CUDACHECK_TEST(cudaSetDevice(kGpu1));
-    CUDACHECK_TEST(cudaStreamDestroy(stream1_));
+    if (stream0_ != nullptr) {
+      EXPECT_EQ(cudaSetDevice(kGpu0), cudaSuccess);
+      EXPECT_EQ(cudaStreamDestroy(stream0_), cudaSuccess);
+    }
+    if (stream1_ != nullptr) {
+      EXPECT_EQ(cudaSetDevice(kGpu1), cudaSuccess);
+      EXPECT_EQ(cudaStreamDestroy(stream1_), cudaSuccess);
+    }
   }
 };
 

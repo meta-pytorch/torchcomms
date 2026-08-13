@@ -135,12 +135,12 @@ namespace comms::prims {
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
-__device__ __forceinline__ void ll128_send(
+__device__ __forceinline__ bool ll128_send(
     const ThreadGroup& group,
     const char* __restrict__ src,
     size_t nbytes,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -149,7 +149,7 @@ __device__ __forceinline__ void ll128_send(
   auto warp = group.to_warp_group();
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
@@ -218,15 +218,28 @@ __device__ __forceinline__ void ll128_send(
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)",
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)remote_ll128_buf[buf_idx].load_flag());
+            switch (timeout.check()) {
+              case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+                break;
+              case comms::fault_tolerance::AbortCheckResult::SKIP:
+                ready = -1;
+                break;
+              case comms::fault_tolerance::AbortCheckResult::TRAP:
+                printf(
+                    "CUDA ABORT ERROR: ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)\n",
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)remote_ll128_buf[buf_idx].load_flag());
+                PIPES_DEVICE_TRAP();
+                ready = -1;
+                break;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
+        if (ready < 0) {
+          return false;
+        }
       } while (!ready);
     }
 
@@ -290,6 +303,7 @@ __device__ __forceinline__ void ll128_send(
   (void)timeout;
   (void)buffer_num_packets;
 #endif
+  return true;
 }
 
 /**
@@ -311,12 +325,12 @@ __device__ __forceinline__ void ll128_send(
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
-__device__ __forceinline__ void ll128_recv(
+__device__ __forceinline__ bool ll128_recv(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -325,7 +339,7 @@ __device__ __forceinline__ void ll128_recv(
   auto warp = group.to_warp_group();
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -387,16 +401,29 @@ __device__ __forceinline__ void ll128_recv(
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
-                (long long)pkt_flag_value,
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)local_ll128_buf[buf_idx].load_flag());
+            switch (timeout.check()) {
+              case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+                break;
+              case comms::fault_tolerance::AbortCheckResult::SKIP:
+                ready = -1;
+                break;
+              case comms::fault_tolerance::AbortCheckResult::TRAP:
+                printf(
+                    "CUDA ABORT ERROR: ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)\n",
+                    (long long)pkt_flag_value,
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)local_ll128_buf[buf_idx].load_flag());
+                PIPES_DEVICE_TRAP();
+                ready = -1;
+                break;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
+        if (ready < 0) {
+          return false;
+        }
       } while (!ready);
     }
 
@@ -462,6 +489,7 @@ __device__ __forceinline__ void ll128_recv(
   (void)timeout;
   (void)buffer_num_packets;
 #endif
+  return true;
 }
 
 /**
@@ -485,13 +513,13 @@ __device__ __forceinline__ void ll128_recv(
  *                            windowed/chunked mode. Must be >=
  *                            kLl128PacketsPerWarp (4) when chunking.
  */
-__device__ __forceinline__ void ll128_forward(
+__device__ __forceinline__ bool ll128_forward(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -500,7 +528,7 @@ __device__ __forceinline__ void ll128_forward(
   auto warp = group.to_warp_group();
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -562,16 +590,29 @@ __device__ __forceinline__ void ll128_forward(
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
-                (long long)pkt_flag_value,
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)local_ll128_buf[buf_idx].load_flag());
+            switch (timeout.check()) {
+              case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+                break;
+              case comms::fault_tolerance::AbortCheckResult::SKIP:
+                ready = -1;
+                break;
+              case comms::fault_tolerance::AbortCheckResult::TRAP:
+                printf(
+                    "CUDA ABORT ERROR: ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)\n",
+                    (long long)pkt_flag_value,
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)local_ll128_buf[buf_idx].load_flag());
+                PIPES_DEVICE_TRAP();
+                ready = -1;
+                break;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
+        if (ready < 0) {
+          return false;
+        }
       } while (!ready);
     }
 
@@ -596,15 +637,28 @@ __device__ __forceinline__ void ll128_forward(
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)",
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)remote_ll128_buf[buf_idx].load_flag());
+            switch (timeout.check()) {
+              case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+                break;
+              case comms::fault_tolerance::AbortCheckResult::SKIP:
+                ready = -1;
+                break;
+              case comms::fault_tolerance::AbortCheckResult::TRAP:
+                printf(
+                    "CUDA ABORT ERROR: ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)\n",
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)remote_ll128_buf[buf_idx].load_flag());
+                PIPES_DEVICE_TRAP();
+                ready = -1;
+                break;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
+        if (ready < 0) {
+          return false;
+        }
       } while (!ready);
     }
 
@@ -682,6 +736,7 @@ __device__ __forceinline__ void ll128_forward(
   (void)timeout;
   (void)buffer_num_packets;
 #endif
+  return true;
 }
 
 } // namespace comms::prims

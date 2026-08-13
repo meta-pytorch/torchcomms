@@ -5,11 +5,14 @@
 // `cudaSuccess` / `cudaGetErrorString` / `cudaGetLastError` directly).
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
-#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/common/fault_tolerance/Abort.h"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
+
+#include <chrono>
 
 namespace comms::prims::tests {
 
@@ -110,6 +113,37 @@ __global__ void testWaitSignalMultipleSlots(
   }
 }
 
+__global__ void testWaitSignalWithDisabledAbort(
+    uint64_t* d_signalBuf,
+    bool* success) {
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
+
+  comms::fault_tolerance::AbortDevice abort;
+  transport.wait_signal(0, 0, abort);
+  *success = true;
+}
+
+__global__ void testWaitSignalWithPreAbortedSkip(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* success) {
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
+
+  *success = !transport.wait_signal(0, 1, abort);
+}
+
 // =============================================================================
 // Wrapper functions to launch the kernels (called from .cc test file)
 // =============================================================================
@@ -141,6 +175,19 @@ void runTestWaitSignalMultipleSlots(
     int numSignals,
     bool* d_success) {
   testWaitSignalMultipleSlots<<<1, 1>>>(d_signalBuf, numSignals, d_success);
+}
+
+void runTestWaitSignalWithDisabledAbort(
+    uint64_t* d_signalBuf,
+    bool* d_success) {
+  testWaitSignalWithDisabledAbort<<<1, 1>>>(d_signalBuf, d_success);
+}
+
+void runTestWaitSignalWithPreAbortedSkip(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* d_success) {
+  testWaitSignalWithPreAbortedSkip<<<1, 1>>>(d_signalBuf, abort, d_success);
 }
 
 // =============================================================================
@@ -396,7 +443,14 @@ cudaError_t runTestWaitSignalTimeout(
     uint64_t* d_signalBuf,
     int device,
     uint32_t timeout_ms) {
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  auto status = cudaSetDevice(device);
+  if (status != cudaSuccess) {
+    return status;
+  }
+  comms::fault_tolerance::Abort abort{
+      /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
+  abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
+  Timeout timeout = abort.getDeviceHandle();
 
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
@@ -407,10 +461,10 @@ cudaError_t runTestWaitSignalTimeout(
 
 void runTestWaitSignalNoTimeout(
     uint64_t* d_signalBuf,
-    int device,
-    uint32_t timeout_ms,
+    int /*device*/,
+    uint32_t /*timeout_ms*/,
     bool* d_success) {
-  Timeout timeout = makeTimeout(timeout_ms, device);
+  Timeout timeout;
 
   testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, timeout, d_success);
   PIPES_KERNEL_LAUNCH_CHECK();

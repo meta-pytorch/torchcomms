@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
@@ -43,6 +44,13 @@ void runTestWaitSignalGE(
 void runTestWaitSignalMultipleSlots(
     uint64_t* d_signalBuf,
     int numSignals,
+    bool* d_success);
+
+void runTestWaitSignalWithDisabledAbort(uint64_t* d_signalBuf, bool* d_success);
+
+void runTestWaitSignalWithPreAbortedSkip(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
     bool* d_success);
 
 // =============================================================================

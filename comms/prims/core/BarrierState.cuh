@@ -76,16 +76,33 @@ struct alignas(128) BarrierState {
    * Warning: Only one thread should call wait() per synchronization round.
    *
    * @param timeout Optional timeout (default: no timeout, infinite wait)
+   * @return true if the arrival was observed; false if abort handling asked
+   *   the caller to skip the remainder of the operation.
    */
-  __device__ __forceinline__ void wait(const Timeout& timeout = Timeout()) {
+  __device__ __forceinline__ bool wait(
+      const AbortDevice& timeout = AbortDevice()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-          timeout,
-          "BarrierState::wait timed out (expected=%llu, current=%llu)",
-          static_cast<unsigned long long>(expected),
-          static_cast<unsigned long long>(current_counter_.load()));
+#if PIPES_IS_DEVICE_COMPILE
+      switch (timeout.check()) {
+        case comms::fault_tolerance::AbortCheckResult::CONTINUE:
+          break;
+        case comms::fault_tolerance::AbortCheckResult::SKIP:
+          return false;
+        case comms::fault_tolerance::AbortCheckResult::TRAP:
+          printf(
+              "CUDA ABORT ERROR: BarrierState::wait timed out "
+              "(expected=%llu, current=%llu)\n",
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(current_counter_.load()));
+          PIPES_DEVICE_TRAP();
+          return false;
+      }
+#else
+      (void)timeout;
+#endif
     }
+    return true;
   }
 
   /**
@@ -109,22 +126,24 @@ struct alignas(128) BarrierState {
   /**
    * wait - Wait for an arrival at the barrier (thread group)
    *
-   * The leader thread waits for the arrival, then synchronizes the group.
-   * The group.sync() at the end ensures all threads observe the completed
-   * barrier before proceeding.
+   * The leader thread waits for the arrival, then broadcasts the result to the
+   * group so all threads either observe completion or skip together.
    *
    * @param group ThreadGroup for cooperative synchronization
    * @param timeout Optional timeout (default: no timeout, infinite wait)
+   * @return true if the arrival was observed; false if abort handling asked
+   *   the caller to skip the remainder of the operation.
    *
    * All threads in the group must call this function (collective operation).
    */
-  __device__ __forceinline__ void wait(
+  __device__ __forceinline__ bool wait(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& timeout = AbortDevice()) {
+    uint32_t complete = 1;
     if (group.is_leader()) {
-      wait(timeout);
+      complete = wait(timeout) ? 1U : 0U;
     }
-    group.sync();
+    return group.broadcast<uint32_t>(complete) != 0;
   }
 };
 

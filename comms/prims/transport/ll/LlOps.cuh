@@ -80,19 +80,19 @@ namespace comms::prims {
  *                          >0 and < total lines = windowed/chunked mode.
  *                          Must be >= kLlLinesPerWarp (32) when chunking.
  */
-__device__ __forceinline__ void ll_send(
+__device__ __forceinline__ bool ll_send(
     const ThreadGroup& group,
     const char* __restrict__ src,
     size_t nbytes,
     LlLine* __restrict__ remote_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
   const int tid = group.to_warp_group().thread_id_in_group;
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll(src, nbytes, buffer_num_lines));
@@ -128,7 +128,7 @@ __device__ __forceinline__ void ll_send(
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_RETURN_FALSE_IF_ABORTED_SINGLE(
               timeout,
               "ll_send: waiting for READY_TO_WRITE on line %llu (buf_idx=%llu)",
               (unsigned long long)line_idx,
@@ -160,6 +160,7 @@ __device__ __forceinline__ void ll_send(
   (void)timeout;
   (void)buffer_num_lines;
 #endif
+  return true;
 }
 
 /**
@@ -183,19 +184,19 @@ __device__ __forceinline__ void ll_send(
  *                          >0 and < total lines = windowed/chunked mode.
  *                          Must be >= kLlLinesPerWarp (32) when chunking.
  */
-__device__ __forceinline__ void ll_recv(
+__device__ __forceinline__ bool ll_recv(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     LlLine* __restrict__ local_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
   const int tid = group.to_warp_group().thread_id_in_group;
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, buffer_num_lines));
@@ -230,7 +231,7 @@ __device__ __forceinline__ void ll_recv(
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_RETURN_FALSE_IF_ABORTED_SINGLE(
               timeout,
               "ll_recv: waiting for flag=%u on line %llu (buf_idx=%llu, got flag1=%u flag2=%u)",
               (unsigned)pkt_flag_value,
@@ -264,6 +265,7 @@ __device__ __forceinline__ void ll_recv(
   (void)timeout;
   (void)buffer_num_lines;
 #endif
+  return true;
 }
 
 /**
@@ -289,20 +291,20 @@ __device__ __forceinline__ void ll_recv(
  *                          >0 and < total lines = windowed/chunked mode.
  *                          Must be >= kLlLinesPerWarp (32) when chunking.
  */
-__device__ __forceinline__ void ll_forward(
+__device__ __forceinline__ bool ll_forward(
     const ThreadGroup& group,
     char* __restrict__ dst,
     size_t nbytes,
     LlLine* __restrict__ local_ll_buf,
     LlLine* __restrict__ remote_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& timeout,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
   const int tid = group.to_warp_group().thread_id_in_group;
 
   if (nbytes == 0) {
-    return;
+    return true;
   }
 
   PIPES_DEVICE_CHECK(can_use_ll(dst, nbytes, buffer_num_lines));
@@ -331,7 +333,7 @@ __device__ __forceinline__ void ll_forward(
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_RETURN_FALSE_IF_ABORTED_SINGLE(
               timeout,
               "ll_forward: waiting for flag=%u on local line %llu (buf_idx=%llu)",
               (unsigned)pkt_flag_value,
@@ -347,7 +349,7 @@ __device__ __forceinline__ void ll_forward(
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          ABORT_RETURN_FALSE_IF_ABORTED_SINGLE(
               timeout,
               "ll_forward: waiting for READY_TO_WRITE on remote line %llu (buf_idx=%llu)",
               (unsigned long long)line_idx,
@@ -380,6 +382,7 @@ __device__ __forceinline__ void ll_forward(
   (void)timeout;
   (void)buffer_num_lines;
 #endif
+  return true;
 }
 
 } // namespace comms::prims

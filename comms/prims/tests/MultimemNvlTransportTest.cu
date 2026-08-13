@@ -120,9 +120,11 @@ __global__ void loadReduceKernel(
 
 __global__ void stageLayoutKernel(
     MultimemNvlTransportDevice transport,
-    StageLayoutResult* results) {
+    StageLayoutResult* results,
+    uint32_t pipelineDepth) {
   auto group = make_block_group();
-  const auto layout = multimem::make_stage_layout<uint32_t>(transport, group);
+  const auto layout =
+      multimem::make_stage_layout<uint32_t>(transport, pipelineDepth, group);
   if (group.is_leader()) {
     results[group.group_id] = StageLayoutResult{
         .groupBeginBytes = layout.groupBeginBytes,
@@ -289,7 +291,17 @@ void launchStageLayout(
     StageLayoutResult* results,
     uint32_t numGroups,
     cudaStream_t stream) {
-  stageLayoutKernel<<<numGroups, 32, 0, stream>>>(transport, results);
+  launchStageLayout(transport, results, numGroups, /*pipelineDepth=*/1, stream);
+}
+
+void launchStageLayout(
+    MultimemNvlTransportDevice transport,
+    StageLayoutResult* results,
+    uint32_t numGroups,
+    uint32_t pipelineDepth,
+    cudaStream_t stream) {
+  stageLayoutKernel<<<numGroups, 32, 0, stream>>>(
+      transport, results, pipelineDepth);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

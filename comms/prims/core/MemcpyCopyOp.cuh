@@ -3,13 +3,11 @@
 #pragma once
 
 #include <cstddef>
-#include <type_traits>
-#include <utility>
+#include <cstdint>
 
 #include "comms/prims/core/CopyUtils.cuh"
-#include "comms/prims/core/LLImpl.cuh"
+#include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -64,14 +62,6 @@ struct Memcpy {
     }
   }
 
-  // Low-latency (LL) protocol hooks: packet-aware encode/decode over the
-  // data+flag interleaved staging of LlxPacket<P>. `byte_offset` carries the
-  // chunk's offset within the logical transfer, matching send()/recv() -- a
-  // plain copy ignores it, but offset-sensitive ops (quantization, reduction)
-  // need it for alignment and addressing, so it must not be dropped here.
-  // Plain-copy Memcpy delegates to the LLImpl<P> codec; a reduce/convert CopyOp
-  // can override these with a packet-aware implementation. Presence is detected
-  // by has_sendLL_v / has_recvLL_v.
   template <typename P, typename... Args>
   __device__ __forceinline__ static void sendLL(
       ThreadGroup& group,
@@ -81,13 +71,37 @@ struct Memcpy {
       std::size_t /*byte_offset*/,
       typename P::FlagType flagVal,
       Args...) {
-    LLImpl<P>::pack(group, staging, src, nbytes, flagVal);
+    static_assert(P::kData == 4 && P::kFlag == 4);
+#if PIPES_IS_DEVICE_COMPILE
+    const std::size_t nPackets = P::packet_count(nbytes);
+    for (std::size_t i = group.thread_id_in_group; i < nPackets;
+         i += group.group_size) {
+      uint32_t payload = 0;
+      const std::size_t valid = P::valid_payload(i, nbytes);
+      const std::size_t off = i * static_cast<std::size_t>(P::kData);
+      auto* payloadBytes = reinterpret_cast<char*>(&payload);
+#pragma unroll
+      for (int b = 0; b < P::kData; ++b) {
+        if (static_cast<std::size_t>(b) < valid) {
+          payloadBytes[b] = src[off + b];
+        }
+      }
+      const uint64_t packet = (static_cast<uint64_t>(flagVal) << 32) | payload;
+      auto* dst = reinterpret_cast<volatile uint64_t*>(
+          staging + i * static_cast<std::size_t>(P::kPacketBytes));
+      *dst = packet;
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)staging;
+    (void)src;
+    (void)nbytes;
+    (void)flagVal;
+#endif
   }
 
-  template <typename P, typename... Args>
-  // Takes a Timeout where recv()/sendLL() do not: LL's readiness wait happens
-  // inside the codec (the flag is in the payload), so this is the one hook that
-  // can block indefinitely and therefore the one that needs a deadline.
+  template <typename P, typename Timeout, typename... Args>
   __device__ __forceinline__ static void recvLL(
       ThreadGroup& group,
       char* dst,
@@ -97,42 +111,44 @@ struct Memcpy {
       typename P::FlagType flagVal,
       const Timeout& timeout,
       Args...) {
-    LLImpl<P>::unpack(group, dst, staging, nbytes, flagVal, timeout);
+    static_assert(P::kData == 4 && P::kFlag == 4);
+#if PIPES_IS_DEVICE_COMPILE
+    constexpr uint32_t kTimeoutPollMask = 1023;
+    const std::size_t nPackets = P::packet_count(nbytes);
+    for (std::size_t i = group.thread_id_in_group; i < nPackets;
+         i += group.group_size) {
+      const auto* src = reinterpret_cast<const volatile uint64_t*>(
+          staging + i * static_cast<std::size_t>(P::kPacketBytes));
+      uint64_t packet = 0;
+      uint32_t spins = 0;
+      do {
+        packet = *src;
+        if (((++spins & kTimeoutPollMask) == 0) && timeout.checkExpired()) {
+          PIPES_DEVICE_TRAP();
+        }
+      } while (static_cast<typename P::FlagType>(packet >> 32) != flagVal);
+
+      const auto payload = static_cast<uint32_t>(packet);
+      const auto* payloadBytes = reinterpret_cast<const char*>(&payload);
+      const std::size_t valid = P::valid_payload(i, nbytes);
+      const std::size_t off = i * static_cast<std::size_t>(P::kData);
+#pragma unroll
+      for (int b = 0; b < P::kData; ++b) {
+        if (static_cast<std::size_t>(b) < valid) {
+          dst[off + b] = payloadBytes[b];
+        }
+      }
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)dst;
+    (void)staging;
+    (void)nbytes;
+    (void)flagVal;
+    (void)timeout;
+#endif
   }
 };
-
-// Detection traits: does CopyOp `Op` provide packet-aware LL hooks for packet
-// geometry `P`? A CopyOp opts into the LL protocol by defining sendLL<P> /
-// recvLL<P> (see Memcpy). The IBGDA transport asserts these before dispatching
-// the LL send/recv path, so an op that only supports contiguous copy fails with
-// a clear message instead of a deep template error.
-template <typename Op, typename P, typename = void>
-inline constexpr bool has_sendLL_v = false;
-template <typename Op, typename P>
-inline constexpr bool has_sendLL_v<
-    Op,
-    P,
-    std::void_t<decltype(Op::template sendLL<P>(
-        std::declval<ThreadGroup&>(),
-        std::declval<char*>(),
-        std::declval<const char*>(),
-        std::declval<std::size_t>(),
-        std::declval<std::size_t>(),
-        std::declval<typename P::FlagType>()))>> = true;
-
-template <typename Op, typename P, typename = void>
-inline constexpr bool has_recvLL_v = false;
-template <typename Op, typename P>
-inline constexpr bool has_recvLL_v<
-    Op,
-    P,
-    std::void_t<decltype(Op::template recvLL<P>(
-        std::declval<ThreadGroup&>(),
-        std::declval<char*>(),
-        std::declval<const char*>(),
-        std::declval<std::size_t>(),
-        std::declval<std::size_t>(),
-        std::declval<typename P::FlagType>(),
-        std::declval<const Timeout&>()))>> = true;
 
 } // namespace comms::prims

@@ -274,8 +274,7 @@ __global__ void signalAllAggregateDistributedKernel(
   dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
 
   // Wait until aggregate reaches nRanks-1 (all peers have signaled us)
-  dw.wait_signal(
-      group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), Timeout(10000000000ULL));
+  dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), Timeout());
 
   // Read aggregate (thread-level API)
   if (group.is_leader()) {
