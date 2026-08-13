@@ -72,13 +72,13 @@ def _create_torchcomm_process_group(
     # Register backend
     # pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn't aware
     pg._register_backend(comm.get_device(), backend_type, wrapper)
-    pg._set_group_name(group_name)
+    pg._set_group_name(group_name)  # pyre-fixme[6]
 
     # Update global state
     dist.distributed_c10d._world.pg_map[pg] = (backend_str, dummy_store)
-    dist.distributed_c10d._world.pg_names[pg] = group_name
+    dist.distributed_c10d._world.pg_names[pg] = group_name  # pyre-fixme[6]
     dist.distributed_c10d._world.pg_backend_config[pg] = str(backend_config)
-    dist.distributed_c10d._register_process_group(group_name, pg)
+    dist.distributed_c10d._register_process_group(group_name, pg)  # pyre-fixme[6]
 
     # Set up rank mapping
     if global_ranks_mapping is not None:
@@ -118,7 +118,7 @@ def init_device_mesh(
     global_rank = cast(int, mesh[tuple(local_ranks)].item())
     backend_str = "torchcomm"
     # Register the backend
-    dist.Backend.register_backend(backend_str, new_comm)
+    dist.Backend.register_backend(backend_str, new_comm)  # pyre-fixme[6]
 
     global_pg = None
     if _global_comm is not None:
@@ -168,7 +168,7 @@ def init_device_mesh(
         _init_backend=False,
         _rank=global_rank,
     )
-    device_mesh._dim_group_names = group_names
+    device_mesh._dim_group_names = group_names  # pyre-fixme[8]
 
     return device_mesh
 
@@ -222,7 +222,7 @@ def _flatten_with_comm(
             _rank=comm.get_rank(),
             _layout=coalesced_layout,
         )
-    flattened_device_mesh._dim_group_names = [mesh_dim_name]
+    flattened_device_mesh._dim_group_names = [mesh_dim_name]  # pyre-fixme[8]
 
     try:
         flattened_device_mesh._root_mesh = mesh._get_root_mesh()
