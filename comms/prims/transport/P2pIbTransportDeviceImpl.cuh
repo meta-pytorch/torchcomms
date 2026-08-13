@@ -792,7 +792,6 @@ __device__ __forceinline__ void consumeRecvBuf(
       "contiguous copy cannot address the data+flag interleaved staging");
 #if PIPES_IS_DEVICE_COMPILE
   (void)transport;
-  (void)localChannel;
   (void)localDataReady;
   (void)waitCredit;
   // Same clamp as the send side: unpacking the padded length writes up to
@@ -809,6 +808,17 @@ __device__ __forceinline__ void consumeRecvBuf(
         static_cast<typename P::FlagType>(flagVal),
         timeout,
         args...);
+  }
+  if (group.is_leader()) {
+    // LL carries no DATA_READY, but the sender's put still advanced the
+    // channel-scoped IbQpState::cursor -- select_put_lane_ordinal() increments
+    // it on every put regardless of protocol. recvDataReadyLaneCursor mirrors
+    // that cursor, so it has to advance here too, or Simple's next receive on
+    // this channel resolves to a lane the sender never wrote and blocks
+    // forever. Outside the validBytes guard on purpose: the sender puts a chunk
+    // even when its valid payload is zero (tail padding), so the mirror must
+    // move for every chunk. A single lane makes this a no-op.
+    ++localChannel.recvDataReadyLaneCursor;
   }
 #else
   (void)transport;
