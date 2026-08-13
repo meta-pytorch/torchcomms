@@ -2199,6 +2199,30 @@ class P2pIbgdaTransportDevice {
     return detail::progress_registered_send_drain_once(*this, group, timeout);
   }
 
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_send_once_with_trace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
+      Args... args) {
+    return detail::
+        progress_send_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
+            *this,
+            group,
+            src,
+            nbytes,
+            max_signal_bytes,
+            timeout,
+            traceContext,
+            traceState,
+            args...);
+  }
+
   /**
    * Attempt bounded progress on one initialized recv.
    *
@@ -2238,6 +2262,30 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_once_with_trace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
+      Args... args) {
+    return detail::
+        progress_recv_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
+            *this,
+            group,
+            dst,
+            nbytes,
+            max_signal_bytes,
+            timeout,
+            traceContext,
+            traceState,
+            args...);
   }
 
   /**
@@ -2354,6 +2402,26 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void sendWithFineTrace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      Args... args) {
+    detail::send_with_fine_trace<P2pIbgdaTransportDevice, CopyOp>(
+        *this,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        traceContext,
+        args...);
+  }
+
   /**
    * recv — receive one block's tile from pipelined RDMA.
    *
@@ -2440,6 +2508,26 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
 #endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recvWithFineTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      Args... args) {
+    detail::recv_with_fine_trace<P2pIbgdaTransportDevice, CopyOp>(
+        *this,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        traceContext,
+        args...);
   }
 
   /**
@@ -2541,6 +2629,30 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
 #endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forwardWithFineTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& recvTraceContext,
+      const PipesTraceAllReduceContext& sendTraceContext,
+      Args... args) {
+    detail::forward_with_fine_trace<CopyOp>(
+        *this,
+        group,
+        dst,
+        fwd,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        recvTraceContext,
+        sendTraceContext,
+        args...);
   }
 
   __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {

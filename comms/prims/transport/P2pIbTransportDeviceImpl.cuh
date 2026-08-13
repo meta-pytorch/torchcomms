@@ -23,6 +23,24 @@ struct copyop_variable_size<C, std::void_t<decltype(C::kVariableSize)>>
     : std::bool_constant<C::kVariableSize> {};
 template <typename C>
 inline constexpr bool copyop_variable_size_v = copyop_variable_size<C>::value;
+
+__device__ __forceinline__ bool fine_trace_enabled(
+    const PipesTraceAllReduceContext* context) {
+  return context != nullptr && context->trace.ring != nullptr &&
+      context->trace.writeIndex != nullptr;
+}
+
+__device__ __forceinline__ void trace_allreduce_event(
+    const PipesTraceAllReduceContext* context,
+    PipesTraceEventType type,
+    uint8_t qpLane) {
+  if (!fine_trace_enabled(context)) {
+    return;
+  }
+  auto tagged = *context;
+  tagged.qpLane = qpLane;
+  write_pipes_trace_allreduce(tagged, type);
+}
 } // namespace detail
 
 #if PIPES_IS_DEVICE_COMPILE
@@ -226,6 +244,19 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     std::size_t nbytes,
     std::size_t max_signal_bytes,
     const Timeout& timeout,
+    Args... args);
+
+template <typename Transport, typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+progress_recv_once_with_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
     Args... args);
 
 /**
@@ -474,14 +505,37 @@ __device__ __forceinline__ void consumeRecvBuf(
     uint64_t /*flagVal*/,
     uint64_t waitCredit,
     const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
+  const uint32_t numLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint8_t qpLane = static_cast<uint8_t>(
+      numLanes == 0 ? 0 : localChannel.recvDataReadyLaneCursor % numLanes);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        traceContext,
+        PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+        qpLane);
+  }
   wait_recv_data_ready(
       transport, group, localChannel, localDataReady, waitCredit, timeout);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        traceContext, PipesTraceEventType::kAllReduceDataReadyWaitEnd, qpLane);
+  }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceReduceCopyBegin, qpLane);
+    }
     CopyOp::recv(dst, staging, validBytes, group, dataOff, args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext, PipesTraceEventType::kAllReduceReduceCopyEnd, qpLane);
+    }
   }
   group.sync();
 #else
@@ -496,6 +550,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)dataOff;
   (void)waitCredit;
   (void)timeout;
+  (void)traceContext;
   ((void)args, ...);
 #endif
 }
@@ -530,6 +585,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     uint32_t fwdSlot,
     uint64_t fwdPipelineCycle,
     const Timeout& timeout,
+    const PipesTraceAllReduceContext* recvTraceContext,
+    const PipesTraceAllReduceContext* sendTraceContext,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
   // Both waits must clear before CopyOp::forward, which reads recvStaging and
@@ -540,6 +597,18 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   // degenerates to a single completion check instead of a CQ-polling spin.
   // Folded in here rather than left to the caller -- both are correctness
   // requirements of this function, not of its call site.
+  const uint32_t recvNumLanes =
+      static_cast<uint32_t>(transport.channel_layout().numLanes);
+  const uint8_t recvQpLane = static_cast<uint8_t>(
+      recvNumLanes == 0
+          ? 0
+          : recvLocalChannel.recvDataReadyLaneCursor % recvNumLanes);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        recvTraceContext,
+        PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+        recvQpLane);
+  }
   wait_recv_data_ready(
       transport,
       group,
@@ -547,13 +616,41 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
       recvDataReady,
       recvWaitCredit,
       timeout);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        recvTraceContext,
+        PipesTraceEventType::kAllReduceDataReadyWaitEnd,
+        recvQpLane);
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask));
+  }
   prepare_send_slot<protocol::Simple>(
       fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask));
+  }
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          recvTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyBegin,
+          recvQpLane);
+    }
     CopyOp::forward(
         dst, fwdStaging, recvStaging, validBytes, group, dataOff, args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          recvTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyEnd,
+          recvQpLane);
+    }
   }
   group.sync();
   return SendSignal{fwdRemoteChannel.dataReady, fwdSignalVal};
@@ -575,6 +672,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   (void)fwdSlot;
   (void)fwdPipelineCycle;
   (void)timeout;
+  (void)recvTraceContext;
+  (void)sendTraceContext;
   ((void)args, ...);
   return SendSignal{};
 #endif
@@ -707,13 +806,14 @@ template <
     typename CopyOp = Memcpy,
     typename Proto = protocol::Simple,
     typename... Args>
-__device__ __forceinline__ void send(
+__device__ __forceinline__ void send_impl(
     Transport& transport,
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
+    const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
   // than behind the prepareSendBuf/consumeRecvBuf seam, so it is Simple-shaped
@@ -732,6 +832,7 @@ __device__ __forceinline__ void send(
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
+  (void)traceContext;
 #else
   if (nbytes == 0) {
     return;
@@ -752,6 +853,7 @@ __device__ __forceinline__ void send(
   auto& state = progress_send_slot<Proto>(transport, group);
   const ChannelSlotView ch =
       acquire_channel<Proto>(transport, channelLayout, group);
+  IbLocalChannel& localChannel = ch.channel;
   const IbgdaLocalBuffer localSlotFree = ch.local.slotFree;
   const IbRemoteChannel remoteChannel = ch.remote;
   assert_progress_slot_idle(group, state, "send");
@@ -775,6 +877,10 @@ __device__ __forceinline__ void send(
     state.activeBaseStep = static_cast<int64_t>(baseByte);
     state.activeNextByte = 0;
     state.activeTailPadding = protocolTailPadding;
+    trace_allreduce_event(
+        traceContext,
+        PipesTraceEventType::kAllReducePathStaged,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask));
   }
 
   if constexpr (detail::copyop_variable_size_v<CopyOp>) {
@@ -1010,9 +1116,27 @@ __device__ __forceinline__ void send(
       const uint64_t flagVal = streamPayload / pipelineBytesPayload + 1;
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
       prepare_send_slot<Proto>(transport, group, slot, pipelineCycle, timeout);
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
 
       // (2) Cooperative copy: src -> local sendStaging via CopyOp.
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceStageCopyBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
       const SendSignal sig = prepareSendBuf<CopyOp>(
           Proto{},
           group,
@@ -1025,23 +1149,58 @@ __device__ __forceinline__ void send(
           remoteChannel,
           protocolBytesThis,
           args...);
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceStageCopyEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
 
       // (3) Backpressure: wait for receiver to free this byte range's
       //     recvStaging offset. Symmetric with DATA_READY.
       if (protocolStreamEnd > pipelineBytesWire) {
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        }
         transport.wait_signal(
             group,
             localSlotFree,
             protocolStreamEnd - pipelineBytesWire,
             timeout);
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        }
       }
 
       // (4) Leader-only single-WQE RDMA put with fused signal.
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceSendSyncBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
       group.sync();
       if (group.is_leader()) {
         __threadfence_system();
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceSendSyncEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+        const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
+        const uint8_t qpLane = static_cast<uint8_t>(
+            numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceWqeSubmitBegin,
+            qpLane);
         const auto completion = transport.put(
             solo,
             channelLayout.sendStagingBuf.subBuffer(stagingOff),
@@ -1052,12 +1211,22 @@ __device__ __forceinline__ void send(
             /*counterBuf=*/{},
             /*counterVal=*/0,
             /*signalPerLane=*/true);
+        trace_allreduce_event(
+            traceContext, PipesTraceEventType::kAllReduceWqeSubmitEnd, qpLane);
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceBookkeepingBegin,
+            qpLane);
         record_send_completion<Proto>(
             transport,
             static_cast<uint32_t>(groupId),
             slot,
             pipelineCycle,
             completion);
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceBookkeepingEnd,
+            qpLane);
       }
       group.sync();
       dataOff += payloadBytes;
@@ -1073,6 +1242,55 @@ __device__ __forceinline__ void send(
     group.sync();
   }
 #endif
+}
+
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void send(
+    Transport& transport,
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout(),
+    Args... args) {
+  send_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      src,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      nullptr,
+      args...);
+}
+
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void send_with_fine_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    Args... args) {
+  send_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      src,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      &traceContext,
+      args...);
 }
 
 /**
@@ -1107,13 +1325,14 @@ template <
     typename CopyOp = Memcpy,
     typename Proto = protocol::Simple,
     typename... Args>
-__device__ __forceinline__ void recv(
+__device__ __forceinline__ void recv_impl(
     Transport& transport,
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
+    const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
   // than behind the prepareSendBuf/consumeRecvBuf seam, so it is Simple-shaped
@@ -1132,6 +1351,7 @@ __device__ __forceinline__ void recv(
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
+  (void)traceContext;
 #else
   if (nbytes == 0) {
     return;
@@ -1340,6 +1560,9 @@ __device__ __forceinline__ void recv(
 
       // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL,
       //         the inline flag) and cooperatively copy recvStaging -> dst.
+      const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
+      const uint8_t qpLane = static_cast<uint8_t>(
+          numLanes == 0 ? 0 : localChannel.recvDataReadyLaneCursor % numLanes);
       consumeRecvBuf<CopyOp>(
           Proto{},
           transport,
@@ -1354,11 +1577,24 @@ __device__ __forceinline__ void recv(
           flagVal,
           protocolBytesThis,
           timeout,
+          traceContext,
           args...);
 
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceBookkeepingBegin,
+            qpLane);
+      }
       transport.signal(
           group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
       dataOff += payloadBytes;
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            traceContext,
+            PipesTraceEventType::kAllReduceBookkeepingEnd,
+            qpLane);
+      }
     }
 
     if (group.is_leader()) {
@@ -1371,6 +1607,55 @@ __device__ __forceinline__ void recv(
     group.sync();
   }
 #endif
+}
+
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void recv(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout(),
+    Args... args) {
+  recv_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      dst,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      nullptr,
+      args...);
+}
+
+template <
+    typename Transport,
+    typename CopyOp = Memcpy,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void recv_with_fine_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    Args... args) {
+  recv_impl<Transport, CopyOp, Proto>(
+      transport,
+      group,
+      dst,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      &traceContext,
+      args...);
 }
 
 /**
@@ -1430,7 +1715,7 @@ template <
     typename Transport,
     typename Proto = protocol::Simple,
     typename... Args>
-__device__ __forceinline__ void forward(
+__device__ __forceinline__ void forward_impl(
     Transport& transport,
     ThreadGroup& group,
     void* __restrict__ dst,
@@ -1438,6 +1723,8 @@ __device__ __forceinline__ void forward(
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
+    const PipesTraceAllReduceContext* recvTraceContext = nullptr,
+    const PipesTraceAllReduceContext* sendTraceContext = nullptr,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
@@ -1483,6 +1770,7 @@ __device__ __forceinline__ void forward(
   auto& fwdSlotState = progress_send_slot<Proto>(fwdTransport, group);
   const ChannelSlotView fwdCh =
       acquire_channel<Proto>(fwdTransport, fwdChannelLayout, group);
+  IbLocalChannel& fwdLocalChannel = fwdCh.channel;
   const IbgdaLocalBuffer fwdSlotFree = fwdCh.local.slotFree;
   const IbRemoteChannel fwdRemoteChannel = fwdCh.remote;
   assert_progress_slot_idle(group, fwdSlotState, "forward send");
@@ -1502,6 +1790,10 @@ __device__ __forceinline__ void forward(
     fwdSlotState.activeBaseStep = static_cast<int64_t>(fwdBaseByte);
     fwdSlotState.activeNextByte = 0;
     fwdSlotState.activeTailPadding = fwdProtocolTailPadding;
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReducePathStaged,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask));
   }
 
   for (std::size_t dataOff = 0; dataOff < payloadProtocolBytes;) {
@@ -1576,6 +1868,8 @@ __device__ __forceinline__ void forward(
         static_cast<uint32_t>(fwdSlot),
         fwdPipelineCycle,
         timeout,
+        recvTraceContext,
+        sendTraceContext,
         args...);
 
     transport.signal(
@@ -1587,19 +1881,49 @@ __device__ __forceinline__ void forward(
     // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
     //     recvStaging).
     if (fwdProtocolStreamEnd > fwdGeo.pipelineBytesWire) {
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
       fwdTransport.wait_signal(
           group,
           fwdSlotFree,
           fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire,
           timeout);
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      }
     }
 
     // (6) Leader-only RDMA put via the forwarding transport.
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceSendSyncBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+    }
     group.sync();
     if (group.is_leader()) {
       __threadfence_system();
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceSendSyncEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask));
+      const uint32_t numLanes =
+          static_cast<uint32_t>(fwdChannelLayout.numLanes);
+      const uint8_t qpLane = static_cast<uint8_t>(
+          numLanes == 0 ? 0 : fwdLocalChannel.sendQp.cursor % numLanes);
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceWqeSubmitBegin,
+          qpLane);
       const auto completion = fwdTransport.put(
           solo,
           fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
@@ -1610,12 +1934,24 @@ __device__ __forceinline__ void forward(
           /*counterBuf=*/{},
           /*counterVal=*/0,
           /*signalPerLane=*/true);
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceWqeSubmitEnd,
+          qpLane);
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceBookkeepingBegin,
+          qpLane);
       record_send_completion<Proto>(
           fwdTransport,
           static_cast<uint32_t>(groupId),
           fwdSlot,
           fwdPipelineCycle,
           completion);
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceBookkeepingEnd,
+          qpLane);
     }
     group.sync();
     dataOff += payloadBytes;
@@ -1645,7 +1981,65 @@ __device__ __forceinline__ void forward(
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
+  (void)recvTraceContext;
+  (void)sendTraceContext;
 #endif
+}
+
+template <
+    typename CopyOp = Memcpy,
+    typename Transport,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void forward(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    Transport& fwdTransport,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout(),
+    Args... args) {
+  forward_impl<CopyOp, Transport, Proto>(
+      transport,
+      group,
+      dst,
+      fwdTransport,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      nullptr,
+      nullptr,
+      args...);
+}
+
+template <
+    typename CopyOp = Memcpy,
+    typename Transport,
+    typename Proto = protocol::Simple,
+    typename... Args>
+__device__ __forceinline__ void forward_with_fine_trace(
+    Transport& transport,
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    Transport& fwdTransport,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& recvTraceContext,
+    const PipesTraceAllReduceContext& sendTraceContext,
+    Args... args) {
+  forward_impl<CopyOp, Transport, Proto>(
+      transport,
+      group,
+      dst,
+      fwdTransport,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      &recvTraceContext,
+      &sendTraceContext,
+      args...);
 }
 
 /**

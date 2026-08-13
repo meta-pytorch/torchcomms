@@ -64,6 +64,71 @@ const char* pipesTraceEventTypeName(uint8_t type) {
       return "allreduce_ring_ag_begin";
     case Type::kAllReduceRingAllGatherEnd:
       return "allreduce_ring_ag_end";
+    case Type::kAllReduceSendSyncBegin:
+      return "allreduce_send_sync_begin";
+    case Type::kAllReduceSendSyncEnd:
+      return "allreduce_send_sync_end";
+    case Type::kAllReduceSlotPrepareBegin:
+      return "allreduce_slot_prepare_begin";
+    case Type::kAllReduceSlotPrepareEnd:
+      return "allreduce_slot_prepare_end";
+    case Type::kAllReduceWqeSubmitBegin:
+      return "allreduce_wqe_submit_begin";
+    case Type::kAllReduceWqeSubmitEnd:
+      return "allreduce_wqe_submit_end";
+    case Type::kAllReduceDataReadyWaitBegin:
+      return "allreduce_data_ready_wait_begin";
+    case Type::kAllReduceDataReadyWaitEnd:
+      return "allreduce_data_ready_wait_end";
+    case Type::kAllReduceReduceCopyBegin:
+      return "allreduce_reduce_copy_begin";
+    case Type::kAllReduceReduceCopyEnd:
+      return "allreduce_reduce_copy_end";
+    case Type::kAllReduceDrainBegin:
+      return "allreduce_drain_begin";
+    case Type::kAllReduceDrainEnd:
+      return "allreduce_drain_end";
+    case Type::kAllReduceBookkeepingBegin:
+      return "allreduce_bookkeeping_begin";
+    case Type::kAllReduceBookkeepingEnd:
+      return "allreduce_bookkeeping_end";
+    case Type::kAllReduceLocalCompletionWaitBegin:
+      return "allreduce_local_completion_wait_begin";
+    case Type::kAllReduceLocalCompletionWaitEnd:
+      return "allreduce_local_completion_wait_end";
+    case Type::kAllReduceRemoteSlotFreeWaitBegin:
+      return "allreduce_remote_slot_free_wait_begin";
+    case Type::kAllReduceRemoteSlotFreeWaitEnd:
+      return "allreduce_remote_slot_free_wait_end";
+    case Type::kAllReduceStageCopyBegin:
+      return "allreduce_stage_copy_begin";
+    case Type::kAllReduceStageCopyEnd:
+      return "allreduce_stage_copy_end";
+    case Type::kAllReducePathStaged:
+      return "allreduce_path_staged";
+    case Type::kAllReducePathRegisteredProgress:
+      return "allreduce_path_registered_progress";
+  }
+  return "unknown";
+}
+
+bool isFineAllReduceEvent(uint8_t type) {
+  using Type = PipesTraceEventType;
+  return type >= static_cast<uint8_t>(Type::kAllReduceSendSyncBegin) &&
+      type <= static_cast<uint8_t>(Type::kAllReducePathRegisteredProgress);
+}
+
+const char* allReducePhaseName(uint32_t phase) {
+  using Phase = PipesTraceAllReducePhase;
+  switch (static_cast<Phase>(phase)) {
+    case Phase::RingReduceScatter:
+      return "ring_reduce_scatter";
+    case Phase::RingAllGather:
+      return "ring_all_gather";
+    case Phase::TreeReduce:
+      return "tree_reduce";
+    case Phase::TreeBroadcast:
+      return "tree_broadcast";
   }
   return "unknown";
 }
@@ -191,6 +256,30 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
             wallTime.time_since_epoch())
             .count();
     const auto& event = entry.data;
+    if (isFineAllReduceEvent(event.type)) {
+      const uint32_t packed = event.step;
+      const uint32_t phase =
+          (packed >> kPipesTracePhaseShift) & kPipesTracePhaseMask;
+      std::fprintf(
+          stderr,
+          "Prims fine trace event=%s rank=%u phase=%s dependency_step=%u stripe=%u lane=%u peer=%u qp_lane=%u bytes=%u slot=%llu wall_time_ns=%lld\n",
+          pipesTraceEventTypeName(event.type),
+          static_cast<unsigned int>(event.rank),
+          allReducePhaseName(phase),
+          (packed >> kPipesTraceDependencyStepShift) &
+              kPipesTraceDependencyStepMask,
+          (packed >> kPipesTraceStripeShift) & kPipesTraceStripeMask,
+          (packed >> kPipesTraceLaneShift) & kPipesTraceLaneMask,
+          (packed >> kPipesTracePeerShift) & kPipesTracePeerMask,
+          (packed >> kPipesTraceQpLaneShift) & kPipesTraceQpLaneMask,
+          static_cast<unsigned int>(event.detail) * kPipesTraceBytesQuantum,
+          static_cast<unsigned long long>(pendingEntry.slot),
+          static_cast<long long>(wallTimeNs));
+      if (eventCallback_ != nullptr) {
+        eventCallback_(event, pendingEntry.slot);
+      }
+      continue;
+    }
     std::fprintf(
         stderr,
         "Prims trace event=%s step=%u rank=%u detail=%u slot=%llu wall_time_ns=%lld\n",
