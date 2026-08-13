@@ -145,6 +145,37 @@ struct AbortDevice final {
   }
 
   /**
+   * Overrides the deadline for one operation, in milliseconds.
+   *
+   * Set this on a per-operation COPY of the handle. Handles obtained from
+   * `MultiPeerTransport::get_device_handle()` are communicator-scoped and
+   * shared, so mutating one in place would leak the override into unrelated
+   * operations:
+   *
+   *     auto abort = mpt->get_device_handle(peers).abort;  // copy
+   *     abort.setOpTimeoutMs(opTimeoutMs);
+   *     params.abort = abort;                              // into kern args
+   *
+   * A negative value (the default) means "no override": the deadline then
+   * comes from the communicator-level timeout in shared state, which stays
+   * late-bound so `Abort::setDefaultTimeout()` is always observed.
+   *
+   * Only set this from a timeout the caller explicitly supplied on the
+   * collective API. Seeding it from the communicator default would snapshot
+   * that value at launch and defeat late-binding.
+   */
+  __host__ __device__ void setOpTimeoutMs(int64_t timeoutMs) {
+    opTimeoutMs_ = timeoutMs;
+  }
+
+  /**
+   * Returns the per-operation override, or a negative value when unset.
+   */
+  __host__ __device__ int64_t opTimeoutMs() const {
+    return opTimeoutMs_;
+  }
+
+  /**
    * Starts this handle's device-side timeout from the shared default duration.
    *
    * Non-positive or unset default timeouts leave the device deadline inactive.
@@ -157,7 +188,7 @@ struct AbortDevice final {
       deadlineCycles_ = 0;
       return;
     }
-    const auto timeoutMs = getTimeoutMs();
+    const auto timeoutMs = resolveTimeoutMs();
     if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
       deadlineCycles_ = 0;
       return;
@@ -303,6 +334,22 @@ struct AbortDevice final {
   friend class Abort;
 
   /**
+   * Deadline duration for this operation, in milliseconds.
+   *
+   * A per-operation override wins because it is the more specific request and
+   * it travels by value in the kernel arguments, so it costs no shared-state
+   * read. Otherwise the communicator-level timeout is read from mapped shared
+   * state on every start, which keeps it late-bound: a handle created before
+   * `setDefaultTimeout()` still observes the new value.
+   */
+  __device__ int64_t resolveTimeoutMs() const {
+    if (opTimeoutMs_ >= 0) {
+      return opTimeoutMs_;
+    }
+    return getTimeoutMs();
+  }
+
+  /**
    * Creates a device handle for mapped pinned state owned by `Abort`.
    *
    * Passing this handle by value to a kernel passes only this small non-owning
@@ -362,6 +409,14 @@ struct AbortDevice final {
    * milliseconds into device clock cycles.
    */
   uint64_t cyclesPerMs_{0};
+
+  /**
+   * Per-operation deadline override in milliseconds; negative means unset.
+   *
+   * Copied into kernel arguments with the rest of the handle, so device code
+   * reads it from registers rather than mapped host memory.
+   */
+  int64_t opTimeoutMs_{-1};
 
   /**
    * Device abort behavior selected by the owning host `Abort`.
