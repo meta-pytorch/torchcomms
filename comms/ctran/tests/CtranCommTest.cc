@@ -3,9 +3,15 @@
 #include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <limits>
+
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranPipes.h"
+#if defined(ENABLE_PRIMS)
+#include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
+#endif
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::testing {
@@ -128,5 +134,68 @@ TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
   EXPECT_FALSE(ctranPrimsEnabled(&mcclComm));
   EXPECT_TRUE(ctranPrimsEnabled(&ncclxComm));
 }
+
+#if defined(ENABLE_PRIMS)
+TEST(CtranBuildMultimemConfigTest, UsesDedicatedDepthAndBufferSize) {
+  const auto savedMultimemDepth = MCCL_NVL_MULTIMEM_PIPELINE_DEPTH;
+  const auto savedP2pDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH;
+  auto restoreCvars = folly::makeGuard([&] {
+    MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = savedMultimemDepth;
+    NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH = savedP2pDepth;
+  });
+  MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = 3;
+  NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH = 7;
+
+  comms::prims::MultimemNvlTransportConfig config{};
+  EXPECT_EQ(
+      ctranBuildMultimemNvlTransportConfig(
+          ctranPrimsConfig{.maxChannels = 4, .maxBlocks = 2},
+          /*bufferSize=*/4096,
+          /*nLocalRanks=*/4,
+          config),
+      commSuccess);
+  EXPECT_EQ(config.pipelineDepth, 3);
+  EXPECT_EQ(config.maxChannels, 4);
+  EXPECT_EQ(config.maxBlocks, 2);
+  EXPECT_EQ(config.perChannelSize, 1008);
+  EXPECT_EQ(config.userSignalCount, 1);
+}
+
+TEST(CtranBuildMultimemConfigTest, RejectsZeroBufferSize) {
+  const auto savedMultimemDepth = MCCL_NVL_MULTIMEM_PIPELINE_DEPTH;
+  auto restoreCvars = folly::makeGuard(
+      [&] { MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = savedMultimemDepth; });
+  MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = 4;
+
+  comms::prims::MultimemNvlTransportConfig config{};
+  EXPECT_EQ(
+      ctranBuildMultimemNvlTransportConfig(
+          ctranPrimsConfig{.maxChannels = 8, .maxBlocks = 3},
+          /*bufferSize=*/0,
+          /*nLocalRanks=*/4,
+          config),
+      commInvalidArgument);
+}
+
+TEST(CtranBuildMultimemConfigTest, RejectsInvalidDedicatedDepth) {
+  const auto savedMultimemDepth = MCCL_NVL_MULTIMEM_PIPELINE_DEPTH;
+  auto restoreCvars = folly::makeGuard(
+      [&] { MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = savedMultimemDepth; });
+
+  comms::prims::MultimemNvlTransportConfig config{};
+  for (const size_t invalidDepth :
+       {size_t{0},
+        static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1}) {
+    MCCL_NVL_MULTIMEM_PIPELINE_DEPTH = invalidDepth;
+    EXPECT_EQ(
+        ctranBuildMultimemNvlTransportConfig(
+            ctranPrimsConfig{.maxChannels = 4, .maxBlocks = 2},
+            /*bufferSize=*/4096,
+            /*nLocalRanks=*/4,
+            config),
+        commInvalidArgument);
+  }
+}
+#endif // defined(ENABLE_PRIMS)
 
 } // namespace ctran::testing

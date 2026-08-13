@@ -62,6 +62,58 @@ size_t alignedPerChannelSize(
 
 } // namespace
 
+commResult_t ctran::ctranBuildMultimemNvlTransportConfig(
+    const ctranPrimsConfig& config,
+    size_t bufferSize,
+    int nLocalRanks,
+    comms::prims::MultimemNvlTransportConfig& multimemConfig) {
+  const size_t pipelineDepth = MCCL_NVL_MULTIMEM_PIPELINE_DEPTH;
+  constexpr size_t kMaxPipelineDepth = std::min(
+      static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
+      std::numeric_limits<size_t>::max() / 16);
+  if (pipelineDepth == 0 || pipelineDepth > kMaxPipelineDepth) {
+    CLOGF(
+        ERR,
+        "MCCL_NVL_MULTIMEM_PIPELINE_DEPTH must be in [1, {}], got {}",
+        kMaxPipelineDepth,
+        pipelineDepth);
+    return commInvalidArgument;
+  }
+
+  const int64_t resolvedMaxChannels = ctranPrimsResolvedMaxChannels(config);
+  const int64_t resolvedMaxBlocks = ctranPrimsResolvedMaxBlocks(config);
+  const size_t maxChannels =
+      resolvedMaxChannels > 0 ? static_cast<size_t>(resolvedMaxChannels) : 0;
+  const size_t maxBlocks =
+      resolvedMaxBlocks > 0 ? static_cast<size_t>(resolvedMaxBlocks) : 0;
+  const size_t perChannelSize =
+      alignedPerChannelSize(bufferSize, maxChannels, pipelineDepth);
+  const auto candidate = comms::prims::make_multimem_nvl_transport_config({
+      .perChannelSize = perChannelSize,
+      .pipelineDepth = pipelineDepth,
+      .maxChannels = maxChannels,
+      .maxBlocks = maxBlocks,
+      .userSignalCount = 1,
+  });
+  const auto validation = comms::prims::validate_multimem_nvl_transport_config(
+      candidate, nLocalRanks);
+  if (!validation) {
+    CLOGF(
+        ERR,
+        "CTRAN-PRIMS: invalid NVL multimem config: {} (bufferSize={} perChannelSize={} pipelineDepth={} maxChannels={} maxBlocks={})",
+        validation.errorMessage,
+        bufferSize,
+        candidate.perChannelSize,
+        candidate.pipelineDepth,
+        candidate.maxChannels,
+        candidate.maxBlocks);
+    return commInvalidArgument;
+  }
+
+  multimemConfig = candidate;
+  return commSuccess;
+}
+
 commResult_t ctran::ctranPreparePipesTrace(
     CtranComm* comm,
     comms::prims::PipesTraceHandle& trace) {
@@ -136,54 +188,23 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     const size_t nvlDataBufferSize =
         nvlMaxNumChannels * config.nvlConfig.perChannelSize;
 
-    // The multimem staging window is decoupled from the P2P shared devbuf: a
-    // larger window means fewer staging rounds, which is the dominant cnvlmm
-    // throughput lever at large sizes. Falls back to the P2P size when the
-    // dedicated cvar is 0. Computed before the enable guard so setting only the
-    // multimem cvar (with the P2P devbuf at 0) is sufficient to enable the
-    // path.
-    const size_t multimemDevbufSize = MCCL_NVL_MULTIMEM_BUFSIZE > 0
-        ? static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE)
-        : nvlSharedDevbufSize;
+    // The multimem staging window is independent of the P2P shared devbuf.
+    // A larger window means fewer staging rounds, which is the dominant
+    // cnvlmm throughput lever at large sizes. A zero size disables multimem.
+    const size_t multimemDevbufSize =
+        static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE);
     if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
-      const std::size_t multimemPipelineDepth =
-          std::max<std::size_t>(1, config.nvlConfig.pipelineDepth);
-      const auto resolvedMaxChannels = ctranPrimsResolvedMaxChannels(pc);
-      const auto resolvedMaxBlocks = ctranPrimsResolvedMaxBlocks(pc);
-      const size_t multimemMaxChannels = resolvedMaxChannels > 0
-          ? static_cast<size_t>(resolvedMaxChannels)
-          : 0;
-      const size_t multimemMaxBlocks =
-          resolvedMaxBlocks > 0 ? static_cast<size_t>(resolvedMaxBlocks) : 0;
-      if (multimemMaxBlocks > multimemMaxChannels) {
-        CLOGF(
-            ERR,
-            "CTRAN-PRIMS: invalid multimem config; maxBlocks={} exceeds maxChannels={}",
-            multimemMaxBlocks,
-            multimemMaxChannels);
-        return commInvalidArgument;
+      comms::prims::MultimemNvlTransportConfig multimemConfig{};
+      if (const auto result = ctran::ctranBuildMultimemNvlTransportConfig(
+              pc,
+              multimemDevbufSize,
+              comm->statex_->nLocalRanks(),
+              multimemConfig);
+          result != commSuccess) {
+        return result;
       }
-      const size_t multimemPerChannelSize = alignedPerChannelSize(
-          multimemDevbufSize, multimemMaxChannels, multimemPipelineDepth);
-      if (multimemPerChannelSize == 0) {
-        CLOGF(
-            ERR,
-            "CTRAN-PRIMS: invalid multimem config; devbufSize={} maxChannels={} pipelineDepth={} cannot produce aligned perChannelSize",
-            multimemDevbufSize,
-            multimemMaxChannels,
-            multimemPipelineDepth);
-        return commInvalidArgument;
-      }
-
       config.nvlConfig.enableMultimem = true;
-      config.nvlConfig.multimem =
-          comms::prims::make_multimem_nvl_transport_config({
-              .perChannelSize = multimemPerChannelSize,
-              .pipelineDepth = multimemPipelineDepth,
-              .maxChannels = multimemMaxChannels,
-              .maxBlocks = multimemMaxBlocks,
-              .userSignalCount = 1,
-          });
+      config.nvlConfig.multimem = multimemConfig;
     }
 
     // LL128 buffer allocation for DeviceAllToAllv
@@ -409,7 +430,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CLOGF(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPipelineDepth={} multimemMaxChannels={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
@@ -418,9 +439,14 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.nvlConfig.perChannelSize,
         config.nvlConfig.enableMultimem,
         config.nvlConfig.enableMultimem
+            ? config.nvlConfig.multimem.perChannelSize
+            : 0,
+        config.nvlConfig.enableMultimem
             ? config.nvlConfig.multimem.pipelineDepth
             : 0,
         config.nvlConfig.enableMultimem ? config.nvlConfig.multimem.maxChannels
+                                        : 0,
+        config.nvlConfig.enableMultimem ? config.nvlConfig.multimem.maxBlocks
                                         : 0,
         hierAgOverlapEnabled,
         config.disableIb,
