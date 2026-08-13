@@ -51,12 +51,12 @@ struct ctranPrimsConfig {
   // fixes the per-chunk size: chunk = channelBufferSize / channelPipelineDepth.
   int64_t channelPipelineDepth{-1};
   // -1 uses MCCL_MAX_NCHANNELS. Total IB staging for this communicator is
-  // channelBufferSize * maxChannels per peer per direction.
+  // channelBufferSize * maxChannels per peer per direction. Multimem staging
+  // capacity is also provisioned for this many channels.
   int64_t maxChannels{-1};
-  // -1 uses MCCL_MAX_NBLOCKS. As with the CVAR, this is both the NVL channel
-  // count and the collective launch-geometry block cap; the two must move
-  // together or the multimem signal sizing drifts from the transport's actual
-  // channel count.
+  // -1 uses MCCL_MAX_NBLOCKS. This is the collective launch-geometry block
+  // cap. Multimem requires it not to exceed maxChannels because a launch
+  // cannot consume more blocks than the provisioned channel capacity.
   int64_t maxBlocks{-1};
 
   bool operator==(const ctranPrimsConfig& other) const {

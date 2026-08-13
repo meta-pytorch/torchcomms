@@ -46,8 +46,18 @@ int ctranPipesNvlMaxNumChannels(const ctranPrimsConfig& pc) {
   return std::max(1, static_cast<int>(resolved));
 }
 
-size_t roundDownToMultiple(size_t value, size_t multiple) {
-  return multiple == 0 ? 0 : (value / multiple) * multiple;
+size_t alignedPerChannelSize(
+    size_t totalSize,
+    size_t maxChannels,
+    size_t pipelineDepth) {
+  constexpr size_t kDataAlignment = 16;
+  if (maxChannels == 0 || pipelineDepth == 0 ||
+      pipelineDepth > std::numeric_limits<size_t>::max() / kDataAlignment) {
+    return 0;
+  }
+
+  const size_t alignment = kDataAlignment * pipelineDepth;
+  return (totalSize / maxChannels / alignment) * alignment;
 }
 
 } // namespace
@@ -112,9 +122,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.maxNumChannels = ctranPipesNvlMaxNumChannels(pc);
     const size_t nvlMaxNumChannels =
         static_cast<size_t>(config.nvlConfig.maxNumChannels);
-    const size_t nvlChannelAlign = 16ULL * config.nvlConfig.pipelineDepth;
-    config.nvlConfig.perChannelSize = roundDownToMultiple(
-        nvlSharedDevbufSize / nvlMaxNumChannels, nvlChannelAlign);
+    config.nvlConfig.perChannelSize = alignedPerChannelSize(
+        nvlSharedDevbufSize, nvlMaxNumChannels, config.nvlConfig.pipelineDepth);
     if (config.nvlConfig.perChannelSize == 0) {
       CLOGF(
           ERR,
@@ -139,19 +148,42 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
       const std::size_t multimemPipelineDepth =
           std::max<std::size_t>(1, config.nvlConfig.pipelineDepth);
-      // Reuse the already-computed channel count (config.nvlConfig
-      // .maxNumChannels, resolved from primsConfig.maxBlocks or
-      // MCCL_MAX_NBLOCKS) as the channel count so signal sizing cannot drift
-      // from the transport's actual channel count. Do not re-derive it here.
-      const std::size_t multimemMaxChannels =
-          static_cast<std::size_t>(config.nvlConfig.maxNumChannels);
+      const auto resolvedMaxChannels = ctranPrimsResolvedMaxChannels(pc);
+      const auto resolvedMaxBlocks = ctranPrimsResolvedMaxBlocks(pc);
+      const size_t multimemMaxChannels = resolvedMaxChannels > 0
+          ? static_cast<size_t>(resolvedMaxChannels)
+          : 0;
+      const size_t multimemMaxBlocks =
+          resolvedMaxBlocks > 0 ? static_cast<size_t>(resolvedMaxBlocks) : 0;
+      if (multimemMaxBlocks > multimemMaxChannels) {
+        CLOGF(
+            ERR,
+            "CTRAN-PRIMS: invalid multimem config; maxBlocks={} exceeds maxChannels={}",
+            multimemMaxBlocks,
+            multimemMaxChannels);
+        return commInvalidArgument;
+      }
+      const size_t multimemPerChannelSize = alignedPerChannelSize(
+          multimemDevbufSize, multimemMaxChannels, multimemPipelineDepth);
+      if (multimemPerChannelSize == 0) {
+        CLOGF(
+            ERR,
+            "CTRAN-PRIMS: invalid multimem config; devbufSize={} maxChannels={} pipelineDepth={} cannot produce aligned perChannelSize",
+            multimemDevbufSize,
+            multimemMaxChannels,
+            multimemPipelineDepth);
+        return commInvalidArgument;
+      }
+
       config.nvlConfig.enableMultimem = true;
-      config.nvlConfig.multimem = comms::prims::MultimemNvlTransportConfig{
-          .dataBufferSize = multimemDevbufSize,
-          .userSignalCount = 1,
-          .pipelineDepth = multimemPipelineDepth,
-          .maxChannels = multimemMaxChannels,
-      };
+      config.nvlConfig.multimem =
+          comms::prims::make_multimem_nvl_transport_config({
+              .perChannelSize = multimemPerChannelSize,
+              .pipelineDepth = multimemPipelineDepth,
+              .maxChannels = multimemMaxChannels,
+              .maxBlocks = multimemMaxBlocks,
+              .userSignalCount = 1,
+          });
     }
 
     // LL128 buffer allocation for DeviceAllToAllv

@@ -151,8 +151,9 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     __trap();
   }
 #endif
-  const uint64_t expectedSignalsPerLane = multimem_staging_signals_per_lane(
-      static_cast<uint32_t>(transport.nvlRanks));
+  const uint64_t expectedSignalsPerLane =
+      comms::prims::multimem_staging_signals_per_lane(
+          static_cast<uint32_t>(transport.nvlRanks));
   const uint64_t signalsPerLane = transport.signalsPerLane;
 #if defined(__CUDA_ARCH__)
   if (signalsPerLane != expectedSignalsPerLane) {
