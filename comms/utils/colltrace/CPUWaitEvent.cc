@@ -31,14 +31,14 @@ CommsMaybe<bool> CPUWaitEvent::waitCollEnd(
 }
 
 CommsMaybeVoid CPUWaitEvent::signalCollStart() noexcept {
-  startEvent_.waitSemaphore.post();
   startEvent_.timePoint = precisionNow();
+  startEvent_.waitSemaphore.post();
   return folly::unit;
 }
 
 CommsMaybeVoid CPUWaitEvent::signalCollEnd() noexcept {
-  endEvent_.waitSemaphore.post();
   endEvent_.timePoint = precisionNow();
+  endEvent_.waitSemaphore.post();
   return folly::unit;
 }
 

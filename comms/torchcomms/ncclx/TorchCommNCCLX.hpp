@@ -78,8 +78,9 @@ void resetGraphTimeoutMonitoringCacheForTest();
 // configures the colltrace WatchdogPlugin to handle async error checking and
 // timeout detection for graph-captured collectives via ncclx global hints.
 // Requires colltrace to be tracing graph-captured collectives (NCCL_COLLTRACE
-// in a "trace"/"verbose" mode AND NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1); otherwise
-// there is no WatchdogPlugin to configure. Returns true if the hints succeeded.
+// in a "trace"/"verbose"/"ALL" mode AND
+// NCCL_COLLTRACE_TRACE_CUDA_GRAPH=1); otherwise there is no WatchdogPlugin to
+// configure. Returns true if the hints succeeded.
 bool tryEnableColltraceTimeoutWatchdog(std::chrono::milliseconds timeout);
 
 class TorchCommNCCLX : public TorchCommBackend,

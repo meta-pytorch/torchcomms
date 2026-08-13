@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <chrono>
+#include <optional>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -29,11 +30,15 @@ TEST(CPUWaitEvent, Constructor) {
 
 TEST(CPUWaitEvent, SignalAndWaitCollStart) {
   auto event = std::make_unique<CPUWaitEvent>();
+  std::optional<ICollWaitEvent::system_clock_time_point> observedStartTime;
   // Start a thread that will wait for the collective to start
   std::thread waiterThread([&]() {
     auto waitResult = event->waitCollStart(std::chrono::milliseconds(10000));
     ASSERT_TRUE(waitResult.hasValue());
     EXPECT_TRUE(waitResult.value());
+    auto startTimeResult = event->getCollStartTime();
+    ASSERT_TRUE(startTimeResult.hasValue());
+    observedStartTime = startTimeResult.value();
   });
 
   // Sleep briefly to ensure the waiter thread is waiting
@@ -46,14 +51,10 @@ TEST(CPUWaitEvent, SignalAndWaitCollStart) {
   // Wait for the waiter thread to complete
   waiterThread.join();
 
-  // Verify that the start time was set
-  auto startTimeResult = event->getCollStartTime();
-  ASSERT_TRUE(startTimeResult.hasValue());
-
   // Start time should be after enqueue time
   auto enqueueTime = event->getCollEnqueueTime().value();
-  auto startTime = startTimeResult.value();
-  EXPECT_GE(startTime, enqueueTime);
+  ASSERT_TRUE(observedStartTime.has_value());
+  EXPECT_GE(observedStartTime.value(), enqueueTime);
 }
 
 TEST(CPUWaitEvent, SignalAndWaitCollStartTwice) {
@@ -126,11 +127,15 @@ TEST(CPUWaitEvent, SignalAndWaitCollEndTwice) {
 
 TEST(CPUWaitEvent, SignalAndWaitCollEnd) {
   auto event = std::make_unique<CPUWaitEvent>();
+  std::optional<ICollWaitEvent::system_clock_time_point> observedEndTime;
   // Start a thread that will wait for the collective to end
   std::thread waiterThread([&]() {
     auto waitResult = event->waitCollEnd(std::chrono::milliseconds(1000));
     ASSERT_TRUE(waitResult.hasValue());
     EXPECT_TRUE(waitResult.value());
+    auto endTimeResult = event->getCollEndTime();
+    ASSERT_TRUE(endTimeResult.hasValue());
+    observedEndTime = endTimeResult.value();
   });
 
   // Sleep briefly to ensure the waiter thread is waiting
@@ -143,14 +148,10 @@ TEST(CPUWaitEvent, SignalAndWaitCollEnd) {
   // Wait for the waiter thread to complete
   waiterThread.join();
 
-  // Verify that the end time was set
-  auto endTimeResult = event->getCollEndTime();
-  ASSERT_TRUE(endTimeResult.hasValue());
-
   // End time should be after enqueue time
   auto enqueueTime = event->getCollEnqueueTime().value();
-  auto endTime = endTimeResult.value();
-  EXPECT_GE(endTime, enqueueTime);
+  ASSERT_TRUE(observedEndTime.has_value());
+  EXPECT_GE(observedEndTime.value(), enqueueTime);
 }
 
 TEST(CPUWaitEvent, WaitCollStartTimeout) {
