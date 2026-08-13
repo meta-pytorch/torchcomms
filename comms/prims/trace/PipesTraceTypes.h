@@ -24,6 +24,17 @@ enum class PipesTraceEventType : uint8_t {
   kIbRecvEnd = 9,
   kIbForwardBegin = 10,
   kIbForwardEnd = 11,
+
+  kAllReducePhase1Begin = 12,
+  kAllReducePhase1End = 13,
+  kAllReducePhase2Begin = 14,
+  kAllReducePhase2End = 15,
+  kAllReducePhase3Begin = 16,
+  kAllReducePhase3End = 17,
+  kAllReduceRingReduceScatterBegin = 18,
+  kAllReduceRingReduceScatterEnd = 19,
+  kAllReduceRingAllGatherBegin = 20,
+  kAllReduceRingAllGatherEnd = 21,
 };
 
 struct PipesTraceEvent {

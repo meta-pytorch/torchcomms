@@ -5,6 +5,7 @@
 #include <pthread.h>
 
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -43,6 +44,26 @@ const char* pipesTraceEventTypeName(uint8_t type) {
       return "ib_forward_begin";
     case Type::kIbForwardEnd:
       return "ib_forward_end";
+    case Type::kAllReducePhase1Begin:
+      return "allreduce_phase1_begin";
+    case Type::kAllReducePhase1End:
+      return "allreduce_phase1_end";
+    case Type::kAllReducePhase2Begin:
+      return "allreduce_phase2_begin";
+    case Type::kAllReducePhase2End:
+      return "allreduce_phase2_end";
+    case Type::kAllReducePhase3Begin:
+      return "allreduce_phase3_begin";
+    case Type::kAllReducePhase3End:
+      return "allreduce_phase3_end";
+    case Type::kAllReduceRingReduceScatterBegin:
+      return "allreduce_ring_rs_begin";
+    case Type::kAllReduceRingReduceScatterEnd:
+      return "allreduce_ring_rs_end";
+    case Type::kAllReduceRingAllGatherBegin:
+      return "allreduce_ring_ag_begin";
+    case Type::kAllReduceRingAllGatherEnd:
+      return "allreduce_ring_ag_end";
   }
   return "unknown";
 }
@@ -119,11 +140,12 @@ void PipesTrace::ensure(
   pollInterval_ = pollInterval;
   eventCallback_ = std::move(eventCallback);
   startPollThread();
-  CLOGF(
-      INFO,
-      "Prims trace buffer ready ring_size={} poll_interval_ms={}",
-      buffer_->size(),
+  std::fprintf(
+      stderr,
+      "Prims trace buffer ready ring_size=%u poll_interval_ms=%lld\n",
+      static_cast<unsigned int>(buffer_->size()),
       static_cast<long long>(pollInterval_.count()));
+  std::fflush(stderr);
 }
 
 PipesTraceHandle PipesTrace::deviceHandle() const {
@@ -169,15 +191,15 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
             wallTime.time_since_epoch())
             .count();
     const auto& event = entry.data;
-    CLOGF(
-        INFO,
-        "Prims trace event={} step={} rank={} detail={} slot={} wall_time_ns={}",
+    std::fprintf(
+        stderr,
+        "Prims trace event=%s step=%u rank=%u detail=%u slot=%llu wall_time_ns=%lld\n",
         pipesTraceEventTypeName(event.type),
         event.step,
-        static_cast<int>(event.rank),
+        static_cast<unsigned int>(event.rank),
         event.detail,
-        pendingEntry.slot,
-        wallTimeNs);
+        static_cast<unsigned long long>(pendingEntry.slot),
+        static_cast<long long>(wallTimeNs));
     if (eventCallback_ != nullptr) {
       eventCallback_(event, pendingEntry.slot);
     }
@@ -185,6 +207,9 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
 
   if (batch.entriesLost != 0) {
     CLOGF(WARN, "Prims trace lost {} entries", batch.entriesLost);
+  }
+  if (!batch.entries.empty()) {
+    std::fflush(stderr);
   }
 }
 

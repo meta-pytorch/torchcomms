@@ -38,6 +38,38 @@ def _loss_line(rank: int, lost: int) -> str:
     )
 
 
+def _mast_event_line(
+    local_rank: int,
+    name: str,
+    step: int,
+    comm_rank: int,
+    detail: int,
+    slot: int,
+    ns: int,
+) -> str:
+    return (
+        f"[{local_rank}]:I0531 12:00:00.000000 1234 PipesTrace.cc:168] "
+        f"Prims trace event={name} step={step} rank={comm_rank} "
+        f"detail={detail} slot={slot} wall_time_ns={ns}\n"
+    )
+
+
+def _mast_wrapped_event_line(
+    local_rank: int,
+    name: str,
+    step: int,
+    comm_rank: int,
+    detail: int,
+    slot: int,
+    ns: int,
+) -> str:
+    return (
+        f"[{local_rank}]:INFO:root:[stderr] Prims trace event={name} "
+        f"step={step} rank={comm_rank} detail={detail} slot={slot} "
+        f"wall_time_ns={ns}\n"
+    )
+
+
 class EventRegexTest(unittest.TestCase):
     def test_matches_well_formed_event(self) -> None:
         line = _event_line(7, ptp.AG_IB_BEGIN, 3, 3, 0, 0, 1780268274964010916)
@@ -61,6 +93,22 @@ class EventRegexTest(unittest.TestCase):
         assert event is not None
         self.assertEqual(0, event.step)
         self.assertEqual(-1, event.rank)
+
+    def test_allreduce_mast_line_uses_log_prefix_rank(self) -> None:
+        line = _mast_event_line(0, ptp.AR_PHASE2_BEGIN, 0, 3, 0, 0, 100)
+        event = ptp._parse_event_line(line)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(0, event.mpi_rank)
+        self.assertEqual(ptp.AR_PHASE2_BEGIN, event.name)
+
+    def test_allreduce_mast_stream_wrapper(self) -> None:
+        line = _mast_wrapped_event_line(0, ptp.AR_PHASE2_BEGIN, 7, 3, 2, 11, 100)
+        event = ptp._parse_event_line(line)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(0, event.mpi_rank)
+        self.assertEqual(2, event.group)
 
 
 class ParseEventsTest(unittest.TestCase):
@@ -188,6 +236,27 @@ class PairNvlTest(unittest.TestCase):
         self.assertEqual([], slices)
         self.assertEqual(1, len(unmatched))
         self.assertIn("task_done", unmatched[0][1])
+
+
+class PairAllReduceTest(unittest.TestCase):
+    def test_phase_and_nested_ring_slices(self) -> None:
+        evs = [
+            ptp.Event(3, ptp.AR_PHASE2_BEGIN, 0, 3, 0, 0, 100),
+            ptp.Event(3, ptp.AR_RING_RS_BEGIN, 0, 3, 0, 1, 110),
+            ptp.Event(3, ptp.AR_RING_RS_END, 0, 3, 0, 2, 150),
+            ptp.Event(3, ptp.AR_RING_AG_BEGIN, 0, 3, 0, 3, 160),
+            ptp.Event(3, ptp.AR_RING_AG_END, 0, 3, 0, 4, 190),
+            ptp.Event(3, ptp.AR_PHASE2_END, 0, 3, 0, 5, 200),
+        ]
+        slices, unpaired_instant_count, unmatched = ptp.pair_events({3: evs})
+        self.assertEqual(0, unpaired_instant_count)
+        self.assertEqual([], unmatched)
+        self.assertCountEqual(
+            ["inter-node", "ring reduce-scatter", "ring all-gather"],
+            [s.name for s in slices],
+        )
+        phase2 = next(s for s in slices if s.name == "inter-node")
+        self.assertEqual(100, phase2.args["dur_ns"])
 
 
 class BuildTraceTest(unittest.TestCase):
