@@ -38,7 +38,7 @@ namespace comms::prims {
 struct MulticastExchangeContract {
   uint64_t protocol{0};
   uint64_t version{0};
-  std::array<uint64_t, 4> parameters{};
+  std::array<uint64_t, 5> parameters{};
 
   bool operator==(const MulticastExchangeContract& other) const {
     return protocol == other.protocol && version == other.version &&
