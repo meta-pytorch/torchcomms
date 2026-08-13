@@ -54,6 +54,7 @@ std::vector<uint8_t> RdmaRegistrationHandle::serialize() const {
       .domainId = domainId_,
       .registrationBase = registrationBase_,
       .numMrs = static_cast<uint8_t>(mrs_.size()),
+      .isDeviceMemory = static_cast<uint8_t>(deviceId_ >= 0 ? 1 : 0),
   };
   std::memcpy(buf.data(), &header, sizeof(header));
 
@@ -81,26 +82,26 @@ RdmaRemoteRegistrationHandle::RdmaRemoteRegistrationHandle(
     std::vector<uint32_t> rkeys,
     uint64_t domainId,
     uint64_t registrationBase,
+    bool isDeviceMemory,
     std::shared_ptr<DeviceAdapter> deviceAdapter)
     : rkeys_(std::move(rkeys)),
       domainId_(domainId),
       registrationBase_(registrationBase),
+      isDeviceMemory_(isDeviceMemory),
       deviceAdapter_(std::move(deviceAdapter)) {
-  // toWireAddr() dereferences deviceAdapter_ whenever registrationBase_ != 0,
-  // so a translated handle must be given a non-null adapter. Enforced in
-  // release builds too: a null adapter here is a programming error, not a
-  // runtime input.
+  // toWireAddr() dereferences deviceAdapter_ whenever the target is device
+  // memory, so a device-backed handle must be given a non-null adapter.
+  // Enforced in release builds too: a null adapter here is a programming error,
+  // not a runtime input.
   CHECK_THROW_EXCEPTION(
-      registrationBase_ == 0 || deviceAdapter_ != nullptr,
-      std::invalid_argument);
+      !isDeviceMemory_ || deviceAdapter_ != nullptr, std::invalid_argument);
 }
 
 uint64_t RdmaRemoteRegistrationHandle::toWireAddr(const void* ptr) const {
-  /// Remote handles don't carry information on whether the target is a device
-  /// ptr or not So we use the fact that only targets that have a non-zero
-  /// registrationBase require pointer translation
-  auto devAddr = registrationBase_ ? deviceAdapter_->resolveDevicePointer(ptr)
-                                   : reinterpret_cast<uint64_t>(ptr);
+  // Remote handles carry an explicit isDeviceMemory flag from the exporting
+  // peer; only device targets need pointer translation via the adapter.
+  auto devAddr = isDeviceMemory_ ? deviceAdapter_->resolveDevicePointer(ptr)
+                                 : reinterpret_cast<uint64_t>(ptr);
   return devAddr - registrationBase_;
 }
 
