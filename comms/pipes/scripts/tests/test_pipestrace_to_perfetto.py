@@ -38,6 +38,28 @@ def _loss_line(rank: int, lost: int) -> str:
     )
 
 
+def _fine_event_line(
+    local_rank: int,
+    name: str,
+    comm_rank: int,
+    phase: str,
+    dependency_step: int,
+    stripe: int,
+    lane: int,
+    peer: int,
+    qp_lane: int,
+    bytes_: int,
+    slot: int,
+    ns: int,
+) -> str:
+    return (
+        f"[{local_rank}]:INFO:root:[stderr] Prims fine trace event={name} "
+        f"rank={comm_rank} phase={phase} dependency_step={dependency_step} "
+        f"stripe={stripe} lane={lane} peer={peer} qp_lane={qp_lane} "
+        f"bytes={bytes_} slot={slot} wall_time_ns={ns}\n"
+    )
+
+
 def _mast_event_line(
     local_rank: int,
     name: str,
@@ -110,6 +132,33 @@ class EventRegexTest(unittest.TestCase):
         self.assertEqual(0, event.mpi_rank)
         self.assertEqual(2, event.group)
 
+    def test_fine_allreduce_line_uses_structured_context(self) -> None:
+        line = _fine_event_line(
+            0,
+            ptp.AR_WQE_SUBMIT_BEGIN,
+            3,
+            "ring_reduce_scatter",
+            2,
+            1,
+            4,
+            7,
+            5,
+            4096,
+            11,
+            100,
+        )
+        event = ptp._parse_event_line(line)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(0, event.mpi_rank)
+        self.assertEqual("ring_reduce_scatter", event.phase)
+        self.assertEqual(2, event.dependency_step)
+        self.assertEqual(1, event.stripe)
+        self.assertEqual(4, event.lane)
+        self.assertEqual(7, event.peer)
+        self.assertEqual(5, event.qp_lane)
+        self.assertEqual(4096, event.bytes)
+
 
 class ParseEventsTest(unittest.TestCase):
     def test_concatenated_tagged_events_are_dropped(self) -> None:
@@ -138,6 +187,30 @@ class ParseEventsTest(unittest.TestCase):
         self.assertEqual(1, len(events))
         self.assertEqual(1, stats.loss_reports)
         self.assertEqual(3, stats.lost_entries)
+
+    def test_malformed_fine_trace_is_counted_as_dropped(self) -> None:
+        log = _fine_event_line(
+            0,
+            ptp.AR_PATH_STAGED,
+            0,
+            "tree_reduce",
+            0,
+            0,
+            0,
+            1,
+            0,
+            4096,
+            0,
+            100,
+        ).replace(" peer=1", "")
+        with tempfile.TemporaryDirectory() as d:
+            log_path = os.path.join(d, "x.log")
+            with open(log_path, "w") as f:
+                f.write(log)
+            stats = ptp.ParseStats()
+            events, _ = ptp.parse_events([log_path], stats)
+        self.assertEqual([], events)
+        self.assertEqual(1, stats.dropped_lines)
 
 
 class FilterEventsTest(unittest.TestCase):
@@ -239,24 +312,69 @@ class PairNvlTest(unittest.TestCase):
 
 
 class PairAllReduceTest(unittest.TestCase):
-    def test_phase_and_nested_ring_slices(self) -> None:
+    def test_phase_slice(self) -> None:
         evs = [
             ptp.Event(3, ptp.AR_PHASE2_BEGIN, 0, 3, 0, 0, 100),
-            ptp.Event(3, ptp.AR_RING_RS_BEGIN, 0, 3, 0, 1, 110),
-            ptp.Event(3, ptp.AR_RING_RS_END, 0, 3, 0, 2, 150),
-            ptp.Event(3, ptp.AR_RING_AG_BEGIN, 0, 3, 0, 3, 160),
-            ptp.Event(3, ptp.AR_RING_AG_END, 0, 3, 0, 4, 190),
-            ptp.Event(3, ptp.AR_PHASE2_END, 0, 3, 0, 5, 200),
+            ptp.Event(3, ptp.AR_PHASE2_END, 0, 3, 0, 1, 200),
         ]
         slices, unpaired_instant_count, unmatched = ptp.pair_events({3: evs})
         self.assertEqual(0, unpaired_instant_count)
         self.assertEqual([], unmatched)
-        self.assertCountEqual(
-            ["inter-node", "ring reduce-scatter", "ring all-gather"],
-            [s.name for s in slices],
-        )
-        phase2 = next(s for s in slices if s.name == "inter-node")
+        self.assertEqual(["inter-node"], [s.name for s in slices])
+        phase2 = slices[0]
         self.assertEqual(100, phase2.args["dur_ns"])
+
+    def test_fine_span_and_actual_path_marker(self) -> None:
+        common = {
+            "mpi_rank": 3,
+            "step": 2,
+            "rank": 7,
+            "group": 1,
+            "phase": "ring_reduce_scatter",
+            "dependency_step": 2,
+            "stripe": 1,
+            "lane": 4,
+            "peer": 7,
+            "qp_lane": 5,
+            "bytes": 4096,
+        }
+        evs = [
+            ptp.Event(
+                name=ptp.AR_PATH_REGISTERED_PROGRESS,
+                slot=9,
+                ns=90,
+                **common,
+            ),
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_BEGIN, slot=10, ns=100, **common),
+            ptp.Event(name=ptp.AR_WQE_SUBMIT_END, slot=11, ns=140, **common),
+        ]
+        slices, unpaired_instant_count, unmatched = ptp.pair_events({3: evs})
+        self.assertEqual(0, unpaired_instant_count)
+        self.assertEqual([], unmatched)
+        path = next(s for s in slices if s.instant)
+        self.assertEqual("path: registered progress", path.name)
+        wqe = next(s for s in slices if not s.instant)
+        self.assertEqual("WQE submit", wqe.name)
+        self.assertEqual((100, 140), (wqe.begin_ns, wqe.end_ns))
+        self.assertEqual(7, wqe.args["peer"])
+        self.assertEqual(5, wqe.args["qp_lane"])
+
+    def test_unmatched_fine_begin_is_reported(self) -> None:
+        event = ptp.Event(
+            mpi_rank=0,
+            name=ptp.AR_STAGE_COPY_BEGIN,
+            step=0,
+            rank=1,
+            group=0,
+            slot=0,
+            ns=100,
+            phase="tree_reduce",
+            peer=1,
+            bytes=4096,
+        )
+        _, _, unmatched = ptp.pair_events({0: [event]})
+        self.assertEqual(1, len(unmatched))
+        self.assertIn("without matching end", unmatched[0][1])
 
 
 class BuildTraceTest(unittest.TestCase):
@@ -335,6 +453,66 @@ class EndToEndCliTest(unittest.TestCase):
             self.assertEqual(0, rc)
         self.assertTrue(
             any("1 unpaired instants suppressed" in message for message in logs.output)
+        )
+
+    def test_fine_allreduce_emits_path_instant_and_span(self) -> None:
+        log = _fine_event_line(
+            0,
+            ptp.AR_PATH_STAGED,
+            0,
+            "tree_reduce",
+            1,
+            2,
+            3,
+            4,
+            5,
+            4096,
+            10,
+            100,
+        )
+        log += _fine_event_line(
+            0,
+            ptp.AR_STAGE_COPY_BEGIN,
+            0,
+            "tree_reduce",
+            1,
+            2,
+            3,
+            4,
+            5,
+            4096,
+            11,
+            110,
+        )
+        log += _fine_event_line(
+            0,
+            ptp.AR_STAGE_COPY_END,
+            0,
+            "tree_reduce",
+            1,
+            2,
+            3,
+            4,
+            5,
+            4096,
+            12,
+            150,
+        )
+        with tempfile.TemporaryDirectory() as d:
+            log_path = os.path.join(d, "x.log")
+            out_path = os.path.join(d, "x.perfetto.json")
+            with open(log_path, "w") as f:
+                f.write(log)
+            rc = ptp.main([log_path, "-o", out_path, "--nvl-size", "1"])
+            self.assertEqual(0, rc)
+            with open(out_path) as f:
+                trace = json.load(f)
+        events = trace["traceEvents"]
+        self.assertTrue(
+            any(e.get("ph") == "i" and e.get("name") == "path: staged" for e in events)
+        )
+        self.assertTrue(
+            any(e.get("ph") == "X" and e.get("name") == "staging copy" for e in events)
         )
 
     def test_strict_returns_2_on_unmatched(self) -> None:

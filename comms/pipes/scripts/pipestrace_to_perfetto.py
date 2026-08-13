@@ -2,8 +2,8 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 """Convert supported `PipesTrace` log lines into Perfetto JSON.
 
-Current event pairing is focused on hierarchical allgather overlap traces:
-IB chunk readiness, NVL wait/broadcast work, and IB send/recv/forward spans.
+Supports hierarchical allgather overlap traces and fine-grained AllReduce
+transport traces, including the staged/registered path actually selected.
 
 Run from `fbcode/comms` with either:
   buck2 run @fbcode//mode/opt \
@@ -49,10 +49,26 @@ AR_PHASE2_BEGIN = "allreduce_phase2_begin"
 AR_PHASE2_END = "allreduce_phase2_end"
 AR_PHASE3_BEGIN = "allreduce_phase3_begin"
 AR_PHASE3_END = "allreduce_phase3_end"
-AR_RING_RS_BEGIN = "allreduce_ring_rs_begin"
-AR_RING_RS_END = "allreduce_ring_rs_end"
-AR_RING_AG_BEGIN = "allreduce_ring_ag_begin"
-AR_RING_AG_END = "allreduce_ring_ag_end"
+AR_SEND_SYNC_BEGIN = "allreduce_send_sync_begin"
+AR_SEND_SYNC_END = "allreduce_send_sync_end"
+AR_WQE_SUBMIT_BEGIN = "allreduce_wqe_submit_begin"
+AR_WQE_SUBMIT_END = "allreduce_wqe_submit_end"
+AR_DATA_READY_WAIT_BEGIN = "allreduce_data_ready_wait_begin"
+AR_DATA_READY_WAIT_END = "allreduce_data_ready_wait_end"
+AR_REDUCE_COPY_BEGIN = "allreduce_reduce_copy_begin"
+AR_REDUCE_COPY_END = "allreduce_reduce_copy_end"
+AR_DRAIN_BEGIN = "allreduce_drain_begin"
+AR_DRAIN_END = "allreduce_drain_end"
+AR_BOOKKEEPING_BEGIN = "allreduce_bookkeeping_begin"
+AR_BOOKKEEPING_END = "allreduce_bookkeeping_end"
+AR_LOCAL_COMPLETION_WAIT_BEGIN = "allreduce_local_completion_wait_begin"
+AR_LOCAL_COMPLETION_WAIT_END = "allreduce_local_completion_wait_end"
+AR_REMOTE_SLOT_FREE_WAIT_BEGIN = "allreduce_remote_slot_free_wait_begin"
+AR_REMOTE_SLOT_FREE_WAIT_END = "allreduce_remote_slot_free_wait_end"
+AR_STAGE_COPY_BEGIN = "allreduce_stage_copy_begin"
+AR_STAGE_COPY_END = "allreduce_stage_copy_end"
+AR_PATH_STAGED = "allreduce_path_staged"
+AR_PATH_REGISTERED_PROGRESS = "allreduce_path_registered_progress"
 
 IB_SEND = "ib_send"
 IB_RECV = "ib_recv"
@@ -75,12 +91,38 @@ AR_PAIRS = {
     AR_PHASE1_END: (AR_PHASE1_BEGIN, "allreduce_phase1", "input/reduce-scatter"),
     AR_PHASE2_END: (AR_PHASE2_BEGIN, "allreduce_phase2", "inter-node"),
     AR_PHASE3_END: (AR_PHASE3_BEGIN, "allreduce_phase3", "output/all-gather"),
-    AR_RING_RS_END: (AR_RING_RS_BEGIN, "allreduce_ring_rs", "ring reduce-scatter"),
-    AR_RING_AG_END: (AR_RING_AG_BEGIN, "allreduce_ring_ag", "ring all-gather"),
 }
 AR_BEGIN_NAMES = frozenset(v[0] for v in AR_PAIRS.values())
 AR_NAMES = frozenset(AR_PAIRS) | AR_BEGIN_NAMES
-KNOWN_EVENT_NAMES = IB_NAMES | NVL_NAMES | AR_NAMES
+FINE_AR_PAIRS = {
+    AR_SEND_SYNC_END: (AR_SEND_SYNC_BEGIN, "send sync"),
+    AR_WQE_SUBMIT_END: (AR_WQE_SUBMIT_BEGIN, "WQE submit"),
+    AR_DATA_READY_WAIT_END: (AR_DATA_READY_WAIT_BEGIN, "DATA_READY wait"),
+    AR_REDUCE_COPY_END: (AR_REDUCE_COPY_BEGIN, "reduce/copy"),
+    AR_DRAIN_END: (AR_DRAIN_BEGIN, "registered drain"),
+    AR_BOOKKEEPING_END: (AR_BOOKKEEPING_BEGIN, "bookkeeping"),
+    AR_LOCAL_COMPLETION_WAIT_END: (
+        AR_LOCAL_COMPLETION_WAIT_BEGIN,
+        "local completion wait",
+    ),
+    AR_REMOTE_SLOT_FREE_WAIT_END: (
+        AR_REMOTE_SLOT_FREE_WAIT_BEGIN,
+        "remote SLOT_FREE wait",
+    ),
+    AR_STAGE_COPY_END: (AR_STAGE_COPY_BEGIN, "staging copy"),
+}
+FINE_AR_PATHS = {
+    AR_PATH_STAGED: "path: staged",
+    AR_PATH_REGISTERED_PROGRESS: "path: registered progress",
+}
+FINE_AR_NAMES = (
+    frozenset(FINE_AR_PAIRS)
+    | frozenset(v[0] for v in FINE_AR_PAIRS.values())
+    | frozenset(FINE_AR_PATHS)
+)
+FINE_AR_BEGIN_NAMES = frozenset(v[0] for v in FINE_AR_PAIRS.values())
+ALL_AR_NAMES = AR_NAMES | FINE_AR_NAMES
+KNOWN_EVENT_NAMES = IB_NAMES | NVL_NAMES | ALL_AR_NAMES
 
 # `detail` is uint16_t, so one full uint16 range per kind makes track IDs
 # disjoint for every representable block index.
@@ -105,6 +147,20 @@ EVENT_RE: re.Pattern[str] = re.compile(
     r" step=(?P<step>\d+)"
     r" rank=(?P<rank>-?\d+)"
     r" detail=(?P<detail>\d+)"
+    r" slot=(?P<slot>\d+)"
+    r" wall_time_ns=(?P<ns>\d+)\s*$"
+)
+
+FINE_EVENT_RE: re.Pattern[str] = re.compile(
+    _PREFIX + rf"[^\[]*?{_MAST_STREAM_WRAPPER}Prims fine trace event=(?P<name>\w+)"
+    r" rank=(?P<rank>\d+)"
+    r" phase=(?P<phase>\w+)"
+    r" dependency_step=(?P<dependency_step>\d+)"
+    r" stripe=(?P<stripe>\d+)"
+    r" lane=(?P<lane>\d+)"
+    r" peer=(?P<peer>\d+)"
+    r" qp_lane=(?P<qp_lane>\d+)"
+    r" bytes=(?P<bytes>\d+)"
     r" slot=(?P<slot>\d+)"
     r" wall_time_ns=(?P<ns>\d+)\s*$"
 )
@@ -136,6 +192,13 @@ class Event:
     group: int  # detail = group.group_id
     slot: int
     ns: int
+    phase: str | None = None
+    dependency_step: int = 0
+    stripe: int = 0
+    lane: int = 0
+    peer: int = 0
+    qp_lane: int = 0
+    bytes: int = 0
 
 
 @dataclasses.dataclass
@@ -162,6 +225,7 @@ class Slice_:
     begin_ns: int
     end_ns: int
     args: dict[str, object]
+    instant: bool = False
 
 
 @dataclasses.dataclass
@@ -193,6 +257,9 @@ class PairState:
     pending_allreduce: dict[tuple[str, int, int], Event] = dataclasses.field(
         default_factory=dict
     )
+    pending_fine_allreduce: dict[
+        tuple[str, str, int, int, int, int, int, int], Event
+    ] = dataclasses.field(default_factory=dict)
 
 
 def _open_log(path: str) -> TextIO:
@@ -214,25 +281,48 @@ def _detect_nvl_from_mpirun(line: str) -> int | None:
 
 def _parse_event_line(line: str) -> Event | None:
     m = EVENT_RE.fullmatch(line)
-    if m is None:
+    if m is not None:
+        name = m["name"]
+        if name not in KNOWN_EVENT_NAMES:
+            return None
+        prefix_rank = m["mpi_rank"] or m["mast_rank"]
+        return Event(
+            mpi_rank=int(prefix_rank),
+            name=name,
+            step=int(m["step"]),
+            rank=int(m["rank"]),
+            group=int(m["detail"]),
+            slot=int(m["slot"]),
+            ns=int(m["ns"]),
+        )
+
+    fine = FINE_EVENT_RE.fullmatch(line)
+    if fine is None or fine["name"] not in FINE_AR_NAMES:
         return None
-    name = m["name"]
-    if name not in KNOWN_EVENT_NAMES:
-        return None
-    prefix_rank = m["mpi_rank"] or m["mast_rank"]
+    dependency_step = int(fine["dependency_step"])
+    stripe = int(fine["stripe"])
+    peer = int(fine["peer"])
+    fine_prefix_rank = fine["mpi_rank"] or fine["mast_rank"]
     return Event(
-        mpi_rank=int(prefix_rank),
-        name=name,
-        step=int(m["step"]),
-        rank=int(m["rank"]),
-        group=int(m["detail"]),
-        slot=int(m["slot"]),
-        ns=int(m["ns"]),
+        mpi_rank=int(fine_prefix_rank),
+        name=fine["name"],
+        step=dependency_step,
+        rank=peer,
+        group=stripe,
+        slot=int(fine["slot"]),
+        ns=int(fine["ns"]),
+        phase=fine["phase"],
+        dependency_step=dependency_step,
+        stripe=stripe,
+        lane=int(fine["lane"]),
+        peer=peer,
+        qp_lane=int(fine["qp_lane"]),
+        bytes=int(fine["bytes"]),
     )
 
 
 def _is_trace_line(line: str) -> bool:
-    return "Prims trace" in line or "Pipes trace" in line
+    return "Prims trace" in line or "Prims fine trace" in line or "Pipes trace" in line
 
 
 def parse_events(
@@ -305,7 +395,7 @@ def filter_events(
             continue
         if "nvl" not in type_filter and e.name in NVL_NAMES:
             continue
-        if "allreduce" not in type_filter and e.name in AR_NAMES:
+        if "allreduce" not in type_filter and e.name in ALL_AR_NAMES:
             continue
         if time_start is not None and e.ns < time_start:
             continue
@@ -575,6 +665,8 @@ def _drain_state(state: PairState, unmatched: list[tuple[Event, str]]) -> None:
         unmatched.append((event, f"{event.name} without matching end"))
     for _, event in state.pending_allreduce.items():
         unmatched.append((event, f"{event.name} without matching end"))
+    for _, event in state.pending_fine_allreduce.items():
+        unmatched.append((event, f"{event.name} without matching end"))
 
 
 def _handle_allreduce_event(
@@ -613,6 +705,93 @@ def _handle_allreduce_event(
                 "end_ns": e.ns,
                 "dur_ns": e.ns - begin.ns,
             },
+        )
+    )
+
+
+def _fine_allreduce_key(
+    e: Event, begin_name: str
+) -> tuple[str, str, int, int, int, int, int, int]:
+    return (
+        begin_name,
+        e.phase or "unknown",
+        e.dependency_step,
+        e.stripe,
+        e.lane,
+        e.peer,
+        e.qp_lane,
+        e.bytes,
+    )
+
+
+def _fine_allreduce_args(e: Event) -> dict[str, object]:
+    return {
+        "phase": e.phase or "unknown",
+        "dependency_step": e.dependency_step,
+        "stripe": e.stripe,
+        "lane": e.lane,
+        "peer": e.peer,
+        "qp_lane": e.qp_lane,
+        "bytes": e.bytes,
+        "slot": e.slot,
+        "wall_time_ns": e.ns,
+    }
+
+
+def _handle_fine_allreduce_event(
+    state: PairState,
+    e: Event,
+    slices: list[Slice_],
+    unmatched: list[tuple[Event, str]],
+) -> None:
+    path_name = FINE_AR_PATHS.get(e.name)
+    if path_name is not None:
+        slices.append(
+            Slice_(
+                pid=state.mpi_rank,
+                tid=THREAD_OFFSET_AR + e.stripe,
+                cat="allreduce_path",
+                name=path_name,
+                begin_ns=e.ns,
+                end_ns=e.ns,
+                args=_fine_allreduce_args(e),
+                instant=True,
+            )
+        )
+        return
+
+    if e.name in FINE_AR_BEGIN_NAMES:
+        key = _fine_allreduce_key(e, e.name)
+        previous = state.pending_fine_allreduce.get(key)
+        if previous is not None:
+            unmatched.append((previous, f"{previous.name} without matching end"))
+        state.pending_fine_allreduce[key] = e
+        return
+
+    begin_name, display_name = FINE_AR_PAIRS[e.name]
+    begin = state.pending_fine_allreduce.pop(_fine_allreduce_key(e, begin_name), None)
+    if begin is None:
+        unmatched.append((e, f"{e.name} without matching begin"))
+        return
+    event_args = _fine_allreduce_args(e)
+    event_args.update(
+        {
+            "slot_begin": begin.slot,
+            "slot_end": e.slot,
+            "begin_ns": begin.ns,
+            "end_ns": e.ns,
+            "dur_ns": e.ns - begin.ns,
+        }
+    )
+    slices.append(
+        Slice_(
+            pid=state.mpi_rank,
+            tid=THREAD_OFFSET_AR + e.stripe,
+            cat="allreduce_fine",
+            name=display_name,
+            begin_ns=begin.ns,
+            end_ns=e.ns,
+            args=event_args,
         )
     )
 
@@ -686,6 +865,8 @@ def pair_events(
                 _handle_nvl_event(state, e, slices, unmatched)
             elif e.name in AR_NAMES:
                 _handle_allreduce_event(state, e, slices, unmatched)
+            elif e.name in FINE_AR_NAMES:
+                _handle_fine_allreduce_event(state, e, slices, unmatched)
             else:
                 unmatched.append((e, f"unknown event name {e.name!r}"))
         _drain_state(state, unmatched)
@@ -769,6 +950,20 @@ def build_trace(
     trace_events: list[dict[str, object]] = _emit_metadata(pids, used_tids, topology)
 
     for s in slices:
+        if s.instant:
+            trace_events.append(
+                {
+                    "ph": "i",
+                    "s": "t",
+                    "name": s.name,
+                    "cat": s.cat,
+                    "pid": s.pid,
+                    "tid": s.tid,
+                    "ts": (s.begin_ns - min_ns) / 1000.0,
+                    "args": s.args,
+                }
+            )
+            continue
         trace_events.append(
             {
                 "ph": "X",
@@ -828,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pipestrace_to_perfetto",
         description=(
-            "Convert supported hierarchical-allgather PipesTrace log lines "
+            "Convert supported collective PipesTrace log lines "
             "into a Perfetto / Chrome Trace Event JSON timeline that can be "
             "opened at https://ui.perfetto.dev/."
         ),
