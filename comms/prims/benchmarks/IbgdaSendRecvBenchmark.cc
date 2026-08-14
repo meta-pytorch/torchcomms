@@ -83,6 +83,14 @@ enum class SendRecvCopyOp {
   Memcpy,
 };
 
+// Wire protocol: Simple (put data + explicit DATA_READY signal) vs LL
+// (low-latency data + inline flag, 2x wire). LL is wired for the blocking path
+// only (the resumable Progress API has no LL wire/payload geometry yet).
+enum class SendRecvProto {
+  Simple,
+  LL,
+};
+
 bool isTcpEnvironment() {
   return std::getenv("MASTER_ADDR") != nullptr &&
       std::getenv("MASTER_PORT") != nullptr && std::getenv("RANK") != nullptr &&
@@ -267,13 +275,26 @@ const char* copyOpName(SendRecvCopyOp copyOp) {
   return "unknown";
 }
 
+const char* protoName(SendRecvProto proto) {
+  switch (proto) {
+    case SendRecvProto::Simple:
+      return "simple";
+    case SendRecvProto::LL:
+      return "ll";
+  }
+  return "unknown";
+}
+
 std::string benchmarkName(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     const char* sizeName,
     int repeat = -1) {
   std::string name = "ibgdaSendRecv(";
+  name += protoName(proto);
+  name += "_";
   name += apiName(api);
   name += "_";
   name += directionName(direction);
@@ -399,11 +420,12 @@ class IbgdaSendRecvBenchmarkContext {
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     CHECK_LE(nbytes, maxBytes_);
     bootstrap_->barrierAll();
     for (int i = 0; i < warmupIters_; ++i) {
-      launchOperation(nbytes, api, direction, copyOp);
+      launchOperation(nbytes, api, direction, copyOp, proto);
       CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
     }
     bootstrap_->barrierAll();
@@ -414,7 +436,8 @@ class IbgdaSendRecvBenchmarkContext {
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     CHECK_LE(nbytes, maxBytes_);
 
     cudaEvent_t start{};
@@ -424,7 +447,7 @@ class IbgdaSendRecvBenchmarkContext {
 
     CHECK_EQ(cudaEventRecord(start, stream_), cudaSuccess);
     for (uint32_t i = 0; i < iters; ++i) {
-      launchOperation(nbytes, api, direction, copyOp);
+      launchOperation(nbytes, api, direction, copyOp, proto);
     }
     CHECK_EQ(cudaEventRecord(stop, stream_), cudaSuccess);
     CHECK_EQ(cudaEventSynchronize(stop), cudaSuccess);
@@ -450,14 +473,23 @@ class IbgdaSendRecvBenchmarkContext {
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     auto* sendBuf = static_cast<char*>(sendBuf_->get());
     auto* recvBuf = static_cast<char*>(recvBuf_->get());
+    // LL is wired only for the blocking path (registerBenchmarks never pairs LL
+    // with Progress); dispatch to the send_ll/recv_ll launchers.
+    const bool useLL = (proto == SendRecvProto::LL);
 
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
-        launch_ibgda_send_recv(
-            deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        if (useLL) {
+          launch_ibgda_send_recv_ll(
+              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        } else {
+          launch_ibgda_send_recv(
+              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        }
       } else {
         launch_ibgda_progress_send_recv(
             deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
@@ -467,8 +499,13 @@ class IbgdaSendRecvBenchmarkContext {
 
     if (globalRank_ == 0) {
       if (api == SendRecvApi::Blocking) {
-        launch_ibgda_send(
-            deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        if (useLL) {
+          launch_ibgda_send_ll(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        } else {
+          launch_ibgda_send(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        }
       } else if (api == SendRecvApi::RegisteredProgress) {
         CHECK(registeredEnabled_);
         launch_ibgda_registered_progress_send(
@@ -486,7 +523,13 @@ class IbgdaSendRecvBenchmarkContext {
     }
 
     if (api == SendRecvApi::Blocking) {
-      launch_ibgda_recv(deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      if (useLL) {
+        launch_ibgda_recv_ll(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      } else {
+        launch_ibgda_recv(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      }
     } else {
       launch_ibgda_progress_recv(
           deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
@@ -518,6 +561,7 @@ static unsigned int ibgdaSendRecv(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     folly::UserCounters& counters) {
   // Small messages would run too briefly at folly's count and be dropped as
   // NaN; use a deterministic high count for them (identical on both ranks, so
@@ -527,11 +571,11 @@ static unsigned int ibgdaSendRecv(
   CHECK_GT(iters, 0);
 
   BENCHMARK_SUSPEND {
-    context.warmup(nbytes, api, direction, copyOp);
+    context.warmup(nbytes, api, direction, copyOp, proto);
   }
 
   const float elapsedMs =
-      context.runLocalElapsed(iters, nbytes, api, direction, copyOp);
+      context.runLocalElapsed(iters, nbytes, api, direction, copyOp, proto);
   folly::doNotOptimizeAway(elapsedMs);
 
   BENCHMARK_SUSPEND {
@@ -562,50 +606,78 @@ void registerBenchmark(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     int repeat = -1) {
   folly::addBenchmark(
       __FILE__,
-      benchmarkName(api, direction, copyOp, size.name, repeat),
-      [&context, nbytes = size.nbytes, api, direction, copyOp](
+      benchmarkName(api, direction, copyOp, proto, size.name, repeat),
+      [&context, nbytes = size.nbytes, api, direction, copyOp, proto](
           folly::UserCounters& counters, unsigned int iters) -> unsigned int {
         return ibgdaSendRecv(
-            context, iters, nbytes, api, direction, copyOp, counters);
+            context, iters, nbytes, api, direction, copyOp, proto, counters);
       });
 }
 
 void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
+  // A single run benchmarks exactly one protocol, selected via
+  // IBGDA_BENCH_PROTO (default: simple). Run the binary once per protocol to
+  // compare.
+  SendRecvProto proto = SendRecvProto::Simple;
+  if (const char* p = std::getenv("IBGDA_BENCH_PROTO")) {
+    const std::string protoStr(p);
+    if (protoStr == "ll") {
+      proto = SendRecvProto::LL;
+    } else if (protoStr == "simple") {
+      proto = SendRecvProto::Simple;
+    } else {
+      LOG(WARNING) << "Unknown IBGDA_BENCH_PROTO='" << protoStr
+                   << "', defaulting to simple";
+    }
+  }
+
   for (const auto& size : kBenchmarkSizes) {
+    // Blocking + fixed-size memcpy is supported by every protocol.
     registerBenchmark(
         context,
         size,
         SendRecvApi::Blocking,
         SendRecvDirection::Bidirectional,
-        SendRecvCopyOp::Memcpy);
-    registerBenchmark(
-        context,
-        size,
-        SendRecvApi::Progress,
-        SendRecvDirection::Bidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
     registerBenchmark(
         context,
         size,
         SendRecvApi::Blocking,
         SendRecvDirection::Unidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
+    // Neither the resumable Progress API nor the variable-size ANS CopyOp has
+    // LL wire geometry; both stay on Simple.
+    if (proto != SendRecvProto::Simple) {
+      continue;
+    }
+    registerBenchmark(
+        context,
+        size,
+        SendRecvApi::Progress,
+        SendRecvDirection::Bidirectional,
+        SendRecvCopyOp::Memcpy,
+        proto);
     registerBenchmark(
         context,
         size,
         SendRecvApi::Progress,
         SendRecvDirection::Unidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
     if (context.registeredEnabled()) {
       registerBenchmark(
           context,
           size,
           SendRecvApi::RegisteredProgress,
           SendRecvDirection::Unidirectional,
-          SendRecvCopyOp::Memcpy);
+          SendRecvCopyOp::Memcpy,
+          proto);
     }
 
     if (context.registeredEnabled() &&
@@ -618,6 +690,7 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
             SendRecvApi::Progress,
             SendRecvDirection::Unidirectional,
             SendRecvCopyOp::Memcpy,
+            proto,
             repeat);
         registerBenchmark(
             context,
@@ -625,6 +698,7 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
             SendRecvApi::RegisteredProgress,
             SendRecvDirection::Unidirectional,
             SendRecvCopyOp::Memcpy,
+            proto,
             repeat);
       }
     }

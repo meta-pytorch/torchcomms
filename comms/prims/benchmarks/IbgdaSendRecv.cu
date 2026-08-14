@@ -300,6 +300,134 @@ void launch_ibgda_recv(
   }
 }
 
+// ==========================================================================
+// Low-latency (LL) protocol benchmark kernels. Mirror the Simple send/recv
+// kernels above but dispatch to the transport's send<LL>/recv<LL> (data+inline
+// flag, 2x wire, no DATA_READY wait; Memcpy only). Section sizing is identical:
+// the pipelined LL loop maps each payload section onto the wire ring
+// internally.
+// ==========================================================================
+__global__ void __launch_bounds__(512, 1) ibgda_send_recv_ll_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  auto [role, sub] = group.partition(2);
+  const bool isSender = (role == 0);
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    const std::size_t offset = s * sectionBytes;
+    if (isSender) {
+      TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
+      transport->send<Memcpy, protocol::LL>(
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
+    } else {
+      TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
+      transport->recv<Memcpy, protocol::LL>(
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
+    }
+  }
+}
+
+void launch_ibgda_send_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  ibgda_send_recv_ll_kernel<<<2 * numBlocks, 512, 0, stream>>>(
+      transport, src, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] send/recv LL kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_send_ll_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
+    transport->send<Memcpy, protocol::LL>(
+        group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
+  }
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_recv_ll_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
+    transport->recv<Memcpy, protocol::LL>(
+        group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout);
+  }
+}
+
+void launch_ibgda_send_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  ibgda_send_ll_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] send LL kernel launch failed: %s\n", cudaGetErrorString(err));
+  }
+}
+
+void launch_ibgda_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  ibgda_recv_ll_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] recv LL kernel launch failed: %s\n", cudaGetErrorString(err));
+  }
+}
+
 __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
     int numBlocks,
