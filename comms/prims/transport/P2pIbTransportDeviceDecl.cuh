@@ -40,6 +40,15 @@ enum class IbgdaRegisteredSendProgressStatus : uint8_t {
 
 namespace detail {
 
+// One landed recv chunk, handed back by progress_recv_acquire_once() without
+// consuming it. Held until progress_recv_release_once() frees the slot.
+struct RecvChunkAcquisition {
+  const char* staging{nullptr}; // this chunk's recv staging
+  std::size_t validBytes{0}; // payload bytes valid in it
+  std::size_t dataOff{0}; // payload offset into the user buffer
+  std::size_t protocolBytes{0}; // SLOT_FREE credit owed for this chunk
+};
+
 template <typename Transport>
 __device__ __forceinline__ void init_registered_send_progress(
     Transport& transport,
@@ -63,6 +72,22 @@ progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
     const Timeout& timeout = Timeout());
+
+template <typename Transport, typename Proto>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+progress_recv_acquire_once(
+    Transport& transport,
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    RecvChunkAcquisition& out);
+
+template <typename Transport, typename Proto>
+__device__ __forceinline__ void progress_recv_release_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const RecvChunkAcquisition& view);
 
 template <typename Transport>
 __device__ __forceinline__ void send_registered(
@@ -371,6 +396,19 @@ struct P2pIbTransportDevice {
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
       Args... args);
+  template <typename = void>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_acquire_once(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      detail::RecvChunkAcquisition& out);
+
+  template <typename = void>
+  __device__ __forceinline__ void progress_recv_release_once(
+      ThreadGroup& group,
+      const detail::RecvChunkAcquisition& view);
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
