@@ -680,7 +680,12 @@ class IbgdaSendRecvBenchmarkContext {
     // Keep both ranks on the same iteration so the pattern they encode and the
     // pattern the peer expects always agree.
     bootstrap_->barrierAll();
-    launchOperation(nbytes, SendRecvApi::Blocking, direction, proto);
+    launchOperation(
+        nbytes,
+        SendRecvApi::Blocking,
+        direction,
+        SendRecvCopyOp::Memcpy,
+        proto);
     CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
 
     if (!receives) {
@@ -726,8 +731,9 @@ class IbgdaSendRecvBenchmarkContext {
       SendRecvProto proto) {
     auto* sendBuf = static_cast<char*>(sendBuf_->get());
     auto* recvBuf = static_cast<char*>(recvBuf_->get());
-    // LL is wired only for the blocking path (registerBenchmarks never pairs LL
-    // with Progress); dispatch to the send_ll/recv_ll launchers.
+    // LL is wired for the blocking path (both directions) and the
+    // unidirectional progress path; registerBenchmarks never pairs LL with
+    // bidirectional Progress, so that combination is Simple-only below.
     const bool useLL = (proto == SendRecvProto::LL);
 
     if (direction == SendRecvDirection::Bidirectional) {
@@ -760,7 +766,10 @@ class IbgdaSendRecvBenchmarkContext {
         launch_ibgda_registered_progress_send(
             deviceTransport_, registeredSendBuf_, nbytes, numBlocks_, stream_);
       } else {
-        if (registeredEnabled_) {
+        if (useLL) {
+          launch_ibgda_progress_send_ll(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        } else if (registeredEnabled_) {
           launch_ibgda_progress_send_complete(
               deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
         } else {
@@ -780,8 +789,13 @@ class IbgdaSendRecvBenchmarkContext {
             deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
       }
     } else {
-      launch_ibgda_progress_recv(
-          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      if (useLL) {
+        launch_ibgda_progress_recv_ll(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      } else {
+        launch_ibgda_progress_recv(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      }
     }
   }
 
@@ -928,18 +942,17 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
         SendRecvDirection::Unidirectional,
         SendRecvCopyOp::Memcpy,
         proto);
-    // Neither the resumable Progress API nor the variable-size ANS CopyOp has
-    // LL wire geometry; both stay on Simple.
-    if (proto != SendRecvProto::Simple) {
-      continue;
+    // Progress: the unidirectional path is wired for every protocol
+    // (Simple + LL); the bidirectional progress kernel is Simple-only.
+    if (proto == SendRecvProto::Simple) {
+      registerBenchmark(
+          context,
+          size,
+          SendRecvApi::Progress,
+          SendRecvDirection::Bidirectional,
+          SendRecvCopyOp::Memcpy,
+          proto);
     }
-    registerBenchmark(
-        context,
-        size,
-        SendRecvApi::Progress,
-        SendRecvDirection::Bidirectional,
-        SendRecvCopyOp::Memcpy,
-        proto);
     registerBenchmark(
         context,
         size,
