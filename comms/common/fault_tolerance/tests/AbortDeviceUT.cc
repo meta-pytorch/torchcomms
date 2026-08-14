@@ -428,6 +428,128 @@ TEST(AbortDeviceTest, deviceTimeoutCanBeCancelledAndRestarted) {
   EXPECT_TRUE(abort.isTimedOut());
 }
 
+// The communicator timeout must stay late-bound. Transports cache one device
+// handle for the communicator's lifetime (MultiPeerTransport builds it in its
+// constructor), so a handle created before setDefaultTimeout() must still honor
+// the new value. Note this asserts the DEADLINE path, not a raw
+// getTimeoutMs() read: deviceHandleSeesHostDefaultTimeoutUpdates covers the
+// latter and would not catch a stale value cached inside startTimeout().
+TEST(AbortDeviceTest, deadlineHonorsDefaultTimeoutSetAfterHandleCreation) {
+  Abort abort{/*enabled=*/true};
+  // Handle created BEFORE any timeout exists, then again after one is set, to
+  // cover both orderings a communicator can produce.
+  abort.setDefaultTimeout(std::chrono::milliseconds{60000});
+  auto handle = abort.getDeviceHandle();
+
+  auto observedMode = makeDeviceValue<int>();
+  auto observedIsAborted = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedIsAborted, nullptr);
+
+  // Shorten well below the value present at handle creation. If the handle
+  // cached that value, this waits ~60s and the bound below fails.
+  abort.setDefaultTimeout(std::chrono::milliseconds{kDeviceTimeoutExpectedMs});
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t end = nullptr;
+  ASSERT_EQ(cudaEventCreate(&start), cudaSuccess);
+  ASSERT_EQ(cudaEventCreate(&end), cudaSuccess);
+
+  ASSERT_EQ(cudaEventRecord(start, /*stream=*/nullptr), cudaSuccess);
+  EXPECT_EQ(
+      launchDeviceWaitForTimeout(
+          handle,
+          observedMode.get(),
+          observedIsAborted.get(),
+          kDeviceTimeoutPollIterations,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaEventRecord(end, /*stream=*/nullptr), cudaSuccess);
+  ASSERT_EQ(cudaEventSynchronize(end), cudaSuccess);
+
+  float elapsedMs = 0.0F;
+  ASSERT_EQ(cudaEventElapsedTime(&elapsedMs, start, end), cudaSuccess);
+  destroyEvent(end);
+  destroyEvent(start);
+
+  EXPECT_EQ(
+      readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));
+  EXPECT_LE(
+      elapsedMs,
+      static_cast<float>(kDeviceTimeoutExpectedMs) + kDeviceTimeoutAccuracyMs)
+      << "deadline used a stale timeout captured at handle creation";
+}
+
+// A per-op override beats the communicator default, and clearing it falls back
+// to shared state.
+TEST(AbortDeviceTest, perOpTimeoutOverridesCommunicatorDefault) {
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{60000});
+
+  auto handle = abort.getDeviceHandle();
+  EXPECT_LT(handle.opTimeoutMs(), 0) << "override must default to unset";
+  handle.setOpTimeoutMs(kDeviceTimeoutExpectedMs);
+
+  auto observedMode = makeDeviceValue<int>();
+  auto observedIsAborted = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedIsAborted, nullptr);
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t end = nullptr;
+  ASSERT_EQ(cudaEventCreate(&start), cudaSuccess);
+  ASSERT_EQ(cudaEventCreate(&end), cudaSuccess);
+
+  ASSERT_EQ(cudaEventRecord(start, /*stream=*/nullptr), cudaSuccess);
+  EXPECT_EQ(
+      launchDeviceWaitForTimeout(
+          handle,
+          observedMode.get(),
+          observedIsAborted.get(),
+          kDeviceTimeoutPollIterations,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaEventRecord(end, /*stream=*/nullptr), cudaSuccess);
+  ASSERT_EQ(cudaEventSynchronize(end), cudaSuccess);
+
+  float elapsedMs = 0.0F;
+  ASSERT_EQ(cudaEventElapsedTime(&elapsedMs, start, end), cudaSuccess);
+  destroyEvent(end);
+  destroyEvent(start);
+
+  EXPECT_EQ(
+      readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));
+  EXPECT_GE(
+      elapsedMs,
+      static_cast<float>(kDeviceTimeoutExpectedMs) - kDeviceTimeoutAccuracyMs);
+  EXPECT_LE(
+      elapsedMs,
+      static_cast<float>(kDeviceTimeoutExpectedMs) + kDeviceTimeoutAccuracyMs)
+      << "per-op override did not take precedence over the 60s comm default";
+}
+
+TEST(AbortDeviceTest, perOpTimeoutUnsetFallsBackToCommunicatorDefault) {
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{1234});
+
+  auto handle = abort.getDeviceHandle();
+  handle.setOpTimeoutMs(4321);
+  EXPECT_EQ(handle.opTimeoutMs(), 4321);
+
+  // Negative clears the override; the deadline reverts to shared state.
+  handle.setOpTimeoutMs(-1);
+  EXPECT_LT(handle.opTimeoutMs(), 0);
+
+  auto observedTimeoutMs = makeDeviceValue<int64_t>();
+  ASSERT_NE(observedTimeoutMs, nullptr);
+  EXPECT_EQ(
+      launchDeviceReadDefaultTimeoutMs(
+          handle, observedTimeoutMs.get(), /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(readDeviceValue(observedTimeoutMs), 1234);
+}
+
 TEST(AbortDeviceTest, deviceTimeoutAccuracyMeasuredWithCudaEvents) {
   Abort abort{/*enabled=*/true};
   auto observedMode = makeDeviceValue<int>();
