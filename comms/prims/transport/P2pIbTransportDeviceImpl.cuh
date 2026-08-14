@@ -214,14 +214,14 @@ __device__ __forceinline__ void record_send_completion(
     uint64_t generation,
     const IbLocalCompletionTicket& ticket);
 
-template <typename Transport>
+template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
-template <typename Transport>
+template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,

@@ -131,7 +131,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
  * @param nbytes Number of user-buffer bytes to send for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
-template <typename Transport>
+template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
@@ -139,7 +139,7 @@ __device__ __forceinline__ void init_send_progress(
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
-  auto& slot = progress_send_slot<protocol::Simple>(transport, group);
+  auto& slot = progress_send_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "send");
   IbChannelProgress state{};
   state.activeStage = nbytes == 0
@@ -149,8 +149,10 @@ __device__ __forceinline__ void init_send_progress(
     store_progress_state(group, slot, state);
     return;
   }
-  // Validate the transfer before reserving the transport byte cursor.
-  const ProgressGeometry geometry = make_progress_geometry(
+  // Validate the transfer before reserving the transport byte cursor. The
+  // reservation runs in Proto's payload/wire geometry so init and every later
+  // progress_send_once() agree on the cursor + tail padding.
+  const ProgressGeometry geometry = make_progress_geometry<Proto>(
       channelLayout, group, nbytes, max_signal_bytes, "init_send_progress");
   reserve_progress_step(group, slot, state, geometry);
   store_progress_state(group, slot, state);
@@ -206,7 +208,7 @@ __device__ __forceinline__ void init_registered_send_progress(
  * @param nbytes Number of user-buffer bytes to receive for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
-template <typename Transport>
+template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
@@ -214,7 +216,7 @@ __device__ __forceinline__ void init_recv_progress(
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
-  auto& slot = progress_recv_slot<protocol::Simple>(transport, group);
+  auto& slot = progress_recv_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "recv");
   IbChannelProgress state{};
   state.activeStage = nbytes == 0
@@ -224,8 +226,10 @@ __device__ __forceinline__ void init_recv_progress(
     store_progress_state(group, slot, state);
     return;
   }
-  // Validate the transfer before reserving the transport byte cursor.
-  const ProgressGeometry geometry = make_progress_geometry(
+  // Validate the transfer before reserving the transport byte cursor. The
+  // reservation runs in Proto's payload/wire geometry so init and every later
+  // progress_recv_once() agree on the cursor + tail padding.
+  const ProgressGeometry geometry = make_progress_geometry<Proto>(
       channelLayout, group, nbytes, max_signal_bytes, "init_recv_progress");
   reserve_progress_step(group, slot, state, geometry);
   store_progress_state(group, slot, state);
@@ -317,6 +321,62 @@ __device__ __forceinline__ SendSignal progress_send_signal(
     const IbRemoteChannel& remoteChannel,
     uint64_t signalVal) {
   return SendSignal{remoteChannel.dataReady, signalVal};
+}
+
+// ---- LL (data + inline flag) progress send overloads ---------------------
+// The LL siblings of the Simple send seams above. Encode packs payload+flag
+// via the CopyOp's packet-aware sendLL<P> hook (Memcpy delegates to
+// LLImpl::pack) so the put carries the readiness mark inline; the signal is
+// therefore empty (no DATA_READY). This mirrors the blocking LL path
+// (prepareSendBuf(protocol::LL)) -- the CopyOp must provide sendLL<P>, so a
+// reduce/convert op can plug in; a plain contiguous copy cannot address the
+// packet-interleaved staging.
+
+// Encode one send chunk into send-staging (LL: CopyOp::sendLL<P>,
+// payload+flag).
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ void progress_send_prepare_buf(
+    protocol::LL,
+    ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
+    const void* __restrict__ src,
+    std::size_t payloadBytes,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  static_assert(
+      has_sendLL_v<CopyOp, P>,
+      "LL progress send requires a CopyOp with a packet-aware sendLL<P>(); "
+      "Memcpy provides one. A reduce/convert CopyOp must supply its own -- a "
+      "plain contiguous copy cannot address the data+flag interleaved staging");
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t validBytes =
+      valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
+  CopyOp::template sendLL<P>(
+      group,
+      channelLayout.sendStagingPtr + chunk.stagingOff,
+      static_cast<const char*>(src) + chunk.dataOff,
+      validBytes,
+      chunk.dataOff,
+      static_cast<typename P::FlagType>(chunk.flagVal),
+      args...);
+#else
+  (void)group;
+  (void)channelLayout;
+  (void)chunk;
+  (void)src;
+  (void)payloadBytes;
+  ((void)args, ...);
+#endif
+}
+
+// The signal the leader put piggybacks (LL: none -- the inline packet flag is
+// the readiness mark, so the put carries data only).
+__device__ __forceinline__ SendSignal progress_send_signal(
+    protocol::LL,
+    const IbRemoteChannel& /*remoteChannel*/,
+    uint64_t /*signalVal*/) {
+  return SendSignal{IbgdaRemoteBuffer{}, /*val=*/0};
 }
 
 template <typename Transport, typename CopyOp, typename Proto, typename... Args>
@@ -951,11 +1011,16 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  */
 // Non-blocking readiness check for one recv chunk (Simple: poll the round-robin
 // DATA_READY lane that carried this chunk; leader-only + broadcast, no spin).
+// `channelLayout`/`chunk` are unused by Simple (they carry the recv staging +
+// packet geometry the LL overload polls); the seam passes them so both
+// protocols share the call site in progress_recv_once.
 template <typename Transport>
 __device__ __forceinline__ bool progress_recv_ready(
     protocol::Simple,
     Transport& transport,
     ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     uint64_t waitCredit,
@@ -964,6 +1029,8 @@ __device__ __forceinline__ bool progress_recv_ready(
     PipesTraceProgressState* traceState,
     uint8_t qpLane) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  (void)channelLayout;
+  (void)chunk;
   uint32_t ready = 1;
   if (group.is_leader()) {
     unsigned long long current = 0;
@@ -1008,6 +1075,8 @@ __device__ __forceinline__ bool progress_recv_ready(
 #else
   (void)transport;
   (void)group;
+  (void)channelLayout;
+  (void)chunk;
   (void)localChannel;
   (void)localDataReady;
   (void)waitCredit;
@@ -1066,6 +1135,147 @@ __device__ __forceinline__ void progress_recv_consume_buf(
   (void)payloadBytes;
   (void)traceContext;
   (void)qpLane;
+  ((void)args, ...);
+#endif
+}
+
+// Group-wide AND, used by the LL readiness poll to fold each thread's local
+// packet-flag check into one collective decision. Delegates to
+// ThreadGroup::all() so the scratch index stays tied to the group's barrier;
+// keeping a second copy of that indexing here is what let it drift from
+// ThreadGroup::broadcast().
+__device__ __forceinline__ bool group_all_ready(ThreadGroup& group, bool pred) {
+  return group.all(pred);
+}
+
+// Non-blocking readiness check for one recv chunk (LL: cooperative,
+// non-spinning poll of every packet's inline flag == chunk.flagVal, then a
+// group AND-reduce). There is no DATA_READY counter for LL, so
+// transport/localChannel/waitCredit are unused. The trace parameters are part
+// of the shared seam that progress_recv_once_impl calls through; LL emits no
+// trace events, so they are accepted and ignored.
+//
+// Landing constraint: leaving localChannel untouched here skips the
+// receiver-side mirror advance that IbgdaBuffer.h documents as a cross-protocol
+// invariant -- put_impl bumps the send cursor unconditionally, so without a
+// matching receiver-side advance the round-robin lane mapping desyncs and a
+// later Simple collective on the same channel can wait on a lane the sender
+// never used. D115669516 completes that advance; it must land in the same batch
+// as this diff and the ones that enable LL progress on top of it.
+template <typename Transport>
+__device__ __forceinline__ bool progress_recv_ready(
+    protocol::LL,
+    Transport& transport,
+    ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
+    IbLocalChannel& localChannel,
+    const IbgdaLocalBuffer& localDataReady,
+    uint64_t waitCredit,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
+    PipesTraceProgressState* traceState,
+    uint8_t qpLane) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  using P = LlxPacket<4, 4>;
+  (void)transport;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)waitCredit;
+  (void)traceContext;
+  (void)traceState;
+  (void)qpLane;
+  const char* staging = channelLayout.recvStagingPtr + chunk.stagingOff;
+  const std::size_t nPackets =
+      chunk.wireBytes / static_cast<std::size_t>(P::kPacketBytes);
+  const auto flagVal = static_cast<typename P::FlagType>(chunk.flagVal);
+  // Each thread inspects the packets it owns (grid-strided, mirroring
+  // LLImpl::unpack) with early-exit, then the group AND-reduces so all threads
+  // agree to decode or to return Waiting -- no spin.
+  uint32_t myReady = 1;
+  for (std::size_t i = group.thread_id_in_group; i < nPackets;
+       i += group.group_size) {
+    if (!LLImpl<P>::is_flag_set(
+            staging + i * static_cast<std::size_t>(P::kPacketBytes), flagVal)) {
+      myReady = 0;
+      break;
+    }
+  }
+  const bool ready = group_all_ready(group, myReady != 0U);
+  if (!ready && group.is_leader()) {
+    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        timeout,
+        "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
+        "wireBytes=%llu",
+        static_cast<unsigned long long>(chunk.flagVal),
+        static_cast<unsigned long long>(chunk.wireBytes));
+  }
+  return ready;
+#else
+  (void)transport;
+  (void)group;
+  (void)channelLayout;
+  (void)chunk;
+  (void)localChannel;
+  (void)localDataReady;
+  (void)waitCredit;
+  (void)timeout;
+  return true;
+#endif
+}
+
+// Decode one ready recv chunk from recv-staging into dst via the CopyOp's
+// packet-aware recvLL<P> hook (Memcpy delegates to LLImpl::unpack; a
+// reduce/convert op sums each packet's payload into the accumulator).
+// progress_recv_ready already confirmed every packet flag == chunk.flagVal, so
+// the decode does not spin. Mirrors the blocking LL path
+// (consumeRecvBuf(protocol::LL)) -- this is the CopyOp dispatch point for the
+// LL progress recv path.
+//
+// traceContext/qpLane are named rather than swept into `Args...`: the pack is
+// forwarded to the CopyOp, so leaving them unnamed would silently hand the
+// reduce op two extra arguments instead of failing to compile.
+template <typename CopyOp = Memcpy, typename... Args>
+__device__ __forceinline__ void progress_recv_consume_buf(
+    protocol::LL,
+    ThreadGroup& group,
+    const IbChannelLayout& channelLayout,
+    const ProgressChunk& chunk,
+    void* __restrict__ dst,
+    std::size_t payloadBytes,
+    const PipesTraceAllReduceContext* traceContext,
+    uint8_t qpLane,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  (void)traceContext;
+  (void)qpLane;
+  static_assert(
+      has_recvLL_v<CopyOp, P>,
+      "LL progress recv requires a CopyOp with a packet-aware recvLL<P>(); "
+      "Memcpy provides one. A reduce/convert CopyOp must supply its own -- a "
+      "plain contiguous copy cannot address the data+flag interleaved staging");
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const std::size_t validBytes =
+      valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
+  // progress_recv_ready() above already confirmed every packet flag equals
+  // chunk.flagVal, so unpack's readiness spin exits on its first load and a
+  // disabled Timeout cannot hang here. If that pre-check ever stops being
+  // exhaustive, thread progress_recv_once()'s timeout through instead.
+  CopyOp::template recvLL<P>(
+      group,
+      static_cast<char*>(dst) + chunk.dataOff,
+      channelLayout.recvStagingPtr + chunk.stagingOff,
+      validBytes,
+      chunk.dataOff,
+      static_cast<typename P::FlagType>(chunk.flagVal),
+      Timeout(),
+      args...);
+#else
+  (void)group;
+  (void)channelLayout;
+  (void)chunk;
+  (void)dst;
+  (void)payloadBytes;
   ((void)args, ...);
 #endif
 }
@@ -1131,6 +1341,8 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
           Proto{},
           transport,
           group,
+          channelLayout,
+          chunk,
           localChannel,
           localDataReady,
           protocolBytesThis,
