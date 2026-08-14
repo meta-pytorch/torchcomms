@@ -1580,13 +1580,18 @@ cvars:
    default     : 33554432
    description : |-
     Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
-    Decoupled from NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE so the multimem path can
-    use a larger window without growing the P2P staging buffers. A larger window
-    means fewer staging rounds, which is the dominant cnvlmm throughput lever at
-    large message sizes. 0 falls back to the effective P2P NVL shared devbuf
-    size (the larger of the P2P and hier-AG NVL devbuf sizes when hier-AG
-    overlap is enabled). Default 32 MiB.
+    This allocation is independent of
+    NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE. A larger window means fewer staging
+    rounds, which is the dominant cnvlmm throughput lever at large message
+    sizes. Set to 0 to disable the NVL multimem transport. Default 32 MiB.
 
+ - name        : MCCL_NVL_MULTIMEM_PIPELINE_DEPTH
+   type        : size_t
+   default     : 2
+   description : |-
+     Number of staging lanes per channel used by the Prims NVL multimem
+     transport. Ctran consumes this value when constructing the transport DTO.
+     Values must be in [1, UINT32_MAX].
 
  - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
    type        : uint64_t
