@@ -2344,6 +2344,16 @@ class P2pIbgdaTransportDevice {
    * flight. `max_signal_bytes` may vary across calls because it only changes
    * the signal cadence within the fixed per-channel staging slice.
    *
+   * `Proto` is a call-site choice and is never negotiated on the wire, so the
+   * sender and receiver must select the same one: mixing them deadlocks, with
+   * Simple waiting on a DATA_READY counter the LL sender never posts while LL
+   * polls for an inline flag Simple never writes. Callers own that agreement
+   * and must derive the protocol from a collective-uniform input rather than
+   * from per-rank state. MCCL's tree does this on the host, picking from the
+   * total message size and baking the result into the kernel symbol (see
+   * `selectAllReduceTreeKernel` / `MCCL_ALLREDUCE_LL_MAX_BYTES`), so every rank
+   * in a launch runs the same format.
+   *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).
    * @param src             Source data for this block's tile.
