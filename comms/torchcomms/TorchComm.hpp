@@ -251,6 +251,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    */
   void abort();
 
+  void abort(AbortInfo info);
+
   /**
    * Check if abort/fault-tolerance is supported on this communicator.
    *
@@ -264,6 +266,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    * @return True if the communicator has been aborted.
    */
   bool isAborted() const;
+
+  std::optional<AbortInfo> getAbortInfo() const;
 
   /**
    * Set the communicator-level default operation timeout.
