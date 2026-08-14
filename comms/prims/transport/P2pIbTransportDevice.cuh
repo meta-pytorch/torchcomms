@@ -747,4 +747,32 @@ P2pIbTransportDevice::progress_recv_once_with_trace(
       args...);
 }
 
+template <typename>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+P2pIbTransportDevice::progress_recv_acquire_once(
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    detail::RecvChunkAcquisition& out) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->progress_recv_acquire_once(
+        group, nbytes, max_signal_bytes, timeout, out);
+  }
+  return ibgda->progress_recv_acquire_once(
+      group, nbytes, max_signal_bytes, timeout, out);
+}
+
+template <typename>
+__device__ __forceinline__ void
+P2pIbTransportDevice::progress_recv_release_once(
+    ThreadGroup& group,
+    const detail::RecvChunkAcquisition& view) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->progress_recv_release_once(group, view);
+  } else {
+    ibgda->progress_recv_release_once(group, view);
+  }
+}
+
 } // namespace comms::prims

@@ -2288,6 +2288,35 @@ class P2pIbgdaTransportDevice {
             args...);
   }
 
+  // Templated for the same reason P2pIbTransportDevice templates its
+  // dispatchers: the definitions live in the progress-impl header, which this
+  // header deliberately does not include. A non-template body is compiled
+  // eagerly in every translation unit, so the HIP/ROCm build -- which never
+  // pulls in that impl header -- failed with -Werror,-Wundefined-inline. A
+  // template body is only instantiated where it is actually called, i.e. where
+  // the definition is visible.
+  template <typename = void>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_acquire_once(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      detail::RecvChunkAcquisition& out) {
+    return detail::
+        progress_recv_acquire_once<P2pIbgdaTransportDevice, protocol::Simple>(
+            *this, group, nbytes, max_signal_bytes, timeout, out);
+  }
+
+  template <typename = void>
+  __device__ __forceinline__ void progress_recv_release_once(
+      ThreadGroup& group,
+      const detail::RecvChunkAcquisition& view) {
+    detail::
+        progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
+            *this, group, view);
+  }
+
   /**
    * send — send one block's tile via pipelined RDMA.
    *
