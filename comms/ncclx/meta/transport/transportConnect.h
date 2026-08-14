@@ -70,6 +70,10 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels);
 // assigned number of channels
 ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels);
 
+ncclResult_t transportNvlsConnect(struct ncclComm* comm);
+
+ncclResult_t transportNvlsTreeConnect(struct ncclComm* comm);
+
 // return true if the given task can be setup lazily
 bool algoCanLazySetupChannel(struct ncclComm* comm, struct ncclTaskColl* task);
 
