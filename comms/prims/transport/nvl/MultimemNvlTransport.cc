@@ -2,13 +2,11 @@
 
 #include "comms/prims/transport/nvl/MultimemNvlTransport.h"
 
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
 
-#include "comms/common/BitOps.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/utils/checks.h"
 
@@ -17,7 +15,7 @@ namespace comms::prims {
 namespace {
 
 constexpr uint64_t kMultimemNvlTransportProtocol = 0x4D4D4E564CULL;
-constexpr uint64_t kMultimemNvlTransportProtocolVersion = 1;
+constexpr uint64_t kMultimemNvlTransportProtocolVersion = 5;
 
 int getCurrentCudaDevice() {
   int cudaDevice = 0;
@@ -86,32 +84,16 @@ MultimemNvlTransport::MultimemNvlTransport(
   // are exercisable on CPU-only hosts (see MultimemNvlTransportValidationTest).
   validateRankMap(commRank_, nvlRankToCommRank_);
 
-  if (config_.dataBufferSize == 0) {
+  const auto validation =
+      validate_multimem_nvl_transport_config(config_, nvlRanks_);
+  if (!validation) {
     throw std::runtime_error(
-        "MultimemNvlTransport: dataBufferSize must be non-zero");
+        std::string("MultimemNvlTransport: ") +
+        std::string(validation.errorMessage));
   }
-  const auto internalSignalCount =
-      detail::checked_multimem_internal_signal_count(config_, nvlRanks_);
-  if (!internalSignalCount.has_value()) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: invalid staging geometry or capacity");
-  }
-  internalSignalCount_ = *internalSignalCount;
-  if (config_.pipelineDepth != 0) {
-    signalsPerLane_ =
-        multimem_staging_signals_per_lane(static_cast<uint32_t>(nvlRanks_));
-  }
-  const uint64_t totalSignalCount =
-      static_cast<uint64_t>(config_.userSignalCount) + internalSignalCount_;
-  if (totalSignalCount == 0) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: at least one signal slot is required");
-  }
-  if (totalSignalCount >
-      static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-    throw std::runtime_error("MultimemNvlTransport: signalCount too large");
-  }
-
+  dataBufferSize_ = validation.dataBufferSize;
+  internalSignalCount_ = validation.internalSignalCount;
+  signalsPerChannel_ = validation.signalsPerChannel;
   // commRank presence in the map is already verified by validateRankMap.
   int nvlRank = -1;
   for (int rank = 0; rank < nvlRanks_; ++rank) {
@@ -129,22 +111,11 @@ MultimemNvlTransport::MultimemNvlTransport(
   }
   nvlRank_ = nvlRank;
 
-  constexpr std::size_t kSignalAlignment = alignof(SignalState);
-  if (config_.dataBufferSize >
-      std::numeric_limits<std::size_t>::max() - (kSignalAlignment - 1)) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: dataBufferSize alignment overflows");
-  }
-  signalRegionOffset_ =
-      comms::bitops::alignUp(config_.dataBufferSize, kSignalAlignment);
-  const std::size_t signalRegionBytes =
-      getSignalBufferSize(static_cast<int>(totalSignalCount));
-  if (signalRegionOffset_ >
-      std::numeric_limits<std::size_t>::max() - signalRegionBytes) {
-    throw std::runtime_error(
-        "MultimemNvlTransport: combined allocation size overflows");
-  }
-  const std::size_t combinedSize = signalRegionOffset_ + signalRegionBytes;
+  static_assert(alignof(SignalState) == detail::kMultimemSignalAlignment);
+  static_assert(sizeof(SignalState) == detail::kMultimemSignalStateSize);
+  signalRegionOffset_ = validation.signalRegionOffset;
+  const std::size_t combinedSize = validation.backingAllocationSize;
+  const std::size_t signalRegionBytes = combinedSize - signalRegionOffset_;
 
   cudaDevice_ = getCurrentCudaDevice();
 
@@ -172,11 +143,13 @@ MultimemNvlTransport::MultimemNvlTransport(
   // exchange()'s post-map barrier lets any peer signal into this region. This
   // mirrors MultiPeerNvlTransport, which zeroes its signal buffer at
   // construction.
-  auto* localSignalRegion =
-      static_cast<char*>(combinedHandler_->getLocalDeviceMemPtr()) +
-      signalRegionOffset_;
-  CUDA_CHECK(cudaMemset(localSignalRegion, 0, signalRegionBytes));
-  CUDA_CHECK(cudaStreamSynchronize(/*stream=*/0));
+  if (signalRegionBytes != 0) {
+    auto* localSignalRegion =
+        static_cast<char*>(combinedHandler_->getLocalDeviceMemPtr()) +
+        signalRegionOffset_;
+    CUDA_CHECK(cudaMemset(localSignalRegion, 0, signalRegionBytes));
+    CUDA_CHECK(cudaStreamSynchronize(/*stream=*/0));
+  }
 }
 
 MultimemNvlTransport::MultimemNvlTransport(
@@ -216,10 +189,11 @@ void MultimemNvlTransport::exchange() {
         .version = kMultimemNvlTransportProtocolVersion,
         .parameters =
             {
-                config_.dataBufferSize,
-                config_.userSignalCount,
+                config_.perChannelSize,
                 config_.pipelineDepth,
                 config_.maxChannels,
+                config_.maxBlocks,
+                config_.userSignalCount,
             },
     };
     combinedHandler_->exchangeMulticast(
@@ -259,17 +233,17 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
           localSignals + userSignalCount, internalSignalCount),
       .internalMultimemSignals = DeviceSpan<SignalState>(
           multimemSignals + userSignalCount, internalSignalCount),
-      .dataBufferSize = config_.dataBufferSize,
+      .dataBufferSize = dataBufferSize_,
       .nvlRank = nvlRank_,
       .nvlRanks = nvlRanks_,
       .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
       .maxChannels = static_cast<uint32_t>(config_.maxChannels),
-      .signalsPerLane = signalsPerLane_,
+      .signalsPerChannel = signalsPerChannel_,
   };
 }
 
 std::size_t MultimemNvlTransport::getAllocatedDataBufferSize() const {
-  return config_.dataBufferSize;
+  return dataBufferSize_;
 }
 
 std::size_t MultimemNvlTransport::getAllocatedSignalBufferSize() const {

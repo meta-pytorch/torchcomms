@@ -4,6 +4,7 @@
 from libc.stdint cimport uint64_t
 from libcpp.string cimport string
 from libcpp.unordered_map cimport unordered_map
+from libcpp.vector cimport vector
 
 
 cdef extern from "cuda_runtime_api.h" nogil:
@@ -64,3 +65,23 @@ cdef extern from "nccl.h" namespace "ncclx" nogil:
 
     # Live comm reconfiguration
     ncclResult_t commSetConfig(ncclComm_t comm, const ncclConfig_t* config)
+
+
+cdef extern from "nccl.h" namespace "ncclx::colltrace" nogil:
+    cdef enum class LifecycleEventType:
+        Enqueue
+        Start
+        End
+
+    cdef cppclass LifecycleEvent:
+        uint64_t replayId
+        uint64_t commId
+        uint64_t collId
+        uint64_t executionCollId
+        LifecycleEventType eventType
+        double timestamp
+
+    ncclResult_t getCollTraceCommId(ncclComm_t comm, uint64_t& comm_id)
+    ncclResult_t getLatestCollTraceCollectiveId(
+        ncclComm_t comm, uint64_t& coll_id)
+    ncclResult_t drainUnreadLifecycleEvents(vector[LifecycleEvent]& events)

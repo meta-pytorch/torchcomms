@@ -1997,6 +1997,20 @@ bool MultiPeerIbTransportBase::isPeerMaterialized(int peerRank) const {
   return peerMaterialized_[rankToPeerIndex(peerRank)];
 }
 
+void MultiPeerIbTransportBase::logPeersMaterialized(
+    std::size_t peerCount,
+    std::int64_t elapsedMs,
+    bool failed) const {
+  if (failed) {
+    LOG(WARNING) << "MultiPeerIbTransport: rank " << myRank_
+                 << " failed after materializing " << peerCount
+                 << " peer(s) in " << elapsedMs << " ms";
+    return;
+  }
+  LOG(INFO) << "MultiPeerIbTransport: rank " << myRank_ << " materialized "
+            << peerCount << " peer(s) in " << elapsedMs << " ms";
+}
+
 void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {
   const std::lock_guard<std::mutex> lock(materializationMutex_);
   if (materializationFailed_) {

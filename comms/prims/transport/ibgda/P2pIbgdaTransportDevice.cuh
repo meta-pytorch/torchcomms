@@ -2199,6 +2199,30 @@ class P2pIbgdaTransportDevice {
     return detail::progress_registered_send_drain_once(*this, group, timeout);
   }
 
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_send_once_with_trace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
+      Args... args) {
+    return detail::
+        progress_send_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
+            *this,
+            group,
+            src,
+            nbytes,
+            max_signal_bytes,
+            timeout,
+            traceContext,
+            traceState,
+            args...);
+  }
+
   /**
    * Attempt bounded progress on one initialized recv.
    *
@@ -2238,6 +2262,59 @@ class P2pIbgdaTransportDevice {
       Args... args) {
     return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_once_with_trace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      PipesTraceProgressState& traceState,
+      Args... args) {
+    return detail::
+        progress_recv_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
+            *this,
+            group,
+            dst,
+            nbytes,
+            max_signal_bytes,
+            timeout,
+            traceContext,
+            traceState,
+            args...);
+  }
+
+  // Templated for the same reason P2pIbTransportDevice templates its
+  // dispatchers: the definitions live in the progress-impl header, which this
+  // header deliberately does not include. A non-template body is compiled
+  // eagerly in every translation unit, so the HIP/ROCm build -- which never
+  // pulls in that impl header -- failed with -Werror,-Wundefined-inline. A
+  // template body is only instantiated where it is actually called, i.e. where
+  // the definition is visible.
+  template <typename = void>
+  __device__ __forceinline__ IbgdaSendRecvProgressStatus
+  progress_recv_acquire_once(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      detail::RecvChunkAcquisition& out) {
+    return detail::
+        progress_recv_acquire_once<P2pIbgdaTransportDevice, protocol::Simple>(
+            *this, group, nbytes, max_signal_bytes, timeout, out);
+  }
+
+  template <typename = void>
+  __device__ __forceinline__ void progress_recv_release_once(
+      ThreadGroup& group,
+      const detail::RecvChunkAcquisition& view) {
+    detail::
+        progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
+            *this, group, view);
   }
 
   /**
@@ -2354,6 +2431,26 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void sendWithFineTrace(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      Args... args) {
+    detail::send_with_fine_trace<P2pIbgdaTransportDevice, CopyOp>(
+        *this,
+        group,
+        src,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        traceContext,
+        args...);
+  }
+
   /**
    * recv — receive one block's tile from pipelined RDMA.
    *
@@ -2440,6 +2537,26 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
 #endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recvWithFineTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& traceContext,
+      Args... args) {
+    detail::recv_with_fine_trace<P2pIbgdaTransportDevice, CopyOp>(
+        *this,
+        group,
+        dst,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        traceContext,
+        args...);
   }
 
   /**
@@ -2541,6 +2658,30 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
 #endif
+  }
+
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void forwardWithFineTrace(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      P2pIbgdaTransportDevice& fwd,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      const Timeout& timeout,
+      const PipesTraceAllReduceContext& recvTraceContext,
+      const PipesTraceAllReduceContext& sendTraceContext,
+      Args... args) {
+    detail::forward_with_fine_trace<CopyOp>(
+        *this,
+        group,
+        dst,
+        fwd,
+        nbytes,
+        max_signal_bytes,
+        timeout,
+        recvTraceContext,
+        sendTraceContext,
+        args...);
   }
 
   __device__ __forceinline__ IbLocalChannel& local_channel(uint32_t channelId) {

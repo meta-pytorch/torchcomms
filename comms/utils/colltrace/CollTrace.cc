@@ -306,12 +306,16 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
     }
   }
 
-  pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(
-      std::make_shared<CollRecord>(collId_.fetch_add(1), std::move(metadata)),
-      std::move(waitEvent));
+  const auto collId = collId_.fetch_add(1);
+  pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(CollTraceEvent{
+      .collRecord = std::make_shared<CollRecord>(collId, std::move(metadata)),
+      .waitEvent = std::move(waitEvent),
+  });
   auto handle =
       std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
   eventToHandleMap_.emplace(pendingEnqueueColl_.get(), handle);
+  triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
+      plugins_, *pendingEnqueueColl_);
   return handle;
 }
 
@@ -421,7 +425,9 @@ CollTrace::recordGraphCollectiveImpl(
   auto collEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
       .collRecord = std::move(collRecord),
       .waitEvent = std::move(waitEvent),
+      .capturedCollId = collIdVal,
   });
+  auto* registrationEvent = collEvent.get();
 
   auto handle = std::make_shared<GraphCollTraceHandle>(
       rawWaitEvent, std::move(recordPtr));
@@ -441,6 +447,8 @@ CollTrace::recordGraphCollectiveImpl(
     std::lock_guard<std::mutex> lock(graphStateMutex_);
     graphState->collectives.emplace(collId, std::move(collectiveEntry));
   }
+  triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
+      plugins_, *registrationEvent);
 
   return handle;
 }
@@ -563,6 +571,8 @@ void CollTrace::pollGraphEvents(
           auto replayEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
               .collRecord = std::move(frozenRecord),
               .waitEvent = nullptr,
+              .replayId = ++collEntry.replayId,
+              .capturedCollId = collId,
           });
           auto* replayPtr = replayEvent.get();
           if (auto replayIt = inFlightReplays_.find(collId);
@@ -641,7 +651,10 @@ void CollTrace::pollEagerEvents(
       if (event->waitEvent->waitCollStart(kPollTimeout).value_or(false)) {
         auto now = precisionNow();
         auto startTimeRes = event->waitEvent->getCollStartTime();
-        auto startTs = startTimeRes.hasValue() ? startTimeRes.value() : now;
+        auto startTs = now;
+        if (startTimeRes.hasValue() && startTimeRes.value() != kEpoch) {
+          startTs = startTimeRes.value();
+        }
         timing.setCollStartTs(startTs);
         actions.insert({event.get(), PendingActionType::kStart, startTs});
         started = true;
@@ -657,7 +670,10 @@ void CollTrace::pollEagerEvents(
       if (event->waitEvent->waitCollEnd(kPollTimeout).value_or(false)) {
         auto now = precisionNow();
         auto endTimeRes = event->waitEvent->getCollEndTime();
-        auto endTs = endTimeRes.hasValue() ? endTimeRes.value() : now;
+        auto endTs = now;
+        if (endTimeRes.hasValue() && endTimeRes.value() != kEpoch) {
+          endTs = endTimeRes.value();
+        }
         timing.setCollEndTs(endTs);
         actions.insert({event.get(), PendingActionType::kEnd, endTs});
       } else {
@@ -744,7 +760,11 @@ void CollTrace::collTraceThread(
         "{}: Error in calling colltrace thread setup function: {}",
         logPrefix_,
         res.error().message);
-    // Unblock the constructor so it doesn't hang forever.
+    {
+      std::lock_guard lock(flushState_.mutex);
+      threadShouldStop_.test_and_set();
+    }
+    flushState_.cv.notify_all();
     threadStarted_.count_down();
     return;
   }

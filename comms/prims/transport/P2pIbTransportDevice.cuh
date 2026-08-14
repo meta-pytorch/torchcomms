@@ -680,6 +680,32 @@ P2pIbTransportDevice::progress_registered_send_drain_once(
 
 template <typename CopyOp, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
+P2pIbTransportDevice::progress_send_once_with_trace(
+    ThreadGroup& group,
+    const void* __restrict__ src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
+    Args... args) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->progress_send_once<CopyOp>(
+        group, src, nbytes, max_signal_bytes, timeout, args...);
+  }
+  return ibgda->progress_send_once_with_trace<CopyOp>(
+      group,
+      src,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      traceContext,
+      traceState,
+      args...);
+}
+
+template <typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_recv_once(
     ThreadGroup& group,
     void* __restrict__ dst,
@@ -693,6 +719,60 @@ P2pIbTransportDevice::progress_recv_once(
   }
   return ibgda->progress_recv_once<CopyOp>(
       group, dst, nbytes, max_signal_bytes, timeout, args...);
+}
+
+template <typename CopyOp, typename... Args>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+P2pIbTransportDevice::progress_recv_once_with_trace(
+    ThreadGroup& group,
+    void* __restrict__ dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    const PipesTraceAllReduceContext& traceContext,
+    PipesTraceProgressState& traceState,
+    Args... args) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->progress_recv_once<CopyOp>(
+        group, dst, nbytes, max_signal_bytes, timeout, args...);
+  }
+  return ibgda->progress_recv_once_with_trace<CopyOp>(
+      group,
+      dst,
+      nbytes,
+      max_signal_bytes,
+      timeout,
+      traceContext,
+      traceState,
+      args...);
+}
+
+template <typename>
+__device__ __forceinline__ IbgdaSendRecvProgressStatus
+P2pIbTransportDevice::progress_recv_acquire_once(
+    ThreadGroup& group,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout,
+    detail::RecvChunkAcquisition& out) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->progress_recv_acquire_once(
+        group, nbytes, max_signal_bytes, timeout, out);
+  }
+  return ibgda->progress_recv_acquire_once(
+      group, nbytes, max_signal_bytes, timeout, out);
+}
+
+template <typename>
+__device__ __forceinline__ void
+P2pIbTransportDevice::progress_recv_release_once(
+    ThreadGroup& group,
+    const detail::RecvChunkAcquisition& view) {
+  if (type == P2pIbBackendType::IBRC) {
+    ibrc->progress_recv_release_once(group, view);
+  } else {
+    ibgda->progress_recv_release_once(group, view);
+  }
 }
 
 } // namespace comms::prims

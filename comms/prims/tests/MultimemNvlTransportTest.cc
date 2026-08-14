@@ -9,6 +9,7 @@
 #include <folly/futures/Future.h>
 #include <folly/init/Init.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -78,12 +79,15 @@ MultimemNvlTransportConfig makeConfig(
     uint32_t userSignalCount = 1,
     std::size_t pipelineDepth = 0,
     std::size_t maxChannels = 0) {
-  MultimemNvlTransportConfig config{};
-  config.dataBufferSize = dataBufferSize;
-  config.userSignalCount = userSignalCount;
-  config.pipelineDepth = pipelineDepth;
-  config.maxChannels = maxChannels;
-  return config;
+  const std::size_t effectiveMaxChannels =
+      std::max<std::size_t>(1, maxChannels);
+  return make_multimem_nvl_transport_config({
+      .perChannelSize = dataBufferSize / effectiveMaxChannels,
+      .pipelineDepth = pipelineDepth,
+      .maxChannels = effectiveMaxChannels,
+      .maxBlocks = maxChannels,
+      .userSignalCount = userSignalCount,
+  });
 }
 
 using meta::comms::testing::MockBootstrap;
@@ -171,6 +175,37 @@ TEST_F(
   EXPECT_EQ(
       MultimemNvlTransport::isEligible(3, localRank),
       GpuMemHandler::isMultimemSupported(localRank));
+}
+
+TEST_F(MultimemNvlTransportTestFixture, SignalFreeConfigurationConstructs) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_signal_free_construction");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(/*dataBufferSize=*/4096, /*userSignalCount=*/0));
+  transport.exchange();
+  const auto handle = transport.getDeviceTransport();
+
+  EXPECT_EQ(transport.getAllocatedDataBufferSize(), 4096);
+  EXPECT_EQ(transport.getAllocatedSignalBufferSize(), 0);
+  EXPECT_NE(handle.localData, nullptr);
+  EXPECT_NE(handle.multimemData, nullptr);
+  EXPECT_TRUE(handle.userLocalSignals.empty());
+  EXPECT_TRUE(handle.userMultimemSignals.empty());
+  EXPECT_TRUE(handle.internalLocalSignals.empty());
+  EXPECT_TRUE(handle.internalMultimemSignals.empty());
+  EXPECT_EQ(handle.pipelineDepth, 0);
+  EXPECT_EQ(handle.maxChannels, 1);
+  EXPECT_EQ(handle.signalsPerChannel, 0);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
 TEST_F(MultimemNvlTransportTestFixture, MultiPeerMultimemDisabled) {
@@ -384,13 +419,13 @@ TEST_F(
       .p2pSignalCount = 1,
       .maxNumChannels = 0,
       .enableMultimem = true,
-      .multimem =
-          MultimemNvlTransportConfig{
-              .dataBufferSize = 0,
-              .userSignalCount = 1,
-              .pipelineDepth = 1,
-              .maxChannels = 1,
-          },
+      .multimem = make_multimem_nvl_transport_config({
+          .perChannelSize = 0,
+          .pipelineDepth = 1,
+          .maxChannels = 1,
+          .maxBlocks = 1,
+          .userSignalCount = 1,
+      }),
   };
   MultiPeerNvlTransport transport(
       /*myRank=*/0,
@@ -430,13 +465,13 @@ TEST_F(
         .p2pSignalCount = 1,
         .maxNumChannels = 0,
         .enableMultimem = true,
-        .multimem =
-            MultimemNvlTransportConfig{
-                .dataBufferSize = 4096,
-                .userSignalCount = 1,
-                .pipelineDepth = 1,
-                .maxChannels = 1,
-            },
+        .multimem = make_multimem_nvl_transport_config({
+            .perChannelSize = 4096,
+            .pipelineDepth = 1,
+            .maxChannels = 1,
+            .maxBlocks = 1,
+            .userSignalCount = 1,
+        }),
     };
     MultiPeerNvlTransport transport(
         globalRank, numRanks, localRank, bootstrap, config);
@@ -484,13 +519,13 @@ TEST_F(
       .p2pSignalCount = 1,
       .maxNumChannels = 0,
       .enableMultimem = true,
-      .multimem =
-          MultimemNvlTransportConfig{
-              .dataBufferSize = 4096,
-              .userSignalCount = 1,
-              .pipelineDepth = 1,
-              .maxChannels = 1,
-          },
+      .multimem = make_multimem_nvl_transport_config({
+          .perChannelSize = 4096,
+          .pipelineDepth = 1,
+          .maxChannels = 1,
+          .maxBlocks = 1,
+          .userSignalCount = 1,
+      }),
   };
   MultiPeerNvlTransport transport(
       /*myRank=*/0,
@@ -537,13 +572,13 @@ TEST_F(
       .p2pSignalCount = 1,
       .maxNumChannels = 0,
       .enableMultimem = true,
-      .multimem =
-          MultimemNvlTransportConfig{
-              .dataBufferSize = 4096,
-              .userSignalCount = 1,
-              .pipelineDepth = 1,
-              .maxChannels = 1,
-          },
+      .multimem = make_multimem_nvl_transport_config({
+          .perChannelSize = 4096,
+          .pipelineDepth = 1,
+          .maxChannels = 1,
+          .maxBlocks = 1,
+          .userSignalCount = 1,
+      }),
   };
   MultiPeerNvlTransport transport(
       /*myRank=*/0,
@@ -576,14 +611,13 @@ TEST_F(
       // channels (a nonzero maxNumChannels requires pipelineDepth >= 1).
       .maxNumChannels = 0,
       .enableMultimem = true,
-      .multimem =
-          MultimemNvlTransportConfig{
-              .dataBufferSize =
-                  kBytesPerRank * static_cast<std::size_t>(numRanks),
-              .userSignalCount = 1,
-              .pipelineDepth = 1,
-              .maxChannels = 1,
-          },
+      .multimem = make_multimem_nvl_transport_config({
+          .perChannelSize = kBytesPerRank * static_cast<std::size_t>(numRanks),
+          .pipelineDepth = 1,
+          .maxChannels = 1,
+          .maxBlocks = 1,
+          .userSignalCount = 1,
+      }),
   };
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   EXPECT_FALSE(transport.hasMultimemNvlTransport());
@@ -606,14 +640,14 @@ TEST_F(
       .p2pSignalCount = 1,
       .maxNumChannels = 0,
       .enableMultimem = true,
-      .multimem =
-          MultimemNvlTransportConfig{
-              .dataBufferSize =
-                  globalRank == 0 ? std::size_t{0} : std::size_t{4096},
-              .userSignalCount = 1,
-              .pipelineDepth = 1,
-              .maxChannels = 1,
-          },
+      .multimem = make_multimem_nvl_transport_config({
+          .perChannelSize =
+              globalRank == 0 ? std::size_t{0} : std::size_t{4096},
+          .pipelineDepth = 1,
+          .maxChannels = 1,
+          .maxBlocks = 1,
+          .userSignalCount = 1,
+      }),
   };
   MultiPeerNvlTransport transport(
       globalRank, numRanks, localRank, bootstrap, config);
@@ -669,8 +703,8 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSetsUpDeviceHandle) {
 
   constexpr std::size_t kDataBytes = 8192;
   constexpr uint32_t kUserSignals = 2;
-  const uint32_t internalSignals =
-      multimem_staging_signals_per_lane(static_cast<uint32_t>(numRanks));
+  const uint64_t internalSignals = multimem_staging_signals_per_channel(
+      static_cast<uint32_t>(numRanks), /*pipelineDepth=*/1);
 
   MultimemNvlTransport transport(
       bootstrap,
@@ -694,7 +728,7 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSetsUpDeviceHandle) {
   EXPECT_EQ(handle.internalMultimemSignals.size(), internalSignals);
   EXPECT_EQ(handle.pipelineDepth, 1);
   EXPECT_EQ(handle.maxChannels, 1);
-  EXPECT_EQ(handle.signalsPerLane, internalSignals);
+  EXPECT_EQ(handle.signalsPerChannel, internalSignals);
 
   EXPECT_EQ(transport.getAllocatedDataBufferSize(), kDataBytes);
   EXPECT_EQ(
@@ -706,6 +740,42 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSetsUpDeviceHandle) {
   transport.exchange();
   auto handle2 = transport.getDeviceTransport();
   EXPECT_EQ(handle2.multimemData, firstMultimemBase);
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(MultimemNvlTransportTestFixture, ExchangeSupportsDataOnlyConfiguration) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_exchange_data_only");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kDataBytes = 4096;
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          kDataBytes,
+          /*userSignalCount=*/0,
+          /*pipelineDepth=*/0,
+          /*maxChannels=*/0));
+
+  transport.exchange();
+  const auto handle = transport.getDeviceTransport();
+
+  EXPECT_EQ(handle.dataBufferSize, kDataBytes);
+  EXPECT_TRUE(handle.userLocalSignals.empty());
+  EXPECT_TRUE(handle.userMultimemSignals.empty());
+  EXPECT_TRUE(handle.internalLocalSignals.empty());
+  EXPECT_TRUE(handle.internalMultimemSignals.empty());
+  EXPECT_EQ(handle.pipelineDepth, 0);
+  EXPECT_EQ(handle.maxChannels, 1);
+  EXPECT_EQ(handle.signalsPerChannel, 0);
+  EXPECT_EQ(transport.getAllocatedSignalBufferSize(), 0);
 
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
@@ -736,9 +806,43 @@ TEST_F(
     EXPECT_NE(
         message.find("ranks disagree on multicast setup"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[8192, 1, 2, 4]"), std::string::npos)
+    EXPECT_NE(message.find("parameters=[2048, 2, 4, 4, 1]"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[8192, 1, 4, 2]"), std::string::npos)
+    EXPECT_NE(message.find("parameters=[4096, 4, 2, 2, 1]"), std::string::npos)
+        << message;
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    ExchangeRejectsMismatchedUserSignalLayout) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_exchange_mismatched_user_signals");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  const uint32_t userSignalCount = globalRank == 0 ? 1 : 2;
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(8192, userSignalCount, 1, 1));
+  try {
+    transport.exchange();
+    FAIL() << "expected setup agreement to reject mismatched signal layout";
+  } catch (const std::runtime_error& ex) {
+    const std::string message = ex.what();
+    EXPECT_NE(
+        message.find("ranks disagree on multicast setup"), std::string::npos)
+        << message;
+    EXPECT_NE(message.find("parameters=[8192, 1, 1, 1, 1]"), std::string::npos)
+        << message;
+    EXPECT_NE(message.find("parameters=[8192, 1, 1, 1, 2]"), std::string::npos)
         << message;
   }
 
@@ -821,14 +925,29 @@ TEST_F(MultimemNvlTransportTestFixture, StageLayoutUsesTransportGeometry) {
       deviceResults,
       results.size() * sizeof(test::StageLayoutResult),
       cudaMemcpyDeviceToHost));
-  const uint64_t signalsPerLane =
-      multimem_staging_signals_per_lane(static_cast<uint32_t>(numRanks));
+  const uint64_t signalsPerChannel = multimem_staging_signals_per_channel(
+      static_cast<uint32_t>(numRanks), kPipelineDepth);
   for (uint32_t group = 0; group < kActiveGroups; ++group) {
-    EXPECT_EQ(results[group].groupBeginBytes, group * 4096);
+    const uint64_t channelBase = group * signalsPerChannel;
+    const uint64_t laneBase = channelBase + 3 * numRanks;
+    EXPECT_EQ(results[group].channelBeginBytes, group * 4096);
     EXPECT_EQ(results[group].stagingBytes, 2048);
-    EXPECT_EQ(
-        results[group].signalBase, group * kPipelineDepth * signalsPerLane);
-    EXPECT_EQ(results[group].signalsPerLane, signalsPerLane);
+    EXPECT_EQ(results[group].signalBase, channelBase);
+    EXPECT_EQ(results[group].signalsPerChannel, signalsPerChannel);
+    EXPECT_EQ(results[group].readyFirst, channelBase);
+    EXPECT_EQ(results[group].readyLast, channelBase + numRanks - 1);
+    EXPECT_EQ(results[group].ackFirst, channelBase + numRanks);
+    EXPECT_EQ(results[group].ackLast, channelBase + 2 * numRanks - 1);
+    EXPECT_EQ(results[group].consumedFirst, channelBase + 2 * numRanks);
+    EXPECT_EQ(results[group].consumedLast, channelBase + 3 * numRanks - 1);
+    EXPECT_EQ(results[group].lane0ReadyCounter, laneBase);
+    EXPECT_EQ(results[group].lane0ReadyEpoch, laneBase + 1);
+    EXPECT_EQ(results[group].lane0AckCounter, laneBase + 2);
+    EXPECT_EQ(results[group].lane0AckEpoch, laneBase + 3);
+    EXPECT_EQ(results[group].lane1ReadyCounter, laneBase + 4);
+    EXPECT_EQ(results[group].lane1ReadyEpoch, laneBase + 5);
+    EXPECT_EQ(results[group].lane1AckCounter, laneBase + 6);
+    EXPECT_EQ(results[group].lane1AckEpoch, laneBase + 7);
     EXPECT_EQ(results[group].pipelineDepth, kPipelineDepth);
   }
 
@@ -843,10 +962,9 @@ TEST_F(MultimemNvlTransportTestFixture, StageLayoutUsesTransportGeometry) {
       cudaMemcpyDeviceToHost));
   CUDACHECK_TEST(cudaFree(deviceResults));
   for (uint32_t group = 0; group < kMaxChannels; ++group) {
-    EXPECT_EQ(results[group].groupBeginBytes, group * 3072);
+    EXPECT_EQ(results[group].channelBeginBytes, group * 3072);
     EXPECT_EQ(results[group].stagingBytes, 1536);
-    EXPECT_EQ(
-        results[group].signalBase, group * kPipelineDepth * signalsPerLane);
+    EXPECT_EQ(results[group].signalBase, group * signalsPerChannel);
   }
 
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);

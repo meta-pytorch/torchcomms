@@ -2,7 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <random>
+#include <set>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 
@@ -163,6 +170,176 @@ TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   const MultipeerIbTransportConfig config;
   EXPECT_TRUE(config.ibLazyConnect);
+}
+
+// connectPeers() walks each rank's pending peers in peerMaterializationKey
+// order and materializes them one at a time against a peer that must be doing
+// the same. The checks below cover the two properties that buys: the schedule
+// never stalls on a symmetric request graph, and a ring pairs up in a constant
+// number of rounds rather than one per rank.
+
+using PeerKey = int (*)(int myRank, int peerRank);
+
+// Rendezvous rounds needed to materialize every edge of `adjacency` when each
+// rank walks its peers in `key` order. Mirrors the connectPeers() loop for a
+// single connect round from a clean state: an edge advances only once both ends
+// have selected it, so a round is one doMaterializePeer() of wall clock.
+// Returns -1 if the schedule stalls. Does not model the peerMaterialized_ skip
+// across repeated calls, nor the failure/cleanup path.
+// `key == nullptr` orders peers with the production `sortPendingPeers`, so a
+// change to the shipped schedule moves these results. Passing a key overrides
+// that, which is only used to model the pre-change rank ordering.
+int rendezvousRounds(
+    std::vector<std::vector<int>> adjacency,
+    PeerKey key = nullptr) {
+  const int nRanks = static_cast<int>(adjacency.size());
+  int remainingEdges = 0;
+  for (int rank = 0; rank < nRanks; ++rank) {
+    auto& peers = adjacency[rank];
+    if (key == nullptr) {
+      sortPendingPeers(rank, peers);
+    } else {
+      std::sort(peers.begin(), peers.end(), [rank, key](int lhs, int rhs) {
+        return key(rank, lhs) < key(rank, rhs);
+      });
+    }
+    remainingEdges += static_cast<int>(peers.size());
+  }
+  remainingEdges /= 2;
+
+  std::vector<std::size_t> head(nRanks, 0);
+  int rounds = 0;
+  while (remainingEdges > 0) {
+    std::vector<std::pair<int, int>> paired;
+    for (int a = 0; a < nRanks; ++a) {
+      if (head[a] >= adjacency[a].size()) {
+        continue;
+      }
+      const int b = adjacency[a][head[a]];
+      if (b > a && head[b] < adjacency[b].size() &&
+          adjacency[b][head[b]] == a) {
+        paired.emplace_back(a, b);
+      }
+    }
+    if (paired.empty()) {
+      return -1;
+    }
+    for (const auto& [a, b] : paired) {
+      ++head[a];
+      ++head[b];
+    }
+    remainingEdges -= static_cast<int>(paired.size());
+    ++rounds;
+  }
+  return rounds;
+}
+
+// queuePeerForMaterialization() rejects self-peers and dedups, so the models
+// below must too -- a 2-rank ring has one edge, not two.
+std::vector<std::vector<int>> fromEdges(
+    int nRanks,
+    const std::vector<std::pair<int, int>>& edges) {
+  std::vector<std::set<int>> unique(nRanks);
+  for (const auto& [a, b] : edges) {
+    if (a != b) {
+      unique[a].insert(b);
+      unique[b].insert(a);
+    }
+  }
+  std::vector<std::vector<int>> adjacency(nRanks);
+  for (int rank = 0; rank < nRanks; ++rank) {
+    adjacency[rank].assign(unique[rank].begin(), unique[rank].end());
+  }
+  return adjacency;
+}
+
+std::vector<std::vector<int>> ringAdjacency(int nRanks) {
+  std::vector<std::pair<int, int>> edges;
+  edges.reserve(nRanks);
+  for (int rank = 0; rank < nRanks; ++rank) {
+    edges.emplace_back(rank, (rank + 1) % nRanks);
+  }
+  return fromEdges(nRanks, edges);
+}
+
+std::vector<std::vector<int>> cliqueAdjacency(int nRanks) {
+  std::vector<std::pair<int, int>> edges;
+  edges.reserve(static_cast<std::size_t>(nRanks) * (nRanks - 1) / 2);
+  for (int a = 0; a < nRanks; ++a) {
+    for (int b = a + 1; b < nRanks; ++b) {
+      edges.emplace_back(a, b);
+    }
+  }
+  return fromEdges(nRanks, edges);
+}
+
+std::vector<std::vector<int>> binaryTreeAdjacency(int nRanks) {
+  std::vector<std::pair<int, int>> edges;
+  edges.reserve(nRanks);
+  for (int rank = 1; rank < nRanks; ++rank) {
+    edges.emplace_back(rank, (rank - 1) / 2);
+  }
+  return fromEdges(nRanks, edges);
+}
+
+std::vector<std::vector<int>>
+randomSymmetricAdjacency(int nRanks, int degree, uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::uniform_int_distribution<int> pick(0, nRanks - 1);
+  std::vector<std::pair<int, int>> edges;
+  edges.reserve(static_cast<std::size_t>(nRanks) * degree);
+  for (int rank = 0; rank < nRanks; ++rank) {
+    for (int i = 0; i < degree; ++i) {
+      edges.emplace_back(rank, pick(rng));
+    }
+  }
+  return fromEdges(nRanks, edges);
+}
+
+// The regression this ordering exists for. A ring is the shape every ring
+// collective requests, and rank order pairs it off one edge at a time.
+int rankOrderKey(int /*myRank*/, int peerRank) {
+  return peerRank;
+}
+
+TEST(MultiPeerIbTransportConfigTest, RankOrderSerializesRing) {
+  for (const int nRanks : {8, 64, 256, 644}) {
+    EXPECT_EQ(rendezvousRounds(ringAdjacency(nRanks), rankOrderKey), nRanks - 1)
+        << "nRanks=" << nRanks;
+  }
+}
+
+// Under peerMaterializationKey the same ring costs a constant instead: two
+// rounds when the ring can be 2-edge-coloured, three when it cannot.
+TEST(MultiPeerIbTransportConfigTest, RingPairsUpInConstantRounds) {
+  for (const int nRanks : {8, 64, 256, 644, 9, 65, 645}) {
+    const int expected = (nRanks % 2 == 0) ? 2 : 3;
+    EXPECT_EQ(rendezvousRounds(ringAdjacency(nRanks)), expected)
+        << "nRanks=" << nRanks;
+  }
+}
+
+// The invariant the ordering has to preserve: given the symmetric request graph
+// materializePeers requires, every edge eventually pairs up. Covers the other
+// shapes comms requests -- cliques from the direct algorithms, trees from
+// AllReduceFusedTree -- plus irregular graphs the fixed topologies do not
+// reach.
+TEST(MultiPeerIbTransportConfigTest, SymmetricRequestGraphsNeverStall) {
+  for (const int nRanks : {2, 3, 8, 33, 64}) {
+    EXPECT_GT(rendezvousRounds(ringAdjacency(nRanks)), 0)
+        << "ring nRanks=" << nRanks;
+    EXPECT_GT(rendezvousRounds(cliqueAdjacency(nRanks)), 0)
+        << "clique nRanks=" << nRanks;
+    EXPECT_GT(rendezvousRounds(binaryTreeAdjacency(nRanks)), 0)
+        << "tree nRanks=" << nRanks;
+  }
+  for (uint32_t seed = 0; seed < 200; ++seed) {
+    EXPECT_GT(
+        rendezvousRounds(
+            randomSymmetricAdjacency(/*nRanks=*/32, /*degree=*/3, seed)),
+        0)
+        << "random seed=" << seed;
+  }
 }
 
 } // namespace

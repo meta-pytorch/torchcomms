@@ -28,7 +28,7 @@ class PipesTrace {
   using Reader =
       ::hrdw_ring_buffer::HRDWRingBufferReader<comms::prims::PipesTraceEvent>;
 
-  PipesTrace() = default;
+  PipesTrace();
   ~PipesTrace();
   PipesTrace(const PipesTrace&) = delete;
   PipesTrace& operator=(const PipesTrace&) = delete;
@@ -44,7 +44,8 @@ class PipesTrace {
   void ensure(
       uint32_t ringSize,
       std::chrono::milliseconds pollInterval,
-      EventCallback eventCallback = nullptr);
+      EventCallback eventCallback = nullptr,
+      uint32_t rank = 0);
 
   // Device-side handle into the ring.
   //
@@ -65,6 +66,7 @@ class PipesTrace {
   struct PendingLogBatch {
     std::vector<PendingLogEntry> entries;
     uint64_t entriesLost{0};
+    uint32_t rank{0};
   };
 
   void logBatch(const PendingLogBatch& batch) const;
@@ -81,6 +83,8 @@ class PipesTrace {
   std::condition_variable pollWake_;
   std::chrono::milliseconds pollInterval_{0};
   EventCallback eventCallback_;
+  uint64_t sessionId_{0};
+  uint32_t rank_{0};
   bool stopPolling_{false};
 };
 

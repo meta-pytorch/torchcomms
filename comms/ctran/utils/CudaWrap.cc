@@ -2,10 +2,10 @@
 #include <folly/ScopeGuard.h>
 
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #if CUDART_VERSION >= 11030
 
@@ -22,7 +22,7 @@
         &driverStatus);                                                      \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) {                                                         \
-        CLOGF(                                                               \
+        CTRAN_LOG(                                                           \
             WARN,                                                            \
             "Retrieve {} version {} failed with {} status {}",               \
             #symbol,                                                         \
@@ -42,7 +42,7 @@
         #symbol, (void**)(&pfn_##symbol), cudaEnableDefault, &driverStatus); \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) {                                                         \
-        CLOGF(                                                               \
+        CTRAN_LOG(                                                           \
             WARN,                                                            \
             "Retrieve {} failed with {} status {}",                          \
             #symbol,                                                         \
@@ -59,7 +59,7 @@
         #symbol, (void**)(&pfn_##symbol), cudaEnableDefault); \
     if (res != cudaSuccess) {                                 \
       if (!ignore) {                                          \
-        CLOGF(                                                \
+        CTRAN_LOG(                                            \
             WARN,                                             \
             "Retrieve {} failed with {}",                     \
             #symbol,                                          \
@@ -171,7 +171,7 @@ bool isCuMemSupported() {
 inline bool isCuMemHostSupported(int driverVersion) {
 #if CUDART_VERSION < 12020
   if (NCCL_CUMEM_HOST_ENABLE == 1) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "NCCL_CUMEM_HOST_ENABLE is set to 1, but CUDA runtime library is too old, required 12.2 or later");
   }
@@ -319,12 +319,12 @@ static commResult_t initCommCudaLibraryOnce_() {
   FB_CUDACHECK_RETURN(cudaGetDevice(&cudaDev), commCudaLibraryInitResult);
   FB_CUDACHECK_RETURN(
       cudaDriverGetVersion(&driverVersion), commCudaLibraryInitResult);
-  CLOGF_SUBSYS(INFO, INIT, "cudaDriverVersion {}", driverVersion);
+  CTRAN_LOG_SUBSYS(INFO, INIT, "cudaDriverVersion {}", driverVersion);
 #ifdef CUDART_VERSION
-  CLOGF_SUBSYS(INFO, INIT, "CUDART_VERSION {}", CUDART_VERSION);
+  CTRAN_LOG_SUBSYS(INFO, INIT, "CUDART_VERSION {}", CUDART_VERSION);
 #endif
   if (cudaPfnFuncLoader() != commSuccess) {
-    CLOGF(WARN, "CUDA some PFN functions not found in the library");
+    CTRAN_LOG(WARN, "CUDA some PFN functions not found in the library");
     return commCudaLibraryInitResult;
   }
   auto cuMemSupported = isCuMemSupported();
@@ -373,7 +373,8 @@ commResult_t dmaBufDriverSupport(int cudaDev) {
   if (flag == 0) {
     return commInternalError;
   }
-  CLOGF_SUBSYS(INFO, INIT, "DMA-BUF is available on GPU device {}", cudaDev);
+  CTRAN_LOG_SUBSYS(
+      INFO, INIT, "DMA-BUF is available on GPU device {}", cudaDev);
   return commSuccess;
 #endif
   return commInternalError;

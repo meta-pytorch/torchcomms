@@ -10,7 +10,7 @@ namespace comms::prims::test {
 enum class StageLayoutTrapCase : uint32_t {
   ZeroGeometry,
   TooManyGroups,
-  BadSignalsPerLane,
+  BadSignalsPerChannel,
   InsufficientLocalSignals,
   InsufficientMultimemSignals,
 };

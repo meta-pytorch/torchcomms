@@ -43,6 +43,11 @@ class MockCollTracePlugin : public ICollTracePlugin {
   MOCK_METHOD(std::string_view, getName, (), (const, noexcept, override));
   MOCK_METHOD(
       CommsMaybeVoid,
+      afterCollRecorded,
+      (CollTraceEvent & curEvent),
+      (noexcept, override));
+  MOCK_METHOD(
+      CommsMaybeVoid,
       beforeCollKernelScheduled,
       (CollTraceEvent & curEvent),
       (noexcept, override));

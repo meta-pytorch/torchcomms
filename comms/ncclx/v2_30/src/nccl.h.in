@@ -1109,8 +1109,9 @@ ncclResult_t  pncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
 #define NCCL_COMM_DUMP_ALL
 
 #include <optional>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
+#include <vector>
 /* Dump NCCL current internal state for a given communicator in a key-value store format.
  * define outside extern "C"{} to pass C++ template */
 ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std::string>& map);
@@ -1125,6 +1126,46 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
  */
 ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
     const std::unordered_map<std::string, std::string>& hints = {});
+
+namespace ncclx::colltrace {
+
+inline constexpr uint64_t kInvalidReplayId = UINT64_MAX;
+
+enum class LifecycleEventType : uint8_t {
+  Enqueue,
+  Start,
+  End,
+};
+
+struct LifecycleEvent {
+  uint64_t replayId{kInvalidReplayId};
+  uint64_t commId{0};
+  // Stable one-based submission identity. Zero is reserved for no record.
+  // Matches getLatestCollTraceCollectiveId().
+  uint64_t collId{0};
+  // One-based per-execution identity. Differs from collId for graph replays.
+  uint64_t executionCollId{0};
+  LifecycleEventType eventType{LifecycleEventType::Enqueue};
+  double timestamp{0};
+};
+
+// Returns the process-local communicator identity used by lifecycle events.
+// Returns ncclInvalidArgument for a null communicator or ncclInvalidUsage if
+// the lifecycle feed is disabled.
+ncclResult_t getCollTraceCommId(ncclComm_t comm, uint64_t& commId);
+
+// Returns the latest one-based collective ID submitted on this communicator.
+// Writes zero and returns ncclSuccess if no collective has been submitted on
+// this communicator. Returns ncclInvalidArgument for a null communicator or
+// ncclInvalidUsage if the lifecycle feed is disabled.
+ncclResult_t getLatestCollTraceCollectiveId(ncclComm_t comm, uint64_t& collId);
+
+// Destructively drains lifecycle events across all lifecycle-enabled
+// communicators in this process. This call blocks until every registered
+// colltrace instance finishes a flush. Events are ordered by timestamp.
+ncclResult_t drainUnreadLifecycleEvents(std::vector<LifecycleEvent>& events);
+
+} // namespace ncclx::colltrace
 
 // NCCL_HAS_DUMP_ALGO_STAT controls whether dumpAlgoStat() is available.
 // To disable (e.g., when using a shim with a

@@ -10,13 +10,13 @@ namespace meta::comms::colltrace {
 // Abstract class for interfaces to implement for plugin of colltrace.
 // How the plugin is used:
 // 1. The plugin is registered in the colltrace library.
-// 2. The following callbacks will be triggered in the colltrace library in
-// order:
+// 2. afterCollRecorded runs once when the record is created. Each execution
+// then triggers the remaining callbacks in order:
 //    beforeCollKernelScheduled -> afterCollKernelScheduled ->
-//    afterCollKernelStart -> [whenCollKernelHang] -> afterCollKernelEnd
-// Please note that beforeCollKernelScheduled and afterCollKernelScheduled will
-// be triggered in the calling thread, while the rest will be triggered in the
-// colltrace thread.
+//    afterCollKernelStart -> [collEventProgressing] -> afterCollKernelEnd
+// afterCollRecorded, beforeCollKernelScheduled, and afterCollKernelScheduled
+// run in the calling thread. The remaining callbacks run in the colltrace
+// thread.
 class ICollTracePlugin {
  public:
   virtual ~ICollTracePlugin() = default;
@@ -28,6 +28,14 @@ class ICollTracePlugin {
   virtual std::string_view getName() const noexcept = 0;
 
   // ----- Callbacks below will be triggered in the calling (main) thread -----
+
+  // Callback that will be called after a collective record has been created
+  // and any capture identity is available. Graph collectives trigger this
+  // during capture, before any replay occurs.
+  virtual CommsMaybeVoid afterCollRecorded(
+      CollTraceEvent& /* curEvent */) noexcept {
+    return folly::unit;
+  }
 
   // Callback that will be called before a collective is scheduled. For cuda
   // event based tracking, this function will be called after the cuda event is
