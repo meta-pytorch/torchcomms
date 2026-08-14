@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -457,7 +458,7 @@ TEST(AbortTest, timedOutFalseForExplicitSet) {
 TEST(AbortTest, setAbortTimedOutRecordsTimeout) {
   Abort abort{/*enabled=*/true};
 
-  abort.setAbort(AbortReason::TIMED_OUT);
+  abort.setAbort(AbortInfo{.reason = AbortReason::TIMED_OUT});
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
@@ -466,7 +467,9 @@ TEST(AbortTest, setAbortTimedOutRecordsTimeout) {
 TEST(AbortTest, setAbortRejectsNone) {
   Abort abort{/*enabled=*/true};
 
-  EXPECT_THROW(abort.setAbort(AbortReason::NONE), std::invalid_argument);
+  EXPECT_THROW(
+      abort.setAbort(AbortInfo{.reason = AbortReason::NONE}),
+      std::invalid_argument);
   EXPECT_FALSE(abort.isAborted());
 }
 
@@ -474,20 +477,120 @@ TEST(AbortTest, setAbortRejectsUnknownReason) {
   Abort abort{/*enabled=*/true};
 
   EXPECT_THROW(
-      abort.setAbort(static_cast<AbortReason>(3)), std::invalid_argument);
+      abort.setAbort(AbortInfo{.reason = static_cast<AbortReason>(99)}),
+      std::invalid_argument);
   EXPECT_FALSE(abort.isAborted());
 
-  abort.setAbort(AbortReason::ABORTED);
+  abort.setAbort(AbortInfo{.reason = AbortReason::ABORTED});
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_FALSE(abort.isTimedOut());
 }
 
+TEST(AbortTest, abortInfoInitiallyEmpty) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortInfoDisabledRemainsEmpty) {
+  Abort abort{/*enabled=*/false};
+
+  abort.setAbort(
+      AbortInfo{
+          .reason = AbortReason::ABORTED,
+          .context = "ignored",
+      });
+
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortInfoRecordsEveryTerminalReasonAndContext) {
+  const std::vector reasons{
+      AbortReason::ABORTED,
+      AbortReason::TIMED_OUT,
+      AbortReason::BOOTSTRAP_POLL,
+      AbortReason::NETWORK_ERROR,
+      AbortReason::INTERNAL_ERROR,
+  };
+
+  for (const auto reason : reasons) {
+    Abort abort{/*enabled=*/true};
+    abort.setAbort(AbortInfo{.reason = reason, .context = "details"});
+    EXPECT_EQ(
+        abort.getAbortInfo(),
+        (AbortInfo{.reason = reason, .context = "details"}));
+  }
+}
+
+TEST(AbortTest, firstTerminalReasonAndContextWinTogether) {
+  Abort abort{/*enabled=*/true};
+
+  abort.setAbort(
+      AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "first",
+      });
+  abort.setAbort(
+      AbortInfo{
+          .reason = AbortReason::INTERNAL_ERROR,
+          .context = "second",
+      });
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "first",
+      }));
+}
+
+TEST(AbortTest, expiredTimeoutRecordsContext) {
+  Abort abort{/*enabled=*/true};
+  abort.startTimeout(std::chrono::milliseconds{0});
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::TIMED_OUT, .context = "timeout expired"}));
+}
+
+TEST(AbortTest, concurrentWinnerKeepsMatchingContext) {
+  for (int iteration = 0; iteration < 100; ++iteration) {
+    Abort abort{/*enabled=*/true};
+    std::thread network([&]() {
+      abort.setAbort(
+          AbortInfo{
+              .reason = AbortReason::NETWORK_ERROR,
+              .context = "network",
+          });
+    });
+    std::thread internal([&]() {
+      abort.setAbort(
+          AbortInfo{
+              .reason = AbortReason::INTERNAL_ERROR,
+              .context = "internal",
+          });
+    });
+    network.join();
+    internal.join();
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    if (info->reason == AbortReason::NETWORK_ERROR) {
+      EXPECT_EQ(info->context, "network");
+    } else {
+      EXPECT_EQ(info->reason, AbortReason::INTERNAL_ERROR);
+      EXPECT_EQ(info->context, "internal");
+    }
+  }
+}
+
 TEST(AbortTest, firstTerminalReasonWins) {
   Abort abort{/*enabled=*/true};
 
-  abort.setAbort(AbortReason::TIMED_OUT);
-  abort.setAbort(AbortReason::ABORTED);
+  abort.setAbort(AbortInfo{.reason = AbortReason::TIMED_OUT});
+  abort.setAbort(AbortInfo{.reason = AbortReason::ABORTED});
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());

@@ -193,6 +193,24 @@ initialized and collective operations are permitted.
           &ReconfigureOptions::hints,
           "Additional configuration key-value pairs");
 
+  py::enum_<AbortReason>(m, "AbortReason", "Communicator abort reason.")
+      .value("NONE", AbortReason::NONE)
+      .value("ABORTED", AbortReason::ABORTED)
+      .value("TIMED_OUT", AbortReason::TIMED_OUT)
+      .value("BOOTSTRAP_POLL", AbortReason::BOOTSTRAP_POLL)
+      .value("NETWORK_ERROR", AbortReason::NETWORK_ERROR)
+      .value("INTERNAL_ERROR", AbortReason::INTERNAL_ERROR);
+
+  py::class_<AbortInfo>(m, "AbortInfo", "Immutable communicator abort status.")
+      .def(
+          py::init([](AbortReason reason, std::string context) {
+            return AbortInfo{.reason = reason, .context = std::move(context)};
+          }),
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "")
+      .def_readonly("reason", &AbortInfo::reason)
+      .def_readonly("context", &AbortInfo::context);
+
   // Bind TorchWork class
   intrusive_ptr_class_<TorchWork>(
       m,
@@ -1387,7 +1405,9 @@ Example:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "abort",
-          &TorchComm::abort,
+          [](TorchComm& self, AbortReason reason, const std::string& context) {
+            self.abort(AbortInfo{.reason = reason, .context = context});
+          },
           R"(
 Abort the communicator, stopping all in-flight operations.
 
@@ -1401,6 +1421,8 @@ communicator.
 Does not raise exceptions. After calling abort(), subsequent collective
 operations will fail until reconfigure() is called (in reconfigurable mode).
           )",
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "is_abort_supported",
@@ -1424,6 +1446,13 @@ detect failures.
 
 Returns:
     bool: True if the communicator has been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_abort_info",
+          &TorchComm::getAbortInfo,
+          R"(
+Return the communicator's first abort reason and diagnostic context.
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(

@@ -294,6 +294,10 @@ class TorchCommBackend {
     return false;
   }
 
+  virtual std::optional<AbortInfo> getAbortInfo() const {
+    return isAborted() ? std::optional<AbortInfo>{AbortInfo{}} : std::nullopt;
+  }
+
   /**
    * Set the communicator-level default operation timeout.
    *
@@ -380,6 +384,10 @@ class TorchCommBackend {
     throw std::runtime_error(
         "[TorchCommBackend]: abort not implemented for communicator:" +
         std::string(getCommName()));
+  }
+
+  virtual void abort(AbortInfo /*info*/) {
+    abort();
   }
 
   // Device Transport API

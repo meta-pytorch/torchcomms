@@ -65,6 +65,8 @@ __all__ = [  # noqa: F405
     "new_comm",
     "TorchComm",
     "ReduceOp",
+    "AbortReason",
+    "AbortInfo",
     "TorchWork",
     "Timeout",
     "BatchP2POptions",

@@ -64,6 +64,23 @@ TEST_F(TorchCommAbortTest, AbortSetsAbortedStateWhenEnabled) {
 
   comm_->abort();
   EXPECT_TRUE(comm_->isAborted());
+  EXPECT_EQ(comm_->getAbortInfo(), AbortInfo{});
+}
+
+TEST_F(TorchCommAbortTest, ContextualAbortFallsBackForLegacyBackend) {
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm_->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->enableAbort();
+
+  comm_->abort(
+      AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "ignored by legacy backend",
+      });
+
+  EXPECT_TRUE(comm_->isAborted());
+  EXPECT_EQ(comm_->getAbortInfo(), (AbortInfo{.reason = AbortReason::ABORTED}));
 }
 
 TEST_F(TorchCommAbortTest, SetTimeoutDelegatesToBackend) {

@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <folly/Synchronized.h>
@@ -169,8 +170,28 @@ class CtranComm {
     return abort_->isEnabled();
   }
 
-  inline void setAbort() {
-    abort_->setAbort();
+  inline void setAbort(comms::fault_tolerance::AbortInfo info = {}) {
+    abort_->setAbort(std::move(info));
+  }
+
+  inline std::optional<comms::fault_tolerance::AbortInfo> getAbortInfo() const {
+    return abort_->getAbortInfo();
+  }
+
+  inline std::string abortMessage() const {
+    const auto info = getAbortInfo();
+    if (!info.has_value()) {
+      return "comm aborted";
+    }
+    auto message =
+        info->reason == comms::fault_tolerance::AbortReason::TIMED_OUT
+        ? std::string{"comm aborted due to timeout"}
+        : "comm aborted reason=" +
+            std::to_string(static_cast<int>(info->reason));
+    if (!info->context.empty()) {
+      message += " context=\"" + info->context + "\"";
+    }
+    return message;
   }
 
   inline bool testAbort() const {

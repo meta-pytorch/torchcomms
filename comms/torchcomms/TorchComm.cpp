@@ -516,12 +516,20 @@ void TorchComm::abort() {
   impl_->abort();
 }
 
+void TorchComm::abort(AbortInfo info) {
+  impl_->abort(std::move(info));
+}
+
 bool TorchComm::isAbortSupported() const {
   return impl_->isAbortSupported();
 }
 
 bool TorchComm::isAborted() const {
   return impl_->isAborted();
+}
+
+std::optional<AbortInfo> TorchComm::getAbortInfo() const {
+  return impl_->getAbortInfo();
 }
 
 void TorchComm::setTimeout(std::chrono::milliseconds timeout) {

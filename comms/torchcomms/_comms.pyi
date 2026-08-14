@@ -8,6 +8,25 @@ from typing import Any, Callable, Dict, List, Set, Type
 
 InitHandle = str
 
+class AbortReason(Enum):
+    NONE = auto()
+    ABORTED = auto()
+    TIMED_OUT = auto()
+    BOOTSTRAP_POLL = auto()
+    NETWORK_ERROR = auto()
+    INTERNAL_ERROR = auto()
+
+class AbortInfo:
+    def __init__(
+        self,
+        reason: AbortReason = AbortReason.ABORTED,
+        context: str = "",
+    ) -> None: ...
+    @property
+    def reason(self) -> AbortReason: ...
+    @property
+    def context(self) -> str: ...
+
 class RedOpType(Enum):
     SUM = auto()
     PRODUCT = auto()
@@ -517,9 +536,14 @@ class TorchComm:
         timeout: timedelta | None = None,
         hints: Dict[str, str] | None = None,
     ) -> TorchWork: ...
-    def abort(self) -> None: ...
+    def abort(
+        self,
+        reason: AbortReason = AbortReason.ABORTED,
+        context: str = "",
+    ) -> None: ...
     def is_abort_supported(self) -> bool: ...
     def is_aborted(self) -> bool: ...
+    def get_abort_info(self) -> AbortInfo | None: ...
     def set_timeout(self, timeout: timedelta) -> None: ...
     def set_hints(self, hints: Dict[str, str]) -> None: ...
     def send(

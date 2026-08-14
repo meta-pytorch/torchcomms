@@ -70,6 +70,9 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_RecordsAlgoAbortedOnAbort) {
   // Wait for kernel + abort handling to complete.
   tryQueryStreamFor(stream, kHostAlgoFnWait + std::chrono::milliseconds(2000));
   ASSERT_TRUE(ctranComm->testAbort());
+  const auto abortInfo = ctranComm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, comms::fault_tolerance::AbortReason::TIMED_OUT);
 
   // Tear down gpe — ~Impl joins the GPE thread.
   gpe.reset();
@@ -92,7 +95,8 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_RecordsAlgoAbortedOnAbort) {
     } else if (r.tracePoint == ::ctran::GpeTracePoint::ALGO_ABORTED) {
       sawAlgoAborted = true;
       EXPECT_TRUE(r.aborted);
-      EXPECT_EQ(r.message, std::string_view{"timeout"});
+      EXPECT_EQ(
+          r.message, std::string_view{"reason=2 context=\"timeout expired\""});
     }
   }
   EXPECT_TRUE(sawIterStart);
@@ -214,11 +218,15 @@ TEST_F(
   // only cmd the GPE thread sees.
   ctranComm->setAbort();
   ASSERT_TRUE(ctranComm->testAbort());
+  const auto abortInfo = ctranComm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, comms::fault_tolerance::AbortReason::ABORTED);
 
   gpe.reset();
 
   // Abort state must persist across cancelTimeout().
   EXPECT_TRUE(ctranComm->testAbort());
+  EXPECT_EQ(ctranComm->getAbortInfo(), abortInfo);
 
   // No ALGO_ABORTED row — TERMINATE branch skips the marker.
   bool sawAlgoAborted = false;
