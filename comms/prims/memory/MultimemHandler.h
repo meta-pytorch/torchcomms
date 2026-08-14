@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -167,13 +168,14 @@ class MultimemHandler {
   AllocationLayout computeAllocationLayout() const;
   void createMulticastHandle(std::size_t allocatedSize);
   ShareableHandle exportMulticastHandle();
-  ShareableHandle exchangeMulticastHandle(ShareableHandle handle);
+  ShareableHandle exchangeMulticastHandle(
+      ShareableHandle handle,
+      const std::exception_ptr& localError);
   void importMulticastHandle(const ShareableHandle& handle);
   void addLocalDeviceToMulticast(CUdevice cuDev);
   void bindLocalMemoryToMulticast(std::size_t allocatedSize);
   void mapMulticastMemory(const AllocationLayout& layout);
-  void synchronizeRanks(const char* phase);
-  void agreeOnSetup();
+  void agreeOnSetup(const std::exception_ptr& localError);
   std::string describeState(const char* failedPhase, const char* completedPhase)
       const;
   void cleanup();
