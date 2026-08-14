@@ -744,6 +744,119 @@ void launch_ibgda_progress_recv(
 #endif
 }
 
+// ==========================================================================
+// LL resumable-progress benchmark kernels. Mirror the Simple progress
+// send/recv kernels above but drive the LL protocol: init/progress are
+// templated on protocol::LL so the reservation, wire geometry, and readiness
+// poll all use the data+inline-flag format (2x wire, no DATA_READY). Memcpy
+// only.
+// ==========================================================================
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void __launch_bounds__(512, 1) ibgda_progress_send_ll_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
+    transport->init_send_progress<protocol::LL>(
+        group, tiles.bytes(), maxSignalBytes);
+    while (transport->progress_send_once<Memcpy, protocol::LL>(
+               group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  }
+}
+
+__global__ void __launch_bounds__(512, 1) ibgda_progress_recv_ll_kernel(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t totalBytes,
+    int numBlocks,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+  auto group = make_block_group();
+
+  const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+  const std::size_t totalSections = totalBytes / sectionBytes;
+
+  for (std::size_t s = 0; s < totalSections; ++s) {
+    TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
+    transport->init_recv_progress<protocol::LL>(
+        group, tiles.bytes(), maxSignalBytes);
+    while (transport->progress_recv_once<Memcpy, protocol::LL>(
+               group, tiles.data(), tiles.bytes(), maxSignalBytes, timeout) !=
+           IbgdaSendRecvProgressStatus::Done) {
+    }
+  }
+}
+#endif
+
+void launch_ibgda_progress_send_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress send LL benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_send_ll_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, src, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress send LL kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
+}
+
+void launch_ibgda_progress_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)dst;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  printf("[PIPES] progress recv LL benchmark is NVIDIA-only\n");
+#else
+  ibgda_progress_recv_ll_kernel<<<numBlocks, 512, 0, stream>>>(
+      transport, dst, nbytes, numBlocks, maxSignalBytes, timeout);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] progress recv LL kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
+}
+
 __global__ void ibgda_snapshot_step_state_kernel(
     P2pIbgdaTransportDevice* transport,
     int64_t* dst,

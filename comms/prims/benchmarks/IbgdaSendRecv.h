@@ -202,6 +202,30 @@ void launch_ibgda_progress_recv(
     Timeout timeout = Timeout());
 
 /**
+ * Launch unidirectional LL progress send kernel. All blocks send.
+ */
+void launch_ibgda_progress_send_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch unidirectional LL progress recv kernel. All blocks receive.
+ */
+void launch_ibgda_progress_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
  * Snapshot the transport send/recv byte cursors into device memory.
  *
  * @param transport  GPU-resident P2pIbgdaTransportDevice pointer
