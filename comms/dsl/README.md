@@ -1,112 +1,341 @@
-# comms/dsl: customized collectives without the plumbing - a hook in, an autotuned kernel out
+# CuTe NVLink collectives
 
-`comms/dsl` framework lets a kernel developer (user) build a customized, autotunable collective in DSLs (Triton or CuTe) by writing only the small part that differentiates their kernel: per-tile hooks and optionally transports, while the framework owns the generic ~95% (schedule, multi-peer addressing, signal/wait protocol) and automates the performance tuning.
+`comms/dsl` provides copy-based GPU communication over PyTorch symmetric memory and
+NVLink. The public API currently includes:
 
-## Why
+- equal-split `all_to_all` schedules written in the CuTe DSL;
+- local, MAST, AnyBench, and Nsight Compute entry points.
 
-Researchers prototype new ideas as kernels in DSLs like Triton/CuTe instead of CUDA/C++ for the fast iteration loop. Scaling the idea needs communication, and that usually leads to repetitive work: days-to-weeks of race-prone stage/signal/wait/fence logic, re-derived per kernel, with bugs that could pass tests and fail at scale. Notably, the part that differentiates the kernel is typically small: a transpose, a quantize, or an accumulate, while a lot around it is plumbing.
+The data path supports `torch.float32` and `torch.bfloat16`.
 
-For instance, the `all_to_all_single_non_contig` kernel is ~800 lines, of which roughly 95% is generic machinery, including the signaling protocol, the pipeline, symmetric-memory staging, multi-peer addressing, and tile-size math. The remaining ~5% is layout transform, which is what really makes this kernel unique.
+## Public API
 
-Furthermore, reaching correctness is only half the journey. Each kernel is then tuned against production shapes maintained per hardware tier, because the launch parameters that win on one shape/hardware may lose on the others.
+```python
+from comms.dsl import NvlTransport, nvl_rendezvous
+from comms.dsl.cute import all_to_all
+from comms.dsl.cute.a2a.tuning import CuteA2AConfig
+```
 
-comms/dsl breaks both loops. It provides the customizable boilerplate, and it turns performance into an autotuner run.
-
-## The pieces
-
-| Piece | What it is |
+| API | Purpose |
 |---|---|
-| **Transport** | A fabric binding (NVLink today, IB later): cross-GPU memory + signaling state, created once via a `rendezvous` over PyTorch symmetric memory. The framework ships defaults and the user either sets one up or could provide their own. |
-| **Endpoint (`PeerEndpoint`)** | How the transport hands a schedule per-peer addresses - `send_dst` (where to write into a peer), `recv_src` (where to read its data), and the signal slots - so no schedule touches raw pointers. Two forms: a host-resolved `PeerEndpoint` for a single peer (used by `send_tile`/`recv_tile`), and a device-side table of all peers that a fused collective indexes by peer in-kernel (e.g. `all_to_all`). |
-| **Ops** | The transport's four device functions that act on those addresses: `put` (remote write), `get` (local read), `signal`/`wait` (the data-ready handshake). The only fabric-specific (NVLink vs IB) device code; hooks and schedules call them and stay transport-agnostic. |
-| **Hook + `Ctx`** | The 5% the user writes: `produce(ctx) -> tile` and `consume(ctx, tile)`. `Ctx` is the per-tile view the framework hands the hook - input/output pointer, flat index, mask, and within-chunk position. This is where a transpose / gather / quantize / accumulate goes. |
-| **Collective** | The shipped schedule (e.g. `all_to_all`) that runs the hook over the fused `peer x block` transfer, owning all addressing and signal/wait. |
-| **`Config` + `Key`** | `Config` = the launch tunables the autotuner sweeps; `Key` = how a tuned config is looked up at runtime. Both are defined by the user (see principles). |
-| **Adapter** | A thin class that plugs a collective into the comms-owned tuner engine (`comm_tuning`). |
+| `nvl_rendezvous` | Collectively allocate a user-owned NVLink transport for a process group. |
+| `NvlTransport` | Own staging memory, signal storage, persistent counters, and resolved launch metadata. |
+| `all_to_all` | Execute an equal-split all-to-all into a caller-owned output tensor. |
+| `CuteA2AConfig` | Select the schedule and its launch geometry explicitly. |
 
-Flow: a `Transport` gives the kernel per-peer addresses; the `Collective` loops tiles, calling the user's `Hook` (compute) and the `ops` (move + signal); a `Config`, looked up by `Key`, sets the launch parameters.
+Advanced schedule authors can also import `PeerTable`, `check_transfer`, and `nvl_ops`.
+Application code normally uses the higher-level APIs above; `all_to_all` invokes the
+required validation and transport operations internally.
 
-## Design principles
+## Basic all-to-all
 
-- Own the 95%, expose the 5%. The framework owns the schedule and the race-prone protocol; the user writes a per-tile `produce`/`consume` hook (transpose, gather, quantize, accumulate) and supplies a transport. No fences, no wait loops, no deadlock reasoning in user code.
-- Performance is autotuned, and the tuner is generic. The user declares two things: a `Key` (which input properties should map to one tuned config - size, dtype, world size, layout, whatever matters for that kernel) and a `Config` (the launch knobs to sweep). A shared engine sweeps configs offline and emits a `{Key: Config}` map; at runtime the collective rebuilds the same key and looks it up (safe default if absent). Changing shapes means re-running the tuner, not rewriting the kernel.
-- Spectrum of control. Plug-and-play collective (write a hook) -> `send_tile`/`recv_tile` (keep your own schedule) -> raw `put`/`get`/`signal`/`wait` ops (full control). Climb only as high as you need.
-- Contracts shared, code per-DSL. Triton and CuTe share the same op names, hook roles, and Config/Key shapes; the device kernels are written per DSL (flat pointers vs partitions), since device code is not portable across DSLs.
+All ranks must call `nvl_rendezvous` and `all_to_all` in the same collective order.
 
-## Example: a custom collective (a2a non-contig), end to end
+```python
+import torch
+import torch.distributed as dist
 
-The whole workflow for a non-contiguous all-to-all - write it, then autotune it.
+from comms.dsl import nvl_rendezvous
+from comms.dsl.cute import all_to_all
 
-### 1. Write it (the ~5%)
+rank = dist.get_rank()
+world_size = dist.get_world_size()
+device = torch.device("cuda", rank % torch.cuda.device_count())
+torch.cuda.set_device(device)
 
-A transport, one hook, one call:
+input = torch.randn(1 << 20, dtype=torch.bfloat16, device=device)
+output = torch.empty_like(input)
+
+# Equal split: every destination receives input.numel() / world_size elements.
+chunk_elements = input.numel() // world_size
+chunk_bytes = chunk_elements * input.element_size()
+transport = nvl_rendezvous(
+    dist.group.WORLD,
+    device,
+    per_peer_bytes=chunk_bytes,
+)
+
+# config=None uses the fixed DEFAULT_A2A_CONFIG. Its zero-valued tuning fields are
+# resolved analytically for this input; its primitive remains classic copy.
+all_to_all(transport, output, input)
+```
+
+The result has the same equal-split layout as `torch.distributed.all_to_all_single`.
+
+## Choosing a schedule
+
+`CuteA2AConfig` exposes the following fields:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `num_blocks` | `8` | Blocks per peer for `copy`; contributes to the total logical-channel grid for channel schedules. |
+| `num_threads` | `0` | Threads per CTA. `0` selects an analytic value. |
+| `num_slots` | `0` | Classic pipeline slots or bounded-ring slots. `0` selects the schedule default. |
+| `unroll` | `0` | Per-thread copy unroll. `0` selects the analytic value. |
+| `primitive` | `"copy"` | Schedule family. |
+| `cluster` | `0` | Classic CTA cluster size. Channel schedules require clustering off. |
+| `cluster_y` | `1` | Classic peer-axis cluster size. Channel schedules require `1`. |
+| `send_threads` | `0` | Threads assigned to the send role in channel schedules. `0` uses half the CTA. |
+| `peer_fanout` | `0` | Concurrent peer groups for `copy_channel_full`. `0` means fanout `1`. |
+
+Supported primitives:
+
+- `copy`: classic per-`(peer, block)` staging with a slot pipeline;
+- `copy_channel_full`: one CTA range spans all peers, with separate send/receive warp
+  groups and `peer_fanout` of `1`, `2`, or `4`;
+- `copy_channel_ring`: the same channel ownership with bounded circular staging.
+
+Example full-staging channel configuration:
 
 ```python
 from comms.dsl import nvl_rendezvous
-from comms.dsl.triton import all_to_all
-from comms.dsl.triton.hooks import transpose_produce   # the 5%: the layout transform
+from comms.dsl.cute import all_to_all
+from comms.dsl.cute.a2a.tuning import CuteA2AConfig
 
-t = nvl_rendezvous(group, dev, per_peer_bytes=chunk_bytes)   # transport (staging + signaling)
-all_to_all(t, out, inp, produce=transpose_produce, rows=R)   # config=None -> tuned lookup
+full_config = CuteA2AConfig(
+    num_blocks=4,
+    num_threads=1024,
+    primitive="copy_channel_full",
+    send_threads=512,
+    peer_fanout=4,
+    unroll=12,
+)
+full_transport = nvl_rendezvous(
+    dist.group.WORLD,
+    device,
+    per_peer_bytes=chunk_bytes,
+)
+all_to_all(full_transport, output, input, config=full_config)
 ```
 
-`nvl_rendezvous` allocates the per-peer staging buffer + signal pad once; `rows` describes the 2D tile layout the hook reads; with no `produce` hook this is a plain all-to-all.
-
-The hook is the 5%. `ctx` is the per-tile view (input pointer, flat index, mask, within-chunk position `pos` with `rows`/`cols`); it returns the tile to send - here, the transposed source position, fused into the transfer leg with no extra HBM pass:
+Example bounded-ring configuration:
 
 ```python
-@triton.jit
-def transpose_produce(ctx):
-    r = ctx.pos % ctx.rows           # position in the transposed [cols, rows] layout
-    c = ctx.pos // ctx.rows
-    src = r * ctx.cols + c           # source position in the [rows, cols] layout
-    base = ctx.idx - ctx.pos         # chunk base in the input
-    return tl.load(ctx.ptr + base + src, mask=ctx.mask)
+ring_config = CuteA2AConfig(
+    num_blocks=4,
+    num_threads=1024,
+    num_slots=4,
+    primitive="copy_channel_ring",
+    send_threads=448,
+    unroll=3,
+)
+ring_transport = nvl_rendezvous(
+    dist.group.WORLD,
+    device,
+    # Capacity is intentionally bounded and may be smaller than the logical chunk.
+    per_peer_bytes=64 * 1024 * 1024,
+)
+all_to_all(ring_transport, output, input, config=ring_config)
 ```
 
-The framework runs the fused `peer x block` schedule (multi-peer addressing, signal/wait) in one launch, validated bit-exact against `dist.all_to_all_single` on 4 ranks.
+### Size selection is explicit
 
-### 2. Autotune it
+The runtime does **not** automatically select a schedule from the message size.
+`config=None` always starts from `DEFAULT_A2A_CONFIG`, whose primitive is classic `copy`.
+The size-band policies used for performance evaluation are not a public runtime API.
 
-Write one thin adapter - the engine is generic, so you only declare your `Key` and the `Config`s to sweep:
+A transport is also bound to the resolved geometry of its first call. Different message
+sizes or changes to dtype, vector width, slots, primitive, fanout, or ring layout must use
+different transports. `check_geometry` raises instead of reinterpreting persistent counters
+and staging ownership.
+
+Applications with multiple stable shapes should keep one transport per geometry:
 
 ```python
-class A2ATuningAdapter(CommKernelTuningAdapter):
-    def enumerate_input_specs(self, world_size): ...      # the shapes to tune
-    def make_key(self, spec, world_size): ...             # YOUR key (must match runtime)
-    def enumerate_candidate_configs(self, spec, key): ... # YOUR configs to sweep
-    def make_inputs(self, spec, *, rank, world_size, device): ...   # tensors + nvl_rendezvous
-    def run_candidate(self, inputs, config, group):       # the collective with the tuned config
-        all_to_all(inputs.transport, inputs.output, inputs.input, rows=inputs.rows, config=config)
-        return inputs.output
-    def run_baseline(self, inputs, baseline, group): ...  # e.g. NCCL, the speed baseline
-    def check_correctness(self, candidate, reference): ...
+config = CuteA2AConfig(
+    num_blocks=4,
+    num_threads=1024,
+    primitive="copy_channel_full",
+    send_threads=512,
+    peer_fanout=4,
+    unroll=12,
+)
+chunk_bytes = input.numel() // world_size * input.element_size()
+transports: dict[tuple[int, torch.dtype, CuteA2AConfig], NvlTransport] = {}
+
+key = (input.numel(), input.dtype, config)
+transport = transports.get(key)
+if transport is None:
+    transport = nvl_rendezvous(
+        dist.group.WORLD,
+        device,
+        per_peer_bytes=chunk_bytes,
+    )
+    transports[key] = transport
+
+all_to_all(transport, output, input, config=config)
 ```
 
-Parent mode sweeps every candidate, benchmarks it against your baseline, and checks correctness; select mode picks the winner per key and writes a generated table:
+Applications with additional geometry-affecting inputs must include them in the cache key.
+All ranks must make the same cache-miss and rendezvous decisions.
 
-```python
-# comms/dsl/triton/generated/a2a_tuned_configs.py  (generated; do not hand-edit)
-from comms.dsl.triton.collectives_tuning import A2AConfig, A2AKey
+`COMMS_DSL_ALLOW_GEOMETRY_SWITCH=1` is only for calls that are already device- and
+cross-rank-synchronized. It does not drain an in-flight transport and is not an automatic
+schedule-selection mechanism.
 
-TUNED_A2A_CONFIGS = {
-    A2AKey(world_size=8, dtype="bfloat16", numel=8192, rows=0, transport_kind="NvlTransport"):
-        A2AConfig(num_blocks=16, block=2048, num_warps=8),
-    # ... one row per tuned key ...
-}
+## Constraints and common errors
+
+`all_to_all` validates the contract before compiling or launching:
+
+- input and output must be non-empty, contiguous CUDA tensors;
+- both tensors must have the same dtype and current CUDA device;
+- input and output storage must not overlap;
+- input/output pointers and `per_peer_bytes` must be 16-byte aligned;
+- `input.numel()` must be divisible by `world_size`;
+- the transport must have enough per-peer staging and signal slots;
+- every signal-spinning CTA must be co-resident; the host uses a conservative maximum of
+  one CTA per SM.
+
+For `copy_channel_full` fanout `2` or `4`, the validated GB300 geometry is world size `8`,
+`32` total CTAs, `1024` threads per CTA, and `512` send threads. Channel schedules reject
+CTA clustering.
+
+## Benchmarking
+
+### Local
+
+The maintained published benchmark compares the default CuTe all-to-all with NCCL and
+checks correctness before timing:
+
+```bash
+buck2 run @fbcode//mode/opt fbcode//comms/dsl/tests:benchmark_a2a_cute
+
+A2A_SIZES=8388608,67108864 \
+  buck2 run @fbcode//mode/opt fbcode//comms/dsl/tests:benchmark_a2a_cute
 ```
 
-Then nothing else changes: the Step 1 call `all_to_all(..., config=None)` rebuilds the key and looks it up, so it now runs the tuned config automatically. When shapes change, re-run the tuner and regenerate the table - no kernel edits.
+### GB300 MAST
 
-## What the same pattern enables next
+The launcher is dry-run by default. Supply access values as flags or through
+`MAST_HPC_IDENTITY`, `MAST_RM_ATTRIBUTION`, and `MAST_HPC_ONCALL`.
 
-Concrete doables on the shipped transport + ops + Config/Key + tuner:
+```bash
+buck2 run @fbcode//mode/opt --prefer-local \
+  fbcode//comms/dsl/tests:mast_launch -- \
+  --delivery conda \
+  --module comms.dsl.tests.benchmark_a2a_cute \
+  --nnode 2 \
+  --ppn 4 \
+  --nvl-hosts 2 \
+  --hw gb300_dsf \
+  --identity networkai_comms_tools \
+  --rm-attribution infra_projects \
+  --oncall hpc_comms_lib \
+  --submit
+```
 
-- reduce-scatter: an accumulate-on-`consume` hook (sum the received tile into the output) over the same schedule family.
-- all-gather: the gather schedule with the default copy hook.
-- quantized all-to-all: a `produce` hook that casts/scales to fp8 and a `consume` that dequantizes, fusing the conversion into the transfer leg (no extra HBM pass).
-- variable-split a2a (MoE dispatch / combine): the same collective with per-rank split sizes added to the `Key` and layout.
+Omit `--submit` to inspect the generated specification without consuming capacity.
+Structured rows are emitted as `A2A_RESULT_JSON`.
 
-Each is a new hook and/or a sibling schedule on the same substrate - not a new comm stack.
+### AnyBench
 
-Further out, and a bigger milestone than the items above: comm-compute overlap - hiding a compute kernel (e.g. a GEMM or MoE expert) under the collective via pipelining to cover its latency.
+```bash
+fbpkg build fbcode//comms/dsl/tests:comms.dsl.benchmark_a2a.aarch64.gb300 \
+  --build-remote --ephemeral --acl-free-uuid-only
+
+buck2 run @fbcode//mode/opt fbcode//hpc_comms/uni_bench:run_uni_bench -- \
+  --uni_bench_config comms/dsl/tests/anybench_a2a_cute.json
+```
+
+## Nsight Compute
+
+D6 integrates single-pass NCU profiling into the published benchmark.
+
+Local example:
+
+```bash
+buck2 run @fbcode//mode/opt fbcode//comms/dsl/tests:benchmark_a2a_cute -- \
+  --ncu \
+  --ncu-launch-count 1 \
+  --ncu-kernel-regex 'regex:.*_a2a_kernel.*'
+```
+
+MAST example:
+
+```bash
+buck2 run @fbcode//mode/opt --prefer-local \
+  fbcode//comms/dsl/tests:mast_launch -- \
+  --delivery conda \
+  --module comms.dsl.tests.benchmark_a2a_cute \
+  --nnode 2 \
+  --ppn 4 \
+  --nvl-hosts 2 \
+  --hw gb300_dsf \
+  --identity networkai_comms_tools \
+  --rm-attribution infra_projects \
+  --oncall hpc_comms_lib \
+  --ncu \
+  --ncu-launch-count 1 \
+  --ncu-kernel-regex 'regex:.*_a2a_kernel.*' \
+  --submit
+```
+
+Use an exact kernel regex. The default `launch__` metrics require one pass. NCU 2025.3.1
+cannot safely replay a distributed signal-spinning communication kernel for arbitrary
+multi-pass metrics, so profiling such metrics can deadlock. MAST NCU profiling requires
+conda delivery because the launcher swaps to the NCU-capable base image.
+
+## Current GB300 results
+
+The current source was measured on two hosts with four GB300 GPUs each. The main matrix
+covers 32 B through 2 GiB per rank. Its 437 structured rows passed bit-exact pre-timing,
+timed-replay, post-timing, queued changed-input, and actual-grid checks. A follow-up sweep
+added the production 48 MiB/peer and 96 MiB/peer shapes (384 MiB and 768 MiB per rank); all
+10 additional rows were bit-exact.
+
+`Ratio` is CuTe/NCCL performance: each run computes NCCL latency divided by CuTe
+latency, equivalently CuTe bus bandwidth divided by NCCL bus bandwidth, and the table
+reports the median ratio across rotations. `(lat)` marks latency as the primary comparison
+metric; `(bw)` marks bus bandwidth. Both forms are greater-is-better. The displayed NCCL
+and CuTe latencies are independent medians, so their rounded quotient need not equal the
+displayed ratio.
+Bandwidth excludes the local diagonal chunk. `NCCL grid` is the measured launch CTA count,
+not a measurement of distinct occupied SMs. The main matrix uses the selected size-band
+policy; the two follow-up rows use the best of all five large-message configurations. For
+adaptive classic rows, the table expands the resolved thread count and unroll as
+`classic<threads>u<unroll>` instead of displaying the requested `analytic` sentinel config.
+
+| Size/rank | NCCL grid | CuTe config | NCCL latency | CuTe latency | NCCL busbw | CuTe busbw | Ratio |
+|---:|---:|---|---:|---:|---:|---:|---:|
+| 32 B | 8 | `classic768u16` | 31.04 us | 9.95 us | 0.000902 GB/s | 0.002814 GB/s | 3.108x (lat) |
+| 64 B | 8 | `classic768u16` | 27.58 us | 10.69 us | 0.002031 GB/s | 0.005241 GB/s | 2.827x (lat) |
+| 128 B | 8 | `classic768u16` | 31.36 us | 10.29 us | 0.003572 GB/s | 0.010886 GB/s | 3.048x (lat) |
+| 256 B | 8 | `classic768u16` | 33.19 us | 10.82 us | 0.006749 GB/s | 0.020693 GB/s | 3.010x (lat) |
+| 512 B | 8 | `classic768u16` | 14.11 us | 10.67 us | 0.031744 GB/s | 0.041979 GB/s | 1.293x (lat) |
+| 1 KiB | 8 | `classic768u16` | 13.74 us | 11.95 us | 0.065205 GB/s | 0.074969 GB/s | 1.258x (lat) |
+| 2 KiB | 8 | `classic768u16` | 31.57 us | 12.00 us | 0.056769 GB/s | 0.149362 GB/s | 2.631x (lat) |
+| 4 KiB | 8 | `classic768u16` | 32.59 us | 11.65 us | 0.109989 GB/s | 0.307567 GB/s | 2.695x (lat) |
+| 8 KiB | 8 | `classic768u16` | 14.07 us | 11.06 us | 0.509371 GB/s | 0.648231 GB/s | 1.273x (lat) |
+| 16 KiB | 8 | `classic1024u6` | 13.92 us | 10.89 us | 1.0 GB/s | 1.3 GB/s | 1.269x (lat) |
+| 32 KiB | 8 | `classic1024u6` | 33.99 us | 11.18 us | 0.843661 GB/s | 2.6 GB/s | 3.040x (lat) |
+| 64 KiB | 8 | `classic1024u6` | 35.02 us | 11.00 us | 1.6 GB/s | 5.2 GB/s | 3.184x (lat) |
+| 128 KiB | 8 | `classic1024u6` | 35.04 us | 11.92 us | 3.3 GB/s | 9.6 GB/s | 3.077x (lat) |
+| 256 KiB | 8 | `classic1024u6` | 34.67 us | 12.84 us | 6.6 GB/s | 17.9 GB/s | 2.679x (lat) |
+| 512 KiB | 8 | `classic1024u6` | 34.56 us | 13.76 us | 13.3 GB/s | 33.3 GB/s | 2.512x (lat) |
+| 1 MiB | 16 | `classic1024u6` | 20.95 us | 14.22 us | 43.8 GB/s | 64.5 GB/s | 1.474x (lat) |
+| 2 MiB | 32 | `classic512u8` | 22.47 us | 15.32 us | 81.7 GB/s | 119.8 GB/s | 1.475x (lat) |
+| 4 MiB | 32 | `classic1024u8` | 37.73 us | 19.57 us | 97.3 GB/s | 187.6 GB/s | 1.928x (lat) |
+| 8 MiB | 32 | `classic1024u8` | 35.78 us | 28.54 us | 205.2 GB/s | 257.2 GB/s | 1.248x (bw) |
+| 16 MiB | 32 | `classic1024u8` | 52.54 us | 45.16 us | 279.4 GB/s | 325.1 GB/s | 1.194x (bw) |
+| 32 MiB | 32 | `full_f4_u12` | 83.31 us | 78.69 us | 352.4 GB/s | 373.1 GB/s | 1.061x (bw) |
+| 48 MiB | 32 | `full_f4_u12` | 107.87 us | 101.76 us | 408.3 GB/s | 432.8 GB/s | 1.058x (bw) |
+| 64 MiB | 32 | `full_f2_u3` | 132.57 us | 120.69 us | 442.9 GB/s | 486.5 GB/s | 1.103x (bw) |
+| 96 MiB | 32 | `full_f2_u3` | 181.95 us | 174.07 us | 484.1 GB/s | 506.0 GB/s | 1.047x (bw) |
+| 128 MiB | 32 | `full_f2_u3` | 230.75 us | 221.51 us | 509.0 GB/s | 530.2 GB/s | 1.042x (bw) |
+| 256 MiB | 32 | `full_f1_s480_u4` | 422.18 us | 412.22 us | 556.4 GB/s | 569.8 GB/s | 1.024x (bw) |
+| 384 MiB | 32 | `full_f1_s480_u4` | 610.86 us | 593.79 us | 576.8 GB/s | 593.3 GB/s | 1.029x (bw) |
+| 512 MiB | 32 | `full_f1_s480_u4` | 802.08 us | 775.74 us | 585.7 GB/s | 605.6 GB/s | 1.034x (bw) |
+| 768 MiB | 32 | `ring_s448_u3` | 1146.52 us | 1153.13 us | 614.6 GB/s | 611.1 GB/s | 0.994x (bw) |
+| 1 GiB | 32 | `ring_s448_u3` | 1503.62 us | 1496.61 us | 624.8 GB/s | 627.8 GB/s | 1.002x (bw) |
+| 2 GiB | 32 | `ring_s448_u3` | 3033.46 us | 2936.06 us | 619.4 GB/s | 640.0 GB/s | 1.033x (bw) |
+
+At 384 MiB/rank, the NCCL result (610.86 us, 659.2 GB/s algorithm bandwidth,
+576.8 GB/s bus bandwidth) reproduces the TorchLabs baseline (610.8 us, 659.3 GB/s
+algorithm bandwidth, 576.9 GB/s bus bandwidth). At 768 MiB/rank, NCCL reaches
+614.6 GB/s bus bandwidth, within 0.6% of the 615-618 GB/s TorchLabs range. This
+cross-check found no evidence of a suboptimal NCCL denominator.
+
+The detailed reproducible commands, job names, correctness gates, ranges, and source digest
+are recorded in the Test Plans for
+[D112061822](https://www.internalfb.com/diff/D112061822) and
+[D112073340](https://www.internalfb.com/diff/D112073340).
