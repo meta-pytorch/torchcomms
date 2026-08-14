@@ -5,10 +5,10 @@
 //
 // Shared infrastructure used by all three staging paths (ReduceScatter /
 // AllGather / AllReduce): the per-CTA staging-window geometry (`StageLayout` /
-// `make_stage_layout`) and the internal-signal slot-id helpers (ready/ack
-// per-peer SET slots and the staging ADD barrier slots). It depends only on the
-// transport struct in MultimemNvlTransportDevice.cuh, not on the reduce/store
-// PTX.
+// `make_stage_layout`) and the internal-signal slot-id helpers (channel-wide
+// ready/ack/consumed SET stripes and lane-private aggregate barriers). It
+// depends only on the transport struct in MultimemNvlTransportDevice.cuh, not
+// on the reduce/store PTX.
 
 // clang-tidy analyzes this .cuh as a standalone main file and misflags the
 // pragma; it is a genuine include-once header. False positive, so suppress it.
@@ -45,18 +45,20 @@ checked_signal_product(uint64_t lhs, uint64_t rhs) {
 } // namespace detail
 
 /**
- * Layout of one CTA-group's slice of the shared staging window.
+ * Layout of one logical channel's slice of the shared staging window.
  *
- * The flat per-rank data buffer is split across CTAs (groups), and each group's
- * slice is further split into `pipelineDepth` lanes. A round picks its lane
- * round-robin so consecutive rounds use disjoint physical windows (pipelining).
+ * Each CUDA ThreadGroup selects one channel by group_id. The flat per-rank data
+ * buffer is split across active channels, and each channel's slice is further
+ * split into `pipelineDepth` lanes. A round picks its lane round-robin so
+ * consecutive rounds use disjoint physical windows.
  */
 struct StageLayout {
-  std::size_t groupBeginBytes{0}; // this group's slice origin into the buffer
+  std::size_t channelBeginBytes{0}; // channel slice origin in the data buffer
   std::size_t stagingElems{0}; // one lane window, in elements
   std::size_t stagingBytes{0}; // one lane window, in bytes
-  uint64_t signalBase{0}; // this group's base into the internal signals
-  uint64_t signalsPerLane{0}; // 2 * nvlRanks + 4
+  uint64_t signalBase{0}; // this channel's base into the internal signals
+  uint64_t signalsPerChannel{0}; // 3 * nvlRanks + 4 * pipelineDepth
+  int nvlRanks{0}; // ranks in this NVLink domain
   uint32_t pipelineDepth{1};
 };
 
@@ -92,14 +94,14 @@ __device__ __forceinline__ StageLayout make_stage_layout(
     __trap();
   }
   if (pipelineDepth == 0 || transport.maxChannels == 0 ||
-      transport.signalsPerLane == 0 ||
+      transport.signalsPerChannel == 0 ||
       group.total_groups > transport.maxChannels) {
     printf(
         "NvlMultimem staging layout: invalid geometry depth=%u "
-        "maxChannels=%u signalsPerLane=%u total_groups=%u\n",
+        "maxChannels=%u signalsPerChannel=%u total_groups=%u\n",
         static_cast<unsigned>(pipelineDepth),
         static_cast<unsigned>(transport.maxChannels),
-        static_cast<unsigned>(transport.signalsPerLane),
+        static_cast<unsigned>(transport.signalsPerChannel),
         static_cast<unsigned>(group.total_groups));
     __trap();
   }
@@ -109,7 +111,7 @@ __device__ __forceinline__ StageLayout make_stage_layout(
   const std::size_t groupId = group.group_id;
   const std::size_t unitsPerGroup = totalUnits / totalGroups;
   const std::size_t extraUnits = totalUnits % totalGroups;
-  const std::size_t groupBeginUnit =
+  const std::size_t channelBeginUnit =
       unitsPerGroup * groupId + (groupId < extraUnits ? groupId : extraUnits);
   const std::size_t groupUnits =
       unitsPerGroup + static_cast<std::size_t>(groupId < extraUnits);
@@ -129,45 +131,43 @@ __device__ __forceinline__ StageLayout make_stage_layout(
   }
 #endif
 
-  // Layout per (group, lane):
+  // Layout per channel:
   //   [0, nvlRanks)             ready[rank]           (SET, per-peer)
   //   [nvlRanks, 2*nvlRanks)    ack[rank]             (SET, per-peer)
-  //   2*nvlRanks + 0            staging_ready_counter (ADD, multicast)
-  //   2*nvlRanks + 1            staging_ready_epoch   (ADD, this rank baseline)
-  //   2*nvlRanks + 2            staging_ack_counter   (ADD, multicast)
-  //   2*nvlRanks + 3            staging_ack_epoch     (ADD, this rank baseline)
-  // The four ADD-mode barrier slots MUST live outside the SET-mode ready/ack
-  // region: without this separation, flipping stagingArrivalBarrier between ops
-  // in a single process leaves ADD counter residue in slots that a later
-  // SET-mode op reads with CMP_GE, and any past-op residue trivially satisfies
-  // the wait.
+  //   [2*nvlRanks, 3*nvlRanks)  consumed[rank]        (SET, per-peer)
+  // Each lane then owns four aggregate-barrier slots:
+  //   3*nvlRanks + 4*lane + 0   staging_ready_counter (ADD, multicast)
+  //   3*nvlRanks + 4*lane + 1   staging_ready_epoch   (local baseline)
+  //   3*nvlRanks + 4*lane + 2   staging_ack_counter   (ADD, multicast)
+  //   3*nvlRanks + 4*lane + 3   staging_ack_epoch     (local baseline)
+  // Only the counter slots are multicast ADD targets. The epoch slots hold
+  // rank-local baselines. All four slots MUST live outside the SET-mode peer
+  // stripes: otherwise ADD counter residue can satisfy a later SET-mode CMP_GE
+  // wait after the selected synchronization mode changes.
 #if defined(__CUDA_ARCH__)
-  if (transport.nvlRanks <= 0 ||
-      static_cast<uint64_t>(transport.nvlRanks) >
-          (static_cast<uint64_t>(~uint32_t{0}) - 4) / 2) {
+  if (transport.nvlRanks <= 0) {
     printf(
         "NvlMultimem staging layout: invalid nvlRanks=%d\n",
         transport.nvlRanks);
     __trap();
   }
 #endif
-  const uint64_t expectedSignalsPerLane =
-      comms::prims::multimem_staging_signals_per_lane(
-          static_cast<uint32_t>(transport.nvlRanks));
-  const uint64_t signalsPerLane = transport.signalsPerLane;
+  const uint64_t expectedSignalsPerChannel =
+      comms::prims::multimem_staging_signals_per_channel(
+          static_cast<uint32_t>(transport.nvlRanks), pipelineDepth);
+  const uint64_t signalsPerChannel = transport.signalsPerChannel;
 #if defined(__CUDA_ARCH__)
-  if (signalsPerLane != expectedSignalsPerLane) {
+  if (expectedSignalsPerChannel > ~uint32_t{0} ||
+      signalsPerChannel != expectedSignalsPerChannel) {
     printf(
-        "NvlMultimem staging layout: signalsPerLane=%llu expected=%llu\n",
-        static_cast<unsigned long long>(signalsPerLane),
-        static_cast<unsigned long long>(expectedSignalsPerLane));
+        "NvlMultimem staging layout: signalsPerChannel=%llu expected=%llu\n",
+        static_cast<unsigned long long>(signalsPerChannel),
+        static_cast<unsigned long long>(expectedSignalsPerChannel));
     __trap();
   }
 #endif
-  const uint64_t signalsPerGroup = detail::checked_signal_product(
-      static_cast<uint64_t>(pipelineDepth), signalsPerLane);
   const uint64_t requiredSignals = detail::checked_signal_product(
-      static_cast<uint64_t>(group.total_groups), signalsPerGroup);
+      static_cast<uint64_t>(group.total_groups), signalsPerChannel);
 #if defined(__CUDA_ARCH__)
   if (requiredSignals > transport.internalLocalSignals.size() ||
       requiredSignals > transport.internalMultimemSignals.size()) {
@@ -186,31 +186,66 @@ __device__ __forceinline__ StageLayout make_stage_layout(
 #endif
 
   return StageLayout{
-      .groupBeginBytes = groupBeginUnit * alignBytes,
+      .channelBeginBytes = channelBeginUnit * alignBytes,
       .stagingElems = stagingUnits * elemsPerAlign,
       .stagingBytes = stagingUnits * alignBytes,
       .signalBase = detail::checked_signal_product(
-          static_cast<uint64_t>(group.group_id), signalsPerGroup),
-      .signalsPerLane = signalsPerLane,
+          static_cast<uint64_t>(group.group_id), signalsPerChannel),
+      .signalsPerChannel = signalsPerChannel,
+      .nvlRanks = transport.nvlRanks,
       .pipelineDepth = pipelineDepth,
   };
 }
 
 __device__ __forceinline__ uint64_t
-ready_signal_id(const StageLayout& layout, uint32_t lane, int rank) {
-  return layout.signalBase +
-      static_cast<uint64_t>(lane) * layout.signalsPerLane +
-      static_cast<uint64_t>(rank);
+peer_signal_id(const StageLayout& layout, uint64_t stripeOffset, int rank) {
+  return layout.signalBase + stripeOffset + static_cast<uint64_t>(rank);
 }
 
-__device__ __forceinline__ uint64_t ack_signal_id(
-    const StageLayout& layout,
-    uint32_t lane,
-    int nvlRanks,
-    int rank) {
+__device__ __forceinline__ uint64_t
+ready_signal_id(const StageLayout& layout, int rank) {
+  return peer_signal_id(layout, /*stripeOffset=*/0, rank);
+}
+
+__device__ __forceinline__ uint64_t
+ack_signal_id(const StageLayout& layout, int rank) {
+  return peer_signal_id(layout, static_cast<uint64_t>(layout.nvlRanks), rank);
+}
+
+__device__ __forceinline__ uint64_t
+consumed_signal_id(const StageLayout& layout, int rank) {
+  return peer_signal_id(
+      layout,
+      static_cast<uint64_t>(2) * static_cast<uint64_t>(layout.nvlRanks),
+      rank);
+}
+
+__device__ __forceinline__ uint64_t
+lane_signal_base(const StageLayout& layout, uint32_t lane) {
   return layout.signalBase +
-      static_cast<uint64_t>(lane) * layout.signalsPerLane +
-      static_cast<uint64_t>(nvlRanks + rank);
+      static_cast<uint64_t>(3) * static_cast<uint64_t>(layout.nvlRanks) +
+      static_cast<uint64_t>(lane) *
+      comms::prims::detail::kMultimemSignalsPerLane;
+}
+
+__device__ __forceinline__ uint64_t
+ready_counter_signal_id(const StageLayout& layout, uint32_t lane) {
+  return lane_signal_base(layout, lane);
+}
+
+__device__ __forceinline__ uint64_t
+ready_epoch_signal_id(const StageLayout& layout, uint32_t lane) {
+  return lane_signal_base(layout, lane) + 1;
+}
+
+__device__ __forceinline__ uint64_t
+ack_counter_signal_id(const StageLayout& layout, uint32_t lane) {
+  return lane_signal_base(layout, lane) + 2;
+}
+
+__device__ __forceinline__ uint64_t
+ack_epoch_signal_id(const StageLayout& layout, uint32_t lane) {
+  return lane_signal_base(layout, lane) + 3;
 }
 
 __device__ __forceinline__ uint64_t
@@ -223,7 +258,7 @@ __device__ __forceinline__ std::size_t lane_begin(
     uint64_t primitiveRound) {
   const uint32_t lane =
       static_cast<uint32_t>(primitiveRound % layout.pipelineDepth);
-  return layout.groupBeginBytes +
+  return layout.channelBeginBytes +
       static_cast<std::size_t>(lane) * layout.stagingBytes;
 }
 

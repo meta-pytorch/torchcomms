@@ -124,11 +124,26 @@ __global__ void stageLayoutKernel(
   auto group = make_block_group();
   const auto layout = multimem::make_stage_layout<uint32_t>(transport, group);
   if (group.is_leader()) {
+    const int lastRank = layout.nvlRanks - 1;
     results[group.group_id] = StageLayoutResult{
-        .groupBeginBytes = layout.groupBeginBytes,
+        .channelBeginBytes = layout.channelBeginBytes,
         .stagingBytes = layout.stagingBytes,
         .signalBase = layout.signalBase,
-        .signalsPerLane = layout.signalsPerLane,
+        .signalsPerChannel = layout.signalsPerChannel,
+        .readyFirst = multimem::ready_signal_id(layout, 0),
+        .readyLast = multimem::ready_signal_id(layout, lastRank),
+        .ackFirst = multimem::ack_signal_id(layout, 0),
+        .ackLast = multimem::ack_signal_id(layout, lastRank),
+        .consumedFirst = multimem::consumed_signal_id(layout, 0),
+        .consumedLast = multimem::consumed_signal_id(layout, lastRank),
+        .lane0ReadyCounter = multimem::ready_counter_signal_id(layout, 0),
+        .lane0ReadyEpoch = multimem::ready_epoch_signal_id(layout, 0),
+        .lane0AckCounter = multimem::ack_counter_signal_id(layout, 0),
+        .lane0AckEpoch = multimem::ack_epoch_signal_id(layout, 0),
+        .lane1ReadyCounter = multimem::ready_counter_signal_id(layout, 1),
+        .lane1ReadyEpoch = multimem::ready_epoch_signal_id(layout, 1),
+        .lane1AckCounter = multimem::ack_counter_signal_id(layout, 1),
+        .lane1AckEpoch = multimem::ack_epoch_signal_id(layout, 1),
         .pipelineDepth = layout.pipelineDepth,
     };
   }

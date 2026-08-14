@@ -15,10 +15,24 @@ namespace comms::prims::test {
 enum class MultimemReductionTestType { Float, Int32, Float16, Bfloat16 };
 
 struct StageLayoutResult {
-  std::size_t groupBeginBytes;
+  std::size_t channelBeginBytes;
   std::size_t stagingBytes;
   uint64_t signalBase;
-  uint64_t signalsPerLane;
+  uint64_t signalsPerChannel;
+  uint64_t readyFirst;
+  uint64_t readyLast;
+  uint64_t ackFirst;
+  uint64_t ackLast;
+  uint64_t consumedFirst;
+  uint64_t consumedLast;
+  uint64_t lane0ReadyCounter;
+  uint64_t lane0ReadyEpoch;
+  uint64_t lane0AckCounter;
+  uint64_t lane0AckEpoch;
+  uint64_t lane1ReadyCounter;
+  uint64_t lane1ReadyEpoch;
+  uint64_t lane1AckCounter;
+  uint64_t lane1AckEpoch;
   uint32_t pipelineDepth;
 };
 

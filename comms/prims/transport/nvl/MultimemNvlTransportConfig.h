@@ -30,7 +30,7 @@ struct MultimemNvlTransportConfigParams {
 
   // Signal slots exposed through signal(), read_signal(), and
   // wait_signal_until(). This is orthogonal to staging geometry.
-  uint32_t userSignalCount{1};
+  uint32_t userSignalCount{0};
 };
 
 struct MultimemNvlTransportConfig {
@@ -48,7 +48,7 @@ struct MultimemNvlTransportConfig {
   std::size_t pipelineDepth{0};
   std::size_t maxChannels{0};
   std::size_t maxBlocks{0};
-  uint32_t userSignalCount{1};
+  uint32_t userSignalCount{0};
 
   bool operator==(const MultimemNvlTransportConfig&) const = default;
 };
@@ -60,6 +60,7 @@ constexpr MultimemNvlTransportConfig make_multimem_nvl_transport_config(
 
 struct MultimemNvlTransportConfigValidation {
   std::size_t dataBufferSize{0};
+  uint32_t signalsPerChannel{0};
   uint32_t internalSignalCount{0};
   std::size_t signalRegionOffset{0};
   std::size_t backingAllocationSize{0};
@@ -71,8 +72,8 @@ struct MultimemNvlTransportConfigValidation {
 };
 
 namespace detail {
-inline constexpr uint64_t kMultimemSignalsPerRank = 2;
-inline constexpr uint64_t kMultimemArrivalBarrierSignals = 4;
+inline constexpr uint64_t kMultimemSignalsPerPeer = 3;
+inline constexpr uint64_t kMultimemSignalsPerLane = 4;
 inline constexpr std::size_t kMultimemSignalAlignment = 128;
 inline constexpr std::size_t kMultimemSignalStateSize = 128;
 } // namespace detail
@@ -80,18 +81,11 @@ inline constexpr std::size_t kMultimemSignalStateSize = 128;
 #if defined(__CUDACC__) || defined(__HIPCC__)
 __host__ __device__
 #endif
-    constexpr uint64_t multimem_staging_signals_per_lane_wide(
-        uint64_t nvlRanks) {
-  return detail::kMultimemSignalsPerRank * nvlRanks +
-      detail::kMultimemArrivalBarrierSignals;
-}
-
-#if defined(__CUDACC__) || defined(__HIPCC__)
-__host__ __device__
-#endif
-    constexpr uint32_t multimem_staging_signals_per_lane(uint32_t nvlRanks) {
-  return static_cast<uint32_t>(
-      multimem_staging_signals_per_lane_wide(nvlRanks));
+    constexpr uint64_t multimem_staging_signals_per_channel(
+        uint64_t nvlRanks,
+        uint64_t pipelineDepth) {
+  return detail::kMultimemSignalsPerPeer * nvlRanks +
+      detail::kMultimemSignalsPerLane * pipelineDepth;
 }
 
 // Validate the complete topology-aware config and derive all allocation sizes.

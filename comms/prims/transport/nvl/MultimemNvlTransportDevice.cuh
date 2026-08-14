@@ -1,5 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+// NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
 #include <cuda_runtime.h>
@@ -77,7 +78,7 @@ struct MultimemNvlTransportDevice {
   int nvlRanks{1};
   uint32_t pipelineDepth{0};
   uint32_t maxChannels{0};
-  uint32_t signalsPerLane{0};
+  uint32_t signalsPerChannel{0};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;
