@@ -165,11 +165,11 @@ struct NvlPeerMem {
 /**
  * VMM (fabric / POSIX FD) peer exchange.
  *
- * Exports `localHandle` (as fabric when `preferFabric`, else POSIX FD),
- * all-gathers every rank's shareable handle + allocated size, imports and maps
- * each peer's backing allocation, holds a post-import barrier so no rank closes
- * its exported POSIX FD before peers have duplicated it, then closes the local
- * exported fd.
+ * Exports `localHandle` (as fabric when `preferFabric`, else POSIX FD) and
+ * all-gathers export status with every rank's shareable handle + allocated
+ * size. It then imports and maps each peer's backing allocation and all-gathers
+ * import status. These agreements propagate rank-local failures and keep every
+ * exported POSIX FD open until all peers have finished their import attempts.
  *
  * `peerPtrs[rank]` is null for self; the caller fills the self slot with
  * `localPtr`. Throws std::runtime_error on any failure. Requires CUDA 12.3+.

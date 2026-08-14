@@ -1,11 +1,19 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
+#include <cstddef>
+#include <cstring>
+#include <string>
+
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/memory/NvlMemExchange.h"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
@@ -247,6 +255,110 @@ TEST_F(GpuMemHandlerTestFixture, SingleRankExchange) {
   ASSERT_EQ(h_errorCount, 0) << "Single-rank exchange verification failed";
 
   XLOGF(INFO, "MPI Rank {} single-rank exchange test passed", globalRank);
+}
+
+TEST_F(GpuMemHandlerTestFixture, VmmImportFailurePropagatesToEveryRank) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Test requires exactly two ranks";
+  }
+
+  using meta::comms::testing::MockBootstrap;
+  using ::testing::_;
+
+  auto realBootstrap = std::make_shared<MpiBootstrap>();
+  auto bootstrap = std::make_shared<::testing::NiceMock<MockBootstrap>>();
+  int allGatherCalls = 0;
+
+  // The first allGather exchanges one VMM record per rank. After the real
+  // collective completes, rank 0 changes rank 1's received handle type to
+  // kUnsupported in rank 0's local receive buffer. Rank 0 therefore fails
+  // while importing rank 1's handle. The following status allGather propagates
+  // that rank-local import failure to rank 1. Later calls are not corrupted,
+  // allowing the final exchangeMemPtrs() call to verify recovery.
+  ON_CALL(*bootstrap, allGather(_, _, _, _))
+      .WillByDefault([&](void* buf, int len, int rank, int nRanks) {
+        // MpiBootstrap completes MPI_Allgather synchronously before returning
+        // its ready future, so the received records are stable here.
+        auto result = realBootstrap->allGather(buf, len, rank, nRanks);
+        if (allGatherCalls++ == 0 && globalRank == 0) {
+          if (len < static_cast<int>(sizeof(ShareableHandle))) {
+            ADD_FAILURE() << "VMM exchange record is smaller than its handle";
+            return result;
+          }
+          const auto unsupported = ShareableHandleType::kUnsupported;
+          // len is the per-rank record size, so this selects rank 1's record.
+          auto* peerRecord = static_cast<std::byte*>(buf) + len;
+          std::memcpy(peerRecord, &unsupported, sizeof(unsupported));
+        }
+        return result;
+      });
+  EXPECT_CALL(*bootstrap, barrier(_, _)).Times(0);
+
+  GpuMemHandler handler(bootstrap, globalRank, numRanks, 4096);
+  if (handler.getMode() == MemSharingMode::kCudaIpc ||
+      handler.getMode() == MemSharingMode::kCudaIpcUncached) {
+    GTEST_SKIP() << "Test requires a VMM-backed sharing mode";
+  }
+
+  std::string error;
+  try {
+    handler.exchangeMemPtrs();
+  } catch (const std::exception& ex) {
+    error = ex.what();
+  }
+
+  EXPECT_THAT(error, ::testing::HasSubstr("peer import failed on rank 0"));
+  if (globalRank == 0) {
+    EXPECT_THAT(
+        error,
+        ::testing::HasSubstr(
+            "NvlMemExchange: cannot import unsupported handle type"));
+  }
+  EXPECT_NO_THROW(handler.exchangeMemPtrs());
+}
+
+TEST_F(GpuMemHandlerTestFixture, VmmExportFailurePropagatesToEveryRank) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Test requires exactly two ranks";
+  }
+
+#if CUDART_VERSION < 12030
+  GTEST_SKIP() << "VMM exchange requires CUDA 12.3+";
+#else
+  int cudaDevice = 0;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDevice));
+  const auto cuDevice = static_cast<CUdevice>(cudaDevice);
+  auto allocation = CuMemAllocation::create(
+      cuDevice, 4096, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+
+  // Rank 0 passes an invalid zero allocation handle while rank 1 passes its
+  // valid allocation handle. Rank 0 consequently fails inside
+  // cuMemExportToShareableHandle. The handle/status allGather then reports
+  // rank 0's local export failure to both ranks.
+  auto bootstrap = std::make_shared<MpiBootstrap>();
+  std::string error;
+  try {
+    (void)nvlMemExchangeVmm(
+        *bootstrap,
+        globalRank,
+        numRanks,
+        cuDevice,
+        globalRank == 0 ? 0 : allocation->handle(),
+        nullptr,
+        allocation->size(),
+        /*preferFabric=*/false);
+  } catch (const std::exception& ex) {
+    error = ex.what();
+  }
+
+  EXPECT_THAT(error, ::testing::HasSubstr("handle export failed on rank 0"));
+  if (globalRank == 0) {
+    EXPECT_THAT(
+        error,
+        ::testing::HasSubstr(
+            "cuMemExportToShareableHandle for POSIX FD failed"));
+  }
+#endif
 }
 
 } // namespace comms::prims::tests

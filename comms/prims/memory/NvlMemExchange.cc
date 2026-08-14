@@ -3,6 +3,7 @@
 #include "comms/prims/memory/NvlMemExchange.h"
 
 #include "comms/common/BitOps.cuh"
+#include "comms/prims/bootstrap/TeamStatusAgreement.h"
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/platform/CudaDriverLazy.h"
@@ -15,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -32,22 +34,27 @@ namespace {
 // (and only on scope exit -- no detach escape hatch; copy + move are deleted
 // so the fd cannot escape this scope). Used for the local POSIX-FD shareable
 // handle that nvlMemExchangeVmm exports before allGather: keeps the fd closed
-// on every exit path (success, allGather throw, import throw, barrier throw)
+// on every exit path (success, allGather throw, or import failure)
 // without the try/catch boilerplate. C++ has no std::scope_exit — P0052 /
 // <experimental/scope> never landed — so we roll a 5-line guard rather than
 // reach for folly (comms/prims is zero-folly).
 class FdGuard {
  public:
-  explicit FdGuard(int fd) : fd_(fd) {}
+  FdGuard() = default;
   ~FdGuard() {
-    if (fd_ >= 0) {
-      ::close(fd_);
-    }
+    reset();
   }
   FdGuard(const FdGuard&) = delete;
   FdGuard& operator=(const FdGuard&) = delete;
   FdGuard(FdGuard&&) = delete;
   FdGuard& operator=(FdGuard&&) = delete;
+
+  void reset(int fd = -1) {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+    fd_ = fd;
+  }
 
  private:
   int fd_{-1};
@@ -473,68 +480,71 @@ NvlPeerMem nvlMemExchangeVmm(
   (void)preferFabric;
   throw std::runtime_error("nvlMemExchangeVmm requires CUDA 12.3+");
 #else
-  // Export the local handle once, as fabric if requested/supported, otherwise
-  // as a POSIX file descriptor (single-host).
   const ShareableHandleType exportType = preferFabric
       ? ShareableHandleType::kFabric
       : ShareableHandleType::kPosixFd;
-  ShareableHandle localShareable =
-      exportShareableHandle(localHandle, exportType);
-
-  // The local POSIX-FD export owns a file descriptor that must stay open
-  // through the import barrier so peers can pidfd_getfd it, then be closed on
-  // every exit path. FdGuard wraps it for RAII; it's a no-op for fabric
-  // exports (fd stays -1). Constructed BEFORE the allGather so an allGather
-  // throw also closes the fd.
-  FdGuard localFdGuard(
-      localShareable.type == ShareableHandleType::kPosixFd ? localShareable.fd
-                                                           : -1);
 
   struct ExchangeData {
     ShareableHandle handle{};
     std::size_t allocatedSize{};
+    detail::TeamStatus status{};
   };
 
   std::vector<ExchangeData> allData(static_cast<std::size_t>(nRanks));
+  std::vector<detail::TeamStatus> importStatus(
+      static_cast<std::size_t>(nRanks));
   // ExchangeData has padding between ShareableHandle (mixed enum + union +
   // ints) and allocatedSize (size_t). Value-init does not guarantee zeroed
   // padding bytes, and the buffer is broadcast verbatim via allGather — zero
   // it out before filling so peers don't receive uninitialized stack bytes.
   std::memset(allData.data(), 0, allData.size() * sizeof(ExchangeData));
-  allData[static_cast<std::size_t>(rank)].handle = localShareable;
-  allData[static_cast<std::size_t>(rank)].allocatedSize = allocatedSize;
-
-  auto gatherResult =
-      bootstrap.allGather(allData.data(), sizeof(ExchangeData), rank, nRanks)
-          .get();
-  if (gatherResult != 0) {
-    throw std::runtime_error("nvlMemExchangeVmm allGather failed");
-  }
-
-  // Import peer memory from received shareable handles. For POSIX FD exports
-  // the local fd must stay open through this import loop so peers can
-  // duplicate it via pidfd_getfd; localFdGuard's destructor closes it on
-  // every exit (import throw, barrier throw, or success).
-  for (int32_t peer = 0; peer < nRanks; ++peer) {
-    if (peer == rank) {
-      continue;
+  FdGuard localFdGuard;
+  std::exception_ptr exportError;
+  try {
+    auto& localData = allData[static_cast<std::size_t>(rank)];
+    localData.handle = exportShareableHandle(localHandle, exportType);
+    localData.allocatedSize = allocatedSize;
+    if (localData.handle.type == ShareableHandleType::kPosixFd) {
+      localFdGuard.reset(localData.handle.fd);
     }
-    const auto peerIdx = static_cast<std::size_t>(peer);
-    importAndMapPeerMemory(
-        peer,
-        allData[peerIdx].handle,
-        allData[peerIdx].allocatedSize,
-        cuDev,
-        result);
+  } catch (...) {
+    exportError = std::current_exception();
   }
+  detail::allGatherAndAgree(
+      bootstrap,
+      rank,
+      nRanks,
+      allData,
+      exportError,
+      "nvlMemExchangeVmm handle export");
 
-  // Hold all ranks here until every peer has finished importing, so no rank
-  // closes its exported POSIX FD before others have duplicated it. Mirrors
-  // the keep-fd-open-until-barrier ordering in MultiPeerTransport.
-  auto barrierResult = bootstrap.barrier(rank, nRanks).get();
-  if (barrierResult != 0) {
-    throw std::runtime_error("nvlMemExchangeVmm post-import barrier failed");
+  // Every rank must reach the status exchange even if a local import fails.
+  // Besides propagating that failure, this collective keeps each exported
+  // POSIX FD open until every peer has finished attempting its imports.
+  std::exception_ptr importError;
+  try {
+    for (int32_t peer = 0; peer < nRanks; ++peer) {
+      if (peer == rank) {
+        continue;
+      }
+      const auto peerIdx = static_cast<std::size_t>(peer);
+      importAndMapPeerMemory(
+          peer,
+          allData[peerIdx].handle,
+          allData[peerIdx].allocatedSize,
+          cuDev,
+          result);
+    }
+  } catch (...) {
+    importError = std::current_exception();
   }
+  detail::allGatherAndAgree(
+      bootstrap,
+      rank,
+      nRanks,
+      importStatus,
+      importError,
+      "nvlMemExchangeVmm peer import");
 
   return result;
 #endif
