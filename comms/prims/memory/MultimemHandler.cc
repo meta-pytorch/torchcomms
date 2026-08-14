@@ -2,6 +2,7 @@
 
 #include "comms/prims/memory/MultimemHandler.h"
 
+#include "comms/prims/bootstrap/TeamStatusAgreement.h"
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/memory/CuMulticastAllocation.h"
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -159,6 +161,104 @@ MultimemHandler::HandleType selectMultimemHandleTypeImpl(int cudaDevice) {
 
   return selectShareableHandleType(cudaDevice);
 #endif
+}
+
+enum class MultimemExchangePhase {
+  kNone,
+  kInitializeDevice,
+  kSetupAgreement,
+  kComputeAllocationLayout,
+  kCreateMulticastHandle,
+  kExportMulticastHandle,
+  kHandleAgreement,
+  kImportMulticastHandle,
+  kAddLocalDeviceToMulticast,
+  kJoinAgreement,
+  kBindLocalMemoryToMulticast,
+  kMapMulticastMemory,
+  kBindMapAgreement,
+};
+
+const char* phaseName(MultimemExchangePhase phase) {
+  switch (phase) {
+    case MultimemExchangePhase::kNone:
+      return "none";
+    case MultimemExchangePhase::kInitializeDevice:
+      return "initializeDevice";
+    case MultimemExchangePhase::kSetupAgreement:
+      return "agreeOnSetup";
+    case MultimemExchangePhase::kComputeAllocationLayout:
+      return "computeAllocationLayout";
+    case MultimemExchangePhase::kCreateMulticastHandle:
+      return "createMulticastHandle";
+    case MultimemExchangePhase::kExportMulticastHandle:
+      return "exportMulticastHandle";
+    case MultimemExchangePhase::kHandleAgreement:
+      return "exchangeMulticastHandle";
+    case MultimemExchangePhase::kImportMulticastHandle:
+      return "importMulticastHandle";
+    case MultimemExchangePhase::kAddLocalDeviceToMulticast:
+      return "addLocalDeviceToMulticast";
+    case MultimemExchangePhase::kJoinAgreement:
+      return "agreeOnStage:join";
+    case MultimemExchangePhase::kBindLocalMemoryToMulticast:
+      return "bindLocalMemoryToMulticast";
+    case MultimemExchangePhase::kMapMulticastMemory:
+      return "mapMulticastMemory";
+    case MultimemExchangePhase::kBindMapAgreement:
+      return "agreeOnStage:bind-map";
+  }
+  return "unknown";
+}
+
+class MultimemExchangeProgress {
+ public:
+  template <typename Action>
+  void run(MultimemExchangePhase phase, Action&& action) {
+    active_ = phase;
+    std::forward<Action>(action)();
+    completed_ = phase;
+  }
+
+  void beginAgreement(MultimemExchangePhase phase) {
+    active_ = phase;
+  }
+
+  void completeAgreement() {
+    completed_ = active_;
+  }
+
+  const char* activeName() const {
+    return phaseName(active_);
+  }
+
+  const char* completedName() const {
+    return phaseName(completed_);
+  }
+
+ private:
+  MultimemExchangePhase active_{MultimemExchangePhase::kNone};
+  MultimemExchangePhase completed_{MultimemExchangePhase::kNone};
+};
+
+template <typename LocalWork, typename Agreement>
+void runAgreedStage(
+    MultimemExchangeProgress& progress,
+    MultimemExchangePhase agreementPhase,
+    LocalWork&& localWork,
+    Agreement&& agreement) {
+  std::exception_ptr localError;
+  try {
+    std::forward<LocalWork>(localWork)();
+  } catch (...) {
+    localError = std::current_exception();
+  }
+
+  if (!localError) {
+    progress.beginAgreement(agreementPhase);
+  }
+  std::forward<Agreement>(agreement)(localError);
+  progress.completeAgreement();
 }
 
 } // namespace
@@ -306,8 +406,32 @@ void MultimemHandler::exchange() {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   throw std::runtime_error("MultimemHandler requires CUDA 12.3+");
 #else
-  const char* failedPhase = "initializeDevice";
-  const char* completedPhase = "none";
+  MultimemExchangeProgress progress;
+
+  const auto runStatusStage = [&](MultimemExchangePhase agreementPhase,
+                                  const char* operation,
+                                  auto&& localWork) {
+    runAgreedStage(
+        progress,
+        agreementPhase,
+        std::forward<decltype(localWork)>(localWork),
+        [&](const std::exception_ptr& localError) {
+          std::vector<detail::TeamStatus> records(
+              static_cast<std::size_t>(nvlRanks_));
+          detail::gatherAndAgree(
+              nvlRank_,
+              nvlRanks_,
+              records,
+              localError,
+              operation,
+              [&](void* data, int size) {
+                return bootstrap_
+                    ->allGatherNvlDomain(
+                        data, size, nvlRank_, nvlRanks_, nvlRankToCommRank_)
+                    .get();
+              });
+        });
+  };
 
   try {
     // Multicast setup is host-synchronous locally, but it still has ordering
@@ -330,11 +454,9 @@ void MultimemHandler::exchange() {
     //    shared object. CUDA requires every participating device to be added
     //    before memory can be bound to the multicast object.
     //
-    // 5. The pre-bind barrier is a control-plane robustness barrier. It
-    //    serializes object create/import + addDevice across ranks before any
-    //    rank calls cuMulticastBindMem, so a slow / aborting rank can't race
-    //    into bind while peers are still importing — that mismatch is a known
-    //    way to wedge the driver. It is not a GPU stream synchronization.
+    // 5. The join agreement serializes object create/import + addDevice across
+    //    ranks before any rank calls cuMulticastBindMem. It also prevents
+    //    successful ranks from entering bind after a peer returned an error.
     //
     // 6. bindLocalMemoryToMulticast() attaches this rank's shared backing
     //    allocation at offset 0 in the multicast object. After all ranks bind
@@ -344,101 +466,108 @@ void MultimemHandler::exchange() {
     // 7. mapMulticastMemory() reserves and maps this rank's multicast VA, then
     //    grants device access. Kernels use this VA for multimem instructions.
     //
-    // 8. The post-map barrier is the "ready to use" contract for exchange():
+    // 8. The bind/map agreement is the "ready to use" contract for exchange():
     //    no rank returns and launches a kernel using multimem while another
-    //    rank is still binding or mapping the multicast VA.
-    cuDev_ = initializeDevice();
-    deviceInitialized_ = true;
-    completedPhase = failedPhase;
+    //    rank is still binding or mapping the multicast VA or has failed.
+    runAgreedStage(
+        progress,
+        MultimemExchangePhase::kSetupAgreement,
+        [&] {
+          progress.run(MultimemExchangePhase::kInitializeDevice, [&] {
+            cuDev_ = initializeDevice();
+            deviceInitialized_ = true;
+          });
+        },
+        [&](const std::exception_ptr& localError) {
+          // Every rank independently selects handleType_ in the constructor;
+          // verify they all picked the same one before rank 0 creates the
+          // multicast object.
+          agreeOnSetup(localError);
+        });
 
-    // Every rank independently selects handleType_ in the constructor; verify
-    // they all picked the same one before rank 0 creates the multicast object
-    // (which embeds handleType_). A silent mismatch would surface as a
-    // confusing export/import failure on the next phase; fail fast with a clear
-    // message.
-    failedPhase = "agreeOnSetup";
-    agreeOnSetup();
-    completedPhase = failedPhase;
+    AllocationLayout layout{};
+    ShareableHandle multicastHandle{};
+    runAgreedStage(
+        progress,
+        MultimemExchangePhase::kHandleAgreement,
+        [&] {
+          progress.run(MultimemExchangePhase::kComputeAllocationLayout, [&] {
+            layout = computeAllocationLayout();
+            allocatedSize_ = layout.allocatedSize;
+          });
 
-    failedPhase = "computeAllocationLayout";
-    const auto layout = computeAllocationLayout();
-    allocatedSize_ = layout.allocatedSize;
-    completedPhase = failedPhase;
+          progress.run(MultimemExchangePhase::kCreateMulticastHandle, [&] {
+            createMulticastHandle(layout.allocatedSize);
+          });
 
-    failedPhase = "createMulticastHandle";
-    createMulticastHandle(layout.allocatedSize);
-    completedPhase = failedPhase;
-
-    ShareableHandle multicastHandle = {};
-    if (nvlRank_ == 0) {
-      failedPhase = "exportMulticastHandle";
-      multicastHandle = exportMulticastHandle();
-      completedPhase = failedPhase;
-    }
-    failedPhase = "exchangeMulticastHandle";
-    multicastHandle = exchangeMulticastHandle(multicastHandle);
-    completedPhase = failedPhase;
+          if (nvlRank_ == 0) {
+            progress.run(MultimemExchangePhase::kExportMulticastHandle, [&] {
+              multicastHandle = exportMulticastHandle();
+            });
+          }
+        },
+        [&](const std::exception_ptr& localError) {
+          multicastHandle =
+              exchangeMulticastHandle(multicastHandle, localError);
+        });
 
     // nvlRank_ is the rank inside this NVLink multicast team. Team rank 0
     // already owns the CUDA multicast handle it created; every other team rank
     // imports rank 0's exchanged multicast handle.
-    if (nvlRank_ != 0) {
-      failedPhase = "importMulticastHandle";
-      importMulticastHandle(multicastHandle);
-      completedPhase = failedPhase;
+    runStatusStage(
+        MultimemExchangePhase::kJoinAgreement,
+        "MultimemHandler multicast join",
+        [&] {
+          if (nvlRank_ != 0) {
+            progress.run(MultimemExchangePhase::kImportMulticastHandle, [&] {
+              importMulticastHandle(multicastHandle);
+            });
+          }
+
+          // Every participating rank, including rank 0, must add its local
+          // device before any rank binds memory to the multicast object.
+          progress.run(MultimemExchangePhase::kAddLocalDeviceToMulticast, [&] {
+            addLocalDeviceToMulticast(cuDev_);
+          });
+        });
+
+    if (multicastExportedFd_ >= 0) {
+      close(multicastExportedFd_);
+      multicastExportedFd_ = -1;
     }
 
-    // Every participating rank, including rank 0, must add its local device to
-    // the shared multicast object before any rank binds memory to the object.
-    failedPhase = "addLocalDeviceToMulticast";
-    addLocalDeviceToMulticast(cuDev_);
-    completedPhase = failedPhase;
-
-    // Keep all ranks out of the driver's blocking cuMulticastBindMem path
-    // until every rank has joined the multicast object. A slow / aborting
-    // rank that calls bind while peers are still in addDevice/import is a
-    // known way to wedge the driver; the barrier serializes the two phases.
-    failedPhase = "synchronizeRanks:pre-bind";
-    synchronizeRanks("pre-bind");
-    completedPhase = failedPhase;
-
-    failedPhase = "bindLocalMemoryToMulticast";
-    bindLocalMemoryToMulticast(layout.allocatedSize);
-    completedPhase = failedPhase;
-
-    failedPhase = "mapMulticastMemory";
-    mapMulticastMemory(layout);
-    completedPhase = failedPhase;
-
-    // exchange() returns ready-to-use pointers. This barrier prevents an early
-    // rank from launching kernels against the multicast VA while another rank
-    // is still binding or mapping that VA.
-    failedPhase = "synchronizeRanks:post-map";
-    synchronizeRanks("post-map");
-    completedPhase = failedPhase;
+    runStatusStage(
+        MultimemExchangePhase::kBindMapAgreement,
+        "MultimemHandler multicast bind/map",
+        [&] {
+          progress.run(MultimemExchangePhase::kBindLocalMemoryToMulticast, [&] {
+            bindLocalMemoryToMulticast(layout.allocatedSize);
+          });
+          progress.run(MultimemExchangePhase::kMapMulticastMemory, [&] {
+            mapMulticastMemory(layout);
+          });
+        });
 
     exchanged_ = true;
   } catch (const std::exception& ex) {
-    const auto state = describeState(failedPhase, completedPhase);
-    std::string message = std::string("MultimemHandler::exchange failed: ") +
-        ex.what() + "\n" + state;
-    std::fprintf(stderr, "%s\n", message.c_str());
-    // Mark terminal BEFORE cleanup() so that even if cleanup itself throws
-    // somehow, the handler is still observably in the failed state for
-    // any subsequent exchange() call.
-    failed_ = true;
-    cleanup();
-    throw std::runtime_error(message);
-  } catch (...) {
-    const auto state = describeState(failedPhase, completedPhase);
-    std::string message =
-        std::string(
-            "MultimemHandler::exchange failed with unknown exception\n") +
+    const auto state =
+        describeState(progress.activeName(), progress.completedName());
+    const std::string message =
+        std::string("MultimemHandler::exchange failed: ") + ex.what() + "\n" +
         state;
     std::fprintf(stderr, "%s\n", message.c_str());
     failed_ = true;
     cleanup();
-    throw std::runtime_error(message);
+    std::throw_with_nested(std::runtime_error(message));
+  } catch (...) {
+    const auto state =
+        describeState(progress.activeName(), progress.completedName());
+    const std::string message =
+        "MultimemHandler::exchange failed with unknown exception\n" + state;
+    std::fprintf(stderr, "%s\n", message.c_str());
+    failed_ = true;
+    cleanup();
+    std::throw_with_nested(std::runtime_error(message));
   }
 #endif
 }
@@ -533,23 +662,33 @@ ShareableHandle MultimemHandler::exportMulticastHandle() {
 }
 
 ShareableHandle MultimemHandler::exchangeMulticastHandle(
-    ShareableHandle handle) {
-  std::vector<ShareableHandle> allHandles(nvlRanks_, ShareableHandle{});
-  allHandles[nvlRank_] = handle;
+    ShareableHandle handle,
+    const std::exception_ptr& localError) {
+  struct HandleRecord {
+    ShareableHandle handle{};
+    detail::TeamStatus status{};
+  };
+  static_assert(std::is_trivially_copyable_v<HandleRecord>);
 
-  auto result = bootstrap_
-                    ->allGatherNvlDomain(
-                        allHandles.data(),
-                        sizeof(ShareableHandle),
-                        nvlRank_,
-                        nvlRanks_,
-                        nvlRankToCommRank_)
-                    .get();
-  if (result != 0) {
-    throw std::runtime_error(
-        "MultimemHandler::exchangeMulticastHandle allGatherNvlDomain failed");
-  }
-  return allHandles[0];
+  std::vector<HandleRecord> records(static_cast<std::size_t>(nvlRanks_));
+  // This trivially copyable wire record is exchanged as raw bytes. Zero its
+  // padding before populating the local payload.
+  // @lint-ignore CLANGTIDY facebook-hte-BadMemset
+  std::memset(records.data(), 0, records.size() * sizeof(HandleRecord));
+  records[static_cast<std::size_t>(nvlRank_)].handle = handle;
+  detail::gatherAndAgree(
+      nvlRank_,
+      nvlRanks_,
+      records,
+      localError,
+      "MultimemHandler multicast create/export",
+      [&](void* data, int size) {
+        return bootstrap_
+            ->allGatherNvlDomain(
+                data, size, nvlRank_, nvlRanks_, nvlRankToCommRank_)
+            .get();
+      });
+  return records.front().handle;
 }
 
 void MultimemHandler::importMulticastHandle(const ShareableHandle& handle) {
@@ -595,51 +734,43 @@ void MultimemHandler::mapMulticastMemory(const AllocationLayout& layout) {
 #endif
 }
 
-void MultimemHandler::synchronizeRanks(const char* phase) {
-  auto barrierResult =
-      bootstrap_->barrierNvlDomain(nvlRank_, nvlRanks_, nvlRankToCommRank_)
-          .get();
-  if (barrierResult != 0) {
-    throw std::runtime_error(
-        std::string("MultimemHandler::synchronizeRanks failed during ") +
-        phase);
-  }
-}
-
-void MultimemHandler::agreeOnSetup() {
+void MultimemHandler::agreeOnSetup(const std::exception_ptr& localError) {
   struct SetupRecord {
     uint64_t handleType{0};
     uint64_t requestedSize{0};
     MulticastExchangeContract contract;
+    detail::TeamStatus status{};
   };
   static_assert(std::is_trivially_copyable_v<SetupRecord>);
   static_assert(std::is_standard_layout_v<SetupRecord>);
 
-  const SetupRecord local{
-      .handleType = static_cast<uint64_t>(handleType_),
-      .requestedSize = requestedSize_,
-      .contract = contract_,
-  };
   std::vector<SetupRecord> records(static_cast<std::size_t>(nvlRanks_));
-  records[static_cast<std::size_t>(nvlRank_)] = local;
+  // This trivially copyable wire record is exchanged as raw bytes. Zero its
+  // padding before populating the local payload.
+  // @lint-ignore CLANGTIDY facebook-hte-BadMemset
+  std::memset(records.data(), 0, records.size() * sizeof(SetupRecord));
+  auto& local = records[static_cast<std::size_t>(nvlRank_)];
+  local.handleType = static_cast<uint64_t>(handleType_);
+  local.requestedSize = requestedSize_;
+  local.contract = contract_;
   // Use the NVL-domain allGather (not the global one): nvlRank_/nvlRanks_ are
   // the NVLink-team indices, and the bootstrap's plain allGather expects
   // global comm ranks. Mirrors exchangeMulticastHandle's allGatherNvlDomain
   // call. A mismatched scope would either corrupt the buffer (if the global
   // rank count exceeded nvlRanks_) or skip the agreement check entirely (if
   // peers outside the NVL team contributed zeros).
-  auto gatherResult = bootstrap_
-                          ->allGatherNvlDomain(
-                              records.data(),
-                              sizeof(SetupRecord),
-                              nvlRank_,
-                              nvlRanks_,
-                              nvlRankToCommRank_)
-                          .get();
-  if (gatherResult != 0) {
-    throw std::runtime_error(
-        "MultimemHandler::agreeOnSetup allGatherNvlDomain failed");
-  }
+  detail::gatherAndAgree(
+      nvlRank_,
+      nvlRanks_,
+      records,
+      localError,
+      "MultimemHandler setup",
+      [&](void* data, int size) {
+        return bootstrap_
+            ->allGatherNvlDomain(
+                data, size, nvlRank_, nvlRanks_, nvlRankToCommRank_)
+            .get();
+      });
   for (int32_t r = 0; r < nvlRanks_; ++r) {
     const auto& peer = records[static_cast<std::size_t>(r)];
     if (peer.handleType != local.handleType ||
@@ -690,31 +821,33 @@ std::string MultimemHandler::describeState(
   const unsigned long long multicastPtr =
       multicastMapping_ ? toU64(multicastMapping_->devicePtr()) : 0ULL;
   return fmt::format(
-      "MultimemHandler state: failedPhase={} completedPhase={} commRank={} "
-      "nvlRank={} nvlRanks={} cudaDevice={} requestedSize={} allocatedSize={} "
-      "handleType={} multicastExportedFd={} rankMap=[{}] "
-      "flags={{exchanged={},failed={},deviceInitialized={},backing={},"
-      "overlay={},multicastMapping={}}} "
-      "handles={{cuDev={},multicastPtr=0x{:x},localAllocHandle=0x{:x},"
+      "MultimemHandler state:\n"
+      "  progress={{failedPhase={} completedPhase={}}}\n"
+      "  team={{commRank={} nvlRank={} nvlRanks={} rankMap=[{}]}}\n"
+      "  device={{cudaDevice={} cuDev={}}}\n"
+      "  allocation={{requestedSize={} allocatedSize={} handleType={}}}\n"
+      "  resources={{multicastExportedFd={} exchanged={} failed={} "
+      "deviceInitialized={} backing={} overlay={} multicastMapping={}}}\n"
+      "  handles={{multicastPtr=0x{:x} localAllocHandle=0x{:x} "
       "multicastHandle=0x{:x}}}",
       failedPhase != nullptr ? failedPhase : "unknown",
       completedPhase != nullptr ? completedPhase : "unknown",
       commRank_,
       nvlRank_,
       nvlRanks_,
+      fmt::join(nvlRankToCommRank_, ","),
       cudaDevice_,
+      cuDev_,
       requestedSize_,
       allocatedSize_,
       handleTypeName(handleType_),
       multicastExportedFd_,
-      fmt::join(nvlRankToCommRank_, ","),
       exchanged_,
       failed_,
       deviceInitialized_,
       static_cast<bool>(backing_),
       static_cast<bool>(overlay_),
       static_cast<bool>(multicastMapping_),
-      cuDev_,
       multicastPtr,
       localAllocHandle,
       multicastHandle);
