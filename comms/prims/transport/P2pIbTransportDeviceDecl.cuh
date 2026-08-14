@@ -17,6 +17,12 @@ struct Memcpy;
 struct PipesTraceAllReduceContext;
 struct PipesTraceProgressState;
 
+// Defined in P2pIbTransportDeviceImpl.cuh, which includes this header; only the
+// name is needed here to spell the default protocol template argument.
+namespace protocol {
+struct Simple;
+} // namespace protocol
+
 class P2pIbgdaTransportDevice;
 class P2pIbrcTransportDevice;
 
@@ -318,7 +324,7 @@ struct P2pIbTransportDevice {
 
   __device__ __forceinline__ std::size_t pipeline_chunk() const;
 
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
@@ -330,13 +336,16 @@ struct P2pIbTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
@@ -372,7 +381,10 @@ struct P2pIbTransportDevice {
       PipesTraceProgressState& traceState,
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
