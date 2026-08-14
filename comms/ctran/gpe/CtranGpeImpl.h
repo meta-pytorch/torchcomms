@@ -23,6 +23,7 @@
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/GpeDeviceRing.h"
+#include "comms/ctran/gpe/GpeHostNodeSpine.h"
 #include "comms/ctran/profiler/GpeProfiler.h"
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
@@ -302,6 +303,12 @@ class CtranGpe::Impl {
   std::unique_ptr<ctran::gpe::GpeRingReader> deviceRingReader_;
   std::queue<CtranGpeCmd*> ringPending_;
   GpeDeviceRingCmdRegistry deviceRingCmdRegistry_;
+
+  // Host-node placement for captured submits: inline on the user stream, or on
+  // a per-graph side stream when NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM is on
+  // (mixing=0 only). Touched only on the submit (capture) thread; see
+  // GpeHostNodeSpine.h.
+  ctran::gpe::HostNodeSpine hostNodeSpine_;
 
   // In-kernel colltrace grouping: a multi-submit collective (e.g. AllGatherP's
   // PipeStart..PipeSync..PipeEnd) records one CollTrace event whose start is

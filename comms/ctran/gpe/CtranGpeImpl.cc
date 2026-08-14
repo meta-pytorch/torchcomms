@@ -45,7 +45,29 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
         {KernelConfig::KernelType::ALLTOALLV, "AllToAllv"},
 };
 
-CtranGpe::Impl::Impl() {
+// Gated on mixing=0: at mixing=1 the guard's fence is a floating
+// EVENT_RECORD node awaited with cudaEventWaitExternal so it can order across
+// graphs, and GraphSideStream::fork_from deliberately restores the user
+// stream's dependencies after its fork (leaving no join edge) -- the opposite
+// of the kept join edge the spine needs. Silently ignoring the knob at
+// mixing=1 keeps that path byte-identical rather than producing a graph with
+// both a spine and a floating fence.
+static bool hostNodeSideStreamEnabled() {
+  if (!NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM) {
+    return false;
+  }
+  if (NCCL_CTRAN_GRAPH_MIXING_SUPPORT != 0) {
+    CLOGF(
+        INFO,
+        "CTRAN-GPE: NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM ignored because "
+        "NCCL_CTRAN_GRAPH_MIXING_SUPPORT={} (requires 0)",
+        NCCL_CTRAN_GRAPH_MIXING_SUPPORT);
+    return false;
+  }
+  return true;
+}
+
+CtranGpe::Impl::Impl() : hostNodeSpine_{hostNodeSideStreamEnabled()} {
   this->kernelFlagPool = std::unique_ptr<KernelFlagPool>(
       new KernelFlagPool(NCCL_CTRAN_NUM_KERNEL_FLAGS));
 
@@ -581,13 +603,13 @@ commResult_t CtranGpe::Impl::publishCapturedCmd(
     kernelFlag->dev.gpeHdr.cmdId = id;
     kernelFlag->dev.gpeHdr.enabled = 1;
   } else {
-    FB_COMMCHECK(
-        utils::cudagraph::addHostNode(
-            /*data=*/cmd,
-            /*execCallback=*/cmdCb,
-            /*destroyCallback=*/cmdDestroy,
-            stream,
-            streamCaptureInfo));
+    // HostNodeSpine picks the inline or side-stream shape internally.
+    FB_COMMCHECK(hostNodeSpine_.submit(
+        /*data=*/cmd,
+        /*execCallback=*/cmdCb,
+        /*destroyCallback=*/cmdDestroy,
+        stream,
+        streamCaptureInfo));
   }
   return commSuccess;
 }
