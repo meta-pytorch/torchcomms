@@ -94,6 +94,39 @@ TEST(AbortDeviceTest, hostProducerDeviceConsumer) {
       readDeviceValue(observedMode), static_cast<int>(AbortReason::ABORTED));
 }
 
+TEST(AbortDeviceTest, deviceObservesDetailedHostReasonWithoutContext) {
+  Abort abort{/*enabled=*/true};
+  auto observed = makeDeviceValue<int>();
+  auto observedReason = makeDeviceValue<int>();
+  ASSERT_NE(observed, nullptr);
+  ASSERT_NE(observedReason, nullptr);
+
+  abort.setAbort(
+      AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "socket health poll",
+      });
+
+  EXPECT_EQ(
+      launchDeviceReadAbort(
+          abort.getDeviceHandle(),
+          observed.get(),
+          observedReason.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(readDeviceValue(observed), 1);
+  EXPECT_EQ(
+      readDeviceValue(observedReason),
+      static_cast<int>(AbortReason::BOOTSTRAP_POLL));
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "socket health poll",
+      }));
+}
+
 TEST(AbortDeviceTest, checkExpiredSeesHostAbort) {
   Abort abort{/*enabled=*/true};
   auto observedCheckExpired = makeDeviceValue<int>();
@@ -184,6 +217,27 @@ TEST(AbortDeviceTest, deviceProducerHostConsumer) {
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+TEST(AbortDeviceTest, deviceProducerSupportsDetailedTerminalReasons) {
+  for (const auto reason : {
+           AbortReason::BOOTSTRAP_POLL,
+           AbortReason::NETWORK_ERROR,
+           AbortReason::INTERNAL_ERROR,
+       }) {
+    Abort abort{/*enabled=*/true};
+
+    EXPECT_EQ(
+        launchDeviceSetAbort(
+            abort.getDeviceHandle(), reason, /*stream=*/nullptr),
+        cudaSuccess);
+    EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->reason, reason);
+    EXPECT_TRUE(info->context.empty());
+  }
 }
 
 TEST(AbortDeviceTest, deviceProducerDeviceConsumer) {
@@ -300,7 +354,7 @@ TEST(AbortDeviceTest, hostAbortWinsOverDeviceTimeout) {
   ASSERT_NE(observedMode, nullptr);
   ASSERT_NE(observedIsAborted, nullptr);
 
-  abort.setAbort(AbortReason::ABORTED);
+  abort.setAbort(AbortInfo{.reason = AbortReason::ABORTED});
   abort.setDefaultTimeout(std::chrono::milliseconds{1});
 
   EXPECT_EQ(
@@ -369,7 +423,7 @@ TEST(AbortDeviceTest, deviceTimeoutWinsOverHostAbort) {
       cudaSuccess);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
-  abort.setAbort(AbortReason::ABORTED);
+  abort.setAbort(AbortInfo{.reason = AbortReason::ABORTED});
 
   EXPECT_EQ(
       readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));

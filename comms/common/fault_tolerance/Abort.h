@@ -7,15 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
+
+#include "comms/common/fault_tolerance/AbortTypes.h"
 
 namespace comms::fault_tolerance {
-
-enum class AbortReason : int {
-  NONE = 0,
-  ABORTED = 1,
-  TIMED_OUT = 2,
-};
 
 enum class AbortBehavior : int {
   SKIP = 0,
@@ -133,12 +131,20 @@ class Abort final {
    * The abort state starts as `AbortReason::NONE` and can transition exactly
    * once to one valid terminal reason. The first writer wins. Later calls with
    * a different reason do not override the reason already visible to other host
-   * threads and device consumers. Valid terminal reasons are
-   * `AbortReason::ABORTED` and `AbortReason::TIMED_OUT`; `AbortReason::NONE`
-   * and unknown enum values are invalid input and are rejected before
-   * attempting to update shared state.
+   * threads and device consumers. `AbortReason::NONE` and unknown enum values
+   * are invalid input and are rejected before attempting to update shared
+   * state.
    */
-  void setAbort(AbortReason newReason = AbortReason::ABORTED);
+  void setAbort(AbortInfo info = {});
+
+  /**
+   * Returns an immutable snapshot of the winning abort reason and context, or
+   * std::nullopt when this controller has not been aborted.
+   *
+   * Like `isAborted()`, this materializes an expired host timeout before
+   * reading the snapshot. Device-originated aborts have an empty context.
+   */
+  std::optional<AbortInfo> getAbortInfo();
 
   /**
    * Returns true when an explicit abort or expired active timeout has aborted
@@ -227,6 +233,9 @@ class Abort final {
     switch (reason) {
       case AbortReason::ABORTED:
       case AbortReason::TIMED_OUT:
+      case AbortReason::BOOTSTRAP_POLL:
+      case AbortReason::NETWORK_ERROR:
+      case AbortReason::INTERNAL_ERROR:
         return true;
       case AbortReason::NONE:
         return false;
@@ -235,13 +244,18 @@ class Abort final {
   }
 
   int loadAbortReason() const;
-  void markAbort(AbortReason newReason);
+  bool markAbort(AbortInfo info);
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};
   std::atomic<bool> hasTimeout_{false};
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
+  // Abort reason polling remains atomic and lock-free on host and device. This
+  // mutex protects only the host context and its publication with the winning
+  // reason; device-originated aborts leave the context empty.
+  mutable std::mutex contextMutex_;
+  std::string context_;
   AbortBehavior behavior_{AbortBehavior::SKIP};
 
   static_assert(std::atomic<bool>::is_always_lock_free);

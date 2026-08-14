@@ -110,7 +110,10 @@ Host explicit abort:
 
 ```cpp
 auto abort = comm->getAbort();
-abort->setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+abort->setAbort(comms::fault_tolerance::AbortInfo{
+    .reason = comms::fault_tolerance::AbortReason::ABORTED,
+    .context = "user requested abort",
+});
 ```
 
 Host default timeout:

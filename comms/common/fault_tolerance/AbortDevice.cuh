@@ -74,6 +74,9 @@ __device__ __forceinline__ bool deviceIsValidTerminalReason(
   switch (reason) {
     case AbortReason::ABORTED:
     case AbortReason::TIMED_OUT:
+    case AbortReason::BOOTSTRAP_POLL:
+    case AbortReason::NETWORK_ERROR:
+    case AbortReason::INTERNAL_ERROR:
       return true;
     case AbortReason::NONE:
       return false;
@@ -308,12 +311,11 @@ struct AbortDevice final {
   /**
    * Records the first shared abort reason from device code.
    *
-   * Valid terminal reasons are `AbortReason::ABORTED` and
-   * `AbortReason::TIMED_OUT`. `AbortReason::NONE` and unknown enum values are
-   * invalid; debug/device assert builds catch them, and release-compatible
-   * builds return before touching shared state. The CAS only transitions the
-   * shared state from `NONE`, so later writers cannot overwrite the first
-   * terminal reason.
+   * Every non-`NONE` AbortReason is terminal. `AbortReason::NONE` and unknown
+   * enum values are invalid; debug/device assert builds catch them, and
+   * release-compatible builds return before touching shared state. The CAS
+   * only transitions the shared state from `NONE`, so later writers cannot
+   * overwrite the first terminal reason.
    */
   __device__ void setAbort(AbortReason newReason = AbortReason::ABORTED) const {
     if (!isEnabled()) {

@@ -61,12 +61,27 @@ Abort::~Abort() {
 #endif
 }
 
-void Abort::setAbort(AbortReason newReason) {
+void Abort::setAbort(AbortInfo info) {
   if (state_ == nullptr) {
     return;
   }
 
-  markAbort(newReason);
+  markAbort(std::move(info));
+}
+
+std::optional<AbortInfo> Abort::getAbortInfo() {
+  if (state_ == nullptr) {
+    return std::nullopt;
+  }
+
+  (void)isAborted();
+  const auto reason = static_cast<AbortReason>(loadAbortReason());
+  if (reason == AbortReason::NONE) {
+    return std::nullopt;
+  }
+
+  std::lock_guard contextLock(contextMutex_);
+  return AbortInfo{.reason = reason, .context = context_};
 }
 
 bool Abort::isAborted() {
@@ -104,7 +119,11 @@ bool Abort::isTimedOut() {
 
   auto now = std::chrono::steady_clock::now();
   if (now >= deadline_.load(std::memory_order_acquire)) {
-    markAbort(AbortReason::TIMED_OUT);
+    markAbort(
+        AbortInfo{
+            .reason = AbortReason::TIMED_OUT,
+            .context = "timeout expired",
+        });
     return loadAbortReason() == encode(AbortReason::TIMED_OUT);
   }
 
@@ -173,16 +192,30 @@ int Abort::loadAbortReason() const {
   return std::atomic_ref<int>{state_->abort}.load(std::memory_order_acquire);
 }
 
-void Abort::markAbort(AbortReason newReason) {
-  if (!isValidTerminalReason(newReason)) {
-    throw std::invalid_argument("Abort reason must be ABORTED or TIMED_OUT");
+bool Abort::markAbort(AbortInfo info) {
+  if (!isValidTerminalReason(info.reason)) {
+    throw std::invalid_argument("Invalid terminal abort reason");
   }
+
+  // Stage and publish the host context under one lock so getAbortInfo() cannot
+  // observe a winning host reason before its context is complete. Fast reason
+  // polling never takes this lock.
+  std::lock_guard contextLock(contextMutex_);
+  if (loadAbortReason() != encode(AbortReason::NONE)) {
+    return false;
+  }
+
+  context_ = std::move(info.context);
   int expected = encode(AbortReason::NONE);
-  std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
+  const bool won = std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
       expected,
-      encode(newReason),
+      encode(info.reason),
       std::memory_order_acq_rel,
       std::memory_order_acquire);
+  if (!won) {
+    context_.clear();
+  }
+  return won;
 }
 
 std::shared_ptr<Abort> createAbort(bool enabled, AbortBehavior behavior) {
