@@ -4,10 +4,31 @@
 
 #include <folly/Synchronized.h>
 
+#include "comms/common/fault_tolerance/AbortTypes.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
 namespace ctran::utils {
+
+namespace detail {
+
+inline comms::fault_tolerance::AbortReason abortReason(commResult_t result) {
+  using comms::fault_tolerance::AbortReason;
+
+  switch (result) {
+    case commRemoteError:
+      return AbortReason::NETWORK_ERROR;
+    case commTimeout:
+      return AbortReason::TIMED_OUT;
+    case commUserAbort:
+      return AbortReason::ABORTED;
+    default:
+      return AbortReason::INTERNAL_ERROR;
+  }
+}
+
+} // namespace detail
+
 // Use the named CTRAN logger so these header macros do not inherit the caller's
 // logging category.
 #define CTRAN_ASYNC_ERR_HANDLE_IMPL(asyncErr, e)                    \
@@ -47,7 +68,17 @@ namespace ctran::utils {
           opCount,                                                            \
           comm->logMetaData_.rank,                                            \
           comm->logMetaData_.commHash);                                       \
-      comm->setAbort();                                                       \
+      comm->setAbort(                                                         \
+          comms::fault_tolerance::AbortInfo{                                  \
+              .reason = ctran::utils::detail::abortReason(e.result()),        \
+              .context = fmt::format(                                         \
+                  "op_type={} op_count={} rank={} comm_hash={} error={}",     \
+                  opType,                                                     \
+                  opCount,                                                    \
+                  comm->logMetaData_.rank,                                    \
+                  comm->logMetaData_.commHash,                                \
+                  e.what()),                                                  \
+          });                                                                 \
     } else {                                                                  \
       throw;                                                                  \
     }                                                                         \

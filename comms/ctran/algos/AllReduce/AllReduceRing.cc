@@ -1031,17 +1031,15 @@ inline commResult_t completeHostResourceSetup(
 
 } // namespace
 
-#define HOST_ABORT(desc)                                                       \
-  if (comm->testAbort()) {                                                     \
-    auto _abort = comm->getAbort();                                            \
-    std::string _ctx =                                                         \
-        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
-    throw ctran::utils::Exception(                                             \
-        _ctx,                                                                  \
-        commRemoteError,                                                       \
-        comm->logMetaData_.rank,                                               \
-        comm->logMetaData_.commHash,                                           \
-        std::string(desc));                                                    \
+#define HOST_ABORT(desc)                     \
+  if (comm->testAbort()) {                   \
+    std::string _ctx = comm->abortMessage(); \
+    throw ctran::utils::Exception(           \
+        _ctx,                                \
+        commRemoteError,                     \
+        comm->logMetaData_.rank,             \
+        comm->logMetaData_.commHash,         \
+        std::string(desc));                  \
   }
 
 static commResult_t impl(

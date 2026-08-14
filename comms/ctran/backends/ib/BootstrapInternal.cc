@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -14,6 +15,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
+#include <folly/String.h>
 
 #include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
 #include "comms/ctran/backends/ib/CtranIbVc.h"
@@ -32,6 +34,17 @@ namespace {
 const std::string kCtranIbLogEventName{"CtranIb-QpExchange"};
 
 const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
+
+std::string socketErrorContext(int error) {
+  const int errnoValue = error < 0 ? -error : error;
+  const char* errorName = ::strerrorname_np(errnoValue);
+  const std::string description = folly::errnoStr(errnoValue);
+  return fmt::format(
+      "origin=socket_error subsystem=ctran_ib error_code={} error_name={} error_description=\"{}\"",
+      error,
+      errorName != nullptr ? errorName : "UNKNOWN",
+      folly::cEscape<std::string>(description));
+}
 } // namespace
 
 // TODO: We may want to retry if err is ECONNRESET,
@@ -39,16 +52,22 @@ const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
 // may still want to throw an ctran::utils::Exception,
 // like what would happen if FT is disabled (via
 // the FB_SYSCHECKTHROW_EX macro).
-#define HANDLE_SOCKET_ERROR(cmd, self)                                       \
-  if (!self->abortCtrl_->isEnabled()) {                                      \
-    FB_SYSCHECKTHROW_EX(cmd, self->rank_, self->commHash_, self->commDesc_); \
-  } else {                                                                   \
-    int errCode = cmd;                                                       \
-    if (errCode || self->abortCtrl_->isAborted()) {                          \
-      CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode);        \
-      self->abortCtrl_->setAbort(); /* Ensure remote is notified */          \
-      break;                                                                 \
-    }                                                                        \
+#define HANDLE_SOCKET_ERROR(cmd, self)                                        \
+  if (!self->abortCtrl_->isEnabled()) {                                       \
+    FB_SYSCHECKTHROW_EX(cmd, self->rank_, self->commHash_, self->commDesc_);  \
+  } else {                                                                    \
+    int errCode = cmd;                                                        \
+    if (errCode || self->abortCtrl_->isAborted()) {                           \
+      if (errCode) {                                                          \
+        CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode);       \
+        self->abortCtrl_->setAbort(                                           \
+            comms::fault_tolerance::AbortInfo{                                \
+                .reason = comms::fault_tolerance::AbortReason::NETWORK_ERROR, \
+                .context = socketErrorContext(errCode),                       \
+            });                                                               \
+      }                                                                       \
+      break;                                                                  \
+    }                                                                         \
   }
 
 namespace ctran::ib {

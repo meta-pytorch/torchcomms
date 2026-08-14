@@ -778,8 +778,11 @@ void CtranGpe::Impl::gpeThreadFn() {
           // Preserve abort state across cancelTimeout(): an aborted comm
           // must never flip back to not-aborted.
           comm->setAbort();
-          const std::string_view reason =
-              comm->getAbort()->isTimedOut() ? "timeout" : "explicit";
+          const auto abortInfo = comm->getAbortInfo().value();
+          const auto reason = fmt::format(
+              "reason={} context=\"{}\"",
+              static_cast<int>(abortInfo.reason),
+              abortInfo.context);
 
           // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
           if (!isTerminateCmd) {

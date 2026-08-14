@@ -32,6 +32,29 @@ TEST(CtranCommTest, AbortAvailableAndEnabled) {
   EXPECT_TRUE(comm.testAbort());
 }
 
+TEST(CtranCommTest, AbortReasonAndContextAreForwarded) {
+  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  CtranComm comm(abort);
+
+  comm.setAbort(
+      comms::fault_tolerance::AbortInfo{
+          .reason = comms::fault_tolerance::AbortReason::INTERNAL_ERROR,
+          .context = "collective failed",
+      });
+
+  const auto abortInfo = comm.getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(
+      *abortInfo,
+      (comms::fault_tolerance::AbortInfo{
+          .reason = comms::fault_tolerance::AbortReason::INTERNAL_ERROR,
+          .context = "collective failed",
+      }));
+  EXPECT_EQ(
+      comm.abortMessage(),
+      "comm aborted reason=5 context=\"collective failed\"");
+}
+
 TEST(CtranCommTest, AbortAvailableAndEnabledDoubleAbort) {
   auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
   CtranComm comm(abort);
