@@ -18,6 +18,65 @@ cvars:
      Please change this line when you change the default value of
      NCCL_CVARS_LOG_INFO: https://fburl.com/code/d5f77k3d
 
+ - name        : MCCL_GPU_COLLSTATS_HIST_TMIN_NS
+   type        : uint64_t
+   default     : 1000
+   description : |-
+     Lower bound of the collective-stats duration histogram, in nanoseconds.
+     Durations below it land in the underflow bucket. With TMAX and SUBBUCKETS
+     this fixes the bucket count, which must not exceed the compiled-in
+     capacity of 242; a configuration that needs more is rejected at
+     communicator init and instrumentation stays off for that comm rather than
+     silently rebucketing. Defaults to 1us. Only takes effect when
+     MCCL_GPU_COLLSTATS_ENABLE is set.
+
+ - name        : MCCL_GPU_COLLSTATS_HIST_TMAX_NS
+   type        : uint64_t
+   default     : 1024000000000
+   description : |-
+     Upper bound of the collective-stats duration histogram, in nanoseconds.
+     Must agree with TMIN and SUBBUCKETS on a bucket count within the 242
+     capacity: the default spans 29.93 octaves at 8 sub-buckets, which is
+     exactly 242 including underflow and overflow. Raising it to 2^40 ns needs
+     243 and is rejected, which disables instrumentation for the comm.
+     Durations at or above it land in the overflow bucket, so a percentile
+     plateaus there during a hang while the exact maximum keeps climbing.
+     Defaults to 1024s. Only takes effect when MCCL_GPU_COLLSTATS_ENABLE is set.
+
+ - name        : MCCL_GPU_COLLSTATS_HIST_SUBBUCKETS
+   type        : int
+   default     : 8
+   description : |-
+     Sub-buckets per octave in the collective-stats duration histogram. This is
+     the resolution knob: relative error is 2^(1/N)-1, so the default of 8 gives
+     9.05% and 16 would give 4.4% at twice the buckets. Buckets are bounded at
+     242, so raising this narrows the representable time span unless TMIN and
+     TMAX are narrowed with it. Only takes effect when
+     MCCL_GPU_COLLSTATS_ENABLE is set.
+
+ - name        : MCCL_GPU_COLLSTATS_THRESHOLDS_NS
+   type        : stringlist
+   default     : ""
+   description : |-
+     Comma-separated duration cut-points in nanoseconds, at most four. Each is
+     counted with an exact atomic add rather than read off the histogram, so a
+     threshold-based page carries no bucket-boundary error -- this is what
+     alerting should key on. Empty (default) uses 1s, 10s, 60s and the 600s
+     watchdog backstop. Only takes effect when MCCL_GPU_COLLSTATS_ENABLE is set.
+
+ - name        : MCCL_GPU_COLLSTATS_SIZE_CLASS_EDGES
+   type        : stringlist
+   default     : ""
+   description : |-
+     Comma-separated message-size bucket edges in bytes, ascending, at most 64.
+     Edge i is the inclusive lower bound of class i+1; anything smaller is
+     class 0. The size class is a key field, so this directly sets how many
+     distinct keys a workload produces -- coarse edges merge shapes, fine edges
+     risk exhausting the key registry and spilling into the catch-all. Empty
+     (default) uses powers of two from 2B to 8GiB, which reproduces
+     floor(log2(bytes)). Only takes effect when MCCL_GPU_COLLSTATS_ENABLE is
+     set.
+
  - name        : NCCL_HPC_JOB_IDS
    type        : stringlist
    default     : ""
