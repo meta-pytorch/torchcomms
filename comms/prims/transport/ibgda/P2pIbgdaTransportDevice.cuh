@@ -2072,12 +2072,13 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to send for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    detail::init_send_progress(*this, group, nbytes, max_signal_bytes);
+    detail::init_send_progress<P2pIbgdaTransportDevice, Proto>(
+        *this, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2119,12 +2120,13 @@ class P2pIbgdaTransportDevice {
    * @param nbytes Number of user-buffer bytes to receive for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    detail::init_recv_progress(*this, group, nbytes, max_signal_bytes);
+    detail::init_recv_progress<P2pIbgdaTransportDevice, Proto>(
+        *this, group, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2159,7 +2161,10 @@ class P2pIbgdaTransportDevice {
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::send`.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
@@ -2167,7 +2172,7 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp>(
+    return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
@@ -2252,7 +2257,10 @@ class P2pIbgdaTransportDevice {
    * @param timeout Optional device timeout checked while dependencies wait.
    * @param args Additional arguments forwarded to `CopyOp::recv`.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2260,7 +2268,7 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp>(
+    return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 
@@ -2343,6 +2351,16 @@ class P2pIbgdaTransportDevice {
    * The caller must keep the staging layout stable while a sequence is in
    * flight. `max_signal_bytes` may vary across calls because it only changes
    * the signal cadence within the fixed per-channel staging slice.
+   *
+   * `Proto` is a call-site choice and is never negotiated on the wire, so the
+   * sender and receiver must select the same one: mixing them deadlocks, with
+   * Simple waiting on a DATA_READY counter the LL sender never posts while LL
+   * polls for an inline flag Simple never writes. Callers own that agreement
+   * and must derive the protocol from a collective-uniform input rather than
+   * from per-rank state. MCCL's tree does this on the host, picking from the
+   * total message size and baking the result into the kernel symbol (see
+   * `selectAllReduceTreeKernel` / `MCCL_ALLREDUCE_LL_MAX_BYTES`), so every rank
+   * in a launch runs the same format.
    *
    * @param group           ThreadGroup (all threads participate in memcpy,
    *                        leader does RDMA ops).

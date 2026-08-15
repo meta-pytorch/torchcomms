@@ -308,6 +308,72 @@ struct ThreadGroup {
   }
 
   /**
+   * Group-wide AND: returns true iff `pred` holds on every thread of the group.
+   *
+   * Lives next to broadcast() and derives its scratch index the same way, so
+   * the slot a group reduces into always matches the barrier it rendezvouses
+   * on. That pairing matters more here than for broadcast(): every thread
+   * atomicAnds into the slot rather than only the leader writing it, so a group
+   * reducing into the wrong index corrupts another group's result instead of
+   * merely reading a stale one.
+   *
+   * All threads in the group must call this -- it barriers.
+   *
+   * @param pred This thread's predicate
+   * @return Whether the predicate held on every thread in the group
+   */
+  __device__ __forceinline__ bool all(bool pred) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    switch (scope) {
+      case SyncScope::THREAD:
+        return pred;
+      case SyncScope::WARP:
+#ifdef __HIP_PLATFORM_AMD__
+        // A wavefront is kWarpSize == 64 lanes here, so __all() already spans
+        // the whole WARP group; HIP's __all_sync() would additionally reject
+        // the 32-bit full-warp mask NVIDIA wants (it static_asserts on a 64-bit
+        // one).
+        return __all(pred) != 0;
+#else
+        return __all_sync(0xFFFFFFFFU, pred) != 0;
+#endif
+      case SyncScope::MULTIWARP: {
+        __shared__ int __tg_all_scratch[kMaxMultiwarpsPerBlock];
+        uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+            threadIdx.z * blockDim.x * blockDim.y;
+        uint32_t scratch_idx =
+            barrier_id == kAutoBarrierId ? tid / group_size : barrier_id;
+        if (is_leader()) {
+          __tg_all_scratch[scratch_idx] = 1;
+        }
+        sync();
+        atomicAnd(&__tg_all_scratch[scratch_idx], pred ? 1 : 0);
+        sync();
+        bool result = __tg_all_scratch[scratch_idx] != 0;
+        sync(); // Prevent leader re-seeding before all threads read
+        return result;
+      }
+      case SyncScope::BLOCK: {
+        __shared__ int __tg_all_block;
+        if (is_leader()) {
+          __tg_all_block = 1;
+        }
+        sync();
+        atomicAnd(&__tg_all_block, pred ? 1 : 0);
+        sync();
+        bool result = __tg_all_block != 0;
+        sync(); // Prevent leader re-seeding before all threads read
+        return result;
+      }
+      case SyncScope::CLUSTER:
+        printf("ThreadGroup::all: CLUSTER scope not yet supported\n");
+        __trap();
+    }
+#endif
+    return pred;
+  }
+
+  /**
    * for_each_item_contiguous - Distribute work items using CONTIGUOUS
    * assignment
    *

@@ -97,6 +97,39 @@ void launch_ibgda_recv(
     Timeout timeout = Timeout());
 
 /**
+ * Low-latency (LL) protocol counterparts of launch_ibgda_send_recv/send/recv.
+ * Same grid layout; dispatch to the transport's send_ll/recv_ll (data + inline
+ * flag, 2x wire, no DATA_READY wait; Memcpy only).
+ */
+void launch_ibgda_send_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+void launch_ibgda_send_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+void launch_ibgda_recv_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
  * Drain outstanding bidirectional send/recv transport work for benchmark
  * measurement and safe teardown.
  */
@@ -160,6 +193,30 @@ void launch_ibgda_registered_progress_send(
  * Launch unidirectional progress recv kernel. All blocks receive.
  */
 void launch_ibgda_progress_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch unidirectional LL progress send kernel. All blocks send.
+ */
+void launch_ibgda_progress_send_ll(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout());
+
+/**
+ * Launch unidirectional LL progress recv kernel. All blocks receive.
+ */
+void launch_ibgda_progress_recv_ll(
     P2pIbgdaTransportDevice* transport,
     char* dst,
     std::size_t nbytes,

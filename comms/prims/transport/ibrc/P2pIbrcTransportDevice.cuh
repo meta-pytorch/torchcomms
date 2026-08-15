@@ -625,23 +625,28 @@ class P2pIbrcTransportDevice {
         static_cast<std::size_t>(channelLayout_.pipelineDepth);
   }
 
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    detail::init_send_progress(*this, group, nbytes, max_signal_bytes);
+    detail::init_send_progress<P2pIbrcTransportDevice, Proto>(
+        *this, group, nbytes, max_signal_bytes);
   }
 
-  template <typename = void>
+  template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
-    detail::init_recv_progress(*this, group, nbytes, max_signal_bytes);
+    detail::init_recv_progress<P2pIbrcTransportDevice, Proto>(
+        *this, group, nbytes, max_signal_bytes);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
       const void* __restrict__ src,
@@ -649,11 +654,14 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp>(
+    return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp, Proto>(
         *this, group, src, nbytes, max_signal_bytes, timeout, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -661,7 +669,7 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const Timeout& timeout = Timeout(),
       Args... args) {
-    return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp>(
+    return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp, Proto>(
         *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
   }
 

@@ -266,6 +266,38 @@ TEST_F(
 
 TEST_F(
     MultimemNvlTransportTestFixture,
+    MultiPeerCollectivelyRejectsAsymmetricEnablement) {
+  using ::testing::_;
+
+  auto mock = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*mock, allGather(_, sizeof(int), 0, 2))
+      .WillOnce([](void* buf, int, int, int) {
+        auto* eligible = static_cast<int*>(buf);
+        EXPECT_EQ(eligible[0], 0);
+        eligible[1] = 1;
+        return folly::makeSemiFuture(0);
+      });
+
+  MultiPeerNvlTransportConfig config{
+      .pipelineDepth = 0,
+      .p2pSignalCount = 1,
+      .maxNumChannels = 0,
+      .enableMultimem = false,
+  };
+  MultiPeerNvlTransport transport(
+      /*myRank=*/0,
+      /*nRanks=*/2,
+      std::shared_ptr<meta::comms::IBootstrap>(mock),
+      config);
+
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+  EXPECT_FALSE(transport.initializeMultimemNvlTransportIfEligible());
+  EXPECT_FALSE(transport.initializeMultimemNvlTransportIfEligible());
+  EXPECT_FALSE(transport.hasMultimemNvlTransport());
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
     MultiPeerRemoteEligibilityQueryErrorPoisonsRetry) {
   using ::testing::_;
 

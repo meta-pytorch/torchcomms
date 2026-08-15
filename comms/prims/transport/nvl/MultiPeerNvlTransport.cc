@@ -177,7 +177,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   dataBufferSize_ = dataBufferSize(config_);
   perPeerDataBufferSize_ = dataBufferSize_;
 
-  perPeerSignalBufferSize_ = getSignalBufferSize(config_.p2pSignalCount);
+  perPeerSignalBufferSize_ =
+      getSignalBufferSize(static_cast<int>(config_.p2pSignalCount));
 
   // Allocate signal buffer (always needed)
   const std::size_t totalSignalBufferSize =
@@ -216,7 +217,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
 
   // Conditionally allocate barrier buffer
   if (config_.p2pBarrierCount > 0) {
-    perPeerBarrierBufferSize_ = getBarrierBufferSize(config_.p2pBarrierCount);
+    perPeerBarrierBufferSize_ =
+        getBarrierBufferSize(static_cast<int>(config_.p2pBarrierCount));
     std::size_t totalBarrierSize = perPeerBarrierBufferSize_ * (nRanks_ - 1);
     barrierBufferHandler_ = std::make_unique<GpuMemHandler>(
         bootstrap_, myRank_, nRanks_, totalBarrierSize, memSharingMode_);
@@ -542,8 +544,7 @@ bool MultiPeerNvlTransport::hasMultimemNvlTransport() const {
 }
 
 bool MultiPeerNvlTransport::initializeMultimemNvlTransportIfEligible() const {
-  if (!config_.enableMultimem ||
-      multimemNvlIneligible_.load(std::memory_order_acquire)) {
+  if (multimemNvlIneligible_.load(std::memory_order_acquire)) {
     return false;
   }
   try {
@@ -579,11 +580,6 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
   if (multimemNvlTransport_) {
     return;
   }
-  if (!config_.enableMultimem) {
-    throw std::runtime_error(
-        "MultiPeerNvlTransport: multimem NVL transport is not enabled "
-        "(config.enableMultimem is false)");
-  }
   if (multimemNvlUnavailable_) {
     throw std::runtime_error(
         "MultiPeerNvlTransport: multimem NVL transport is not available: " +
@@ -593,16 +589,22 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
   std::vector<int> multimemEligible(nRanks_, 0);
   std::vector<int> multimemReady(nRanks_, 0);
   std::optional<ScopedCudaDevice> deviceGuard;
-  // A local CUDA/driver query failure is an error vote, not an early return:
-  // every rank must still enter the allGather so peers cannot hang.
-  try {
-    deviceGuard.emplace(multimemCudaDevice_);
-    multimemEligible[myRank_] =
-        MultimemNvlTransport::isEligible(nRanks_, multimemCudaDevice_)
-        ? kMultimemEligible
-        : kMultimemIneligible;
-  } catch (...) {
-    multimemEligible[myRank_] = kMultimemEligibilityError;
+  if (!config_.enableMultimem) {
+    // A disabled rank must still vote so enabled peers cannot hang in the
+    // communicator-wide eligibility agreement.
+    multimemEligible[myRank_] = kMultimemIneligible;
+  } else {
+    // A local CUDA/driver query failure is an error vote, not an early return:
+    // every rank must still enter the allGather so peers cannot hang.
+    try {
+      deviceGuard.emplace(multimemCudaDevice_);
+      multimemEligible[myRank_] =
+          MultimemNvlTransport::isEligible(nRanks_, multimemCudaDevice_)
+          ? kMultimemEligible
+          : kMultimemIneligible;
+    } catch (...) {
+      multimemEligible[myRank_] = kMultimemEligibilityError;
+    }
   }
   int eligibilityResult = 0;
   try {

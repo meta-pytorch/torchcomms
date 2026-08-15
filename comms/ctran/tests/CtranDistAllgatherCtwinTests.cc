@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 #include "comms/ctran/Ctran.h"
@@ -717,6 +718,227 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Bool(),
     [](const ::testing::TestParamInfo<bool>& info) {
       return info.param ? "SkipMcIntraBarrier" : "KeepMcIntraBarrier";
+    });
+
+// Asserts the recorded topology of the captured GPE HOST nodes with and without
+// NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM. The knob's whole effect is a change in
+// where the HOST node is recorded, so the assertions are on graph edges rather
+// than on numerics:
+//
+//   inline (knob off): every HOST is a pass-through link (out-degree 1) and no
+//                      HOST depends on another -> the driver is free to spread
+//                      the graph's internal streams across hardware channels.
+//   spine  (knob on):  HOST[i] depends on HOST[i-1] AND parents the
+//   collective's
+//                      first node, so out-degree reaches 2 and there are
+//                      exactly N-1 HOST -> HOST edges.
+//
+// The (N-1) HOST -> HOST count is the direct fingerprint of the serial spine.
+// Note the spine's cudaEventRecord is ABSORBED by capture into a plain
+// dependency edge rather than becoming a standalone EVENT_RECORD node, so the
+// edge is HOST -> HOST directly (measured; this is the same absorption that
+// mixing=0's fence relies on).
+class CtranAllgatherCtwinHostSpineTest
+    : public CtranAllgatherCtwinTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  void SetUp() override {
+    // Must be set before the comm is constructed: CtranGpe::Impl caches both
+    // knobs in its constructor.
+    setenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT", "0", 1);
+    setenv("NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM", GetParam() ? "1" : "0", 1);
+    CtranAllgatherCtwinTest::SetUp();
+  }
+
+  void TearDown() override {
+    unsetenv("NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM");
+    unsetenv("NCCL_CTRAN_GRAPH_MIXING_SUPPORT");
+    CtranAllgatherCtwinTest::TearDown();
+  }
+};
+
+TEST_P(CtranAllgatherCtwinHostSpineTest, HostNodeWiring) {
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skipping ctwin graph test";
+  }
+  if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  }
+  // The GPE host node comes from the PipeStart submit, which ctpipeline makes
+  // only when nNodes > 1; a single-node config emits no host node at all, so
+  // both arms would assert on an empty set. Skip loudly rather than vacuously.
+  const auto nNodes = ctranComm->statex_->nNodes();
+  if (nNodes < 2) {
+    GTEST_SKIP() << "the captured GPE host node needs nNodes>1 to be emitted; "
+                 << "got nNodes=" << nNodes;
+  }
+  const bool spine = GetParam();
+
+  const size_t typeSize = commTypeSize(dt);
+  const size_t sendCount = 8192;
+  const size_t chunkBytes = sendCount * typeSize;
+  const size_t totalBytes = sendCount * numRanks * typeSize;
+
+  CtranWin* win = nullptr;
+  void* winBase = createSymmetricWindow(totalBytes, &win);
+  ASSERT_NE(win, nullptr);
+
+  void* recvbuf = winBase;
+  void* sendbuf = static_cast<char*>(recvbuf) + globalRank * chunkBytes;
+
+  cudaStream_t captureStream;
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&captureStream, cudaStreamNonBlocking));
+  {
+    const std::vector<int> seed(sendCount, globalRank);
+    CUDACHECK_TEST(cudaMemset(recvbuf, 0xEE, totalBytes));
+    CUDACHECK_TEST(
+        cudaMemcpy(sendbuf, seed.data(), chunkBytes, cudaMemcpyDefault));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  }
+  oobBarrier();
+
+  // Several collectives back to back: the spine only becomes visible across
+  // collectives (HOST[i] <- HOST[i-1]), so a single-collective capture cannot
+  // distinguish the two shapes.
+  constexpr int kNumCollectives = 4;
+  cudaGraph_t graph = nullptr;
+  ASSERT_EQ(
+      cudaStreamBeginCapture(captureStream, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  for (int i = 0; i < kNumCollectives; ++i) {
+    ASSERT_EQ(
+        ctranAllGather(
+            sendbuf,
+            recvbuf,
+            sendCount,
+            dt,
+            ctranComm.get(),
+            captureStream,
+            NCCL_ALLGATHER_ALGO::ctwin_pipeline),
+        commSuccess);
+  }
+  ASSERT_EQ(cudaStreamEndCapture(captureStream, &graph), cudaSuccess);
+  ASSERT_NE(graph, nullptr);
+
+  // Walk the recorded graph.
+  size_t numNodes = 0;
+  ASSERT_EQ(cudaGraphGetNodes(graph, nullptr, &numNodes), cudaSuccess);
+  std::vector<cudaGraphNode_t> nodes(numNodes);
+  ASSERT_EQ(cudaGraphGetNodes(graph, nodes.data(), &numNodes), cudaSuccess);
+
+  size_t numEdges = 0;
+  ASSERT_EQ(cudaGraphGetEdges(graph, nullptr, nullptr, &numEdges), cudaSuccess);
+  std::vector<cudaGraphNode_t> from(numEdges), to(numEdges);
+  ASSERT_EQ(
+      cudaGraphGetEdges(graph, from.data(), to.data(), &numEdges), cudaSuccess);
+
+  std::unordered_map<cudaGraphNode_t, cudaGraphNodeType> kind;
+  for (cudaGraphNode_t n : nodes) {
+    cudaGraphNodeType t{};
+    ASSERT_EQ(cudaGraphNodeGetType(n, &t), cudaSuccess);
+    kind[n] = t;
+  }
+  std::unordered_map<cudaGraphNode_t, int> outDeg, inDeg;
+  int hostToRecord = 0, recordToHost = 0, hostToHost = 0;
+  for (size_t e = 0; e < numEdges; ++e) {
+    outDeg[from[e]]++;
+    inDeg[to[e]]++;
+    const bool fromHost = kind[from[e]] == cudaGraphNodeTypeHost;
+    const bool toHost = kind[to[e]] == cudaGraphNodeTypeHost;
+    const bool fromRec = kind[from[e]] == cudaGraphNodeTypeEventRecord;
+    const bool toRec = kind[to[e]] == cudaGraphNodeTypeEventRecord;
+    if (fromHost && toRec) {
+      hostToRecord++;
+    }
+    if (fromRec && toHost) {
+      recordToHost++;
+    }
+    if (fromHost && toHost) {
+      hostToHost++;
+    }
+  }
+  std::vector<cudaGraphNode_t> hosts;
+  for (cudaGraphNode_t n : nodes) {
+    if (kind[n] == cudaGraphNodeTypeHost) {
+      hosts.push_back(n);
+    }
+  }
+
+  // One GPE host node per collective either way -- the knob moves the node, it
+  // does not add or remove any.
+  ASSERT_EQ(hosts.size(), static_cast<size_t>(kNumCollectives));
+  int minIn = 1 << 30, maxIn = 0, minOut = 1 << 30, maxOut = 0;
+  for (cudaGraphNode_t h : hosts) {
+    minIn = std::min(minIn, inDeg[h]);
+    maxIn = std::max(maxIn, inDeg[h]);
+    minOut = std::min(minOut, outDeg[h]);
+    maxOut = std::max(maxOut, outDeg[h]);
+  }
+  if (globalRank == 0) {
+    fprintf(
+        stderr,
+        "[hostspine] spine=%d nodes=%zu edges=%zu hosts=%zu "
+        "inDeg=[%d,%d] outDeg=[%d,%d] host->rec=%d rec->host=%d host->host=%d\n",
+        spine ? 1 : 0,
+        numNodes,
+        numEdges,
+        hosts.size(),
+        minIn,
+        maxIn,
+        minOut,
+        maxOut,
+        hostToRecord,
+        recordToHost,
+        hostToHost);
+  }
+  if (spine) {
+    // Each HOST feeds its own EVENT_RECORD (the spine tip) and the collective's
+    // first node; every HOST but the first is fed by the previous tip.
+    EXPECT_EQ(hostToHost, kNumCollectives - 1)
+        << "serial host spine: HOST[i] depends on HOST[i-1]";
+    EXPECT_EQ(maxOut, 2)
+        << "a spine HOST feeds both the next HOST and its collective";
+  } else {
+    EXPECT_EQ(hostToHost, 0) << "inline: host nodes are mutually independent";
+    EXPECT_EQ(maxOut, 1) << "inline HOST is a pass-through link";
+  }
+
+  // The graph must still replay correctly in both shapes.
+  cudaGraphExec_t graphExec = nullptr;
+  ASSERT_EQ(cudaGraphInstantiate(&graphExec, graph, 0), cudaSuccess);
+  const std::vector<int> myChunk(sendCount, globalRank + 7);
+  CUDACHECK_TEST(cudaMemset(recvbuf, 0xEE, totalBytes));
+  CUDACHECK_TEST(
+      cudaMemcpy(sendbuf, myChunk.data(), chunkBytes, cudaMemcpyDefault));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  oobBarrier();
+  ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(captureStream), cudaSuccess);
+  for (int peer = 0; peer < numRanks; ++peer) {
+    std::vector<int> observed(sendCount, -1);
+    CUDACHECK_TEST(cudaMemcpy(
+        observed.data(),
+        static_cast<char*>(recvbuf) + peer * chunkBytes,
+        chunkBytes,
+        cudaMemcpyDefault));
+    EXPECT_EQ(observed, std::vector<int>(sendCount, peer + 7))
+        << "chunk from peer " << peer;
+  }
+
+  ASSERT_EQ(cudaGraphExecDestroy(graphExec), cudaSuccess);
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  CUDACHECK_TEST(cudaStreamDestroy(captureStream));
+  oobBarrier();
+  freeSymmetricWindow(win, winBase, totalBytes);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllgatherCtwinHostSpineTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "HostSpine" : "HostInline";
     });
 
 int main(int argc, char* argv[]) {

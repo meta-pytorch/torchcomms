@@ -12,10 +12,15 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "comms/prims/benchmarks/IbgdaSendRecv.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
@@ -81,6 +86,14 @@ enum class SendRecvDirection {
 // renaming every benchmark.
 enum class SendRecvCopyOp {
   Memcpy,
+};
+
+// Wire protocol: Simple (put data + explicit DATA_READY signal) vs LL
+// (low-latency data + inline flag, 2x wire). LL is wired for the blocking path
+// only (the resumable Progress API has no LL wire/payload geometry yet).
+enum class SendRecvProto {
+  Simple,
+  LL,
 };
 
 bool isTcpEnvironment() {
@@ -199,6 +212,63 @@ struct BenchmarkSize {
   std::size_t nbytes;
 };
 
+// ---------------------------------------------------------------------------
+// Correctness pass (separate from the timed benchmarks; see
+// runCorrectnessSweep)
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t kDefaultCorrectnessIters = 32;
+constexpr int kCorrectnessPoison = 0xEE;
+
+// Bytes checked past the payload to catch a decoder that writes a padded
+// length. LL's quantum is kData = 4, so 3 stray bytes is the worst case; 16
+// covers any plausible future packet geometry.
+constexpr std::size_t kCorrectnessGuardBytes = 16;
+
+// Correctness verifies on the host, so each iteration costs an H2D of the
+// pattern plus a D2H of the result, and holds two host buffers of `nbytes`.
+// Simple's sweep runs to 4 GB, which would mean 8 GB of host memory and
+// hundreds of GB over PCIe -- so the correctness pass caps the size instead of
+// carrying a separate list. Sizes above the cap are skipped and reported (never
+// silently dropped). Override with IBGDA_BENCH_CORRECTNESS_MAX_BYTES.
+constexpr std::size_t kDefaultCorrectnessMaxBytes = 1ULL << 20; // 1 MiB
+
+// SplitMix64 finalizer: cheap full-avalanche mixing.
+inline uint64_t mix64(uint64_t x) {
+  x += 0x9E3779B97F4A7C15ULL;
+  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+  return x ^ (x >> 31);
+}
+
+// Payload seed for one (iteration, size) case. Both ranks derive it from
+// values they already agree on, so the pattern never has to be exchanged.
+// Mixing in `nbytes` keeps two different sizes from sharing a prefix, so a
+// stale buffer left by an earlier size cannot match either.
+inline uint64_t correctnessSeed(uint32_t iter, std::size_t nbytes) {
+  return mix64((static_cast<uint64_t>(iter) << 32) ^ nbytes);
+}
+
+// Fill `buf` with `nbytes` of pseudo-random payload for `seed`.
+//
+// Deliberately NOT a linear ramp: with a constant stride k, a whole-buffer
+// shift of `s` bytes reproduces the expected values whenever k*s is a multiple
+// of 256, so shifted-copy bugs at those offsets pass unnoticed. Mixing each
+// 8 B word independently removes any stride, so no shift aliases.
+inline void
+fillPattern(std::vector<char>& buf, std::size_t nbytes, uint64_t seed) {
+  buf.resize(nbytes);
+  std::size_t i = 0;
+  for (; i + sizeof(uint64_t) <= nbytes; i += sizeof(uint64_t)) {
+    const uint64_t word = mix64(seed ^ i);
+    std::memcpy(buf.data() + i, &word, sizeof(word));
+  }
+  if (i < nbytes) {
+    const uint64_t word = mix64(seed ^ i);
+    std::memcpy(buf.data() + i, &word, nbytes - i);
+  }
+}
+
 constexpr std::array<BenchmarkSize, 33> kBenchmarkSizes{{
     {"1B", 1ULL},
     {"2B", 2ULL},
@@ -235,6 +305,103 @@ constexpr std::array<BenchmarkSize, 33> kBenchmarkSizes{{
     {"4GB", 4ULL << 30},
 }};
 
+// LL sweep. Capped at 1 MiB: LL puts 2x payload on the wire (8 B packet per
+// 4 B of data), so past ~1 MiB it is bandwidth-bound and strictly worse than
+// Simple -- the interesting region is small-message latency. 1..64 B is
+// enumerated byte-by-byte so every partial-final-packet remainder
+// (nbytes % kData, kData = 4) and every packet count up to 16 is covered;
+// past 64 B the sweep doubles, with a few deliberately non-4B-aligned sizes
+// interleaved to keep exercising the partial final packet at scale.
+constexpr std::array<BenchmarkSize, 86> kLlBenchmarkSizes{{
+    {"1B", 1ULL},
+    {"2B", 2ULL},
+    {"3B", 3ULL},
+    {"4B", 4ULL},
+    {"5B", 5ULL},
+    {"6B", 6ULL},
+    {"7B", 7ULL},
+    {"8B", 8ULL},
+    {"9B", 9ULL},
+    {"10B", 10ULL},
+    {"11B", 11ULL},
+    {"12B", 12ULL},
+    {"13B", 13ULL},
+    {"14B", 14ULL},
+    {"15B", 15ULL},
+    {"16B", 16ULL},
+    {"17B", 17ULL},
+    {"18B", 18ULL},
+    {"19B", 19ULL},
+    {"20B", 20ULL},
+    {"21B", 21ULL},
+    {"22B", 22ULL},
+    {"23B", 23ULL},
+    {"24B", 24ULL},
+    {"25B", 25ULL},
+    {"26B", 26ULL},
+    {"27B", 27ULL},
+    {"28B", 28ULL},
+    {"29B", 29ULL},
+    {"30B", 30ULL},
+    {"31B", 31ULL},
+    {"32B", 32ULL},
+    {"33B", 33ULL},
+    {"34B", 34ULL},
+    {"35B", 35ULL},
+    {"36B", 36ULL},
+    {"37B", 37ULL},
+    {"38B", 38ULL},
+    {"39B", 39ULL},
+    {"40B", 40ULL},
+    {"41B", 41ULL},
+    {"42B", 42ULL},
+    {"43B", 43ULL},
+    {"44B", 44ULL},
+    {"45B", 45ULL},
+    {"46B", 46ULL},
+    {"47B", 47ULL},
+    {"48B", 48ULL},
+    {"49B", 49ULL},
+    {"50B", 50ULL},
+    {"51B", 51ULL},
+    {"52B", 52ULL},
+    {"53B", 53ULL},
+    {"54B", 54ULL},
+    {"55B", 55ULL},
+    {"56B", 56ULL},
+    {"57B", 57ULL},
+    {"58B", 58ULL},
+    {"59B", 59ULL},
+    {"60B", 60ULL},
+    {"61B", 61ULL},
+    {"62B", 62ULL},
+    {"63B", 63ULL},
+    {"64B", 64ULL},
+    // Doubling from 64 B, with non-4B-aligned sizes interleaved in order.
+    {"127B", 127ULL},
+    {"128B", 128ULL},
+    {"256B", 256ULL},
+    {"333B", 333ULL},
+    {"512B", 512ULL},
+    {"1023B", 1023ULL},
+    {"1KB", 1ULL << 10},
+    {"2KB", 2ULL << 10},
+    {"3001B", 3001ULL},
+    {"4KB", 4ULL << 10},
+    {"8KB", 8ULL << 10},
+    {"12345B", 12345ULL},
+    {"16KB", 16ULL << 10},
+    {"32KB", 32ULL << 10},
+    {"64KB", 64ULL << 10},
+    {"65537B", 65537ULL},
+    {"128KB", 128ULL << 10},
+    {"256KB", 256ULL << 10},
+    {"300007B", 300007ULL},
+    {"512KB", 512ULL << 10},
+    {"999983B", 999983ULL},
+    {"1MB", 1ULL << 20},
+}};
+
 constexpr std::size_t kMaxBenchmarkBytes = 4ULL << 30;
 
 const char* apiName(SendRecvApi api) {
@@ -267,13 +434,26 @@ const char* copyOpName(SendRecvCopyOp copyOp) {
   return "unknown";
 }
 
+const char* protoName(SendRecvProto proto) {
+  switch (proto) {
+    case SendRecvProto::Simple:
+      return "simple";
+    case SendRecvProto::LL:
+      return "ll";
+  }
+  return "unknown";
+}
+
 std::string benchmarkName(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     const char* sizeName,
     int repeat = -1) {
   std::string name = "ibgdaSendRecv(";
+  name += protoName(proto);
+  name += "_";
   name += apiName(api);
   name += "_";
   name += directionName(direction);
@@ -399,11 +579,12 @@ class IbgdaSendRecvBenchmarkContext {
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     CHECK_LE(nbytes, maxBytes_);
     bootstrap_->barrierAll();
     for (int i = 0; i < warmupIters_; ++i) {
-      launchOperation(nbytes, api, direction, copyOp);
+      launchOperation(nbytes, api, direction, copyOp, proto);
       CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
     }
     bootstrap_->barrierAll();
@@ -414,7 +595,8 @@ class IbgdaSendRecvBenchmarkContext {
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     CHECK_LE(nbytes, maxBytes_);
 
     cudaEvent_t start{};
@@ -424,7 +606,7 @@ class IbgdaSendRecvBenchmarkContext {
 
     CHECK_EQ(cudaEventRecord(start, stream_), cudaSuccess);
     for (uint32_t i = 0; i < iters; ++i) {
-      launchOperation(nbytes, api, direction, copyOp);
+      launchOperation(nbytes, api, direction, copyOp, proto);
     }
     CHECK_EQ(cudaEventRecord(stop, stream_), cudaSuccess);
     CHECK_EQ(cudaEventSynchronize(stop), cudaSuccess);
@@ -445,19 +627,124 @@ class IbgdaSendRecvBenchmarkContext {
     return *std::max_element(rankElapsed.begin(), rankElapsed.end());
   }
 
+  // One correctness iteration: fill -> transfer -> verify. Untimed.
+  //
+  // The payload pattern is re-derived from `iter` every call, so a receiver
+  // that accepts a previous ring pass's bytes (the stale-flag failure LL's
+  // inline readiness is most exposed to) cannot match. recvBuf is poisoned
+  // first for the same reason: a recv that writes nothing must not pass on
+  // leftovers. Returns false on mismatch and reports the first bad offset.
+  bool runVerifiedIteration(
+      std::size_t nbytes,
+      uint32_t iter,
+      SendRecvDirection direction,
+      SendRecvProto proto,
+      std::size_t& badOffset) {
+    // The guard bytes are poisoned and read back past the payload, so the recv
+    // buffer must hold them too -- `maxBytes_` alone would let a large
+    // IBGDA_BENCH_CORRECTNESS_MAX_BYTES run off the end of the allocation.
+    CHECK_LE(nbytes + kCorrectnessGuardBytes, maxBytes_);
+    const bool bidir = direction == SendRecvDirection::Bidirectional;
+    const bool sends = bidir || globalRank_ == 0;
+    const bool receives = bidir || globalRank_ == 1;
+
+    // Both ranks build the same pattern from the same seed: the sender puts it
+    // on the wire, the receiver compares against it. No exchange needed.
+    fillPattern(hostPattern_, nbytes, correctnessSeed(iter, nbytes));
+
+    if (sends) {
+      CHECK_EQ(
+          cudaMemcpyAsync(
+              sendBuf_->get(),
+              hostPattern_.data(),
+              nbytes,
+              cudaMemcpyHostToDevice,
+              stream_),
+          cudaSuccess);
+    }
+    if (receives) {
+      // Poison the payload AND a guard region past it. A protocol that decodes
+      // a padded length (LL rounds chunks up to kData) would write past nbytes;
+      // without the guard those bytes land in allocated-but-unchecked memory
+      // and the comparison below, which only covers nbytes, never sees them.
+      CHECK_EQ(
+          cudaMemsetAsync(
+              recvBuf_->get(),
+              kCorrectnessPoison,
+              nbytes + kCorrectnessGuardBytes,
+              stream_),
+          cudaSuccess);
+    }
+    CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+    // Keep both ranks on the same iteration so the pattern they encode and the
+    // pattern the peer expects always agree.
+    bootstrap_->barrierAll();
+    launchOperation(
+        nbytes,
+        SendRecvApi::Blocking,
+        direction,
+        SendRecvCopyOp::Memcpy,
+        proto);
+    CHECK_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+
+    if (!receives) {
+      return true;
+    }
+    hostRecv_.resize(nbytes + kCorrectnessGuardBytes);
+    CHECK_EQ(
+        cudaMemcpy(
+            hostRecv_.data(),
+            recvBuf_->get(),
+            nbytes + kCorrectnessGuardBytes,
+            cudaMemcpyDeviceToHost),
+        cudaSuccess);
+    // Guard must still be poison: anything else is a write past the payload.
+    for (std::size_t g = 0; g < kCorrectnessGuardBytes; ++g) {
+      if (hostRecv_[nbytes + g] != static_cast<char>(kCorrectnessPoison)) {
+        badOffset = nbytes + g;
+        return false;
+      }
+    }
+    if (std::memcmp(hostRecv_.data(), hostPattern_.data(), nbytes) == 0) {
+      return true;
+    }
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      if (hostRecv_[i] != hostPattern_[i]) {
+        badOffset = i;
+        break;
+      }
+    }
+    return false;
+  }
+
+  int globalRank() const {
+    return globalRank_;
+  }
+
  private:
   void launchOperation(
       std::size_t nbytes,
       SendRecvApi api,
       SendRecvDirection direction,
-      SendRecvCopyOp copyOp) {
+      SendRecvCopyOp copyOp,
+      SendRecvProto proto) {
     auto* sendBuf = static_cast<char*>(sendBuf_->get());
     auto* recvBuf = static_cast<char*>(recvBuf_->get());
+    // LL is wired for the blocking path (both directions) and the
+    // unidirectional progress path; registerBenchmarks never pairs LL with
+    // bidirectional Progress, so that combination is Simple-only below.
+    const bool useLL = (proto == SendRecvProto::LL);
 
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
-        launch_ibgda_send_recv(
-            deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        if (useLL) {
+          launch_ibgda_send_recv_ll(
+              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        } else {
+          launch_ibgda_send_recv(
+              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+        }
       } else {
         launch_ibgda_progress_send_recv(
             deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
@@ -467,14 +754,22 @@ class IbgdaSendRecvBenchmarkContext {
 
     if (globalRank_ == 0) {
       if (api == SendRecvApi::Blocking) {
-        launch_ibgda_send(
-            deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        if (useLL) {
+          launch_ibgda_send_ll(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        } else {
+          launch_ibgda_send(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        }
       } else if (api == SendRecvApi::RegisteredProgress) {
         CHECK(registeredEnabled_);
         launch_ibgda_registered_progress_send(
             deviceTransport_, registeredSendBuf_, nbytes, numBlocks_, stream_);
       } else {
-        if (registeredEnabled_) {
+        if (useLL) {
+          launch_ibgda_progress_send_ll(
+              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+        } else if (registeredEnabled_) {
           launch_ibgda_progress_send_complete(
               deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
         } else {
@@ -486,10 +781,21 @@ class IbgdaSendRecvBenchmarkContext {
     }
 
     if (api == SendRecvApi::Blocking) {
-      launch_ibgda_recv(deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      if (useLL) {
+        launch_ibgda_recv_ll(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      } else {
+        launch_ibgda_recv(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      }
     } else {
-      launch_ibgda_progress_recv(
-          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      if (useLL) {
+        launch_ibgda_progress_recv_ll(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      } else {
+        launch_ibgda_progress_recv(
+            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+      }
     }
   }
 
@@ -498,6 +804,9 @@ class IbgdaSendRecvBenchmarkContext {
   std::unique_ptr<DeviceBuffer> sendBuf_;
   std::unique_ptr<DeviceBuffer> recvBuf_;
   IbgdaLocalBuffer registeredSendBuf_{};
+  // Correctness-pass staging (unused by the timed benchmarks).
+  std::vector<char> hostPattern_;
+  std::vector<char> hostRecv_;
   P2pIbgdaTransportDevice* deviceTransport_{nullptr};
   std::size_t maxBytes_{0};
   std::size_t perChannelSize_{0};
@@ -518,6 +827,7 @@ static unsigned int ibgdaSendRecv(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     folly::UserCounters& counters) {
   // Small messages would run too briefly at folly's count and be dropped as
   // NaN; use a deterministic high count for them (identical on both ranks, so
@@ -527,11 +837,11 @@ static unsigned int ibgdaSendRecv(
   CHECK_GT(iters, 0);
 
   BENCHMARK_SUSPEND {
-    context.warmup(nbytes, api, direction, copyOp);
+    context.warmup(nbytes, api, direction, copyOp, proto);
   }
 
   const float elapsedMs =
-      context.runLocalElapsed(iters, nbytes, api, direction, copyOp);
+      context.runLocalElapsed(iters, nbytes, api, direction, copyOp, proto);
   folly::doNotOptimizeAway(elapsedMs);
 
   BENCHMARK_SUSPEND {
@@ -562,50 +872,102 @@ void registerBenchmark(
     SendRecvApi api,
     SendRecvDirection direction,
     SendRecvCopyOp copyOp,
+    SendRecvProto proto,
     int repeat = -1) {
   folly::addBenchmark(
       __FILE__,
-      benchmarkName(api, direction, copyOp, size.name, repeat),
-      [&context, nbytes = size.nbytes, api, direction, copyOp](
+      benchmarkName(api, direction, copyOp, proto, size.name, repeat),
+      [&context, nbytes = size.nbytes, api, direction, copyOp, proto](
           folly::UserCounters& counters, unsigned int iters) -> unsigned int {
         return ibgdaSendRecv(
-            context, iters, nbytes, api, direction, copyOp, counters);
+            context, iters, nbytes, api, direction, copyOp, proto, counters);
       });
 }
 
+// A single run uses exactly one protocol, selected via IBGDA_BENCH_PROTO
+// (default: simple). Run the binary once per protocol to compare.
+// Mixed mode: alternate Simple and LL on the SAME group_id within one run.
+// This is the only configuration that exercises the protocol banks against each
+// other -- both land on the same hardware QP (channelId % channelsPerBank) but
+// must keep separate per-channel state. A bank mix-up shows up here as a
+// payload mismatch; running the protocols in separate processes cannot catch
+// it.
+bool correctnessMixed() {
+  if (const char* p = std::getenv("IBGDA_BENCH_PROTO")) {
+    return std::string(p) == "mixed";
+  }
+  return false;
+}
+
+SendRecvProto selectProto() {
+  SendRecvProto proto = SendRecvProto::Simple;
+  if (const char* p = std::getenv("IBGDA_BENCH_PROTO")) {
+    const std::string protoStr(p);
+    if (protoStr == "ll") {
+      proto = SendRecvProto::LL;
+    } else if (protoStr == "simple" || protoStr == "mixed") {
+      proto = SendRecvProto::Simple;
+    } else {
+      LOG(WARNING) << "Unknown IBGDA_BENCH_PROTO='" << protoStr
+                   << "', defaulting to simple";
+    }
+  }
+  return proto;
+}
+
 void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
-  for (const auto& size : kBenchmarkSizes) {
+  const SendRecvProto proto = selectProto();
+
+  // LL uses its own sweep: denser below 64 B and capped at 1 MiB.
+  const bool isLl = proto == SendRecvProto::LL;
+  const BenchmarkSize* const sizes =
+      isLl ? kLlBenchmarkSizes.data() : kBenchmarkSizes.data();
+  const std::size_t numSizes =
+      isLl ? kLlBenchmarkSizes.size() : kBenchmarkSizes.size();
+
+  for (std::size_t i = 0; i < numSizes; ++i) {
+    const auto& size = sizes[i];
+    // Blocking + fixed-size memcpy is supported by every protocol.
     registerBenchmark(
         context,
         size,
         SendRecvApi::Blocking,
         SendRecvDirection::Bidirectional,
-        SendRecvCopyOp::Memcpy);
-    registerBenchmark(
-        context,
-        size,
-        SendRecvApi::Progress,
-        SendRecvDirection::Bidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
     registerBenchmark(
         context,
         size,
         SendRecvApi::Blocking,
         SendRecvDirection::Unidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
+    // Progress: the unidirectional path is wired for every protocol
+    // (Simple + LL); the bidirectional progress kernel is Simple-only.
+    if (proto == SendRecvProto::Simple) {
+      registerBenchmark(
+          context,
+          size,
+          SendRecvApi::Progress,
+          SendRecvDirection::Bidirectional,
+          SendRecvCopyOp::Memcpy,
+          proto);
+    }
     registerBenchmark(
         context,
         size,
         SendRecvApi::Progress,
         SendRecvDirection::Unidirectional,
-        SendRecvCopyOp::Memcpy);
+        SendRecvCopyOp::Memcpy,
+        proto);
     if (context.registeredEnabled()) {
       registerBenchmark(
           context,
           size,
           SendRecvApi::RegisteredProgress,
           SendRecvDirection::Unidirectional,
-          SendRecvCopyOp::Memcpy);
+          SendRecvCopyOp::Memcpy,
+          proto);
     }
 
     if (context.registeredEnabled() &&
@@ -618,6 +980,7 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
             SendRecvApi::Progress,
             SendRecvDirection::Unidirectional,
             SendRecvCopyOp::Memcpy,
+            proto,
             repeat);
         registerBenchmark(
             context,
@@ -625,10 +988,169 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
             SendRecvApi::RegisteredProgress,
             SendRecvDirection::Unidirectional,
             SendRecvCopyOp::Memcpy,
+            proto,
             repeat);
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Correctness sweep
+//
+// A separate, untimed pass over the same size list. Unlike the folly
+// benchmarks it verifies EVERY iteration and prints its own table -- no
+// latency/bandwidth columns, because nothing here is timed and the
+// per-iteration host round-trip would dominate if it were.
+// Enabled with IBGDA_BENCH_CORRECTNESS=1; iteration count overridable with
+// IBGDA_BENCH_CORRECTNESS_ITERS.
+// ---------------------------------------------------------------------------
+
+struct CorrectnessResult {
+  const char* name;
+  std::size_t nbytes;
+  SendRecvDirection direction;
+  uint32_t iters;
+  uint32_t failures;
+  uint32_t firstBadIter;
+  std::size_t firstBadOffset;
+};
+
+uint32_t correctnessIters() {
+  if (const char* s = std::getenv("IBGDA_BENCH_CORRECTNESS_ITERS")) {
+    const int parsed = std::atoi(s);
+    if (parsed > 0) {
+      return static_cast<uint32_t>(parsed);
+    }
+    LOG(WARNING) << "Ignoring invalid IBGDA_BENCH_CORRECTNESS_ITERS='" << s
+                 << "'";
+  }
+  return kDefaultCorrectnessIters;
+}
+
+std::size_t correctnessMaxBytes() {
+  if (const char* s = std::getenv("IBGDA_BENCH_CORRECTNESS_MAX_BYTES")) {
+    const long long parsed = std::atoll(s);
+    if (parsed > 0) {
+      return static_cast<std::size_t>(parsed);
+    }
+    LOG(WARNING) << "Ignoring invalid IBGDA_BENCH_CORRECTNESS_MAX_BYTES='" << s
+                 << "'";
+  }
+  return kDefaultCorrectnessMaxBytes;
+}
+
+void printCorrectnessTable(
+    const std::vector<CorrectnessResult>& results,
+    SendRecvProto proto,
+    uint32_t iters,
+    int globalRank) {
+  std::ostringstream ss;
+  ss << "\n=== ibgdaSendRecv correctness (proto="
+     << (correctnessMixed() ? "mixed(simple+ll)" : protoName(proto))
+     << ", iters=" << iters << "/size, rank=" << globalRank << ") ===\n";
+  ss << std::left << std::setw(12) << "size" << std::right << std::setw(12)
+     << "bytes" << std::right << std::setw(16) << "direction" << std::right
+     << std::setw(10) << "verified" << std::right << std::setw(10) << "failures"
+     << std::right << std::setw(22) << "first bad (iter@off)"
+     << "\n";
+  ss << std::string(82, '-') << "\n";
+
+  uint32_t totalFailures = 0;
+  for (const auto& r : results) {
+    totalFailures += r.failures;
+    ss << std::left << std::setw(12) << r.name << std::right << std::setw(12)
+       << r.nbytes << std::right << std::setw(16) << directionName(r.direction)
+       << std::right << std::setw(10) << r.iters << std::right << std::setw(10)
+       << r.failures << std::right << std::setw(22);
+    if (r.failures == 0) {
+      ss << "-";
+    } else {
+      ss
+          << (std::to_string(r.firstBadIter) + "@" +
+              std::to_string(r.firstBadOffset));
+    }
+    ss << "\n";
+  }
+  ss << std::string(82, '-') << "\n";
+  ss << (totalFailures == 0 ? "RESULT: PASS" : "RESULT: FAIL") << " ("
+     << totalFailures << " failing iterations across " << results.size()
+     << " cases)\n";
+  std::cout << ss.str() << std::flush;
+}
+
+// Returns true if every verified iteration matched.
+bool runCorrectnessSweep(IbgdaSendRecvBenchmarkContext& context) {
+  const bool mixed = correctnessMixed();
+  const SendRecvProto proto = selectProto();
+  const uint32_t iters = correctnessIters();
+  // Mixed uses the LL size list: every size in it is valid for both protocols,
+  // and it stays under the LL 1 MiB wire cap.
+  const bool useLlSizes = mixed || proto == SendRecvProto::LL;
+  const BenchmarkSize* const sizes =
+      useLlSizes ? kLlBenchmarkSizes.data() : kBenchmarkSizes.data();
+  const std::size_t numSizes =
+      useLlSizes ? kLlBenchmarkSizes.size() : kBenchmarkSizes.size();
+
+  constexpr std::array<SendRecvDirection, 2> kDirections{
+      SendRecvDirection::Bidirectional, SendRecvDirection::Unidirectional};
+
+  std::vector<CorrectnessResult> results;
+  results.reserve(numSizes * kDirections.size());
+
+  const std::size_t maxBytes = correctnessMaxBytes();
+  std::size_t skipped = 0;
+  std::size_t largestSkipped = 0;
+
+  for (std::size_t i = 0; i < numSizes; ++i) {
+    const auto& size = sizes[i];
+    if (size.nbytes > maxBytes) {
+      ++skipped;
+      largestSkipped = std::max(largestSkipped, size.nbytes);
+      continue;
+    }
+    for (const auto direction : kDirections) {
+      CorrectnessResult r{
+          .name = size.name,
+          .nbytes = size.nbytes,
+          .direction = direction,
+          .iters = iters,
+          .failures = 0,
+          .firstBadIter = 0,
+          .firstBadOffset = 0};
+      for (uint32_t it = 0; it < iters; ++it) {
+        std::size_t badOffset = 0;
+        // Mixed: alternate protocols on the SAME group_id so consecutive
+        // iterations hit different banks over one shared QP.
+        const SendRecvProto iterProto = mixed
+            ? ((it % 2 == 0) ? SendRecvProto::Simple : SendRecvProto::LL)
+            : proto;
+        if (!context.runVerifiedIteration(
+                size.nbytes, it, direction, iterProto, badOffset)) {
+          if (r.failures == 0) {
+            r.firstBadIter = it;
+            r.firstBadOffset = badOffset;
+          }
+          ++r.failures;
+        }
+      }
+      results.push_back(r);
+    }
+  }
+
+  if (skipped != 0) {
+    LOG(WARNING) << "Correctness: skipped " << skipped << " size(s) above "
+                 << maxBytes << " B (largest " << largestSkipped
+                 << " B); raise IBGDA_BENCH_CORRECTNESS_MAX_BYTES to include "
+                 << "them (needs 2x that in host memory per rank)";
+  }
+  printCorrectnessTable(results, proto, iters, context.globalRank());
+  for (const auto& r : results) {
+    if (r.failures != 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -646,6 +1168,16 @@ int main(int argc, char** argv) {
   const int globalRank = bootstrap->getGlobalRank();
   comms::prims::benchmark::IbgdaSendRecvBenchmarkContext context(
       std::move(bootstrap), comms::prims::benchmark::kMaxBenchmarkBytes);
+
+  // Correctness mode is a distinct run: it verifies every iteration and prints
+  // its own table, so it deliberately does not also run the timed benchmarks
+  // (the verified path is not representative of steady-state timing). Both
+  // ranks participate; each prints the results for the transfers it received.
+  if (const char* c = std::getenv("IBGDA_BENCH_CORRECTNESS");
+      c != nullptr && std::string(c) != "0") {
+    return comms::prims::benchmark::runCorrectnessSweep(context) ? 0 : 1;
+  }
+
   comms::prims::benchmark::registerBenchmarks(context);
   // Both ranks must run every benchmark in lockstep (paired send/recv), but
   // only rank 0 prints the results table. Rank 1 runs and discards its output.

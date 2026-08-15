@@ -14,6 +14,7 @@
 
 class CtranComm;
 class CtranAlgo;
+struct ctranPrimsConfig;
 
 inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
   uint64_t size = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
@@ -38,7 +39,17 @@ bool ctranPrimsEnabled(const CtranComm* comm);
 commResult_t ctranInitPipesResources(CtranAlgo* algo);
 
 #if defined(ENABLE_PRIMS)
+namespace comms::prims {
+struct MultimemNvlTransportConfig;
+} // namespace comms::prims
+
 namespace ctran {
+
+commResult_t ctranBuildMultimemNvlTransportConfig(
+    const ctranPrimsConfig& config,
+    size_t bufferSize,
+    int nLocalRanks,
+    comms::prims::MultimemNvlTransportConfig& multimemConfig);
 
 commResult_t ctranPreparePipesTrace(
     CtranComm* comm,
