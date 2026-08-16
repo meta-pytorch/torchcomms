@@ -123,7 +123,8 @@ source_suffix = [".rst", ".md"]
 master_doc = "index"
 
 # General information about the project.
-project = "meta-pytorch/torchcomms"
+project = "TorchComms"
+html_title = "TorchComms"
 copyright = "2025, torchcomms Contributors"
 author = "torchcomms Contributors"
 
