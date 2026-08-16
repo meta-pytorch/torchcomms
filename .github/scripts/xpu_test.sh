@@ -19,6 +19,7 @@ export USE_NCCL=OFF
 export USE_NCCLX=OFF
 export USE_GLOO=ON
 export USE_TRANSPORT=OFF
+export USE_UNIFLOW=OFF
 export USE_SYSTEM_LIBS=1
 ulimit -n 65535 # Increase the open file descriptor limit to avoid oneCCL/Level Zero
 # initialization failures ("pidfd_getfd failed: Too many open files")
@@ -27,7 +28,7 @@ python3 -m pip install --pre torch --index-url https://download.pytorch.org/whl/
 
 #Build and run XCCL C++ unit tests (mock-based, no XPU hardware required)
 cd torchcomms
-cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_GLOO=ON -DUSE_TRANSPORT=OFF
+cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_GLOO=ON -DUSE_TRANSPORT=OFF -DUSE_UNIFLOW=OFF
 cmake --build build
 ctest --test-dir build --output-on-failure -R "TorchCommXCCLTest|TorchWorkXCCLQueueTest|TorchCommXCCLBootstrapTest|HintParsingTest"
 cd ..

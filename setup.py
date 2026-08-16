@@ -92,6 +92,8 @@ USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
 USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
+# uniflow._core extension. CUDA-only; disable by default on ROCm.
+USE_UNIFLOW = flag_enabled("USE_UNIFLOW", not IS_ROCM)
 USE_TRITON = flag_enabled("USE_TRITON", False)
 
 
@@ -193,6 +195,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
+            f"-DUSE_UNIFLOW={flag_str(USE_UNIFLOW)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
         build_args = ["--", "-j"]
@@ -229,6 +232,13 @@ if USE_TRANSPORT:
     ext_modules.append(CMakeExtension("torchcomms._transport"))
 if USE_TRANSPORT_CCA_HOOK:
     ext_modules.append(CMakeExtension("torchcomms._transport_cca_hook"))
+if USE_UNIFLOW:
+    ext_modules.append(CMakeExtension("uniflow._core"))
+
+packages = find_packages("comms")
+if not USE_UNIFLOW:
+    # Don't ship a uniflow package whose _core extension was not built.
+    packages = [p for p in packages if p.split(".")[0] != "uniflow"]
 
 backend_entry_points = ["fake = torchcomms._comms"] + [
     f"{name} = torchcomms._comms_{name}" for name, enabled in BACKEND_FLAGS if enabled
@@ -242,10 +252,11 @@ if USE_NCCL:
 setup(
     name="torchcomms",
     version=get_version(),
-    packages=find_packages("comms"),
+    packages=packages,
     package_dir={"": "comms"},
     package_data={
         "torchcomms.triton.fb": ["*.bc"],
+        "uniflow": ["*.pyi"],
     },
     entry_points={
         "torchcomms.backends": backend_entry_points,

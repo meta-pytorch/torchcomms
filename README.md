@@ -201,6 +201,9 @@ export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
 export USE_XCCL=OFF   # Default: OFF
+
+# Enable/disable the uniflow._core Python extension (CUDA-only)
+export USE_UNIFLOW=ON  # Default: ON (OFF on ROCm)
 ```
 
 Then run:
