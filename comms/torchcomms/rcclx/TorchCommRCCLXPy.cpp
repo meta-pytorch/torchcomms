@@ -23,9 +23,15 @@ PYBIND11_MODULE(_comms_rcclx, m, py::mod_gil_not_used()) {
              const ReduceOp& op,
              const std::vector<std::vector<int64_t>>& all_active_ranks,
              const std::vector<int64_t>& per_group_counts,
-             bool async_op) {
+             bool async_op,
+             std::optional<std::vector<at::Tensor>> output_tensors) {
             return self.sharded_relay_multi_group_all_reduce(
-                tensors, op, all_active_ranks, per_group_counts, async_op);
+                tensors,
+                op,
+                all_active_ranks,
+                per_group_counts,
+                async_op,
+                output_tensors);
           },
           R"(
 Fused multi-group sharded relay allreduce for 2D sparse parallelism.
@@ -51,6 +57,12 @@ Args:
         different groups to have different tensor sizes. Each tensor's
         numel() must match the corresponding count.
     async_op: If True, returns a TorchWork handle for async operation
+    output_tensors: Optional list of output segment tensors (one list per
+        group), parallel to `tensors`. When None (default) the allreduce is
+        in-place. When provided, the active group's reduced result is written
+        out-of-place into these output tensors while the inputs are preserved;
+        the active group's output segments must mirror its input segments in
+        count and per-segment numel().
 
 Returns:
     TorchWork object for operation completion if async_op=True
@@ -68,6 +80,7 @@ Example:
           py::arg("all_active_ranks"),
           py::arg("per_group_counts"),
           py::arg("async_op") = false,
+          py::arg("output_tensors") = py::none(),
           py::call_guard<py::gil_scoped_release>())
       .def(
           "sharded_relay_multi_group_reduce_scatter",

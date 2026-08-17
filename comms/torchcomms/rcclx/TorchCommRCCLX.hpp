@@ -197,7 +197,8 @@ class TorchCommRCCLX : public TorchCommBackend,
       const ReduceOp& op,
       const std::vector<std::vector<int64_t>>& all_active_ranks,
       const std::vector<int64_t>& per_group_counts,
-      bool async_op);
+      bool async_op,
+      std::optional<std::vector<at::Tensor>> output_tensors = std::nullopt);
 
   // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
   // input_tensors[g] / output_tensors[g] are the contiguous send / recv buffer
