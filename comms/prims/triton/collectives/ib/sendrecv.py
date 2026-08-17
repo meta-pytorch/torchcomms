@@ -180,7 +180,6 @@ if has_triton():  # noqa: C901
                     nic_counter,
                 )
             else:
-                # pyrefly: ignore [bad-argument-type]
                 signal_block(win, peer_rank, data_signal, 1)
 
         # -- Drain: SLOT_FREE only (implies NIC_DONE) --
@@ -259,7 +258,6 @@ if has_triton():  # noqa: C901
                     tl.store(dst_ptr + dst_start + offs, data, mask=mask)
 
             # -- Signal sender: this slot is free --
-            # pyrefly: ignore [bad-argument-type]
             signal_block(win, peer_rank, slot_free_signal, 1)
 
     @requires_torchcomms

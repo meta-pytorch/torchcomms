@@ -92,7 +92,6 @@ def check_nvlink_connections(group: dist.ProcessGroup) -> None:
         )
 
     try:
-        # pyre-ignore[21]: optional third-party
         import pynvml  # @manual
     except ImportError:
         logger.warning("pynvml not available; skipping NVLink connectivity check")

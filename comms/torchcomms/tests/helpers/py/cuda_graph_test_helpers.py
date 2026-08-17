@@ -17,12 +17,10 @@ import pydot
 import torch
 import torchcomms
 
-# pyre-fixme[5]: Global annotation for skip decorator.
 skip_unless_ncclx = unittest.skipIf(
     os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only tests"
 )
 
-# pyre-fixme[21]: Could not find name `ProfilerActivity` in `torch.profiler`.
 from torch.profiler import profile, ProfilerActivity
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import get_rank_and_size
 
@@ -134,7 +132,7 @@ def probe_tensor_addr(
 
     assert probe.dtype == torch.int64 and probe.numel() >= 1
     stream = torch.cuda.current_stream().cuda_stream
-    _cpp_write_addr(buf.data_ptr(), probe.data_ptr(), stream)  # pyre-ignore[16]
+    _cpp_write_addr(buf.data_ptr(), probe.data_ptr(), stream)
 
 
 def _wait(work: object | None) -> None:
@@ -465,10 +463,8 @@ class GraphTestBuilder:
                 profile_ctx = (
                     profile(
                         activities=[
-                            # pyre-fixme[16]: Module `torch.profiler` has no
                             # attribute `ProfilerActivity`.
                             ProfilerActivity.CPU,
-                            # pyre-fixme[16]: Module `torch.profiler` has no
                             # attribute `ProfilerActivity`.
                             ProfilerActivity.CUDA,
                         ],

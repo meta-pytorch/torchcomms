@@ -127,7 +127,6 @@ class Buffer:
             self.group_size = group.size()
 
             def _all_gather_object_group(obj: object) -> list[object]:
-                # pyre-ignore[9]: None pre-fill, overwritten by all_gather_object
                 object_list: list[object] = [None] * self.group_size
                 dist.all_gather_object(object_list, obj, group)
                 return object_list
@@ -222,12 +221,10 @@ class Buffer:
                 "destroy() requires `explicitly_destroy=True` at construction"
             )
         self.runtime.destroy()
-        # pyre-ignore[8]: deliberately invalidate
         self.runtime = None
 
     @staticmethod
     def is_sm90_compiled() -> bool:
-        # pyre-ignore[16]
         return _cpp.is_sm90_compiled()
 
     @staticmethod
@@ -247,7 +244,6 @@ class Buffer:
         num_ranks: int,
         num_experts: int,
     ) -> int:
-        # pyre-ignore[16]
         return _cpp.get_low_latency_rdma_size_hint(
             num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts
         )

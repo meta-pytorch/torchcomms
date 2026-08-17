@@ -193,11 +193,14 @@ def new_group(
     )
 
     # Register the new process group
+    # pyrefly: ignore [bad-argument-type]
     pg_info_create(new_pg, ranks, group_desc)
 
     # Store device_backends
+    # pyrefly: ignore [bad-argument-type]
     pg_info_set_data(new_pg, "device_backends", device_backends)
 
+    # pyrefly: ignore [bad-return]
     return new_pg
 
 
@@ -274,13 +277,16 @@ def split_group(  # noqa: C901
         )
 
         # Register the new process group
+        # pyrefly: ignore [bad-argument-type]
         pg_info_create(new_pg, my_group_ranks, group_desc)
 
         # Store device_backends
+        # pyrefly: ignore [bad-argument-type]
         pg_info_set_data(new_pg, "device_backends", device_backends)
 
         # Create torchcomms instances by splitting from the parent pg
         torchcomms_create_split_group(
+            # pyrefly: ignore [bad-argument-type]
             new_pg,
             parent_pg,
             split_ranks,
@@ -312,12 +318,9 @@ def split_group(  # noqa: C901
             # NCCL options, we set split_share=0 on them. If the user passes
             # non-NCCL options (e.g., Gloo), we pass them through unchanged.
             #
-            # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
             if hasattr(dist, "ProcessGroupNCCL"):
                 if pg_options is None:
-                    # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
                     pg_options = dist.ProcessGroupNCCL.Options()
-                # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
                 if isinstance(pg_options, dist.ProcessGroupNCCL.Options):
                     if hasattr(pg_options, "config") and hasattr(
                         pg_options.config, "split_share"
@@ -341,9 +344,12 @@ def split_group(  # noqa: C901
 
         assert new_pg is not None
         # Register the new process group
+        # pyrefly: ignore [bad-argument-type]
         pg_info_create(new_pg, my_group_ranks, group_desc)
 
         # Store device_backends
+        # pyrefly: ignore [bad-argument-type]
         pg_info_set_data(new_pg, "device_backends", device_backends)
 
+    # pyrefly: ignore [bad-return]
     return new_pg

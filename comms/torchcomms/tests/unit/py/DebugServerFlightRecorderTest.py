@@ -29,8 +29,6 @@ import torchcomms
 from requests.adapters import HTTPAdapter
 from torch.distributed.debug import start_debug_server, stop_debug_server
 from torchcomms.hooks import FlightRecorderHook
-
-# pyre-fixme[21]: Could not find module `urllib3.util.retry`.
 from urllib3.util.retry import Retry
 
 

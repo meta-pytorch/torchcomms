@@ -23,9 +23,9 @@ from comms.ncclx.meta.tests.ReductionNumericalVersionCompare import (
     parse_actual_outputs,
     print_numerical_failure_summary,
 )
-from torchx.components.fb.dist import hpc as fb_dist_hpc  # pyre-ignore[21]
+from torchx.components.fb.dist import hpc as fb_dist_hpc
 from torchx.runner import get_runner  # pyre-ignore[21]
-from torchx.specs import CfgVal, named_resources  # pyre-ignore[21]
+from torchx.specs import CfgVal, named_resources
 
 logger: logging.Logger = logging.getLogger(__name__)
 
