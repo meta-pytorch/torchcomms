@@ -54,7 +54,7 @@ jobs:
         conda install conda-forge::libopenssl-static conda-forge::rsync -y
         conda install conda-forge::glog=0.4.0 conda-forge::gflags=2.2.2 conda-forge::fmt=12.2.0 -y
 
-        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0
+        pip install ${{ matrix.torch-spec }}
 
         if [ "${{ matrix.cmake-version }}" = "latest" ]; then
           conda install -y cmake
@@ -63,6 +63,7 @@ jobs:
         fi
 
         pip install -r requirements.txt
+        pip install -r dev-requirements.txt
 
         export ROCM_HOME=/opt/rocm
         export RCCL_INCLUDE=$ROCM_HOME/include/rccl
@@ -78,6 +79,7 @@ jobs:
 
         # Test RCCL backend availability
         python -c "
+        import torch
         import torchcomms
         try:
             comm = torchcomms.new_comm('rccl', torch.device('hip'), 'test_comm')

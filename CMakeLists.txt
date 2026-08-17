@@ -110,6 +110,13 @@ endif()
 set(CONDA_LIB "${CONDA_PREFIX}/lib")
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
 
+# Embed CONDA_LIB in the install rpath so the dynamic linker finds
+# conda-installed dependencies (glog, gflags, etc.) when the .so files are
+# loaded at runtime without LD_LIBRARY_PATH set. Without this, CMake strips
+# the build-tree rpath on install and ctypes.CDLL fails with
+# "libglog.so.0: cannot open shared object file".
+list(APPEND CMAKE_INSTALL_RPATH "${CONDA_LIB}")
+
 # Third-party dependencies (find_package with FetchContent fallback)
 # Allow FetchContent_Populate() which we use to patch glog before add_subdirectory.
 if(POLICY CMP0169)
