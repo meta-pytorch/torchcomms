@@ -14,11 +14,11 @@
 namespace comms::prims::benchmark {
 namespace {
 
-constexpr int kBlockSize = 384;
+constexpr int kBlockSize = 640;
 constexpr int kBlocks = 1;
 
-using StagedPolicy = TileReduceStaged<float, SumOp, 24576, kBlockSize>;
-using SmemPolicy = CpAsyncSmemReduce<float, SumOp, 8192, kBlockSize, 2>;
+using StagedPolicy = TileReduceStaged<float, SumOp, 15360, kBlockSize>;
+using SmemPolicy = CpAsyncSmemReduce<float, SumOp, 10240, kBlockSize, 2>;
 
 template <typename Policy>
 __global__ void reduceKernel(
