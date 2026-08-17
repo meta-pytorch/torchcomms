@@ -213,7 +213,8 @@ static ncclResult_t shardedRelayAllGather2Active(
   const int numChunks = numHelpers + 2;
 
   size_t chunkSizes[SHARDED_RELAY_MAX_GROUPS];
-  size_t relayTotals[SHARDED_RELAY_MAX_GROUPS]; // == direct chunk A's offset
+  size_t dirAOffsets[SHARDED_RELAY_MAX_GROUPS];
+  size_t dirASizes[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBOffsets[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBSizes[SHARDED_RELAY_MAX_GROUPS]; // absorbs the remainder
 
@@ -223,22 +224,27 @@ static ncclResult_t shardedRelayAllGather2Active(
     // Zero-count groups are skipped by every loop below.
     if (count == 0) {
       chunkSizes[g] = 0;
-      relayTotals[g] = 0;
+      dirAOffsets[g] = 0;
+      dirASizes[g] = 0;
       dirBOffsets[g] = 0;
       dirBSizes[g] = 0;
       continue;
     }
 
-    // A chunk size that rounds down to zero means the send buffer is too small
-    // to scatter; the caller should fall back to a regular all-gather.
     size_t chunkSize = count / numChunks;
     chunkSize = (chunkSize / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-    if (chunkSize == 0) {
-      return ncclInvalidArgument;
-    }
     chunkSizes[g] = chunkSize;
-    relayTotals[g] = static_cast<size_t>(numHelpers) * chunkSize;
-    dirBOffsets[g] = relayTotals[g] + chunkSize;
+    if (chunkSize == 0) {
+      dirAOffsets[g] = 0;
+      dirASizes[g] = count / 2;
+      dirBOffsets[g] = dirASizes[g];
+      dirBSizes[g] = count - dirASizes[g];
+      continue;
+    }
+
+    dirAOffsets[g] = static_cast<size_t>(numHelpers) * chunkSize;
+    dirASizes[g] = chunkSize;
+    dirBOffsets[g] = dirAOffsets[g] + dirASizes[g];
     dirBSizes[g] = count - dirBOffsets[g];
   }
 
@@ -294,7 +300,7 @@ static ncclResult_t shardedRelayAllGather2Active(
       char* recvbuff = static_cast<char*>(recvBuffs[g]);
 
       // Scatter: chunk h of my sendBuff goes to helper h.
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclSend(
             sendbuff + static_cast<size_t>(h) * chunkSize * elementSize,
             chunkSize,
@@ -308,20 +314,20 @@ static ncclResult_t shardedRelayAllGather2Active(
       // gather slot never overlaps the send source, so this is safe in-place.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       NCCLCHECK(ncclSend(
-          sendbuff + relayTotals[g] * elementSize,
-          chunkSize,
+          sendbuff + dirAOffsets[g] * elementSize,
+          dirASizes[g],
           datatype,
           partner,
           comm,
           stream));
       NCCLCHECK(ncclRecv(
-          recvbuff + (gatherSlotOffset + relayTotals[g]) * elementSize,
-          chunkSize,
+          recvbuff + (gatherSlotOffset + dirAOffsets[g]) * elementSize,
+          dirASizes[g],
           datatype,
           partner,
           comm,
           stream));
-    } else {
+    } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
       char* helperBuf = static_cast<char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
@@ -355,7 +361,7 @@ static ncclResult_t shardedRelayAllGather2Active(
     if (cfg.isActiveRank) {
       char* recvbuff = static_cast<char*>(recvBuffs[g]);
 
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclRecv(
             recvbuff +
                 (gatherSlotOffset + static_cast<size_t>(h) * chunkSize) *
@@ -383,7 +389,7 @@ static ncclResult_t shardedRelayAllGather2Active(
           partner,
           comm,
           stream));
-    } else {
+    } else if (chunkSize > 0) {
       const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(

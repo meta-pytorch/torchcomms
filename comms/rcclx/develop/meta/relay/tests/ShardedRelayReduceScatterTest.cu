@@ -54,6 +54,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -271,6 +273,320 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         host.data(),
         static_cast<size_t>(nActiveRanks) * recvCount * sizeof(int32_t),
         hipMemcpyHostToDevice));
+  }
+
+  static uint16_t bfloat16Bits(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return static_cast<uint16_t>(bits >> 16);
+  }
+
+  void initActiveBfloat16SendBuffer(
+      uint16_t* deviceBuf,
+      size_t recvCount,
+      int myActiveIndex) {
+    constexpr int nActiveRanks = 2;
+    std::vector<uint16_t> host(nActiveRanks * recvCount);
+    for (int block = 0; block < nActiveRanks; block++) {
+      const uint16_t value = bfloat16Bits(
+          static_cast<float>(blockFillValue(myActiveIndex, block)));
+      std::fill_n(host.data() + block * recvCount, recvCount, value);
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        deviceBuf,
+        host.data(),
+        host.size() * sizeof(uint16_t),
+        hipMemcpyHostToDevice));
+  }
+
+  void verifyBfloat16BufferEquals(
+      const uint16_t* deviceBuffer,
+      size_t count,
+      uint16_t expectedValue,
+      int groupIndex,
+      const char* boundary) {
+    std::vector<uint16_t> hostOutput(count);
+    HIPCHECK_TEST(hipMemcpy(
+        hostOutput.data(),
+        deviceBuffer,
+        count * sizeof(uint16_t),
+        hipMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (size_t i = 0; i < count && errorCount < 10; ++i) {
+      if (hostOutput[i] != expectedValue) {
+        std::cout << "R" << this->globalRank << ": Group " << groupIndex
+                  << " BF16 mismatch at index " << i << ": expected bits "
+                  << expectedValue << " but got " << hostOutput[i] << std::endl;
+        errorCount++;
+      }
+    }
+    EXPECT_EQ(errorCount, 0) << "BF16 reduce-scatter mismatch at the "
+                             << boundary << " routing-threshold case";
+  }
+
+  void verifyBfloat16BufferEquals(
+      const uint16_t* deviceBuffer,
+      const std::vector<uint16_t>& expected,
+      const char* context) {
+    std::vector<uint16_t> actual(expected.size());
+    HIPCHECK_TEST(hipMemcpy(
+        actual.data(),
+        deviceBuffer,
+        actual.size() * sizeof(uint16_t),
+        hipMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (size_t i = 0; i < actual.size() && errorCount < 10; ++i) {
+      if (actual[i] != expected[i]) {
+        std::cout << "R" << this->globalRank << ": " << context << " at index "
+                  << i << ": expected bits " << expected[i] << " but got "
+                  << actual[i] << std::endl;
+        errorCount++;
+      }
+    }
+    EXPECT_EQ(errorCount, 0) << context;
+  }
+
+  bool bfloat16BufferContainsNonSentinel(
+      const uint16_t* deviceBuffer,
+      size_t count,
+      uint16_t sentinel) {
+    std::vector<uint16_t> hostBuffer(count);
+    const hipError_t error = hipMemcpy(
+        hostBuffer.data(),
+        deviceBuffer,
+        count * sizeof(uint16_t),
+        hipMemcpyDeviceToHost);
+    if (error != hipSuccess) {
+      ADD_FAILURE() << "HIP error: " << hipGetErrorString(error);
+      return false;
+    }
+    return std::any_of(
+        hostBuffer.begin(), hostBuffer.end(), [sentinel](uint16_t value) {
+          return value != sentinel;
+        });
+  }
+
+  void runBfloat16A2RoutingThreshold(
+      int nGroups,
+      size_t thresholdBytes,
+      ncclRedOp_t op) {
+    constexpr int nActiveRanksPerGroup = 2;
+    constexpr uint16_t helperSentinel = 0xffff;
+    const size_t thresholdCount =
+        thresholdBytes / nActiveRanksPerGroup / sizeof(uint16_t);
+    const size_t boundaryCounts[] = {
+        thresholdCount - 1, thresholdCount, thresholdCount + 1};
+    const char* boundaries[] = {"below", "at", "above"};
+
+    Standard4GroupActiveRanks fourGroupConfig;
+    const int singleGroupStorage[] = {0, 1};
+    const int* singleGroupActiveRanks[] = {singleGroupStorage};
+    const int* const* allActiveRanks =
+        nGroups == 1 ? singleGroupActiveRanks : fourGroupConfig.allActiveRanks;
+
+    const int myActiveGroup = nGroups == 1
+        ? (this->globalRank < nActiveRanksPerGroup ? 0 : -1)
+        : this->globalRank / nActiveRanksPerGroup;
+    const int myActiveIndex = nGroups == 1
+        ? this->globalRank
+        : this->globalRank % nActiveRanksPerGroup;
+
+    for (int boundaryIndex = 0; boundaryIndex < 3; boundaryIndex++) {
+      const size_t recvCount = boundaryCounts[boundaryIndex];
+      const size_t recvBytes = recvCount * sizeof(uint16_t);
+      std::vector<uint16_t*> sendBuffs(nGroups);
+      std::vector<uint16_t*> recvBuffs(nGroups);
+
+      for (int g = 0; g < nGroups; g++) {
+        HIPCHECK_TEST(
+            hipMalloc(&sendBuffs[g], nActiveRanksPerGroup * recvBytes));
+        if (g == myActiveGroup) {
+          HIPCHECK_TEST(hipMalloc(&recvBuffs[g], recvBytes));
+        } else {
+          recvBuffs[g] = sendBuffs[g];
+        }
+      }
+
+      barrierSyncOn(reinterpret_cast<int32_t*>(sendBuffs[0]));
+
+      const std::vector<uint16_t> helperSentinels(
+          nActiveRanksPerGroup * recvCount, helperSentinel);
+      for (int g = 0; g < nGroups; g++) {
+        if (g == myActiveGroup) {
+          initActiveBfloat16SendBuffer(sendBuffs[g], recvCount, myActiveIndex);
+          HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, recvBytes));
+        } else {
+          HIPCHECK_TEST(hipMemcpy(
+              sendBuffs[g],
+              helperSentinels.data(),
+              nActiveRanksPerGroup * recvBytes,
+              hipMemcpyHostToDevice));
+        }
+      }
+      HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+      std::vector<const void*> sendPtrs(nGroups);
+      std::vector<void*> recvPtrs(nGroups);
+      std::vector<size_t> recvCounts(nGroups, recvCount);
+      for (int g = 0; g < nGroups; g++) {
+        sendPtrs[g] = sendBuffs[g];
+        recvPtrs[g] = recvBuffs[g];
+      }
+
+      const ncclResult_t result = callReduceScatterCompat(
+          sendPtrs.data(),
+          recvPtrs.data(),
+          recvCounts.data(),
+          ncclBfloat16,
+          op,
+          this->comm,
+          this->stream,
+          allActiveRanks,
+          nActiveRanksPerGroup,
+          nGroups);
+      ASSERT_EQ(result, ncclSuccess)
+          << "BF16 reduce-scatter failed at the " << boundaries[boundaryIndex]
+          << " routing-threshold case";
+      HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+      if (myActiveGroup >= 0) {
+        const int32_t expectedSum =
+            expectedReduceScatterSum(myActiveIndex, nActiveRanksPerGroup);
+        const float expected = op == ncclAvg
+            ? static_cast<float>(expectedSum) / nActiveRanksPerGroup
+            : static_cast<float>(expectedSum);
+        verifyBfloat16BufferEquals(
+            recvBuffs[myActiveGroup],
+            recvCount,
+            bfloat16Bits(expected),
+            myActiveGroup,
+            boundaries[boundaryIndex]);
+      }
+
+      for (int g = 0; g < nGroups; g++) {
+        if (g == myActiveGroup) {
+          continue;
+        }
+        const bool helperParticipated = bfloat16BufferContainsNonSentinel(
+            sendBuffs[g], nActiveRanksPerGroup * recvCount, helperSentinel);
+        EXPECT_EQ(helperParticipated, boundaryIndex != 0)
+            << "Group " << g << " helper buffer on rank " << this->globalRank
+            << " did not witness the expected route at the "
+            << boundaries[boundaryIndex] << " routing-threshold case";
+      }
+
+      for (int g = 0; g < nGroups; g++) {
+        HIPCHECK_TEST(hipFree(sendBuffs[g]));
+        if (g == myActiveGroup) {
+          HIPCHECK_TEST(hipFree(recvBuffs[g]));
+        }
+      }
+    }
+  }
+
+  void runBfloat16A4SeededDirect(ncclRedOp_t op) {
+    constexpr int nGroups = 2;
+    constexpr int nActiveRanksPerGroup = 4;
+    constexpr size_t recvCount = 4099;
+    const size_t recvBytes = recvCount * sizeof(uint16_t);
+    const size_t inputCount = nActiveRanksPerGroup * recvCount;
+
+    TwoGroupFourActiveRanks groupConfig;
+    const int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+    uint16_t* sendBuffs[nGroups];
+    uint16_t* recvBuffs[nGroups];
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], inputCount * sizeof(uint16_t)));
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipMalloc(&recvBuffs[g], recvBytes));
+      } else {
+        recvBuffs[g] = sendBuffs[g];
+      }
+    }
+
+    barrierSyncOn(reinterpret_cast<int32_t*>(sendBuffs[0]));
+
+    std::vector<uint16_t> expectedInput(inputCount);
+    for (int owner = 0; owner < nActiveRanksPerGroup; owner++) {
+      for (size_t i = 0; i < recvCount; i++) {
+        // At this magnitude BF16 has a 2-unit ULP. The even-mantissa seed
+        // rounds each subsequent +1 back to itself, while reassociating the
+        // three peer contributions would produce seed + 4.
+        const float seed =
+            256.0f + owner * 16.0f + static_cast<float>(i % 2) * 4.0f;
+        const float value = myActiveIndex == 0 ? seed : 1.0f;
+        expectedInput[static_cast<size_t>(owner) * recvCount + i] =
+            bfloat16Bits(value);
+      }
+    }
+
+    for (int g = 0; g < nGroups; g++) {
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipMemcpy(
+            sendBuffs[g],
+            expectedInput.data(),
+            expectedInput.size() * sizeof(uint16_t),
+            hipMemcpyHostToDevice));
+        HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, recvBytes));
+      } else {
+        HIPCHECK_TEST(
+            hipMemset(sendBuffs[g], 0, inputCount * sizeof(uint16_t)));
+      }
+    }
+
+    const void* sendPtrs[nGroups];
+    void* recvPtrs[nGroups];
+    size_t recvCounts[nGroups];
+    for (int g = 0; g < nGroups; g++) {
+      sendPtrs[g] = sendBuffs[g];
+      recvPtrs[g] = recvBuffs[g];
+      recvCounts[g] = recvCount;
+    }
+
+    const ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclBfloat16,
+        op,
+        this->comm,
+        this->stream,
+        groupConfig.allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    std::vector<uint16_t> expectedOutput(recvCount);
+    for (size_t i = 0; i < recvCount; i++) {
+      float expected =
+          256.0f + myActiveIndex * 16.0f + static_cast<float>(i % 2) * 4.0f;
+      if (op == ncclAvg) {
+        expected /= nActiveRanksPerGroup;
+      }
+      expectedOutput[i] = bfloat16Bits(expected);
+    }
+
+    verifyBfloat16BufferEquals(
+        recvBuffs[myActiveGroup],
+        expectedOutput,
+        op == ncclAvg ? "A=4 seeded direct BF16 AVG mismatch"
+                      : "A=4 seeded direct BF16 SUM mismatch");
+    verifyBfloat16BufferEquals(
+        sendBuffs[myActiveGroup],
+        expectedInput,
+        "A=4 seeded direct modified the out-of-place input");
+
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipFree(sendBuffs[g]));
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipFree(recvBuffs[g]));
+      }
+    }
   }
 
   // Run a 1-element ncclAllReduce on `scratchBuffer` to act as a cross-rank
@@ -1001,7 +1317,7 @@ TEST_F(
   const size_t recvBytes = 64ULL * 1024 * 1024;
   const size_t recvCount = recvBytes / sizeof(int32_t);
   const int numHelpers = this->numRanks - nActiveRanksPerGroup;
-  const int numChunks = numHelpers + 1;
+  const int numChunks = numHelpers + 2;
 
   Standard4GroupActiveRanks groupConfig;
   const int* const* allActiveRanks = groupConfig.allActiveRanks;

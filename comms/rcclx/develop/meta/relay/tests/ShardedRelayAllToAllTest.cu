@@ -225,6 +225,11 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     return segFillValue(senderActiveIndex, myActiveIndex);
   }
 
+  static int32_t
+  boundaryFillValue(int sourceIndex, int destIndex, int boundaryIndex) {
+    return 1000 + sourceIndex * 100 + destIndex * 10 + boundaryIndex;
+  }
+
   // Initialize an active rank's send buffer (nActiveRanks x segmentCount
   // elements) so that segment j is uniformly filled with
   // segFillValue(myActiveIndex, j).
@@ -321,6 +326,247 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
           expectedRecvSeg(i, myActiveIndex),
           groupIndex,
           "Found mismatches in all-to-all recvSeg[i]");
+    }
+  }
+
+  void runA2CorrectnessCase(
+      const std::vector<size_t>& segmentCounts,
+      const int* const* allActiveRanks,
+      bool expectRelay) {
+    constexpr int nActiveRanksPerGroup = 2;
+    const int nGroups = static_cast<int>(segmentCounts.size());
+    ASSERT_GT(nGroups, 0);
+
+    int myActiveGroup = -1;
+    int myActiveIndex = -1;
+    for (int g = 0; g < nGroups; g++) {
+      for (int a = 0; a < nActiveRanksPerGroup; a++) {
+        if (allActiveRanks[g][a] == this->globalRank) {
+          myActiveGroup = g;
+          myActiveIndex = a;
+        }
+      }
+    }
+
+    std::vector<int32_t*> sendBuffs(nGroups);
+    std::vector<int32_t*> recvBuffs(nGroups);
+    for (int g = 0; g < nGroups; g++) {
+      const size_t bufferBytes = static_cast<size_t>(nActiveRanksPerGroup) *
+          segmentCounts[g] * sizeof(int32_t);
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], bufferBytes));
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipMalloc(&recvBuffs[g], bufferBytes));
+      } else {
+        recvBuffs[g] = sendBuffs[g];
+      }
+    }
+
+    barrierSyncOn(sendBuffs[0]);
+
+    for (int g = 0; g < nGroups; g++) {
+      const size_t bufferBytes = static_cast<size_t>(nActiveRanksPerGroup) *
+          segmentCounts[g] * sizeof(int32_t);
+      if (g == myActiveGroup) {
+        initActiveSendBuffer(sendBuffs[g], segmentCounts[g], myActiveIndex);
+        HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, bufferBytes));
+      } else {
+        HIPCHECK_TEST(hipMemset(sendBuffs[g], 0, bufferBytes));
+      }
+    }
+
+    std::vector<const void*> sendPtrs(nGroups);
+    std::vector<void*> recvPtrs(nGroups);
+    for (int g = 0; g < nGroups; g++) {
+      sendPtrs[g] = sendBuffs[g];
+      recvPtrs[g] = recvBuffs[g];
+    }
+
+    const ncclResult_t result = callAllToAllCompat(
+        sendPtrs.data(),
+        recvPtrs.data(),
+        segmentCounts.data(),
+        ncclInt32,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (myActiveGroup >= 0) {
+      verifyAllToAllOutput(
+          recvBuffs[myActiveGroup],
+          segmentCounts[myActiveGroup],
+          myActiveIndex,
+          myActiveGroup);
+    }
+    for (int g = 0; g < nGroups; g++) {
+      if (g != myActiveGroup) {
+        const int32_t expectedHelperFirstElement =
+            expectRelay ? segFillValue(0, 1) : 0;
+        verifyDeviceBufferEquals(
+            sendBuffs[g],
+            1,
+            expectedHelperFirstElement,
+            g,
+            expectRelay ? "Relay route did not use helper storage"
+                        : "Pure-direct route modified helper storage");
+      }
+    }
+
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipFree(sendBuffs[g]));
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipFree(recvBuffs[g]));
+      }
+    }
+  }
+
+  void runA4CorrectnessCase(
+      size_t segmentCount,
+      bool expectRelay,
+      bool checkRegionBoundaries = false) {
+    constexpr int nGroups = 2;
+    constexpr int nActiveRanksPerGroup = 4;
+    constexpr int32_t helperSentinel = 0;
+    const size_t segmentBytes = segmentCount * sizeof(int32_t);
+    const size_t activeBufferBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
+    const size_t relayCount = (segmentCount / 3 / 128) * 128;
+    const size_t helperElements = expectRelay ? 3 * relayCount : segmentCount;
+    const size_t helperBufferBytes = (helperElements + 1) * sizeof(int32_t);
+
+    TwoGroupFourActiveRanks groupConfig;
+    const int* const* allActiveRanks = groupConfig.allActiveRanks;
+    const int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+    int32_t* sendBuffs[nGroups];
+    int32_t* recvBuffs[nGroups];
+    for (int g = 0; g < nGroups; g++) {
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipMalloc(&sendBuffs[g], activeBufferBytes));
+        HIPCHECK_TEST(hipMalloc(&recvBuffs[g], activeBufferBytes));
+      } else {
+        HIPCHECK_TEST(hipMalloc(&sendBuffs[g], helperBufferBytes));
+        recvBuffs[g] = sendBuffs[g];
+      }
+    }
+
+    barrierSyncOn(sendBuffs[0]);
+
+    for (int g = 0; g < nGroups; g++) {
+      if (g == myActiveGroup) {
+        initActiveSendBuffer(
+            sendBuffs[g], segmentCount, myActiveIndex, nActiveRanksPerGroup);
+        if (checkRegionBoundaries) {
+          const size_t directA = segmentCount / 3;
+          const size_t regionOffsets[5] = {
+              directA - 1,
+              directA,
+              directA + relayCount - 1,
+              directA + relayCount,
+              segmentCount - 1};
+          for (int dest = 0; dest < nActiveRanksPerGroup; dest++) {
+            for (int boundary = 0; boundary < 5; boundary++) {
+              const int32_t value =
+                  boundaryFillValue(myActiveIndex, dest, boundary);
+              HIPCHECK_TEST(hipMemcpy(
+                  sendBuffs[g] + static_cast<size_t>(dest) * segmentCount +
+                      regionOffsets[boundary],
+                  &value,
+                  sizeof(value),
+                  hipMemcpyHostToDevice));
+            }
+          }
+        }
+        HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, activeBufferBytes));
+      } else {
+        HIPCHECK_TEST(hipMemset(sendBuffs[g], 0, helperBufferBytes));
+      }
+    }
+
+    const void* sendPtrs[nGroups] = {sendBuffs[0], sendBuffs[1]};
+    void* recvPtrs[nGroups] = {recvBuffs[0], recvBuffs[1]};
+    const size_t segmentCounts[nGroups] = {segmentCount, segmentCount};
+    const ncclResult_t result = callAllToAllCompat(
+        sendPtrs,
+        recvPtrs,
+        segmentCounts,
+        ncclInt32,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (checkRegionBoundaries) {
+      const size_t directA = segmentCount / 3;
+      const size_t regionOffsets[5] = {
+          directA - 1,
+          directA,
+          directA + relayCount - 1,
+          directA + relayCount,
+          segmentCount - 1};
+      for (int source = 0; source < nActiveRanksPerGroup; source++) {
+        for (int boundary = 0; boundary < 5; boundary++) {
+          verifyDeviceBufferEquals(
+              recvBuffs[myActiveGroup] +
+                  static_cast<size_t>(source) * segmentCount +
+                  regionOffsets[boundary],
+              1,
+              boundaryFillValue(source, myActiveIndex, boundary),
+              myActiveGroup,
+              "A=4 XOR route misplaced a region boundary or tail element");
+        }
+      }
+    } else {
+      verifyAllToAllOutput(
+          recvBuffs[myActiveGroup],
+          segmentCount,
+          myActiveIndex,
+          myActiveGroup,
+          nActiveRanksPerGroup);
+    }
+
+    const int helperGroup = 1 - myActiveGroup;
+    if (expectRelay) {
+      constexpr int firstSlotSource[4] = {1, 0, 0, 0};
+      constexpr int firstSlotDest[4] = {3, 3, 1, 2};
+      const int32_t expectedFirstSlot = checkRegionBoundaries
+          ? boundaryFillValue(
+                firstSlotSource[myActiveIndex], firstSlotDest[myActiveIndex], 1)
+          : segFillValue(
+                firstSlotSource[myActiveIndex], firstSlotDest[myActiveIndex]);
+      verifyDeviceBufferEquals(
+          recvBuffs[helperGroup],
+          1,
+          expectedFirstSlot,
+          helperGroup,
+          "A=4 XOR route did not populate the expected first helper slot");
+    } else {
+      verifyDeviceBufferEquals(
+          recvBuffs[helperGroup],
+          1,
+          helperSentinel,
+          helperGroup,
+          "A=4 direct route unexpectedly modified helper scratch");
+    }
+    verifyDeviceBufferEquals(
+        recvBuffs[helperGroup] + helperElements,
+        1,
+        helperSentinel,
+        helperGroup,
+        "A=4 all-to-all wrote past the helper scratch contract");
+
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipFree(sendBuffs[g]));
+      if (g == myActiveGroup) {
+        HIPCHECK_TEST(hipFree(recvBuffs[g]));
+      }
     }
   }
 
@@ -575,7 +821,7 @@ TEST_F(
   const size_t segmentBytes = 64ULL * 1024 * 1024;
   const size_t segmentCount = segmentBytes / sizeof(int32_t);
   const int numHelpers = this->numRanks - nActiveRanksPerGroup;
-  const int numChunks = numHelpers + 1;
+  const int numChunks = numHelpers + 2;
 
   Standard4GroupActiveRanks groupConfig;
   const int* const* allActiveRanks = groupConfig.allActiveRanks;
