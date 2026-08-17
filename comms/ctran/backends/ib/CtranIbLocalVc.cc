@@ -5,7 +5,7 @@
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/utils/Checks.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 using namespace ctran::ibvwrap;
 
@@ -93,7 +93,7 @@ LocalVirtualConn::LocalVirtualConn(
         rtsQp(ibvQps_[device], NCCL_IB_TIMEOUT, NCCL_IB_RETRY_CNT),
         commLogData_);
 
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: Established connection: commHash {:x}, commDesc {}, flush qpn {} on port {}",

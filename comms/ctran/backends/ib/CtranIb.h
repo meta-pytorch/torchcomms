@@ -23,6 +23,7 @@
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
@@ -599,7 +600,7 @@ class CtranIb {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,
@@ -613,7 +614,7 @@ class CtranIb {
       std::shared_ptr<CtranIbVirtualConn>& vc,
       int peerRank) {
     if (vc == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "No valid VirtualConnection (VC) found for peerRank {}",
           peerRank);
@@ -633,7 +634,7 @@ class CtranIb {
     deviceEnd = numNics;
     if (device.has_value()) {
       if (*device < 0 || *device >= numNics) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-IB: invalid device {} (numNics={})",
             *device,
@@ -1046,7 +1047,7 @@ class CtranIb {
         CTRAN_IB_PER_OBJ_LOCK_GUARD(cqMutex, {
           auto maybeWcsVector = devices[device].ibvCq->pollCq(1);
           if (maybeWcsVector.hasError()) {
-            CERR(
+            CTRAN_ERR(
                 commSystemError,
                 "Call to pollCq() on device {} failed with error {}",
                 device,
@@ -1083,7 +1084,7 @@ class CtranIb {
         std::shared_ptr<CtranIbVirtualConn> vc =
             vcState_.getVcByQp<PerfConfig>(std::make_pair(wc.qp_num, device));
         if (vc == nullptr) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "No valid VirtualConnection (VC) found for qpn {}",
               wc.qp_num);
