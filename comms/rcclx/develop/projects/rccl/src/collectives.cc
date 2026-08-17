@@ -583,8 +583,8 @@ ncclResult_t ncclShardedRelayMultiGroupAllToAll_impl(
     return ncclInvalidArgument;
   }
 
-  if (nActiveRanksPerGroup != 2) {
-    WARN("ncclShardedRelayMultiGroupAllToAll: nActiveRanksPerGroup must be 2, got %d",
+  if (nActiveRanksPerGroup != 2 && nActiveRanksPerGroup != 4) {
+    WARN("ncclShardedRelayMultiGroupAllToAll: nActiveRanksPerGroup must be 2 or 4, got %d",
          nActiveRanksPerGroup);
     return ncclInvalidArgument;
   }
