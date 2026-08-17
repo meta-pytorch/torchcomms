@@ -86,7 +86,9 @@ class TorchCommRCCLX:
         All-to-all analogue of sharded_relay_multi_group_reduce_scatter. No
         reduction (pure data movement) and no reduction op. Each active rank's
         input/output hold nActiveRanks x per_group_segment_counts[g] elements
-        (input = [sendSeg[0]|sendSeg[1]], output = [recvSeg[0]|recvSeg[1]]).
+        (input = [sendSeg[0]|...|sendSeg[A-1]], output =
+        [recvSeg[0]|...|recvSeg[A-1]]). nActiveRanks must be a power of two (2 or
+        4); A>2 uses a flat all-to-all + 2-hop relay.
 
         OUT-OF-PLACE ONLY: input and output tensors for the active group must be
         distinct (matches native ncclAllToAll); aliasing raises.
@@ -94,7 +96,7 @@ class TorchCommRCCLX:
         Args:
             input_tensors: List of send tensors (one per group). Active rank:
                 nActiveRanks x per_group_segment_counts[g] elements. Helper rank:
-                two-slot scratch tensor.
+                nActiveRanks-slot scratch tensor.
             output_tensors: List of receive tensors (one per group). Active rank:
                 nActiveRanks x per_group_segment_counts[g] elements (distinct
                 from input). Helper rank: same scratch as input.
