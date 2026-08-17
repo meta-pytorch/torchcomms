@@ -12,10 +12,10 @@
 #include <folly/container/F14Map.h>
 
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::ib {
 
@@ -139,7 +139,7 @@ class VcState {
       // found, it likely indicates a COMM bug, e.g., not using CtranIb
       // epoch lock.
       if (it == maybeLockedVcStateMapsPtr->qpToVcMap.end()) {
-        CLOGF(
+        CTRAN_LOG(
             ERR,
             "CTRAN-IB: Received unknown QP number {} on IB device {} in pimpl {} commHash {:x}, commDesc {}. Known QPs: {}. It likely indicates a COMM bug.",
             qpUniqueId.first,
