@@ -421,6 +421,90 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
   std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_4Groups_A2_SmallPureDirect_Unaligned) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t kFusedA2ThresholdElements =
+      (2ULL * 1024 * 1024) / sizeof(int32_t);
+  Standard4GroupActiveRanks groupConfig;
+  runOutOfPlaceRoutingCases(
+      groupConfig.allActiveRanks, 2, 4, {1025}, kFusedA2ThresholdElements);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_4Groups_A2_FusedRoutingThresholds) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t kThresholdElements = (2ULL * 1024 * 1024) / sizeof(int32_t);
+  Standard4GroupActiveRanks groupConfig;
+  runOutOfPlaceRoutingCases(
+      groupConfig.allActiveRanks,
+      2,
+      4,
+      {kThresholdElements - 1, kThresholdElements, kThresholdElements + 1},
+      kThresholdElements);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_SingleGroup_A2_RoutingThresholds) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t kThresholdElements = (9ULL * 1024 * 1024) / sizeof(int32_t);
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+  runOutOfPlaceRoutingCases(
+      allActiveRanks,
+      2,
+      1,
+      {kThresholdElements - 1, kThresholdElements, kThresholdElements + 1},
+      kThresholdElements);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_2Groups_A4_FusedRoutingThresholds) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t kThresholdElements = (12ULL * 1024 * 1024) / sizeof(int32_t);
+  TwoGroupFourActiveRanks groupConfig;
+  runOutOfPlaceRoutingCases(
+      groupConfig.allActiveRanks,
+      4,
+      2,
+      {kThresholdElements - 1, kThresholdElements, kThresholdElements + 1},
+      kThresholdElements);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_SingleGroup_A4_RoutingThresholds) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t kThresholdElements = (8ULL * 1024 * 1024) / sizeof(int32_t);
+  const int activeRanks[] = {0, 1, 2, 3};
+  const int* allActiveRanks[] = {activeRanks};
+  runOutOfPlaceRoutingCases(
+      allActiveRanks,
+      4,
+      1,
+      {kThresholdElements - 1, kThresholdElements, kThresholdElements + 1},
+      kThresholdElements);
+}
+
 /**
  * Test: Multi-Group Correctness with 4 groups (OUT-OF-PLACE)
  *

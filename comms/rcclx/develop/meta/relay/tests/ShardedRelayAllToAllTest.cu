@@ -668,6 +668,192 @@ TEST_F(
   }
 }
 
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_PureDirect_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  Standard4GroupActiveRanks groupConfig;
+  runA2CorrectnessCase(
+      std::vector<size_t>(4, 1025), groupConfig.allActiveRanks, false);
+}
+
+// A=2 route selection uses A * max(segmentCount) * elementSize. For int32,
+// the fused cutoff is 2 MiB, or 262144 elements per segment. Equality selects
+// the relay path; the adjacent counts exercise one-element unaligned tails.
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_FusedThreshold_Below_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  Standard4GroupActiveRanks groupConfig;
+  runA2CorrectnessCase(
+      std::vector<size_t>(4, 262143), groupConfig.allActiveRanks, false);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_FusedThreshold_At_WithUnalignedGroupTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  Standard4GroupActiveRanks groupConfig;
+  const std::vector<size_t> segmentCounts = {262144, 262143, 262144, 262143};
+  runA2CorrectnessCase(segmentCounts, groupConfig.allActiveRanks, true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_FusedThreshold_Above_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  Standard4GroupActiveRanks groupConfig;
+  runA2CorrectnessCase(
+      std::vector<size_t>(4, 262145), groupConfig.allActiveRanks, true);
+}
+
+// The independent A=2 cutoff is 27 MiB, or 3538944 int32 elements per segment.
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_IndependentThreshold_Below_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+  runA2CorrectnessCase({3538943}, allActiveRanks, false);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_IndependentThreshold_At) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+  runA2CorrectnessCase({3538944}, allActiveRanks, true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_A2_IndependentThreshold_Above_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+  runA2CorrectnessCase({3538945}, allActiveRanks, true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Groups_HeterogeneousRelayAndTinyDirect) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 4;
+  const int nActiveRanksPerGroup = 2;
+  const size_t largeSegmentBytes = 16ULL * 1024 * 1024;
+  const size_t largeSegmentCount = largeSegmentBytes / sizeof(int32_t);
+  const size_t tinySegmentCount = 513;
+  const size_t segmentCounts[nGroups] = {
+      largeSegmentCount, tinySegmentCount, largeSegmentCount, tinySegmentCount};
+
+  Standard4GroupActiveRanks groupConfig;
+  const int* const* allActiveRanks = groupConfig.allActiveRanks;
+
+  int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+  int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+  int32_t* sendBuffs[nGroups];
+  int32_t* recvBuffs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    size_t segmentBytes = segmentCounts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      HIPCHECK_TEST(
+          hipMalloc(&sendBuffs[g], static_cast<size_t>(2) * segmentBytes));
+      HIPCHECK_TEST(
+          hipMalloc(&recvBuffs[g], static_cast<size_t>(2) * segmentBytes));
+    } else if (segmentCounts[g] == tinySegmentCount) {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], sizeof(int32_t)));
+      recvBuffs[g] = sendBuffs[g];
+    } else {
+      HIPCHECK_TEST(
+          hipMalloc(&sendBuffs[g], static_cast<size_t>(2) * segmentBytes));
+      recvBuffs[g] = sendBuffs[g];
+    }
+  }
+
+  barrierSyncOn(sendBuffs[0]);
+
+  for (int g = 0; g < nGroups; g++) {
+    size_t segmentBytes = segmentCounts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      initActiveSendBuffer(sendBuffs[g], segmentCounts[g], myActiveIndex);
+      HIPCHECK_TEST(
+          hipMemset(recvBuffs[g], 0, static_cast<size_t>(2) * segmentBytes));
+    } else if (segmentCounts[g] == tinySegmentCount) {
+      HIPCHECK_TEST(hipMemset(sendBuffs[g], 0, sizeof(int32_t)));
+    } else {
+      HIPCHECK_TEST(
+          hipMemset(sendBuffs[g], 0, static_cast<size_t>(2) * segmentBytes));
+    }
+  }
+
+  const void* sendPtrs[nGroups];
+  void* recvPtrs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    sendPtrs[g] = sendBuffs[g];
+    recvPtrs[g] = recvBuffs[g];
+  }
+
+  ncclResult_t result = callAllToAllCompat(
+      sendPtrs,
+      recvPtrs,
+      segmentCounts,
+      ncclInt32,
+      this->comm,
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  verifyAllToAllOutput(
+      recvBuffs[myActiveGroup],
+      segmentCounts[myActiveGroup],
+      myActiveIndex,
+      myActiveGroup);
+
+  for (int g = 0; g < nGroups; g++) {
+    HIPCHECK_TEST(hipFree(sendBuffs[g]));
+    if (g == myActiveGroup) {
+      HIPCHECK_TEST(hipFree(recvBuffs[g]));
+    }
+  }
+}
+
 /**
  * Test: In-place is rejected.
  *
