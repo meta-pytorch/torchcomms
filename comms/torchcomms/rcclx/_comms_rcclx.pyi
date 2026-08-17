@@ -57,7 +57,7 @@ class TorchCommRCCLX:
         Args:
             input_tensors: List of send tensors (one per group). Active rank:
                 nActiveRanks x per_group_recv_counts[g] elements. Helper rank:
-                two-slot scratch tensor.
+                nActiveRanks-slot scratch tensor.
             output_tensors: List of receive tensors (one per group). Active
                 rank: per_group_recv_counts[g] elements (pass the local block of
                 the input for in-place). Helper rank: same scratch as input.
