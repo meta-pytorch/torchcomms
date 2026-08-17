@@ -409,7 +409,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_4Groups_InPlace_64MB) {
     counts[g] = count; // Same count for all groups in this test
   }
 
-  ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+  ncclResult_t result = callAllReduceCompat(
       sendPtrs,
       recvPtrs,
       counts,
@@ -516,7 +516,7 @@ TEST_F(
     counts[g] = count;
   }
 
-  ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+  ncclResult_t result = callAllReduceCompat(
       sendPtrs,
       recvPtrs,
       counts,
@@ -637,7 +637,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_1GB) {
 
   for (int iter = 0; iter < nIters; iter++) {
     HIPCHECK_TEST(hipEventRecord(startEvent, this->stream));
-    ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+    ncclResult_t result = callAllReduceCompat(
         sendPtrs,
         recvPtrs,
         counts,
@@ -776,7 +776,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
 
   for (int iter = 0; iter < nIters; iter++) {
     HIPCHECK_TEST(hipEventRecord(startEvent, this->stream));
-    ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+    ncclResult_t result = callAllReduceCompat(
         sendPtrs,
         recvPtrs,
         counts,
@@ -895,7 +895,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_SingleGroup_64MB) {
   sendPtrs[0] = buff;
   recvPtrs[0] = buff;
 
-  ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+  ncclResult_t result = callAllReduceCompat(
       sendPtrs,
       recvPtrs,
       counts,
@@ -1009,7 +1009,7 @@ TEST_F(
     counts[g] = count;
   }
 
-  ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+  ncclResult_t result = callAllReduceCompat(
       sendPtrs,
       recvPtrs,
       counts,
@@ -1138,7 +1138,7 @@ TEST_F(
   }
 
   // Execute — must succeed and not trigger internal error for count=0 groups
-  ncclResult_t result = ncclShardedRelayMultiGroupAllReduce(
+  ncclResult_t result = callAllReduceCompat(
       sendPtrs,
       recvPtrs,
       counts,
