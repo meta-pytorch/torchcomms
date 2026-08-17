@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 #include <fmt/format.h>
 
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #if CUDART_VERSION >= 11030
 #include <cudaTypedefs.h> // @manual
@@ -56,7 +56,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {              \
       const char* errStr;                   \
       (void)cuGetErrorString(err, &errStr); \
-      CERR(                                 \
+      CTRAN_ERR(                            \
           commUnhandledCudaError,           \
           "Cuda failure {} '{}'",           \
           static_cast<int>(err),            \
@@ -71,7 +71,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {              \
       const char* errStr;                   \
       (void)cuGetErrorString(err, &errStr); \
-      CERR(                                 \
+      CTRAN_ERR(                            \
           commUnhandledCudaError,           \
           "Cuda failure {} '{}'",           \
           static_cast<int>(err),            \
@@ -86,7 +86,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {           \
       const char* errStr;                \
       cuGetErrorString(err, &errStr);    \
-      CERR(                              \
+      CTRAN_ERR(                         \
           commUnhandledCudaError,        \
           "Cuda failure {} '{}'",        \
           static_cast<int>(err),         \
@@ -96,14 +96,14 @@ namespace ctran::utils {
     }                                    \
   } while (false)
 
-#define FB_CUCHECKRES(res)                                               \
-  do {                                                                   \
-    if (res != CUDA_SUCCESS) {                                           \
-      const char* errStr;                                                \
-      (void)cuGetErrorString(res, &errStr);                              \
-      CERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
-      return commUnhandledCudaError;                                     \
-    }                                                                    \
+#define FB_CUCHECKRES(res)                                                    \
+  do {                                                                        \
+    if (res != CUDA_SUCCESS) {                                                \
+      const char* errStr;                                                     \
+      (void)cuGetErrorString(res, &errStr);                                   \
+      CTRAN_ERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
+      return commUnhandledCudaError;                                          \
+    }                                                                         \
   } while (false)
 
 // Report failure but clear error and continue
@@ -113,7 +113,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {              \
       const char* errStr;                   \
       (void)cuGetErrorString(err, &errStr); \
-      CLOGF(                                \
+      CTRAN_LOG(                            \
           WARN,                             \
           "{}:{} Cuda failure {} '{}'",     \
           __FILE__,                         \
@@ -127,7 +127,7 @@ namespace ctran::utils {
   do {                                    \
     CUresult err = cmd;                   \
     if (err != CUDA_SUCCESS) {            \
-      CERR(                               \
+      CTRAN_ERR(                          \
           commUnhandledCudaError,         \
           "{}:{} -> {} [Async thread]",   \
           __FILE__,                       \
@@ -149,7 +149,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {                                  \
       const char* errStr;                                       \
       (void)::ctran::utils::pfn_cuGetErrorString(err, &errStr); \
-      CERR(                                                     \
+      CTRAN_ERR(                                                \
           commUnhandledCudaError,                               \
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
@@ -164,7 +164,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {                                  \
       const char* errStr;                                       \
       (void)::ctran::utils::pfn_cuGetErrorString(err, &errStr); \
-      CERR(                                                     \
+      CTRAN_ERR(                                                \
           commUnhandledCudaError,                               \
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
@@ -179,7 +179,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {                                  \
       const char* errStr;                                       \
       (void)::ctran::utils::pfn_cuGetErrorString(err, &errStr); \
-      CERR(                                                     \
+      CTRAN_ERR(                                                \
           commUnhandledCudaError,                               \
           "Cuda failure {} '{}'",                               \
           static_cast<int>(err),                                \
@@ -189,14 +189,14 @@ namespace ctran::utils {
     }                                                           \
   } while (false)
 
-#define FB_CUCHECKRES(res)                                               \
-  do {                                                                   \
-    if (res != CUDA_SUCCESS) {                                           \
-      const char* errStr;                                                \
-      (void)::ctran::utils::pfn_cuGetErrorString(res, &errStr);          \
-      CERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
-      return commUnhandledCudaError;                                     \
-    }                                                                    \
+#define FB_CUCHECKRES(res)                                                    \
+  do {                                                                        \
+    if (res != CUDA_SUCCESS) {                                                \
+      const char* errStr;                                                     \
+      (void)::ctran::utils::pfn_cuGetErrorString(res, &errStr);               \
+      CTRAN_ERR(commUnhandledCudaError, "Cuda failure {} '{}'", res, errStr); \
+      return commUnhandledCudaError;                                          \
+    }                                                                         \
   } while (false)
 
 // Report failure but clear error and continue
@@ -206,7 +206,7 @@ namespace ctran::utils {
     if (err != CUDA_SUCCESS) {                                  \
       const char* errStr;                                       \
       (void)::ctran::utils::pfn_cuGetErrorString(err, &errStr); \
-      CLOGF(                                                    \
+      CTRAN_LOG(                                                \
           WARN,                                                 \
           "{}:{} Cuda failure {} '{}'",                         \
           __FILE__,                                             \
@@ -220,7 +220,7 @@ namespace ctran::utils {
   do {                                        \
     CUresult err = ::ctran::utils::pfn_##cmd; \
     if (err != CUDA_SUCCESS) {                \
-      CERR(                                   \
+      CTRAN_ERR(                              \
           commUnhandledCudaError,             \
           "{}:{} -> {} [Async thread]",       \
           __FILE__,                           \
