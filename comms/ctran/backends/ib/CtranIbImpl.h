@@ -7,9 +7,9 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/ScubaLogger.h"
 
 #define CTRAN_IB_PER_OBJ_LOCK_GUARD(mutex_, code) \
@@ -32,7 +32,7 @@
           wc.qp_num,                                                                                  \
           wc.status,                                                                                  \
           ibv_wc_status_str(wc.status));                                                              \
-      CERR(commRemoteError, "{}", errMsg);                                                            \
+      CTRAN_ERR(commRemoteError, "{}", errMsg);                                                       \
       return commRemoteError;                                                                         \
     }                                                                                                 \
   } while (0)
