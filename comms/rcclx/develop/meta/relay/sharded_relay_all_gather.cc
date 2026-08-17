@@ -488,15 +488,47 @@ static ncclResult_t shardedRelayAllGatherFlat(
   const int A = nActiveRanksPerGroup;
   const int H = numHelpers;
 
-  // Tuned constants (MI350X, A=4, fp16, BM-FM sizes):
-  //   - direct (intra, 1-hop) share = 429/1000 (~3/7); offload (2-hop via
-  //     helpers) is the rest. Balances the intra direct link against the
-  //     helper->dest link.
-  //   - pipeline depth P = 16 overlap stages: enough to overlap the
-  //     helper-forward and active-send hops without per-superstep launch
-  //     overhead dominating (P=32 regressed).
-  constexpr size_t kOffPermille = 1000 - 429;
-  constexpr int P = 16;
+  // Largest per-group message drives the size-adaptive tuning below. All groups
+  // march through the same superstep count to keep XGMI traffic phase-synced,
+  // so tune off the max.
+  size_t maxSc = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (sendCounts[g] > maxSc) {
+      maxSc = sendCounts[g];
+    }
+  }
+  const size_t maxBytes = maxSc * elementSize;
+
+  // Size-adaptive helper offload. The offload (2-hop active->helper->active)
+  // share spreads traffic across otherwise-idle cross links and is a bandwidth
+  // win only at large sizes, but it costs an extra group boundary + a hop of
+  // latency. Below the threshold, disable it: the kernel degenerates to a
+  // single-group pure-direct all-gather (each active rank exchanges its shard
+  // directly with the other A-1 active ranks, helpers idle) -- the same
+  // minimal-latency shape as all-to-all.
+  //
+  // The crossover depends on cross-link contention: a fused multi-group call
+  // runs all groups phase-synced, so the offload cross links contend with the
+  // other groups and only pay off at the very top end (>=256 MB); an
+  // independent single-group call has those cross links free, so offload pays
+  // off ~2x earlier (>=128 MB). Measured on MI350X (A=4, bf16, 8 GPUs): fused
+  // offload ties/loses to pure-direct until 256 MB (1.03x @512MB), while
+  // independent offload wins from 135 MB (1.10x) -- so cross over per-scenario.
+  // Above the threshold the direct share is 429/1000 (~3/7), balancing the
+  // intra direct link against the helper->dest link.
+  const size_t kOffloadMinBytes = (nGroups > 1)
+      ? (static_cast<size_t>(256) << 20) // fused: >= 256 MB
+      : (static_cast<size_t>(128) << 20); // independent: >= 128 MB
+  const bool useOffload = (H > 0) && (maxBytes >= kOffloadMinBytes);
+  const size_t kOffPermille = useOffload ? (1000 - 429) : 0;
+
+  // Pipeline depth. Only the offload path has a helper->active forward hop to
+  // overlap against the next active->helper scatter hop; the pure-direct path
+  // is a single group. In the offload regime the superstep loop runs P+1
+  // ncclGroup boundaries (each ~25us of fixed launch+handshake tax); at these
+  // large sizes the deep pipeline (P=16; P=32 regressed) amortizes that tax
+  // against the per-slice transfer.
+  const int P = useOffload ? 16 : 1;
 
   // Per-group geometry (same as the flat path): cs = per-source helper chunk
   // (128-aligned); directSz absorbs the remainder so directSz + H*cs == sc.
@@ -550,8 +582,21 @@ static ncclResult_t shardedRelayAllGatherFlat(
         stream);
   }
 
-  // Supersteps 0..P (one ncclGroup each).
-  for (int k = 0; k <= P; k++) {
+  // When offload is disabled (small messages), csArr is all zero and every
+  // forward stage is a no-op, so the loop only needs the P direct-send
+  // supersteps -- drop the trailing forward-only superstep to save one
+  // boundary.
+  bool anyOffload = false;
+  for (int g = 0; g < nGroups; g++) {
+    if (csArr[g] > 0) {
+      anyOffload = true;
+      break;
+    }
+  }
+  const int lastK = anyOffload ? P : (P - 1);
+
+  // Supersteps 0..lastK (one ncclGroup each).
+  for (int k = 0; k <= lastK; k++) {
     NCCLCHECK(ncclGroupStart());
     for (int g = 0; g < nGroups; g++) {
       if (sendCounts[g] == 0)
@@ -774,7 +819,29 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
   }
 
   ncclResult_t r;
-  if (nActiveRanksPerGroup == 2) {
+  // Size-adaptive routing for A==2. The 2Active relay wins on bandwidth at
+  // large sizes, but at small sizes it is latency-bound; the A-generic Flat
+  // path (with its own small-size pure-direct mode) does a single-group direct
+  // shard exchange with minimal latency. Route small A==2 to Flat, large to
+  // 2Active. maxBytes (sendCount*elemSize) equals the bench per-rank input
+  // shard label.
+  size_t maxScAg = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (sendCounts[g] > maxScAg) {
+      maxScAg = sendCounts[g];
+    }
+  }
+  const size_t maxBytesAg = maxScAg * elementSize;
+  // Crossover measured MI350X (bf16, 8 GPUs): fused 2Active relay overtakes
+  // Flat at ~4.5 MB (Flat wins the small end, 576 KB 0.75x->1.31x), independent
+  // at ~13.5 MB (0.34->0.51 @4KB). Independent has no cross-group contention so
+  // direct holds on longer. Cross over below each.
+  const size_t kAgA2PureDirectMaxBytes = (nGroups > 1)
+      ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
+      : (static_cast<size_t>(12) << 20); // independent: < 12 MB
+  const bool agA2UseFlat =
+      (nActiveRanksPerGroup == 2) && (maxBytesAg < kAgA2PureDirectMaxBytes);
+  if (nActiveRanksPerGroup == 2 && !agA2UseFlat) {
     r = shardedRelayAllGather2Active(
         sendBuffs2,
         recvBuffs2,
@@ -788,9 +855,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
         nGroups,
         elementSize);
   } else {
-    // A>2: bandwidth-optimal flat scatter->forward relay (the dual of
-    // reduce-scatter), pipelined to overlap the helper-forward and active-send
-    // hops.
+    // A>2, or small A==2: flat scatter->forward relay (dual of reduce-scatter)
+    // with a size-adaptive pure-direct small-size mode.
     r = shardedRelayAllGatherFlat(
         sendBuffs2,
         recvBuffs2,
