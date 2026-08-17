@@ -669,7 +669,7 @@ class CtranIb {
             : PendingOp::PendingOpType::IRECV_CTRL;
         auto pendingOp = std::make_unique<PendingOp>(
             opType, type, payload, size, peerRank, req);
-        CLOGF_TRACE(COLL, "Enqueue pendingOp [{}]", pendingOp->toString());
+        CTRAN_LOG_TRACE(COLL, "Enqueue pendingOp [{}]", pendingOp->toString());
 
         if (it == rankToPendingOpsMap.end()) {
           // create a new entry for the peer if it does not exist and VC is not

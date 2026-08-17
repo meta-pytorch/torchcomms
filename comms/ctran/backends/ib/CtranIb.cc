@@ -854,7 +854,7 @@ commResult_t CtranIb::regMem(
 
   bool useDmaBuf = dmaBufSupport && NCCL_CTRAN_IB_DMABUF_ENABLE;
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IB: regMem buf={}, len={}, useDmaBuf={}, dmaBufSupport={}",
       buf,
