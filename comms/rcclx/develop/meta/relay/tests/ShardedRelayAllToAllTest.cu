@@ -570,6 +570,127 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     }
   }
 
+  // Single-group (nGroups=1) A=4 all-to-all. Ranks {0,1,2,3} are active and
+  // {4,5,6,7} are passthrough helpers, exercising the A=4 route WITHOUT the
+  // multi-group fusion the 4Active (2-group) tests cover. All-to-all is
+  // out-of-place only. Verifies active-rank output (optionally at region
+  // boundaries) and that helpers never write past their scratch contract.
+  void runA4SingleGroupCorrectnessCase(
+      size_t segmentCount,
+      bool expectRelay,
+      bool checkRegionBoundaries = false) {
+    constexpr int nGroups = 1;
+    constexpr int nActiveRanksPerGroup = 4;
+    constexpr int32_t helperSentinel = 0;
+    const size_t segmentBytes = segmentCount * sizeof(int32_t);
+    const size_t activeBufferBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
+    const size_t relayCount = (segmentCount / 3 / 128) * 128;
+    const size_t helperElements = expectRelay ? 3 * relayCount : segmentCount;
+    const size_t helperBufferBytes = (helperElements + 1) * sizeof(int32_t);
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank; // 0..3 for active ranks
+
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    if (isActive) {
+      HIPCHECK_TEST(hipMalloc(&sendBuff, activeBufferBytes));
+      HIPCHECK_TEST(hipMalloc(&recvBuff, activeBufferBytes));
+    } else {
+      HIPCHECK_TEST(hipMalloc(&sendBuff, helperBufferBytes));
+      recvBuff = sendBuff;
+    }
+
+    barrierSyncOn(sendBuff);
+
+    if (isActive) {
+      initActiveSendBuffer(
+          sendBuff, segmentCount, myActiveIndex, nActiveRanksPerGroup);
+      if (checkRegionBoundaries) {
+        const size_t directA = segmentCount / 3;
+        const size_t regionOffsets[5] = {
+            directA - 1,
+            directA,
+            directA + relayCount - 1,
+            directA + relayCount,
+            segmentCount - 1};
+        for (int dest = 0; dest < nActiveRanksPerGroup; dest++) {
+          for (int boundary = 0; boundary < 5; boundary++) {
+            const int32_t value =
+                boundaryFillValue(myActiveIndex, dest, boundary);
+            HIPCHECK_TEST(hipMemcpy(
+                sendBuff + static_cast<size_t>(dest) * segmentCount +
+                    regionOffsets[boundary],
+                &value,
+                sizeof(value),
+                hipMemcpyHostToDevice));
+          }
+        }
+      }
+      HIPCHECK_TEST(hipMemset(recvBuff, 0, activeBufferBytes));
+    } else {
+      HIPCHECK_TEST(hipMemset(sendBuff, 0, helperBufferBytes));
+    }
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {recvBuff};
+    const size_t segmentCounts[1] = {segmentCount};
+    const ncclResult_t result = callAllToAllCompat(
+        sendPtrs,
+        recvPtrs,
+        segmentCounts,
+        ncclInt32,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      if (checkRegionBoundaries) {
+        const size_t directA = segmentCount / 3;
+        const size_t regionOffsets[5] = {
+            directA - 1,
+            directA,
+            directA + relayCount - 1,
+            directA + relayCount,
+            segmentCount - 1};
+        for (int source = 0; source < nActiveRanksPerGroup; source++) {
+          for (int boundary = 0; boundary < 5; boundary++) {
+            verifyDeviceBufferEquals(
+                recvBuff + static_cast<size_t>(source) * segmentCount +
+                    regionOffsets[boundary],
+                1,
+                boundaryFillValue(source, myActiveIndex, boundary),
+                0,
+                "A=4 single-group XOR route misplaced a boundary element");
+          }
+        }
+      } else {
+        verifyAllToAllOutput(
+            recvBuff, segmentCount, myActiveIndex, 0, nActiveRanksPerGroup);
+      }
+    } else {
+      // Helper ranks must never write past their scratch contract.
+      verifyDeviceBufferEquals(
+          sendBuff + helperElements,
+          1,
+          helperSentinel,
+          0,
+          "A=4 single-group all-to-all wrote past the helper scratch contract");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (isActive) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
@@ -1381,6 +1502,45 @@ TEST_F(
   constexpr size_t perActiveBytes = 256ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4CorrectnessCase(segmentCount, false);
+}
+
+// Single-group (nGroups=1) A=4 all-to-all: ranks {0,1,2,3} active, {4,5,6,7}
+// helpers. Exercises the A=4 route without the multi-group fusion the 2-group
+// tests cover, across the routed and direct regimes.
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_SingleGroup_Routed_63MiB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
+  runA4SingleGroupCorrectnessCase(segmentCount, true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_SingleGroup_DirectBelowLowerBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
+  runA4SingleGroupCorrectnessCase(segmentCount, false);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_SingleGroup_RoutedUnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
+  runA4SingleGroupCorrectnessCase(segmentCount, true, true);
 }
 
 /**

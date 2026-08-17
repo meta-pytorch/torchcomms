@@ -486,6 +486,87 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
     }
   }
 
+  // Single-group (nGroups=1) reduce-scatter with 4 active ranks {0,1,2,3} and
+  // ranks {4,5,6,7} acting as passthrough helpers. Exercises the A=4 kernel
+  // path WITHOUT multi-group fusion (the single-group counterpart to the
+  // 4Active_2Groups tests). Covers SUM/AVG and in-place/out-of-place.
+  void runReduceScatterA4SingleGroup(ncclRedOp_t op, bool inPlace) {
+    constexpr int nGroups = 1;
+    constexpr int nActiveRanksPerGroup = 4;
+    const size_t recvBytes = 64ULL * 1024 * 1024;
+    const size_t recvCount = recvBytes / sizeof(int32_t);
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank; // 0..3 for active ranks
+    const size_t helperBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * recvBytes;
+
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    if (isActive) {
+      HIPCHECK_TEST(hipMalloc(&sendBuff, helperBytes)); // A blocks
+      if (inPlace) {
+        // In-place: recvBuff aliases the owner's block inside sendBuff.
+        recvBuff = sendBuff + static_cast<size_t>(myActiveIndex) * recvCount;
+      } else {
+        HIPCHECK_TEST(hipMalloc(&recvBuff, recvBytes));
+      }
+    } else {
+      HIPCHECK_TEST(hipMalloc(&sendBuff, helperBytes));
+      recvBuff = sendBuff;
+    }
+
+    barrierSyncOn(sendBuff);
+
+    if (isActive) {
+      initActiveSendBuffer(
+          sendBuff, recvCount, myActiveIndex, nActiveRanksPerGroup);
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, recvBytes));
+      }
+    } else {
+      HIPCHECK_TEST(hipMemset(sendBuff, 0, helperBytes));
+    }
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {recvBuff};
+    size_t recvCounts[1] = {recvCount};
+
+    ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclInt32,
+        op,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      const int32_t sum =
+          expectedReduceScatterSum(myActiveIndex, nActiveRanksPerGroup);
+      const int32_t expected = op == ncclAvg ? sum / nActiveRanksPerGroup : sum;
+      verifyDeviceBufferEquals(
+          recvBuff,
+          recvCount,
+          expected,
+          0,
+          "4-active single-group reduce-scatter mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+
   void runBfloat16A4SeededDirect(ncclRedOp_t op) {
     constexpr int nGroups = 2;
     constexpr int nActiveRanksPerGroup = 4;
@@ -1946,6 +2027,39 @@ TEST_F(
       HIPCHECK_TEST(hipFree(recvBuffs[g]));
     }
   }
+}
+
+// Single-group (nGroups=1) A=4 reduce-scatter. Ranks {0,1,2,3} are active and
+// {4,5,6,7} are passthrough helpers, exercising the A=4 path without the
+// multi-group fusion the 4Active_2Groups tests cover.
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Active_SingleGroup_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runReduceScatterA4SingleGroup(ncclSum, /*inPlace=*/true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Active_SingleGroup_OutOfPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runReduceScatterA4SingleGroup(ncclSum, /*inPlace=*/false);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Active_SingleGroup_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runReduceScatterA4SingleGroup(ncclAvg, /*inPlace=*/false);
 }
 
 /**
