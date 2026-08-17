@@ -492,6 +492,102 @@ bool buildShardedRelayRankConfig(
     }                                                                      \
   } while (0)
 
+#define LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                          \
+    TYPE, dst, seed, contribs, numContribs, count, divisor, stream) \
+  launchSeededMultiReduceKernel<TYPE>(                              \
+      dst, seed, contribs, numContribs, count, divisor, stream)
+
+#define DISPATCH_SEEDED_MULTI_REDUCE(                                          \
+    datatype, dst, seed, contribs, numContribs, count, divisor, stream)        \
+  do {                                                                         \
+    switch (datatype) {                                                        \
+      case ncclInt8:                                                           \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int8_t, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclUint8:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint8_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt32:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int32_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint32:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint32_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt64:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int64_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint64:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint64_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclFloat16:                                                        \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __half, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclFloat:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            float, dst, seed, contribs, numContribs, count, divisor, stream);  \
+        break;                                                                 \
+      case ncclDouble:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            double, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclBfloat16:                                                       \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __nv_bfloat16,                                                     \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      default:                                                                 \
+        break;                                                                 \
+    }                                                                          \
+  } while (0)
+
 namespace {
 
 // The DISPATCH_* macros above instantiate reduce kernels for exactly these
@@ -1218,16 +1314,28 @@ static ncclResult_t shardedRelayReduceScatterFlat(
         static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
 
     // Direct region: own + the A-1 peer blocks, one fused multi-input pass.
-    if (!isInPlace) {
-      cudaMemcpyAsync(
+    if (A == 4 && directSz > 0 && !isInPlace) {
+      DISPATCH_SEEDED_MULTI_REDUCE(
+          datatype,
           out,
           ownBlock,
-          directSz * elementSize,
-          cudaMemcpyDeviceToDevice,
+          dScratch,
+          A - 1,
+          directSz,
+          reductionDivisor,
           stream);
+    } else {
+      if (!isInPlace) {
+        cudaMemcpyAsync(
+            out,
+            ownBlock,
+            directSz * elementSize,
+            cudaMemcpyDeviceToDevice,
+            stream);
+      }
+      DISPATCH_MULTI_REDUCE(
+          datatype, out, dScratch, A - 1, directSz, reductionDivisor, stream);
     }
-    DISPATCH_MULTI_REDUCE(
-        datatype, out, dScratch, A - 1, directSz, reductionDivisor, stream);
 
     // Offload region: own + the H helper-reduced slices (each already a sum of
     // the A-1 other sources).

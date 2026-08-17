@@ -1748,6 +1748,26 @@ TEST_F(
 
 TEST_F(
     ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Active_2Groups_Bfloat16_SeededDirect_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runBfloat16A4SeededDirect(ncclSum);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Active_2Groups_Bfloat16_SeededDirect_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runBfloat16A4SeededDirect(ncclAvg);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
     Correctness_4Active_2Groups_OutOfPlace) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
