@@ -1234,7 +1234,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (*isComplete) {
       req->setComplete();
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: request {} completed, reqType {}, peer {}",
           (void*)this,
@@ -1285,7 +1285,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           fmt::format("waitNotify for peer {}", notify->peer));
     }
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
@@ -1541,7 +1541,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND ctrlmsg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1581,7 +1581,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV ctrlmsg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1618,7 +1618,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND msg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1657,7 +1657,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV msg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1699,7 +1699,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       req.peer = peer;
       msg.ibDesc.remoteAddr = reinterpret_cast<uint64_t>(bufs[peer]);
       msg.aux = reqs[idx - 1].aux;
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post SEND ctrlmsg to rank {} with req {} ibReq {}: {}",
           req.peer,
@@ -1735,7 +1735,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ncclx::colltrace::SendSyncCtrlStart{
               .peerRank = peerRank, .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND(SYNC) ctrlmsg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1773,7 +1773,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ncclx::colltrace::RecvSyncCtrlStart{
               .peerRank = peerRank, .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV(SYNC) ctrlmsg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1830,7 +1830,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       struct ctran::regcache::RegElem* regElem =
           reinterpret_cast<struct ctran::regcache::RegElem*>(shdl);
       auto regLk = regElem->stateMnger.rlock();
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post IB PUT to rank {}: sbuf {} -> dbuf {} len {} kernElem {}",
           peerRank,
@@ -1906,7 +1906,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
       if (this->ctranIb != nullptr) {
         CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-MAPPER: Post IB PUT to rank {}: sbuf {} -> dbuf {} len {} kernElem {}",
             peerRank,
@@ -1958,7 +1958,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       }
     } else if (remoteAccessKey.backend == CtranMapperBackend::NVL) {
       iPutCount[CtranMapperBackend::NVL]++;
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post NVL PUT to rank {}: sbuf {} -> dbuf {} len {}",
           peerRank,
@@ -2038,7 +2038,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
       if (this->ctranIb != nullptr) {
         CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-MAPPER: Post IB Get to rank {}: sbuf {} -> dbuf {} len {}",
             peerRank,
@@ -2097,7 +2097,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       req->setConfig(config);
     }
     CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post IB ATOMIC_SET to rank {}: val {} dbuf {}",
         peerRank,
@@ -2171,7 +2171,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     notify->update(peerRank, kernElem, backend, notifyCnt);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "CTRAN-MAPPER: initialized notify {}", notify->toString());
     return commSuccess;
   }
@@ -2213,7 +2213,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (*done) {
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
       if (this->mapperTrace) {
         this->mapperTrace->recordMapperEvent(
