@@ -12,9 +12,9 @@
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #define CTRAN_HARDCODED_MAX_QPS (128)
 
@@ -93,7 +93,7 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
 
   // cannot execeed the hardcoded max number of QPs
   if (maxNumQps_ > CTRAN_HARDCODED_MAX_QPS) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-IB: CTRAN_MAX_QPS set to more than the hardcoded max value ({} > {}), use {} instead",
         maxNumQps_,
@@ -108,7 +108,7 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   if (maxNumQps_ % numActive) {
     int originalMaxNumQps = maxNumQps_;
     maxNumQps_ = maxNumQps_ + (numActive - maxNumQps_ % numActive);
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of active device count ({} < {}), rounding up to {} instead",
         originalMaxNumQps,
@@ -117,7 +117,7 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   }
 
   if (maxQpMsgs_ > MAX_SEND_WR) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-IB: Max messages per QP set to more than the hardcoded max value ({} > {}), use {} instead",
         maxQpMsgs_,
@@ -217,7 +217,7 @@ void CtranIbVirtualConn::logConnectionConfig(ConnectionType connTyp) {
   if (!lockedMap->at(connTyp)) {
     if (comm_ && comm_->statex_) {
       const auto& statex = comm_->statex_.get();
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB-VC: QP setting for connection type {} (sameDC {}, sameZone {}): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}, "
@@ -235,7 +235,7 @@ void CtranIbVirtualConn::logConnectionConfig(ConnectionType connTyp) {
           statex->commHash(),
           statex->commDesc());
     } else {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB-VC: QP setting for connection type {} (no statex): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}",
@@ -411,7 +411,7 @@ CtranIbVirtualConn::CtranIbVirtualConn(
         ? ibvDev->device()->name
         : "<uninitialized>";
   }
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB-VC: VC peerRank={} cudaDev={} ifnames=[{}]",
@@ -456,7 +456,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   // evaluates the negotiation symmetrically and fail-closes (WARN +
   // commSystemError) if the request can't be honored.
   if (localOooRq_) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-IB-VC: OOO_RQ ENABLED — data QPs created with "
         "MLX5DV_QP_CREATE_OOO_DP (per-device oooRqSize >= MAX_RECV_WR={}).",
@@ -477,7 +477,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
     if (portAttr.max_msg_sz < qpScalingTh_) {
       // Every message we post will be NCCL_CTRAN_IB_QP_SCALING_THRESHOLD or
       // smaller; clamp if this was set beyond what we can support
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-IB-VC: QP Scaling threshold {} higher than max message size {}; clamping",
           qpScalingTh_,
@@ -590,7 +590,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
             devices_[device].devName,
             devices_[device].oooRqSize);
       }
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-IB-VC: NCCL_CTRAN_IB_ENABLE_OOO_RQ=true requested but "
           "negotiation failed with peer {}: localOooRq={}, remoteOooRq={} "
@@ -606,7 +606,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
 
   // Validate that QPs have been initialized via getLocalBusCard()
   if (!areQpsInitialized()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IB-VC: setupVc called before getLocalBusCard(). "
         "QPs not initialized: controlQp={}, notifyQp={}, atomicQp={}, dataQps={}. "
@@ -629,7 +629,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     QpUniqueId qpId =
         std::make_pair(this->ibvDataQps_.at(i).qp()->qp_num, ibDevice);
     if (qpNumToIdx_.find(qpId) != qpNumToIdx_.end()) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB-VC: QP {} on device {} already exists",
           this->ibvDataQps_.at(i).qp()->qp_num,
