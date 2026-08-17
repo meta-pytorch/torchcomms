@@ -60,25 +60,29 @@
  * recvBuff MUST be distinct; passing sendBuff == recvBuff returns
  * ncclInvalidArgument.
  *
- * Five Phases (no reduction; pure relay + placement copies):
- * ==========================================================
- *   Phase 1 (active->helpers): each active rank scatters numHelpers chunks of
- *            its sendSeg[o] segment to helpers; each helper stores two slots
- *            (one per active rank).
- *   Phase 2 (helpers->active, batched): each helper forwards slot-from-a0 -> a1
- *            and slot-from-a1 -> a0; the active rank receives numHelpers chunks
- *            DIRECTLY into recvSeg[o] (offset o x segmentCount + h x
- * chunkSize). No relay scratch and no reduction are needed. Phase 3 (diagonal
- * copy): recvSeg[m] = sendSeg[m] (cudaMemcpyAsync). Phase 4 (active<->active):
- * direct exchange of the last (direct) chunk of the exchange segment, received
- * directly into recvSeg[o]. Phase 5: none (no reduction).
+ * Two Comm Groups (no reduction; pure relay + a placement copy):
+ * ==============================================================
+ *   Diagonal: recvSeg[m] = sendSeg[m] (cudaMemcpyAsync).
+ *   Group 1:  each active rank scatters numHelpers chunks of its sendSeg[o] to
+ *             helpers (each helper stores two slots, one per active rank) AND
+ *             the two active ranks directly exchange one chunk over the
+ *             otherwise-idle active<->active link.
+ *   Group 2:  each helper forwards slot-from-a0 -> a1 and slot-from-a1 -> a0,
+ *             landing DIRECTLY in recvSeg[o] at h x chunkSize, AND the active
+ *             ranks directly exchange a second chunk over the same idle link.
+ *   No relay scratch and no reduction are needed.
  *
  * Chunking:
  * =========
- *   chunkSize  = segmentCounts[g] / numChunks rounded down to 128 elements,
- *   numChunks  = numHelpers + 1 (last chunk is the direct-exchange chunk).
- * Returns ncclInvalidArgument when segmentCounts[g] < numChunks x 128 (too
- * small to scatter); callers should fall back to a plain all-to-all.
+ *   chunkSize = segmentCounts[g] / numChunks rounded down to 128 elements,
+ *   numChunks = numHelpers + 2. The active<->active link is idle while the
+ * relay scatter and forward run on the cross links, so instead of a third comm
+ * group for one direct chunk, one direct chunk rides along with each relay
+ * group. Every link then carries exactly one chunk per direction per group and
+ * the critical path is 2 x chunkSize instead of 3 x
+ * segmentCounts[g]/(numHelpers+1). Returns ncclInvalidArgument when
+ * segmentCounts[g] < numChunks x 128 (too small to scatter); callers should
+ * fall back to a plain all-to-all.
  *
  * Helper-Buffer Contract (passthrough-at-helper):
  * ===============================================

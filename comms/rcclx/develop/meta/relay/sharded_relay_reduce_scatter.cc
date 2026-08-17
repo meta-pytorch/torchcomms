@@ -530,7 +530,7 @@ bool isSupportedRelayDataType(ncclDataType_t datatype) {
  * reduce-scatter between them, accelerated by passthrough helpers that relay
  * sharded chunks of a single block (recvCounts[g] elements). This is the
  * production BM-FM path and is byte-for-byte unchanged from the original
- * implementation; the A>2 path lives in shardedRelayReduceScatterRecursive.
+ * implementation; the A>2 path lives in shardedRelayReduceScatterFlat.
  *
  * Per active rank (index myActiveIndex), with recvcount = recvCounts[g]:
  *   - sendBuff holds 2 × recvcount elements; block[i] = sendBuff[i*recvcount].
@@ -561,8 +561,6 @@ static ncclResult_t shardedRelayReduceScatter2Active(
     int numHelpers,
     int nGroups,
     size_t elementSize) {
-  int numChunks = numHelpers + 1;
-
   // ==========================================================================
   // SIZE-ADAPTIVE PURE-DIRECT FAST PATH (A==2)
   // ==========================================================================
@@ -586,8 +584,8 @@ static ncclResult_t shardedRelayReduceScatter2Active(
   // independent at ~27 MB (independent has no cross-group contention, so direct
   // holds on longer). Cross over just below each.
   const size_t kA2PureDirectMaxBytes = (nGroups > 1)
-      ? (static_cast<size_t>(8) << 20) // fused: < 8 MB
-      : (static_cast<size_t>(16) << 20); // independent: < 16 MB
+      ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
+      : (static_cast<size_t>(6) << 20); // independent: < 6 MB
   if (maxBytes2 < kA2PureDirectMaxBytes) {
     void* pdScratch = nullptr;
     size_t pdRecvcount = 0;
@@ -659,368 +657,227 @@ static ncclResult_t shardedRelayReduceScatter2Active(
   }
 
   // =========================================================================
-  // CALCULATE PER-GROUP CHUNK SIZES (from the OUTPUT recvCount, i.e. one block)
+  // CHUNK GEOMETRY: numHelpers relayed chunks + TWO direct chunks
   // =========================================================================
+  // The active<->active link is idle while the relay scatter and forward run on
+  // the cross links, so instead of a third comm group for a single direct
+  // chunk, one direct chunk rides along with each relay group. With numChunks =
+  // numHelpers + 2 every link carries exactly one chunk per direction per
+  // group, making the critical path 2*recvCount/numChunks instead of the
+  // 3*recvCount/(numHelpers+1) of a separate direct phase.
+  //
+  // Unlike allreduce, the helper CANNOT reduce here: its slot 0 holds a0's
+  // contribution to a1's output and slot 1 holds a1's contribution to a0's
+  // output — different outputs. Helpers stay pure passthrough and the active
+  // rank reduces.
+  const int numChunks = numHelpers + 2;
+
   size_t chunkSizes[SHARDED_RELAY_MAX_GROUPS];
-  size_t lastChunkSizes[SHARDED_RELAY_MAX_GROUPS];
-  size_t directChunkOffsets[SHARDED_RELAY_MAX_GROUPS];
-  size_t directChunkSizes[SHARDED_RELAY_MAX_GROUPS];
+  size_t relayTotals[SHARDED_RELAY_MAX_GROUPS]; // == direct chunk A's offset
+  size_t dirBOffsets[SHARDED_RELAY_MAX_GROUPS];
+  size_t dirBSizes[SHARDED_RELAY_MAX_GROUPS]; // absorbs the remainder
 
   for (int g = 0; g < nGroups; g++) {
     size_t count = recvCounts[g];
 
-    // Skip groups with recvCount == 0; the per-phase loops below already check
-    // recvCounts[g] == 0 and bypass NCCL ops for those groups.
+    // Zero-count groups are skipped by every loop below.
     if (count == 0) {
       chunkSizes[g] = 0;
-      lastChunkSizes[g] = 0;
-      directChunkOffsets[g] = 0;
-      directChunkSizes[g] = 0;
+      relayTotals[g] = 0;
+      dirBOffsets[g] = 0;
+      dirBSizes[g] = 0;
       continue;
     }
 
-    // Calculate chunk size (aligned to CHUNK_ALIGN_ELEMENTS). When the
-    // per-chunk size rounded down to CHUNK_ALIGN_ELEMENTS is zero, the block
-    // is too small to scatter and the caller should fall back to a regular
-    // reduce-scatter.
+    // A chunk size that rounds down to zero means the block is too small to
+    // scatter; the caller should fall back to a regular reduce-scatter.
     size_t chunkSize = count / numChunks;
     chunkSize = (chunkSize / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
     if (chunkSize == 0) {
       return ncclInvalidArgument;
     }
     chunkSizes[g] = chunkSize;
-
-    // Calculate the size of the last chunk (absorbs the remainder)
-    size_t totalChunkedElements = static_cast<size_t>(numChunks) * chunkSize;
-    size_t lastChunkSize = chunkSize;
-    if (totalChunkedElements < count) {
-      lastChunkSize = chunkSize + (count - totalChunkedElements);
-    }
-    lastChunkSizes[g] = lastChunkSize;
-
-    // Direct exchange chunk info (within the single output block)
-    int directChunkIndex = numHelpers;
-    directChunkOffsets[g] = static_cast<size_t>(directChunkIndex) * chunkSize;
-    directChunkSizes[g] = lastChunkSize;
+    relayTotals[g] = static_cast<size_t>(numHelpers) * chunkSize;
+    dirBOffsets[g] = relayTotals[g] + chunkSize;
+    dirBSizes[g] = count - dirBOffsets[g];
   }
 
   // =========================================================================
-  // SCRATCH BUFFER ALLOCATION
+  // SCRATCH: the whole foreign contribution to my output block, contiguous
   // =========================================================================
-  // Relay scratch: numHelpers × chunkSize for batched passthrough recv.
-  // Direct-exchange scratch: (nActiveRanks-1) × directChunkSize (in-place).
-  void* relayScratch = nullptr;
-  void* directScratch = nullptr;
-
-  // For an active rank, compute its block offsets up-front.
+  // One recvCount-element buffer laid out exactly like the output block: the
+  // relayed chunks land at [0, relayTotal) and the two direct chunks fill
+  // [relayTotal, recvCount). Because it mirrors the output layout, the entire
+  // reduction collapses to ONE fused kernel launch at the end.
+  void* foreignScratch = nullptr;
   size_t ownBlockOffset = 0;
   size_t sendBlockOffset = 0;
   bool isInPlace = false;
   if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
     const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
     size_t recvcount = recvCounts[myActiveGroup];
-    int otherActiveIndex = 1 - cfg.myActiveIndex;
     ownBlockOffset = static_cast<size_t>(cfg.myActiveIndex) * recvcount;
-    sendBlockOffset = static_cast<size_t>(otherActiveIndex) * recvcount;
+    sendBlockOffset = static_cast<size_t>(1 - cfg.myActiveIndex) * recvcount;
 
     // In-place when recvBuff aliases the local contribution block of sendBuff.
-    const char* sendBlockStart =
-        static_cast<const char*>(sendBuffs[myActiveGroup]) +
+    const char* ownBlock = static_cast<const char*>(sendBuffs[myActiveGroup]) +
         ownBlockOffset * elementSize;
     isInPlace =
         (static_cast<const void*>(recvBuffs[myActiveGroup]) ==
-         static_cast<const void*>(sendBlockStart));
+         static_cast<const void*>(ownBlock));
 
-    // Relay scratch sized to numHelpers × chunkSize.
-    size_t relayScratchBytes = static_cast<size_t>(numHelpers) *
-        chunkSizes[myActiveGroup] * elementSize;
-    relayScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS, relayScratchBytes, stream);
-    if (relayScratch == nullptr) {
+    foreignScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS, recvcount * elementSize, stream);
+    if (foreignScratch == nullptr) {
       return ncclInternalError;
     }
+  }
 
-    // Direct-exchange scratch (in-place only)
+  // =========================================================================
+  // GROUP 1: relay scatter (active->helpers) || direct chunk A
+  // (active<->active)
+  // =========================================================================
+  NCCLCHECK(ncclGroupStart());
+
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t chunkSize = chunkSizes[g];
+
+    if (cfg.isActiveRank) {
+      // The block shipped to the other active rank.
+      const char* sendBlock = static_cast<const char*>(sendBuffs[g]) +
+          sendBlockOffset * elementSize;
+
+      for (int h = 0; h < cfg.numHelpers; h++) {
+        NCCLCHECK(ncclSend(
+            sendBlock + static_cast<size_t>(h) * chunkSize * elementSize,
+            chunkSize,
+            datatype,
+            cfg.helperRanks[h],
+            comm,
+            stream));
+      }
+
+      // Direct chunk A over the otherwise-idle active<->active link.
+      int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      NCCLCHECK(ncclSend(
+          sendBlock + relayTotals[g] * elementSize,
+          chunkSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          static_cast<char*>(foreignScratch) + relayTotals[g] * elementSize,
+          chunkSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      // Helper: receive active rank a's chunk into slot a.
+      char* helperBuf = static_cast<char*>(recvBuffs[g]);
+      for (int a = 0; a < cfg.nActiveRanks; a++) {
+        NCCLCHECK(ncclRecv(
+            helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
+            chunkSize,
+            datatype,
+            cfg.activeRanks[a],
+            comm,
+            stream));
+      }
+    }
+  }
+
+  NCCLCHECK(ncclGroupEnd());
+
+  // =========================================================================
+  // GROUP 2: relay forward (helpers->active) || direct chunk B
+  // (active<->active)
+  // =========================================================================
+  NCCLCHECK(ncclGroupStart());
+
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t chunkSize = chunkSizes[g];
+
+    if (cfg.isActiveRank) {
+      char* scratch = static_cast<char*>(foreignScratch);
+
+      for (int h = 0; h < cfg.numHelpers; h++) {
+        NCCLCHECK(ncclRecv(
+            scratch + static_cast<size_t>(h) * chunkSize * elementSize,
+            chunkSize,
+            datatype,
+            cfg.helperRanks[h],
+            comm,
+            stream));
+      }
+
+      // Direct chunk B, again over the idle active<->active link.
+      int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      NCCLCHECK(ncclSend(
+          static_cast<const char*>(sendBuffs[g]) +
+              (sendBlockOffset + dirBOffsets[g]) * elementSize,
+          dirBSizes[g],
+          datatype,
+          partner,
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          scratch + dirBOffsets[g] * elementSize,
+          dirBSizes[g],
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      // Passthrough: slot a goes to the OTHER active rank, which owns it.
+      const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
+      for (int a = 0; a < cfg.nActiveRanks; a++) {
+        NCCLCHECK(ncclSend(
+            helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
+            chunkSize,
+            datatype,
+            cfg.activeRanks[1 - a],
+            comm,
+            stream));
+      }
+    }
+  }
+
+  NCCLCHECK(ncclGroupEnd());
+
+  // =========================================================================
+  // REDUCE: one fused pass over the whole output block
+  // =========================================================================
+  // foreignScratch mirrors the output layout, so relayed and direct chunks are
+  // reduced together in a single launch.
+  if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
+    size_t recvcount = recvCounts[myActiveGroup];
+    void* out = recvBuffs[myActiveGroup];
     if (isInPlace) {
-      int nOtherActives = cfg.nActiveRanks - 1;
-      size_t directScratchBytes = static_cast<size_t>(nOtherActives) *
-          directChunkSizes[myActiveGroup] * elementSize;
-      directScratch = ScratchBufferCache::getInstance().get(
-          myActiveGroup, directScratchBytes, stream);
-      if (directScratch == nullptr) {
-        return ncclInternalError;
-      }
-    }
-  }
-
-  // =========================================================================
-  // PHASE 1 (active→helpers): Both active ranks scatter their sendBlock chunks
-  // =========================================================================
-  // Helpers receive from each active rank into offset-based slots:
-  //   slot a at offset (a × chunkSize) holds data from active rank a.
-  // Active ranks send chunks of the sendBlockOffset block (block destined for
-  // the OTHER active rank).
-  NCCLCHECK(ncclGroupStart());
-
-  for (int g = 0; g < nGroups; g++) {
-    if (recvCounts[g] == 0)
-      continue;
-    const ShardedRelayRankConfig& cfg = configs[g];
-    const void* sendbuff = sendBuffs[g];
-    void* recvbuff = recvBuffs[g];
-    size_t chunkSize = chunkSizes[g];
-
-    if (cfg.isActiveRank) {
-      // Active rank: send chunk h of my sendBlock to helper h
-      for (int h = 0; h < cfg.numHelpers; h++) {
-        int helperRank = cfg.helperRanks[h];
-        size_t chunkOffset =
-            sendBlockOffset + static_cast<size_t>(h) * chunkSize;
-
-        NCCLCHECK(ncclSend(
-            static_cast<const char*>(sendbuff) + chunkOffset * elementSize,
-            chunkSize,
-            datatype,
-            helperRank,
-            comm,
-            stream));
-      }
-    } else {
-      // Helper rank: receive from each active rank into slot a
-      for (int a = 0; a < cfg.nActiveRanks; a++) {
-        int activeRank = cfg.activeRanks[a];
-        size_t helperOffset = static_cast<size_t>(a) * chunkSize;
-
-        NCCLCHECK(ncclRecv(
-            static_cast<char*>(recvbuff) + helperOffset * elementSize,
-            chunkSize,
-            datatype,
-            activeRank,
-            comm,
-            stream));
-      }
-    }
-  }
-
-  NCCLCHECK(ncclGroupEnd());
-
-  // For out-of-place active groups: seed recvbuff's relay region with the
-  // local contribution (the ownBlockOffset block of sendbuff) so the
-  // incremental add in Phase 3 works uniformly. In-place already has it.
-  if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0 && !isInPlace) {
-    const void* sendbuff = sendBuffs[myActiveGroup];
-    void* recvbuff = recvBuffs[myActiveGroup];
-    size_t relayBytes = static_cast<size_t>(numHelpers) *
-        chunkSizes[myActiveGroup] * elementSize;
-    cudaMemcpyAsync(
-        recvbuff,
-        static_cast<const char*>(sendbuff) + ownBlockOffset * elementSize,
-        relayBytes,
-        cudaMemcpyDeviceToDevice,
-        stream);
-  }
-
-  // =========================================================================
-  // PHASE 2 (helpers→active, batched): Passthrough forward
-  // =========================================================================
-  // Each helper sends slot 0 (a0's data) → a1 and slot 1 (a1's data) → a0.
-  // Active rank receives all numHelpers chunks into relay scratch at offset
-  // h × chunkSize per helper h.
-  NCCLCHECK(ncclGroupStart());
-
-  for (int g = 0; g < nGroups; g++) {
-    if (recvCounts[g] == 0)
-      continue;
-    const ShardedRelayRankConfig& cfg = configs[g];
-    void* recvbuff = recvBuffs[g];
-    size_t chunkSize = chunkSizes[g];
-
-    if (!cfg.isActiveRank) {
-      // Helper for group g: forward each slot to the OTHER active rank.
-      for (int a = 0; a < cfg.nActiveRanks; a++) {
-        int targetActive = cfg.activeRanks[1 - a];
-        NCCLCHECK(ncclSend(
-            static_cast<const char*>(recvbuff) +
-                static_cast<size_t>(a) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
-            targetActive,
-            comm,
-            stream));
-      }
-    } else {
-      // Active rank: receive ALL forwarded data from each helper into the
-      // relay scratch at offset h × chunkSize.
-      for (int h = 0; h < cfg.numHelpers; h++) {
-        int helperRank = cfg.helperRanks[h];
-        size_t scratchOffset = static_cast<size_t>(h) * chunkSize;
-        NCCLCHECK(ncclRecv(
-            static_cast<char*>(relayScratch) + scratchOffset * elementSize,
-            chunkSize,
-            datatype,
-            helperRank,
-            comm,
-            stream));
-      }
-    }
-  }
-
-  NCCLCHECK(ncclGroupEnd());
-
-  // =========================================================================
-  // PHASE 3 (active reduce): Fused add + scale on the relay region
-  // =========================================================================
-  // recvbuff[i] = (recvbuff[i] + relayScratch[i]) / divisor over the relay
-  // region (numHelpers × chunkSize). recvbuff was seeded with the local
-  // ownBlock contribution above.
-  for (int g = 0; g < nGroups; g++) {
-    if (recvCounts[g] == 0)
-      continue;
-    const ShardedRelayRankConfig& cfg = configs[g];
-    if (cfg.isActiveRank) {
-      void* recvbuff = recvBuffs[g];
-      size_t chunkSize = chunkSizes[g];
-      size_t relayTotal = static_cast<size_t>(numHelpers) * chunkSize;
-
       if (reductionDivisor > 1) {
         DISPATCH_INCREMENTAL_ADD_AND_SCALE(
-            datatype,
-            recvbuff,
-            relayScratch,
-            relayTotal,
-            reductionDivisor,
-            stream);
+            datatype, out, foreignScratch, recvcount, reductionDivisor, stream);
       } else {
         DISPATCH_INCREMENTAL_ADD(
-            datatype, recvbuff, relayScratch, relayTotal, stream);
+            datatype, out, foreignScratch, recvcount, stream);
       }
-    }
-  }
-
-  // =========================================================================
-  // PHASE 4 (active↔active): Direct exchange of the last chunk
-  // =========================================================================
-  // Active ranks exchange the direct chunk of their sendBlock; it lands in the
-  // output block's direct-chunk slot (offset directChunkOffset in recvbuff).
-  NCCLCHECK(ncclGroupStart());
-
-  for (int g = 0; g < nGroups; g++) {
-    if (recvCounts[g] == 0)
-      continue;
-    const ShardedRelayRankConfig& cfg = configs[g];
-
-    if (cfg.isActiveRank) {
-      const void* sendbuff = sendBuffs[g];
-      void* recvbuff = recvBuffs[g];
-      size_t directChunkOffset = directChunkOffsets[g];
-      size_t directChunkSize = directChunkSizes[g];
-      // Source in sendbuff is within the sendBlock (shipped to other rank).
-      size_t sendDirectOffset = sendBlockOffset + directChunkOffset;
-
-      // Send my direct chunk to all other active ranks
-      for (int a = 0; a < cfg.nActiveRanks; a++) {
-        if (a == cfg.myActiveIndex)
-          continue;
-        int otherActiveRank = cfg.activeRanks[a];
-
-        NCCLCHECK(ncclSend(
-            static_cast<const char*>(sendbuff) + sendDirectOffset * elementSize,
-            directChunkSize,
-            datatype,
-            otherActiveRank,
-            comm,
-            stream));
-      }
-
-      // Receive direct chunks from all other active ranks
-      int scratchIdx = 0;
-      for (int a = 0; a < cfg.nActiveRanks; a++) {
-        if (a == cfg.myActiveIndex)
-          continue;
-        int otherActiveRank = cfg.activeRanks[a];
-
-        if (isInPlace) {
-          size_t scratchOffset =
-              static_cast<size_t>(scratchIdx) * directChunkSize;
-          NCCLCHECK(ncclRecv(
-              static_cast<char*>(directScratch) + scratchOffset * elementSize,
-              directChunkSize,
-              datatype,
-              otherActiveRank,
-              comm,
-              stream));
-        } else {
-          NCCLCHECK(ncclRecv(
-              static_cast<char*>(recvbuff) + directChunkOffset * elementSize,
-              directChunkSize,
-              datatype,
-              otherActiveRank,
-              comm,
-              stream));
-        }
-        scratchIdx++;
-      }
-    }
-  }
-
-  NCCLCHECK(ncclGroupEnd());
-
-  // =========================================================================
-  // PHASE 5 (active reduce): Final reduction on the direct-exchange chunk
-  // =========================================================================
-  for (int g = 0; g < nGroups; g++) {
-    if (recvCounts[g] == 0)
-      continue;
-    const ShardedRelayRankConfig& cfg = configs[g];
-
-    if (cfg.isActiveRank) {
-      const void* sendbuff = sendBuffs[g];
-      void* recvbuff = recvBuffs[g];
-      size_t directChunkOffset = directChunkOffsets[g];
-      size_t directChunkSize = directChunkSizes[g];
-
-      void* directChunkDst =
-          static_cast<char*>(recvbuff) + directChunkOffset * elementSize;
-
-      if (isInPlace) {
-        // recvbuff direct slot already holds the local contribution.
-        int scratchIdx2 = 0;
-        for (int a = 0; a < cfg.nActiveRanks; a++) {
-          if (a == cfg.myActiveIndex)
-            continue;
-          size_t scratchOffset =
-              static_cast<size_t>(scratchIdx2) * directChunkSize;
-          const void* received = static_cast<const char*>(directScratch) +
-              scratchOffset * elementSize;
-          DISPATCH_INCREMENTAL_ADD(
-              datatype, directChunkDst, received, directChunkSize, stream);
-          scratchIdx2++;
-        }
-
-        if (reductionDivisor > 1) {
-          DISPATCH_SCALE(
-              datatype,
-              directChunkDst,
-              directChunkSize,
-              reductionDivisor,
-              stream);
-        }
-      } else {
-        // Out-of-place: local contribution is in sendbuff's ownBlock; the
-        // received chunk is already in recvbuff's direct slot.
-        const void* localContribution = static_cast<const char*>(sendbuff) +
-            (ownBlockOffset + directChunkOffset) * elementSize;
-        const void* receivedContribution = directChunkDst;
-
-        DISPATCH_FUSED_REDUCE(
-            datatype,
-            directChunkDst,
-            localContribution,
-            receivedContribution,
-            directChunkSize,
-            reductionDivisor,
-            stream);
-      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          out,
+          static_cast<const char*>(sendBuffs[myActiveGroup]) +
+              ownBlockOffset * elementSize,
+          foreignScratch,
+          recvcount,
+          reductionDivisor,
+          stream);
     }
   }
 
@@ -1028,36 +885,48 @@ static ncclResult_t shardedRelayReduceScatter2Active(
 }
 
 /**
- * Reduce-scatter for > 2 active ranks (bandwidth-optimal recursive path).
+ * Reduce-scatter for > 2 active ranks (two-group flat relay with
+ * reduce-at-helper).
  *
- * A recursive-halving relay over the cross links (active<->helper, 2-hop) woven
- * with a direct all-to-all over the intra links (active<->active, 1-hop), split
- * DIRECT_NUM=60% / 40% to equalize per-link load. There is NO all-gather phase
- * (reduce-scatter keeps only the owner's reduced shard).
+ * Each active rank's sendBuff holds A blocks of recvCount; block[j] is this
+ * rank's contribution to owner j's output. Owner j's output is the sum over all
+ * A sources of block[j].
  *
- * The active rank's sendBuff holds A blocks of recvCount (block[j] is this
- * rank's contribution to owner j). It is gathered into a working buffer W of
- * size A*recvCount laid out as [R region (pR) | D region (pD)], where every
- * block contributes an R part (pR/A elements, its first elements) and a D part
- * (pD/A elements, the rest):
- *   - block[j]_R is placed at R-part bitReverse(j): the recursive-halving
- *     reduce-scatter leaves owner mi holding R-part bitReverse(mi), so owner j
- *     ends up with the reduced block[j]_R.
- *   - block[j]_D is placed at D-part j: the direct all-to-all reduce-scatter
- *     keeps index j with owner j.
- * After the halving relay + direct all-to-all reduce, owner mi holds the
- * reduced block[mi] in two pieces in W (R at the final segOff, D at
- * pR + mi*(pD/A)); both are copied into recvBuff (recvCount = pR/A + pD/A).
+ * Every block is split into a DIRECT region, exchanged 1-hop over the intra
+ * active<->active links, and an OFFLOAD region, routed 2-hop through the
+ * otherwise-idle helpers. A helper owns one position slice of every block: it
+ * collects that slice from the A-1 non-owner sources, SUMS them, and sends the
+ * single reduced slice on to the owner, which folds in its own contribution.
+ * Reducing at the helper is what keeps the return hop cheap -- (A-1) chunks in,
+ * one chunk out.
  *
- * In-place (recvBuff == sendBuff + myActiveIndex*recvCount) and out-of-place
- * are both supported transparently: W is a separate scratch, so sendBuff is
- * fully read into W before recvBuff is written, and the only difference is the
- * (identical) final copy destination.
+ * Link accounting, per direction, in units of the per-(owner, helper) chunk cs.
+ * A rank's helpers are the active ranks of another group, so its scatter and
+ * its helper duty are egress on the same cross links:
  *
- * Requires a power-of-two active count (count = A*recvCount is divisible by A
- * by construction, so the R/D split and per-block parts are exact).
+ *   group 1:  cross = (A-1)*cs (my A-1 foreign blocks' slice h)   intra =
+ * (A-1)*cs group 2:  cross = cs       (one reduced slice per owner)      intra
+ * = cs
+ *
+ * Balancing intra against cross in each group puts (A-1)*cs of the direct
+ * region in group 1 and cs in group 2, so the direct region is A*cs and the
+ * offload region is H*cs: cs = recvCount/(A+H), eight equal units on the 8-GPU
+ * node. The critical path is (A-1)*cs + cs = A*cs = recvCount/2, against
+ * recvCount for NCCL's intra-only reduce-scatter -- a 2x ceiling. (The previous
+ * recursive-halving path measured ~0.96x.)
+ *
+ * Block layout [0, recvCount): direct region [0, A*cs) whose first (A-1)*cs go
+ * out in group 1 and whose last cs goes out in group 2, then the offload region
+ * [A*cs, recvCount) as H slices of cs, slice h owned by helper h.
+ *
+ * Helper scratch = recvBuffs[g], holding one cs chunk per (owner, contributing
+ * source) pair: A*(A-1)*cs elements. The reduction is done in place into each
+ * owner's first slot.
+ *
+ * Below a size threshold the offload is disabled and this degenerates to a
+ * single-group pure-direct all-to-all reduce-scatter with the helpers idle.
  */
-static ncclResult_t shardedRelayReduceScatterRecursive(
+static ncclResult_t shardedRelayReduceScatterFlat(
     const void* const* sendBuffs,
     void* const* recvBuffs,
     const size_t* recvCounts,
@@ -1072,396 +941,309 @@ static ncclResult_t shardedRelayReduceScatterRecursive(
     int nGroups,
     size_t elementSize) {
   const int A = nActiveRanksPerGroup;
-  const int numChunks = numHelpers + 1;
-  int logA = 0;
-  while ((1 << logA) < A) {
-    logA++;
-  }
-  const int nRsGroups = 2 * logA;
+  const int H = numHelpers;
 
-  // Largest per-group message drives the size-adaptive tuning. All groups march
-  // through the same superstep count to stay phase-synced, so tune off the max.
   size_t maxRc = 0;
   for (int g = 0; g < nGroups; g++) {
     if (recvCounts[g] > maxRc) {
       maxRc = recvCounts[g];
     }
   }
+  // maxBytes (A*recvCount*elemSize) equals the bench per-rank input label.
   const size_t maxBytes = static_cast<size_t>(A) * maxRc * elementSize;
+  // Measured crossover (MI350X, A=4, bf16, 8 GPUs): the offload's 2-hop hop
+  // plus the second group boundary only pays for itself past ~48 MB; below that
+  // the single-group pure-direct all-to-all reduce-scatter wins outright
+  // (1.24-1.42x at <= 576 KB, vs 0.69x if the offload is forced on at 4.5 MB).
+  const size_t kOffloadMinBytes = static_cast<size_t>(48) << 20;
+  const bool useOffload = (H > 0) && (maxBytes >= kOffloadMinBytes);
 
-  // Size-adaptive routing. The recursive-halving relay spreads traffic across
-  // helper cross links for bandwidth, but it costs 2*logA group boundaries
-  // (~25us each) plus 2-hop latency. Below the threshold that is pure overhead,
-  // so degenerate to a single-group pure-direct all-to-all reduce-scatter (each
-  // active rank swaps its foreign shards directly with the other A-1 owners and
-  // reduces locally; helpers idle) -- the same minimal-latency shape as
-  // all-to-all. Above it, keep the recursive relay with a 60% direct / 40%
-  // relay split (balances per-link load: intra links carry 0.5*D at 1 hop,
-  // cross links 0.75*R at 2 hops; equal at D:R = 0.6:0.4). The crossover is
-  // scenario-independent here (unlike all-gather): measured on MI350X (A=4,
-  // bf16, 8 GPUs) pure-direct wins or ties across the whole range up to 144 MB
-  // in both fused and independent modes (e.g. 4.5 MB 0.44x->0.99x, 72 MB
-  // 0.86x->0.98x fused), and the recursive relay only pulls ahead at
-  // >=256 MB where its helper-cross-link bandwidth beats intra-only direct. max
-  // bytes here (A*recvCount*elemSize) equals the bench's per-rank input label.
-  const size_t kFlatPureDirectMaxBytes = static_cast<size_t>(256)
-      << 20; // 256 MB
-  const bool pureDirect = (maxBytes < kFlatPureDirectMaxBytes);
-  const size_t DIRECT_NUM = pureDirect ? 100 : 60, DIRECT_DEN = 100;
-
-  // Per-group working-buffer total count = A * recvCount (the full input), and
-  // its R/D split. count is divisible by A by construction.
-  size_t countArr[SHARDED_RELAY_MAX_GROUPS];
-  size_t pRArr[SHARDED_RELAY_MAX_GROUPS];
-  size_t pDArr[SHARDED_RELAY_MAX_GROUPS];
+  // Per-group geometry. cs = recvCount/(A+H) aligned down; the direct region
+  // absorbs the remainder so directSz + H*cs == recvCount.
+  size_t csArr[SHARDED_RELAY_MAX_GROUPS];
+  size_t directArr[SHARDED_RELAY_MAX_GROUPS];
+  size_t d1Arr[SHARDED_RELAY_MAX_GROUPS];
   for (int g = 0; g < nGroups; g++) {
-    size_t recvcount = recvCounts[g];
-    if (recvcount == 0) {
-      countArr[g] = 0;
-      pRArr[g] = 0;
-      pDArr[g] = 0;
+    size_t rc = recvCounts[g];
+    if (rc == 0) {
+      csArr[g] = 0;
+      directArr[g] = 0;
+      d1Arr[g] = 0;
       continue;
     }
-    size_t count = static_cast<size_t>(A) * recvcount;
-    countArr[g] = count;
-    size_t alignA = static_cast<size_t>(A) * CHUNK_ALIGN_ELEMENTS;
-    size_t pD = (count * DIRECT_NUM) / DIRECT_DEN;
-    pD = (pD / alignA) * alignA;
-    if (pD > count) {
-      pD = (count / alignA) * alignA;
-    }
-    pDArr[g] = pD;
-    pRArr[g] = count - pD;
+    size_t cs = useOffload ? (rc / static_cast<size_t>(A + H)) : 0;
+    cs = (cs / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
+    csArr[g] = cs;
+    directArr[g] = rc - static_cast<size_t>(H) * cs;
+    d1Arr[g] = (cs > 0) ? (directArr[g] - cs) : directArr[g];
   }
 
-  // =========================================================================
-  // SCRATCH BUFFER ALLOCATION
-  // =========================================================================
-  // workScratch (W): A*recvCount working buffer (active rank only).
-  // rsScratch: relay reduce-scatter receive buffer (max half pR/2).
-  // directScratch: direct all-to-all reduce-scatter buffer ((A-1) shards).
-  void* workScratch = nullptr;
-  void* rsScratch = nullptr;
-  void* directScratch = nullptr;
+  // Active-rank scratch. dScratch holds the A-1 peer contributions to my direct
+  // region, one contiguous directSz block each, so the whole direct region
+  // reduces in a single multi-input pass. oScratch mirrors my output's offload
+  // region and receives the H helper-reduced slices straight into place.
+  void* dScratch = nullptr;
+  void* oScratch = nullptr;
+  bool isInPlace = false;
   if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
-    size_t count = countArr[myActiveGroup];
-    size_t pR = pRArr[myActiveGroup];
-    size_t pD = pDArr[myActiveGroup];
+    const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+    const char* ownBlock = static_cast<const char*>(sendBuffs[myActiveGroup]) +
+        static_cast<size_t>(cfg.myActiveIndex) * recvCounts[myActiveGroup] *
+            elementSize;
+    isInPlace =
+        (static_cast<const void*>(recvBuffs[myActiveGroup]) ==
+         static_cast<const void*>(ownBlock));
 
-    size_t workBytes = count * elementSize;
-    workScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS, workBytes, stream);
-    if (workScratch == nullptr) {
+    dScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS,
+        static_cast<size_t>(A - 1) * directArr[myActiveGroup] * elementSize,
+        stream);
+    if (dScratch == nullptr) {
       return ncclInternalError;
     }
-    if (pR > 0) {
-      size_t maxHalfBytes = (pR / 2 + CHUNK_ALIGN_ELEMENTS) * elementSize;
-      rsScratch = ScratchBufferCache::getInstance().get(
-          SHARDED_RELAY_MAX_GROUPS + 1, maxHalfBytes, stream);
-      if (rsScratch == nullptr) {
-        return ncclInternalError;
-      }
-    }
-    if (pD > 0) {
-      size_t directBytes = static_cast<size_t>(A - 1) * (pD / A) * elementSize;
-      directScratch = ScratchBufferCache::getInstance().get(
-          SHARDED_RELAY_MAX_GROUPS + 2, directBytes, stream);
-      if (directScratch == nullptr) {
+    if (csArr[myActiveGroup] > 0) {
+      oScratch = ScratchBufferCache::getInstance().get(
+          myActiveGroup,
+          static_cast<size_t>(H) * csArr[myActiveGroup] * elementSize,
+          stream);
+      if (oScratch == nullptr) {
         return ncclInternalError;
       }
     }
   }
 
   // =========================================================================
-  // GATHER: scatter the A input blocks into W with the R/D split + bit-reversed
-  // R placement (active rank only). Reads directly from the caller's contiguous
-  // input buffer (block j spans logical [j*recvcount, (j+1)*recvcount)).
+  // GROUP 1: direct part 1 (active<->active) || offload scatter
+  // (active->helper)
   // =========================================================================
-  if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
-    char* W = static_cast<char*>(workScratch);
-    const char* inPtr = static_cast<const char*>(sendBuffs[myActiveGroup]);
-    size_t recvcount = recvCounts[myActiveGroup];
-    size_t pR = pRArr[myActiveGroup];
-    size_t rPart = pR / A; // per-block R part
-    size_t dPart = pDArr[myActiveGroup] / A; // per-block D part
-    for (int j = 0; j < A; j++) {
-      size_t blkOff = static_cast<size_t>(j) * recvcount;
-      if (rPart > 0) {
-        int p = bitReverse(j, logA);
-        cudaMemcpyAsync(
-            W + static_cast<size_t>(p) * rPart * elementSize,
-            inPtr + blkOff * elementSize,
-            rPart * elementSize,
-            cudaMemcpyDeviceToDevice,
-            stream);
-      }
-      if (dPart > 0) {
-        cudaMemcpyAsync(
-            W + (pR + static_cast<size_t>(j) * dPart) * elementSize,
-            inPtr + (blkOff + rPart) * elementSize,
-            dPart * elementSize,
-            cudaMemcpyDeviceToDevice,
-            stream);
-      }
-    }
-  }
+  NCCLCHECK(ncclGroupStart());
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t rc = recvCounts[g];
+    size_t cs = csArr[g];
+    size_t directSz = directArr[g];
+    size_t d1 = d1Arr[g];
 
-  // Direct shard geometry for this rank's active group.
-  size_t myShardLen = 0, dBase = 0;
-  int myIdx = -1;
-  if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0 &&
-      pDArr[myActiveGroup] > 0) {
-    myShardLen = pDArr[myActiveGroup] / A;
-    dBase = pRArr[myActiveGroup];
-    myIdx = configs[myActiveGroup].myActiveIndex;
-  }
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
+      int m = cfg.myActiveIndex;
 
-  // Relay segment within the R region [0, pR).
-  size_t segOff = 0;
-  size_t segLen = (myActiveGroup >= 0) ? pRArr[myActiveGroup] : 0;
-
-  // ===== Reduce-scatter: relay halving (R) + direct all-to-all (D) =====
-  int giRs = 0;
-  for (int k = 0; k < logA; k++) {
-    int mask = 1 << k;
-    bool lastRsStep = (k == logA - 1);
-
-    size_t halfLen = 0, sendOff = 0, keepOff = 0;
-    int partner = -1;
-    if (myActiveGroup >= 0 && pRArr[myActiveGroup] > 0) {
-      const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
-      halfLen = segLen / 2;
-      int mi = cfg.myActiveIndex;
-      if (mi & mask) {
-        keepOff = segOff + halfLen;
-        sendOff = segOff;
-      } else {
-        keepOff = segOff;
-        sendOff = segOff + halfLen;
-      }
-      partner = cfg.activeRanks[mi ^ mask];
-    }
-
-    for (int phase = 0; phase < 2; phase++) { // 0 = scatter, 1 = forward
-      int gi = giRs + phase;
-      size_t dSliceLen = 0, dSliceOff = 0;
-      if (myShardLen > 0) {
-        if (pureDirect) {
-          // No relay traffic to overlap against: carry the whole direct
-          // all-to-all in the first superstep and leave the rest empty.
-          dSliceOff = 0;
-          dSliceLen = (gi == 0) ? myShardLen : 0;
-        } else {
-          size_t base = myShardLen / nRsGroups;
-          dSliceOff = static_cast<size_t>(gi) * base;
-          dSliceLen = (gi == nRsGroups - 1) ? (myShardLen - dSliceOff) : base;
+      if (d1 > 0) {
+        for (int k = 0; k < A; k++) {
+          if (k == m)
+            continue;
+          NCCLCHECK(ncclSend(
+              sendbuff + static_cast<size_t>(k) * rc * elementSize,
+              d1,
+              datatype,
+              cfg.activeRanks[k],
+              comm,
+              stream));
+        }
+        for (int s = 0; s < A; s++) {
+          if (s == m)
+            continue;
+          int p = (s < m) ? s : s - 1;
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(dScratch) +
+                  static_cast<size_t>(p) * directSz * elementSize,
+              d1,
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
         }
       }
 
-      // Skip supersteps with no work: in pure-direct mode pR==0 (no relay) and
-      // all direct traffic is in gi==0, so gi>0 would be an empty group
-      // boundary.
-      if (pureDirect && gi > 0) {
+      // Offload scatter: helper h gets slice h of each of my foreign blocks.
+      for (int h = 0; h < cfg.numHelpers && cs > 0; h++) {
+        for (int j = 0; j < A; j++) {
+          if (j == m)
+            continue;
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(j) * rc + directSz +
+                   static_cast<size_t>(h) * cs) *
+                      elementSize,
+              cs,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+    } else if (cs > 0) {
+      // Helper: collect owner j's slice from each contributing source s != j.
+      char* hbuff = static_cast<char*>(recvBuffs[g]);
+      for (int s = 0; s < cfg.nActiveRanks; s++) {
+        for (int j = 0; j < A; j++) {
+          if (j == s)
+            continue;
+          int t = (s < j) ? s : s - 1;
+          size_t slot = static_cast<size_t>(j) * (A - 1) + t;
+          NCCLCHECK(ncclRecv(
+              hbuff + slot * cs * elementSize,
+              cs,
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+    }
+  }
+  NCCLCHECK(ncclGroupEnd());
+
+  bool anyOffload = false;
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] > 0 && csArr[g] > 0) {
+      anyOffload = true;
+      break;
+    }
+  }
+
+  // =========================================================================
+  // HELPER REDUCE: sum each owner's A-1 contributions in place
+  // =========================================================================
+  // No divisor here: the owner applies the AVG divisor once when it folds in
+  // its own contribution.
+  if (anyOffload) {
+    for (int g = 0; g < nGroups; g++) {
+      if (recvCounts[g] == 0 || csArr[g] == 0 || configs[g].isActiveRank)
         continue;
-      }
-
-      NCCLCHECK(ncclGroupStart());
-      for (int g = 0; g < nGroups; g++) {
-        if (recvCounts[g] == 0)
-          continue;
-        const ShardedRelayRankConfig& cfg = configs[g];
-        void* workbuff = (g == myActiveGroup) ? workScratch : recvBuffs[g];
-        size_t pRg = pRArr[g];
-
-        // ---- RELAY (cross links), R region ----
-        if (pRg > 0) {
-          size_t xg = pRg >> (k + 1);
-          size_t csz = (xg / numChunks);
-          csz = (csz / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-          if (cfg.isActiveRank) {
-            if (csz == 0) {
-              // No helpers: the whole half is a direct partner swap. Send AND
-              // recv MUST be in the same ncclGroup (phase 0) — NCCL matches P2P
-              // within a group, so splitting send/recv across phases deadlocks.
-              if (phase == 0) {
-                NCCLCHECK(ncclSend(
-                    static_cast<const char*>(workbuff) + sendOff * elementSize,
-                    xg,
-                    datatype,
-                    partner,
-                    comm,
-                    stream));
-                NCCLCHECK(ncclRecv(
-                    static_cast<char*>(rsScratch),
-                    xg,
-                    datatype,
-                    partner,
-                    comm,
-                    stream));
-              }
-            } else {
-              size_t directSz = xg - static_cast<size_t>(numHelpers) * csz;
-              if (phase == 0) {
-                for (int h = 0; h < cfg.numHelpers; h++) {
-                  NCCLCHECK(ncclSend(
-                      static_cast<const char*>(workbuff) +
-                          (sendOff + (size_t)h * csz) * elementSize,
-                      csz,
-                      datatype,
-                      cfg.helperRanks[h],
-                      comm,
-                      stream));
-                }
-                NCCLCHECK(ncclSend(
-                    static_cast<const char*>(workbuff) +
-                        (sendOff + (size_t)numHelpers * csz) * elementSize,
-                    directSz,
-                    datatype,
-                    partner,
-                    comm,
-                    stream));
-                NCCLCHECK(ncclRecv(
-                    static_cast<char*>(rsScratch) +
-                        (size_t)numHelpers * csz * elementSize,
-                    directSz,
-                    datatype,
-                    partner,
-                    comm,
-                    stream));
-              } else {
-                for (int h = 0; h < cfg.numHelpers; h++) {
-                  NCCLCHECK(ncclRecv(
-                      static_cast<char*>(rsScratch) +
-                          (size_t)h * csz * elementSize,
-                      csz,
-                      datatype,
-                      cfg.helperRanks[h],
-                      comm,
-                      stream));
-                }
-              }
-            }
-          } else {
-            size_t cszH = (xg / numChunks);
-            cszH = (cszH / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-            if (cszH != 0) {
-              if (phase == 0) {
-                for (int a = 0; a < cfg.nActiveRanks; a++) {
-                  NCCLCHECK(ncclRecv(
-                      static_cast<char*>(workbuff) +
-                          (size_t)a * cszH * elementSize,
-                      cszH,
-                      datatype,
-                      cfg.activeRanks[a],
-                      comm,
-                      stream));
-                }
-              } else {
-                for (int a = 0; a < cfg.nActiveRanks; a++) {
-                  int target = cfg.activeRanks[a ^ mask];
-                  NCCLCHECK(ncclSend(
-                      static_cast<const char*>(workbuff) +
-                          (size_t)a * cszH * elementSize,
-                      cszH,
-                      datatype,
-                      target,
-                      comm,
-                      stream));
-                }
-              }
-            }
-          }
-        }
-
-        // ---- DIRECT all-to-all RS (intra links), D region ----
-        if (g == myActiveGroup && myShardLen > 0 && dSliceLen > 0) {
-          int peerIdx = 0;
-          for (int j = 0; j < A; j++) {
-            if (j == myIdx) {
-              continue;
-            }
-            NCCLCHECK(ncclSend(
-                static_cast<const char*>(workbuff) +
-                    (dBase + (size_t)j * myShardLen + dSliceOff) * elementSize,
-                dSliceLen,
-                datatype,
-                cfg.activeRanks[j],
-                comm,
-                stream));
-            NCCLCHECK(ncclRecv(
-                static_cast<char*>(directScratch) +
-                    ((size_t)peerIdx * myShardLen + dSliceOff) * elementSize,
-                dSliceLen,
-                datatype,
-                cfg.activeRanks[j],
-                comm,
-                stream));
-            peerIdx++;
-          }
-        }
-      }
-      NCCLCHECK(ncclGroupEnd());
-
-      if (phase == 1 && myActiveGroup >= 0 && pRArr[myActiveGroup] > 0) {
-        void* keepDst = static_cast<char*>(workScratch) + keepOff * elementSize;
-        if (lastRsStep && reductionDivisor > 1) {
-          DISPATCH_INCREMENTAL_ADD_AND_SCALE(
-              datatype, keepDst, rsScratch, halfLen, reductionDivisor, stream);
-        } else {
-          DISPATCH_INCREMENTAL_ADD(
-              datatype, keepDst, rsScratch, halfLen, stream);
-        }
-        segOff = keepOff;
-        segLen = halfLen;
+      char* hbuff = static_cast<char*>(recvBuffs[g]);
+      size_t cs = csArr[g];
+      for (int j = 0; j < A; j++) {
+        char* dst = hbuff + static_cast<size_t>(j) * (A - 1) * cs * elementSize;
+        DISPATCH_MULTI_REDUCE(
+            datatype, dst, dst + cs * elementSize, A - 2, cs, 1, stream);
       }
     }
-    giRs += 2;
-  }
-
-  // Direct RS reduce: fold the A-1 contributions into the owned shard, scale.
-  // Fused single-pass multi-input reduce (read owned + all A-1 contribs once,
-  // write owned once) instead of A-1 separate read-modify-write adds + scale.
-  if (myShardLen > 0) {
-    void* ownedDst = static_cast<char*>(workScratch) +
-        (dBase + (size_t)myIdx * myShardLen) * elementSize;
-    DISPATCH_MULTI_REDUCE(
-        datatype,
-        ownedDst,
-        directScratch,
-        A - 1,
-        myShardLen,
-        reductionDivisor,
-        stream);
   }
 
   // =========================================================================
-  // SCATTER OUT: copy owner mi's reduced block from W into the caller's output
-  // buffer (recvCount = rPart + dPart elements). R result at logical
-  // [0, rPart); D result at [rPart, rPart+dPart).
+  // GROUP 2: direct part 2 (active<->active) || reduced offload
+  // (helper->active)
+  // =========================================================================
+  if (anyOffload) {
+    NCCLCHECK(ncclGroupStart());
+    for (int g = 0; g < nGroups; g++) {
+      if (recvCounts[g] == 0 || csArr[g] == 0)
+        continue;
+      const ShardedRelayRankConfig& cfg = configs[g];
+      size_t rc = recvCounts[g];
+      size_t cs = csArr[g];
+      size_t directSz = directArr[g];
+      size_t d1 = d1Arr[g];
+      size_t d2 = directSz - d1;
+
+      if (cfg.isActiveRank) {
+        const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
+        int m = cfg.myActiveIndex;
+
+        if (d2 > 0) {
+          for (int k = 0; k < A; k++) {
+            if (k == m)
+              continue;
+            NCCLCHECK(ncclSend(
+                sendbuff + (static_cast<size_t>(k) * rc + d1) * elementSize,
+                d2,
+                datatype,
+                cfg.activeRanks[k],
+                comm,
+                stream));
+          }
+          for (int s = 0; s < A; s++) {
+            if (s == m)
+              continue;
+            int p = (s < m) ? s : s - 1;
+            NCCLCHECK(ncclRecv(
+                static_cast<char*>(dScratch) +
+                    (static_cast<size_t>(p) * directSz + d1) * elementSize,
+                d2,
+                datatype,
+                cfg.activeRanks[s],
+                comm,
+                stream));
+          }
+        }
+
+        // Reduced offload slices land contiguously, mirroring my output.
+        for (int h = 0; h < cfg.numHelpers; h++) {
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(oScratch) +
+                  static_cast<size_t>(h) * cs * elementSize,
+              cs,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      } else {
+        // Helper: hand owner j its single reduced slice.
+        const char* hbuff = static_cast<const char*>(recvBuffs[g]);
+        for (int j = 0; j < A; j++) {
+          NCCLCHECK(ncclSend(
+              hbuff + static_cast<size_t>(j) * (A - 1) * cs * elementSize,
+              cs,
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+  }
+
+  // =========================================================================
+  // OWNER REDUCE: fold my own contribution into the direct and offload regions
   // =========================================================================
   if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
-    const char* W = static_cast<const char*>(workScratch);
-    char* outPtr = static_cast<char*>(recvBuffs[myActiveGroup]);
-    size_t pR = pRArr[myActiveGroup];
-    size_t rPart = pR / A;
-    size_t dPart = pDArr[myActiveGroup] / A;
-    int mi = configs[myActiveGroup].myActiveIndex;
-    if (rPart > 0) {
-      // Owner mi's R result sits at the final segOff (== bitReverse(mi)*rPart).
+    const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+    size_t rc = recvCounts[myActiveGroup];
+    size_t cs = csArr[myActiveGroup];
+    size_t directSz = directArr[myActiveGroup];
+    char* out = static_cast<char*>(recvBuffs[myActiveGroup]);
+    const char* ownBlock = static_cast<const char*>(sendBuffs[myActiveGroup]) +
+        static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
+
+    // Direct region: own + the A-1 peer blocks, one fused multi-input pass.
+    if (!isInPlace) {
       cudaMemcpyAsync(
-          outPtr,
-          W + segOff * elementSize,
-          rPart * elementSize,
+          out,
+          ownBlock,
+          directSz * elementSize,
           cudaMemcpyDeviceToDevice,
           stream);
     }
-    if (dPart > 0) {
-      cudaMemcpyAsync(
-          outPtr + rPart * elementSize,
-          W + (pR + static_cast<size_t>(mi) * dPart) * elementSize,
-          dPart * elementSize,
-          cudaMemcpyDeviceToDevice,
-          stream);
+    DISPATCH_MULTI_REDUCE(
+        datatype, out, dScratch, A - 1, directSz, reductionDivisor, stream);
+
+    // Offload region: own + the H helper-reduced slices (each already a sum of
+    // the A-1 other sources).
+    if (cs > 0) {
+      char* oOut = out + directSz * elementSize;
+      size_t oCount = rc - directSz;
+      if (isInPlace) {
+        if (reductionDivisor > 1) {
+          DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+              datatype, oOut, oScratch, oCount, reductionDivisor, stream);
+        } else {
+          DISPATCH_INCREMENTAL_ADD(datatype, oOut, oScratch, oCount, stream);
+        }
+      } else {
+        DISPATCH_FUSED_REDUCE(
+            datatype,
+            oOut,
+            ownBlock + directSz * elementSize,
+            oScratch,
+            oCount,
+            reductionDivisor,
+            stream);
+      }
     }
   }
 
@@ -1586,8 +1368,9 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
         nGroups,
         elementSize);
   }
-  // A>2: bandwidth-optimal recursive-halving relay + woven direct all-to-all.
-  return shardedRelayReduceScatterRecursive(
+  // A>2: two-group flat relay with reduce-at-helper woven with a direct
+  // all-to-all reduce-scatter over the intra links.
+  return shardedRelayReduceScatterFlat(
       sendBuffs,
       recvBuffs,
       recvCounts,
