@@ -1344,8 +1344,8 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Z_BusBW_4Groups_InPlace_1GB) {
  *
  * Each active rank's sendBuff (sendCount) is filled with rankFillValue(mi);
  * recvBuff holds A=4 slots of sendCount. After the all-gather, every active
- * rank's recvBuff slot i must equal rankFillValue(i), so a wrong bit-reversal /
- * slot mapping in the recursive-doubling path is detected.
+ * rank's recvBuff slot i must equal rankFillValue(i), so a wrong source->slot
+ * mapping in the flat scatter->forward relay is detected.
  */
 TEST_F(
     ShardedRelayMultiGroupAllGatherTest,
@@ -1508,12 +1508,11 @@ TEST_F(
 }
 
 /**
- * Tiny-segment regression: forces the relay csz==0 path for 4 active ranks.
- * With sendCount=512 the working buffer count = A*sendCount = 2048: pR=1024,
- * the largest relay half xg=512, csz=align(512/5)=0, so each recursive-doubling
- * step exchanges the whole half directly with the partner. The send and recv of
- * that swap MUST share one ncclGroup or it deadlocks. The direct all-to-all D
- * region (pD=1024) is also exercised.
+ * Tiny-segment regression for the flat A>2 all-gather. sendCount=512 keeps the
+ * per-helper relay chunk tiny (128-aligned), so it floors toward zero and the
+ * slots are delivered mostly over the direct chunks woven into each relay
+ * group. All sends and recvs share one ncclGroup per group, so the exchange is
+ * deadlock-safe by construction.
  */
 TEST_F(
     ShardedRelayMultiGroupAllGatherTest,
@@ -1524,7 +1523,7 @@ TEST_F(
 
   const int nGroups = 2;
   const int nActiveRanksPerGroup = 4;
-  const size_t sendCount = 512; // count = A*sendCount = 2048 -> relay csz == 0
+  const size_t sendCount = 512; // tiny send: relay chunk floors toward zero
   const size_t sendBytes = sendCount * sizeof(int32_t);
 
   TwoGroupFourActiveRanks groupConfig;
@@ -1699,9 +1698,8 @@ TEST_F(
 /**
  * BusBW with 4-active 2-group all-gather (1GB send, OUT-OF-PLACE).
  *
- * A 4-active all-gather active rank holds an A-slot recvBuff plus an A-slot
- * working buffer; 1GB keeps the per-rank footprint inside a shared devgpu/CI
- * memory budget.
+ * A 4-active all-gather active rank holds an A-slot recvBuff (A x sendCount);
+ * 1GB keeps the per-rank footprint inside a shared devgpu/CI memory budget.
  */
 TEST_F(
     ShardedRelayMultiGroupAllGatherTest,
