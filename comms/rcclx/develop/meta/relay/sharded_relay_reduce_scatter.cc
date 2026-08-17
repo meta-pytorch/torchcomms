@@ -563,6 +563,101 @@ static ncclResult_t shardedRelayReduceScatter2Active(
     size_t elementSize) {
   int numChunks = numHelpers + 1;
 
+  // ==========================================================================
+  // SIZE-ADAPTIVE PURE-DIRECT FAST PATH (A==2)
+  // ==========================================================================
+  // At small sizes the 2-hop helper relay (phases 1-2 = two group boundaries
+  // plus a helper HBM round trip) costs far more than the bandwidth it buys.
+  // Instead the two active ranks exchange their full foreign block directly in
+  // a single group (helpers idle) and reduce locally -- minimal latency, the
+  // same shape as all-to-all. maxBytes here (2*recvCount*elemSize) equals the
+  // bench's per-rank input label; crossover measured at 256 MB (same as the A>2
+  // path), above which the relay's helper cross links win on bandwidth.
+  size_t maxRc2 = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] > maxRc2) {
+      maxRc2 = recvCounts[g];
+    }
+  }
+  const size_t maxBytes2 = static_cast<size_t>(2) * maxRc2 * elementSize;
+  // A=2 relay is very efficient at large sizes (one group spread across all
+  // helpers -> up to ~1.9x), so the pure-direct crossover is low and scenario
+  // dependent (measured MI350X, bf16, 8 GPUs): fused relay overtakes at ~9 MB,
+  // independent at ~27 MB (independent has no cross-group contention, so direct
+  // holds on longer). Cross over just below each.
+  const size_t kA2PureDirectMaxBytes = (nGroups > 1)
+      ? (static_cast<size_t>(8) << 20) // fused: < 8 MB
+      : (static_cast<size_t>(16) << 20); // independent: < 16 MB
+  if (maxBytes2 < kA2PureDirectMaxBytes) {
+    void* pdScratch = nullptr;
+    size_t pdRecvcount = 0;
+    size_t pdOwnOff = 0;
+    bool pdInPlace = false;
+    if (myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
+      const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+      pdRecvcount = recvCounts[myActiveGroup];
+      pdOwnOff = static_cast<size_t>(cfg.myActiveIndex) * pdRecvcount;
+      const char* ownContrib =
+          static_cast<const char*>(sendBuffs[myActiveGroup]) +
+          pdOwnOff * elementSize;
+      pdInPlace =
+          (static_cast<const void*>(recvBuffs[myActiveGroup]) ==
+           static_cast<const void*>(ownContrib));
+      pdScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS, pdRecvcount * elementSize, stream);
+      if (pdScratch == nullptr) {
+        return ncclInternalError;
+      }
+    }
+
+    NCCLCHECK(ncclGroupStart());
+    for (int g = 0; g < nGroups; g++) {
+      if (recvCounts[g] == 0) {
+        continue;
+      }
+      const ShardedRelayRankConfig& cfg = configs[g];
+      if (!cfg.isActiveRank) {
+        continue; // helpers idle in pure-direct mode
+      }
+      size_t rc = recvCounts[g];
+      int other = 1 - cfg.myActiveIndex;
+      int partner = cfg.activeRanks[other];
+      // Send my contribution to the partner's owned block; receive the
+      // partner's contribution to my owned block into scratch.
+      NCCLCHECK(ncclSend(
+          static_cast<const char*>(sendBuffs[g]) +
+              static_cast<size_t>(other) * rc * elementSize,
+          rc,
+          datatype,
+          partner,
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          static_cast<char*>(pdScratch), rc, datatype, partner, comm, stream));
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    if (myActiveGroup >= 0 && pdRecvcount > 0) {
+      void* out = recvBuffs[myActiveGroup];
+      if (!pdInPlace) {
+        cudaMemcpyAsync(
+            out,
+            static_cast<const char*>(sendBuffs[myActiveGroup]) +
+                pdOwnOff * elementSize,
+            pdRecvcount * elementSize,
+            cudaMemcpyDeviceToDevice,
+            stream);
+      }
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype, out, pdScratch, pdRecvcount, reductionDivisor, stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(datatype, out, pdScratch, pdRecvcount, stream);
+      }
+    }
+    return ncclSuccess;
+  }
+
   // =========================================================================
   // CALCULATE PER-GROUP CHUNK SIZES (from the OUTPUT recvCount, i.e. one block)
   // =========================================================================
@@ -984,10 +1079,35 @@ static ncclResult_t shardedRelayReduceScatterRecursive(
   }
   const int nRsGroups = 2 * logA;
 
-  // Direct (intra) fraction = 60%. Balances per-link load: each intra link
-  // carries 0.5*D (1-hop), each cross link 0.75*R (2-hop); equal at
-  // D:R=0.6:0.4.
-  const size_t DIRECT_NUM = 60, DIRECT_DEN = 100;
+  // Largest per-group message drives the size-adaptive tuning. All groups march
+  // through the same superstep count to stay phase-synced, so tune off the max.
+  size_t maxRc = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] > maxRc) {
+      maxRc = recvCounts[g];
+    }
+  }
+  const size_t maxBytes = static_cast<size_t>(A) * maxRc * elementSize;
+
+  // Size-adaptive routing. The recursive-halving relay spreads traffic across
+  // helper cross links for bandwidth, but it costs 2*logA group boundaries
+  // (~25us each) plus 2-hop latency. Below the threshold that is pure overhead,
+  // so degenerate to a single-group pure-direct all-to-all reduce-scatter (each
+  // active rank swaps its foreign shards directly with the other A-1 owners and
+  // reduces locally; helpers idle) -- the same minimal-latency shape as
+  // all-to-all. Above it, keep the recursive relay with a 60% direct / 40%
+  // relay split (balances per-link load: intra links carry 0.5*D at 1 hop,
+  // cross links 0.75*R at 2 hops; equal at D:R = 0.6:0.4). The crossover is
+  // scenario-independent here (unlike all-gather): measured on MI350X (A=4,
+  // bf16, 8 GPUs) pure-direct wins or ties across the whole range up to 144 MB
+  // in both fused and independent modes (e.g. 4.5 MB 0.44x->0.99x, 72 MB
+  // 0.86x->0.98x fused), and the recursive relay only pulls ahead at
+  // >=256 MB where its helper-cross-link bandwidth beats intra-only direct. max
+  // bytes here (A*recvCount*elemSize) equals the bench's per-rank input label.
+  const size_t kFlatPureDirectMaxBytes = static_cast<size_t>(256)
+      << 20; // 256 MB
+  const bool pureDirect = (maxBytes < kFlatPureDirectMaxBytes);
+  const size_t DIRECT_NUM = pureDirect ? 100 : 60, DIRECT_DEN = 100;
 
   // Per-group working-buffer total count = A * recvCount (the full input), and
   // its R/D split. count is divisible by A by construction.
@@ -1126,9 +1246,23 @@ static ncclResult_t shardedRelayReduceScatterRecursive(
       int gi = giRs + phase;
       size_t dSliceLen = 0, dSliceOff = 0;
       if (myShardLen > 0) {
-        size_t base = myShardLen / nRsGroups;
-        dSliceOff = static_cast<size_t>(gi) * base;
-        dSliceLen = (gi == nRsGroups - 1) ? (myShardLen - dSliceOff) : base;
+        if (pureDirect) {
+          // No relay traffic to overlap against: carry the whole direct
+          // all-to-all in the first superstep and leave the rest empty.
+          dSliceOff = 0;
+          dSliceLen = (gi == 0) ? myShardLen : 0;
+        } else {
+          size_t base = myShardLen / nRsGroups;
+          dSliceOff = static_cast<size_t>(gi) * base;
+          dSliceLen = (gi == nRsGroups - 1) ? (myShardLen - dSliceOff) : base;
+        }
+      }
+
+      // Skip supersteps with no work: in pure-direct mode pR==0 (no relay) and
+      // all direct traffic is in gi==0, so gi>0 would be an empty group
+      // boundary.
+      if (pureDirect && gi > 0) {
+        continue;
       }
 
       NCCLCHECK(ncclGroupStart());
