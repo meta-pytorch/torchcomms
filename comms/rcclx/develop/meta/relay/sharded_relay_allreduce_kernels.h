@@ -68,6 +68,16 @@ void launchMultiReduceKernel(
     int divisor,
     cudaStream_t stream);
 
+template <typename T>
+void launchSeededMultiReduceKernel(
+    void* dst,
+    const void* seed,
+    const void* contribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream);
+
 // Suppress instantiation in the host TU; the actual instantiations live in
 // sharded_relay_allreduce_kernels.cu.
 #define RCCLX_DECLARE_RELAY_KERNEL_INSTANTIATIONS(T)                       \
@@ -90,6 +100,14 @@ void launchMultiReduceKernel(
       cudaStream_t stream);                                                \
   extern template void launchMultiReduceKernel<T>(                         \
       void* dst,                                                           \
+      const void* contribs,                                                \
+      int numContribs,                                                     \
+      size_t count,                                                        \
+      int divisor,                                                         \
+      cudaStream_t stream);                                                \
+  extern template void launchSeededMultiReduceKernel<T>(                   \
+      void* dst,                                                           \
+      const void* seed,                                                    \
       const void* contribs,                                                \
       int numContribs,                                                     \
       size_t count,                                                        \

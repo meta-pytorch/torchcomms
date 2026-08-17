@@ -202,6 +202,57 @@ void launchMultiReduceKernel(
       divisor);
 }
 
+/*
+ * Seeded multi-input reduce. Each scalar result follows the exact sequence:
+ * seed[i], then contribs[0][i] through contribs[numContribs - 1][i], then one
+ * optional divide. The loop controls prevent reassociation and vectorization.
+ */
+template <typename T>
+__global__ void seededMultiReduceKernel(
+    T* dst,
+    const T* seed,
+    const T* contribs,
+    int numContribs,
+    size_t count,
+    int divisor) {
+#pragma clang fp reassociate(off)
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
+
+#pragma clang loop vectorize(disable) interleave(disable)
+  for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
+    T acc = seed[elemIdx];
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+    for (int p = 0; p < numContribs; p++) {
+      acc = acc + contribs[static_cast<size_t>(p) * count + elemIdx];
+    }
+    if (divisor > 1) {
+      acc = acc / static_cast<T>(divisor);
+    }
+    dst[elemIdx] = acc;
+  }
+}
+
+template <typename T>
+void launchSeededMultiReduceKernel(
+    void* dst,
+    const void* seed,
+    const void* contribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream) {
+  const int blockSize = 256;
+  int gridSize = (count + blockSize - 1) / blockSize;
+  seededMultiReduceKernel<T><<<gridSize, blockSize, 0, stream>>>(
+      static_cast<T*>(dst),
+      static_cast<const T*>(seed),
+      static_cast<const T*>(contribs),
+      numContribs,
+      count,
+      divisor);
+}
+
 // Explicit template instantiations for every dtype used by the DISPATCH_*
 // macros in sharded_relay_allreduce.cc.  Without these, the symbols would
 // not exist with external linkage in the device object, and the host TU
@@ -228,6 +279,14 @@ void launchMultiReduceKernel(
       cudaStream_t stream);                                                \
   template void launchMultiReduceKernel<T>(                                \
       void* dst,                                                           \
+      const void* contribs,                                                \
+      int numContribs,                                                     \
+      size_t count,                                                        \
+      int divisor,                                                         \
+      cudaStream_t stream);                                                \
+  template void launchSeededMultiReduceKernel<T>(                          \
+      void* dst,                                                           \
+      const void* seed,                                                    \
       const void* contribs,                                                \
       int numContribs,                                                     \
       size_t count,                                                        \
