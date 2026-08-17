@@ -64,6 +64,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -348,24 +349,17 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
     EXPECT_EQ(errorCount, 0) << context;
   }
 
-  bool bfloat16BufferContainsNonSentinel(
-      const uint16_t* deviceBuffer,
-      size_t count,
-      uint16_t sentinel) {
-    std::vector<uint16_t> hostBuffer(count);
-    const hipError_t error = hipMemcpy(
-        hostBuffer.data(),
-        deviceBuffer,
-        count * sizeof(uint16_t),
-        hipMemcpyDeviceToHost);
-    if (error != hipSuccess) {
-      ADD_FAILURE() << "HIP error: " << hipGetErrorString(error);
-      return false;
+  static const char* reduceScatterRouteName(
+      rcclx::relay::ReduceScatterRoute route) {
+    switch (route) {
+      case rcclx::relay::ReduceScatterRoute::PureDirect:
+        return "PureDirect";
+      case rcclx::relay::ReduceScatterRoute::A2Relay:
+        return "A2Relay";
+      case rcclx::relay::ReduceScatterRoute::FlatOffload:
+        return "FlatOffload";
     }
-    return std::any_of(
-        hostBuffer.begin(), hostBuffer.end(), [sentinel](uint16_t value) {
-          return value != sentinel;
-        });
+    return "unknown";
   }
 
   void runBfloat16A2RoutingThreshold(
@@ -465,17 +459,30 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
             boundaries[boundaryIndex]);
       }
 
-      for (int g = 0; g < nGroups; g++) {
-        if (g == myActiveGroup) {
-          continue;
-        }
-        const bool helperParticipated = bfloat16BufferContainsNonSentinel(
-            sendBuffs[g], nActiveRanksPerGroup * recvCount, helperSentinel);
-        EXPECT_EQ(helperParticipated, boundaryIndex != 0)
-            << "Group " << g << " helper buffer on rank " << this->globalRank
-            << " did not witness the expected route at the "
-            << boundaries[boundaryIndex] << " routing-threshold case";
-      }
+      // Which route runs is internal to the collective and derived only from
+      // the message size. Helper participation used to make that visible, but
+      // helpers now stage into kernel-owned internal scratch and never write
+      // the caller's buffer on any route, so assert the collective's own
+      // selector instead: boundary 0 sits below the crossover and must stay
+      // pure-direct, the other two must take the relay.
+      const std::vector<size_t> routeRecvCounts(nGroups, recvCount);
+      const rcclx::relay::ReduceScatterRoute expectedRoute = boundaryIndex == 0
+          ? rcclx::relay::ReduceScatterRoute::PureDirect
+          : rcclx::relay::ReduceScatterRoute::A2Relay;
+      const rcclx::relay::ReduceScatterRoute actualRoute =
+          rcclx::relay::selectReduceScatterRoute(
+              nActiveRanksPerGroup,
+              this->numRanks - nActiveRanksPerGroup,
+              nGroups,
+              routeRecvCounts.data(),
+              sizeof(uint16_t));
+      EXPECT_EQ(actualRoute, expectedRoute)
+          << "internal route selection resolved to "
+          << reduceScatterRouteName(actualRoute) << " at the "
+          << boundaries[boundaryIndex]
+          << " routing-threshold case (recvCount=" << recvCount
+          << ", nGroups=" << nGroups << "), expected "
+          << reduceScatterRouteName(expectedRoute);
 
       for (int g = 0; g < nGroups; g++) {
         HIPCHECK_TEST(hipFree(sendBuffs[g]));

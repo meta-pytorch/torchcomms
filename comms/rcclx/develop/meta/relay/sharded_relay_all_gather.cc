@@ -8,11 +8,18 @@
 
 #include "sharded_relay_all_gather.h"
 #include "comm.h"
+#include "sharded_relay_route.h"
+
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <tuple>
 
 // GPU memory access alignment in elements for chunk size rounding.
 // Distinct from the CPU CACHE_LINE_SIZE (64 bytes) defined in comm.h
 // which is used for struct padding.
-static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
+static constexpr size_t CHUNK_ALIGN_ELEMENTS =
+    rcclx::relay::kRelayChunkAlignElements;
 
 // The rank-config builder below is a deliberate copy of the file-local helper
 // in sharded_relay_allreduce.cc (also mirrored in the reduce-scatter and
@@ -22,6 +29,69 @@ static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
 // reduction kernels are used, and the relay paths land every byte directly in
 // recvBuff / the helper passthrough buffers (no working-buffer scratch).
 namespace {
+
+// Cached scratch buffer pool for kernel-owned relay helper staging (keyed by
+// (device, stream, key), never shrinks, mutex-protected). A file-local copy of
+// the pool in sharded_relay_allreduce.cc / _reduce_scatter.cc so callers can
+// pass placeholder buffers for the groups where they are a helper.
+class ScratchBufferCache {
+ public:
+  static ScratchBufferCache& getInstance() {
+    static ScratchBufferCache instance;
+    return instance;
+  }
+
+  void* get(int key, size_t requiredBytes, cudaStream_t stream) {
+    if (requiredBytes == 0) {
+      return nullptr;
+    }
+    int device;
+    cudaGetDevice(&device);
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Keyed by (device, stream, key). The stream is part of the key because two
+    // relay collectives can run concurrently on one device on different streams
+    // (independent communicators do exactly this): sharing one staging buffer
+    // between them corrupts both. It also makes the stream-ordered free below
+    // safe -- an entry is only ever read or written by the stream that owns it.
+    auto& entry = buffers_[std::make_tuple(
+        device, static_cast<const void*>(stream), key)];
+    if (entry.buffer == nullptr || entry.size < requiredBytes) {
+      if (entry.buffer != nullptr) {
+        cudaFreeAsync(entry.buffer, stream);
+      }
+      size_t allocSize = requiredBytes;
+      if (allocSize >= 1024 * 1024) {
+        allocSize =
+            ((requiredBytes + 64 * 1024 * 1024 - 1) / (64 * 1024 * 1024)) *
+            (64 * 1024 * 1024);
+      }
+      cudaError_t err = cudaMallocAsync(&entry.buffer, allocSize, stream);
+      if (err != cudaSuccess) {
+        entry.buffer = nullptr;
+        entry.size = 0;
+        return nullptr;
+      }
+      entry.size = allocSize;
+    }
+    return entry.buffer;
+  }
+
+  ScratchBufferCache(const ScratchBufferCache&) = delete;
+  ScratchBufferCache& operator=(const ScratchBufferCache&) = delete;
+
+ private:
+  ScratchBufferCache() = default;
+  ~ScratchBufferCache() = default;
+  struct BufferEntry {
+    void* buffer = nullptr;
+    size_t size = 0;
+  };
+  std::mutex mutex_;
+  // (device, stream, group) -> grow-only staging buffer.
+  std::map<std::tuple<int, const void*, int>, BufferEntry> buffers_;
+};
+
+static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
 
 // Maximum number of helper ranks supported per group.
 constexpr int SHARDED_RELAY_MAX_HELPERS = 8;
@@ -283,6 +353,23 @@ static ncclResult_t shardedRelayAllGather2Active(
         stream);
   }
 
+  // Helper staging is kernel-owned scratch: callers pass a placeholder buffer
+  // for groups where they are a helper. Each helper group holds nActiveRanks
+  // chunks (one per active source) to receive and forward.
+  void* helperScratch[SHARDED_RELAY_MAX_GROUPS] = {nullptr};
+  for (int g = 0; g < nGroups; g++) {
+    const ShardedRelayRankConfig& cfg = configs[g];
+    if (!cfg.isActiveRank && sendCounts[g] > 0 && chunkSizes[g] > 0) {
+      size_t needBytes =
+          static_cast<size_t>(cfg.nActiveRanks) * chunkSizes[g] * elementSize;
+      helperScratch[g] = ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase + g, needBytes, stream);
+      if (helperScratch[g] == nullptr) {
+        return ncclInternalError;
+      }
+    }
+  }
+
   // =========================================================================
   // GROUP 1: relay scatter (active->helpers) || direct chunk A
   // (active<->active)
@@ -329,7 +416,7 @@ static ncclResult_t shardedRelayAllGather2Active(
           stream));
     } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
-      char* helperBuf = static_cast<char*>(recvBuffs[g]);
+      char* helperBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclRecv(
             helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
@@ -390,7 +477,7 @@ static ncclResult_t shardedRelayAllGather2Active(
           comm,
           stream));
     } else if (chunkSize > 0) {
-      const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
+      const char* helperBuf = static_cast<const char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(
             helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
@@ -460,29 +547,16 @@ static ncclResult_t shardedRelayAllGatherFlat(
   const int A = nActiveRanksPerGroup;
   const int H = numHelpers;
 
-  // All groups march through the same schedule to keep XGMI traffic
-  // phase-synced, so tune off the largest per-group message.
-  size_t maxSc = 0;
-  for (int g = 0; g < nGroups; g++) {
-    if (sendCounts[g] > maxSc) {
-      maxSc = sendCounts[g];
-    }
-  }
-  const size_t maxBytes = maxSc * elementSize;
-
   // An independent call has the cross links to itself, so the offload pays off
-  // earlier than in a fused call where every group is driving them at once.
-  // Measured crossover (MI350X, A=4, bf16, 8 GPUs): a fused call has every
-  // group driving the cross links at once so the offload needs ~12 MB to pay
-  // off, while an independent call has them to itself and turns a profit from
-  // ~8 MB.
-  const size_t kOffloadMinBytes = (nGroups > 1)
-      ? (static_cast<size_t>(12) << 20) // fused: >= 12 MB
-      : (static_cast<size_t>(8) << 20); // independent: >= 8 MB
-  // A == 2 only reaches this function in the small-message regime, where the
-  // dedicated 2-active relay has already been ruled out; running the offload
-  // there just re-adds the hop it was routed here to avoid.
-  const bool useOffload = (H > 0) && (A > 2) && (maxBytes >= kOffloadMinBytes);
+  // earlier than in a fused call where every group is driving them at once. The
+  // size -> route mapping lives in selectAllGatherRoute() so the tests assert
+  // the same definition this dispatch uses; it also encodes why A == 2 never
+  // takes the offload (it only reaches this function in the small-message
+  // regime, where the dedicated 2-active relay has already been ruled out, so
+  // offloading would just re-add the hop it was routed here to avoid).
+  const bool useOffload = rcclx::relay::selectAllGatherRoute(
+                              A, H, nGroups, sendCounts, elementSize) ==
+      rcclx::relay::AllGatherRoute::FlatOffload;
 
   // Per-group geometry. cs = sc/(A+H) aligned down; the direct region absorbs
   // the remainder so directSz + H*cs == sc.
@@ -529,6 +603,23 @@ static ncclResult_t shardedRelayAllGatherFlat(
         sendCounts[myActiveGroup] * elementSize,
         cudaMemcpyDeviceToDevice,
         stream);
+  }
+
+  // Helper staging is kernel-owned scratch: callers pass a placeholder buffer
+  // for groups where they are a helper. Each helper group holds A slices of cs
+  // (one per active source, A*cs <= sc).
+  void* helperScratch[SHARDED_RELAY_MAX_GROUPS] = {nullptr};
+  for (int g = 0; g < nGroups; g++) {
+    const ShardedRelayRankConfig& cfg = configs[g];
+    if (!cfg.isActiveRank && sendCounts[g] > 0 && csArr[g] > 0) {
+      size_t needBytes =
+          static_cast<size_t>(cfg.nActiveRanks) * csArr[g] * elementSize;
+      helperScratch[g] = ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase + g, needBytes, stream);
+      if (helperScratch[g] == nullptr) {
+        return ncclInternalError;
+      }
+    }
   }
 
   // =========================================================================
@@ -582,7 +673,7 @@ static ncclResult_t shardedRelayAllGatherFlat(
       }
     } else if (cs > 0) {
       // Helper: receive each source's slice into slot s.
-      char* hbuff = static_cast<char*>(recvBuffs[g]);
+      char* hbuff = static_cast<char*>(helperScratch[g]);
       for (int s = 0; s < cfg.nActiveRanks; s++) {
         NCCLCHECK(ncclRecv(
             hbuff + static_cast<size_t>(s) * cs * elementSize,
@@ -673,7 +764,7 @@ static ncclResult_t shardedRelayAllGatherFlat(
       }
     } else {
       // Helper: forward source s's slice to every dest other than s.
-      const char* hbuff = static_cast<const char*>(recvBuffs[g]);
+      const char* hbuff = static_cast<const char*>(helperScratch[g]);
       for (int s = 0; s < cfg.nActiveRanks; s++) {
         for (int d = 0; d < A; d++) {
           if (d == s)
@@ -794,26 +885,12 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
   // Size-adaptive routing for A==2. The 2Active relay wins on bandwidth at
   // large sizes, but at small sizes it is latency-bound; the A-generic Flat
   // path (with its own small-size pure-direct mode) does a single-group direct
-  // shard exchange with minimal latency. Route small A==2 to Flat, large to
-  // 2Active. maxBytes (sendCount*elemSize) equals the bench per-rank input
-  // shard label.
-  size_t maxScAg = 0;
-  for (int g = 0; g < nGroups; g++) {
-    if (sendCounts[g] > maxScAg) {
-      maxScAg = sendCounts[g];
-    }
-  }
-  const size_t maxBytesAg = maxScAg * elementSize;
-  // Crossover measured MI350X (bf16, 8 GPUs): fused 2Active relay overtakes
-  // Flat at ~4.5 MB (Flat wins the small end, 576 KB 0.75x->1.31x), independent
-  // at ~13.5 MB (0.34->0.51 @4KB). Independent has no cross-group contention so
-  // direct holds on longer. Cross over below each.
-  const size_t kAgA2PureDirectMaxBytes = (nGroups > 1)
-      ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(9) << 20); // independent: < 9 MB
-  const bool agA2UseFlat =
-      (nActiveRanksPerGroup == 2) && (maxBytesAg < kAgA2PureDirectMaxBytes);
-  if (nActiveRanksPerGroup == 2 && !agA2UseFlat) {
+  // shard exchange with minimal latency. The size -> route mapping lives in
+  // selectAllGatherRoute() so the tests assert the same definition this
+  // dispatch uses.
+  if (rcclx::relay::selectAllGatherRoute(
+          nActiveRanksPerGroup, numHelpers, nGroups, sendCounts, elementSize) ==
+      rcclx::relay::AllGatherRoute::A2Relay) {
     r = shardedRelayAllGather2Active(
         sendBuffs2,
         recvBuffs2,
