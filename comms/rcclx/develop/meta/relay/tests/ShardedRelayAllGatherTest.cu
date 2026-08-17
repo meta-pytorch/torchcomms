@@ -309,6 +309,110 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
     }
   }
 
+  void runOutOfPlaceRoutingCases(
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups,
+      const std::vector<size_t>& caseSendCounts,
+      size_t pureDirectMaxCount) {
+    int myActiveGroup = -1;
+    int myActiveIndex = -1;
+    for (int g = 0; g < nGroups; g++) {
+      for (int i = 0; i < nActiveRanksPerGroup; i++) {
+        if (allActiveRanks[g][i] == this->globalRank) {
+          myActiveGroup = g;
+          myActiveIndex = i;
+        }
+      }
+    }
+
+    constexpr int32_t kHelperSentinel = -1;
+    for (size_t sendCount : caseSendCounts) {
+      const size_t sendBytes = sendCount * sizeof(int32_t);
+      const size_t helperElements =
+          static_cast<size_t>(nActiveRanksPerGroup) * sendCount;
+      const bool expectPureDirect = sendCount < pureDirectMaxCount;
+      std::vector<int32_t*> sendBuffs(nGroups);
+      std::vector<int32_t*> recvBuffs(nGroups);
+
+      for (int g = 0; g < nGroups; g++) {
+        if (g == myActiveGroup) {
+          HIPCHECK_TEST(hipMalloc(&sendBuffs[g], sendBytes));
+          HIPCHECK_TEST(hipMalloc(
+              &recvBuffs[g],
+              static_cast<size_t>(nActiveRanksPerGroup) * sendBytes));
+        } else {
+          HIPCHECK_TEST(
+              hipMalloc(&sendBuffs[g], helperElements * sizeof(int32_t)));
+          recvBuffs[g] = sendBuffs[g];
+        }
+      }
+
+      barrierSyncOn(nullptr);
+
+      for (int g = 0; g < nGroups; g++) {
+        if (g == myActiveGroup) {
+          fillDeviceRegion(
+              sendBuffs[g], sendCount, rankFillValue(myActiveIndex));
+          HIPCHECK_TEST(hipMemset(
+              recvBuffs[g],
+              0,
+              static_cast<size_t>(nActiveRanksPerGroup) * sendBytes));
+        } else {
+          fillDeviceRegion(sendBuffs[g], helperElements, kHelperSentinel);
+        }
+      }
+
+      std::vector<const void*> sendPtrs(nGroups);
+      std::vector<void*> recvPtrs(nGroups);
+      std::vector<size_t> sendCounts(nGroups, sendCount);
+      for (int g = 0; g < nGroups; g++) {
+        sendPtrs[g] = sendBuffs[g];
+        recvPtrs[g] = recvBuffs[g];
+      }
+
+      ncclResult_t result = callAllGatherCompat(
+          sendPtrs.data(),
+          recvPtrs.data(),
+          sendCounts.data(),
+          ncclInt32,
+          this->comm,
+          this->stream,
+          allActiveRanks,
+          nActiveRanksPerGroup,
+          nGroups);
+      ASSERT_EQ(result, ncclSuccess) << "sendCount=" << sendCount;
+      HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+      if (myActiveGroup >= 0) {
+        verifyAllGatherOutput(
+            recvBuffs[myActiveGroup],
+            sendCount,
+            myActiveGroup,
+            nActiveRanksPerGroup);
+      }
+      for (int g = 0; g < nGroups; g++) {
+        if (g == myActiveGroup) {
+          continue;
+        }
+        verifyDeviceBufferEquals(
+            recvBuffs[g],
+            1,
+            expectPureDirect ? kHelperSentinel : rankFillValue(0),
+            g,
+            expectPureDirect ? "Pure-direct route modified helper storage"
+                             : "Relay route did not use helper storage");
+      }
+
+      for (int g = 0; g < nGroups; g++) {
+        HIPCHECK_TEST(hipFree(sendBuffs[g]));
+        if (g == myActiveGroup) {
+          HIPCHECK_TEST(hipFree(recvBuffs[g]));
+        }
+      }
+    }
+  }
+
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
@@ -577,7 +681,7 @@ TEST_F(
   const size_t sendBytes = 64ULL * 1024 * 1024;
   const size_t sendCount = sendBytes / sizeof(int32_t);
   const int numHelpers = this->numRanks - nActiveRanksPerGroup;
-  const int numChunks = numHelpers + 1;
+  const int numChunks = numHelpers + 2;
 
   Standard4GroupActiveRanks groupConfig;
   const int* const* allActiveRanks = groupConfig.allActiveRanks;
@@ -655,6 +759,115 @@ TEST_F(
   for (int g = 0; g < nGroups; g++) {
     if (g != myActiveGroup) {
       HIPCHECK_TEST(hipFree(helperBuffers[g]));
+    }
+  }
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_4Groups_HeterogeneousRelayAndTiny) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 4;
+  const int nActiveRanksPerGroup = 2;
+  const size_t sendCounts[nGroups] = {
+      (4ULL * 1024 * 1024) / sizeof(int32_t), 511, 777, 1023};
+  const bool inPlace[nGroups] = {false, true, false, true};
+  const int numChunks = this->numRanks - nActiveRanksPerGroup + 2;
+  const int32_t helperSentinel = -1;
+
+  Standard4GroupActiveRanks groupConfig;
+  const int* const* allActiveRanks = groupConfig.allActiveRanks;
+
+  int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+  int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+  int32_t* sendBuffs[nGroups];
+  int32_t* recvBuffs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    size_t sendBytes = sendCounts[g] * sizeof(int32_t);
+    size_t recvBytes = static_cast<size_t>(nActiveRanksPerGroup) * sendBytes;
+    if (g != myActiveGroup) {
+      size_t chunkSize = sendCounts[g] / numChunks;
+      chunkSize = (chunkSize / 128) * 128;
+      size_t helperElements = chunkSize == 0
+          ? 1
+          : static_cast<size_t>(nActiveRanksPerGroup) * chunkSize;
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], helperElements * sizeof(int32_t)));
+      recvBuffs[g] = sendBuffs[g];
+    } else if (inPlace[g]) {
+      HIPCHECK_TEST(hipMalloc(&recvBuffs[g], recvBytes));
+      sendBuffs[g] =
+          recvBuffs[g] + static_cast<size_t>(myActiveIndex) * sendCounts[g];
+    } else {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], sendBytes));
+      HIPCHECK_TEST(hipMalloc(&recvBuffs[g], recvBytes));
+    }
+  }
+
+  barrierSyncOn(recvBuffs[0]);
+
+  for (int g = 0; g < nGroups; g++) {
+    if (g == myActiveGroup) {
+      size_t recvBytes = static_cast<size_t>(nActiveRanksPerGroup) *
+          sendCounts[g] * sizeof(int32_t);
+      HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, recvBytes));
+      fillDeviceRegion(
+          sendBuffs[g], sendCounts[g], rankFillValue(myActiveIndex));
+      continue;
+    }
+
+    size_t chunkSize = sendCounts[g] / numChunks;
+    chunkSize = (chunkSize / 128) * 128;
+    size_t helperElements = chunkSize == 0
+        ? 1
+        : static_cast<size_t>(nActiveRanksPerGroup) * chunkSize;
+    fillDeviceRegion(
+        recvBuffs[g], helperElements, chunkSize == 0 ? helperSentinel : 0);
+  }
+
+  const void* sendPtrs[nGroups];
+  void* recvPtrs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    sendPtrs[g] = sendBuffs[g];
+    recvPtrs[g] = recvBuffs[g];
+  }
+
+  ncclResult_t result = callAllGatherCompat(
+      sendPtrs,
+      recvPtrs,
+      sendCounts,
+      ncclInt32,
+      this->comm,
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  verifyAllGatherOutput(
+      recvBuffs[myActiveGroup], sendCounts[myActiveGroup], myActiveGroup);
+  for (int g = 0; g < nGroups; g++) {
+    if (g != myActiveGroup && sendCounts[g] < 1024) {
+      verifyDeviceBufferEquals(
+          recvBuffs[g],
+          1,
+          helperSentinel,
+          g,
+          "Tiny-group helper buffer was modified");
+    }
+  }
+
+  for (int g = 0; g < nGroups; g++) {
+    if (g == myActiveGroup && !inPlace[g]) {
+      HIPCHECK_TEST(hipFree(sendBuffs[g]));
+      HIPCHECK_TEST(hipFree(recvBuffs[g]));
+    } else {
+      HIPCHECK_TEST(hipFree(recvBuffs[g]));
     }
   }
 }

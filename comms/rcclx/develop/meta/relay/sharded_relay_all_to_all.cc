@@ -210,6 +210,7 @@ static ncclResult_t shardedRelayAllToAll2Active(
 
   size_t chunkSizes[SHARDED_RELAY_MAX_GROUPS];
   size_t relayTotals[SHARDED_RELAY_MAX_GROUPS]; // == direct chunk A's offset
+  size_t dirASizes[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBOffsets[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBSizes[SHARDED_RELAY_MAX_GROUPS]; // absorbs the remainder
 
@@ -220,21 +221,23 @@ static ncclResult_t shardedRelayAllToAll2Active(
     if (count == 0) {
       chunkSizes[g] = 0;
       relayTotals[g] = 0;
+      dirASizes[g] = 0;
       dirBOffsets[g] = 0;
       dirBSizes[g] = 0;
       continue;
     }
 
-    // A chunk size that rounds down to zero means the segment is too small to
-    // scatter; the caller should fall back to a regular all-to-all.
     size_t chunkSize = count / numChunks;
     chunkSize = (chunkSize / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-    if (chunkSize == 0) {
-      return ncclInvalidArgument;
-    }
     chunkSizes[g] = chunkSize;
     relayTotals[g] = static_cast<size_t>(numHelpers) * chunkSize;
-    dirBOffsets[g] = relayTotals[g] + chunkSize;
+    if (chunkSize == 0) {
+      dirASizes[g] = count / 2;
+      dirBOffsets[g] = dirASizes[g];
+    } else {
+      dirASizes[g] = chunkSize;
+      dirBOffsets[g] = relayTotals[g] + chunkSize;
+    }
     dirBSizes[g] = count - dirBOffsets[g];
   }
 
@@ -282,33 +285,35 @@ static ncclResult_t shardedRelayAllToAll2Active(
           static_cast<char*>(recvBuffs[g]) + exchangeSegOffset * elementSize;
 
       // Scatter: chunk h of my exchange segment goes to helper h.
-      for (int h = 0; h < cfg.numHelpers; h++) {
-        NCCLCHECK(ncclSend(
-            sendSeg + static_cast<size_t>(h) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
-            cfg.helperRanks[h],
-            comm,
-            stream));
+      if (chunkSize > 0) {
+        for (int h = 0; h < cfg.numHelpers; h++) {
+          NCCLCHECK(ncclSend(
+              sendSeg + static_cast<size_t>(h) * chunkSize * elementSize,
+              chunkSize,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
       }
 
       // Direct chunk A over the otherwise-idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       NCCLCHECK(ncclSend(
           sendSeg + relayTotals[g] * elementSize,
-          chunkSize,
+          dirASizes[g],
           datatype,
           partner,
           comm,
           stream));
       NCCLCHECK(ncclRecv(
           recvSeg + relayTotals[g] * elementSize,
-          chunkSize,
+          dirASizes[g],
           datatype,
           partner,
           comm,
           stream));
-    } else {
+    } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
       char* helperBuf = static_cast<char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
@@ -345,14 +350,16 @@ static ncclResult_t shardedRelayAllToAll2Active(
       char* recvSeg =
           static_cast<char*>(recvBuffs[g]) + exchangeSegOffset * elementSize;
 
-      for (int h = 0; h < cfg.numHelpers; h++) {
-        NCCLCHECK(ncclRecv(
-            recvSeg + static_cast<size_t>(h) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
-            cfg.helperRanks[h],
-            comm,
-            stream));
+      if (chunkSize > 0) {
+        for (int h = 0; h < cfg.numHelpers; h++) {
+          NCCLCHECK(ncclRecv(
+              recvSeg + static_cast<size_t>(h) * chunkSize * elementSize,
+              chunkSize,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
       }
 
       // Direct chunk B, again over the idle active<->active link.
@@ -371,7 +378,7 @@ static ncclResult_t shardedRelayAllToAll2Active(
           partner,
           comm,
           stream));
-    } else {
+    } else if (chunkSize > 0) {
       const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(

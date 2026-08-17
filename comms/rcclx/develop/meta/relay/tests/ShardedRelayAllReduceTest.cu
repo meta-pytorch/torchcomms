@@ -43,8 +43,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <hip/hip_runtime.h>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -251,6 +253,18 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     const int* allActiveRanks[2] = {storage[0], storage[1]};
   };
 
+  struct PermutedTwoGroupFourActiveRanks {
+    int storage[2][4] = {{0, 2, 5, 7}, {1, 3, 4, 6}};
+    const int* allActiveRanks[2] = {storage[0], storage[1]};
+  };
+
+  struct Bfloat16AllReduceCase {
+    size_t count;
+    ncclRedOp_t op;
+    const char* description;
+    bool useShardPattern{false};
+  };
+
   // Run a 1-element ncclAllReduce on `scratchBuffer` to act as a cross-rank
   // barrier (ensuring all ranks reach this point before proceeding with
   // benchmark / correctness work).
@@ -313,6 +327,167 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     }
     EXPECT_EQ(errorCount, 0) << failureMessage;
     return errorCount;
+  }
+
+  static uint16_t floatToBfloat16(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return static_cast<uint16_t>(bits >> 16);
+  }
+
+  static float bfloat16ShardPatternValue(
+      int activeIndex,
+      size_t elementIndex,
+      size_t count,
+      int nActiveRanks) {
+    const size_t shardSize = count / static_cast<size_t>(nActiveRanks);
+    const size_t shardIndex = elementIndex / shardSize;
+    const size_t offsetLane = (elementIndex % shardSize) % 11;
+    return static_cast<float>(
+        1 + (activeIndex + 1) * (shardIndex + 1) + 4 * offsetLane);
+  }
+
+  static float expectedBfloat16ShardPatternValue(
+      size_t elementIndex,
+      size_t count,
+      int nActiveRanks,
+      ncclRedOp_t op) {
+    const size_t shardSize = count / static_cast<size_t>(nActiveRanks);
+    const size_t shardIndex = elementIndex / shardSize;
+    const size_t offsetLane = (elementIndex % shardSize) % 11;
+    const int activeIndexSum = nActiveRanks * (nActiveRanks + 1) / 2;
+    const float expectedSum = static_cast<float>(
+        nActiveRanks * (1 + 4 * offsetLane) +
+        (shardIndex + 1) * activeIndexSum);
+    return op == ncclAvg ? expectedSum / nActiveRanks : expectedSum;
+  }
+
+  void verifyBfloat16DeviceBufferEquals(
+      const uint16_t* deviceBuffer,
+      size_t count,
+      float expectedValue,
+      int nActiveRanks,
+      int groupIndex,
+      const Bfloat16AllReduceCase& testCase) {
+    std::vector<uint16_t> hostOutput(count);
+    HIPCHECK_TEST(hipMemcpy(
+        hostOutput.data(),
+        deviceBuffer,
+        count * sizeof(uint16_t),
+        hipMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (size_t i = 0; i < count && errorCount < 10; ++i) {
+      const float expected = testCase.useShardPattern
+          ? expectedBfloat16ShardPatternValue(
+                i, count, nActiveRanks, testCase.op)
+          : expectedValue;
+      const uint16_t expectedBits = floatToBfloat16(expected);
+      if (hostOutput[i] != expectedBits) {
+        std::cout << "R" << this->globalRank << ": Group " << groupIndex
+                  << " BF16 mismatch for " << testCase.description
+                  << " at index " << i << ": expected bits " << expectedBits
+                  << " but got " << hostOutput[i] << std::endl;
+        errorCount++;
+      }
+    }
+    EXPECT_EQ(errorCount, 0) << testCase.description;
+  }
+
+  void runBfloat16AllReduceCases(
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups,
+      const std::vector<Bfloat16AllReduceCase>& cases) {
+    int myActiveGroup = -1;
+    int myActiveIndex = -1;
+    for (int g = 0; g < nGroups; ++g) {
+      for (int a = 0; a < nActiveRanksPerGroup; ++a) {
+        if (allActiveRanks[g][a] == this->globalRank) {
+          myActiveGroup = g;
+          myActiveIndex = a;
+        }
+      }
+    }
+
+    for (const auto& testCase : cases) {
+      const size_t dataBytes = testCase.count * sizeof(uint16_t);
+      uint16_t* buffers[4] = {};
+      const void* sendPtrs[4] = {};
+      void* recvPtrs[4] = {};
+      size_t counts[4] = {};
+
+      for (int g = 0; g < nGroups; ++g) {
+        const bool isActive = g == myActiveGroup;
+        const size_t allocationBytes =
+            isActive ? dataBytes : std::max(sizeof(uint16_t), 2 * dataBytes);
+        HIPCHECK_TEST(hipMalloc(&buffers[g], allocationBytes));
+        sendPtrs[g] = buffers[g];
+        recvPtrs[g] = buffers[g];
+        counts[g] = testCase.count;
+      }
+
+      barrierSyncOn(nullptr);
+
+      for (int g = 0; g < nGroups; ++g) {
+        if (g == myActiveGroup) {
+          std::vector<uint16_t> hostInput(testCase.count);
+          if (testCase.useShardPattern) {
+            // The configured active index and logical output offset jointly
+            // fingerprint each contribution. This exposes implementations that
+            // infer the index from global rank or place a shard at a wrong
+            // offset.
+            for (size_t i = 0; i < testCase.count; ++i) {
+              hostInput[i] = floatToBfloat16(bfloat16ShardPatternValue(
+                  myActiveIndex, i, testCase.count, nActiveRanksPerGroup));
+            }
+          } else {
+            // Active index a contributes 2a+1, so SUM=A^2 and AVG=A exactly.
+            const float inputValue = static_cast<float>(2 * myActiveIndex + 1);
+            std::fill(
+                hostInput.begin(),
+                hostInput.end(),
+                floatToBfloat16(inputValue));
+          }
+          HIPCHECK_TEST(hipMemcpy(
+              buffers[g], hostInput.data(), dataBytes, hipMemcpyHostToDevice));
+        } else {
+          HIPCHECK_TEST(hipMemset(
+              buffers[g], 0, std::max(sizeof(uint16_t), 2 * dataBytes)));
+        }
+      }
+
+      const ncclResult_t result = callAllReduceCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclBfloat16,
+          testCase.op,
+          this->comm,
+          this->stream,
+          allActiveRanks,
+          nActiveRanksPerGroup,
+          nGroups);
+      ASSERT_EQ(result, ncclSuccess) << testCase.description;
+      HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+      if (myActiveGroup >= 0) {
+        const float expectedValue = testCase.op == ncclAvg
+            ? static_cast<float>(nActiveRanksPerGroup)
+            : static_cast<float>(nActiveRanksPerGroup * nActiveRanksPerGroup);
+        verifyBfloat16DeviceBufferEquals(
+            buffers[myActiveGroup],
+            testCase.count,
+            expectedValue,
+            nActiveRanksPerGroup,
+            myActiveGroup,
+            testCase);
+      }
+
+      for (int g = 0; g < nGroups; ++g) {
+        HIPCHECK_TEST(hipFree(buffers[g]));
+      }
+    }
   }
 
   int localRank{0};
@@ -548,6 +723,99 @@ TEST_F(
       // Only free recvBuffs for active groups (helpers share the buffer)
       HIPCHECK_TEST(hipFree(recvBuffs[g]));
     }
+  }
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_4Groups_HeterogeneousPositiveSizes) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 4;
+  const int nActiveRanksPerGroup = 2;
+  const size_t largeCount = (4ULL * 1024 * 1024) / sizeof(int32_t);
+  const size_t counts[nGroups] = {largeCount, 513, largeCount, 1023};
+
+  Standard4GroupActiveRanks groupConfig;
+  const int* const* allActiveRanks = groupConfig.allActiveRanks;
+  const int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+  const int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+  int32_t* sendBuffs[nGroups];
+  int32_t* recvBuffs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    const size_t dataBytes = counts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], dataBytes));
+      if (g < 2) {
+        recvBuffs[g] = sendBuffs[g];
+      } else {
+        HIPCHECK_TEST(hipMalloc(&recvBuffs[g], dataBytes));
+      }
+    } else {
+      const size_t helperBytes = counts[g] < 1024
+          ? sizeof(int32_t)
+          : static_cast<size_t>(nActiveRanksPerGroup) * dataBytes;
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], helperBytes));
+      recvBuffs[g] = sendBuffs[g];
+    }
+  }
+
+  barrierSyncOn(recvBuffs[0]);
+
+  for (int g = 0; g < nGroups; g++) {
+    const size_t dataBytes = counts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      std::vector<int32_t> hostData(counts[g], myActiveIndex + 1);
+      HIPCHECK_TEST(hipMemcpy(
+          sendBuffs[g], hostData.data(), dataBytes, hipMemcpyHostToDevice));
+      if (recvBuffs[g] != sendBuffs[g]) {
+        HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, dataBytes));
+      }
+    } else {
+      const size_t helperBytes = counts[g] < 1024
+          ? sizeof(int32_t)
+          : static_cast<size_t>(nActiveRanksPerGroup) * dataBytes;
+      HIPCHECK_TEST(hipMemset(sendBuffs[g], 0, helperBytes));
+    }
+  }
+
+  const void* sendPtrs[nGroups];
+  void* recvPtrs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    sendPtrs[g] = sendBuffs[g];
+    recvPtrs[g] = recvBuffs[g];
+  }
+
+  ncclResult_t result = callAllReduceCompat(
+      sendPtrs,
+      recvPtrs,
+      counts,
+      ncclInt32,
+      ncclSum,
+      this->comm,
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  verifyDeviceBufferEquals(
+      recvBuffs[myActiveGroup],
+      counts[myActiveGroup],
+      3,
+      myActiveGroup,
+      "Heterogeneous positive-size SUM mismatch (expected 3)");
+
+  for (int g = 0; g < nGroups; g++) {
+    if (recvBuffs[g] != sendBuffs[g]) {
+      HIPCHECK_TEST(hipFree(recvBuffs[g]));
+    }
+    HIPCHECK_TEST(hipFree(sendBuffs[g]));
   }
 }
 
@@ -952,7 +1220,7 @@ TEST_F(
   const size_t dataBytes = 64ULL * 1024 * 1024;
   const size_t count = dataBytes / sizeof(int32_t);
   const int numHelpers = this->numRanks - nActiveRanksPerGroup;
-  const int numChunks = numHelpers + 1;
+  const int numChunks = numHelpers + 2;
 
   Standard4GroupActiveRanks groupConfig;
   const int* const* allActiveRanks = groupConfig.allActiveRanks;
