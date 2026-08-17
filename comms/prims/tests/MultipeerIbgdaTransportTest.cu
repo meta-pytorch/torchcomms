@@ -8,6 +8,9 @@
 #include <string>
 
 #include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
+#ifndef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/ibgda/IbgdaWarpProxy.cuh"
+#endif
 
 namespace comms::prims::test {
 
@@ -429,6 +432,40 @@ void testTwoCallSendThenRecv(
 }
 
 #ifndef __HIP_PLATFORM_AMD__
+constexpr uint32_t kWarpProxyTestWorkerThreads = 512;
+using WarpProxyTest = IbgdaWarpProxy<kWarpProxyTestWorkerThreads>;
+
+__global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
+    warpProxySendRecvKernel(
+        P2pIbgdaTransportDevice* transport,
+        void* buffer,
+        std::size_t nbytes,
+        std::size_t maxSignalBytes,
+        bool send,
+        uint32_t queueDepth,
+        uint64_t* queueFullCount,
+        uint64_t timeoutCycles) {
+  Timeout timeout(timeoutCycles);
+  timeout.start();
+  auto block = make_block_group();
+  __shared__ WarpProxyTest::SharedState sharedState;
+  WarpProxyTest::run(
+      sharedState,
+      block,
+      WarpProxyTest::Config{
+          .queueDepth = queueDepth,
+          .queueFullCount = queueFullCount,
+      },
+      timeout,
+      [&](auto& ops) {
+        if (send) {
+          ops.send(*transport, buffer, nbytes, maxSignalBytes);
+        } else {
+          ops.recv(*transport, buffer, nbytes, maxSignalBytes);
+        }
+      });
+}
+
 __global__ void progressSendRecvKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
@@ -663,6 +700,43 @@ __global__ void verifyTransportStagingKernel(
 }
 
 #endif
+
+void testWarpProxySendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    uint32_t queueDepth,
+    uint64_t* queueFullCount,
+    uint64_t timeoutCycles) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)buffer;
+  (void)nbytes;
+  (void)maxSignalBytes;
+  (void)send;
+  (void)queueDepth;
+  (void)queueFullCount;
+  (void)timeoutCycles;
+  throw std::runtime_error("warp proxy is NVIDIA-only");
+#else
+  warpProxySendRecvKernel<<<1, WarpProxyTest::kBlockThreads>>>(
+      transport,
+      buffer,
+      nbytes,
+      maxSignalBytes,
+      send,
+      queueDepth,
+      queueFullCount,
+      timeoutCycles);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
 
 void testProgressSendRecv(
     P2pIbgdaTransportDevice* transport,

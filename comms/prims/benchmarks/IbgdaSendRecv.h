@@ -15,6 +15,8 @@ class P2pIbgdaTransportDevice;
 
 namespace comms::prims::benchmark {
 
+inline constexpr uint32_t kDefaultIbgdaWarpProxyQueueDepth = 16;
+
 /**
  * Launch bidirectional tile sendrecv kernel for IBGDA transport.
  *
@@ -85,6 +87,19 @@ void launch_ibgda_send(
     Timeout timeout = Timeout());
 
 /**
+ * Launch NVIDIA-only unidirectional send with one IB service warp per block.
+ */
+void launch_ibgda_warp_proxy_send(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout(),
+    uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
+
+/**
  * Launch unidirectional tile recv kernel. All blocks receive.
  */
 void launch_ibgda_recv(
@@ -95,6 +110,19 @@ void launch_ibgda_recv(
     cudaStream_t stream,
     std::size_t maxSignalBytes = 0,
     Timeout timeout = Timeout());
+
+/**
+ * Launch NVIDIA-only unidirectional receive with one IB service warp per block.
+ */
+void launch_ibgda_warp_proxy_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes = 0,
+    Timeout timeout = Timeout(),
+    uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
 
 /**
  * Low-latency (LL) protocol counterparts of launch_ibgda_send_recv/send/recv.

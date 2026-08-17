@@ -1,5 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include "comms/prims/benchmarks/IbgdaSendRecv.h"
+
 #include "comms/prims/benchmarks/IbgdaSendRecv.cuh"
 
 #include <algorithm>
@@ -9,13 +11,23 @@
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
+#ifndef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/ibgda/IbgdaWarpProxy.cuh"
+#endif
 
 namespace comms::prims::benchmark {
 
 namespace {
 
-__device__ __forceinline__ std::size_t benchmark_align_protocol_bytes(
-    std::size_t nbytes) {
+#ifndef __HIP_PLATFORM_AMD__
+constexpr uint32_t kWarpProxyWorkerThreads = 512;
+constexpr uint32_t kWarpProxyBlockThreads =
+    kWarpProxyWorkerThreads + comms::device::kWarpSize;
+using BenchmarkWarpProxy = IbgdaWarpProxy<kWarpProxyWorkerThreads>;
+#endif
+
+__device__ __forceinline__
+    std::size_t benchmark_align_protocol_bytes(std::size_t nbytes) {
   return (nbytes + 15ULL) & ~15ULL;
 }
 
@@ -268,6 +280,42 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
   }
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+template <bool IsSend>
+__global__ void __launch_bounds__(kWarpProxyBlockThreads, 1)
+    ibgda_warp_proxy_kernel(
+        P2pIbgdaTransportDevice* transport,
+        char* buffer,
+        std::size_t totalBytes,
+        std::size_t maxSignalBytes,
+        uint32_t queueDepth,
+        Timeout timeout) {
+  timeout.start();
+  auto block = make_block_group();
+  __shared__ BenchmarkWarpProxy::SharedState sharedState;
+  BenchmarkWarpProxy::run(
+      sharedState,
+      block,
+      BenchmarkWarpProxy::Config{.queueDepth = queueDepth},
+      timeout,
+      [&](auto& ops) {
+        auto& workers = ops.group();
+        const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+        for (std::size_t offset = 0; offset < totalBytes;
+             offset += sectionBytes) {
+          const std::size_t bytes = min(sectionBytes, totalBytes - offset);
+          TiledBuffer<char> tiles(buffer + offset, bytes, workers);
+          if constexpr (IsSend) {
+            ops.send(*transport, tiles.data(), tiles.bytes(), maxSignalBytes);
+          } else {
+            ops.recv(*transport, tiles.data(), tiles.bytes(), maxSignalBytes);
+          }
+        }
+      });
+}
+
+#endif
+
 void launch_ibgda_send(
     P2pIbgdaTransportDevice* transport,
     char* src,
@@ -282,6 +330,38 @@ void launch_ibgda_send(
   if (err != cudaSuccess) {
     printf("[PIPES] send kernel launch failed: %s\n", cudaGetErrorString(err));
   }
+}
+
+void launch_ibgda_warp_proxy_send(
+    P2pIbgdaTransportDevice* transport,
+    char* src,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout,
+    uint32_t queueDepth) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)src;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  (void)queueDepth;
+  printf("[PIPES] warp-proxy send benchmark is NVIDIA-only\n");
+#else
+  ibgda_warp_proxy_kernel<true>
+      <<<numBlocks, kWarpProxyBlockThreads, 0, stream>>>(
+          transport, src, nbytes, maxSignalBytes, queueDepth, timeout);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] warp-proxy send kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
 }
 
 void launch_ibgda_recv(
@@ -426,6 +506,38 @@ void launch_ibgda_recv_ll(
     printf(
         "[PIPES] recv LL kernel launch failed: %s\n", cudaGetErrorString(err));
   }
+}
+
+void launch_ibgda_warp_proxy_recv(
+    P2pIbgdaTransportDevice* transport,
+    char* dst,
+    std::size_t nbytes,
+    int numBlocks,
+    cudaStream_t stream,
+    std::size_t maxSignalBytes,
+    Timeout timeout,
+    uint32_t queueDepth) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)dst;
+  (void)nbytes;
+  (void)numBlocks;
+  (void)stream;
+  (void)maxSignalBytes;
+  (void)timeout;
+  (void)queueDepth;
+  printf("[PIPES] warp-proxy recv benchmark is NVIDIA-only\n");
+#else
+  ibgda_warp_proxy_kernel<false>
+      <<<numBlocks, kWarpProxyBlockThreads, 0, stream>>>(
+          transport, dst, nbytes, maxSignalBytes, queueDepth, timeout);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf(
+        "[PIPES] warp-proxy recv kernel launch failed: %s\n",
+        cudaGetErrorString(err));
+  }
+#endif
 }
 
 __global__ void __launch_bounds__(512, 1) ibgda_drain_send_recv_kernel(

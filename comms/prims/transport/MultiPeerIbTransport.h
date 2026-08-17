@@ -538,6 +538,11 @@ class MultiPeerIbTransportBase {
     return numNics_;
   }
 
+  /** @return Configured send/recv staging pipeline depth. */
+  int pipelineDepth() const {
+    return config_.pipelineDepth;
+  }
+
   /**
    * registerBuffer - Register a user GPU buffer for RDMA, refcounted per
    * allocation. Containment fast-path returns cached per-NIC lkeys without any
