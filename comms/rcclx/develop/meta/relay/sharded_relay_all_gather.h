@@ -26,11 +26,13 @@
  * reuses the same phase-synchronized passthrough-helper scheme; helpers perform
  * no compute and simply relay sharded chunks.
  *
- * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the original
- * 2-active passthrough path; A>2 uses the bandwidth-optimal flat
+ * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the 2-active
+ * passthrough relay described below; A>2 uses a two-group flat
  * scatter->forward relay (the dual of the reduce-scatter path): a direct intra
- * all-to-all woven with a 2-hop offload through the idle helper GPUs, in two
- * ncclGroups.
+ * exchange woven with a 2-hop offload through the idle helper GPUs. Group 1's
+ * cross links carry one chunk and group 2's carry A-1 (the helper fans each
+ * source's slice out to every other dest), so the direct region is split
+ * 1:(A-1) across the two groups to keep both balanced.
  *
  * All-gather performs NO reduction (pure data movement), so no reduction
  * kernels are used and there is no reduction op parameter. It is the dual of
@@ -57,25 +59,29 @@
  * either mode: the gather destination (slot o) never overlaps the send source
  * (slot m), so there is no send/recv aliasing hazard.
  *
- * Five Phases (no reduction; pure relay + placement copies):
- * ==========================================================
- *   Phase 1 (active->helpers): each active rank scatters numHelpers chunks of
- *            its sendBuff to helpers; each helper stores two slots.
- *   Phase 2 (helpers->active, batched): each helper forwards slot-from-a0 -> a1
- *            and slot-from-a1 -> a0; the active rank receives numHelpers chunks
- *            DIRECTLY into recvBuff[o x sendCount + h x chunkSize].
- *   Phase 3 (diagonal copy): recvBuff[m x sendCount] = sendBuff (a no-op when
- *            in-place).
- *   Phase 4 (active<->active): direct exchange of the last (direct) chunk,
- *            received directly into recvBuff[o x sendCount].
- *   Phase 5: none (no reduction).
+ * Two Comm Groups (no reduction; pure relay + a placement copy):
+ * ==============================================================
+ *   Diagonal: recvBuff[m x sendCount] = sendBuff (a no-op when in-place).
+ *   Group 1:  each active rank scatters numHelpers chunks of its sendBuff to
+ *             helpers (each helper stores two slots) AND the two active ranks
+ *             directly exchange one chunk over the otherwise-idle
+ *             active<->active link, straight into recvBuff[o x sendCount].
+ *   Group 2:  each helper forwards slot-from-a0 -> a1 and slot-from-a1 -> a0,
+ *             landing DIRECTLY in recvBuff[o x sendCount + h x chunkSize], AND
+ *             the active ranks directly exchange a second chunk over the same
+ *             idle link.
  *
  * Chunking:
  * =========
- *   chunkSize  = sendCounts[g] / numChunks rounded down to 128 elements,
- *   numChunks  = numHelpers + 1 (last chunk is the direct-exchange chunk).
- * Returns ncclInvalidArgument when sendCounts[g] < numChunks x 128 (too small
- * to scatter); callers should fall back to a plain all-gather.
+ *   chunkSize = sendCounts[g] / numChunks rounded down to 128 elements,
+ *   numChunks = numHelpers + 2. The active<->active link is idle while the
+ * relay scatter and forward run on the cross links, so instead of a third comm
+ * group for one direct chunk, one direct chunk rides along with each relay
+ * group. Every link then carries exactly one chunk per direction per group and
+ * the critical path is 2 x chunkSize instead of 3 x
+ * sendCounts[g]/(numHelpers+1). Returns ncclInvalidArgument when sendCounts[g]
+ * < numChunks x 128 (too small to scatter); callers should fall back to a plain
+ * all-gather.
  *
  * Helper-Buffer Contract (passthrough-at-helper):
  * ===============================================
