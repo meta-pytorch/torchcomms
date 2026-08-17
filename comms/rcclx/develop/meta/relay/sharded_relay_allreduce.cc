@@ -1008,7 +1008,7 @@ static ncclResult_t shardedRelayAllReduceFlat(
   // whatever else is in flight and pure-direct holds on longer.
   const size_t kFlatPureDirectMaxBytes = (nGroups > 1)
       ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(12) << 20); // independent: < 12 MB
+      : (static_cast<size_t>(9) << 20); // independent: < 9 MB
   const size_t kOffPermille = (maxBytes < kFlatPureDirectMaxBytes) ? 0 : 500;
 
   for (int g = 0; g < nGroups; g++) {

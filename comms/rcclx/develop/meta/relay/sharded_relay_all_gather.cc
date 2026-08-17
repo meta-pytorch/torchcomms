@@ -810,7 +810,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
   // direct holds on longer. Cross over below each.
   const size_t kAgA2PureDirectMaxBytes = (nGroups > 1)
       ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(4) << 20); // independent: < 4 MB
+      : (static_cast<size_t>(9) << 20); // independent: < 9 MB
   const bool agA2UseFlat =
       (nActiveRanksPerGroup == 2) && (maxBytesAg < kAgA2PureDirectMaxBytes);
   if (nActiveRanksPerGroup == 2 && !agA2UseFlat) {
