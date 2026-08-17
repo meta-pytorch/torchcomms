@@ -46,11 +46,12 @@ void cpAsyncSmemReduce(
   runPolicy(iters, CopyOpReducePolicy::CpAsyncSmemReduce, nbytes, counters);
 }
 
-#define REGISTER_SIZES(function)                     \
-  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 32768);  \
-  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 131072); \
-  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 524288); \
-  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 2097152)
+#define REGISTER_SIZES(function)                        \
+  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 2097152);   \
+  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 8388608);   \
+  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 33554432);  \
+  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 134217728); \
+  BENCHMARK_SINGLE_PARAM_COUNTERS(function, 268435456)
 
 REGISTER_SIZES(tileReduceStaged);
 REGISTER_SIZES(cpAsyncSmemReduce);
