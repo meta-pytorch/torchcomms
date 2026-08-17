@@ -46,6 +46,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -309,6 +310,18 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
     }
   }
 
+  static const char* allGatherRouteName(rcclx::relay::AllGatherRoute route) {
+    switch (route) {
+      case rcclx::relay::AllGatherRoute::PureDirect:
+        return "PureDirect";
+      case rcclx::relay::AllGatherRoute::A2Relay:
+        return "A2Relay";
+      case rcclx::relay::AllGatherRoute::FlatOffload:
+        return "FlatOffload";
+    }
+    return "unknown";
+  }
+
   void runOutOfPlaceRoutingCases(
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
@@ -331,7 +344,32 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
       const size_t sendBytes = sendCount * sizeof(int32_t);
       const size_t helperElements =
           static_cast<size_t>(nActiveRanksPerGroup) * sendCount;
-      const bool expectPureDirect = sendCount < pureDirectMaxCount;
+      // Which route runs is internal to the collective and derived only from
+      // the message size. These cases sweep just below/at/above a crossover, so
+      // assert the collective's own selector actually flips there: helpers now
+      // stage into kernel-owned internal scratch and never write the caller's
+      // buffer on any route, so without this the sweep would pass even if the
+      // routing collapsed to a single path.
+      const std::vector<size_t> routeSendCounts(nGroups, sendCount);
+      const rcclx::relay::AllGatherRoute expectedRoute =
+          sendCount < pureDirectMaxCount
+          ? rcclx::relay::AllGatherRoute::PureDirect
+          : (nActiveRanksPerGroup == 2
+                 ? rcclx::relay::AllGatherRoute::A2Relay
+                 : rcclx::relay::AllGatherRoute::FlatOffload);
+      const rcclx::relay::AllGatherRoute actualRoute =
+          rcclx::relay::selectAllGatherRoute(
+              nActiveRanksPerGroup,
+              this->numRanks - nActiveRanksPerGroup,
+              nGroups,
+              routeSendCounts.data(),
+              sizeof(int32_t));
+      EXPECT_EQ(actualRoute, expectedRoute)
+          << "internal route selection resolved to "
+          << allGatherRouteName(actualRoute) << " but sendCount=" << sendCount
+          << " against a pure-direct max of " << pureDirectMaxCount
+          << " (A=" << nActiveRanksPerGroup << ", nGroups=" << nGroups
+          << ") is written for " << allGatherRouteName(expectedRoute);
       std::vector<int32_t*> sendBuffs(nGroups);
       std::vector<int32_t*> recvBuffs(nGroups);
 
@@ -398,10 +436,9 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
         verifyDeviceBufferEquals(
             recvBuffs[g],
             1,
-            expectPureDirect ? kHelperSentinel : rankFillValue(0),
+            kHelperSentinel,
             g,
-            expectPureDirect ? "Pure-direct route modified helper storage"
-                             : "Relay route did not use helper storage");
+            "Helper caller buffer must stay untouched (internal scratch)");
       }
 
       for (int g = 0; g < nGroups; g++) {
@@ -909,8 +946,7 @@ TEST_F(
     size_t helperElements = chunkSize == 0
         ? 1
         : static_cast<size_t>(nActiveRanksPerGroup) * chunkSize;
-    fillDeviceRegion(
-        recvBuffs[g], helperElements, chunkSize == 0 ? helperSentinel : 0);
+    fillDeviceRegion(recvBuffs[g], helperElements, helperSentinel);
   }
 
   const void* sendPtrs[nGroups];
@@ -936,13 +972,13 @@ TEST_F(
   verifyAllGatherOutput(
       recvBuffs[myActiveGroup], sendCounts[myActiveGroup], myActiveGroup);
   for (int g = 0; g < nGroups; g++) {
-    if (g != myActiveGroup && sendCounts[g] < 1024) {
+    if (g != myActiveGroup) {
       verifyDeviceBufferEquals(
           recvBuffs[g],
           1,
           helperSentinel,
           g,
-          "Tiny-group helper buffer was modified");
+          "Helper caller buffer must stay untouched (internal scratch)");
     }
   }
 

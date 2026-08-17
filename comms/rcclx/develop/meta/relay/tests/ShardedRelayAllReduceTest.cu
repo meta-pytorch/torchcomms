@@ -55,6 +55,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -394,6 +395,40 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     EXPECT_EQ(errorCount, 0) << testCase.description;
   }
 
+  static const char* allReduceRouteName(rcclx::relay::AllReduceRoute route) {
+    switch (route) {
+      case rcclx::relay::AllReduceRoute::PureDirect:
+        return "PureDirect";
+      case rcclx::relay::AllReduceRoute::A2Relay:
+        return "A2Relay";
+      case rcclx::relay::AllReduceRoute::FlatOffload:
+        return "FlatOffload";
+    }
+    return "unknown";
+  }
+
+  // Assert the collective's internal size -> route mapping resolves this
+  // geometry to `expected`. Which route runs is owned by the collective and
+  // derived only from the message size; this asks the very selector the
+  // implementation dispatches on, so a test can neither drive the route nor
+  // drift from the thresholds it means to pin.
+  void expectAllReduceRoute(
+      int nActiveRanksPerGroup,
+      int nGroups,
+      const size_t* counts,
+      size_t elementSize,
+      rcclx::relay::AllReduceRoute expected) {
+    const rcclx::relay::AllReduceRoute actual =
+        rcclx::relay::selectAllReduceRoute(
+            nActiveRanksPerGroup, nGroups, counts, elementSize);
+    EXPECT_EQ(actual, expected)
+        << "internal route selection resolved to " << allReduceRouteName(actual)
+        << " but this case is written for " << allReduceRouteName(expected)
+        << " (A=" << nActiveRanksPerGroup << ", nGroups=" << nGroups
+        << ", max count=" << rcclx::relay::relayMaxCount(counts, nGroups)
+        << ", elementSize=" << elementSize << ")";
+  }
+
   void runBfloat16AllReduceCases(
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
@@ -536,6 +571,15 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     const void* sendPtrs[1] = {buff};
     void* recvPtrs[1] = {buff};
     size_t counts[1] = {count};
+    // 64 MiB single-group A=4 sits far above the 9 MiB independent crossover,
+    // so this case must exercise the helper offload rather than the
+    // pure-direct reduce-scatter + all-gather.
+    expectAllReduceRoute(
+        nActiveRanksPerGroup,
+        nGroups,
+        counts,
+        sizeof(int32_t),
+        rcclx::relay::AllReduceRoute::FlatOffload);
 
     ncclResult_t result = callAllReduceCompat(
         sendPtrs,
@@ -2123,6 +2167,71 @@ TEST_F(
   HIPCHECK_TEST(hipEventDestroy(stopEvent));
   for (int g = 0; g < nGroups; g++) {
     HIPCHECK_TEST(hipFree(buffers[g]));
+  }
+}
+
+// Pins the size-adaptive routing crossovers. Routing is internal to the
+// collective and derived only from the message size, so the only thing a test
+// can meaningfully assert is that the mapping matches the measured crossovers
+// the design specifies. Each block states the intended threshold independently
+// and checks below / at / above it, so moving a threshold in the implementation
+// fails here and forces a deliberate decision rather than silently reshaping
+// the routing. This exercises the selector only -- no collective is issued, so
+// it costs nothing on the GPU.
+TEST_F(ShardedRelayMultiGroupAllReduceTest, Routing_SizeAdaptiveCrossovers) {
+  struct Crossover {
+    const char* name;
+    int nActiveRanksPerGroup;
+    int nGroups;
+    size_t thresholdBytes;
+    rcclx::relay::AllReduceRoute atOrAbove;
+  };
+  // A==2: 2 MB fused / 6 MB independent. A>2: 2 MB fused / 9 MB independent.
+  const Crossover crossovers[] = {
+      {"A2 fused", 2, 4, 2ULL << 20, rcclx::relay::AllReduceRoute::A2Relay},
+      {"A2 independent",
+       2,
+       1,
+       6ULL << 20,
+       rcclx::relay::AllReduceRoute::A2Relay},
+      {"A4 fused", 4, 2, 2ULL << 20, rcclx::relay::AllReduceRoute::FlatOffload},
+      {"A4 independent",
+       4,
+       1,
+       9ULL << 20,
+       rcclx::relay::AllReduceRoute::FlatOffload},
+  };
+
+  for (const auto& crossover : crossovers) {
+    const size_t thresholdCount = crossover.thresholdBytes / sizeof(int32_t);
+    const size_t belowCount = thresholdCount - 1;
+    const size_t aboveCount = thresholdCount + 1;
+
+    // The mapping keys off the largest per-group count, so filling every group
+    // with the same count also pins that the maximum is what is consulted.
+    const std::vector<size_t> below(crossover.nGroups, belowCount);
+    const std::vector<size_t> at(crossover.nGroups, thresholdCount);
+    const std::vector<size_t> above(crossover.nGroups, aboveCount);
+
+    SCOPED_TRACE(crossover.name);
+    expectAllReduceRoute(
+        crossover.nActiveRanksPerGroup,
+        crossover.nGroups,
+        below.data(),
+        sizeof(int32_t),
+        rcclx::relay::AllReduceRoute::PureDirect);
+    expectAllReduceRoute(
+        crossover.nActiveRanksPerGroup,
+        crossover.nGroups,
+        at.data(),
+        sizeof(int32_t),
+        crossover.atOrAbove);
+    expectAllReduceRoute(
+        crossover.nActiveRanksPerGroup,
+        crossover.nGroups,
+        above.data(),
+        sizeof(int32_t),
+        crossover.atOrAbove);
   }
 }
 
