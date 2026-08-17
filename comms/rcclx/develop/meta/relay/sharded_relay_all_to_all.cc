@@ -630,7 +630,31 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
   }
 
   ncclResult_t r;
-  if (nActiveRanksPerGroup == 2) {
+  // Size-adaptive routing for A==2. The 2Active relay (scatter/forward/direct =
+  // 3 group boundaries + a helper HBM round trip) wins on bandwidth at large
+  // sizes, but at small sizes it is latency-bound; the A-generic Flat path does
+  // a single-group pure-direct exchange (the two active ranks swap their off-
+  // diagonal segment directly, helpers idle) with minimal latency. Route small
+  // A==2 to Flat, large to the relay. maxBytes (A*segment*elemSize) equals the
+  // bench per-rank input label; crossover set nGroups-aware below.
+  size_t maxSeg = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (segmentCounts[g] > maxSeg) {
+      maxSeg = segmentCounts[g];
+    }
+  }
+  const size_t maxBytes =
+      static_cast<size_t>(nActiveRanksPerGroup) * maxSeg * elementSize;
+  // Crossover measured MI350X (bf16, 8 GPUs): fused relay overtakes Flat at
+  // ~9 MB (Flat wins the small end big, e.g. 576 KB 0.92x->1.45x), independent
+  // at ~27 MB (0.38->0.53 @4KB). Independent has no cross-group contention so
+  // direct holds on longer. Cross over below each.
+  const size_t kA2PureDirectMaxBytes = (nGroups > 1)
+      ? (static_cast<size_t>(6) << 20) // fused: < 6 MB
+      : (static_cast<size_t>(16) << 20); // independent: < 16 MB
+  const bool a2UseFlat =
+      (nActiveRanksPerGroup == 2) && (maxBytes < kA2PureDirectMaxBytes);
+  if (nActiveRanksPerGroup == 2 && !a2UseFlat) {
     r = shardedRelayAllToAll2Active(
         sendBuffs2,
         recvBuffs2,
@@ -644,7 +668,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
         nGroups,
         elementSize);
   } else {
-    // A>2: flat all-to-all + 2-hop relay over A-1 XOR-matching rounds.
+    // A>2, or small A==2: flat single-group pure-direct all-to-all.
     r = shardedRelayAllToAllFlat(
         sendBuffs2,
         recvBuffs2,

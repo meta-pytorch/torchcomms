@@ -619,6 +619,139 @@ static ncclResult_t shardedRelayAllReduce2Active(
     size_t elementSize) {
   int numChunks = numHelpers + 1; // 7 for 8 ranks with 2 active per group
 
+  // ==========================================================================
+  // SIZE-ADAPTIVE PURE-DIRECT FAST PATH (A==2)
+  // ==========================================================================
+  // At small sizes the 3-group helper relay (scatter/forward/direct + a helper
+  // HBM round trip) is dominated by launch+handshake latency. Instead do a
+  // classic 2-rank RS+AG allreduce directly between the two active ranks (two
+  // groups, helpers idle): swap owned halves and reduce, then swap the reduced
+  // halves back. maxBytes (count*elemSize) equals the bench per-rank input
+  // label.
+  size_t maxCount2 = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] > maxCount2) {
+      maxCount2 = counts[g];
+    }
+  }
+  const size_t maxBytes2 = maxCount2 * elementSize;
+  // A=2 relay wins big at large (one group across all helpers -> ~1.7x fused);
+  // pure-direct only helps small. Crossover (measured MI350X, bf16, 8 GPUs):
+  // fused relay overtakes at ~4.5 MB, independent at ~9 MB. Cross over below.
+  const size_t kA2PureDirectMaxBytes = (nGroups > 1)
+      ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
+      : (static_cast<size_t>(6) << 20); // independent: < 6 MB
+  if (maxBytes2 < kA2PureDirectMaxBytes) {
+    void* pdScratch = nullptr;
+    size_t pdCount = 0, pdOwnOff = 0, pdOwnLen = 0, pdOthOff = 0, pdOthLen = 0;
+    int pdPartner = -1;
+    if (myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
+      const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+      pdCount = counts[myActiveGroup];
+      size_t h0 = pdCount / 2;
+      size_t h1 = pdCount - h0;
+      int mi = cfg.myActiveIndex;
+      pdOwnOff = (mi == 0) ? 0 : h0;
+      pdOwnLen = (mi == 0) ? h0 : h1;
+      pdOthOff = (mi == 0) ? h0 : 0;
+      pdOthLen = (mi == 0) ? h1 : h0;
+      pdPartner = cfg.activeRanks[1 - mi];
+      pdScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS, (pdOwnLen + 1) * elementSize, stream);
+      if (pdScratch == nullptr) {
+        return ncclInternalError;
+      }
+      // Seed recvBuff with local contribution (out-of-place); in-place already
+      // holds it.
+      if (sendBuffs[myActiveGroup] != recvBuffs[myActiveGroup]) {
+        cudaMemcpyAsync(
+            recvBuffs[myActiveGroup],
+            sendBuffs[myActiveGroup],
+            pdCount * elementSize,
+            cudaMemcpyDeviceToDevice,
+            stream);
+      }
+    }
+
+    // Group 1 (reduce-scatter swap): send my partner's owned half; receive my
+    // owned half's other contribution into scratch.
+    NCCLCHECK(ncclGroupStart());
+    for (int g = 0; g < nGroups; g++) {
+      if (counts[g] == 0) {
+        continue;
+      }
+      const ShardedRelayRankConfig& cfg = configs[g];
+      if (!cfg.isActiveRank) {
+        continue; // helpers idle
+      }
+      char* recvbuff = static_cast<char*>(recvBuffs[g]);
+      if (pdOthLen > 0) {
+        NCCLCHECK(ncclSend(
+            recvbuff + pdOthOff * elementSize,
+            pdOthLen,
+            datatype,
+            pdPartner,
+            comm,
+            stream));
+      }
+      if (pdOwnLen > 0) {
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(pdScratch),
+            pdOwnLen,
+            datatype,
+            pdPartner,
+            comm,
+            stream));
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    // Reduce my owned half (local + received), scale for AVG.
+    if (myActiveGroup >= 0 && pdOwnLen > 0) {
+      char* ownDst =
+          static_cast<char*>(recvBuffs[myActiveGroup]) + pdOwnOff * elementSize;
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype, ownDst, pdScratch, pdOwnLen, reductionDivisor, stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(datatype, ownDst, pdScratch, pdOwnLen, stream);
+      }
+    }
+
+    // Group 2 (all-gather swap): exchange the reduced owned halves.
+    NCCLCHECK(ncclGroupStart());
+    for (int g = 0; g < nGroups; g++) {
+      if (counts[g] == 0) {
+        continue;
+      }
+      const ShardedRelayRankConfig& cfg = configs[g];
+      if (!cfg.isActiveRank) {
+        continue;
+      }
+      char* recvbuff = static_cast<char*>(recvBuffs[g]);
+      if (pdOwnLen > 0) {
+        NCCLCHECK(ncclSend(
+            recvbuff + pdOwnOff * elementSize,
+            pdOwnLen,
+            datatype,
+            pdPartner,
+            comm,
+            stream));
+      }
+      if (pdOthLen > 0) {
+        NCCLCHECK(ncclRecv(
+            recvbuff + pdOthOff * elementSize,
+            pdOthLen,
+            datatype,
+            pdPartner,
+            comm,
+            stream));
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+    return ncclSuccess;
+  }
+
   // =========================================================================
   // CALCULATE PER-GROUP CHUNK SIZES
   // =========================================================================
@@ -1014,16 +1147,30 @@ static ncclResult_t shardedRelayAllReduceFlat(
   const int A = nActiveRanksPerGroup;
   const int H = numHelpers;
 
-  // Offload (helper reduce+broadcast) share = 571/1000. Like the flat
-  // reduce-scatter, the cross-link cost is dominated by the source->helper 1st
-  // hop, so shifting slightly more onto the (idle) cross links beats the
-  // equal-load f = 0.5 split empirically on MI350X.
-  // Offload (helper reduce+broadcast) share = 780/1000. Empirically optimal on
-  // MI350X (swept 0.5..0.85): far above the 0.5 equal-link-load point because
-  // the offload path (reduce+broadcast through the otherwise-idle cross links)
-  // is more efficient per byte than the direct intra RS+AG, so it pays to push
-  // most of the data onto the helpers. Kernel measures ~1.03x vs NCCL.
-  constexpr size_t kOffPermille = 780;
+  // Offload (helper reduce+broadcast) share. Empirically ~0.78 is optimal at
+  // large sizes on MI350X (the offload path through otherwise-idle cross links
+  // is more efficient per byte than direct intra RS+AG). But at small sizes the
+  // 2-hop offload only adds helper-hop latency, so disable it there and run a
+  // pure-direct RS+AG among the A active ranks (helpers idle). maxBytes here
+  // (count*elemSize) equals the bench per-rank input label; crossover set
+  // below.
+  size_t maxCount = 0;
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] > maxCount) {
+      maxCount = counts[g];
+    }
+  }
+  const size_t maxBytes = maxCount * elementSize;
+  // Crossover is scenario-dependent (measured MI350X, A=4, bf16, 8 GPUs): fused
+  // offload overtakes pure-direct at ~4.5 MB (pure-direct wins the small end,
+  // e.g. 576 KB 1.08x->1.23x), independent at ~27 MB (0.62->0.74 @4KB,
+  // 0.69->0.86 @4.5MB). Independent has no cross-group contention so direct
+  // holds on longer. A=4 fused was already >=1.02x, so keep the threshold low
+  // there.
+  const size_t kFlatPureDirectMaxBytes = (nGroups > 1)
+      ? 0 // fused A=4 already >=1.02x with offload; pure-direct doesn't help
+      : (static_cast<size_t>(12) << 20); // independent: < 12 MB
+  const size_t kOffPermille = (maxBytes < kFlatPureDirectMaxBytes) ? 0 : 780;
 
   for (int g = 0; g < nGroups; g++) {
     if (counts[g] != 0 && (counts[g] % static_cast<size_t>(A)) != 0) {
