@@ -657,10 +657,10 @@ document.write(`
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">_Serialization</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Serialization helper with serialize and deserialize methods.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Serialization helper with serialize and deserialize methods."""</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">use_pickle</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;TORCHCOMMS_SERIALIZATION&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;pickle&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">use_pickle</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">"TORCHCOMMS_SERIALIZATION"</span><span class="p">)</span> <span class="o">==</span> <span class="s2">"pickle"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">serialize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">f</span><span class="p">:</span> <span class="n">io</span><span class="o">.</span><span class="n">BytesIO</span><span class="p">,</span> <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_pickle</span><span class="p">:</span>
@@ -677,14 +677,14 @@ document.write(`
 
 <span class="nd">@functools</span><span class="o">.</span><span class="n">lru_cache</span><span class="p">(</span><span class="n">maxsize</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">_get_serialization</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">_Serialization</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns a cached serialization object with serialize and deserialize methods.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Returns a cached serialization object with serialize and deserialize methods."""</span>
     <span class="k">return</span> <span class="n">_Serialization</span><span class="p">()</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_object_to_tensor</span><span class="p">(</span>
     <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">]:</span>
-    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">&quot;pytorch.wait_counter.torchcomms._object_to_tensor&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
+    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">"pytorch.wait_counter.torchcomms._object_to_tensor"</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
         <span class="n">f</span> <span class="o">=</span> <span class="n">io</span><span class="o">.</span><span class="n">BytesIO</span><span class="p">()</span>
         <span class="n">serialization</span> <span class="o">=</span> <span class="n">_get_serialization</span><span class="p">()</span>
         <span class="n">serialization</span><span class="o">.</span><span class="n">serialize</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">obj</span><span class="p">)</span>
@@ -700,7 +700,7 @@ document.write(`
 <span class="k">def</span><span class="w"> </span><span class="nf">_tensor_to_object</span><span class="p">(</span>
     <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">tensor_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
-    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">&quot;pytorch.wait_counter.torchcomms._tensor_to_object&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
+    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">"pytorch.wait_counter.torchcomms._tensor_to_object"</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
         <span class="n">tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
         <span class="n">buf</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()[:</span><span class="n">tensor_size</span><span class="p">]</span>
         <span class="n">serialization</span> <span class="o">=</span> <span class="n">_get_serialization</span><span class="p">()</span>
@@ -716,7 +716,7 @@ document.write(`
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Gathers picklable objects from the whole comm into a list.</span>
 
 <span class="sd">    Similar to :func:`all_gather`, but Python objects can be passed in.</span>
@@ -746,7 +746,7 @@ document.write(`
 <span class="sd">    .. note:: For NCCL-based processed comms, internal tensor representations</span>
 <span class="sd">        of objects must be moved to the GPU device before communication takes</span>
 <span class="sd">        place. In this case, the device used is given by</span>
-<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user's responsibility to</span>
 <span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
 <span class="sd">        ``torch.cuda.set_device()``.</span>
 
@@ -766,16 +766,16 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`all_gather` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; # Assumes world_size of 3.</span>
-<span class="sd">        &gt;&gt;&gt; gather_objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; gather_objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt; output = [None for _ in gather_objects]</span>
 <span class="sd">        &gt;&gt;&gt; objcol.all_gather_object(comm, output, gather_objects[comm.get_rank()])</span>
 <span class="sd">        &gt;&gt;&gt; output</span>
-<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        ['foo', 12, {1: 2}]</span>
+<span class="sd">    """</span>
 
     <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
     <span class="n">input_tensor</span><span class="p">,</span> <span class="n">local_size</span> <span class="o">=</span> <span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span>
@@ -823,7 +823,7 @@ document.write(`
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Gathers picklable objects from the whole comm in a single process.</span>
 
 <span class="sd">    Similar to :func:`gather`, but Python objects can be passed in. Note that the</span>
@@ -854,7 +854,7 @@ document.write(`
 <span class="sd">    .. note:: For NCCL-based processed comms, internal tensor representations</span>
 <span class="sd">        of objects must be moved to the GPU device before communication takes</span>
 <span class="sd">        place. In this case, the device used is given by</span>
-<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user's responsibility to</span>
 <span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
 <span class="sd">        ``torch.cuda.set_device()``.</span>
 
@@ -874,11 +874,11 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`gather` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; # Assumes world_size of 3.</span>
-<span class="sd">        &gt;&gt;&gt; gather_objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; gather_objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt; output = [None for _ in gather_objects]</span>
 <span class="sd">        &gt;&gt;&gt; objcol.gather_object(</span>
 <span class="sd">        ...     comm,</span>
@@ -888,8 +888,8 @@ document.write(`
 <span class="sd">        ... )</span>
 <span class="sd">        &gt;&gt;&gt; # On rank 0</span>
 <span class="sd">        &gt;&gt;&gt; output</span>
-<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        ['foo', 12, {1: 2}]</span>
+<span class="sd">    """</span>
     <span class="c1"># Ensure object_gather_list is specified appropriately.</span>
     <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
     <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
@@ -932,7 +932,7 @@ document.write(`
         <span class="k">return</span>
 
     <span class="k">assert</span> <span class="n">object_gather_list</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span> <span class="p">(</span>
-        <span class="s2">&quot;Must provide object_gather_list on root rank&quot;</span>
+        <span class="s2">"Must provide object_gather_list on root rank"</span>
     <span class="p">)</span>
     <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">output_tensors</span><span class="p">):</span>
         <span class="n">tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">type</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
@@ -951,7 +951,7 @@ document.write(`
     <span class="n">dst</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Sends picklable objects in ``object_list`` synchronously.</span>
 
 <span class="sd">    Similar to :func:`send`, but Python objects can be passed in.</span>
@@ -971,7 +971,7 @@ document.write(`
 <span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
 <span class="sd">        of objects must be moved to the GPU device before communication takes</span>
 <span class="sd">        place. In this case, the device used is given by</span>
-<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user's responsibility to</span>
 <span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
 <span class="sd">        ``torch.cuda.set_device()``.</span>
 
@@ -991,20 +991,20 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`send` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
 <span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
 <span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 2.</span>
-<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt;     objcol.send_object_list(comm, objects, dst=1)</span>
 <span class="sd">        &gt;&gt;&gt; else:</span>
 <span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
 <span class="sd">        &gt;&gt;&gt;     objcol.recv_object_list(comm, objects, src=0)</span>
 <span class="sd">        &gt;&gt;&gt; objects</span>
-<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        ['foo', 12, {1: 2}]</span>
+<span class="sd">    """</span>
     <span class="c1"># Current device selection.</span>
     <span class="c1"># To preserve backwards compatibility, ``device`` is default to ``None``</span>
     <span class="c1"># in which case we run current logic of device selection, i.e.</span>
@@ -1042,7 +1042,7 @@ document.write(`
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Receives picklable objects in ``object_list`` synchronously.</span>
 
 <span class="sd">    Similar to :func:`recv`, but can receive Python objects.</span>
@@ -1063,7 +1063,7 @@ document.write(`
 <span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
 <span class="sd">        of objects must be moved to the GPU device before communication takes</span>
 <span class="sd">        place. In this case, the device used is given by</span>
-<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user's responsibility to</span>
 <span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
 <span class="sd">        ``torch.cuda.set_device()``.</span>
 
@@ -1083,20 +1083,20 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`recv` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
 <span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
 <span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 2.</span>
-<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt;     objcol.send_object_list(comm, objects, dst=1)</span>
 <span class="sd">        &gt;&gt;&gt; else:</span>
 <span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
 <span class="sd">        &gt;&gt;&gt;     objcol.recv_object_list(comm, objects, src=0)</span>
 <span class="sd">        &gt;&gt;&gt; objects</span>
-<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        ['foo', 12, {1: 2}]</span>
+<span class="sd">    """</span>
     <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
     <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
         <span class="nb">len</span><span class="p">(</span><span class="n">object_list</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
@@ -1134,7 +1134,7 @@ document.write(`
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Broadcasts picklable objects in ``object_list`` to the whole comm.</span>
 
 <span class="sd">    Similar to :func:`broadcast`, but Python objects can be passed in.</span>
@@ -1160,7 +1160,7 @@ document.write(`
 <span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
 <span class="sd">        of objects must be moved to the GPU device before communication takes</span>
 <span class="sd">        place. In this case, the device used is given by</span>
-<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user's responsibility to</span>
 <span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
 <span class="sd">        ``torch.cuda.set_device()``.</span>
 
@@ -1184,19 +1184,19 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`broadcast` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
 <span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 3.</span>
-<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt; else:</span>
 <span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
 <span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
 <span class="sd">        &gt;&gt;&gt; objcol.broadcast_object_list(comm, objects, src=0, device=device)</span>
 <span class="sd">        &gt;&gt;&gt; objects</span>
-<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        ['foo', 12, {1: 2}]</span>
+<span class="sd">    """</span>
     <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
     <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
     <span class="c1"># Serialize object_list elements to tensors on src rank.</span>
@@ -1252,7 +1252,7 @@ document.write(`
     <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Scatters picklable objects in ``scatter_object_input_list`` to the whole comm.</span>
 
 <span class="sd">    Similar to :func:`scatter`, but Python objects can be passed in. On</span>
@@ -1298,12 +1298,12 @@ document.write(`
 <span class="sd">        pickled. Please consider using :func:`scatter` instead.</span>
 
 <span class="sd">    Example::</span>
-<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP("need comm init")</span>
 <span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
 <span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
 <span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
 <span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 3.</span>
-<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objects = ["foo", 12, {1: 2}] # any picklable object</span>
 <span class="sd">        &gt;&gt;&gt; else:</span>
 <span class="sd">        &gt;&gt;&gt;     # Can be any list on non-root ranks, elements are not used.</span>
 <span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
@@ -1312,14 +1312,14 @@ document.write(`
 <span class="sd">        &gt;&gt;&gt; # Rank i gets objects[i]. For example, on rank 2:</span>
 <span class="sd">        &gt;&gt;&gt; output_list</span>
 <span class="sd">        [{1: 2}]</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">if</span> <span class="p">(</span>
         <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scatter_object_output_list</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span>
         <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">scatter_object_output_list</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">1</span>
     <span class="p">):</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="s2">&quot;Expected argument scatter_object_output_list to be a list of size at least 1.&quot;</span>
+            <span class="s2">"Expected argument scatter_object_output_list to be a list of size at least 1."</span>
         <span class="p">)</span>
 
     <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
@@ -1327,7 +1327,7 @@ document.write(`
     <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">==</span> <span class="n">root</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">scatter_object_input_list</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="s2">&quot;source rank must provide non-None scatter_object_input_list&quot;</span>
+                <span class="s2">"source rank must provide non-None scatter_object_input_list"</span>
             <span class="p">)</span>
         <span class="n">tensor_list</span><span class="p">,</span> <span class="n">tensor_sizes</span> <span class="o">=</span> <span class="nb">zip</span><span class="p">(</span>
             <span class="o">*</span><span class="p">[</span>

@@ -644,22 +644,22 @@ document.write(`
 <span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
 <span class="c1"># pyre-strict</span>
 
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 <span class="sd">TorchComm DeviceMesh integration module.</span>
 
-<span class="sd">This module provides integration between TorchComm and PyTorch&#39;s DeviceMesh</span>
+<span class="sd">This module provides integration between TorchComm and PyTorch's DeviceMesh</span>
 <span class="sd">abstraction. It allows creating DeviceMesh instances backed by TorchComm</span>
-<span class="sd">communicators, enabling seamless use of TorchComm with PyTorch&#39;s distributed</span>
+<span class="sd">communicators, enabling seamless use of TorchComm with PyTorch's distributed</span>
 <span class="sd">tensor parallelism APIs.</span>
 
 <span class="sd">Status: This module is under active development. The core functionality</span>
 <span class="sd">(init_device_mesh and _flatten_with_comm) is stable, but the API may evolve</span>
-<span class="sd">as PyTorch&#39;s DeviceMesh API changes.</span>
+<span class="sd">as PyTorch's DeviceMesh API changes.</span>
 
 <span class="sd">Key functions:</span>
 <span class="sd">- init_device_mesh: Initialize a DeviceMesh from TorchComm instances</span>
 <span class="sd">- _flatten_with_comm: Flatten a DeviceMesh dimension with a custom TorchComm</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">cast</span><span class="p">,</span> <span class="n">Optional</span>
@@ -672,7 +672,7 @@ document.write(`
 <span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.distributed_c10d</span><span class="w"> </span><span class="kn">import</span> <span class="n">GroupName</span>
 <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
-    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;GroupName is not available.&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">"GroupName is not available."</span><span class="p">)</span>
     <span class="c1"># Fallback: GroupName is effectively just str when not available from torch</span>
     <span class="c1"># We use cast to satisfy type checkers while keeping runtime behavior simple</span>
     <span class="n">GroupName</span> <span class="o">=</span> <span class="nb">str</span>  <span class="c1"># type: ignore[misc]</span>
@@ -681,10 +681,10 @@ document.write(`
 <span class="k">def</span><span class="w"> </span><span class="nf">_create_torchcomm_process_group</span><span class="p">(</span>
     <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
     <span class="n">group_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-    <span class="n">backend_str</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;torchcomm&quot;</span><span class="p">,</span>
+    <span class="n">backend_str</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"torchcomm"</span><span class="p">,</span>
     <span class="n">global_ranks_mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">dist</span><span class="o">.</span><span class="n">ProcessGroup</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Helper function to create a ProcessGroup backed by TorchComm and register it</span>
 <span class="sd">    with the distributed runtime.</span>
 
@@ -696,7 +696,7 @@ document.write(`
 
 <span class="sd">    Returns:</span>
 <span class="sd">        The created and registered ProcessGroup instance</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="c1"># Make the linter happy. GroupName is just an alias for str. The cost of</span>
     <span class="c1"># this conversion is negligible.</span>
     <span class="n">group_name</span> <span class="o">=</span> <span class="n">GroupName</span><span class="p">(</span><span class="n">group_name</span><span class="p">)</span>
@@ -713,7 +713,7 @@ document.write(`
     <span class="n">pg</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">ProcessGroup</span><span class="p">(</span><span class="n">dummy_store</span><span class="p">,</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(),</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_size</span><span class="p">())</span>
 
     <span class="c1"># Register backend</span>
-    <span class="c1"># pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn&#39;t aware</span>
+    <span class="c1"># pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn't aware</span>
     <span class="n">pg</span><span class="o">.</span><span class="n">_register_backend</span><span class="p">(</span><span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">(),</span> <span class="n">backend_type</span><span class="p">,</span> <span class="n">wrapper</span><span class="p">)</span>
     <span class="n">pg</span><span class="o">.</span><span class="n">_set_group_name</span><span class="p">(</span><span class="n">group_name</span><span class="p">)</span>  <span class="c1"># pyre-fixme[6]</span>
 
@@ -733,7 +733,7 @@ document.write(`
         <span class="p">}</span>
 
     <span class="c1"># Set up process group tag</span>
-    <span class="n">pg_tag</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ptd:</span><span class="si">{</span><span class="n">group_name</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="n">pg_tag</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"ptd:</span><span class="si">{</span><span class="n">group_name</span><span class="si">}</span><span class="s2">"</span>
     <span class="n">dist</span><span class="o">.</span><span class="n">distributed_c10d</span><span class="o">.</span><span class="n">_world</span><span class="o">.</span><span class="n">tags_to_pg</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">pg_tag</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">pg</span><span class="p">)</span>
     <span class="n">dist</span><span class="o">.</span><span class="n">distributed_c10d</span><span class="o">.</span><span class="n">_world</span><span class="o">.</span><span class="n">pg_to_tag</span><span class="p">[</span><span class="n">pg</span><span class="p">]</span> <span class="o">=</span> <span class="n">pg_tag</span>
 
@@ -747,21 +747,21 @@ document.write(`
     <span class="n">mesh_dim_names</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
     <span class="n">_global_comm</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">TorchComm</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># noqa: F405</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">dist</span><span class="o">.</span><span class="n">DeviceMesh</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Initializes a `DeviceMesh` from the list of provided `TorchComm` instances.</span>
 
 <span class="sd">    See `DeviceMesh` for more details.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">mesh_dim_comms</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
     <span class="n">mesh_shape</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">comm</span><span class="o">.</span><span class="n">get_size</span><span class="p">()</span> <span class="k">for</span> <span class="n">comm</span> <span class="ow">in</span> <span class="n">mesh_dim_comms</span><span class="p">)</span>
     <span class="n">world_size</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">prod</span><span class="p">(</span><span class="n">mesh_shape</span><span class="p">)</span>
 
-    <span class="n">mesh</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">world_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">mesh_shape</span><span class="p">)</span>
+    <span class="n">mesh</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">world_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">)</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">mesh_shape</span><span class="p">)</span>
 
     <span class="n">local_ranks</span> <span class="o">=</span> <span class="p">[</span><span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="k">for</span> <span class="n">comm</span> <span class="ow">in</span> <span class="n">mesh_dim_comms</span><span class="p">]</span>
     <span class="n">global_rank</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="n">mesh</span><span class="p">[</span><span class="nb">tuple</span><span class="p">(</span><span class="n">local_ranks</span><span class="p">)]</span><span class="o">.</span><span class="n">item</span><span class="p">())</span>
-    <span class="n">backend_str</span> <span class="o">=</span> <span class="s2">&quot;torchcomm&quot;</span>
+    <span class="n">backend_str</span> <span class="o">=</span> <span class="s2">"torchcomm"</span>
     <span class="c1"># Register the backend</span>
     <span class="n">dist</span><span class="o">.</span><span class="n">Backend</span><span class="o">.</span><span class="n">register_backend</span><span class="p">(</span><span class="n">backend_str</span><span class="p">,</span> <span class="n">new_comm</span><span class="p">)</span>  <span class="c1"># pyre-fixme[6]</span>
 
@@ -774,8 +774,8 @@ document.write(`
         <span class="p">)</span>
     <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="n">mesh_dim_comms</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-            <span class="s2">&quot;More than one torch comm objects are passed but no global comm(_global_comm) is provided. &quot;</span>
-            <span class="s2">&quot;Please provide a global comm object via _global_comm.&quot;</span>
+            <span class="s2">"More than one torch comm objects are passed but no global comm(_global_comm) is provided. "</span>
+            <span class="s2">"Please provide a global comm object via _global_comm."</span>
         <span class="p">)</span>
 
     <span class="n">group_names</span> <span class="o">=</span> <span class="p">[]</span>
@@ -826,7 +826,7 @@ document.write(`
     <span class="n">global_ranks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span>
     <span class="n">layout</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>  <span class="c1"># noqa: F405</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">dist</span><span class="o">.</span><span class="n">DeviceMesh</span><span class="p">:</span>
-    <span class="n">backend_str</span> <span class="o">=</span> <span class="s2">&quot;torchcomm&quot;</span>
+    <span class="n">backend_str</span> <span class="o">=</span> <span class="s2">"torchcomm"</span>
     <span class="n">global_ranks_mapping</span> <span class="o">=</span> <span class="p">{</span><span class="n">global_ranks</span><span class="p">[</span><span class="n">i</span><span class="p">]:</span> <span class="n">i</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">comm</span><span class="o">.</span><span class="n">get_size</span><span class="p">())}</span>
     <span class="c1"># We still need to register the process group for the flattened mesh</span>
     <span class="n">_create_torchcomm_process_group</span><span class="p">(</span>
@@ -839,7 +839,7 @@ document.write(`
     <span class="c1"># Coalesce the layout for the flattened mesh dimension.</span>
     <span class="c1"># New PyTorch API (2.13+): _MeshLayout has collapse() instead of coalesce(),</span>
     <span class="c1"># and auto-coalesces _FlatLayouts in the constructor.</span>
-    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">layout</span><span class="p">,</span> <span class="s2">&quot;coalesce&quot;</span><span class="p">):</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">layout</span><span class="p">,</span> <span class="s2">"coalesce"</span><span class="p">):</span>
         <span class="n">coalesced_layout</span> <span class="o">=</span> <span class="n">layout</span><span class="o">.</span><span class="n">coalesce</span><span class="p">()</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed._mesh_layout</span><span class="w"> </span><span class="kn">import</span> <span class="n">_MeshLayout</span>
@@ -849,7 +849,7 @@ document.write(`
     <span class="c1"># Compatibility layer for DeviceMesh API changes. The new API uses _rank_map</span>
     <span class="c1"># while the older API requires passing mesh tensor directly. This conditional</span>
     <span class="c1"># can be removed once all supported PyTorch versions include _rank_map support.</span>
-    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="s2">&quot;_rank_map&quot;</span><span class="p">):</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="s2">"_rank_map"</span><span class="p">):</span>
         <span class="n">flattened_device_mesh</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">DeviceMesh</span><span class="p">(</span>
             <span class="n">device_type</span><span class="o">=</span><span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">(),</span>
             <span class="n">mesh_dim_names</span><span class="o">=</span><span class="p">(</span><span class="n">mesh_dim_name</span><span class="p">,),</span>
@@ -862,7 +862,7 @@ document.write(`
     <span class="k">else</span><span class="p">:</span>
         <span class="n">flattened_device_mesh</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">DeviceMesh</span><span class="p">(</span>
             <span class="n">device_type</span><span class="o">=</span><span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">(),</span>
-            <span class="n">mesh</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">global_ranks</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">),</span>
+            <span class="n">mesh</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">global_ranks</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cpu"</span><span class="p">),</span>
             <span class="n">mesh_dim_names</span><span class="o">=</span><span class="p">(</span><span class="n">mesh_dim_name</span><span class="p">,),</span>
             <span class="n">_init_backend</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
             <span class="n">_rank</span><span class="o">=</span><span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(),</span>
@@ -876,9 +876,9 @@ document.write(`
             <span class="n">flattened_device_mesh</span>
         <span class="p">)</span>
     <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">_mesh_resources</span><span class="p">,</span> <span class="s2">&quot;flatten_name_to_root_dims&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">_mesh_resources</span><span class="p">,</span> <span class="s2">"flatten_name_to_root_dims"</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
-                <span class="s2">&quot;Flattening with torchcomm is not supported for device mesh without mesh layout.&quot;</span>
+                <span class="s2">"Flattening with torchcomm is not supported for device mesh without mesh layout."</span>
             <span class="p">)</span>
         <span class="n">root_mesh</span> <span class="o">=</span> <span class="n">_mesh_resources</span><span class="o">.</span><span class="n">get_root_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
         <span class="n">_mesh_resources</span><span class="o">.</span><span class="n">child_to_root_mapping</span><span class="p">[</span>  <span class="c1"># pyre-ignore[16]</span>

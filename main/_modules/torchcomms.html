@@ -658,8 +658,8 @@ document.write(`
         <span class="kn">from</span><span class="w"> </span><span class="nn">torch._opaque_base</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpaqueBaseMeta</span>
 
     <span class="c1"># make the metaclass available to the pybind module</span>
-    <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="p">[</span><span class="s2">&quot;torchcomms._opaque_meta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span>
-        <span class="s2">&quot;module&quot;</span><span class="p">,</span> <span class="p">(),</span> <span class="p">{</span><span class="s2">&quot;OpaqueBaseMeta&quot;</span><span class="p">:</span> <span class="n">OpaqueBaseMeta</span><span class="p">}</span>
+    <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="p">[</span><span class="s2">"torchcomms._opaque_meta"</span><span class="p">]</span> <span class="o">=</span> <span class="nb">type</span><span class="p">(</span>
+        <span class="s2">"module"</span><span class="p">,</span> <span class="p">(),</span> <span class="p">{</span><span class="s2">"OpaqueBaseMeta"</span><span class="p">:</span> <span class="n">OpaqueBaseMeta</span><span class="p">}</span>
     <span class="p">)()</span>
 
     <span class="c1"># to support opaque registration for time delta.</span>
@@ -675,12 +675,12 @@ document.write(`
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_load_libtorchcomms</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="n">libtorchcomms_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="vm">__file__</span><span class="p">),</span> <span class="s2">&quot;libtorchcomms.so&quot;</span><span class="p">)</span>
+    <span class="n">libtorchcomms_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="vm">__file__</span><span class="p">),</span> <span class="s2">"libtorchcomms.so"</span><span class="p">)</span>
     <span class="c1"># OSS build, buck native linking links everything together so this is not needed</span>
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">libtorchcomms_path</span><span class="p">):</span>
-        <span class="c1"># load this using RTLD_LOCAL so that we don&#39;t pollute the global namespace</span>
+        <span class="c1"># load this using RTLD_LOCAL so that we don't pollute the global namespace</span>
         <span class="c1"># We need to load this upfront since _comms and _comms_* depend on it</span>
-        <span class="c1"># and won&#39;t be able to find it themselves.</span>
+        <span class="c1"># and won't be able to find it themselves.</span>
         <span class="n">ctypes</span><span class="o">.</span><span class="n">CDLL</span><span class="p">(</span><span class="n">libtorchcomms_path</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="n">ctypes</span><span class="o">.</span><span class="n">RTLD_LOCAL</span><span class="p">)</span>
 
 
@@ -699,48 +699,48 @@ document.write(`
 <span class="c1"># The documentation uses __all__ to determine what is documented and in what</span>
 <span class="c1"># order.</span>
 <span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span>  <span class="c1"># noqa: F405</span>
-    <span class="s2">&quot;new_comm&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;TorchComm&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;ReduceOp&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;TorchWork&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;Timeout&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;BatchP2POptions&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;BatchSendRecv&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;P2POp&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;CommOptions&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;TorchCommWindow&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;register_backend&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;TorchCommBackend&quot;</span><span class="p">,</span>
+    <span class="s2">"new_comm"</span><span class="p">,</span>
+    <span class="s2">"TorchComm"</span><span class="p">,</span>
+    <span class="s2">"ReduceOp"</span><span class="p">,</span>
+    <span class="s2">"TorchWork"</span><span class="p">,</span>
+    <span class="s2">"Timeout"</span><span class="p">,</span>
+    <span class="s2">"BatchP2POptions"</span><span class="p">,</span>
+    <span class="s2">"BatchSendRecv"</span><span class="p">,</span>
+    <span class="s2">"P2POp"</span><span class="p">,</span>
+    <span class="s2">"CommOptions"</span><span class="p">,</span>
+    <span class="s2">"TorchCommWindow"</span><span class="p">,</span>
+    <span class="s2">"register_backend"</span><span class="p">,</span>
+    <span class="s2">"TorchCommBackend"</span><span class="p">,</span>
 <span class="p">]</span>
 
 <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">__all__</span><span class="p">:</span>
     <span class="bp">cls</span> <span class="o">=</span> <span class="nb">globals</span><span class="p">()[</span><span class="n">name</span><span class="p">]</span>
-    <span class="bp">cls</span><span class="o">.</span><span class="vm">__module__</span> <span class="o">=</span> <span class="s2">&quot;torchcomms&quot;</span>
+    <span class="bp">cls</span><span class="o">.</span><span class="vm">__module__</span> <span class="o">=</span> <span class="s2">"torchcomms"</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_load_backend</span><span class="p">(</span><span class="n">backend</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Used to load backends lazily from C++</span>
+<span class="w">    </span><span class="sd">"""Used to load backends lazily from C++</span>
 
 <span class="sd">    C++ calls this only when the backend is not already registered via</span>
 <span class="sd">    register_backend.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">found</span> <span class="o">=</span> <span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">&quot;torchcomms.backends&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">backend</span><span class="p">)</span>
+<span class="sd">    """</span>
+    <span class="n">found</span> <span class="o">=</span> <span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">"torchcomms.backends"</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">backend</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">found</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ModuleNotFoundError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;failed to find backend </span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2">, is it registered via entry_points.txt?&quot;</span>
+            <span class="sa">f</span><span class="s2">"failed to find backend </span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2">, is it registered via entry_points.txt?"</span>
         <span class="p">)</span>
     <span class="n">wheel</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">found</span><span class="p">))</span>
     <span class="n">wheel</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">is_backend_built</span><span class="p">(</span><span class="n">backend</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;True if the wheel was built with this backend&#39;s extension.&quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">&quot;torchcomms.backends&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">backend</span><span class="p">))</span>
+<span class="w">    </span><span class="sd">"""True if the wheel was built with this backend's extension."""</span>
+    <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">"torchcomms.backends"</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">backend</span><span class="p">))</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">built_backends</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Names of all backends the wheel was built with.&quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="p">[</span><span class="n">ep</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">&quot;torchcomms.backends&quot;</span><span class="p">)]</span>
+<span class="w">    </span><span class="sd">"""Names of all backends the wheel was built with."""</span>
+    <span class="k">return</span> <span class="p">[</span><span class="n">ep</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">entry_points</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="s2">"torchcomms.backends"</span><span class="p">)]</span>
 </pre></div>
 
                 </article>

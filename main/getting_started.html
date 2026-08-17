@@ -774,8 +774,8 @@ pip<span class="w"> </span>install<span class="w"> </span>-v<span class="w"> </s
 
 <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
     <span class="c1"># Initialize TorchComm with NCCLX backend</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
-    <span class="n">torchcomm</span> <span class="o">=</span> <span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;main_comm&quot;</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">"cuda"</span><span class="p">)</span>
+    <span class="n">torchcomm</span> <span class="o">=</span> <span class="n">new_comm</span><span class="p">(</span><span class="s2">"ncclx"</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"main_comm"</span><span class="p">)</span>
 
     <span class="c1"># Get rank and world size</span>
     <span class="n">rank</span> <span class="o">=</span> <span class="n">torchcomm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
@@ -784,9 +784,9 @@ pip<span class="w"> </span>install<span class="w"> </span>-v<span class="w"> </s
     <span class="c1"># Calculate device ID</span>
     <span class="n">num_devices</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">()</span>
     <span class="n">device_id</span> <span class="o">=</span> <span class="n">rank</span> <span class="o">%</span> <span class="n">num_devices</span>
-    <span class="n">target_device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;cuda:</span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">target_device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="sa">f</span><span class="s2">"cuda:</span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">world_size</span><span class="si">}</span><span class="s2">: Running on device </span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">world_size</span><span class="si">}</span><span class="s2">: Running on device </span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="c1"># Create a tensor with rank-specific data</span>
     <span class="n">tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span>
@@ -796,7 +796,7 @@ pip<span class="w"> </span>install<span class="w"> </span>-v<span class="w"> </s
         <span class="n">device</span><span class="o">=</span><span class="n">target_device</span>
     <span class="p">)</span>
 
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: Before AllReduce: </span><span class="si">{</span><span class="n">tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: Before AllReduce: </span><span class="si">{</span><span class="n">tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="c1"># Perform synchronous AllReduce (sum across all ranks)</span>
     <span class="n">torchcomm</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">ReduceOp</span><span class="o">.</span><span class="n">SUM</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
@@ -804,12 +804,12 @@ pip<span class="w"> </span>install<span class="w"> </span>-v<span class="w"> </s
     <span class="c1"># Synchronize CUDA stream</span>
     <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_stream</span><span class="p">()</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
 
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: After AllReduce: </span><span class="si">{</span><span class="n">tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: After AllReduce: </span><span class="si">{</span><span class="n">tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="c1"># Cleanup</span>
     <span class="n">torchcomm</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 
-<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">"__main__"</span><span class="p">:</span>
     <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
@@ -840,12 +840,12 @@ Here is the same example as above, but with asynchronous <code class="docutils l
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms</span><span class="w"> </span><span class="kn">import</span> <span class="n">new_comm</span><span class="p">,</span> <span class="n">ReduceOp</span>
 
-<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
-<span class="n">torchcomm</span> <span class="o">=</span> <span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;main_comm&quot;</span><span class="p">)</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">"cuda"</span><span class="p">)</span>
+<span class="n">torchcomm</span> <span class="o">=</span> <span class="n">new_comm</span><span class="p">(</span><span class="s2">"ncclx"</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"main_comm"</span><span class="p">)</span>
 
 <span class="n">rank</span> <span class="o">=</span> <span class="n">torchcomm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
 <span class="n">device_id</span> <span class="o">=</span> <span class="n">rank</span> <span class="o">%</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">()</span>
-<span class="n">target_device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;cuda:</span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">target_device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="sa">f</span><span class="s2">"cuda:</span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 <span class="c1"># Create tensor</span>
 <span class="n">tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="mi">1024</span><span class="p">,),</span> <span class="nb">float</span><span class="p">(</span><span class="n">rank</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">target_device</span><span class="p">)</span>
@@ -854,11 +854,11 @@ Here is the same example as above, but with asynchronous <code class="docutils l
 <span class="n">work</span> <span class="o">=</span> <span class="n">torchcomm</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">ReduceOp</span><span class="o">.</span><span class="n">SUM</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
 <span class="c1"># Do other work while communication happens</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: Doing other work while AllReduce is in progress...&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: Doing other work while AllReduce is in progress..."</span><span class="p">)</span>
 
 <span class="c1"># Wait for completion</span>
 <span class="n">work</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: AllReduce completed&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rank </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">: AllReduce completed"</span><span class="p">)</span>
 
 <span class="n">torchcomm</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 </pre></div>

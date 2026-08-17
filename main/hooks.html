@@ -663,18 +663,18 @@ logic.</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms._comms</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpName</span><span class="p">,</span> <span class="n">PreHookArgs</span><span class="p">,</span> <span class="n">PostHookArgs</span>
 
 <span class="c1"># Create a communicator</span>
-<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda:0&quot;</span><span class="p">)</span>
-<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">"cuda:0"</span><span class="p">)</span>
+<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">"ncclx"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
 <span class="c1"># Define hook callbacks</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">my_pre_hook</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">PreHookArgs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Starting operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Starting operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">my_post_hook</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">PostHookArgs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Completed operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Completed operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">my_abort_hook</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Process is about to abort, saving debug info...&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">"Process is about to abort, saving debug info..."</span><span class="p">)</span>
 
 <span class="c1"># Register hooks - each returns a RemovableHandle</span>
 <span class="n">pre_handle</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">register_pre_hook</span><span class="p">(</span><span class="n">my_pre_hook</span><span class="p">)</span>
@@ -716,8 +716,8 @@ analysis tools.</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.hooks</span><span class="w"> </span><span class="kn">import</span> <span class="n">FlightRecorderHook</span>
 
 <span class="c1"># Create a communicator</span>
-<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda:0&quot;</span><span class="p">)</span>
-<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">"cuda:0"</span><span class="p">)</span>
+<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">"ncclx"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
 <span class="c1"># Create and register a flight recorder hook</span>
 <span class="n">recorder</span> <span class="o">=</span> <span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
@@ -773,8 +773,8 @@ before the corruption has a chance to propagate across the job.</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.hooks</span><span class="w"> </span><span class="kn">import</span> <span class="n">NanCheckHook</span>
 
 <span class="c1"># Create a communicator</span>
-<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda:0&quot;</span><span class="p">)</span>
-<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">"cuda:0"</span><span class="p">)</span>
+<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">"ncclx"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
 <span class="c1"># Create and register the NaN check hook</span>
 <span class="n">nan_check</span> <span class="o">=</span> <span class="n">NanCheckHook</span><span class="p">()</span>
@@ -806,7 +806,7 @@ before the corruption has a chance to propagate across the job.</p>
 to a pipe-delimited log file.</p>
 <p class="rubric">Example</p>
 <div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.hooks</span><span class="w"> </span><span class="kn">import</span> <span class="n">clog</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">logger</span> <span class="o">=</span> <span class="n">clog</span><span class="p">(</span><span class="n">output</span><span class="o">=</span><span class="s2">&quot;/tmp/clog.log&quot;</span><span class="p">,</span> <span class="n">events</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;ALL&quot;</span><span class="p">])</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">logger</span> <span class="o">=</span> <span class="n">clog</span><span class="p">(</span><span class="n">output</span><span class="o">=</span><span class="s2">"/tmp/clog.log"</span><span class="p">,</span> <span class="n">events</span><span class="o">=</span><span class="p">[</span><span class="s2">"ALL"</span><span class="p">])</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">logger</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm_a</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">logger</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm_b</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="c1"># ... run collectives ...</span>
@@ -850,7 +850,7 @@ distributed module, so traces can be analyzed using the same fr_trace
 analysis tools.</p>
 <p class="rubric">Example</p>
 <div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.hooks</span><span class="w"> </span><span class="kn">import</span> <span class="n">fr</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;nccl&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="s2">&quot;world&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">"nccl"</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="s2">"world"</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">fr</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="c1"># ... run some collectives ...</span>

@@ -645,7 +645,7 @@ document.write(`
 
 <span class="c1"># pyre-strict</span>
 
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 <span class="sd">NanCheckHook for detecting NaN values in tensors before collective operations.</span>
 
 <span class="sd">Catches numerical instability early before it propagates across ranks.</span>
@@ -653,11 +653,11 @@ document.write(`
 <span class="sd">Example:</span>
 <span class="sd">    &gt;&gt;&gt; from torchcomms.hooks import NanCheckHook</span>
 <span class="sd">    &gt;&gt;&gt; import torchcomms</span>
-<span class="sd">    &gt;&gt;&gt; comm = torchcomms.new_comm(&quot;nccl&quot;, device, &quot;world&quot;)</span>
+<span class="sd">    &gt;&gt;&gt; comm = torchcomms.new_comm("nccl", device, "world")</span>
 <span class="sd">    &gt;&gt;&gt; nan_check = NanCheckHook()</span>
 <span class="sd">    &gt;&gt;&gt; nan_check.register_with_comm(comm)</span>
 <span class="sd">    &gt;&gt;&gt; # NaN in tensors will now raise RuntimeError before collective runs</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -683,12 +683,12 @@ document.write(`
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_check_tensor</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">label</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">op_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Check a single tensor for NaN values using c10d::check_for_nan.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Check a single tensor for NaN values using c10d::check_for_nan."""</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="n">_get_check_for_nan</span><span class="p">()(</span><span class="n">tensor</span><span class="p">)</span>
     <span class="k">except</span> <span class="ne">RuntimeError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;NaN detected in </span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2"> tensor for &#39;</span><span class="si">{</span><span class="n">op_name</span><span class="si">}</span><span class="s2">&#39; on comm &#39;</span><span class="si">{</span><span class="n">comm_name</span><span class="si">}</span><span class="s2">&#39;: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="sa">f</span><span class="s2">"NaN detected in </span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2"> tensor for '</span><span class="si">{</span><span class="n">op_name</span><span class="si">}</span><span class="s2">' on comm '</span><span class="si">{</span><span class="n">comm_name</span><span class="si">}</span><span class="s2">': </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
 
 
@@ -750,7 +750,7 @@ document.write(`
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">NanCheckHook</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Hook that checks for NaN values in tensors before collective operations.</span>
+<span class="w">    </span><span class="sd">"""Hook that checks for NaN values in tensors before collective operations.</span>
 
 <span class="sd">    Registers a pre-hook on communicators that inspects input and/or output</span>
 <span class="sd">    tensors for NaN values using the dispatched ``c10d::check_for_nan``</span>
@@ -760,7 +760,7 @@ document.write(`
 <span class="sd">    Args:</span>
 <span class="sd">        check_inputs: Whether to check input tensors. Default: True.</span>
 <span class="sd">        check_outputs: Whether to check output tensors. Default: False.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
 <div class="viewcode-block" id="NanCheckHook.__init__">
 <a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.__init__">[docs]</a>
@@ -777,51 +777,51 @@ document.write(`
 <div class="viewcode-block" id="NanCheckHook.register_with_comm">
 <a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.register_with_comm">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">register_with_comm</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">comm</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register the NaN check hook with a communicator.</span>
+<span class="w">        </span><span class="sd">"""Register the NaN check hook with a communicator.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            comm: A TorchComm communicator instance.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">comm_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_name</span><span class="p">()</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">_pre_hook</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="n">OpName</span><span class="p">,</span> <span class="n">op_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">op_str</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="o">.</span><span class="n">rsplit</span><span class="p">(</span><span class="s2">&quot;.&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+            <span class="n">op_str</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="o">.</span><span class="n">rsplit</span><span class="p">(</span><span class="s2">"."</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
 
             <span class="k">if</span> <span class="n">name</span> <span class="o">==</span> <span class="n">OpName</span><span class="o">.</span><span class="n">send</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="o">==</span> <span class="n">OpName</span><span class="o">.</span><span class="n">recv</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">_INPLACE_OPS</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">_SINGLE_IO_OPS</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">_SINGLE_IN_LIST_OUT_OPS</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">_LIST_IN_SINGLE_OUT_OPS</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span><span class="p">:</span>
-                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_single</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="k">elif</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">_LIST_IO_OPS</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_inputs</span><span class="p">:</span>
-                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">&quot;input&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">input</span><span class="p">,</span> <span class="s2">"input"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_outputs</span><span class="p">:</span>
-                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
+                    <span class="n">_check_list</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">output</span><span class="p">,</span> <span class="s2">"output"</span><span class="p">,</span> <span class="n">op_str</span><span class="p">,</span> <span class="n">comm_name</span><span class="p">)</span>
 
             <span class="c1"># barrier, split, new_window, finalize: no tensors to check</span>
 
@@ -832,7 +832,7 @@ document.write(`
 <div class="viewcode-block" id="NanCheckHook.is_enabled">
 <a class="viewcode-back" href="../../../../hooks.html#torchcomms.hooks.NanCheckHook.is_enabled">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return whether any communicators are registered.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Return whether any communicators are registered."""</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered_count</span> <span class="o">&gt;</span> <span class="mi">0</span></div>
 
 </pre></div>
