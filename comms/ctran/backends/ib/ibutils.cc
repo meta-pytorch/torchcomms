@@ -12,10 +12,10 @@
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using namespace ctran::ibvwrap;
 
@@ -38,12 +38,12 @@ commResult_t IbUtils::pollForAsyncEvent(
   int flags = fcntl(fdSet.fd, F_GETFL);
 
   if (flags == -1) {
-    CERR(commSystemError, "fcntl flags failure");
+    CTRAN_ERR(commSystemError, "fcntl flags failure");
     return commSystemError;
   }
   auto ret = fcntl(fdSet.fd, F_SETFL, flags | O_NONBLOCK);
   if (ret == -1) {
-    CERR(commSystemError, "fcntl set NONBLOCK failure");
+    CTRAN_ERR(commSystemError, "fcntl set NONBLOCK failure");
     return commSystemError;
   }
 
@@ -64,24 +64,25 @@ commResult_t IbUtils::pollForAsyncEvent(
 
   if (stopRequested) {
     // stop requested during cleanup; hence exiting this loop.
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO, NET, "CTRAN-IB: Exiting ibAsyncEventHandler (requested)");
     return commInProgress;
   }
   if (linkDown) {
-    CLOGF_SUBSYS(INFO, NET, "NET/IB : Exiting ibAsyncEventHandler (link down)");
+    CTRAN_LOG_SUBSYS(
+        INFO, NET, "NET/IB : Exiting ibAsyncEventHandler (link down)");
     joinTimeoutThread();
     return commSystemError;
   }
   if (ret < 0) {
-    CERR(
+    CTRAN_ERR(
         commSystemError,
         "NET/IB : poll for IB async events failed with error code:{}",
         ret);
     return commSystemError;
   }
   if ((fdSet.revents & POLLIN) != POLLIN) {
-    CERR(
+    CTRAN_ERR(
         commSystemError,
         "NET/IB : poll returned unexpected POLLERR or POLLHUP for dev={} (probably a bad device)",
         ibvContext->device->name);
@@ -111,7 +112,7 @@ void IbUtils::timeoutHandler(
           locked.as_lock(), duration, [&] { return *locked; })) {
     std::string errorMessage = fmt::format(
         "Link down timeout reached for {} ({} ms).", devName, duration.count());
-    CERR(commSystemError, "{}", errorMessage);
+    CTRAN_ERR(commSystemError, "{}", errorMessage);
     CTRAN_LOG(
         WARN,
         "ctranCommSetAsyncError: error comm NULL sets state {}",
@@ -120,7 +121,7 @@ void IbUtils::timeoutHandler(
     ibutils->setLinkFlapState(
         ctran::ibutils::LinkFlapState::IB_ASYNC_LINK_TIMEOUT);
   } else {
-    CLOGF_SUBSYS(INFO, NET, "NET/IB : timeoutHandler: link back up.");
+    CTRAN_LOG_SUBSYS(INFO, NET, "NET/IB : timeoutHandler: link back up.");
   }
 }
 
@@ -177,7 +178,8 @@ commResult_t IbUtils::triageIbAsyncEvents(
     const int port) {
   char* asyncErrorMsg = nullptr;
   if (commSuccess != wrap_ibv_event_type_str(&asyncErrorMsg, eventType)) {
-    CLOGF(WARN, "ibv_event_type_str not parsable - eventType={}", eventType);
+    CTRAN_LOG(
+        WARN, "ibv_event_type_str not parsable - eventType={}", eventType);
   }
   auto msg = fmt::format(
       "NET/IB: {}:{} Got async event: {} ({})",
@@ -202,11 +204,11 @@ commResult_t IbUtils::triageIbAsyncEvents(
     case ibverbx::IBV_EVENT_GID_CHANGE:
     case ibverbx::IBV_EVENT_SM_CHANGE:
     case ibverbx::IBV_EVENT_CLIENT_REREGISTER:
-      CLOGF_SUBSYS(INFO, NET, "{}", msg.c_str());
+      CTRAN_LOG_SUBSYS(INFO, NET, "{}", msg.c_str());
       break;
 
     case ibverbx::IBV_EVENT_PORT_ACTIVE:
-      CLOGF_SUBSYS(INFO, NET, "{}", msg.c_str());
+      CTRAN_LOG_SUBSYS(INFO, NET, "{}", msg.c_str());
       sendLinkUpEvent();
       break;
 
@@ -214,7 +216,7 @@ commResult_t IbUtils::triageIbAsyncEvents(
       // a link down event is not considered an error unless it is down
       // for a period longer than the configured timeout
       // so do not return commSystemError here
-      CERR(commSystemError, "{}", msg);
+      CTRAN_ERR(commSystemError, "{}", msg);
       // for now, only ctran supports timer
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
         // set timer; if timer expires it will trigger an error
@@ -232,7 +234,7 @@ commResult_t IbUtils::triageIbAsyncEvents(
     case ibverbx::IBV_EVENT_SRQ_ERR:
     case ibverbx::IBV_EVENT_DEVICE_FATAL:
       ret = commSystemError;
-      CERR(commSystemError, "{}", msg);
+      CTRAN_ERR(commSystemError, "{}", msg);
       // preserve baseline functionality by not sending async error
       if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
         CTRAN_LOG(
@@ -243,7 +245,7 @@ commResult_t IbUtils::triageIbAsyncEvents(
       break;
 
     default:
-      CLOGF_SUBSYS(INFO, NET, "{}", msg.c_str());
+      CTRAN_LOG_SUBSYS(INFO, NET, "{}", msg.c_str());
       break;
   }
   return ret;
