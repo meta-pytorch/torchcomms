@@ -25,7 +25,16 @@
  * It is the reduce-scatter analogue of
  * `ncclShardedRelayMultiGroupAllReduceImpl` and reuses the same
  * phase-synchronized passthrough-helper scheme; helpers perform no local
- * compute and all reductions happen on the two active ranks per group.
+ * compute and all reductions happen on the active ranks per group.
+ *
+ * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the original
+ * 2-active passthrough path (block-restricted 5-phase relay); A>2 uses the
+ * bandwidth-optimal recursive path (recursive-halving relay woven with a direct
+ * all-to-all, mirroring the merged allreduce). The direct all-to-all's owned
+ * shard is reduced with a single fused multi-input reduce pass (owned shard +
+ * all A-1 peer contributions read once, AVG divisor applied, written once)
+ * instead of a loop of per-contribution add + scale passes. Both keep the same
+ * per-helper buffer contract (nActiveRanksPerGroup x chunkSize).
  *
  * Reduce-Scatter Semantics (per group, 2 active ranks a0, a1):
  * ===========================================================
@@ -106,7 +115,7 @@
  * @param stream CUDA stream
  * @param allActiveRanks 2D array of active ranks
  * [nGroups][nActiveRanksPerGroup]
- * @param nActiveRanksPerGroup Number of active ranks per group (typically 2)
+ * @param nActiveRanksPerGroup Number of active ranks per group (2 or 4)
  * @param nGroups Number of groups (typically 4 for 8-GPU node)
  * @return ncclResult_t Success or error code
  */
