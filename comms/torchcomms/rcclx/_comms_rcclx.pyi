@@ -121,18 +121,21 @@ class TorchCommRCCLX:
         Fused multi-group sharded relay all-gather for 2D sparse parallelism.
 
         All-gather analogue of sharded_relay_multi_group_reduce_scatter (its
-        dual). No reduction (pure data movement) and no reduction op. Each
-        active rank's input holds per_group_send_counts[g] elements and its
-        output holds nActiveRanks x per_group_send_counts[g] elements
-        (output[i x sendCount] from active index i).
+        dual). No reduction (pure data movement) and no reduction op.
+        nActiveRanks must be a power of two (2 or 4); A>2 uses the flat
+        scatter->forward relay: a direct intra all-to-all woven with a 2-hop
+        offload through the idle helper GPUs. Each active rank's input
+        holds per_group_send_counts[g] elements and its output holds
+        nActiveRanks x per_group_send_counts[g] elements (output[i x sendCount]
+        from active index i).
 
         Supports both in-place and out-of-place. In-place is detected when the
         active input aliases output + myActiveIndex x sendCount.
 
         Args:
             input_tensors: List of send tensors (one per group). Active rank:
-                per_group_send_counts[g] elements. Helper rank: two-slot scratch
-                tensor.
+                per_group_send_counts[g] elements. Helper rank:
+                nActiveRanks-slot scratch tensor.
             output_tensors: List of receive tensors (one per group). Active rank:
                 nActiveRanks x per_group_send_counts[g] elements. Helper rank:
                 same scratch as input.
