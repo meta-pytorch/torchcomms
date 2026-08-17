@@ -3,6 +3,7 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 static std::unordered_map<CtranMapperRequest::ReqType, std::string> reqTypeStr =
     {{CtranMapperRequest::ReqType::SEND_CTRL, "SEND_CTRL"},
@@ -29,7 +30,7 @@ CtranMapperRequest::CtranMapperRequest(
   }
   if (backend != CtranMapperBackend::IB &&
       backend != CtranMapperBackend::SOCKET) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "CTRAN-MAPPER: Unsupported backend {} for CtranMapperRequest",
         backend);
