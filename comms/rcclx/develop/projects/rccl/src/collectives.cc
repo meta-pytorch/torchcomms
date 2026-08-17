@@ -21,6 +21,7 @@
 #include "meta/relay/sharded_relay_allreduce.h"
 #include "meta/relay/sharded_relay_reduce_scatter.h"
 #include "meta/relay/sharded_relay_all_to_all.h"
+#include "meta/relay/sharded_relay_all_gather.h"
 #include "comms/ctran/Ctran.h"
 #include "MetaFactory.h"
 
@@ -611,6 +612,60 @@ ncclResult_t ncclShardedRelayMultiGroupAllToAll(
     const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
   return ncclShardedRelayMultiGroupAllToAll_impl(
       sendBuffs, recvBuffs, segmentCounts,
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+}
+
+NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupAllGather,
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+
+ncclResult_t ncclShardedRelayMultiGroupAllGather_impl(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
+    ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+  // Validate buffer pointers
+  if (recvBuffs == nullptr || allActiveRanks == nullptr || sendCounts == nullptr ||
+      sendBuffs == nullptr) {
+    WARN("ncclShardedRelayMultiGroupAllGather: buffer, sendCounts, and activeRanks pointers must be non-null");
+    return ncclInvalidArgument;
+  }
+
+  // Validate group parameters
+  if (nGroups < 1 || nGroups > 8) {
+    WARN("ncclShardedRelayMultiGroupAllGather: nGroups must be between 1 and 8, got %d", nGroups);
+    return ncclInvalidArgument;
+  }
+
+  if (nActiveRanksPerGroup != 2) {
+    WARN("ncclShardedRelayMultiGroupAllGather: nActiveRanksPerGroup must be 2, got %d",
+         nActiveRanksPerGroup);
+    return ncclInvalidArgument;
+  }
+
+  int nRanks;
+  NCCLCHECK(ncclCommCount(comm, &nRanks));
+
+  // Validate we have enough ranks for sharded relay (need helpers)
+  if (nRanks < nActiveRanksPerGroup + 1) {
+    WARN("ncclShardedRelayMultiGroupAllGather: need at least %d ranks for %d active ranks (need helpers)",
+         nActiveRanksPerGroup + 1, nActiveRanksPerGroup);
+    return ncclInvalidArgument;
+  }
+
+  TRACE(NCCL_COLL, "Using Sharded Relay Multi-Group AllGather (nRanks=%d, nActiveRanksPerGroup=%d, nGroups=%d)",
+        nRanks, nActiveRanksPerGroup, nGroups);
+  return ncclShardedRelayMultiGroupAllGatherImpl(
+      sendBuffs, recvBuffs, sendCounts,
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+}
+
+ncclResult_t ncclShardedRelayMultiGroupAllGather(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+  return ncclShardedRelayMultiGroupAllGather_impl(
+      sendBuffs, recvBuffs, sendCounts,
       datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
 }
 
