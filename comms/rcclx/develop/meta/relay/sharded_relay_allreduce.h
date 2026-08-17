@@ -19,6 +19,19 @@
  * This API performs multiple sharded relay allreduces in a single fused call,
  * coordinating phases across all groups to prevent XGMI link contention.
  *
+ * Active ranks per group (nActiveRanksPerGroup) must be a power of two — 2 or 4
+ * are supported (on an 8-GPU node: 2 active + 6 helpers, or 4 active + 4
+ * helpers). A=2 uses the original single-pass flow. A=4 uses a flat
+ * helper-reduce-AND-broadcast: count is split into a DIRECT region (allreduced
+ * among the active ranks over the 1-hop intra links via a direct reduce-scatter
+ * + all-gather) and an OFFLOAD region (allreduced 2-hop through the otherwise-
+ * idle helpers, which SUM all active ranks' chunk and BROADCAST the result
+ * back); the AVG divisor is nActiveRanks. Both the direct owned-shard reduce
+ * and the helper SUM use a single fused multi-input reduce pass (read the owned
+ * shard plus all peer contributions once, apply the AVG divisor, write once)
+ * rather than a loop of per-contribution add + scale passes. The two paths live
+ * in separate internal functions selected by nActiveRanksPerGroup.
+ *
  * Problem with Separate Calls:
  * ============================
  * When 4 separate sharded relay allreduces run in parallel (one per sparse
@@ -77,15 +90,24 @@
  * For the BM-FM 4-group / 2-active topology this is:
  *   3 × 2 × chunkSize = 6 × chunkSize per rank.
  *
+ * For A=4 the helper (reduce-and-broadcast) holds A source chunks plus one
+ * reduced chunk per offload slice, so the caller must supply a larger scratch:
+ * at least 2 × counts[g] elements per helper group (covers (A+1) × oChunk for
+ * any offload fraction).
+ *
  * Memory Model:
  * =============
  * Each rank is ACTIVE for exactly ONE group (has real tensor data).
  * For other groups, the rank is a HELPER (uses provided two-slot scratch).
  * The caller must provide:
- *   - sendBuffs[nGroups]: One buffer per group
- *   - recvBuffs[nGroups]: One buffer per group
- *   - For the group where rank is active: full per_group_counts[g] elements
- *   - For other groups: two-slot scratch (>= nActiveRanks * chunkSize)
+ *   - sendBuffs[nGroups]: one contiguous input buffer per group. For the active
+ *     group it is the real input tensor (counts[g] elements); helper groups may
+ *     pass the same pointer as recvBuffs.
+ *   - recvBuffs[nGroups]: one base buffer per group. For helper groups this is
+ *     the two-slot passthrough scratch (>= nActiveRanks * chunkSize); for the
+ *     active group it is the working/output base (counts[g] elements).
+ *   - Allreduce may be in-place (recvBuffs[g] aliases sendBuffs[g]) or
+ *     out-of-place (distinct buffers), keyed off sendBuffs[g]==recvBuffs[g].
  *   - Each helper group MUST have its own buffer (no aliasing across groups)
  *     because all groups are processed simultaneously under phase-sync
  *
@@ -96,16 +118,19 @@
  *   Group 2: activeRanks = {4, 5}, helpers = {0,1,2,3,6,7}
  *   Group 3: activeRanks = {6, 7}, helpers = {0,1,2,3,4,5}
  *
- * @param sendBuffs Array of send buffer pointers (one per group)
- * @param recvBuffs Array of receive buffer pointers (one per group)
- * @param counts Array of element counts (one per group, allows different sizes)
+ * @param sendBuffs Array of per-group contiguous input buffer pointers (one per
+ *        group); the active group holds counts[g] elements
+ * @param recvBuffs Array of per-group base buffer pointers (one per group);
+ *        helper groups pass two-slot passthrough scratch
+ * @param counts Array of element counts (one per group, allows different
+ *        sizes); the active group's input/output each hold counts[g] elements
  * @param datatype NCCL data type
  * @param op Reduction operation (only ncclSum and ncclAvg supported)
  * @param comm NCCL communicator
  * @param stream CUDA stream
  * @param allActiveRanks 2D array of active ranks
  * [nGroups][nActiveRanksPerGroup]
- * @param nActiveRanksPerGroup Number of active ranks per group (typically 2)
+ * @param nActiveRanksPerGroup Number of active ranks per group (2 or 4)
  * @param nGroups Number of groups (typically 4 for 8-GPU node)
  * @return ncclResult_t Success or error code
  */
