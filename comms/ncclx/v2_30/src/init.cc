@@ -1605,6 +1605,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
         "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
     // cache the ring info to be used for setupChannel later when needed
     comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
+    // Attempt to setup NVLS
+    NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
   } else if (comm->runtimeConn) {
     for (int c=0; c<comm->nChannels; c++) {
       NCCLCHECKGOTO(setupChannel(comm, c, rank, nranks, rings+c*nranks), ret, fail);
@@ -3740,4 +3742,3 @@ ncclResult_t ncclCommUserRank(const ncclComm_t comm, int* rank) {
   *rank = comm->rank;
   return ncclSuccess;
 }
-
