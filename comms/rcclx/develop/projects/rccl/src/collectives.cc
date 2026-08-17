@@ -460,7 +460,8 @@ ncclResult_t ncclShardedRelayMultiGroupAllReduce_impl(
   }
 
   // Validate buffer pointers
-  if (sendBuffs == nullptr || recvBuffs == nullptr || allActiveRanks == nullptr || counts == nullptr) {
+  if (recvBuffs == nullptr || allActiveRanks == nullptr || counts == nullptr ||
+      sendBuffs == nullptr) {
     WARN("ncclShardedRelayMultiGroupAllReduce: buffer, counts, and activeRanks pointers must be non-null");
     return ncclInvalidArgument;
   }
@@ -489,16 +490,18 @@ ncclResult_t ncclShardedRelayMultiGroupAllReduce_impl(
 
   TRACE(NCCL_COLL, "Using Sharded Relay Multi-Group AllReduce (nRanks=%d, nActiveRanksPerGroup=%d, nGroups=%d)", 
         nRanks, nActiveRanksPerGroup, nGroups);
-  return ncclShardedRelayMultiGroupAllReduceImpl(sendBuffs, recvBuffs, counts, datatype, op, comm, stream, 
-                                                  allActiveRanks, nActiveRanksPerGroup, nGroups);
+  return ncclShardedRelayMultiGroupAllReduceImpl(
+      sendBuffs, recvBuffs, counts,
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
 }
 
 ncclResult_t ncclShardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream,
     const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
-  return ncclShardedRelayMultiGroupAllReduce_impl(sendBuffs, recvBuffs, counts, datatype, op, comm, stream,
-                                                   allActiveRanks, nActiveRanksPerGroup, nGroups);
+  return ncclShardedRelayMultiGroupAllReduce_impl(
+      sendBuffs, recvBuffs, counts,
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
 }
 
 NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupReduceScatter,
