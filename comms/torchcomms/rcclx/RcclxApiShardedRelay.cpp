@@ -71,4 +71,28 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
       nGroups);
 }
 
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* recvCounts,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    ncclComm_t comm,
+    hipStream_t stream,
+    const int* const* allActiveRanks,
+    int nActiveRanksPerGroup,
+    int nGroups) {
+  return ncclShardedRelayMultiGroupReduceScatter(
+      sendBuffs,
+      recvBuffs,
+      recvCounts,
+      datatype,
+      op,
+      comm,
+      stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+}
+
 } // namespace torch::comms

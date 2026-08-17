@@ -275,6 +275,19 @@ class RcclxApi {
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
       int nGroups) = 0;
+
+  // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism
+  virtual ncclResult_t shardedRelayMultiGroupReduceScatter(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* recvCounts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) = 0;
 };
 
 /**
@@ -520,6 +533,19 @@ class DefaultRcclxApi : public RcclxApi {
       const void* const* sendBuffs,
       void* const* recvBuffs,
       const size_t* counts,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) override;
+
+  // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism
+  ncclResult_t shardedRelayMultiGroupReduceScatter(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* recvCounts,
       ncclDataType_t datatype,
       ncclRedOp_t op,
       ncclComm_t comm,
