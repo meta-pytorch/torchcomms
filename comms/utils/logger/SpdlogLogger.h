@@ -51,6 +51,28 @@ class CommsSpdlogLogger {
       std::string_view message);
 
   template <typename... Args>
+  void logSynchronous(
+      spdlog::source_loc location,
+      spdlog::level::level_enum level,
+      spdlog::format_string_t<Args...> format,
+      Args&&... args) {
+    if (!should_log(level)) {
+      return;
+    }
+    logFormatted(
+        location,
+        level,
+        getLevelName(level),
+        fmt::format(format, std::forward<Args>(args)...),
+        true);
+  }
+
+  void logSynchronous(
+      spdlog::source_loc location,
+      spdlog::level::level_enum level,
+      std::string_view message);
+
+  template <typename... Args>
   void logFatal(
       spdlog::source_loc location,
       spdlog::format_string_t<Args...> format,
