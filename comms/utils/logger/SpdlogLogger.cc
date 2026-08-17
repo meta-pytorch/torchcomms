@@ -211,6 +211,15 @@ void CommsSpdlogLogger::log(
   }
 }
 
+void CommsSpdlogLogger::logSynchronous(
+    spdlog::source_loc location,
+    spdlog::level::level_enum level,
+    std::string_view message) {
+  if (should_log(level)) {
+    logFormatted(location, level, getLevelName(level), message, true);
+  }
+}
+
 void CommsSpdlogLogger::logFatal(
     spdlog::source_loc location,
     std::string_view message) {

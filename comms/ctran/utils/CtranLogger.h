@@ -16,6 +16,18 @@ inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 #define CTRAN_LOG(level, ...) \
   COMMS_LOG_NAMED(::ctran::logging::kCtranLoggerName, level, __VA_ARGS__)
 
+#define CTRAN_LOG_SYNC_ERR(...)                                      \
+  do {                                                               \
+    auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger(    \
+        ::ctran::logging::kCtranLoggerName);                         \
+    if (_ctran_logger.should_log(::spdlog::level::err)) {            \
+      _ctran_logger.logSynchronous(                                  \
+          ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
+          ::spdlog::level::err,                                      \
+          __VA_ARGS__);                                              \
+    }                                                                \
+  } while (false)
+
 #define CTRAN_LOG_IF_IMPL(level, spdlog_level, condition, ...)    \
   do {                                                            \
     auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
