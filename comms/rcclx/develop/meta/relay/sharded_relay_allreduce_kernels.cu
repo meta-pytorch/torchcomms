@@ -14,8 +14,8 @@
  */
 template <typename T>
 __global__ void incrementalAddKernel(T* output, const T* input, size_t count) {
-  size_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
-  size_t totalThreads = blockDim.x * gridDim.x;
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
 
   for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
     output[elemIdx] += input[elemIdx];
@@ -40,8 +40,8 @@ void launchIncrementalAddKernel(
  */
 template <typename T>
 __global__ void scaleKernel(T* data, size_t count, int divisor) {
-  size_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
-  size_t totalThreads = blockDim.x * gridDim.x;
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
 
   for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
     data[elemIdx] = data[elemIdx] / static_cast<T>(divisor);
@@ -79,8 +79,8 @@ __global__ void incrementalAddAndScaleKernel(
     const T* input,
     size_t count,
     int divisor) {
-  size_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
-  size_t totalThreads = blockDim.x * gridDim.x;
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
 
   for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
     T sum = output[elemIdx] + input[elemIdx];
@@ -120,8 +120,8 @@ __global__ void fusedReduceKernel(
     const T* inputB,
     size_t count,
     int divisor) {
-  size_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
-  size_t totalThreads = blockDim.x * gridDim.x;
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
 
   for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
     T sum = inputA[elemIdx] + inputB[elemIdx];
@@ -151,6 +151,57 @@ void launchFusedReduceKernel(
       divisor);
 }
 
+/*
+ * Fused multi-input reduce: dst[i] = (dst[i] + sum_p contribs[p*count + i]),
+ * optionally divided by `divisor`, in a single pass / single launch.
+ *
+ * `contribs` is a contiguous array of `numContribs` blocks, each `count`
+ * elements (block p starts at contribs + p*count).  This replaces a loop of
+ * `numContribs` separate incremental-add launches (each read-modify-writing
+ * dst) plus a trailing scale — reading dst once and writing it once instead of
+ * numContribs+1 times, which cuts reduce-path HBM traffic.
+ */
+template <typename T>
+__global__ void multiReduceKernel(
+    T* dst,
+    const T* contribs,
+    int numContribs,
+    size_t count,
+    int divisor) {
+  size_t threadId = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  size_t totalThreads = static_cast<size_t>(blockDim.x) * gridDim.x;
+
+  for (size_t elemIdx = threadId; elemIdx < count; elemIdx += totalThreads) {
+    T acc = dst[elemIdx];
+    for (int p = 0; p < numContribs; p++) {
+      acc += contribs[static_cast<size_t>(p) * count + elemIdx];
+    }
+    if (divisor > 1) {
+      dst[elemIdx] = acc / static_cast<T>(divisor);
+    } else {
+      dst[elemIdx] = acc;
+    }
+  }
+}
+
+template <typename T>
+void launchMultiReduceKernel(
+    void* dst,
+    const void* contribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream) {
+  const int blockSize = 256;
+  int gridSize = (count + blockSize - 1) / blockSize;
+  multiReduceKernel<T><<<gridSize, blockSize, 0, stream>>>(
+      static_cast<T*>(dst),
+      static_cast<const T*>(contribs),
+      numContribs,
+      count,
+      divisor);
+}
+
 // Explicit template instantiations for every dtype used by the DISPATCH_*
 // macros in sharded_relay_allreduce.cc.  Without these, the symbols would
 // not exist with external linkage in the device object, and the host TU
@@ -172,6 +223,13 @@ void launchFusedReduceKernel(
       void* output,                                                        \
       const void* inputA,                                                  \
       const void* inputB,                                                  \
+      size_t count,                                                        \
+      int divisor,                                                         \
+      cudaStream_t stream);                                                \
+  template void launchMultiReduceKernel<T>(                                \
+      void* dst,                                                           \
+      const void* contribs,                                                \
+      int numContribs,                                                     \
       size_t count,                                                        \
       int divisor,                                                         \
       cudaStream_t stream);

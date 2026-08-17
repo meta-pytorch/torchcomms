@@ -380,20 +380,125 @@ class ScratchBufferCache {
     }                                                                       \
   } while (0)
 
+#define LAUNCH_MULTI_REDUCE_KERNEL(                           \
+    TYPE, dst, contribs, numContribs, count, divisor, stream) \
+  launchMultiReduceKernel<TYPE>(                              \
+      dst, contribs, numContribs, count, divisor, stream)
+
+// Fused multi-input reduce: dst = (dst + sum of `numContribs` contiguous
+// contribution blocks) [/ divisor], in one launch. Replaces a loop of
+// per-contribution incremental adds plus a trailing scale.
+#define DISPATCH_MULTI_REDUCE(                                             \
+    datatype, dst, contribs, numContribs, count, divisor, stream)          \
+  do {                                                                     \
+    switch (datatype) {                                                    \
+      case ncclInt8:                                                       \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            int8_t, dst, contribs, numContribs, count, divisor, stream);   \
+        break;                                                             \
+      case ncclUint8:                                                      \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            uint8_t, dst, contribs, numContribs, count, divisor, stream);  \
+        break;                                                             \
+      case ncclInt32:                                                      \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            int32_t, dst, contribs, numContribs, count, divisor, stream);  \
+        break;                                                             \
+      case ncclUint32:                                                     \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            uint32_t, dst, contribs, numContribs, count, divisor, stream); \
+        break;                                                             \
+      case ncclInt64:                                                      \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            int64_t, dst, contribs, numContribs, count, divisor, stream);  \
+        break;                                                             \
+      case ncclUint64:                                                     \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            uint64_t, dst, contribs, numContribs, count, divisor, stream); \
+        break;                                                             \
+      case ncclFloat16:                                                    \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            __half, dst, contribs, numContribs, count, divisor, stream);   \
+        break;                                                             \
+      case ncclFloat:                                                      \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            float, dst, contribs, numContribs, count, divisor, stream);    \
+        break;                                                             \
+      case ncclDouble:                                                     \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            double, dst, contribs, numContribs, count, divisor, stream);   \
+        break;                                                             \
+      case ncclBfloat16:                                                   \
+        LAUNCH_MULTI_REDUCE_KERNEL(                                        \
+            __nv_bfloat16,                                                 \
+            dst,                                                           \
+            contribs,                                                      \
+            numContribs,                                                   \
+            count,                                                         \
+            divisor,                                                       \
+            stream);                                                       \
+        break;                                                             \
+      default:                                                             \
+        break;                                                             \
+    }                                                                      \
+  } while (0)
+
+namespace {
+
+// The DISPATCH_* macros above instantiate reduce kernels for exactly these
+// types and fall through silently (default: break) for anything else, so an
+// unsupported datatype would return ncclSuccess having never reduced anything.
+//
+// This is deliberately a supported-set test rather than the
+// `datatype < 0 || datatype >= ncclNumTypes` range test used by upstream
+// ArgsCheck: ncclFloat8e4m3 and ncclFloat8e5m2 are valid NCCL types that
+// ncclTypeSize() sizes at 1 byte, so they pass a range test but have no reduce
+// kernel here. It also keeps ncclTypeSize()'s int -1 for an unknown type out of
+// the `size_t elementSize` below, where it would become SIZE_MAX rather than 0.
+// Keep this list in sync with the DISPATCH_* macros above.
+bool isSupportedRelayDataType(ncclDataType_t datatype) {
+  switch (datatype) {
+    case ncclInt8:
+    case ncclUint8:
+    case ncclInt32:
+    case ncclUint32:
+    case ncclInt64:
+    case ncclUint64:
+    case ncclFloat16:
+    case ncclFloat:
+    case ncclDouble:
+    case ncclBfloat16:
+      return true;
+    default:
+      return false;
+  }
+}
+
+} // namespace
+
 // Maximum number of helper ranks supported per group.
-// With exactly 2 active ranks, this implies a maximum communicator size of
-// SHARDED_RELAY_MAX_HELPERS + 2 ranks for this algorithm.
 static constexpr int SHARDED_RELAY_MAX_HELPERS = 8;
+
+// Maximum number of active ranks per group. The hypercube exchange schedule
+// (round-r partner = myActiveIndex XOR round) requires nActiveRanks to be a
+// power of two; supported values are 2 and 4 (on an 8-GPU node this leaves 6
+// or 4 helpers respectively).
+static constexpr int SHARDED_RELAY_MAX_ACTIVE = 8;
+
+// Returns true if v is a power of two (v >= 1).
+static inline bool isPowerOfTwo(int v) {
+  return v > 0 && (v & (v - 1)) == 0;
+}
 
 /**
  * Rank Configuration for Sharded Relay AllReduce
  *
  * Holds parsed active and helper rank information for a single group.
- * NOTE: This implementation requires exactly 2 active ranks per group.
+ * Supports a power-of-two number of active ranks per group (2 or 4).
  */
 struct ShardedRelayRankConfig {
-  int activeRanks[2]; // Active rank IDs (exactly 2 required)
-  int nActiveRanks; // Number of active ranks (must be 2)
+  int activeRanks[SHARDED_RELAY_MAX_ACTIVE]; // Active rank IDs (power of two)
+  int nActiveRanks; // Number of active ranks (2 or 4)
   int helperRanks[SHARDED_RELAY_MAX_HELPERS]; // Helper rank IDs
   int numHelpers; // Number of helper ranks
   bool isActiveRank; // Is current rank active?
@@ -425,21 +530,24 @@ static bool buildShardedRelayRankConfig(
   config.myActiveIndex = -1;
   config.myHelperIndex = -1;
 
-  // Validate input - require EXACTLY 2 active ranks
-  if (activeRanksInput == nullptr || nActiveRanksInput != 2) {
+  // Validate input - require a power-of-two active-rank count in
+  // [2, SHARDED_RELAY_MAX_ACTIVE]. The XOR round schedule depends on it.
+  if (activeRanksInput == nullptr || nActiveRanksInput < 2 ||
+      nActiveRanksInput > SHARDED_RELAY_MAX_ACTIVE ||
+      !isPowerOfTwo(nActiveRanksInput)) {
     return false;
   }
 
   // Copy active ranks and validate
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < nActiveRanksInput; i++) {
     int rankId = activeRanksInput[i];
     if (rankId >= 0 && rankId < nRanks) {
       config.activeRanks[config.nActiveRanks++] = rankId;
     }
   }
 
-  // Validate: need exactly 2 valid active ranks
-  if (config.nActiveRanks != 2) {
+  // Validate: need exactly nActiveRanksInput valid active ranks
+  if (config.nActiveRanks != nActiveRanksInput) {
     return false;
   }
 
@@ -489,129 +597,26 @@ static bool buildShardedRelayRankConfig(
 }
 
 /**
- * Fused Multi-Group Sharded Relay AllReduce — Phase-Synchronized Passthrough
+ * Two-active sharded relay allreduce (original, performant path).
  *
- * This implementation executes multiple sharded relay allreduces in a single
- * fused call, coordinating phases across ALL groups to prevent XGMI link
- * contention.  Helpers act as pure passthrough (no local compute); all
- * reductions are performed on the active ranks.
- *
- * Phase-Synchronized Execution with Passthrough Helpers:
- * ======================================================
- *
- *   PHASE 1 (active→helpers): ALL groups scatter simultaneously.
- *            Both active ranks send their chunks to helpers.
- *            Helpers receive into a two-slot buffer:
- *              slot 0 = data from active rank a0
- *              slot 1 = data from active rank a1
- *            All XGMI links carry unidirectional traffic: active→helper
- *
- *   PHASE 2 (helpers→active, batched): ALL helpers forward simultaneously
- *            in ONE ncclGroupStart/End.  Each helper sends slot 0 (a0's data)
- *            to a1 and slot 1 (a1's data) to a0.  Active rank receives all
- *            numHelpers chunks into relay scratch (numHelpers × chunkSize).
- *
- *   PHASE 3 (active reduce): Active ranks add the relay scratch to recvBuff
- *            using a single fused add+scale kernel
- *            (recvBuff[i] = (recvBuff[i] + scratch[i]) / nActiveRanks)
- *            over the whole relay region (numHelpers × chunkSize) — halves
- *            HBM traffic vs separate add + scale passes.
- *
- *   PHASE 4 (active↔active): Direct exchange of the last chunk between
- *            the two active ranks (same as the original algorithm).
- *
- *   PHASE 5 (active reduce): Final reduction on the direct-exchange chunk.
- *            Compute-only, no XGMI traffic.
- *
- * Memory Model:
- * =============
- * Each rank is ACTIVE for exactly ONE group (has real tensor data).
- * For other groups, the rank is a HELPER (uses provided two-slot scratch).
- *
- * For ACTIVE ranks:
- *   - sendBuff and recvBuff can be the same (in-place) or different
- *   - Relay scratch: numHelpers × chunkSize (from ScratchBufferCache, batched)
- *   - Direct-exchange scratch: (nActiveRanks-1) × directChunkSize (in-place)
- *
- * For HELPER ranks:
- *   - Buffer must hold nActiveRanks × chunkSize elements (two slots)
- *   - Slot a at offset a × chunkSize holds data from active rank a
- *   - Each helper group MUST have its own buffer (no aliasing across groups)
- *     because all groups are processed simultaneously under phase-sync
+ * Helpers forward slot a -> activeRanks[1-a]; the active rank batches all
+ * numHelpers forwarded chunks into relay scratch, fuses add+scale into
+ * recvBuff, then directly exchanges the final chunk between the two active
+ * ranks.
  */
-HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
+static ncclResult_t shardedRelayAllReduce2Active(
     const void* const* sendBuffs,
     void* const* recvBuffs,
     const size_t* counts,
     ncclDataType_t datatype,
-    ncclRedOp_t op,
+    int reductionDivisor,
     ncclComm_t comm,
     cudaStream_t stream,
-    const int* const* allActiveRanks,
-    int nActiveRanksPerGroup,
-    int nGroups) {
-  int nRanks, rank;
-  NCCLCHECK(ncclCommCount(comm, &nRanks));
-  NCCLCHECK(ncclCommUserRank(comm, &rank));
-
-  // Require at least 2 active ranks per group
-  if (nActiveRanksPerGroup < 2) {
-    return ncclInvalidArgument;
-  }
-
-  // Check if all counts are zero
-  bool allZero = true;
-  for (int g = 0; g < nGroups; g++) {
-    if (counts[g] != 0) {
-      allZero = false;
-      break;
-    }
-  }
-  if (allZero) {
-    return ncclSuccess;
-  }
-
-  // Validate operation - only SUM and AVG are supported
-  if (op != ncclSum && op != ncclAvg) {
-    return ncclInvalidArgument;
-  }
-
-  if (nGroups < 1 || nGroups > SHARDED_RELAY_MAX_GROUPS) {
-    return ncclInvalidArgument;
-  }
-
-  if (sendBuffs == nullptr || recvBuffs == nullptr ||
-      allActiveRanks == nullptr || counts == nullptr) {
-    return ncclInvalidArgument;
-  }
-
-  size_t elementSize = ncclTypeSize(datatype);
-
-  // Compute divisor for reduction: 1 for SUM, nActiveRanksPerGroup for AVG
-  int reductionDivisor = (op == ncclAvg) ? nActiveRanksPerGroup : 1;
-
-  // =========================================================================
-  // BUILD RANK CONFIGURATION FOR ALL GROUPS
-  // =========================================================================
-  ShardedRelayRankConfig configs[SHARDED_RELAY_MAX_GROUPS];
-  int myActiveGroup = -1; // Which group is this rank active for?
-
-  for (int g = 0; g < nGroups; g++) {
-    if (!buildShardedRelayRankConfig(
-            nRanks,
-            rank,
-            allActiveRanks[g],
-            nActiveRanksPerGroup,
-            configs[g])) {
-      return ncclInvalidArgument;
-    }
-    if (configs[g].isActiveRank) {
-      myActiveGroup = g;
-    }
-  }
-
-  // All groups should have the same number of helpers (same chunk structure)
-  int numHelpers = configs[0].numHelpers;
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nGroups,
+    size_t elementSize) {
   int numChunks = numHelpers + 1; // 7 for 8 ranks with 2 active per group
 
   // =========================================================================
@@ -964,4 +969,413 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
   }
 
   return ncclSuccess;
+}
+
+/**
+ * AllReduce for > 2 active ranks (flat helper-reduce-AND-broadcast). Combines
+ * the two patterns that individually beat NCCL at 4-active: the
+ * reduce-AT-helper of the flat reduce-scatter and the broadcast-AT-helper of
+ * the flat all-gather.
+ *
+ * Each rank's `count` is split into a DIRECT region pD (allreduced among the A
+ * active ranks over the 1-hop intra links via a direct all-to-all
+ * reduce-scatter + all-gather) and an OFFLOAD region pO (allreduced 2-hop
+ * through the otherwise-idle helpers: every helper SUMS all A active ranks'
+ * chunk and BROADCASTS the result back to all A). Both regions run concurrently
+ * in two ncclGroups -- G1 scatter and G2 gather/broadcast -- with the
+ * reductions in between. With f = pO/count = 0.5 each XGMI link carries
+ * ~0.25*count (intra: 0.5*(1-f)*count for the direct RS+AG; cross:
+ * 2*f*count/H for the offload scatter+broadcast), vs ~0.5*count/link for a
+ * 4-rank NCCL allreduce that uses only the intra links. Replaces the
+ * recursive-halving path.
+ *
+ * Scratch: dScratch holds the A-1 received direct shards. The helper's scratch
+ * is recvBuffs[g] = rawBuf [0, A*oChunk) (one chunk per active source); the
+ * fused helper reduce sums all A chunks in place into rawBuf[0], which is then
+ * broadcast back to the active ranks. recvBuff is operated on in
+ * place after being seeded from sendBuff (out-of-place) or aliasing it
+ * (in-place). Requires count % A == 0 and assumes A == numHelpers (the 8-GPU
+ * 4-active topology); the AVG divisor is applied once over the whole count.
+ */
+static ncclResult_t shardedRelayAllReduceFlat(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nActiveRanksPerGroup,
+    int nGroups,
+    size_t elementSize) {
+  const int A = nActiveRanksPerGroup;
+  const int H = numHelpers;
+
+  // Offload (helper reduce+broadcast) share = 571/1000. Like the flat
+  // reduce-scatter, the cross-link cost is dominated by the source->helper 1st
+  // hop, so shifting slightly more onto the (idle) cross links beats the
+  // equal-load f = 0.5 split empirically on MI350X.
+  // Offload (helper reduce+broadcast) share = 780/1000. Empirically optimal on
+  // MI350X (swept 0.5..0.85): far above the 0.5 equal-link-load point because
+  // the offload path (reduce+broadcast through the otherwise-idle cross links)
+  // is more efficient per byte than the direct intra RS+AG, so it pays to push
+  // most of the data onto the helpers. Kernel measures ~1.03x vs NCCL.
+  constexpr size_t kOffPermille = 780;
+
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] != 0 && (counts[g] % static_cast<size_t>(A)) != 0) {
+      return ncclInvalidArgument;
+    }
+  }
+
+  // Per-group geometry: pO (offload) aligned to H*CHUNK_ALIGN; pD = count - pO
+  // is then divisible by A (== H). dShard = pD/A, oChunk = pO/H.
+  size_t pDArr[SHARDED_RELAY_MAX_GROUPS];
+  size_t pOArr[SHARDED_RELAY_MAX_GROUPS];
+  for (int g = 0; g < nGroups; g++) {
+    size_t count = counts[g];
+    if (count == 0) {
+      pDArr[g] = 0;
+      pOArr[g] = 0;
+      continue;
+    }
+    size_t alignH = static_cast<size_t>(H) * CHUNK_ALIGN_ELEMENTS;
+    size_t pO = (count * kOffPermille) / 1000;
+    pO = (pO / alignH) * alignH;
+    if (pO > count) {
+      pO = (count / alignH) * alignH;
+    }
+    pOArr[g] = pO;
+    pDArr[g] = count - pO;
+  }
+
+  // Out-of-place: seed recvBuff = sendBuff once, then operate in place.
+  if (myActiveGroup >= 0 && counts[myActiveGroup] > 0 &&
+      sendBuffs[myActiveGroup] != recvBuffs[myActiveGroup]) {
+    cudaMemcpyAsync(
+        recvBuffs[myActiveGroup],
+        sendBuffs[myActiveGroup],
+        counts[myActiveGroup] * elementSize,
+        cudaMemcpyDeviceToDevice,
+        stream);
+  }
+
+  // Direct reduce-scatter scratch: the A-1 received direct shards.
+  void* dScratch = nullptr;
+  if (myActiveGroup >= 0 && counts[myActiveGroup] > 0 &&
+      pDArr[myActiveGroup] > 0) {
+    size_t dShard = pDArr[myActiveGroup] / A;
+    size_t dBytes = static_cast<size_t>(A - 1) * dShard * elementSize;
+    dScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS, dBytes, stream);
+    if (dScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  // ===== Group 1: direct RS (active<->active) + offload scatter
+  // (active->helper). ========================================================
+  NCCLCHECK(ncclGroupStart());
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t pD = pDArr[g];
+    size_t pO = pOArr[g];
+    size_t dShard = (pD > 0) ? pD / A : 0;
+    size_t oChunk = (pO > 0) ? pO / H : 0;
+    if (cfg.isActiveRank) {
+      char* recvbuff = static_cast<char*>(recvBuffs[g]);
+      int m = cfg.myActiveIndex;
+      // Direct RS: send my shard k to owner k; recv source s's shard m into its
+      // dScratch slot p.
+      if (dShard > 0) {
+        for (int k = 0; k < A; k++) {
+          if (k == m)
+            continue;
+          NCCLCHECK(ncclSend(
+              recvbuff + static_cast<size_t>(k) * dShard * elementSize,
+              dShard,
+              datatype,
+              cfg.activeRanks[k],
+              comm,
+              stream));
+        }
+        for (int s = 0; s < A; s++) {
+          if (s == m)
+            continue;
+          int p = (s < m) ? s : s - 1;
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(dScratch) +
+                  static_cast<size_t>(p) * dShard * elementSize,
+              dShard,
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+      // Offload scatter: send my offload chunk h to helper h.
+      if (oChunk > 0) {
+        for (int h = 0; h < cfg.numHelpers; h++) {
+          NCCLCHECK(ncclSend(
+              recvbuff + (pD + static_cast<size_t>(h) * oChunk) * elementSize,
+              oChunk,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+    } else if (oChunk > 0) {
+      // Helper: recv this helper's offload chunk from each active a into
+      // rawBuf[a].
+      char* rawBuf = static_cast<char*>(recvBuffs[g]);
+      for (int a = 0; a < cfg.nActiveRanks; a++) {
+        NCCLCHECK(ncclRecv(
+            rawBuf + static_cast<size_t>(a) * oChunk * elementSize,
+            oChunk,
+            datatype,
+            cfg.activeRanks[a],
+            comm,
+            stream));
+      }
+    }
+  }
+  NCCLCHECK(ncclGroupEnd());
+
+  // ===== Reduce: direct (active sums its shard) + offload (helper sums all A).
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t pD = pDArr[g];
+    size_t pO = pOArr[g];
+    size_t dShard = (pD > 0) ? pD / A : 0;
+    size_t oChunk = (pO > 0) ? pO / H : 0;
+    if (cfg.isActiveRank) {
+      if (dShard > 0 && g == myActiveGroup) {
+        char* recvbuff = static_cast<char*>(recvBuffs[g]);
+        int m = cfg.myActiveIndex;
+        char* dst = recvbuff + static_cast<size_t>(m) * dShard * elementSize;
+        // Fused single-pass reduce: dst = (dst + A-1 direct contribs) / divisor
+        // (AVG folded in), before the all-gather broadcasts the owned shard.
+        DISPATCH_MULTI_REDUCE(
+            datatype, dst, dScratch, A - 1, dShard, reductionDivisor, stream);
+      }
+    } else if (oChunk > 0) {
+      // Helper: fused single-pass reduce of the A received chunks into
+      // rawBuf[0] in-place (rawBuf[0] = (sum_a rawBuf[a]) / divisor), one
+      // launch instead of memcpy + A-1 adds + scale. The broadcast below reads
+      // rawBuf[0].
+      char* rawBuf = static_cast<char*>(recvBuffs[g]);
+      DISPATCH_MULTI_REDUCE(
+          datatype,
+          rawBuf,
+          rawBuf + oChunk * elementSize,
+          cfg.nActiveRanks - 1,
+          oChunk,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  // ===== Group 2: direct AG (active<->active) + offload broadcast
+  // (helper->active). ========================================================
+  NCCLCHECK(ncclGroupStart());
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] == 0)
+      continue;
+    const ShardedRelayRankConfig& cfg = configs[g];
+    size_t pD = pDArr[g];
+    size_t pO = pOArr[g];
+    size_t dShard = (pD > 0) ? pD / A : 0;
+    size_t oChunk = (pO > 0) ? pO / H : 0;
+    if (cfg.isActiveRank) {
+      char* recvbuff = static_cast<char*>(recvBuffs[g]);
+      int m = cfg.myActiveIndex;
+      // Direct AG: send my reduced shard m to every other active; recv their
+      // reduced shard k into recvBuff[k].
+      if (dShard > 0) {
+        for (int k = 0; k < A; k++) {
+          if (k == m)
+            continue;
+          NCCLCHECK(ncclSend(
+              recvbuff + static_cast<size_t>(m) * dShard * elementSize,
+              dShard,
+              datatype,
+              cfg.activeRanks[k],
+              comm,
+              stream));
+          NCCLCHECK(ncclRecv(
+              recvbuff + static_cast<size_t>(k) * dShard * elementSize,
+              dShard,
+              datatype,
+              cfg.activeRanks[k],
+              comm,
+              stream));
+        }
+      }
+      // Offload broadcast: recv reduced chunk h from helper h into recvBuff.
+      if (oChunk > 0) {
+        for (int h = 0; h < cfg.numHelpers; h++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff + (pD + static_cast<size_t>(h) * oChunk) * elementSize,
+              oChunk,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+    } else if (oChunk > 0) {
+      // Helper: broadcast the reduced chunk (now in rawBuf[0]) to all A active
+      // ranks.
+      char* rawBuf = static_cast<char*>(recvBuffs[g]);
+      for (int a = 0; a < cfg.nActiveRanks; a++) {
+        NCCLCHECK(ncclSend(
+            rawBuf, oChunk, datatype, cfg.activeRanks[a], comm, stream));
+      }
+    }
+  }
+  NCCLCHECK(ncclGroupEnd());
+
+  // The AVG divisor was already folded into the per-shard direct reduce and the
+  // per-chunk helper reduce above, so no separate whole-count scale is needed.
+  return ncclSuccess;
+}
+
+/**
+ * Fused Multi-Group Sharded Relay AllReduce.
+ *
+ * Executes multiple sharded relay allreduces in one fused call, phase-synced
+ * across all groups so XGMI links carry unidirectional traffic. Helpers are
+ * pure passthrough; reductions happen on the active ranks. Each rank is ACTIVE
+ * for exactly one group and a HELPER for the others.
+ *
+ * nActiveRanksPerGroup must be a power of two (2 or 4): A==2 uses the original
+ * 2-active path; A>2 uses the flat helper-reduce-and-broadcast path.
+ */
+HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const int* const* allActiveRanks,
+    int nActiveRanksPerGroup,
+    int nGroups) {
+  int nRanks, rank;
+  NCCLCHECK(ncclCommCount(comm, &nRanks));
+  NCCLCHECK(ncclCommUserRank(comm, &rank));
+
+  // Validate every argument before touching counts: the all-zero scan below
+  // indexes counts[0..nGroups), so a null pointer or an out-of-range nGroups
+  // has to be rejected first. Bounds-checking nGroups up here also means
+  // nGroups <= 0 reports ncclInvalidArgument rather than skipping the scan
+  // entirely and returning ncclSuccess.
+  if (nGroups < 1 || nGroups > SHARDED_RELAY_MAX_GROUPS) {
+    return ncclInvalidArgument;
+  }
+  if (recvBuffs == nullptr || allActiveRanks == nullptr || counts == nullptr ||
+      sendBuffs == nullptr) {
+    return ncclInvalidArgument;
+  }
+
+  // Require a power-of-two active-rank count (>= 2) for the XOR schedule.
+  if (nActiveRanksPerGroup < 2 || !isPowerOfTwo(nActiveRanksPerGroup)) {
+    return ncclInvalidArgument;
+  }
+
+  if (op != ncclSum && op != ncclAvg) {
+    return ncclInvalidArgument;
+  }
+
+  if (!isSupportedRelayDataType(datatype)) {
+    return ncclInvalidArgument;
+  }
+
+  bool allZero = true;
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] != 0) {
+      allZero = false;
+      break;
+    }
+  }
+  if (allZero) {
+    return ncclSuccess;
+  }
+
+  size_t elementSize = ncclTypeSize(datatype);
+  int reductionDivisor = (op == ncclAvg) ? nActiveRanksPerGroup : 1;
+
+  ShardedRelayRankConfig configs[SHARDED_RELAY_MAX_GROUPS];
+  int myActiveGroup = -1;
+  for (int g = 0; g < nGroups; g++) {
+    if (!buildShardedRelayRankConfig(
+            nRanks,
+            rank,
+            allActiveRanks[g],
+            nActiveRanksPerGroup,
+            configs[g])) {
+      return ncclInvalidArgument;
+    }
+    if (configs[g].isActiveRank) {
+      myActiveGroup = g;
+    }
+  }
+  int numHelpers = configs[0].numHelpers;
+
+  // Build per-group buffer arrays for the unchanged kernels. Helper groups use
+  // their scratch (recvBuffs[g]); the active group uses the caller's contiguous
+  // input/output buffers directly. Allreduce may be in-place (sendBuffs[g]
+  // aliases recvBuffs[g]) or out-of-place, keyed off
+  // sendBuffs[g]==recvBuffs[g].
+  const void* sendBuffs2[SHARDED_RELAY_MAX_GROUPS];
+  void* recvBuffs2[SHARDED_RELAY_MAX_GROUPS];
+  for (int g = 0; g < nGroups; g++) {
+    sendBuffs2[g] = sendBuffs[g];
+    recvBuffs2[g] = recvBuffs[g];
+  }
+
+  ncclResult_t r;
+  if (nActiveRanksPerGroup == 2) {
+    r = shardedRelayAllReduce2Active(
+        sendBuffs2,
+        recvBuffs2,
+        counts,
+        datatype,
+        reductionDivisor,
+        comm,
+        stream,
+        configs,
+        myActiveGroup,
+        numHelpers,
+        nGroups,
+        elementSize);
+  } else {
+    // A>2: flat helper-reduce-and-broadcast (direct RS+AG over intra woven with
+    // offload reduce+broadcast through the helpers).
+    r = shardedRelayAllReduceFlat(
+        sendBuffs2,
+        recvBuffs2,
+        counts,
+        datatype,
+        reductionDivisor,
+        comm,
+        stream,
+        configs,
+        myActiveGroup,
+        numHelpers,
+        nActiveRanksPerGroup,
+        nGroups,
+        elementSize);
+  }
+
+  return r;
 }
