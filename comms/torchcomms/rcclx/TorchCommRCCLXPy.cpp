@@ -207,9 +207,13 @@ Fused multi-group sharded relay all-gather for 2D sparse parallelism.
 
 All-gather analogue of sharded_relay_multi_group_reduce_scatter (and the dual of
 it). Executes multiple all-gather groups in lockstep phases to eliminate XGMI
-link contention on MI300x GPUs. Each group has exactly 2 active ranks; the
-logical collective is a 2-rank all-gather between them, accelerated by
-passthrough helpers. There is NO reduction (pure data movement) and NO op.
+link contention on MI300x GPUs. Each group has a power-of-two number of active
+ranks (2 or 4); the logical collective is an all-gather among them, accelerated
+by passthrough helpers (A==2 uses the original 2-active passthrough path; A>2
+uses the bandwidth-optimal flat scatter->forward relay -- the dual of the
+reduce-scatter -- i.e. a direct intra all-to-all woven with a 2-hop offload
+through the idle helper GPUs). There is NO reduction (pure data movement) and
+NO op.
 
 For each active rank, the input holds per_group_send_counts[g] elements (its
 contribution) and the output holds nActiveRanks x per_group_send_counts[g]
@@ -221,8 +225,8 @@ in-place convention).
 
 Args:
     input_tensors: List of send tensors (one per group). Active rank: holds
-        per_group_send_counts[g] elements. Helper rank: a two-slot scratch
-        tensor.
+        per_group_send_counts[g] elements. Helper rank: an nActiveRanks-slot
+        scratch tensor.
     output_tensors: List of receive tensors (one per group). Active rank: holds
         nActiveRanks x per_group_send_counts[g] elements. Helper rank: the same
         scratch tensor as the input.
