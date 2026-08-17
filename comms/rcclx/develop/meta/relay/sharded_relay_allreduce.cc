@@ -20,6 +20,14 @@
 // which is used for struct padding.
 static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
 
+// The helpers below are duplicated, by design, across every sharded-relay TU
+// (reduce-scatter, all-gather, all-to-all, hierarchical all-to-all). Each of
+// those TUs keeps its copy in an anonymous namespace so the class types and
+// their inline members have internal linkage and can never be merged across
+// translation units; this TU does the same. The GPU kernels are NOT duplicated
+// -- they are shared via sharded_relay_allreduce_kernels.h.
+namespace {
+
 /**
  * Scratch Buffer Cache Singleton
  *
@@ -43,6 +51,14 @@ class ScratchBufferCache {
    * Get a scratch buffer with a specific key (for multi-group support).
    * Each key maintains its own buffer, allowing multiple independent scratch
    * buffers per device.
+   *
+   * The returned memory is UNINITIALISED: it is either a fresh pool allocation
+   * or a recycled one still holding bytes from an earlier call. Callers must
+   * fully overwrite every element they later read; each one does so today by
+   * receiving into the whole buffer before reducing over it. Zeroing here
+   * instead would add a full HBM pass per call, and would convert any future
+   * coverage gap into a silently wrong sum (zero is the SUM identity) rather
+   * than visible garbage.
    *
    * @param key Unique key to identify this scratch buffer (e.g., group index)
    * @param requiredBytes Minimum size in bytes needed
@@ -133,6 +149,8 @@ class ScratchBufferCache {
   std::mutex mutex_;
   std::unordered_map<int64_t, BufferEntry> buffers_; // compositeKey -> buffer
 };
+
+} // namespace
 
 /**
  * GPU kernel for incremental reduction: output[i] += input[i]
@@ -496,6 +514,8 @@ static inline bool isPowerOfTwo(int v) {
  * Holds parsed active and helper rank information for a single group.
  * Supports a power-of-two number of active ranks per group (2 or 4).
  */
+namespace {
+
 struct ShardedRelayRankConfig {
   int activeRanks[SHARDED_RELAY_MAX_ACTIVE]; // Active rank IDs (power of two)
   int nActiveRanks; // Number of active ranks (2 or 4)
@@ -505,6 +525,8 @@ struct ShardedRelayRankConfig {
   int myActiveIndex; // Index in activeRanks array (-1 if helper)
   int myHelperIndex; // Index in helperRanks array (-1 if active)
 };
+
+} // namespace
 
 /**
  * Build rank configuration from provided active ranks array.
