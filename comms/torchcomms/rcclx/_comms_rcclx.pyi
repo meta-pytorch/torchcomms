@@ -106,3 +106,39 @@ class TorchCommRCCLX:
             TorchWork handle if async_op=True, else None
         """
         ...
+
+    def sharded_relay_multi_group_all_gather(
+        self,
+        input_tensors: list[torch.Tensor],
+        output_tensors: list[torch.Tensor],
+        all_active_ranks: list[list[int]],
+        per_group_send_counts: list[int],
+        async_op: bool = False,
+    ) -> TorchWork | None:
+        """
+        Fused multi-group sharded relay all-gather for 2D sparse parallelism.
+
+        All-gather analogue of sharded_relay_multi_group_reduce_scatter (its
+        dual). No reduction (pure data movement) and no reduction op. Each
+        active rank's input holds per_group_send_counts[g] elements and its
+        output holds nActiveRanks x per_group_send_counts[g] elements
+        (output[i x sendCount] from active index i).
+
+        Supports both in-place and out-of-place. In-place is detected when the
+        active input aliases output + myActiveIndex x sendCount.
+
+        Args:
+            input_tensors: List of send tensors (one per group). Active rank:
+                per_group_send_counts[g] elements. Helper rank: two-slot scratch
+                tensor.
+            output_tensors: List of receive tensors (one per group). Active rank:
+                nActiveRanks x per_group_send_counts[g] elements. Helper rank:
+                same scratch as input.
+            all_active_ranks: List of lists of active rank IDs per sparse group
+            per_group_send_counts: List of per-rank contribution counts
+            async_op: If True, returns a TorchWork handle for async operation
+
+        Returns:
+            TorchWork handle if async_op=True, else None
+        """
+        ...

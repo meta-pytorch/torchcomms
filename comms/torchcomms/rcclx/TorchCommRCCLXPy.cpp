@@ -185,5 +185,57 @@ Returns:
           py::arg("all_active_ranks"),
           py::arg("per_group_segment_counts"),
           py::arg("async_op") = false,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "sharded_relay_multi_group_all_gather",
+          [](TorchCommRCCLX& self,
+             std::vector<at::Tensor>& input_tensors,
+             std::vector<at::Tensor>& output_tensors,
+             const std::vector<std::vector<int64_t>>& all_active_ranks,
+             const std::vector<int64_t>& per_group_send_counts,
+             bool async_op) {
+            return self.sharded_relay_multi_group_all_gather(
+                input_tensors,
+                output_tensors,
+                all_active_ranks,
+                per_group_send_counts,
+                async_op);
+          },
+          R"(
+Fused multi-group sharded relay all-gather for 2D sparse parallelism.
+
+All-gather analogue of sharded_relay_multi_group_reduce_scatter (and the dual of
+it). Executes multiple all-gather groups in lockstep phases to eliminate XGMI
+link contention on MI300x GPUs. Each group has exactly 2 active ranks; the
+logical collective is a 2-rank all-gather between them, accelerated by
+passthrough helpers. There is NO reduction (pure data movement) and NO op.
+
+For each active rank, the input holds per_group_send_counts[g] elements (its
+contribution) and the output holds nActiveRanks x per_group_send_counts[g]
+elements (output[i x sendCount] receives active index i's contribution).
+
+Supports both in-place and out-of-place. In-place is detected when the active
+input aliases output + myActiveIndex x sendCount (standard NCCL all-gather
+in-place convention).
+
+Args:
+    input_tensors: List of send tensors (one per group). Active rank: holds
+        per_group_send_counts[g] elements. Helper rank: a two-slot scratch
+        tensor.
+    output_tensors: List of receive tensors (one per group). Active rank: holds
+        nActiveRanks x per_group_send_counts[g] elements. Helper rank: the same
+        scratch tensor as the input.
+    all_active_ranks: List of lists of active rank IDs per sparse group.
+    per_group_send_counts: List of per-rank contribution counts (one per group).
+    async_op: If True, returns a TorchWork handle for async operation
+
+Returns:
+    TorchWork object for operation completion if async_op=True
+)",
+          py::arg("input_tensors"),
+          py::arg("output_tensors"),
+          py::arg("all_active_ranks"),
+          py::arg("per_group_send_counts"),
+          py::arg("async_op") = false,
           py::call_guard<py::gil_scoped_release>());
 }
