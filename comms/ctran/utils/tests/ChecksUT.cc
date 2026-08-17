@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <string>
-#include <vector>
 
 #include <cuda_runtime.h>
 #include <fmt/core.h>
@@ -9,12 +8,11 @@
 #include <gtest/gtest.h>
 
 #include <gmock/gmock.h>
-#include "TestLogCategory.h"
 #include "comms/ctran/utils/ArgCheck.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 class CtranUtilsCheckTest : public ::testing::Test {
  public:
@@ -22,20 +20,28 @@ class CtranUtilsCheckTest : public ::testing::Test {
 
   void SetUp() override {
     ctran::logging::initCtranLogging(true /*alwaysInit*/);
-
-    // Set up a test category
-    auto* category =
-        folly::LoggerDB::get().getCategory(XLOG_GET_CATEGORY_NAME());
-    ASSERT_TRUE(testCategory_.setup(category));
+    auto& logger =
+        meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+    logger.configure("CTRAN", []() { return 0; }, {}, false);
+    logger.set_level(spdlog::level::info);
+    testing::internal::CaptureStdout();
+    capturingStdout_ = true;
   }
 
   void TearDown() override {
-    NcclLogger::close();
-    testCategory_.reset();
+    if (capturingStdout_) {
+      testing::internal::GetCapturedStdout();
+    }
+    auto& logger =
+        meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+    logger.configure("CTRAN", []() { return 0; }, {}, false);
   }
 
-  const std::vector<std::string>& getMessages() const {
-    return testCategory_.getMessages();
+  std::string getOutput() {
+    meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName)
+        .flush();
+    capturingStdout_ = false;
+    return testing::internal::GetCapturedStdout();
   }
 
   const int getCurrentGpuIndex() {
@@ -53,7 +59,7 @@ class CtranUtilsCheckTest : public ::testing::Test {
   }
 
  private:
-  TestLogCategory testCategory_;
+  bool capturingStdout_{false};
 };
 
 TEST_F(CtranUtilsCheckTest, CudaCheck) {
@@ -65,10 +71,9 @@ TEST_F(CtranUtilsCheckTest, CudaCheck) {
   auto res = dummyFn();
   ASSERT_EQ(res, commUnhandledCudaError);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("invalid argument"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
+  EXPECT_THAT(output, ::testing::HasSubstr("invalid argument"));
 }
 
 TEST_F(CtranUtilsCheckTest, CudaCheckGoto) {
@@ -82,10 +87,9 @@ TEST_F(CtranUtilsCheckTest, CudaCheckGoto) {
   auto res = dummyFn();
   ASSERT_EQ(res, commUnhandledCudaError);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("unspecified launch failure"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
+  EXPECT_THAT(output, ::testing::HasSubstr("unspecified launch failure"));
 }
 
 TEST_F(CtranUtilsCheckTest, CudaCheckIgnore) {
@@ -96,10 +100,9 @@ TEST_F(CtranUtilsCheckTest, CudaCheckIgnore) {
   auto res = dummyFn();
   ASSERT_EQ(res, commSuccess);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN WARN"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("invalid argument"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN WARN"));
+  EXPECT_THAT(output, ::testing::HasSubstr("invalid argument"));
 }
 
 TEST_F(CtranUtilsCheckTest, SysCheck) {
@@ -111,10 +114,9 @@ TEST_F(CtranUtilsCheckTest, SysCheck) {
   auto res = dummyFn();
   ASSERT_EQ(res, commSystemError);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("Call to sysTestFn failed"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
+  EXPECT_THAT(output, ::testing::HasSubstr("Call to sysTestFn failed"));
 }
 
 TEST_F(CtranUtilsCheckTest, SysCheckGoto) {
@@ -128,10 +130,9 @@ TEST_F(CtranUtilsCheckTest, SysCheckGoto) {
   auto res = dummyFn();
   ASSERT_EQ(res, commSystemError);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("Call to sysTestFn failed"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
+  EXPECT_THAT(output, ::testing::HasSubstr("Call to sysTestFn failed"));
 }
 
 TEST_F(CtranUtilsCheckTest, ErrorReturn) {
@@ -142,10 +143,9 @@ TEST_F(CtranUtilsCheckTest, ErrorReturn) {
   auto res = dummyFn();
   ASSERT_EQ(res, commInvalidUsage);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("test ErrorReturn failure"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
+  EXPECT_THAT(output, ::testing::HasSubstr("test ErrorReturn failure"));
 }
 
 TEST_F(CtranUtilsCheckTest, ErrorThrowEx) {
@@ -172,9 +172,8 @@ TEST_F(CtranUtilsCheckTest, ErrorThrowEx) {
 
   ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
 }
 
 TEST_F(CtranUtilsCheckTest, ArgCheckNull) {
@@ -185,11 +184,10 @@ TEST_F(CtranUtilsCheckTest, ArgCheckNull) {
   auto res = dummyFn();
   ASSERT_EQ(res, commInvalidArgument);
 
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
+  const auto output = getOutput();
+  EXPECT_THAT(output, ::testing::HasSubstr("CTRAN ERROR"));
   EXPECT_THAT(
-      messages[0], ::testing::HasSubstr("ArgCheckNull ptr argument is NULL"));
+      output, ::testing::HasSubstr("ArgCheckNull ptr argument is NULL"));
 }
 
 TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_DIRECT) {
