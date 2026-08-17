@@ -506,12 +506,12 @@ TEST_F(
 }
 
 /**
- * Test: BusBW with 4-group Multi-Group AllReduce (24GB per group, IN-PLACE)
+ * Test: BusBW with 4-group Multi-Group AllReduce (1GB per group, IN-PLACE)
  *
  * This is the key benchmark for 2D sparse parallelism performance.
  * All 4 groups execute in parallel with phase synchronization.
  */
-TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_24GB) {
+TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_1GB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
                  << " available";
@@ -519,7 +519,10 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_24GB) {
 
   const int nGroups = 4;
   const int nActiveRanksPerGroup = 2;
-  const size_t dataBytes = 24ULL * 1024 * 1024 * 1024; // 24 GB per group
+  // 1 GB per group keeps the whole 8-rank suite inside a shared devgpu/CI
+  // memory budget: a rank is active for one group and a helper for the other
+  // three, so it holds dataBytes + 3 x (nActiveRanksPerGroup x dataBytes).
+  const size_t dataBytes = 1ULL * 1024 * 1024 * 1024; // 1 GB per group
   const size_t count = dataBytes / sizeof(int32_t);
 
   // Benchmark configuration: Run 20 iterations total, take the best time.
@@ -628,7 +631,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_24GB) {
     ShardedBandwidthResult bwResult = calculateMultiGroupAggregateBandwidth(
         dataBytes, bestTimeMs, nActiveRanksPerGroup, nGroups);
     printMultiGroupBandwidthResults(
-        "4-Group IN-PLACE 24GB",
+        "4-Group IN-PLACE 1GB",
         dataBytes,
         this->numRanks,
         nGroups,
@@ -645,9 +648,9 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_24GB) {
 }
 
 /**
- * Test: BusBW with 4-group Multi-Group AllReduce (24GB per group, OUT-OF-PLACE)
+ * Test: BusBW with 4-group Multi-Group AllReduce (1GB per group, OUT-OF-PLACE)
  */
-TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_24GB) {
+TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
                  << " available";
@@ -655,7 +658,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_24GB) {
 
   const int nGroups = 4;
   const int nActiveRanksPerGroup = 2;
-  const size_t dataBytes = 24ULL * 1024 * 1024 * 1024; // 24 GB per group
+  const size_t dataBytes = 1ULL * 1024 * 1024 * 1024; // 1 GB per group
   const size_t count = dataBytes / sizeof(int32_t);
 
   // Benchmark configuration: Run 20 iterations total, take the best time.
@@ -765,7 +768,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_24GB) {
     ShardedBandwidthResult bwResult = calculateMultiGroupAggregateBandwidth(
         dataBytes, bestTimeMs, nActiveRanksPerGroup, nGroups);
     printMultiGroupBandwidthResults(
-        "4-Group OUT-OF-PLACE 24GB",
+        "4-Group OUT-OF-PLACE 1GB",
         dataBytes,
         this->numRanks,
         nGroups,
