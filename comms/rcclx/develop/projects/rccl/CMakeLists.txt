@@ -959,10 +959,16 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta/lpcoll/p2p_allgather.h
   # find comms/rcclx/develop/meta -type f ! -path "*/tests/*" -path "*/relay/*" \( -name "*.cc" -o -name "*.h" -o -name "*.cu" \) | sort
+  comms/rcclx/develop/meta/relay/sharded_relay_all_gather.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_all_gather.h
+  comms/rcclx/develop/meta/relay/sharded_relay_all_to_all.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_all_to_all.h
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce.cc
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce.h
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.h
+  comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.h
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
