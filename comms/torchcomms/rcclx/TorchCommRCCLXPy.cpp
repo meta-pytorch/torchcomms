@@ -91,9 +91,9 @@ Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
 
 Reduce-scatter analogue of sharded_relay_multi_group_all_reduce. Executes
 multiple reduce-scatter groups in lockstep phases to eliminate XGMI link
-contention on MI300x GPUs. Each group has exactly 2 active ranks; the logical
-collective is a 2-rank reduce-scatter between them, accelerated by passthrough
-helpers that relay sharded chunks of a single output block.
+contention on MI300x GPUs. Each group has a power-of-two number of active ranks
+(2 or 4); the logical collective is a reduce-scatter among them, accelerated by
+passthrough helpers that relay sharded chunks of a single output block.
 
 For each active rank, the input holds nActiveRanks x per_group_recv_counts[g]
 elements (block[i] is the slice destined for active index i) and the output
@@ -102,7 +102,7 @@ holds per_group_recv_counts[g] elements receiving the reduced block[myIndex].
 Args:
     input_tensors: List of send tensors (one per group). For an active rank,
         holds nActiveRanks x per_group_recv_counts[g] elements. For a helper
-        rank, a two-slot scratch tensor.
+        rank, an nActiveRanks-slot scratch tensor (nActiveRanks x chunkSize).
     output_tensors: List of receive tensors (one per group). For an active
         rank, holds per_group_recv_counts[g] elements. Pass the
         local-contribution block of the input tensor for in-place operation.
