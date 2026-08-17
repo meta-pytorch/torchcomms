@@ -447,4 +447,61 @@ struct P2pIbTransportDevice {
 static_assert(std::is_standard_layout_v<P2pIbTransportDevice>);
 static_assert(std::is_trivially_copyable_v<P2pIbTransportDevice>);
 
+template <uint32_t WorkerThreads>
+class BlockingIbOps {
+ public:
+  static constexpr uint32_t kWorkerThreads = WorkerThreads;
+
+  __device__ BlockingIbOps(ThreadGroup workers, const Timeout& timeout)
+      : workers_(workers), timeout_(timeout) {}
+
+  __device__ __forceinline__ ThreadGroup& group() {
+    return workers_;
+  }
+
+  __device__ __forceinline__ void sync() {
+    workers_.sync();
+  }
+
+  __device__ __forceinline__ void drain() {}
+
+  template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+  __device__ __forceinline__ void send(
+      Transport& transport,
+      const void* src,
+      std::size_t nbytes,
+      std::size_t maxSignalBytes,
+      Args... args) {
+    transport.template send<CopyOp>(
+        workers_, src, nbytes, maxSignalBytes, timeout_, args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+  __device__ __forceinline__ void recv(
+      Transport& transport,
+      void* dst,
+      std::size_t nbytes,
+      std::size_t maxSignalBytes,
+      Args... args) {
+    transport.template recv<CopyOp>(
+        workers_, dst, nbytes, maxSignalBytes, timeout_, args...);
+  }
+
+  template <typename CopyOp = Memcpy, typename Transport, typename... Args>
+  __device__ __forceinline__ void forward(
+      Transport& prev,
+      void* dst,
+      Transport& next,
+      std::size_t nbytes,
+      std::size_t maxSignalBytes,
+      Args... args) {
+    prev.template forward<CopyOp>(
+        workers_, dst, next, nbytes, maxSignalBytes, timeout_, args...);
+  }
+
+ private:
+  ThreadGroup workers_;
+  Timeout timeout_;
+};
+
 } // namespace comms::prims

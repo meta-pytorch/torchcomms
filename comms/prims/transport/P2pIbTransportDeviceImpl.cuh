@@ -783,6 +783,7 @@ __device__ __forceinline__ void consumeRecvBuf(
     uint64_t flagVal,
     uint64_t waitCredit,
     const Timeout& timeout,
+    const PipesTraceAllReduceContext* traceContext,
     Args... args) {
   using P = LlxPacket<4, 4>;
   static_assert(
@@ -791,6 +792,7 @@ __device__ __forceinline__ void consumeRecvBuf(
       "provides one. A reduce/convert CopyOp must supply its own -- a plain "
       "contiguous copy cannot address the data+flag interleaved staging");
 #if PIPES_IS_DEVICE_COMPILE
+  (void)traceContext;
   (void)transport;
   (void)localDataReady;
   (void)waitCredit;
@@ -833,6 +835,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)flagVal;
   (void)waitCredit;
   (void)timeout;
+  (void)traceContext;
   ((void)args, ...);
 #endif
 }
@@ -840,11 +843,13 @@ __device__ __forceinline__ void consumeRecvBuf(
 template <
     typename Transport,
     typename CopyOp = Memcpy,
+    typename IbOps = void,
     typename Proto = protocol::Simple,
     typename... Args>
 __device__ __forceinline__ void send_impl(
     Transport& transport,
     ThreadGroup& group,
+    IbOps* ibOps,
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
@@ -861,15 +866,23 @@ __device__ __forceinline__ void send_impl(
       "variable-size CopyOps (e.g. AnsCompress) are supported on "
       "protocol::Simple only; the compressed loop is not behind the "
       "prepareSendBuf/consumeRecvBuf seam.");
+  static_assert(
+      std::is_void_v<IbOps> || !detail::copyop_variable_size_v<CopyOp>,
+      "IB operation policies support fixed-size CopyOps only");
+  static_assert(
+      std::is_void_v<IbOps> || std::is_same_v<Proto, protocol::Simple>,
+      "IB operation policies support protocol::Simple only");
 #if !PIPES_IS_DEVICE_COMPILE
   (void)transport;
   (void)group;
+  (void)ibOps;
   (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
   (void)traceContext;
 #else
+  (void)ibOps;
   if (nbytes == 0) {
     return;
   }
@@ -1161,7 +1174,13 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint8_t>(kPipesTraceQpLaneMask),
             bytesThis);
       }
-      prepare_send_slot<Proto>(transport, group, slot, pipelineCycle, timeout);
+      if constexpr (std::is_void_v<IbOps>) {
+        prepare_send_slot<Proto>(
+            transport, group, slot, pipelineCycle, timeout);
+      } else {
+        ibOps->prepare_send_slot(
+            transport, group, slot, pipelineCycle, timeout);
+      }
       if (group.is_leader()) {
         trace_allreduce_event(
             traceContext,
@@ -1178,7 +1197,7 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint8_t>(kPipesTraceQpLaneMask),
             validBytes);
       }
-      const SendSignal sig = prepareSendBuf<CopyOp>(
+      [[maybe_unused]] const SendSignal sig = prepareSendBuf<CopyOp>(
           Proto{},
           group,
           channelLayout.sendStagingPtr + stagingOff,
@@ -1198,89 +1217,109 @@ __device__ __forceinline__ void send_impl(
             validBytes);
       }
 
-      // (3) Backpressure: wait for receiver to free this byte range's
-      //     recvStaging offset. Symmetric with DATA_READY.
-      if (protocolStreamEnd > pipelineBytesWire) {
-        if (group.is_leader()) {
-          trace_allreduce_event(
-              traceContext,
-              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
-              static_cast<uint8_t>(kPipesTraceQpLaneMask),
-              protocolBytesThis);
+      const uint64_t slotFreeExpected = protocolStreamEnd > pipelineBytesWire
+          ? protocolStreamEnd - pipelineBytesWire
+          : 0;
+      if constexpr (std::is_void_v<IbOps>) {
+        // (3) Backpressure: wait for receiver to free this byte range's
+        //     recvStaging offset. Symmetric with DATA_READY.
+        if (slotFreeExpected != 0) {
+          if (group.is_leader()) {
+            trace_allreduce_event(
+                traceContext,
+                PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+                static_cast<uint8_t>(kPipesTraceQpLaneMask),
+                protocolBytesThis);
+          }
+          transport.wait_signal(
+              group, localSlotFree, slotFreeExpected, timeout);
+          if (group.is_leader()) {
+            trace_allreduce_event(
+                traceContext,
+                PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
+                static_cast<uint8_t>(kPipesTraceQpLaneMask),
+                protocolBytesThis);
+          }
         }
-        transport.wait_signal(
-            group,
-            localSlotFree,
-            protocolStreamEnd - pipelineBytesWire,
-            timeout);
-        if (group.is_leader()) {
-          trace_allreduce_event(
-              traceContext,
-              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
-              static_cast<uint8_t>(kPipesTraceQpLaneMask),
-              protocolBytesThis);
-        }
-      }
 
-      // (4) Leader-only single-WQE RDMA put with fused signal.
-      if (group.is_leader()) {
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceSendSyncBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask),
-            bytesThis);
-      }
-      group.sync();
-      if (group.is_leader()) {
-        __threadfence_system();
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceSendSyncEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask),
-            bytesThis);
-        const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
-        const uint8_t qpLane = static_cast<uint8_t>(
-            numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
-        ThreadGroup solo{
-            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceWqeSubmitBegin,
-            qpLane,
-            bytesThis);
-        const auto completion = transport.put(
-            solo,
-            channelLayout.sendStagingBuf.subBuffer(stagingOff),
-            remoteChannel.recvStaging.subBuffer(stagingOff),
-            bytesThis,
-            sig.buf,
-            sig.val,
-            /*counterBuf=*/{},
-            /*counterVal=*/0,
-            /*signalPerLane=*/true);
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceWqeSubmitEnd,
-            qpLane,
-            bytesThis);
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceBookkeepingBegin,
-            qpLane,
-            protocolBytesThis);
-        record_send_completion<Proto>(
+        // (4) Leader-only single-WQE RDMA put with fused signal.
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceSendSyncBegin,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              bytesThis);
+        }
+        group.sync();
+        if (group.is_leader()) {
+          __threadfence_system();
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceSendSyncEnd,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              bytesThis);
+          const uint32_t numLanes =
+              static_cast<uint32_t>(channelLayout.numLanes);
+          const uint8_t qpLane = static_cast<uint8_t>(
+              numLanes == 0 ? 0 : localChannel.sendQp.cursor % numLanes);
+          ThreadGroup solo{
+              0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceWqeSubmitBegin,
+              qpLane,
+              bytesThis);
+          const auto completion = transport.put(
+              solo,
+              channelLayout.sendStagingBuf.subBuffer(stagingOff),
+              remoteChannel.recvStaging.subBuffer(stagingOff),
+              bytesThis,
+              sig.buf,
+              sig.val,
+              /*counterBuf=*/{},
+              /*counterVal=*/0,
+              /*signalPerLane=*/true);
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceWqeSubmitEnd,
+              qpLane,
+              bytesThis);
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceBookkeepingBegin,
+              qpLane,
+              protocolBytesThis);
+          record_send_completion<Proto>(
+              transport,
+              static_cast<uint32_t>(groupId),
+              slot,
+              pipelineCycle,
+              completion);
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceBookkeepingEnd,
+              qpLane,
+              protocolBytesThis);
+        }
+        group.sync();
+      } else {
+        if (group.is_leader()) {
+          __threadfence_system();
+        }
+        group.sync();
+        ibOps->submit_send(
             transport,
-            static_cast<uint32_t>(groupId),
-            slot,
+            group,
+            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            stagingOff,
+            bytesThis,
+            protocolBytesThis,
+            slotFreeExpected,
+            static_cast<uint32_t>(slot),
             pipelineCycle,
-            completion);
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceBookkeepingEnd,
-            qpLane,
-            protocolBytesThis);
+            /*requiredRecvCredit=*/0,
+            timeout);
       }
-      group.sync();
       dataOff += payloadBytes;
     }
 
@@ -1309,9 +1348,10 @@ __device__ __forceinline__ void send(
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
     Args... args) {
-  send_impl<Transport, CopyOp, Proto>(
+  send_impl<Transport, CopyOp, void, Proto>(
       transport,
       group,
+      nullptr,
       src,
       nbytes,
       max_signal_bytes,
@@ -1334,9 +1374,10 @@ __device__ __forceinline__ void send_with_fine_trace(
     const Timeout& timeout,
     const PipesTraceAllReduceContext& traceContext,
     Args... args) {
-  send_impl<Transport, CopyOp, Proto>(
+  send_impl<Transport, CopyOp, void, Proto>(
       transport,
       group,
+      nullptr,
       src,
       nbytes,
       max_signal_bytes,
@@ -1375,11 +1416,13 @@ __device__ __forceinline__ void send_with_fine_trace(
 template <
     typename Transport,
     typename CopyOp = Memcpy,
+    typename IbOps = void,
     typename Proto = protocol::Simple,
     typename... Args>
 __device__ __forceinline__ void recv_impl(
     Transport& transport,
     ThreadGroup& group,
+    IbOps* ibOps,
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
@@ -1396,15 +1439,23 @@ __device__ __forceinline__ void recv_impl(
       "variable-size CopyOps (e.g. AnsCompress) are supported on "
       "protocol::Simple only; the compressed loop is not behind the "
       "prepareSendBuf/consumeRecvBuf seam.");
+  static_assert(
+      std::is_void_v<IbOps> || !detail::copyop_variable_size_v<CopyOp>,
+      "IB operation policies support fixed-size CopyOps only");
+  static_assert(
+      std::is_void_v<IbOps> || std::is_same_v<Proto, protocol::Simple>,
+      "IB operation policies support protocol::Simple only");
 #if !PIPES_IS_DEVICE_COMPILE
   (void)transport;
   (void)group;
+  (void)ibOps;
   (void)dst;
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
   (void)traceContext;
 #else
+  (void)ibOps;
   if (nbytes == 0) {
     return;
   }
@@ -1608,47 +1659,70 @@ __device__ __forceinline__ void recv_impl(
           Proto::wire_bytes(chunkOff);
       // flagVal (a per-ring-pass counter) for this chunk's slot; LL stamps it
       // into every packet flag.
-      const uint64_t flagVal = streamPayload / pipelineBytesPayload + 1;
+      [[maybe_unused]] const uint64_t flagVal =
+          streamPayload / pipelineBytesPayload + 1;
 
-      // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL,
-      //         the inline flag) and cooperatively copy recvStaging -> dst.
-      const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
-      const uint8_t qpLane = static_cast<uint8_t>(
-          numLanes == 0 ? 0 : localChannel.recvDataReadyLaneCursor % numLanes);
-      consumeRecvBuf<CopyOp>(
-          Proto{},
-          transport,
-          group,
-          localChannel,
-          localDataReady,
-          static_cast<char*>(dst) + dataOff,
-          channelLayout.recvStagingPtr + stagingOff,
-          payloadBytes,
-          nbytes,
-          dataOff,
-          flagVal,
-          protocolBytesThis,
-          timeout,
-          traceContext,
-          args...);
-
-      if (group.is_leader()) {
-        trace_allreduce_event(
+      if constexpr (std::is_void_v<IbOps>) {
+        // (1)+(2) Wait for the chunk to be ready (DATA_READY signal or, for LL,
+        //         the inline flag) and cooperatively copy recvStaging -> dst.
+        const uint32_t numLanes = static_cast<uint32_t>(channelLayout.numLanes);
+        const uint8_t qpLane = static_cast<uint8_t>(
+            numLanes == 0 ? 0
+                          : localChannel.recvDataReadyLaneCursor % numLanes);
+        consumeRecvBuf<CopyOp>(
+            Proto{},
+            transport,
+            group,
+            localChannel,
+            localDataReady,
+            static_cast<char*>(dst) + dataOff,
+            channelLayout.recvStagingPtr + stagingOff,
+            payloadBytes,
+            nbytes,
+            dataOff,
+            flagVal,
+            protocolBytesThis,
+            timeout,
             traceContext,
-            PipesTraceEventType::kAllReduceBookkeepingBegin,
-            qpLane,
-            protocolBytesThis);
+            args...);
+
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceBookkeepingBegin,
+              qpLane,
+              protocolBytesThis);
+        }
+        transport.signal(
+            group,
+            remoteChannel.slotFree,
+            protocolBytesThis,
+            IbDirection::Recv);
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceBookkeepingEnd,
+              qpLane,
+              protocolBytesThis);
+        }
+      } else {
+        const uint64_t recvToken =
+            ibOps->wait_recv(transport, group, protocolBytesThis, timeout);
+        const std::size_t validBytes =
+            valid_payload_bytes(dataOff, payloadBytes, nbytes);
+        if (validBytes > 0) {
+          CopyOp::recv(
+              static_cast<char*>(dst) + dataOff,
+              channelLayout.recvStagingPtr + stagingOff,
+              validBytes,
+              group,
+              dataOff,
+              args...);
+        }
+        group.sync();
+        ibOps->publish_recv(transport, group, protocolBytesThis, recvToken);
       }
-      transport.signal(
-          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
       dataOff += payloadBytes;
-      if (group.is_leader()) {
-        trace_allreduce_event(
-            traceContext,
-            PipesTraceEventType::kAllReduceBookkeepingEnd,
-            qpLane,
-            protocolBytesThis);
-      }
     }
 
     if (group.is_leader()) {
@@ -1676,9 +1750,10 @@ __device__ __forceinline__ void recv(
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
     Args... args) {
-  recv_impl<Transport, CopyOp, Proto>(
+  recv_impl<Transport, CopyOp, void, Proto>(
       transport,
       group,
+      nullptr,
       dst,
       nbytes,
       max_signal_bytes,
@@ -1701,9 +1776,10 @@ __device__ __forceinline__ void recv_with_fine_trace(
     const Timeout& timeout,
     const PipesTraceAllReduceContext& traceContext,
     Args... args) {
-  recv_impl<Transport, CopyOp, Proto>(
+  recv_impl<Transport, CopyOp, void, Proto>(
       transport,
       group,
+      nullptr,
       dst,
       nbytes,
       max_signal_bytes,
@@ -1767,11 +1843,13 @@ __device__ __forceinline__ void recv_with_fine_trace(
 template <
     typename CopyOp = Memcpy,
     typename Transport,
+    typename IbOps = void,
     typename Proto = protocol::Simple,
     typename... Args>
 __device__ __forceinline__ void forward_impl(
     Transport& transport,
     ThreadGroup& group,
+    IbOps* ibOps,
     void* __restrict__ dst,
     Transport& fwdTransport,
     std::size_t nbytes,
@@ -1780,12 +1858,19 @@ __device__ __forceinline__ void forward_impl(
     const PipesTraceAllReduceContext* recvTraceContext = nullptr,
     const PipesTraceAllReduceContext* sendTraceContext = nullptr,
     Args... args) {
+  static_assert(
+      std::is_void_v<IbOps> || !detail::copyop_variable_size_v<CopyOp>,
+      "IB operation policies support fixed-size CopyOps only");
+  static_assert(
+      std::is_void_v<IbOps> || std::is_same_v<Proto, protocol::Simple>,
+      "IB operation policies support protocol::Simple only");
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
   static_assert(
       sizeof(CopyOp) == 0,
       "detail::forward() requires NVIDIA GPU (DOCA/IBGDA)");
 #endif
+  (void)ibOps;
   if (nbytes == 0) {
     return;
   }
@@ -1900,122 +1985,165 @@ __device__ __forceinline__ void forward_impl(
     const uint64_t fwdPipelineCycle =
         fwdStreamPayload / fwdGeo.pipelineBytesPayload;
 
-    // (1) prepareForwardBuf: fwd slot-reuse backpressure + recv-side readiness
-    //     + fused transform recvStaging -> dst + fwdStaging, returning the
-    //     relay SendSignal for the put. Tag-dispatched on Proto.
-    const SendSignal sig = prepareForwardBuf<CopyOp>(
-        Proto{},
-        transport,
-        fwdTransport,
-        group,
-        recvLocalChannel,
-        recvDataReady,
-        dst ? static_cast<char*>(dst) + dataOff : nullptr,
-        fwdChannelLayout.sendStagingPtr + fwdStagingOff,
-        channelLayout.recvStagingPtr + recvStagingOff,
-        payloadBytes,
-        nbytes,
-        dataOff,
-        recvProtocolBytesThis,
-        fwdRemoteChannel,
-        fwdProtocolBytesThis,
-        static_cast<uint32_t>(fwdSlot),
-        fwdPipelineCycle,
-        timeout,
-        recvTraceContext,
-        sendTraceContext,
-        args...);
-
-    transport.signal(
-        group,
-        recvRemoteChannel.slotFree,
-        recvProtocolBytesThis,
-        IbDirection::Recv);
-
-    // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
-    //     recvStaging).
-    if (fwdProtocolStreamEnd > fwdGeo.pipelineBytesWire) {
-      if (group.is_leader()) {
-        trace_allreduce_event(
-            sendTraceContext,
-            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask),
-            fwdProtocolBytesThis);
-      }
-      fwdTransport.wait_signal(
-          group,
-          fwdSlotFree,
-          fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire,
-          timeout);
-      if (group.is_leader()) {
-        trace_allreduce_event(
-            sendTraceContext,
-            PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
-            static_cast<uint8_t>(kPipesTraceQpLaneMask),
-            fwdProtocolBytesThis);
-      }
-    }
-
-    // (6) Leader-only RDMA put via the forwarding transport.
-    if (group.is_leader()) {
-      trace_allreduce_event(
-          sendTraceContext,
-          PipesTraceEventType::kAllReduceSendSyncBegin,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask),
-          bytesThis);
-    }
-    group.sync();
-    if (group.is_leader()) {
-      __threadfence_system();
-      trace_allreduce_event(
-          sendTraceContext,
-          PipesTraceEventType::kAllReduceSendSyncEnd,
-          static_cast<uint8_t>(kPipesTraceQpLaneMask),
-          bytesThis);
-      const uint32_t numLanes =
-          static_cast<uint32_t>(fwdChannelLayout.numLanes);
-      const uint8_t qpLane = static_cast<uint8_t>(
-          numLanes == 0 ? 0 : fwdLocalChannel.sendQp.cursor % numLanes);
-      ThreadGroup solo{
-          0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      trace_allreduce_event(
-          sendTraceContext,
-          PipesTraceEventType::kAllReduceWqeSubmitBegin,
-          qpLane,
-          bytesThis);
-      const auto completion = fwdTransport.put(
-          solo,
-          fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
-          fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
-          bytesThis,
-          sig.buf,
-          sig.val,
-          /*counterBuf=*/{},
-          /*counterVal=*/0,
-          /*signalPerLane=*/true);
-      trace_allreduce_event(
-          sendTraceContext,
-          PipesTraceEventType::kAllReduceWqeSubmitEnd,
-          qpLane,
-          bytesThis);
-      trace_allreduce_event(
-          sendTraceContext,
-          PipesTraceEventType::kAllReduceBookkeepingBegin,
-          qpLane,
-          fwdProtocolBytesThis);
-      record_send_completion<Proto>(
+    const uint64_t fwdSlotFreeExpected =
+        fwdProtocolStreamEnd > fwdGeo.pipelineBytesWire
+        ? fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire
+        : 0;
+    if constexpr (std::is_void_v<IbOps>) {
+      // (1) prepareForwardBuf: fwd slot-reuse backpressure + recv-side
+      // readiness
+      //     + fused transform recvStaging -> dst + fwdStaging, returning the
+      //     relay SendSignal for the put. Tag-dispatched on Proto.
+      const SendSignal sig = prepareForwardBuf<CopyOp>(
+          Proto{},
+          transport,
           fwdTransport,
-          static_cast<uint32_t>(groupId),
-          fwdSlot,
+          group,
+          recvLocalChannel,
+          recvDataReady,
+          dst ? static_cast<char*>(dst) + dataOff : nullptr,
+          fwdChannelLayout.sendStagingPtr + fwdStagingOff,
+          channelLayout.recvStagingPtr + recvStagingOff,
+          payloadBytes,
+          nbytes,
+          dataOff,
+          recvProtocolBytesThis,
+          fwdRemoteChannel,
+          fwdProtocolBytesThis,
+          static_cast<uint32_t>(fwdSlot),
           fwdPipelineCycle,
-          completion);
-      trace_allreduce_event(
+          timeout,
+          recvTraceContext,
           sendTraceContext,
-          PipesTraceEventType::kAllReduceBookkeepingEnd,
-          qpLane,
-          fwdProtocolBytesThis);
+          args...);
+
+      transport.signal(
+          group,
+          recvRemoteChannel.slotFree,
+          recvProtocolBytesThis,
+          IbDirection::Recv);
+
+      // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
+      //     recvStaging).
+      if (fwdSlotFreeExpected != 0) {
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              sendTraceContext,
+              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitBegin,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              fwdProtocolBytesThis);
+        }
+        fwdTransport.wait_signal(
+            group, fwdSlotFree, fwdSlotFreeExpected, timeout);
+        if (group.is_leader()) {
+          trace_allreduce_event(
+              sendTraceContext,
+              PipesTraceEventType::kAllReduceRemoteSlotFreeWaitEnd,
+              static_cast<uint8_t>(kPipesTraceQpLaneMask),
+              fwdProtocolBytesThis);
+        }
+      }
+
+      // (6) Leader-only RDMA put via the forwarding transport.
+      if (group.is_leader()) {
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceSendSyncBegin,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
+      }
+      group.sync();
+      if (group.is_leader()) {
+        __threadfence_system();
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceSendSyncEnd,
+            static_cast<uint8_t>(kPipesTraceQpLaneMask),
+            bytesThis);
+        const uint32_t numLanes =
+            static_cast<uint32_t>(fwdChannelLayout.numLanes);
+        const uint8_t qpLane = static_cast<uint8_t>(
+            numLanes == 0 ? 0 : fwdLocalChannel.sendQp.cursor % numLanes);
+        ThreadGroup solo{
+            0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceWqeSubmitBegin,
+            qpLane,
+            bytesThis);
+        const auto completion = fwdTransport.put(
+            solo,
+            fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+            fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
+            bytesThis,
+            sig.buf,
+            sig.val,
+            /*counterBuf=*/{},
+            /*counterVal=*/0,
+            /*signalPerLane=*/true);
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceWqeSubmitEnd,
+            qpLane,
+            bytesThis);
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceBookkeepingBegin,
+            qpLane,
+            fwdProtocolBytesThis);
+        record_send_completion<Proto>(
+            fwdTransport,
+            static_cast<uint32_t>(groupId),
+            fwdSlot,
+            fwdPipelineCycle,
+            completion);
+        trace_allreduce_event(
+            sendTraceContext,
+            PipesTraceEventType::kAllReduceBookkeepingEnd,
+            qpLane,
+            fwdProtocolBytesThis);
+      }
+      group.sync();
+    } else {
+      const uint64_t recvToken =
+          ibOps->wait_recv(transport, group, recvProtocolBytesThis, timeout);
+      ibOps->prepare_send_slot(
+          fwdTransport,
+          group,
+          static_cast<uint32_t>(fwdSlot),
+          fwdPipelineCycle,
+          timeout);
+      const std::size_t validBytes =
+          valid_payload_bytes(dataOff, payloadBytes, nbytes);
+      if (validBytes > 0) {
+        CopyOp::forward(
+            dst ? static_cast<char*>(dst) + dataOff : nullptr,
+            fwdChannelLayout.sendStagingPtr + fwdStagingOff,
+            channelLayout.recvStagingPtr + recvStagingOff,
+            validBytes,
+            group,
+            dataOff,
+            args...);
+      }
+      group.sync();
+      if (group.is_leader()) {
+        __threadfence_system();
+      }
+      group.sync();
+      ibOps->publish_recv(transport, group, recvProtocolBytesThis, recvToken);
+      ibOps->submit_send(
+          fwdTransport,
+          group,
+          fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+          fwdStagingOff,
+          bytesThis,
+          fwdProtocolBytesThis,
+          fwdSlotFreeExpected,
+          static_cast<uint32_t>(fwdSlot),
+          fwdPipelineCycle,
+          recvToken + 1,
+          timeout);
     }
-    group.sync();
     dataOff += payloadBytes;
   }
 
@@ -2038,6 +2166,7 @@ __device__ __forceinline__ void forward_impl(
 #else
   (void)transport;
   (void)group;
+  (void)ibOps;
   (void)dst;
   (void)fwdTransport;
   (void)nbytes;
@@ -2062,9 +2191,10 @@ __device__ __forceinline__ void forward(
     std::size_t max_signal_bytes = 0,
     const Timeout& timeout = Timeout(),
     Args... args) {
-  forward_impl<CopyOp, Transport, Proto>(
+  forward_impl<CopyOp, Transport, void, Proto>(
       transport,
       group,
+      nullptr,
       dst,
       fwdTransport,
       nbytes,
@@ -2091,9 +2221,10 @@ __device__ __forceinline__ void forward_with_fine_trace(
     const PipesTraceAllReduceContext& recvTraceContext,
     const PipesTraceAllReduceContext& sendTraceContext,
     Args... args) {
-  forward_impl<CopyOp, Transport, Proto>(
+  forward_impl<CopyOp, Transport, void, Proto>(
       transport,
       group,
+      nullptr,
       dst,
       fwdTransport,
       nbytes,
@@ -2358,6 +2489,28 @@ __device__ __forceinline__ void record_send_completion(
   (void)generation;
   (void)ticket;
 #endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ void prepare_send_slot(
+    Transport& transport,
+    ThreadGroup& group,
+    uint32_t slotId,
+    uint64_t generation,
+    const Timeout& timeout) {
+  prepare_send_slot<protocol::Simple>(
+      transport, group, slotId, generation, timeout);
+}
+
+template <typename Transport>
+__device__ __forceinline__ void record_send_completion(
+    Transport& transport,
+    uint32_t channelId,
+    uint32_t slotId,
+    uint64_t generation,
+    const IbLocalCompletionTicket& ticket) {
+  record_send_completion<protocol::Simple>(
+      transport, channelId, slotId, generation, ticket);
 }
 } // namespace detail
 

@@ -218,6 +218,13 @@ std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
   return ibgdaTransport_->maxGroups();
 }
 
+std::optional<int> MultiPeerTransport::ibgda_pipeline_depth() const {
+  if (!ibgdaTransport_) {
+    return std::nullopt;
+  }
+  return ibgdaTransport_->pipelineDepth();
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {

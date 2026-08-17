@@ -259,6 +259,11 @@ class MultiPeerTransport {
   std::optional<int> ibgda_max_groups() const;
 
   /*
+   * Resolved staging pipeline depth of the configured IBGDA transport.
+   */
+  std::optional<int> ibgda_pipeline_depth() const;
+
+  /*
    * Every requested edge must be requested by both endpoint ranks in the same
    * connect round. Peer-vector order may differ between ranks.
    */
