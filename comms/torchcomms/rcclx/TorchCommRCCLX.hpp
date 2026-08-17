@@ -210,6 +210,19 @@ class TorchCommRCCLX : public TorchCommBackend,
       const std::vector<int64_t>& per_group_recv_counts,
       bool async_op);
 
+  // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
+  // Each active rank's input/output hold nActiveRanks x
+  // per_group_segment_counts[g] elements (input = [sendSeg[0]|sendSeg[1]],
+  // output = [recvSeg[0]|recvSeg[1]]). No reduction op. OUT-OF-PLACE ONLY:
+  // input and output must be distinct tensors (matches native ncclAllToAll).
+  // Helper ranks pass a two-slot scratch tensor as both input and output.
+  c10::intrusive_ptr<TorchWork> sharded_relay_multi_group_all_to_all(
+      std::vector<at::Tensor>& input_tensors,
+      std::vector<at::Tensor>& output_tensors,
+      const std::vector<std::vector<int64_t>>& all_active_ranks,
+      const std::vector<int64_t>& per_group_segment_counts,
+      bool async_op);
+
   // Scatter and Gather Operations
   c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
