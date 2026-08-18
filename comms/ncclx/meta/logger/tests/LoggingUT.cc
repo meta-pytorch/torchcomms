@@ -55,7 +55,26 @@ class NcclLoggerTest : public ::testing::Test {
     ncclDebugLevel = -1;
     initNcclLogger();
   }
+
+  void initLegacyLogging() {
+    NcclLogger::init(
+        {.contextName = "comms.ncclx",
+         .logPrefix = "NCCL",
+         .logFilePath =
+             meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+         .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+             meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+         .threadContextFn = []() {
+           int cudaDev = -1;
+           (void)cudaGetDevice(&cudaDev);
+           return cudaDev;
+         }});
+  }
 };
+
+TEST_F(NcclLoggerTest, LegacyCloseIsSafeWhenNotInitialized) {
+  NcclLogger::close();
+}
 
 // Just for remembering the test format. Current test format example:
 // P1783645719
@@ -68,6 +87,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
   // auto fileGuard = EnvRAII(NCCL_DEBUG_FILE, std::string{"/tmp/debug.test3"});
 
   initLogging();
+  initLegacyLogging();
   NcclLogger::init(
       // TODO: Change the context name when ctran is refactored out of NCCLX
       // Otherwise the logging will no longer work as intended.
@@ -236,6 +256,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTestXLOG) {
   ncclResetDebugInit();
 
   initLogging();
+  initLegacyLogging();
 
   // Create a long error message (but within the 1024 char buffer)
   std::string longError(500, 'X');
@@ -456,6 +477,7 @@ TEST_F(NcclLoggerTest, SpdlogDebugMatchesLegacyDbg2) {
   auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
 
   initLogging();
+  initLegacyLogging();
   auto& logger =
       meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
   EXPECT_TRUE(logger.should_log(spdlog::level::debug));
@@ -554,6 +576,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
       folly::makeGuard([]() { unsetenv("NCCL_DEBUG_FILE"); });
   ncclResetDebugInit();
   initLogging();
+  initLegacyLogging();
 
   INFO(NCCL_ALL, "Trigger DebugInit");
 
@@ -834,7 +857,7 @@ TEST_F(NcclLoggerTest, SecondErrorUpdatesMessageKeepsAppendedStack) {
 
 #endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
 
-TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
+TEST_F(NcclLoggerTest, PreservesSharedUtilsLogHandler) {
   ncclResetDebugInit();
 
   ncclCvarInit();
