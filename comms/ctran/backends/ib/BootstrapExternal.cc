@@ -12,7 +12,7 @@
 #include "comms/ctran/backends/ib/CtranIbVc.h"
 #include "comms/ctran/backends/ib/VcState.h"
 #include "comms/ctran/utils/Checks.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 namespace ctran::ib {
 
@@ -82,7 +82,7 @@ commResult_t BootstrapExternal::connectVc(
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = pendingVcs_.find(peerRank);
     if (it == pendingVcs_.end()) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB: BootstrapExternal::connectVc called for peerRank {} before "
           "getLocalVcId. commHash {:x}, commDesc {}",
