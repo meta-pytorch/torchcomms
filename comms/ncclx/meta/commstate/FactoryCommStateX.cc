@@ -1,12 +1,11 @@
 #include "meta/commstate/FactoryCommStateX.h"
 
-#include <folly/logging/xlog.h>
-
 #include "checks.h"
 #include "comm.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/NcclxLogger.h"
 
 #include "nvmlwrap.h"
 #include "transport.h"
@@ -133,16 +132,28 @@ ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
 }
 
 ncclResult_t assignMnnvlCliqueIdBasedOnCliqueSize(int* cliqueId) {
-  XCHECK(NCCL_MNNVL_CLIQUE_SIZE > 0)
-      << "NCCL_MNNVL_CLIQUE_SIZE must be positive";
-  XCHECK(NCCL_MNNVL_CLIQUE_ID == -1)
-      << "NCCL_MNNVL_CLIQUE_SIZE and NCCL_MNNVL_CLIQUE_ID can NOT be set at the same time";
+  NCCLX_LOG_IF(
+      FATAL,
+      NCCL_MNNVL_CLIQUE_SIZE <= 0,
+      "Check failed: NCCL_MNNVL_CLIQUE_SIZE > 0: NCCL_MNNVL_CLIQUE_SIZE must be positive");
+  NCCLX_LOG_IF(
+      FATAL,
+      NCCL_MNNVL_CLIQUE_ID != -1,
+      "Check failed: NCCL_MNNVL_CLIQUE_ID == -1: NCCL_MNNVL_CLIQUE_SIZE and NCCL_MNNVL_CLIQUE_ID can NOT be set at the same time");
   auto globalRank = RankUtil::getGlobalRank();
   auto worldSize = RankUtil::getWorldSize();
-  XCHECK(globalRank.has_value()) << "RANK is not set";
-  XCHECK(worldSize.has_value()) << "WORLD_SIZE is not set";
-  XCHECK(worldSize.value() % NCCL_MNNVL_CLIQUE_SIZE == 0)
-      << "WORLD_SIZE is not a multiple of NCCL_MNNVL_CLIQUE_SIZE";
+  NCCLX_LOG_IF(
+      FATAL,
+      !globalRank.has_value(),
+      "Check failed: globalRank.has_value(): RANK is not set");
+  NCCLX_LOG_IF(
+      FATAL,
+      !worldSize.has_value(),
+      "Check failed: worldSize.has_value(): WORLD_SIZE is not set");
+  NCCLX_LOG_IF(
+      FATAL,
+      worldSize.value() % NCCL_MNNVL_CLIQUE_SIZE != 0,
+      "Check failed: worldSize.value() % NCCL_MNNVL_CLIQUE_SIZE == 0: WORLD_SIZE is not a multiple of NCCL_MNNVL_CLIQUE_SIZE");
   *cliqueId = globalRank.value() / NCCL_MNNVL_CLIQUE_SIZE;
   return ncclSuccess;
 }
