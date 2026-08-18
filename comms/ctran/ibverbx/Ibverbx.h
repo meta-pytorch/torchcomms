@@ -5,7 +5,6 @@
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
 #include <folly/json.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvDevice.h" // IWYU pragma: keep

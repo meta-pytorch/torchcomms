@@ -20,7 +20,6 @@
 #include "register_inline.h"
 #include "meta/nvls/NvlsBindWatchdog.h"
 
-#include "comms/utils/logger/Logger.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
