@@ -19,6 +19,8 @@
 #include "debug.h" // @manual
 #include "param.h" // @manual
 
+extern "C" void ncclResetDebugInitInternal();
+
 namespace {
 void inline checkStringHasLogging(
     std::string_view output,
@@ -348,6 +350,63 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   sleep(1);
   output = testing::internal::GetCapturedStdout();
   checkStringHasLogging(output, TestStr, "INFO");
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, PluginDebugBridgePreservesSourceMetadata) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+  setenv("NCCL_DEBUG", "INFO", 1);
+  ncclResetDebugInitInternal();
+
+  initLogging();
+  constexpr std::string_view message = "PLUGIN DEBUG BRIDGE";
+
+  testing::internal::CaptureStdout();
+  ncclDebugLog(
+      NCCL_LOG_INFO,
+      NCCL_ALL,
+      "transport/plugin.cc:pluginFunc",
+      321,
+      "%s",
+      message.data());
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, message, "INFO");
+  EXPECT_THAT(output, testing::HasSubstr("plugin.cc:pluginFunc:321]"));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, MetaDebugBridgePreservesTraceAndSourceMetadata) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+  setenv("NCCL_DEBUG", "TRACE", 1);
+  ncclResetDebugInitInternal();
+
+  initLogging();
+  constexpr std::string_view message = "META DEBUG BRIDGE";
+
+  testing::internal::CaptureStdout();
+  ncclMetaDebugLog(
+      NCCL_LOG_TRACE,
+      NCCL_ALL,
+      "source.cc",
+      "sourceFunction",
+      654,
+      "%s",
+      message.data());
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, message, "VERBOSE");
+  EXPECT_THAT(output, testing::HasSubstr("source.cc:654]"));
 
   finishLogging();
 }
