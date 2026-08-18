@@ -621,9 +621,12 @@ commResult_t ctranAllReduceDirect(
   op->allreduce.datatype = datatype;
   op->allreduce.op = redOp;
 
-  XCHECK(typeToFunc.contains(std::make_pair(datatype, redOp)))
-      << "typeToFunc does not contain datatype " << datatype << " with op "
-      << redOp;
+  CTRAN_LOG_IF(
+      FATAL,
+      !typeToFunc.contains(std::make_pair(datatype, redOp)),
+      "Check failed: typeToFunc.contains(std::make_pair(datatype, redOp)): typeToFunc does not contain datatype {} with op {}",
+      datatype,
+      redOp);
   const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
 
   auto config = KernelConfig(
