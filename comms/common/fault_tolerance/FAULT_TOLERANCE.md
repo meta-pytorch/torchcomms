@@ -307,7 +307,9 @@ Host explicit abort:
 
 ```cpp
 auto abort = comm->getAbort();
-abort->setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+abort->setAbort(
+    comms::fault_tolerance::AbortReason::ABORTED,
+    "user requested abort");
 ```
 
 Host default timeout:
@@ -340,8 +342,14 @@ __global__ void kernel(KernArgs args) {
 Device explicit abort:
 
 ```cpp
-abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+abort.setAbort(
+    comms::fault_tolerance::AbortReason::ABORTED,
+    "device callsite");
 ```
+
+The host copies the context into host-only storage. The device never stores the
+string in mapped shared state; a device diagnostic may consume the
+device-accessible string only at the winning callsite.
 
 Device timeout:
 
