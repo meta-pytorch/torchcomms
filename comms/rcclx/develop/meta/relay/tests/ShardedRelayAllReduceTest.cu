@@ -490,6 +490,75 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     }
   }
 
+  // Single-group (nGroups=1) A=4 allreduce (in-place). Ranks {0,1,2,3} are
+  // active and {4,5,6,7} are passthrough helpers, exercising the A=4 kernel
+  // path WITHOUT the multi-group fusion the 4Active_2Groups tests cover.
+  // Active rank myActiveIndex fills (myActiveIndex+1)*scale so the reduction
+  // detects a missing partner or mis-routed contribution.
+  void runAllReduceA4SingleGroup(ncclRedOp_t op) {
+    constexpr int nGroups = 1;
+    constexpr int nActiveRanksPerGroup = 4;
+    const size_t dataBytes = 64ULL * 1024 * 1024;
+    const size_t count = dataBytes / sizeof(int32_t);
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank; // 0..3 for active ranks
+    const size_t helperBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * dataBytes;
+
+    // SUM: fill (m+1) -> 1+2+3+4 = 10. AVG: fill (m+1)*2 -> 20/4 = 5 (exact in
+    // int32). A wrong AVG divisor (e.g. 2) would give 10, so this also checks
+    // that AVG uses nActiveRanks rather than a hardcoded 2.
+    const int32_t fill =
+        op == ncclAvg ? (myActiveIndex + 1) * 2 : myActiveIndex + 1;
+    const int32_t expected = op == ncclAvg ? 5 : 10;
+
+    int32_t* buff = nullptr;
+    if (isActive) {
+      HIPCHECK_TEST(hipMalloc(&buff, dataBytes));
+    } else {
+      HIPCHECK_TEST(hipMalloc(&buff, helperBytes));
+    }
+
+    barrierSyncOn(buff);
+
+    if (isActive) {
+      std::vector<int32_t> hostData(count, fill);
+      HIPCHECK_TEST(
+          hipMemcpy(buff, hostData.data(), dataBytes, hipMemcpyHostToDevice));
+    } else {
+      HIPCHECK_TEST(hipMemset(buff, 0, helperBytes));
+    }
+
+    const void* sendPtrs[1] = {buff};
+    void* recvPtrs[1] = {buff};
+    size_t counts[1] = {count};
+
+    ncclResult_t result = callAllReduceCompat(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        ncclInt32,
+        op,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyDeviceBufferEquals(
+          buff, count, expected, 0, "4-active single-group allreduce mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(buff));
+  }
+
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
@@ -1771,6 +1840,29 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_4Active_2Groups_Avg) {
   for (int g = 0; g < nGroups; g++) {
     HIPCHECK_TEST(hipFree(buffers[g]));
   }
+}
+
+// Single-group (nGroups=1) A=4 allreduce: ranks {0,1,2,3} active, {4,5,6,7}
+// helpers. Exercises the A=4 path without the multi-group fusion the
+// 4Active_2Groups tests cover.
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_4Active_SingleGroup_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runAllReduceA4SingleGroup(ncclSum);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_4Active_SingleGroup_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  runAllReduceA4SingleGroup(ncclAvg);
 }
 
 TEST_F(
