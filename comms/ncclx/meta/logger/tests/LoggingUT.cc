@@ -14,7 +14,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "meta/NcclxLogUtils.h"
+#include "meta/NcclxChecks.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
@@ -94,6 +94,46 @@ TEST_F(NcclLoggerTest, LogDisplay) {
   ERR(ncclInternalError, "%s", TestStr.c_str());
 
   finishLogging();
+}
+
+TEST_F(NcclLoggerTest, NcclxChecksPreserveResultsAndSingleEvaluation) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInitInternal();
+  initLogging();
+  auto loggingGuard = folly::makeGuard([&] { finishLogging(); });
+
+  int commEvaluations = 0;
+  EXPECT_NO_THROW(NCCLX_COMMCHECKTHROW((++commEvaluations, commSuccess)));
+  EXPECT_NO_THROW(NCCLX_COMMCHECKTHROW((++commEvaluations, commInProgress)));
+  EXPECT_THROW(
+      NCCLX_COMMCHECKTHROW((++commEvaluations, commInternalError)),
+      std::runtime_error);
+  EXPECT_EQ(commEvaluations, 3);
+
+  int messageEvaluations = 0;
+  EXPECT_THROW(
+      NCCLX_ERRORTHROW(
+          commInvalidUsage, "NCCLX error {}", ++messageEvaluations),
+      std::runtime_error);
+  EXPECT_EQ(messageEvaluations, 1);
+
+  int cudaEvaluations = 0;
+  EXPECT_NO_THROW(NCCLX_CUDACHECKTHROW((++cudaEvaluations, cudaSuccess)));
+  EXPECT_THROW(
+      NCCLX_CUDACHECKTHROW((++cudaEvaluations, cudaErrorInvalidValue)),
+      std::runtime_error);
+  EXPECT_EQ(cudaEvaluations, 2);
+
+  auto expectedCheck = [](cudaError_t error) -> meta::comms::CommsMaybeVoid {
+    NCCLX_CUDA_CHECK_EXPECTED(error);
+    return folly::unit;
+  };
+  EXPECT_TRUE(expectedCheck(cudaSuccess).hasValue());
+  const auto expectedError = expectedCheck(cudaErrorInvalidValue);
+  ASSERT_TRUE(expectedError.hasError());
+  EXPECT_EQ(expectedError.error().errorCode, commUnhandledCudaError);
+  EXPECT_THAT(
+      expectedError.error().message, testing::HasSubstr("CUDA error in"));
 }
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {

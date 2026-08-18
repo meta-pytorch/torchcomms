@@ -7,10 +7,9 @@
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
-#include "comms/utils/checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
-#include "meta/NcclxLogUtils.h"
+#include "meta/NcclxChecks.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
@@ -156,7 +155,7 @@ commResult_t TransportProxy::getNextChannelsReadyPtr(
     uint64_t** channelsReadyPtr) {
   std::unique_lock<std::mutex> lock(mutex_);
   if (syncFlagPool_.empty()) {
-    FB_ERRORTHROW(
+    NCCLX_ERRORTHROW(
         commInternalError, "No available sync flag in transport worker thread");
   }
   auto ptr = syncFlagPool_.front();
@@ -274,7 +273,7 @@ void TransportProxy::testAny() {
   for (const auto& req : activeOps_) {
     auto ptr = req->channelsReadyPtr;
     if (*ptr == 0) {
-      FB_COMMCHECKTHROW(req->comm->memCache->release(req->bufKeys));
+      NCCLX_COMMCHECKTHROW(req->comm->memCache->release(req->bufKeys));
       NCCLX_LOG_SUBSYS(
           INFO,
           COLL,
@@ -327,7 +326,7 @@ void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
           req->bufKeys,
           skipReconnect));
   if (req->state != commSuccess) {
-    FB_ERRORTHROW(
+    NCCLX_ERRORTHROW(
         commInternalError,
         "Failed to reconnect to peers in transport worker thread");
   }
@@ -359,7 +358,7 @@ void TransportProxy::workerThreadFn() {
       parentComm_->commHash,
       parentComm_->logMetaData.commDesc);
 
-  FB_CUDACHECKTHROW(cudaSetDevice(parentComm_->cudaDev));
+  NCCLX_CUDACHECKTHROW(cudaSetDevice(parentComm_->cudaDev));
 
   while (true) {
     // test if any collective is complected, and release the resources
