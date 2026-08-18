@@ -16,10 +16,9 @@
  * Under `AbortBehavior::TRAP` all three log the *site* -- file, line and
  * function -- alongside the caller's message, so a log line says where the
  * abort or the timeout was observed rather than only that one happened. Under
- * the default `AbortBehavior::SKIP` they stay silent: a wait that aborts does
- * so on every thread that reached it, and one printf per thread per site would
- * bury the host-side diagnosis under device output. SKIP is the production
- * path; the reason is already recorded on the `Abort` for the host to report.
+ * the default `AbortBehavior::SKIP`, only the call that wins the shared reason
+ * CAS logs. Every later observer stays silent, avoiding one printf per thread
+ * while preserving the device callsite that first declared the abort.
  *
  * These live in the fault-tolerance module and deliberately depend on nothing
  * from Prims, so CTRAN and MCCL device code can use the same checks.
@@ -47,22 +46,34 @@ namespace comms::fault_tolerance::detail {
  * is consumed by the trailing `%s`.
  */
 template <typename... Args>
-__device__ __forceinline__ bool
-abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
+__device__ __forceinline__ bool abortCheckAndLog(
+    const AbortDevice& abort,
+    const char* fmt,
+    const char* firstWriterFmt,
+    Args... args) {
 #if FT_IS_DEVICE_COMPILE
-  const auto result = abort.check();
+  bool flippedHere = false;
+  const auto result = abort.check(&flippedHere);
   if (result == AbortCheckResult::CONTINUE) {
     return false;
   }
-  if (result == AbortCheckResult::TRAP) {
+  if (flippedHere) {
+    // The transition from NONE happens exactly once per communicator. Print
+    // regardless of behavior so the production SKIP path retains the winning
+    // device callsite. NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+    printf(firstWriterFmt, args...);
+  } else if (result == AbortCheckResult::TRAP) {
     // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
     printf(fmt, args...);
+  }
+  if (result == AbortCheckResult::TRAP) {
     FT_DEVICE_TRAP();
   }
   return true;
 #else
   (void)abort;
   (void)fmt;
+  (void)firstWriterFmt;
   ((void)args, ...);
   return false;
 #endif
@@ -97,11 +108,12 @@ abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
  *       break;
  *     }
  */
-#define FT_ABORT_CHECK(abort, fmt, ...)               \
-  ::comms::fault_tolerance::detail::abortCheckAndLog( \
-      (abort),                                        \
-      "CUDA ABORT ERROR: " fmt FT_ABORT_SITE_SUFFIX_, \
-      ##__VA_ARGS__,                                  \
+#define FT_ABORT_CHECK(abort, fmt, ...)                                 \
+  ::comms::fault_tolerance::detail::abortCheckAndLog(                   \
+      (abort),                                                          \
+      "CUDA ABORT ERROR: " fmt FT_ABORT_SITE_SUFFIX_,                   \
+      "COMMS FT ABORT FIRST WRITER: device " fmt FT_ABORT_SITE_SUFFIX_, \
+      ##__VA_ARGS__,                                                    \
       __func__)
 
 /*

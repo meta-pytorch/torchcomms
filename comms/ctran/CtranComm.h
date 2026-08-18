@@ -11,8 +11,10 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <folly/String.h>
 #include <folly/Synchronized.h>
 #include <folly/container/F14Set.h>
 #include "comms/common/fault_tolerance/Abort.h"
@@ -20,6 +22,7 @@
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
@@ -169,8 +172,26 @@ class CtranComm {
     return abort_->isEnabled();
   }
 
-  inline void setAbort() {
-    abort_->setAbort();
+  inline void setAbort(comms::fault_tolerance::AbortInfo info = {}) {
+    abort_->setAbort(info.reason, info.context.c_str());
+  }
+
+  inline std::optional<comms::fault_tolerance::AbortInfo> getAbortInfo() const {
+    return abort_->getAbortInfo();
+  }
+
+  inline std::string abortMessage() const {
+    const auto info = getAbortInfo();
+    if (!info.has_value()) {
+      return "comm aborted";
+    }
+    auto message = "comm aborted reason=" +
+        std::string{ctran::utils::abortReasonName(info->reason)};
+    if (!info->context.empty()) {
+      message +=
+          " context=\"" + folly::cEscape<std::string>(info->context) + "\"";
+    }
+    return message;
   }
 
   inline bool testAbort() const {
