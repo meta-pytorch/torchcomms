@@ -1333,115 +1333,70 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
  * Each active rank's sendBuff holds A=4 segments of segmentCount; segment j is
  * filled with segFillValue(myActiveIndex, j). After the all-to-all, owner m's
  * recvSeg[i] must equal segFillValue(i, m), so a wrong round/partner mapping in
- * the flat 2-hop relay is detectable per segment.
+ * either the exact direct or XOR/Latin route is detectable per segment.
  */
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_2Groups_OutOfPlace) {
+    Correctness_4Active_RoutedLowerBoundary_63MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  const int nGroups = 2;
-  const int nActiveRanksPerGroup = 4;
-  const size_t segmentBytes = 64ULL * 1024 * 1024;
-  const size_t segmentCount = segmentBytes / sizeof(int32_t);
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
+  runA4CorrectnessCase(segmentCount, true);
+}
 
-  TwoGroupFourActiveRanks groupConfig;
-  const int* const* allActiveRanks = groupConfig.allActiveRanks;
-
-  int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
-  int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
-
-  int32_t* sendBuffs[nGroups];
-  int32_t* recvBuffs[nGroups];
-  for (int g = 0; g < nGroups; g++) {
-    if (g == myActiveGroup) {
-      HIPCHECK_TEST(hipMalloc(
-          &sendBuffs[g],
-          static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes));
-      HIPCHECK_TEST(hipMalloc(
-          &recvBuffs[g],
-          static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes));
-    } else {
-      size_t helperBufferSize =
-          static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
-      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], helperBufferSize));
-      recvBuffs[g] = sendBuffs[g];
-    }
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_DirectBelowLowerBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  barrierSyncOn(recvBuffs[0]);
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
+  runA4CorrectnessCase(segmentCount, false);
+}
 
-  for (int g = 0; g < nGroups; g++) {
-    if (g == myActiveGroup) {
-      initActiveSendBuffer(
-          sendBuffs[g], segmentCount, myActiveIndex, nActiveRanksPerGroup);
-      HIPCHECK_TEST(hipMemset(
-          recvBuffs[g],
-          0,
-          static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes));
-    } else {
-      size_t helperBufferSize =
-          static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
-      HIPCHECK_TEST(hipMemset(sendBuffs[g], 0, helperBufferSize));
-    }
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_RoutedUnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  const void* sendPtrs[nGroups];
-  void* recvPtrs[nGroups];
-  size_t segmentCounts[nGroups];
-  for (int g = 0; g < nGroups; g++) {
-    sendPtrs[g] = sendBuffs[g];
-    recvPtrs[g] = recvBuffs[g];
-    segmentCounts[g] = segmentCount;
+  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
+  runA4CorrectnessCase(segmentCount, true, true);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_DirectUpperBoundary_256MiB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  ncclResult_t result = callAllToAllCompat(
-      sendPtrs,
-      recvPtrs,
-      segmentCounts,
-      ncclInt32,
-      this->comm,
-      this->stream,
-      allActiveRanks,
-      nActiveRanksPerGroup,
-      nGroups);
-  ASSERT_EQ(result, ncclSuccess);
-  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
-
-  verifyAllToAllOutput(
-      recvBuffs[myActiveGroup],
-      segmentCount,
-      myActiveIndex,
-      myActiveGroup,
-      nActiveRanksPerGroup);
-
-  for (int g = 0; g < nGroups; g++) {
-    HIPCHECK_TEST(hipFree(sendBuffs[g]));
-    if (g == myActiveGroup) {
-      HIPCHECK_TEST(hipFree(recvBuffs[g]));
-    }
-  }
+  constexpr size_t perActiveBytes = 256ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
+  runA4CorrectnessCase(segmentCount, false);
 }
 
 /**
- * Tiny-segment regression: forces the relay csz==0 path for 4 active ranks.
- * With segmentCount=512, csz = align(512 / 5) = 0, so each round's exchange is
- * a full whole-segment direct partner swap (no helper hops). The send and recv
- * of that swap MUST share one ncclGroup; splitting them across the two hops
- * would deadlock. All A-1 XOR rounds are exercised.
+ * Tiny-segment regression for the exact direct fallback below the retained
+ * A=4 XOR/Latin routing window.
  */
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_2Groups_TinyCsz0_OutOfPlace) {
+    Correctness_4Active_TinyDirect_OutOfPlace) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
   const int nGroups = 2;
   const int nActiveRanksPerGroup = 4;
-  const size_t segmentCount = 512; // align(512 / 5) == 0 -> relay csz == 0
+  const size_t segmentCount = 512;
   const size_t segmentBytes = segmentCount * sizeof(int32_t);
 
   TwoGroupFourActiveRanks groupConfig;

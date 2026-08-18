@@ -26,14 +26,13 @@
  * reuses the same phase-synchronized passthrough-helper scheme; helpers perform
  * no compute and simply relay sharded chunks.
  *
- * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the original
- * 2-active passthrough relay (which wins there with 6 dedicated helpers per
- * group); A>2 uses a PURE-DIRECT all-to-all among the active ranks over the
- * 1-hop intra links -- NO helper relay, because the 2-hop offload is a net loss
- * at A>2 (only A helpers, serial source->helper->owner) and the fused direct
- * exchange already beats NCCL's P2P-bound 4-GPU all_to_all by ~1.4x. Helper
- * ranks do no work for a group they are not active in. OUT-OF-PLACE ONLY in
- * both cases.
+ * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 selects between
+ * the exact direct exchange at small sizes and the original 2-active
+ * passthrough relay with 6 dedicated helpers. A==4 with 4
+ * helpers uses the no-pack XOR/Latin relay when the common maximum per-active-
+ * rank input size, A * max(segmentCounts) * elementSize, is in [63 MiB,
+ * 256 MiB) and every group count is positive. Other A==4 calls use the exact
+ * pure-direct all-to-all. OUT-OF-PLACE ONLY in all cases.
  *
  * Unlike allreduce/reduce-scatter, all-to-all performs NO reduction — it is
  * pure data movement — so no reduction kernels are used and there is no
@@ -42,68 +41,64 @@
  * All-to-All Semantics (per group, A active ranks):
  * =======================================================
  * Each active rank's sendBuff and recvBuff hold nActiveRanksPerGroup x
- * segmentCounts[g] (= 2 x segmentCounts[g]) elements:
- *   - sendBuff = [sendSeg[0] | sendSeg[1]]; sendSeg[j] is the segment destined
- *     for active index j.
- *   - recvBuff = [recvSeg[0] | recvSeg[1]]; recvSeg[i] receives the segment
- *     from active index i.
+ * segmentCounts[g] elements:
+ *   - sendBuff = [sendSeg[0] | ... | sendSeg[A-1]]; sendSeg[j] is destined for
+ *     active index j.
+ *   - recvBuff = [recvSeg[0] | ... | recvSeg[A-1]]; recvSeg[i] receives from
+ *     active index i.
  *
- * For the active rank with myActiveIndex = m, otherActiveIndex = o = 1 - m:
- *   - Diagonal (self -> self): recvSeg[m] = sendSeg[m]; both at offset
- *     m x segmentCount. A local copy.
- *   - Exchange: rank m ships sendSeg[o] (offset o x segmentCount) to the other
- *     rank and receives the other rank's sendSeg[m] into recvSeg[o] (offset
- *     o x segmentCount). This single-segment exchange is sharded across
- * helpers.
+ * For active index m, recvSeg[m] = sendSeg[m] is a local diagonal copy. Every
+ * off-diagonal sendSeg[j] is transferred to active index j and placed in its
+ * recvSeg[m].
  *
  * IN-PLACE IS NOT SUPPORTED. Like the native RCCL ncclAllToAll, sendBuff and
  * recvBuff MUST be distinct; passing sendBuff == recvBuff returns
  * ncclInvalidArgument.
  *
- * Two Comm Groups (no reduction; pure relay + a placement copy):
- * ==============================================================
+ * Schedules (no reduction; data movement + a placement copy):
+ * ============================================================
  *   Diagonal: recvSeg[m] = sendSeg[m] (cudaMemcpyAsync).
- *   Group 1:  each active rank scatters numHelpers chunks of its sendSeg[o] to
- *             helpers (each helper stores two slots, one per active rank) AND
- *             the two active ranks directly exchange one chunk over the
- *             otherwise-idle active<->active link.
- *   Group 2:  each helper forwards slot-from-a0 -> a1 and slot-from-a1 -> a0,
- *             landing DIRECTLY in recvSeg[o] at h x chunkSize, AND the active
- *             ranks directly exchange a second chunk over the same idle link.
- *   No relay scratch and no reduction are needed.
+ *   A==2: group 1 scatters helper chunks and exchanges directA; group 2
+ *         forwards helper slots and exchanges directB.
+ *   Routed A==4: each off-diagonal segment is split contiguously into directA,
+ *         relay, and directB. Group 1 transfers directA to the destination and
+ *         relay to helper index source XOR p[destination], p={0,2,3,1}. Group 2
+ *         transfers directB and forwards each compact helper slot directly to
+ *         recvSeg[source] + directA. Each helper receives and forwards exactly
+ *         three tasks to three distinct destinations.
+ *   Direct A==4: one grouped active-to-active exchange; helpers are idle.
  *
  * Chunking:
  * =========
- *   chunkSize = segmentCounts[g] / numChunks rounded down to 128 elements,
- *   numChunks = numHelpers + 2. The active<->active link is idle while the
- * relay scatter and forward run on the cross links, so instead of a third comm
- * group for one direct chunk, one direct chunk rides along with each relay
- * group. Every link then carries exactly one chunk per direction per group and
- * the critical path is 2 x chunkSize instead of 3 x
- * segmentCounts[g]/(numHelpers+1). Returns ncclInvalidArgument when
- * segmentCounts[g] < numChunks x 128 (too small to scatter); callers should
- * fall back to a plain all-to-all.
+ * A==2 relay: chunkSize = segmentCounts[g] / (numHelpers + 2), rounded down to
+ * 128 elements. One direct chunk rides with each relay group; if alignment
+ * makes chunkSize zero, directA/directB cover the whole segment.
+ * Routed A==4: directA = floor(segmentCounts[g] / 3), relayCount is directA
+ * rounded down to 128 elements, and directB absorbs every alignment and
+ * division tail. The three contiguous regions cover every element once.
  *
  * Helper-Buffer Contract (passthrough-at-helper):
  * ===============================================
  * A==2: caller MUST supply at least nActiveRanksPerGroup x chunkSize_aligned
  * elements per helper group, where chunkSize_aligned is computed from
  * segmentCounts[g].
- * A>2: PURE-DIRECT (no helper relay), so helper ranks do no work and need NO
- * helper buffer; the caller may pass any small placeholder tensor for the
- * groups it is a helper for.
+ * A==4 routed window: caller MUST supply at least 3 x relayCount elements per
+ * helper group, where relayCount = alignDown(segmentCounts[g] / 3, 128). This
+ * is bounded by one segment, so allocating segmentCounts[g] elements suffices.
+ * A==4 direct routes: helpers do no work and need no scratch, though callers
+ * may retain the one-segment allocation used for the routed window.
  *
  * Memory Model:
  * =============
  * Each rank is ACTIVE for exactly ONE group (has real tensor data).
- * For other groups, the rank is a HELPER (uses provided two-slot scratch).
+ * For other groups, the rank is a HELPER (uses the provided scratch when the
+ * selected route relays data).
  *   - sendBuffs[nGroups]: one contiguous input buffer per group. For the active
  *     group it holds nActiveRanksPerGroup x segmentCounts[g] elements; helper
- *     groups may pass a small placeholder.
+ *     groups provide scratch sized by the selected route's contract above.
  *   - recvBuffs[nGroups]: one base buffer per group. For helper groups this is
- *     the two-slot passthrough scratch (>= nActiveRanks x chunkSize); for the
- *     active group it is the output base (nActiveRanksPerGroup x
- *     segmentCounts[g] elements).
+ *     the passthrough scratch; for the active group it is the output base
+ *     (nActiveRanksPerGroup x segmentCounts[g] elements).
  *   - IN-PLACE IS NOT SUPPORTED: sendBuffs[g] and recvBuffs[g] MUST be distinct
  *     (matching native ncclAllToAll); aliasing returns ncclInvalidArgument.
  *   - Each helper group MUST have its own buffer (no aliasing across groups)
@@ -113,7 +108,7 @@
  *        group); the active group holds nActiveRanksPerGroup x segmentCounts[g]
  *        elements
  * @param recvBuffs Array of per-group base buffer pointers (one per group);
- *        helper groups pass two-slot passthrough scratch
+ *        helper groups pass scratch satisfying the helper-buffer contract
  * @param segmentCounts Array of per-group per-segment element counts (one per
  *        group); the active group's input/output together hold
  *        nActiveRanksPerGroup x segmentCounts[g] elements
