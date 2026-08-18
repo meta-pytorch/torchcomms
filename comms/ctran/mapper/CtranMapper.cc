@@ -554,7 +554,7 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
         req.get(),
         exportCount));
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Posted IPC release to rank {} with exportCount {}",
         peerRank,
@@ -782,12 +782,12 @@ commResult_t CtranMapper::regAsync(const void* buf, const size_t len) {
     bool dynamicRegist = false;
     FB_COMMCHECK(searchRegHandle(
         buf, len, &regHdl, &dynamicRegist, false /* allowDynamic */));
-    CLOGF_TRACE(COLL, "regAsync registered buf {} len {}", buf, len);
+    CTRAN_LOG_TRACE(COLL, "regAsync registered buf {} len {}", buf, len);
     return commSuccess;
   } else {
     FB_COMMCHECK(regCache->asyncRegRange(
         buf, len, cudaDev, logMetaData_, enableBackends_));
-    CLOGF_TRACE(COLL, "regAsync submitted buf {} len {}", buf, len);
+    CTRAN_LOG_TRACE(COLL, "regAsync submitted buf {} len {}", buf, len);
     return commInProgress;
   }
 }
@@ -847,7 +847,7 @@ commResult_t CtranMapper::searchRegHandle(
         len);
   }
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       COLL,
       "searchRegHandle buf {} len {} returned handle (regElem) {} dynamicRegist {}",
       buf,
