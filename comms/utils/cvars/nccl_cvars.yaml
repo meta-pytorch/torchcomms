@@ -3469,6 +3469,13 @@ cvars:
      capability query and forces VALID_DBR. Host-only loopback QPs always use
      VALID_DBR. This policy is NVIDIA-only and ignored on AMD.
 
+ - name        : MCCL_IBGDA_WARP_PROXY_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable the dedicated IBGDA warp-proxy send, receive, and forward path for
+     fused Ring AllReduce. Disabled by default while the path is evaluated.
+
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t
    default     : 1024

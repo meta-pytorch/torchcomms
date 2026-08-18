@@ -5,6 +5,7 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 #include <array>
+#include <chrono>
 
 #include <memory>
 #include <string>
@@ -22,6 +23,7 @@
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #ifndef __HIP_PLATFORM_AMD__
+#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/utils/CudaRAII.h"
 #endif
 
@@ -1712,6 +1714,131 @@ TEST_F(
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
   }
 }
+
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyQueueBackpressureAndSlotReuseAcross1024Commands) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+
+  constexpr std::size_t numChunks = 1024;
+  constexpr std::size_t maxSignalBytes = 1024;
+  constexpr int pipelineDepth = 16;
+  constexpr std::size_t perChannelSize =
+      static_cast<std::size_t>(pipelineDepth) * maxSignalBytes;
+  constexpr std::size_t nbytes = numChunks * maxSignalBytes;
+  constexpr uint32_t queueDepth = 1;
+  constexpr uint8_t patternBase = 0xA7;
+  constexpr std::size_t patternPeriod = 251;
+  constexpr std::size_t patternChunkStride = 17;
+  static_assert(numChunks % pipelineDepth == 0);
+  static_assert(numChunks / pipelineDepth == 64);
+  static_assert(perChannelSize / pipelineDepth == maxSignalBytes);
+  const bool isSender = globalRank == 0;
+  const int peerRank = isSender ? 1 : 0;
+
+  std::unique_ptr<MultipeerIbgdaTransport> transport;
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = 1,
+        .pipelineDepth = pipelineDepth,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  auto* peerTransport = transport->getP2pTransportDevice(peerRank);
+  DeviceBuffer dataBuffer(nbytes);
+  DeviceBuffer queueFullCountBuffer(sizeof(uint64_t));
+  auto* queueFullCount = static_cast<uint64_t*>(queueFullCountBuffer.get());
+  const Timeout timeout = makeTimeout(5000, localRank);
+
+  std::vector<uint8_t> expected(nbytes);
+  for (std::size_t i = 0; i < nbytes; ++i) {
+    const std::size_t chunk = i / maxSignalBytes;
+    const std::size_t chunkOffset = i % maxSignalBytes;
+    expected[i] = static_cast<uint8_t>(
+        patternBase +
+        (chunk * patternChunkStride + chunkOffset) % patternPeriod);
+  }
+  if (isSender) {
+    CUDACHECK_TEST(cudaMemcpy(
+        dataBuffer.get(), expected.data(), nbytes, cudaMemcpyHostToDevice));
+  } else {
+    CUDACHECK_TEST(cudaMemset(dataBuffer.get(), 0, nbytes));
+  }
+  CUDACHECK_TEST(cudaMemset(queueFullCount, 0, sizeof(*queueFullCount)));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  if (isSender) {
+    test::testWarpProxySendRecv(
+        peerTransport,
+        dataBuffer.get(),
+        nbytes,
+        maxSignalBytes,
+        /*send=*/true,
+        queueDepth,
+        queueFullCount,
+        timeout.timeout_cycles);
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  if (!isSender) {
+    test::testWarpProxySendRecv(
+        peerTransport,
+        dataBuffer.get(),
+        nbytes,
+        maxSignalBytes,
+        /*send=*/false,
+        queueDepth,
+        /*queueFullCount=*/nullptr,
+        timeout.timeout_cycles);
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  if (isSender) {
+    uint64_t hostQueueFullCount = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &hostQueueFullCount,
+        queueFullCount,
+        sizeof(hostQueueFullCount),
+        cudaMemcpyDeviceToHost));
+    EXPECT_GT(hostQueueFullCount, 0)
+        << "warp proxy send did not observe command-queue backpressure";
+  }
+
+  if (!isSender) {
+    std::vector<uint8_t> received(nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        received.data(), dataBuffer.get(), nbytes, cudaMemcpyDeviceToHost));
+    std::size_t mismatchCount = 0;
+    std::size_t firstMismatch = 0;
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      if (received[i] != expected[i]) {
+        if (mismatchCount == 0) {
+          firstMismatch = i;
+        }
+        ++mismatchCount;
+      }
+    }
+    EXPECT_EQ(mismatchCount, 0)
+        << "warp proxy staging-slot reuse corrupted payload; first mismatch "
+        << "at byte " << firstMismatch << ", expected "
+        << static_cast<int>(expected[firstMismatch]) << ", got "
+        << static_cast<int>(received[firstMismatch]);
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+#endif
 
 TEST_P(
     MultipeerIbTransportTestFixture,

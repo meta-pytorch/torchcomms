@@ -4,7 +4,7 @@
 
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -29,10 +29,10 @@ commResult_t wrap_ibv_symbols(void) {
 }
 
 /* CHECK_NOT_NULL: helper macro to check for NULL symbol */
-#define CHECK_NOT_NULL(container, internal_name)             \
-  if (container.internal_name == nullptr) {                  \
-    CERR(commInternalError, "lib wrapper not initialized."); \
-    return commInternalError;                                \
+#define CHECK_NOT_NULL(container, internal_name)                  \
+  if (container.internal_name == nullptr) {                       \
+    CTRAN_ERR(commInternalError, "lib wrapper not initialized."); \
+    return commInternalError;                                     \
   }
 
 #define IBV_PTR_CHECK_ERRNO(                                    \
@@ -40,7 +40,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);                     \
   retval = container.call;                                      \
   if (retval == error_retval) {                                 \
-    CERR(                                                       \
+    CTRAN_ERR(                                                  \
         commSystemError,                                        \
         "Call to {} failed with error {}",                      \
         name,                                                   \
@@ -54,7 +54,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);                     \
   retval = container.call;                                      \
   if (retval == error_retval) {                                 \
-    CERR(commSystemError, "Call to {} failed", name);           \
+    CTRAN_ERR(commSystemError, "Call to {} failed", name);      \
     return commSystemError;                                     \
   }                                                             \
   return commSuccess;
@@ -62,18 +62,18 @@ commResult_t wrap_ibv_symbols(void) {
 #define IBV_INT_CHECK_RET_ERRNO_OPTIONAL(                                    \
     container, internal_name, call, success_retval, name, supported)         \
   if (container.internal_name == nullptr) {                                  \
-    CLOGF_SUBSYS(                                                            \
+    CTRAN_LOG_SUBSYS(                                                        \
         INFO, NET, "Call to {} skipped, internal_name doesn't exist", name); \
     *supported = 0;                                                          \
     return commSuccess;                                                      \
   }                                                                          \
   int ret = container.call;                                                  \
   if (ret == ENOTSUP || ret == EOPNOTSUPP) {                                 \
-    CLOGF_SUBSYS(INFO, NET, "Call to {} not supported", name);               \
+    CTRAN_LOG_SUBSYS(INFO, NET, "Call to {} not supported", name);           \
     *supported = 0;                                                          \
     return commSuccess;                                                      \
   } else if (ret != success_retval) {                                        \
-    CLOGF(                                                                   \
+    CTRAN_LOG(                                                               \
         WARN,                                                                \
         "Call to failed with error {} errno {}",                             \
         name,                                                                \
@@ -90,7 +90,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);               \
   int ret = container.call;                               \
   if (ret != success_retval) {                            \
-    CERR(                                                 \
+    CTRAN_ERR(                                            \
         commSystemError,                                  \
         "Call to {} failed with error {} errno {}",       \
         name,                                             \
@@ -104,7 +104,7 @@ commResult_t wrap_ibv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name);                               \
   int ret = container.call;                                               \
   if (ret == error_retval) {                                              \
-    CERR(commSystemError, "Call to failed", name);                        \
+    CTRAN_ERR(commSystemError, "Call to failed", name);                   \
     return commSystemError;                                               \
   }                                                                       \
   return commSuccess;
@@ -147,7 +147,7 @@ commResult_t wrap_ibv_free_device_list(struct ibv_device** list) {
 
 const char* wrap_ibv_get_device_name(struct ibv_device* device) {
   if (ibvSymbols.ibv_internal_get_device_name == nullptr) {
-    CLOGF(WARN, "lib wrapper not initialized.");
+    CTRAN_LOG(WARN, "lib wrapper not initialized.");
     exit(-1);
   }
   return ibvSymbols.ibv_internal_get_device_name(device);
@@ -287,7 +287,7 @@ commResult_t wrap_ibv_reg_mr(
 ibv_mr*
 wrap_direct_ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
   if (ibvSymbols.ibv_internal_reg_mr == nullptr) {
-    CLOGF(WARN, "lib wrapper not initialized.");
+    CTRAN_LOG(WARN, "lib wrapper not initialized.");
     return nullptr;
   }
   return ibvSymbols.ibv_internal_reg_mr(pd, addr, length, access);
@@ -524,7 +524,7 @@ wrap_ibv_modify_qp(struct ibv_qp* qp, struct ibv_qp_attr* attr, int attr_mask) {
     if (attempts > 0) {
       unsigned int sleepTime = timeOut * attempts;
       ibvModifyQpLog(qp, attr->qp_state, attr, attr_mask, qpMsg, sizeof(qpMsg));
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           NET,
           "Call to ibv_modify_qp failed with {} {}, {}, retrying {}/{} after {} msec of sleep",
@@ -545,7 +545,7 @@ wrap_ibv_modify_qp(struct ibv_qp* qp, struct ibv_qp_attr* attr, int attr_mask) {
   } while (IBV_MQP_RETRY_ERRNO_ALL(ret) && attempts < maxCnt);
   if (ret != 0) {
     ibvModifyQpLog(qp, attr->qp_state, attr, attr_mask, qpMsg, sizeof(qpMsg));
-    CERR(
+    CTRAN_ERR(
         commSystemError,
         "Call to ibv_modify_qp failed with {} {}, {}",
         ret,

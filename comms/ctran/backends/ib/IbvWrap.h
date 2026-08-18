@@ -12,8 +12,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 // Copy-pasted from NCCL with minor modifications (ncclResult_t -> commResult_t,
 // etc.) [WIP]TODO: replace this c-style interface with comms/ctran/ibverbx
@@ -117,7 +117,7 @@ static inline commResult_t wrap_ibv_poll_cq(
       cq, num_entries, wc); /*returns the number of wcs or 0 on success, a
                                negative number otherwise*/
   if (done < 0) {
-    CERR(commSystemError, "Call to ibv_poll_cq() returned {}", done);
+    CTRAN_ERR(commSystemError, "Call to ibv_poll_cq() returned {}", done);
     return commSystemError;
   }
   *num_done = done;
@@ -145,7 +145,7 @@ static inline commResult_t wrap_ibv_post_send(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
   if (ret != IBV_SUCCESS) {
-    CERR(
+    CTRAN_ERR(
         commSystemError,
         "ibv_post_send() failed with error {}, Bad WR {}, First WR {}",
         strerror(ret),
@@ -164,7 +164,7 @@ static inline commResult_t wrap_ibv_post_recv(
       qp, wr, bad_wr); /*returns 0 on success, or the value of errno on failure
                           (which indicates the failure reason)*/
   if (ret != IBV_SUCCESS) {
-    CERR(
+    CTRAN_ERR(
         commSystemError, "ibv_post_recv() failed with error {}", strerror(ret));
     return commSystemError;
   }

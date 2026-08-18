@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::ib {
 
@@ -43,7 +43,7 @@ commResult_t VcState::setupAndPublishVc(
     const std::vector<std::string>& remoteVcIdentifiers,
     int peerRank) {
   if (vcs.empty() || vcs.size() != remoteVcIdentifiers.size()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IB: setupAndPublishVc called with vcs.size()={} remoteVcIdentifiers.size()={} for peerRank {} in pimpl {} commHash {:x} commDesc {}",
         vcs.size(),
@@ -68,7 +68,7 @@ commResult_t VcState::setupAndPublishVc(
   {
     auto locked = vcStateMaps_.wlock();
     if (locked->rankToVcs.find(peerRank) != locked->rankToVcs.end()) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB: VirtualConnection (VC) already exists for peerRank {} in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
           peerRank,
@@ -113,7 +113,7 @@ commResult_t VcState::setupAndPublishVc(
 
     // Log each established VC while we still own a stable reference.
     for (const auto& vc : vcs) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB: Established connection: commHash {:x}, commDesc {}, "
@@ -152,7 +152,7 @@ commResult_t VcState::checkAndInsertQpToVcMap(
     QpUniqueId& qpId,
     std::shared_ptr<CtranIbVirtualConn>& vc) {
   if (map.find(qpId) != map.end()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-IB: QP {} on device {} already exists in pimpl {} commHash {:x}, commDesc {}. It likely indicates a COMM bug.",
         qpId.first,

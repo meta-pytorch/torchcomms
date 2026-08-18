@@ -28,6 +28,7 @@
 #include "comms/ctran/transport/IP2pHostTransport.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/commSpecs.h"
@@ -214,7 +215,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
   [[noreturn]] void throwTcpDmNotifyAbort(CtranMapperNotify* notify) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-MAPPER: TCPDM notify abort notify={} rank {} commHash {:x}",
         notify->toString(),
@@ -752,7 +753,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
           const_cast<void*>(regHdl));
       if (!regElem) {
-        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        CTRAN_LOG(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
         return commSuccess;
       }
       auto regLk = regElem->stateMnger.rlock();
@@ -785,7 +786,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
           const_cast<void*>(regHdl));
       if (!regElem) {
-        CLOGF(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+        CTRAN_LOG(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
         return commSuccess;
       }
 
@@ -1219,7 +1220,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           if (cudaErr == cudaSuccess) {
             *isComplete = true;
           } else if (cudaErr != cudaErrorNotReady) {
-            CERR(
+            CTRAN_ERR(
                 commSystemError,
                 "CTRAN: cudaStreamQuery returned error '{}'",
                 cudaGetErrorString(cudaErr));
@@ -1233,7 +1234,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (*isComplete) {
       req->setComplete();
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: request {} completed, reqType {}, peer {}",
           (void*)this,
@@ -1265,7 +1266,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
       }
     } else {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: unexpected backend {}",
           notify->backend);
@@ -1284,7 +1285,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           fmt::format("waitNotify for peer {}", notify->peer));
     }
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
@@ -1370,7 +1371,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         FB_COMMCHECK(ipcRegCache->exportMem(
             buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
         if (!tmpExtraSegments.empty()) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: exportMem to rank {} has overflow segments, which is "
               "not supported in this path.",
@@ -1390,7 +1391,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       // No need to export the buffers, TCP device memory is steered by
       // the receiver.
     } else {
-      CERR(
+      CTRAN_ERR(
           commInvalidUsage,
           "CTRAN-MAPPER: Cannot export buffer {} to rank {}. The rank may not be "
           "reachable by any backend, or buffer type is not supported.",
@@ -1420,7 +1421,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     switch (msg.type) {
       case ControlMsgType::IB_EXPORT_MEM:
         if (!this->ctranIb) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: IB backend is disabled but received unexpected internal control msg ({})",
               msg.toString());
@@ -1431,7 +1432,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         break;
       case ControlMsgType::NVL_EXPORT_MEM: {
         if (!this->ctranNvl) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: NVL backend is disabled but received unexpected internal control msg ({})",
               msg.toString());
@@ -1453,7 +1454,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         break;
       }
       default:
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-MAPPER: Received unexpected control message type {}",
             msg.type);
@@ -1480,7 +1481,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const bool isCrossNode = this->ctranNvl->isNvlFabric(rank) &&
           !this->comm->statex_->isSameNode(this->comm->logMetaData_.rank, rank);
       if (isCrossNode && regElem->getType() != DevMemType::kCumem) {
-        CLOGF_SUBSYS(
+        CTRAN_LOG_SUBSYS(
             DBG,
             ALLOC,
             "CTRAN-MAPPER: cross-node nvlFabric peer rank {} with non-cuMem "
@@ -1513,7 +1514,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return CtranMapperBackend::TCPDM;
     }
 
-    CLOGF(ERR, "No backend is available, please specify at least one backend.");
+    CTRAN_LOG(
+        ERR, "No backend is available, please specify at least one backend.");
 
     return CtranMapperBackend::UNSET;
   }
@@ -1539,7 +1541,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND ctrlmsg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1579,7 +1581,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV ctrlmsg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1616,7 +1618,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND msg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1630,7 +1632,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ControlMsgType::SYNC, payload, size, peerRank, req->ibReq);
     }
     // only support ib for now
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "CTRAN-MAPPER: isendCtrlMsg only supports the IB backend for peerRank {}",
         peerRank);
@@ -1655,7 +1657,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
               .peerRank = peerRank,
               .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV msg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1668,7 +1670,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       return ctranIb->irecvCtrlMsg<PerfConfig>(
           payload, size, peerRank, req->ibReq);
     }
-    CERR(
+    CTRAN_ERR(
         commInvalidArgument,
         "CTRAN-MAPPER: irecvCtrlMsg only supports the IB backend for peerRank {}",
         peerRank);
@@ -1697,7 +1699,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       req.peer = peer;
       msg.ibDesc.remoteAddr = reinterpret_cast<uint64_t>(bufs[peer]);
       msg.aux = reqs[idx - 1].aux;
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post SEND ctrlmsg to rank {} with req {} ibReq {}: {}",
           req.peer,
@@ -1733,7 +1735,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ncclx::colltrace::SendSyncCtrlStart{
               .peerRank = peerRank, .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND(SYNC) ctrlmsg to rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1750,7 +1752,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (ctranTcpDm) {
       return ctranTcpDm->isendCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-MAPPER: isendCtrl found no available backend for peerRank {}",
         peerRank);
@@ -1771,7 +1773,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           ncclx::colltrace::RecvSyncCtrlStart{
               .peerRank = peerRank, .req = req});
     }
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV(SYNC) ctrlmsg from rank {} with req {} {} {}: {}",
         ctranIb ? "IB" : "SOCKET",
@@ -1787,7 +1789,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     } else if (ctranTcpDm) {
       return ctranTcpDm->irecvCtrlMsg(msg, peerRank, req->tcpDmReq);
     }
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-MAPPER: irecvCtrl found no available backend for peerRank {}",
         peerRank);
@@ -1800,7 +1802,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       const std::vector<CtranMapperPutMsg>& puts,
       int peerRank) {
     if (this->ctranIb == nullptr) {
-      CERR(commInternalError, "CTRAN-MAPPER: ctranIB is null in batch put.");
+      CTRAN_ERR(
+          commInternalError, "CTRAN-MAPPER: ctranIB is null in batch put.");
       return commInternalError;
     }
     std::vector<PutIbMsg> msgs;
@@ -1808,7 +1811,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     for (auto& put : puts) {
       const auto& remoteAccessKey = put.config.remoteAccessKey_;
       if (remoteAccessKey.backend != CtranMapperBackend::IB) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-MAPPER: Unsupported remote access key backend {}",
             backendToStr(remoteAccessKey.backend));
@@ -1827,7 +1830,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       struct ctran::regcache::RegElem* regElem =
           reinterpret_cast<struct ctran::regcache::RegElem*>(shdl);
       auto regLk = regElem->stateMnger.rlock();
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post IB PUT to rank {}: sbuf {} -> dbuf {} len {} kernElem {}",
           peerRank,
@@ -1903,7 +1906,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
       if (this->ctranIb != nullptr) {
         CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-MAPPER: Post IB PUT to rank {}: sbuf {} -> dbuf {} len {} kernElem {}",
             peerRank,
@@ -1926,13 +1929,13 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
             config.ibFastPath_));
       } else {
         if (req == nullptr) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: Unsupported TCPDM iput without request");
           return commInternalError;
         }
         if (!notify) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: Unsupported TCPDM iput without notify");
           return commInternalError;
@@ -1955,7 +1958,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       }
     } else if (remoteAccessKey.backend == CtranMapperBackend::NVL) {
       iPutCount[CtranMapperBackend::NVL]++;
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-MAPPER: Post NVL PUT to rank {}: sbuf {} -> dbuf {} len {}",
           peerRank,
@@ -1964,7 +1967,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           len);
 
       if (!kernElem) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-MAPPER: NVL PUT requires valid kernElem. It indicates a COMM internal bug");
         return commInternalError;
@@ -1982,7 +1985,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       kernElem->post();
     } else {
       auto backendStr = backendToStr(remoteAccessKey.backend);
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: Unsupported remote access key backend {}",
           backendStr.c_str());
@@ -2022,7 +2025,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           req->backend = CtranMapperBackend::IB;
           req->setConfig(config);
         } else {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "CTRAN-MAPPER: Unsupported backend iget without IB backend");
           return commInternalError;
@@ -2035,7 +2038,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
       if (this->ctranIb != nullptr) {
         CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-MAPPER: Post IB Get to rank {}: sbuf {} -> dbuf {} len {}",
             peerRank,
@@ -2055,7 +2058,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
             ibReqPtr,
             config.ibFastPath_));
       } else {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-MAPPER: IB backend required for iget operation, but not available.");
 
@@ -2063,7 +2066,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       }
     } else {
       auto backendStr = backendToStr(remoteAccessKey.backend);
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: Unsupported remote access key backend {}",
           backendStr.c_str());
@@ -2082,7 +2085,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperRequest* req) {
     const auto& remoteAccessKey = config.remoteAccessKey_;
     if (remoteAccessKey.backend != CtranMapperBackend::IB) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: atomicSet only supports IB backend");
       return commInternalError;
@@ -2094,7 +2097,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       req->setConfig(config);
     }
     CtranIbRequest* ibReqPtr = (req == nullptr ? nullptr : &(req->ibReq));
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post IB ATOMIC_SET to rank {}: val {} dbuf {}",
         peerRank,
@@ -2136,7 +2139,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         rbuff = kernElem->waitNotify.recvbuff;
         len = kernElem->waitNotify.nbytes;
         if (rbuff == nullptr || len == 0) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "TCP Device Memory requires recvbuff in the notifier");
           return commInternalError;
@@ -2144,7 +2147,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       } else {
         const DevMemType type = regElem->getType();
         if (type != kHostUnregistered && type != kHostPinned) {
-          CERR(
+          CTRAN_ERR(
               commInternalError,
               "TCP Device Memory requires kernElem in the notifier "
               "(memType {})",
@@ -2168,7 +2171,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     notify->update(peerRank, kernElem, backend, notifyCnt);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL, "CTRAN-MAPPER: initialized notify {}", notify->toString());
     return commSuccess;
   }
@@ -2198,7 +2201,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       FB_COMMCHECK(this->ctranTcpDm->progress());
       FB_COMMCHECK(this->ctranTcpDm->checkNotify(notify->peer, done));
     } else {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: unexpected backend {}",
           notify->backend);
@@ -2210,7 +2213,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (*done) {
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL, "CTRAN-MAPPER: check notify({}) completed", notify->toString());
       if (this->mapperTrace) {
         this->mapperTrace->recordMapperEvent(
@@ -2244,7 +2247,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         // Only icopy request doesn't have peer; expect it is not used in
         // testSomeRequests with timepoints.
         if (req->peer == -1) {
-          CERR(commInternalError, "Expect peer is specified in request.");
+          CTRAN_ERR(commInternalError, "Expect peer is specified in request.");
           return commInternalError;
         }
 
@@ -2276,7 +2279,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     for (auto it = reqs.begin(); it != reqs.end(); it++) {
       auto& req = *it;
       if (req.peer == -1) {
-        CERR(commInternalError, "Expect peer is specified in request.");
+        CTRAN_ERR(commInternalError, "Expect peer is specified in request.");
         return commInternalError;
       }
       FB_COMMCHECK(waitRequest<PerfConfig>(&req));
@@ -2294,7 +2297,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperRequest** req,
       const char* fnName) {
     if (req == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: Invalid request pointer. Unexpected {} indicates a COMM internal bug",
           fnName);
@@ -2310,7 +2313,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperRequest* req,
       const char* fnName) {
     if (req == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-MAPPER: Invalid request pointer. Unexpected {} indicates a COMM internal bug",
           fnName);

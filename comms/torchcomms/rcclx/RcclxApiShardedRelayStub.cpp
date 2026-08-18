@@ -56,4 +56,44 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
   return ncclInternalError;
 }
 
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
+    const void* const* /*sendBuffs*/,
+    void* const* /*recvBuffs*/,
+    const size_t* /*recvCounts*/,
+    ncclDataType_t /*datatype*/,
+    ncclRedOp_t /*op*/,
+    ncclComm_t /*comm*/,
+    hipStream_t /*stream*/,
+    const int* const* /*allActiveRanks*/,
+    int /*nActiveRanksPerGroup*/,
+    int /*nGroups*/) {
+  return ncclInternalError;
+}
+
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
+    const void* const* /*sendBuffs*/,
+    void* const* /*recvBuffs*/,
+    const size_t* /*segmentCounts*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    hipStream_t /*stream*/,
+    const int* const* /*allActiveRanks*/,
+    int /*nActiveRanksPerGroup*/,
+    int /*nGroups*/) {
+  return ncclInternalError;
+}
+
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
+    const void* const* /*sendBuffs*/,
+    void* const* /*recvBuffs*/,
+    const size_t* /*sendCounts*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    hipStream_t /*stream*/,
+    const int* const* /*allActiveRanks*/,
+    int /*nActiveRanksPerGroup*/,
+    int /*nGroups*/) {
+  return ncclInternalError;
+}
+
 } // namespace torch::comms

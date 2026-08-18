@@ -1534,6 +1534,8 @@ progress_recv_acquire_once(
           Proto{},
           transport,
           group,
+          channelLayout,
+          chunk,
           ch.channel,
           ch.local.dataReady,
           protocolBytesThis,

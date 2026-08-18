@@ -15,12 +15,12 @@
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 #define CTRAN_IB_FAST_PATH_MSG_MAX_SIZE 1073741824LU
 // a QpUniqueId is defined by a pair of <qpnum, ibDeviceId>
@@ -601,7 +601,7 @@ class CtranIbVirtualConn {
       // FIXME: need refactor to keep the constness if possible
       auto wr = std::make_unique<ControlPendingSendWr>(
           type, (void*)payload, size, req);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: enqueue wr [{}] peer {}",
           wr->toString(),
@@ -612,7 +612,7 @@ class CtranIbVirtualConn {
       auto& packet = dequeFront(this->sendCtrl_.freePkts_).get();
       packet.copyFrom(type, payload, size);
 
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: post packet [{}] req {} peer {}, copied from payload {}",
           packet.toString(),
@@ -633,7 +633,7 @@ class CtranIbVirtualConn {
   irecvCtrlMsgImpl(void* payload, const size_t size, CtranIbRequest& req) {
     if (this->recvCtrl_.unexpWrs_.empty()) {
       auto wr = std::make_unique<ControlPostedRecvWr>(payload, size, req);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: enqueue wr [{}] peer {}",
           wr->toString(),
@@ -641,7 +641,7 @@ class CtranIbVirtualConn {
       this->recvCtrl_.enqueuedWrs_.push_back(std::move(wr));
     } else {
       auto unexpWr = dequeFront(this->recvCtrl_.unexpWrs_);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: matched wr [{}] peer {}",
           unexpWr->toString(),
@@ -691,7 +691,7 @@ class CtranIbVirtualConn {
   inline bool
   isFastPutValid(CtranIbConfig* config, size_t len, size_t numMessages) {
     if (outstandingPuts_.size() > 0 || pendingPuts_.size() > 0) {
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "iputFast issued when previous regular puts are still in progress: outstandingPuts {}, pendingPuts {}",
           outstandingPuts_.size(),
@@ -700,7 +700,7 @@ class CtranIbVirtualConn {
     }
 
     if (outstandingFastPuts_.size() + numMessages > maxQpMsgs_) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "iputFast issued when outstanding fast puts {} > maxQpMsgs_ {}",
           outstandingFastPuts_.size() + numMessages,
@@ -711,7 +711,7 @@ class CtranIbVirtualConn {
     uint64_t maxWqeSize = maxWqeSizeFor(config, len, /*qps=*/1);
 
     if (len > maxWqeSize) {
-      CLOGF(
+      CTRAN_LOG(
           INFO, "iputFast issued with len {} > maxWqeSize {}", len, maxWqeSize);
       return false;
     }
@@ -727,7 +727,7 @@ class CtranIbVirtualConn {
       int device) {
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(put.ibRegElem);
     if (smrs == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)put.sbuf);
@@ -783,7 +783,7 @@ class CtranIbVirtualConn {
 
     // Fallback path if chained sends won't work.
     if (!sendChained) {
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-IB: fallback to non-chained sends for batch {}",
           msgs.size());
@@ -825,7 +825,7 @@ class CtranIbVirtualConn {
         sendPutWr.next = &sendBatchWrs[i + 1];
       }
 
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-IB-VC: Batch message {} notify {} wrId {}",
           i,
@@ -855,7 +855,7 @@ class CtranIbVirtualConn {
 
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)sbuf);
@@ -864,7 +864,7 @@ class CtranIbVirtualConn {
     for (int device : activeDevices_) {
       lkeys.push_back((*smrs)[device].mr()->lkey);
       rkeys.push_back(remoteAccessKey.rkeys[device]);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: iput sbuf {} dbuf {} len {} rkey {}",
           (void*)sbuf,
@@ -899,7 +899,7 @@ class CtranIbVirtualConn {
       int device = getIbDevFromQpIdx(iputFastQpIdx_);
 
       // sanity check
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: issue the put through fast path, putId {} sbuf {} dbuf {} len {}",
           putId,
@@ -915,7 +915,7 @@ class CtranIbVirtualConn {
           ibvDataQps_[iputFastQpIdx_].postSend(&sendPutWr_, &badSendPutWr_);
       FOLLY_EXPECTED_CHECK(maybeSend);
     } else {
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: issue the put through regular path, putId {} sbuf {} dbuf {} len {} notify {} vcMode {}",
           putId,
@@ -961,7 +961,7 @@ class CtranIbVirtualConn {
 
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)dbuf);
@@ -970,7 +970,7 @@ class CtranIbVirtualConn {
     for (int device : activeDevices_) {
       lkeys.push_back((*smrs)[device].mr()->lkey);
       rkeys.push_back(remoteAccessKey.rkeys[device]);
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: iget sbuf {} dbuf {} len {} rkey {}",
           (void*)sbuf,
@@ -993,7 +993,7 @@ class CtranIbVirtualConn {
       // sanity check
       // all previous spray messages should be completed
       if (outstandingGets_.size() > 0 || pendingGets_.size() > 0) {
-        CERR(
+        CTRAN_ERR(
             commSystemError,
             "igetFast issued when previous regular gets are still in progress: outstandingGets {}, pendingGets {}",
             outstandingGets_.size(),
@@ -1004,7 +1004,7 @@ class CtranIbVirtualConn {
       uint64_t maxWqeSize = maxWqeSizeFor(config, len, /*qps=*/1);
 
       if (len > maxWqeSize) {
-        CERR(
+        CTRAN_ERR(
             commSystemError,
             "igetFast issued with len {} > maxWqeSize {}",
             len,
@@ -1013,7 +1013,7 @@ class CtranIbVirtualConn {
       }
 
       if (outstandingFastGets_.size() >= maxQpMsgs_) {
-        CERR(
+        CTRAN_ERR(
             commSystemError,
             "igetFast issued when outstanding fast gets {} > maxQpMsgs_ {}",
             outstandingFastGets_.size(),
@@ -1036,7 +1036,7 @@ class CtranIbVirtualConn {
           ibvDataQps_[igetFastQpIdx_].postSend(&sendGetWr_, &badSendGetWr_);
       FOLLY_EXPECTED_CHECK(maybeSend);
     } else {
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: issue the get through regular path, getId {} dbuf {} sbuf {} len {} vcMode {}",
           getId,
@@ -1074,7 +1074,7 @@ class CtranIbVirtualConn {
       CtranIbRequest* req) {
     auto smrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
     if (smrs == nullptr) {
-      CERR(
+      CTRAN_ERR(
           commSystemError,
           "CTRAN-IB: memory registration not found for addr {}",
           (void*)sbuf);
@@ -1084,7 +1084,7 @@ class CtranIbVirtualConn {
     int device = atomicDevice_;
     uint32_t lkey = (*smrs)[device].mr()->lkey;
     uint32_t rkey = remoteAccessKey.rkeys[device];
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: ifetchAndAdd sbuf {} dbuf {} addVal {} rkey {}",
         (void*)sbuf,
@@ -1112,7 +1112,7 @@ class CtranIbVirtualConn {
     // For atomic operations, use the VC's atomic device.
     int device = atomicDevice_;
     uint32_t rkey = remoteAccessKey.rkeys[device];
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: iatomicSet dbuf {} val {} rkey {}",
         (void*)dbuf,
@@ -1137,7 +1137,7 @@ class CtranIbVirtualConn {
     packet.copyFrom(wr->type, wr->payload, wr->size);
     req = &wr->req;
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: post packet [{}] peer {}, copied from wr [{}]",
         packet.toString(),
@@ -1154,7 +1154,7 @@ class CtranIbVirtualConn {
   inline commResult_t enqueueUnexpWr(CtrlPacket& packet) {
     auto wr = std::make_unique<ControlUnexpWr>();
     packet.copyTo(wr->packet);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: received and enqueued unexp wr [{}] peer {}",
         wr->toString(),
@@ -1166,7 +1166,7 @@ class CtranIbVirtualConn {
   inline commResult_t matchRecvWr(CtrlPacket& packet) {
     auto wr = dequeFront(this->recvCtrl_.enqueuedWrs_);
     packet.copyTo(wr->payload, wr->size);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: received and matched wr [{}] peer {}",
         wr->toString(),
@@ -1245,7 +1245,8 @@ class CtranIbVirtualConn {
       } break;
 
       default:
-        CERR(commSystemError, "CTRAN-IB: Found unknown opcode: {}", opcode);
+        CTRAN_ERR(
+            commSystemError, "CTRAN-IB: Found unknown opcode: {}", opcode);
         return commSystemError;
     }
 
@@ -1291,7 +1292,7 @@ class CtranIbVirtualConn {
         std::move(pendingNotifies_.front());
     pendingNotifies_.pop_front();
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: post notify wrId {} req {} ({} pending, {} out)",
         notifyInfo->wrId,
@@ -1343,7 +1344,7 @@ class CtranIbVirtualConn {
     bool fastPut = immData & (1 << kFastPutBit);
     bool notify = immData & (1 << kNotifyBit);
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: Received immData {} on qp {} fastPut {} notify {} notifyCount {}",
         immData,
@@ -1482,7 +1483,7 @@ class CtranIbVirtualConn {
 
     putWqesByQp_.at(i).emplace(sendPutWr_.wr_id, put.get());
     put->outstandingWqes++;
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: postSend occurred on qpIdx {} device {} wrId {} toSend {} putLen {}",
         i,
@@ -1533,7 +1534,7 @@ class CtranIbVirtualConn {
         reinterpret_cast<uint64_t>(get->sbuf) + get->offset;
     sendGetWr_.wr.rdma.rkey = get->rkeys[activeIdx];
 
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB-VC: queueReadOnQp post SendGetWr {}, local addr {} offest {} length {} remote addr {}, offsite {}",
         sendGetWr_.wr_id,
@@ -1579,7 +1580,7 @@ class CtranIbVirtualConn {
           wrId,
           notifyInfo->wrId);
 
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: Complete notify for wrId {} req {} {}",
           notifyInfo->wrId,
@@ -1605,7 +1606,7 @@ class CtranIbVirtualConn {
         if (putInfo.req != nullptr) {
           FB_COMMCHECK(putInfo.req->complete());
         }
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-IB-VC: Complete fast path put for req {} putId {}",
             (void*)putInfo.req,
@@ -1658,7 +1659,7 @@ class CtranIbVirtualConn {
       if (getInfo.req != nullptr) {
         FB_COMMCHECK(getInfo.req->complete());
       }
-      CLOGF_TRACE(
+      CTRAN_LOG_TRACE(
           COLL,
           "CTRAN-IB-VC: Complete fast path put for req {} opId {}",
           (void*)getInfo.req,
@@ -1701,7 +1702,7 @@ class CtranIbVirtualConn {
       }
       pendingAtomicReqs_.pop_front();
     } else {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB-VC: Received completion for atomic Ops but no pending request");
       return commInternalError;
@@ -1730,7 +1731,7 @@ class CtranIbVirtualConn {
         // In DQPLB mode, we're done now, so we can fire the completion on the
         // req
         FB_COMMCHECK(putInfo.req->complete());
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-IB-VC: Complete regular path put for req {} putId {}",
             (void*)putInfo.req,
@@ -1758,7 +1759,7 @@ class CtranIbVirtualConn {
         // In DQPLB mode, we're done now, so we can fire the completion on the
         // req
         FB_COMMCHECK(getInfo.req->complete());
-        CLOGF_TRACE(
+        CTRAN_LOG_TRACE(
             COLL,
             "CTRAN-IB-VC: Complete regular path get for req {} getId {}",
             (void*)getInfo.req,

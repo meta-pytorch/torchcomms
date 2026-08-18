@@ -19,6 +19,19 @@
  * This API performs multiple sharded relay allreduces in a single fused call,
  * coordinating phases across all groups to prevent XGMI link contention.
  *
+ * Active ranks per group (nActiveRanksPerGroup) must be a power of two — 2 or 4
+ * are supported (on an 8-GPU node: 2 active + 6 helpers, or 4 active + 4
+ * helpers). A=2 uses the original single-pass flow. A=4 uses a flat
+ * helper-reduce-AND-broadcast: count is split into a DIRECT region (allreduced
+ * among the active ranks over the 1-hop intra links via a direct reduce-scatter
+ * + all-gather) and an OFFLOAD region (allreduced 2-hop through the otherwise-
+ * idle helpers, which SUM all active ranks' chunk and BROADCAST the result
+ * back); the AVG divisor is nActiveRanks. Both the direct owned-shard reduce
+ * and the helper SUM use a single fused multi-input reduce pass (read the owned
+ * shard plus all peer contributions once, apply the AVG divisor, write once)
+ * rather than a loop of per-contribution add + scale passes. The two paths live
+ * in separate internal functions selected by nActiveRanksPerGroup.
+ *
  * Problem with Separate Calls:
  * ============================
  * When 4 separate sharded relay allreduces run in parallel (one per sparse
@@ -28,64 +41,77 @@
  * This causes bidirectional contention on shared XGMI links, degrading
  * bandwidth by up to 10x.
  *
- * Solution - Phase-Synchronized Execution with Passthrough Helpers:
+ * Solution - Phase-Synchronized Execution with Reduce-at-Helper:
  * =================================================================
- * This fused API executes ALL groups in lockstep phases:
+ * This fused API executes ALL groups in lockstep so that at any instant every
+ * group is driving the XGMI links the same way. For A==2 there are exactly TWO
+ * comm groups:
  *
- *   Phase 1: ALL groups scatter (active→helpers) simultaneously.
- *            Each helper receives one chunk per active rank into a
- *            two-slot helper buffer (slot 0 from a0, slot 1 from a1).
+ *   Group 1: ALL groups scatter (active->helpers) simultaneously -- each helper
+ *            receives one chunk per active rank into a two-slot helper buffer
+ * -- AND the two active ranks directly exchange one chunk over the
+ *            active<->active link, which the scatter leaves idle.
  *
- *   Phase 2: ALL groups forward (helpers→other active) simultaneously.
- *            Helpers act as PURE PASSTHROUGH (no local compute):
- *            they forward slot 0 to a1 and slot 1 to a0.  Active ranks
- *            receive into a per-group recv-scratch slot.
+ *   Helper reduce: each helper sums its two slots (both active ranks send the
+ *            SAME logical chunk index, so the sum is the final allreduced
+ * value) and applies the AVG divisor.
  *
- *   Phase 3: ALL active ranks reduce the numHelpers helper-relayed chunks
- *            into their own active buffer (pipelined with Phase 2 recvs)
- *            and apply the AVG scaling once across the reduced region.
+ *   Group 2: ALL helpers hand their single reduced chunk to BOTH active ranks,
+ *            landing directly in its final place in recvBuff -- AND the active
+ *            ranks directly exchange a second chunk over the same idle link.
  *
- *   Phase 4: ALL groups direct-exchange the last (chunk N) data
- *            simultaneously between the two active ranks.
+ *   Final reduce: each active rank folds the two directly exchanged chunks into
+ *            its own contribution in one fused pass.
  *
- *   Phase 5: Active ranks perform the final reduction on the directly
- *            exchanged chunk.
+ * Why numChunks = numHelpers + 2:
+ * ===============================
+ * Let d be the bytes exchanged directly on the active<->active link and
+ * r = count - d the bytes relayed through the numHelpers helpers. A rank's
+ * egress is d + r (its own scatter) + r (its helper duty for the other groups),
+ * spread over its (numHelpers + 1) links, and the direct link alone bounds the
+ * runtime by d. Both bounds meet at r/(numHelpers/2) == d, i.e. one chunk per
+ * link per group, which is numChunks = numHelpers + 2 with one direct chunk in
+ * each group. The critical path is then 2*count/numChunks -- on an 8-GPU node
+ * count/4, versus count for a plain 2-rank allreduce.
  *
- * Since all groups are in the same phase at any time, XGMI links carry
- * unidirectional traffic only, eliminating contention.
+ * Reducing at the helper rather than forwarding both slots costs the same link
+ * time (the helper still sends one chunk to each active rank) but removes the
+ * active rank's relay scratch and its fused add+scale over most of the buffer,
+ * and spreads the reduction over every helper GPU instead of the two actives.
  *
- * Helper-Buffer Contract (passthrough-at-helper):
- * ===============================================
- * Helpers no longer perform local reductions; they simply forward each
- * received chunk to the OTHER active rank.  Two slots are needed per
- * helper group so that the recv from a0 (slot 0) and the recv from a1
- * (slot 1) can proceed concurrently — without two slots, a helper would
- * have to serialize the two directions and halve its instantaneous
- * network bandwidth.
+ * Helper-Buffer Contract:
+ * =======================
+ * A helper needs two slots so the recv from a0 (slot 0) and the recv from a1
+ * (slot 1) can proceed concurrently; without two slots it would serialize the
+ * two directions and halve its instantaneous network bandwidth. The reduction
+ * is done in place into slot 0.
  *
  * Caller MUST supply at least
- *   nActiveRanksPerGroup × chunkSize_aligned
+ *   nActiveRanksPerGroup x chunkSize_aligned
  * elements per helper group, where:
  *   chunkSize_aligned = (per_group_count / numChunks) rounded down to
  *                       CHUNK_ALIGN_ELEMENTS (128 elements).
- * Returns ncclInvalidArgument when per_group_count < numChunks × 128
- * (the buffer is too small to scatter); callers should fall back to a
- * regular allreduce in that case.
+ * Returns ncclInvalidArgument when per_group_count < numChunks x 128 (the
+ * buffer is too small to scatter); callers should fall back to a regular
+ * allreduce in that case.
  *
- * Across the (nGroups - 1) helper groups per rank, that totals:
- *   (nGroups - 1) × nActiveRanksPerGroup × chunkSize
- * For the BM-FM 4-group / 2-active topology this is:
- *   3 × 2 × chunkSize = 6 × chunkSize per rank.
+ * For A=4 the helper (reduce-and-broadcast) holds A source chunks plus one
+ * reduced chunk per offload slice, so the caller must supply at least
+ * 2 x counts[g] elements per helper group.
  *
  * Memory Model:
  * =============
  * Each rank is ACTIVE for exactly ONE group (has real tensor data).
  * For other groups, the rank is a HELPER (uses provided two-slot scratch).
  * The caller must provide:
- *   - sendBuffs[nGroups]: One buffer per group
- *   - recvBuffs[nGroups]: One buffer per group
- *   - For the group where rank is active: full per_group_counts[g] elements
- *   - For other groups: two-slot scratch (>= nActiveRanks * chunkSize)
+ *   - sendBuffs[nGroups]: one contiguous input buffer per group. For the active
+ *     group it is the real input tensor (counts[g] elements); helper groups may
+ *     pass the same pointer as recvBuffs.
+ *   - recvBuffs[nGroups]: one base buffer per group. For helper groups this is
+ *     the two-slot passthrough scratch (>= nActiveRanks * chunkSize); for the
+ *     active group it is the working/output base (counts[g] elements).
+ *   - Allreduce may be in-place (recvBuffs[g] aliases sendBuffs[g]) or
+ *     out-of-place (distinct buffers), keyed off sendBuffs[g]==recvBuffs[g].
  *   - Each helper group MUST have its own buffer (no aliasing across groups)
  *     because all groups are processed simultaneously under phase-sync
  *
@@ -96,16 +122,19 @@
  *   Group 2: activeRanks = {4, 5}, helpers = {0,1,2,3,6,7}
  *   Group 3: activeRanks = {6, 7}, helpers = {0,1,2,3,4,5}
  *
- * @param sendBuffs Array of send buffer pointers (one per group)
- * @param recvBuffs Array of receive buffer pointers (one per group)
- * @param counts Array of element counts (one per group, allows different sizes)
+ * @param sendBuffs Array of per-group contiguous input buffer pointers (one per
+ *        group); the active group holds counts[g] elements
+ * @param recvBuffs Array of per-group base buffer pointers (one per group);
+ *        helper groups pass two-slot passthrough scratch
+ * @param counts Array of element counts (one per group, allows different
+ *        sizes); the active group's input/output each hold counts[g] elements
  * @param datatype NCCL data type
  * @param op Reduction operation (only ncclSum and ncclAvg supported)
  * @param comm NCCL communicator
  * @param stream CUDA stream
  * @param allActiveRanks 2D array of active ranks
  * [nGroups][nActiveRanksPerGroup]
- * @param nActiveRanksPerGroup Number of active ranks per group (typically 2)
+ * @param nActiveRanksPerGroup Number of active ranks per group (2 or 4)
  * @param nGroups Number of groups (typically 4 for 8-GPU node)
  * @return ncclResult_t Success or error code
  */

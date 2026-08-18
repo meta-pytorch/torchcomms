@@ -201,6 +201,19 @@ void testTwoCallSendThenRecv(
     int blockSize);
 
 /**
+ * Test kernel: Warp-proxy send or recv with queue-full observation.
+ */
+void testWarpProxySendRecv(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    bool send,
+    uint32_t queueDepth,
+    uint64_t* queueFullCount,
+    uint64_t timeoutCycles);
+
+/**
  * Test kernel: Resumable pipelined send or recv progress loop.
  */
 void testProgressSendRecv(

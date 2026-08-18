@@ -692,6 +692,155 @@ ncclResult_t pncclShardedRelayMultiGroupAllReduce(
     const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
 /*! @endcond */
 
+/*! @brief      Fused Multi-Group Sharded Relay Reduce-Scatter for 2D Sparse Parallelism
+    @details    Performs multiple sharded relay reduce-scatters in a single fused call, coordinating
+                phases across ALL groups to prevent XGMI link contention. This is the reduce-scatter
+                analogue of ncclShardedRelayMultiGroupAllReduce and uses the same phase-synchronized
+                passthrough-helper scheme.
+
+                Each group has exactly 2 active ranks. Each active sendBuff holds
+                nActiveRanksPerGroup x recvCounts[g] elements (block[i] is the slice destined for
+                active index i); each active recvBuff holds recvCounts[g] elements and receives
+                sum_over_active_ranks(sendBuff[block i]). The relay ships block[otherActiveIndex] to
+                the other active rank, sharded across helpers, then reduces it into the output block.
+
+                  Phase 1: ALL groups scatter sendBlock chunks (active->helpers) - unidirectional
+                  Phase 2: ALL groups forward (helpers->other active) - unidirectional
+                  Phase 3: ALL active ranks reduce the relayed chunks into the output block
+                  Phase 4: ALL groups direct-exchange last chunk between active ranks
+                  Phase 5: Final reduction on the exchanged chunk - compute only
+
+                Helpers act as pure passthrough relays (no local reduction). All
+                reductions happen on active ranks only.
+
+              Memory model: Each rank is ACTIVE for exactly ONE group (has real tensor data).
+              For other groups, the rank is a HELPER (uses provided scratch buffer).
+
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  sendBuffs           Array of send buffer pointers (one per group); each active buffer
+                                    holds nActiveRanksPerGroup x recvCounts[g] elements
+    @param[out] recvBuffs           Array of receive buffer pointers (one per group)
+    @param[in]  recvCounts          Array of per-group OUTPUT element counts (one per group)
+    @param[in]  datatype            Data buffer element datatype
+    @param[in]  op                  Reduction operator (ncclSum and ncclAvg supported)
+    @param[in]  comm                Communicator group object to execute on
+    @param[in]  stream              HIP stream to execute collective on
+    @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
+    @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+ncclResult_t  ncclShardedRelayMultiGroupReduceScatter(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @cond       include_hidden */
+ncclResult_t pncclShardedRelayMultiGroupReduceScatter(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @endcond */
+
+/*! @brief      Fused Multi-Group Sharded Relay All-to-All for 2D Sparse Parallelism
+    @details    Performs multiple sharded relay all-to-alls in a single fused call, coordinating
+                phases across ALL groups to prevent XGMI link contention. This is the all-to-all
+                analogue of ncclShardedRelayMultiGroupAllReduce and uses the same phase-synchronized
+                passthrough-helper scheme. All-to-all performs NO reduction (pure data movement), so
+                there is no reduction op parameter and no reduction kernels.
+
+                Each group has exactly 2 active ranks. Each active sendBuff/recvBuff holds
+                nActiveRanksPerGroup x segmentCounts[g] elements: sendBuff = [sendSeg[0]|sendSeg[1]]
+                where sendSeg[j] is destined for active index j, and recvBuff = [recvSeg[0]|recvSeg[1]]
+                where recvSeg[i] receives from active index i. The diagonal segment is copied locally
+                and the off-diagonal segment is exchanged with the other active rank, sharded across
+                helpers.
+
+                  Phase 1: ALL groups scatter sendSeg[o] chunks (active->helpers) - unidirectional
+                  Phase 2: ALL groups forward (helpers->other active), received into recvSeg[o]
+                  Phase 3: diagonal copy recvSeg[m] = sendSeg[m]
+                  Phase 4: ALL groups direct-exchange the last chunk between active ranks
+                  Phase 5: none (no reduction)
+
+                Helpers act as pure passthrough relays. IN-PLACE IS NOT SUPPORTED: sendBuff and
+                recvBuff must be distinct (matches native ncclAllToAll); passing equal buffers
+                returns ncclInvalidArgument.
+
+              Memory model: Each rank is ACTIVE for exactly ONE group (has real tensor data).
+              For other groups, the rank is a HELPER (uses provided scratch buffer).
+
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  sendBuffs           Array of send buffer pointers (one per group); each active buffer
+                                    holds nActiveRanksPerGroup x segmentCounts[g] elements
+    @param[out] recvBuffs           Array of receive buffer pointers (one per group); each active
+                                    buffer holds nActiveRanksPerGroup x segmentCounts[g] elements
+    @param[in]  segmentCounts       Array of per-group per-segment element counts (one per group)
+    @param[in]  datatype            Data buffer element datatype
+    @param[in]  comm                Communicator group object to execute on
+    @param[in]  stream              HIP stream to execute collective on
+    @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
+    @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+ncclResult_t  ncclShardedRelayMultiGroupAllToAll(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @cond       include_hidden */
+ncclResult_t pncclShardedRelayMultiGroupAllToAll(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @endcond */
+
+/*! @brief      Fused Multi-Group Sharded Relay All-Gather for 2D Sparse Parallelism
+    @details    Performs multiple sharded relay all-gathers in a single fused call, coordinating
+                phases across ALL groups to prevent XGMI link contention. This is the all-gather
+                analogue of ncclShardedRelayMultiGroupAllReduce and the dual of the reduce-scatter
+                relay. All-gather performs NO reduction (pure data movement), so there is no
+                reduction op parameter and no reduction kernels.
+
+                Each group has exactly 2 active ranks. Each active sendBuff holds sendCounts[g]
+                elements (its contribution); each active recvBuff holds nActiveRanksPerGroup x
+                sendCounts[g] elements, where recvBuff[i x sendCount] receives the contribution from
+                active index i. The diagonal slot is filled with this rank's own data and the other
+                slot is gathered from the other active rank, sharded across helpers.
+
+                  Phase 1: ALL groups scatter sendBuff chunks (active->helpers) - unidirectional
+                  Phase 2: ALL groups forward (helpers->other active), received into recvBuff[o]
+                  Phase 3: diagonal copy recvBuff[m x sendCount] = sendBuff (no-op when in-place)
+                  Phase 4: ALL groups direct-exchange the last chunk between active ranks
+                  Phase 5: none (no reduction)
+
+                Helpers act as pure passthrough relays. Both in-place and out-of-place are
+                supported: in-place is detected when sendBuff == recvBuff + rank x sendCount
+                (standard NCCL all-gather in-place convention). No scratch buffers are needed.
+
+              Memory model: Each rank is ACTIVE for exactly ONE group (has real tensor data).
+              For other groups, the rank is a HELPER (uses provided scratch buffer).
+
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  sendBuffs           Array of send buffer pointers (one per group); each active buffer
+                                    holds sendCounts[g] elements
+    @param[out] recvBuffs           Array of receive buffer pointers (one per group); each active
+                                    buffer holds nActiveRanksPerGroup x sendCounts[g] elements
+    @param[in]  sendCounts          Array of per-group per-rank contribution counts (one per group)
+    @param[in]  datatype            Data buffer element datatype
+    @param[in]  comm                Communicator group object to execute on
+    @param[in]  stream              HIP stream to execute collective on
+    @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
+    @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+ncclResult_t  ncclShardedRelayMultiGroupAllGather(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @cond       include_hidden */
+ncclResult_t pncclShardedRelayMultiGroupAllGather(
+    const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @endcond */
+
 /*! @brief      Reduce-Scatter
     @details    Reduces data in *sendbuff* using *op* operation and leaves reduced result
                 scattered over the devices so that *recvbuff* on rank i will contain the i-th

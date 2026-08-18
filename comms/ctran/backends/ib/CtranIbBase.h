@@ -6,8 +6,8 @@
 #include <folly/String.h>
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 struct CtranIbRemoteAccessKey {
   std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK> rkeys{};
@@ -68,7 +68,8 @@ class CtranIbRequest {
   inline commResult_t complete() {
     this->refCount_--;
     if (this->refCount_ < 0) {
-      CERR(commInternalError, "CTRAN-IB: req {} refCount_ < 0", (void*)this);
+      CTRAN_ERR(
+          commInternalError, "CTRAN-IB: req {} refCount_ < 0", (void*)this);
       return commInternalError;
     }
     if (this->refCount_ == 0) {

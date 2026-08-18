@@ -52,13 +52,16 @@ DEFINE_int32(
     1,
     "QPs per channel, direction, and NIC");
 DEFINE_int32(ibgda_sendrecv_warmup_iters, 5, "Warmup iterations");
+DEFINE_uint32(
+    ibgda_warp_proxy_queue_depth,
+    comms::prims::benchmark::kDefaultIbgdaWarpProxyQueueDepth,
+    "Maximum outstanding commands per IB warp proxy queue");
 
 namespace comms::prims::benchmark {
 namespace {
 
 constexpr int kWorldSize = 2;
 constexpr const char* kDefaultBenchmarkIters = "20";
-constexpr const char* kDefaultBenchmarkMaxIters = "21";
 
 // Sub-1MB transfers finish below folly's ~100us timing floor at the default
 // iteration count, so folly drops their counters (printing
@@ -73,6 +76,7 @@ enum class SendRecvApi {
   Blocking,
   Progress,
   RegisteredProgress,
+  WarpProxy,
 };
 
 enum class SendRecvDirection {
@@ -199,12 +203,6 @@ void setDefaultBenchmarkFlags() {
       "bm_min_iters",
       kDefaultBenchmarkIters,
       folly::gflags::SET_FLAG_IF_DEFAULT);
-  folly::gflags::SetCommandLineOptionWithMode(
-      "bm_max_iters",
-      kDefaultBenchmarkMaxIters,
-      folly::gflags::SET_FLAG_IF_DEFAULT);
-  folly::gflags::SetCommandLineOptionWithMode(
-      "bm_max_trials", "1", folly::gflags::SET_FLAG_IF_DEFAULT);
 }
 
 struct BenchmarkSize {
@@ -412,6 +410,8 @@ const char* apiName(SendRecvApi api) {
       return "progress";
     case SendRecvApi::RegisteredProgress:
       return "registered_progress";
+    case SendRecvApi::WarpProxy:
+      return "warp_proxy";
   }
   return "unknown";
 }
@@ -519,6 +519,7 @@ class IbgdaSendRecvBenchmarkContext {
     transport_ = std::make_unique<MultipeerIbgdaTransport>(
         globalRank_, worldSize_, bootstrap_, transportConfig);
     transport_->exchange();
+    CHECK_GT(transport_->numNics(), 0);
 
     sendBuf_ = std::make_unique<DeviceBuffer>(maxBytes_);
     recvBuf_ = std::make_unique<DeviceBuffer>(maxBytes_);
@@ -569,6 +570,18 @@ class IbgdaSendRecvBenchmarkContext {
 
   std::size_t pipelineChunkBytes() const {
     return perChannelSize_ / static_cast<std::size_t>(pipelineDepth_);
+  }
+
+  std::size_t perChannelSize() const {
+    return perChannelSize_;
+  }
+
+  int pipelineDepth() const {
+    return pipelineDepth_;
+  }
+
+  int qpsPerConnection() const {
+    return FLAGS_ibgda_sendrecv_qps_per_connection;
   }
 
   bool registeredEnabled() const {
@@ -722,6 +735,14 @@ class IbgdaSendRecvBenchmarkContext {
     return globalRank_;
   }
 
+  int numNics() const {
+    return transport_->numNics();
+  }
+
+  int numLanes() const {
+    return numNics() * qpsPerConnection();
+  }
+
  private:
   void launchOperation(
       std::size_t nbytes,
@@ -735,6 +756,7 @@ class IbgdaSendRecvBenchmarkContext {
     // unidirectional progress path; registerBenchmarks never pairs LL with
     // bidirectional Progress, so that combination is Simple-only below.
     const bool useLL = (proto == SendRecvProto::LL);
+    (void)copyOp;
 
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
@@ -746,6 +768,7 @@ class IbgdaSendRecvBenchmarkContext {
               deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
         }
       } else {
+        CHECK(api == SendRecvApi::Progress);
         launch_ibgda_progress_send_recv(
             deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
       }
@@ -762,10 +785,11 @@ class IbgdaSendRecvBenchmarkContext {
               deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
         }
       } else if (api == SendRecvApi::RegisteredProgress) {
+        CHECK(!useLL);
         CHECK(registeredEnabled_);
         launch_ibgda_registered_progress_send(
             deviceTransport_, registeredSendBuf_, nbytes, numBlocks_, stream_);
-      } else {
+      } else if (api == SendRecvApi::Progress) {
         if (useLL) {
           launch_ibgda_progress_send_ll(
               deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
@@ -776,6 +800,19 @@ class IbgdaSendRecvBenchmarkContext {
           launch_ibgda_progress_send(
               deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
         }
+      } else if (api == SendRecvApi::WarpProxy) {
+        CHECK(!useLL);
+        launch_ibgda_warp_proxy_send(
+            deviceTransport_,
+            sendBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            /*maxSignalBytes=*/0,
+            Timeout(),
+            FLAGS_ibgda_warp_proxy_queue_depth);
+      } else {
+        LOG(FATAL) << "unsupported send/recv API";
       }
       return;
     }
@@ -788,7 +825,7 @@ class IbgdaSendRecvBenchmarkContext {
         launch_ibgda_recv(
             deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
       }
-    } else {
+    } else if (api == SendRecvApi::Progress) {
       if (useLL) {
         launch_ibgda_progress_recv_ll(
             deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
@@ -796,6 +833,24 @@ class IbgdaSendRecvBenchmarkContext {
         launch_ibgda_progress_recv(
             deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
       }
+    } else if (api == SendRecvApi::RegisteredProgress) {
+      CHECK(!useLL);
+      CHECK(registeredEnabled_);
+      launch_ibgda_progress_recv(
+          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+    } else if (api == SendRecvApi::WarpProxy) {
+      CHECK(!useLL);
+      launch_ibgda_warp_proxy_recv(
+          deviceTransport_,
+          recvBuf,
+          nbytes,
+          numBlocks_,
+          stream_,
+          /*maxSignalBytes=*/0,
+          Timeout(),
+          FLAGS_ibgda_warp_proxy_queue_depth);
+    } else {
+      LOG(FATAL) << "unsupported send/recv API";
     }
   }
 
@@ -861,6 +916,33 @@ static unsigned int ibgdaSendRecv(
         folly::UserMetric::Type::METRIC);
     counters["pipeline_chunk_bytes"] = folly::UserMetric(
         static_cast<double>(context.pipelineChunkBytes()),
+        folly::UserMetric::Type::METRIC);
+    counters["pipeline_depth"] = folly::UserMetric(
+        static_cast<double>(context.pipelineDepth()),
+        folly::UserMetric::Type::METRIC);
+    counters["total_staging_bytes"] = folly::UserMetric(
+        static_cast<double>(context.perChannelSize()) * context.numBlocks(),
+        folly::UserMetric::Type::METRIC);
+    counters["per_channel_window_bytes"] = folly::UserMetric(
+        static_cast<double>(context.perChannelSize()),
+        folly::UserMetric::Type::METRIC);
+    counters["slot_bytes"] = folly::UserMetric(
+        static_cast<double>(context.pipelineChunkBytes()),
+        folly::UserMetric::Type::METRIC);
+    counters["warp_proxy_queue_depth"] = folly::UserMetric(
+        static_cast<double>(FLAGS_ibgda_warp_proxy_queue_depth),
+        folly::UserMetric::Type::METRIC);
+    counters["num_channels"] = folly::UserMetric(
+        static_cast<double>(context.numBlocks()),
+        folly::UserMetric::Type::METRIC);
+    counters["qps_per_connection"] = folly::UserMetric(
+        static_cast<double>(context.qpsPerConnection()),
+        folly::UserMetric::Type::METRIC);
+    counters["num_nics"] = folly::UserMetric(
+        static_cast<double>(context.numNics()),
+        folly::UserMetric::Type::METRIC);
+    counters["num_lanes"] = folly::UserMetric(
+        static_cast<double>(context.numLanes()),
         folly::UserMetric::Type::METRIC);
   }
   return iters;
@@ -960,7 +1042,18 @@ void registerBenchmarks(IbgdaSendRecvBenchmarkContext& context) {
         SendRecvDirection::Unidirectional,
         SendRecvCopyOp::Memcpy,
         proto);
-    if (context.registeredEnabled()) {
+#ifndef __HIP_PLATFORM_AMD__
+    if (proto == SendRecvProto::Simple) {
+      registerBenchmark(
+          context,
+          size,
+          SendRecvApi::WarpProxy,
+          SendRecvDirection::Unidirectional,
+          SendRecvCopyOp::Memcpy,
+          proto);
+    }
+#endif
+    if (context.registeredEnabled() && proto == SendRecvProto::Simple) {
       registerBenchmark(
           context,
           size,

@@ -24,6 +24,7 @@
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/utils/ArgCheck.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
@@ -33,7 +34,6 @@
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "folly/synchronization/CallOnce.h"
 
 using namespace ctran::ib;
@@ -66,7 +66,7 @@ bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
 commResult_t checkEpochLock(CtranIb* ctranIb) {
   if (NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK &&
       NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE && !epochLockedFlags[ctranIb].load()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE is set to true, but the critical section is called "
         "without acquiring the epoch lock on the calling thread. It is likely a NCCL bug.");
@@ -87,7 +87,7 @@ CtranIbSingleton::CtranIbSingleton() {
   try {
     FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
   } catch (const ctran::utils::Exception& e) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "CTRAN-IB: Failed to initialize ibverbs (libibverbs.so): {}. "
         "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
@@ -99,7 +99,7 @@ CtranIbSingleton::CtranIbSingleton() {
   try {
     FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
   } catch (const ctran::utils::Exception& e) {
-    CLOGF(
+    CTRAN_LOG(
         ERR,
         "CTRAN-IB: Failed to get InfiniBand device list: {}. "
         "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
@@ -115,7 +115,7 @@ CtranIbSingleton::CtranIbSingleton() {
         "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
         ibvDevices.size(),
         NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    CERR(commSystemError, "{}", msg);
+    CTRAN_ERR(commSystemError, "{}", msg);
     throw ctran::utils::Exception(msg, commSystemError);
   }
 
@@ -151,7 +151,7 @@ commResult_t CtranIbSingleton::destroy() {
   // Report traffic if enabled
   if (NCCL_SLOW_RANK_ENABLE) {
     for (int i = 0; i < devBytes_.size(); i++) {
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB: [traffic profiling] cudaDev {} total traffic: {} bytes",
@@ -173,7 +173,7 @@ commResult_t CtranIbSingleton::destroy() {
   this->comms_.withRLock([&](auto& comms) {
     if (comms.size()) {
       for (auto& it : comms) {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "CTRAN-IB: communicator {} are still alive when CtranIbSingleton is destroyed.",
             (void*)it);
@@ -183,7 +183,7 @@ commResult_t CtranIbSingleton::destroy() {
 
   size_t activeRegCount = getActiveRegCount();
   if (activeRegCount > 0) {
-    CLOGF(
+    CTRAN_LOG(
         WARN,
         "CTRAN-IB: {} active buffer registrations when CtranIbSingleton is destroyed.",
         activeRegCount);
@@ -324,7 +324,7 @@ void CtranIbSingleton::ibAsyncEventHandler(const int cudaDev) {
       break;
     }
   }
-  CLOGF_SUBSYS(INFO, INIT, "CTRAN-IB: Exiting ibAsyncEventHandler");
+  CTRAN_LOG_SUBSYS(INFO, INIT, "CTRAN-IB: Exiting ibAsyncEventHandler");
 }
 
 CtranIb::CtranIb(
@@ -348,7 +348,7 @@ CtranIb::CtranIb(
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
       socketFactory,
       maxNumCqe);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: Initialized {} from comm {} enableLocalFlush {}",
@@ -386,7 +386,7 @@ CtranIb::CtranIb(
       maxNumCqe,
       maxNumNic);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: Initialized {} from rank {} cudaDev {} commHash {:x} commDesc {} enableLocalFlush {}",
@@ -463,7 +463,7 @@ void CtranIb::init(
         std::to_string(NCCL_CTRAN_IB_DEVICES_PER_RANK) +
         ") exceeds CTRAN_MAX_IB_DEVICES_PER_RANK (" +
         std::to_string(CTRAN_MAX_IB_DEVICES_PER_RANK) + ")";
-    CERR(commInvalidArgument, "CTRAN-IB: {}", msg);
+    CTRAN_ERR(commInvalidArgument, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commInvalidArgument,
@@ -478,7 +478,7 @@ void CtranIb::init(
     std::string msg = "cudaDev (" + std::to_string(cudaDev) +
         ") * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE exceeds the number of contexts (" +
         std::to_string(s->ibvDevices.size()) + ")";
-    CERR(commSystemError, "CTRAN-IB: {}", msg);
+    CTRAN_ERR(commSystemError, "CTRAN-IB: {}", msg);
     throw ::ctran::utils::Exception(
         msg.c_str(),
         commSystemError,
@@ -504,7 +504,7 @@ void CtranIb::init(
       ibverbx::ibv_port_attr portAttr;
       auto maybePortAttr = s->ibvDevices[singletonDevIdx].queryPort(port);
       if (maybePortAttr.hasError()) {
-        CLOGF(
+        CTRAN_LOG(
             WARN,
             "CTRAN-IB : Unable to query port {} on device {}",
             port,
@@ -543,7 +543,7 @@ void CtranIb::init(
           // Covers: libmlx5 dlopen failed (EOPNOTSUPP from null symbol);
           // driver didn't populate the requested caps (EOPNOTSUPP from
           // firmware/kernel too old); any other errno from the driver.
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "CTRAN-IB: OOO_RQ detection FAILED on {}: {} (errno {}).",
               devices[device].devName,
@@ -552,14 +552,14 @@ void CtranIb::init(
         } else if (maybeCtx->ooo_recv_wrs_caps.max_rc == 0) {
           // Driver populated the caps struct but HW/firmware reports zero
           // capability — the query API works; the feature is just absent.
-          CLOGF(
+          CTRAN_LOG(
               WARN,
               "CTRAN-IB: OOO_RQ not supported by HW on {}: "
               "ooo_recv_wrs_caps.max_rc == 0.",
               devices[device].devName);
         } else {
           devices[device].oooRqSize = maybeCtx->ooo_recv_wrs_caps.max_rc;
-          CLOGF(
+          CTRAN_LOG(
               INFO,
               "CTRAN-IB: OOO_RQ detected on {}: max_rc={}.",
               devices[device].devName,
@@ -567,7 +567,7 @@ void CtranIb::init(
         }
       }
 
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB: using device {}, port {} commHash {:x} commDesc {}",
@@ -576,7 +576,7 @@ void CtranIb::init(
           commHash,
           commDesc);
     } else {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-IB : No active port found on device {}. Disable IB backend.",
           s->ibvDevices[singletonDevIdx].device()->name);
@@ -611,7 +611,7 @@ void CtranIb::init(
     // device-reported maximum.
     const int cqeCap = maxNumCqe.value_or(NCCL_CTRAN_IB_MAX_NUM_CQE);
     if (cqeCap > 0 && maxCqe > cqeCap) {
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-IB: Capping CQ size from {} to {} ({}) to reduce memory overhead",
           maxCqe,
@@ -620,7 +620,7 @@ void CtranIb::init(
                                 : "NCCL_CTRAN_IB_MAX_NUM_CQE");
       maxCqe = cqeCap;
     } else {
-      CLOGF(INFO, "CTRAN-IB: CQ size is {}", maxCqe);
+      CTRAN_LOG(INFO, "CTRAN-IB: CQ size is {}", maxCqe);
     }
 
     // Skip lock for cq and localVc in constructor since no other thread can
@@ -648,7 +648,7 @@ void CtranIb::init(
   // Reset flags for invalid use case check in epochLock() and epochUnlock()
   epochLockedFlags[this].store(false);
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: dmabuf support for device {} is {}",
@@ -675,11 +675,11 @@ void CtranIb::init(
         "gets at least one data QP.",
         NCCL_CTRAN_IB_MAX_QPS,
         maxVcsPerPeer);
-    CERR(commInvalidArgument, "{}", msg);
+    CTRAN_ERR(commInvalidArgument, "{}", msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
   }
   vcLayout_ = ctran::ib::VcLayout(numNics, maxVcsPerPeer);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: VC layout: {} (numNics={}, NCCL_CTRAN_IB_MAX_QPS={}). "
@@ -701,7 +701,7 @@ void CtranIb::init(
         commDesc,
         ncclLogData,
         getPgToTrafficClassValue());
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: skip internal bootstrap for IB backend {} commHash {:x} commDesc {}",
@@ -725,7 +725,7 @@ void CtranIb::init(
     bootstrap_->start(qpServerAddr);
   }
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: created IB backend {} for commHash {:x} commDesc {}",
@@ -752,7 +752,7 @@ CtranIb::~CtranIb(void) {
 
   FB_COMMCHECKIGNORE(releaseRemoteTransStates(true /* fromDestructor */));
 
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: destroyed IB backend {} for commHash {:x} commDesc {}",
@@ -784,7 +784,7 @@ commResult_t CtranIb::epochLock() {
   }
 
   if (epochLockedFlags[this].load()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "epochLock() already called on the same thread without epochUnlock(). It is likely a COMM bug.");
     return commInternalError;
@@ -802,7 +802,7 @@ commResult_t CtranIb::epochTryLock() {
   }
 
   if (epochLockedFlags[this].load()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "epochLock() already called on the same thread without epochUnlock(). It is likely a COMM bug.");
     return commInternalError;
@@ -822,7 +822,7 @@ commResult_t CtranIb::epochUnlock() {
   }
 
   if (!epochLockedFlags[this].load()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "epochUnlock() is called without an outstanding epochLock() on the thread. It is likely a COMM bug.");
     return commInternalError;
@@ -840,7 +840,7 @@ commResult_t CtranIb::regMem(
     void** ibRegElem) {
   commResult_t res = commSuccess;
   if (len < CTRAN_MIN_REGISTRATION_SIZE && NCCL_CTRAN_REGISTRATION_SIZE_CHECK) {
-    CERR(
+    CTRAN_ERR(
         commSystemError,
         "CTRAN-IB: cannot register buffer, size ({}) < {}",
         len,
@@ -854,7 +854,7 @@ commResult_t CtranIb::regMem(
 
   bool useDmaBuf = dmaBufSupport && NCCL_CTRAN_IB_DMABUF_ENABLE;
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       ALLOC,
       "CTRAN-IB: regMem buf={}, len={}, useDmaBuf={}, dmaBufSupport={}",
       buf,
@@ -901,7 +901,7 @@ commResult_t CtranIb::regMem(
       // fall back to ibv_reg_mr
       if (comms::utils::cumem::isBackedByMultipleCuMemAllocations(
               buf, cudaDev, len)) {
-        CERR(
+        CTRAN_ERR(
             commInvalidUsage,
             "CTRAN-IB: Memory region (buf {}, len {}) spans multiple cuMem allocations, ibv_reg_mr may fail!",
             buf,
@@ -1058,7 +1058,7 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
   }
 
   if (newConnection) {
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: Rank-{} Pre-connected peers: [{}]",
@@ -1130,7 +1130,7 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
     std::vector<std::string> pgTrafficClassPair;
     folly::split(":", pgTrafficClassPairStr, pgTrafficClassPair);
     if (pgTrafficClassPair.size() != 2) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB: Invalid PG->Traffic class pair {} in pimpl {} commHash {:x}, commDesc {}.",
           pgTrafficClassPairStr,
@@ -1142,7 +1142,7 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
     std::string tcStr = pgTrafficClassPair[1];
     auto tc = folly::tryTo<uint32_t>(tcStr);
     if (!tc.hasValue()) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-IB: Invalid Traffic Class value provided {} in pimpl {} commHash {:x}, commDesc {}.",
           tcStr,
@@ -1151,7 +1151,7 @@ commResult_t CtranIb::setPgToTrafficClassMap() {
           commDesc);
       return commInternalError;
     }
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: commHash {:x}, commDesc {} override traffic class to {}",
