@@ -10,6 +10,7 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocketBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/commSpecs.h"
 
@@ -111,7 +112,7 @@ class CtranSocket {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,

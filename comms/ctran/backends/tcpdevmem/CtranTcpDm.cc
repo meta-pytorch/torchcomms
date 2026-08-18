@@ -66,7 +66,7 @@ commResult_t mapBootstrapSocketError(
     return commRemoteError;
   }
 
-  CERR(
+  CTRAN_ERR(
       commInternalError,
       "CTRAN-TCPDM: bootstrap {} failed with peer {} on rank {} commHash {:x} commDesc {} errno={}",
       op,
