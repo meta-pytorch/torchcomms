@@ -1414,6 +1414,133 @@ TEST_F(
   }
 }
 
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Groups_Bfloat16_Sum_FusedRoutingThreshold) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  runBfloat16A2RoutingThreshold(4, static_cast<size_t>(2) << 20, ncclSum);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Groups_Bfloat16_Avg_FusedRoutingThreshold) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  runBfloat16A2RoutingThreshold(4, static_cast<size_t>(2) << 20, ncclAvg);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_SingleGroup_Bfloat16_Sum_IndependentRoutingThreshold) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclSum);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_SingleGroup_Bfloat16_Avg_IndependentRoutingThreshold) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclAvg);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupReduceScatterTest,
+    Correctness_4Groups_HeterogeneousRelayAndSmallPositive) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 4;
+  const int nActiveRanksPerGroup = 2;
+  const size_t relayThresholdCount =
+      (static_cast<size_t>(2) << 20) / nActiveRanksPerGroup / sizeof(int32_t);
+  const size_t recvCounts[nGroups] = {
+      relayThresholdCount, relayThresholdCount, 513, 1023};
+
+  Standard4GroupActiveRanks groupConfig;
+  const int* const* allActiveRanks = groupConfig.allActiveRanks;
+
+  const int myActiveGroup = this->globalRank / nActiveRanksPerGroup;
+  const int myActiveIndex = this->globalRank % nActiveRanksPerGroup;
+
+  int32_t* sendBuffs[nGroups];
+  int32_t* recvBuffs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    const size_t recvBytes = recvCounts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], nActiveRanksPerGroup * recvBytes));
+      HIPCHECK_TEST(hipMalloc(&recvBuffs[g], recvBytes));
+    } else {
+      HIPCHECK_TEST(hipMalloc(&sendBuffs[g], nActiveRanksPerGroup * recvBytes));
+      recvBuffs[g] = sendBuffs[g];
+    }
+  }
+
+  barrierSyncOn(sendBuffs[0]);
+
+  for (int g = 0; g < nGroups; g++) {
+    const size_t recvBytes = recvCounts[g] * sizeof(int32_t);
+    if (g == myActiveGroup) {
+      initActiveSendBuffer(sendBuffs[g], recvCounts[g], myActiveIndex);
+      HIPCHECK_TEST(hipMemset(recvBuffs[g], 0, recvBytes));
+    } else {
+      HIPCHECK_TEST(
+          hipMemset(sendBuffs[g], 0, nActiveRanksPerGroup * recvBytes));
+    }
+  }
+
+  const void* sendPtrs[nGroups];
+  void* recvPtrs[nGroups];
+  for (int g = 0; g < nGroups; g++) {
+    sendPtrs[g] = sendBuffs[g];
+    recvPtrs[g] = recvBuffs[g];
+  }
+
+  ncclResult_t result = callReduceScatterCompat(
+      sendPtrs,
+      recvPtrs,
+      recvCounts,
+      ncclInt32,
+      ncclSum,
+      this->comm,
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  verifyDeviceBufferEquals(
+      recvBuffs[myActiveGroup],
+      recvCounts[myActiveGroup],
+      expectedReduceScatterSum(myActiveIndex),
+      myActiveGroup,
+      "Heterogeneous relay/direct reduce-scatter SUM mismatch");
+
+  for (int g = 0; g < nGroups; g++) {
+    HIPCHECK_TEST(hipFree(sendBuffs[g]));
+    if (g == myActiveGroup) {
+      HIPCHECK_TEST(hipFree(recvBuffs[g]));
+    }
+  }
+}
+
 /**
  * Test: Correctness_PartialGroupsZeroCount
  *

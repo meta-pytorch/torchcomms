@@ -585,7 +585,7 @@ static ncclResult_t shardedRelayReduceScatter2Active(
   // holds on longer). Cross over just below each.
   const size_t kA2PureDirectMaxBytes = (nGroups > 1)
       ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(6) << 20); // independent: < 6 MB
+      : (static_cast<size_t>(27) << 20); // independent: < 27 MB
   if (maxBytes2 < kA2PureDirectMaxBytes) {
     void* pdScratch = nullptr;
     size_t pdRecvcount = 0;

@@ -1866,6 +1866,73 @@ TEST_F(
 
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
+    Correctness_Phase2C02_BFloat16_A2_Independent6MiBBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t thresholdCount = (6ULL * 1024 * 1024) / sizeof(uint16_t);
+  const int activeRanks[2] = {0, 1};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {thresholdCount - 1, ncclSum, "A=2 6 MiB below-threshold BF16 SUM"},
+      {thresholdCount - 1, ncclAvg, "A=2 6 MiB below-threshold BF16 AVG"},
+      {thresholdCount, ncclSum, "A=2 6 MiB at-threshold BF16 SUM"},
+      {thresholdCount, ncclAvg, "A=2 6 MiB at-threshold BF16 AVG"},
+      {thresholdCount + 1, ncclSum, "A=2 6 MiB above-threshold BF16 SUM"},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 2, 1, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_Phase2C02_BFloat16_A4_PermutedFused2MiBBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t thresholdCount = (2ULL * 1024 * 1024) / sizeof(uint16_t);
+  PermutedTwoGroupFourActiveRanks groupConfig;
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {thresholdCount - 4,
+       ncclSum,
+       "A=4 2 MiB below-threshold permuted patterned SUM",
+       true},
+      {thresholdCount,
+       ncclSum,
+       "A=4 2 MiB at-threshold permuted patterned SUM",
+       true},
+      {thresholdCount + 4,
+       ncclSum,
+       "A=4 2 MiB above-threshold permuted patterned SUM",
+       true},
+  };
+
+  runBfloat16AllReduceCases(groupConfig.allActiveRanks, 4, 2, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_Phase2C02_BFloat16_A4_Independent9MiBBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t thresholdCount = (9ULL * 1024 * 1024) / sizeof(uint16_t);
+  const int activeRanks[4] = {0, 1, 2, 3};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {thresholdCount - 4, ncclSum, "A=4 9 MiB below-threshold BF16 SUM"},
+      {thresholdCount, ncclSum, "A=4 9 MiB at-threshold BF16 SUM"},
+      {thresholdCount + 4, ncclSum, "A=4 9 MiB above-threshold BF16 SUM"},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 4, 1, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
     Z_BusBW_4Active_2Groups_InPlace_1GB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
