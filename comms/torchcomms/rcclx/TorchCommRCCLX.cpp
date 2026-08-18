@@ -1045,6 +1045,177 @@ TorchCommRCCLX::sharded_relay_multi_group_reduce_scatter(
   return work;
 }
 
+c10::intrusive_ptr<TorchWork>
+TorchCommRCCLX::sharded_relay_multi_group_all_to_all(
+    std::vector<at::Tensor>& input_tensors,
+    std::vector<at::Tensor>& output_tensors,
+    const std::vector<std::vector<int64_t>>& all_active_ranks,
+    const std::vector<int64_t>& per_group_segment_counts,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  int nGroups = static_cast<int>(input_tensors.size());
+  if (nGroups == 0) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_to_all: input_tensors list cannot be empty");
+  }
+  if (output_tensors.size() != static_cast<size_t>(nGroups) ||
+      all_active_ranks.size() != static_cast<size_t>(nGroups) ||
+      per_group_segment_counts.size() != static_cast<size_t>(nGroups)) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_to_all: output_tensors, all_active_ranks, and per_group_segment_counts sizes must match input_tensors size");
+  }
+
+  int nActiveRanksPerGroup = static_cast<int>(all_active_ranks[0].size());
+
+  int myActiveGroup = -1;
+  for (int g = 0; g < nGroups && myActiveGroup < 0; g++) {
+    for (int a = 0; a < static_cast<int>(all_active_ranks[g].size()); a++) {
+      if (all_active_ranks[g][a] == rank_) {
+        myActiveGroup = g;
+        break;
+      }
+    }
+  }
+
+  // One contiguous send / recv buffer per group. Helper groups pass a single
+  // scratch tensor as both input and output.
+  std::vector<const void*> sendBuffs(nGroups);
+  std::vector<void*> recvBuffs(nGroups);
+  std::vector<size_t> segmentCounts(nGroups);
+  std::vector<at::Tensor> all_tensors;
+  for (int g = 0; g < nGroups; g++) {
+    ensureTensorContiguous(input_tensors[g]);
+    ensureTensorContiguous(output_tensors[g]);
+    sendBuffs[g] = input_tensors[g].data_ptr();
+    recvBuffs[g] = output_tensors[g].data_ptr();
+    segmentCounts[g] = static_cast<size_t>(per_group_segment_counts[g]);
+    all_tensors.push_back(input_tensors[g]);
+    all_tensors.push_back(output_tensors[g]);
+  }
+
+  // Check this rank's active group against the buffer contract documented in
+  // sharded_relay_all_to_all.h: input and output each hold one segment per
+  // active index (nActiveRanks x segmentCount). The kernel only receives raw
+  // pointers, so an undersized tensor here becomes an out-of-bounds device
+  // access there. Helper groups are deliberately not size-checked: their
+  // buffers are scratch sized by the route the kernel selects, which cannot be
+  // recomputed here without duplicating that math.
+  if (myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+    const size_t segmentCount = segmentCounts[myActiveGroup];
+    const size_t expected =
+        static_cast<size_t>(nActiveRanksPerGroup) * segmentCount;
+    if (static_cast<size_t>(input_tensors[myActiveGroup].numel()) != expected) {
+      throw std::runtime_error(
+          fmt::format(
+              "sharded_relay_multi_group_all_to_all: active group {} input has {} elements, expected {} (nActiveRanks={} x segmentCount={})",
+              myActiveGroup,
+              input_tensors[myActiveGroup].numel(),
+              expected,
+              nActiveRanksPerGroup,
+              segmentCount));
+    }
+    if (static_cast<size_t>(output_tensors[myActiveGroup].numel()) !=
+        expected) {
+      throw std::runtime_error(
+          fmt::format(
+              "sharded_relay_multi_group_all_to_all: active group {} output has {} elements, expected {} (nActiveRanks={} x segmentCount={})",
+              myActiveGroup,
+              output_tensors[myActiveGroup].numel(),
+              expected,
+              nActiveRanksPerGroup,
+              segmentCount));
+    }
+  }
+
+  int segGroup = (myActiveGroup >= 0) ? myActiveGroup : 0;
+
+  std::vector<std::vector<int>> active_ranks_int(nGroups);
+  std::vector<const int*> allActiveRanksPtr(nGroups);
+  for (int g = 0; g < nGroups; g++) {
+    active_ranks_int[g].assign(
+        all_active_ranks[g].begin(), all_active_ranks[g].end());
+    allActiveRanksPtr[g] = active_ranks_int[g].data();
+  }
+
+  TracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "sharded_relay_multi_group_all_to_all",
+      rank_,
+      input_tensors[segGroup],
+      output_tensors[segGroup]);
+  hipStream_t stream = getOperationStream(async_op);
+  auto work = createWork(stream, options_.timeout, all_tensors);
+
+  work->recordStart("sharded_relay_multi_group_all_to_all");
+
+  // The kernel takes ONE ncclDataType_t for every group, so the dtype has to
+  // come from a group that actually carries data. A count-0 group holds a
+  // 1-element placeholder that the kernel ignores, and nothing requires that
+  // placeholder to share the payload's dtype, so reading the dtype off one
+  // would hand every group the wrong ncclDataType_t. Prefer this rank's own
+  // active group; fall back to the first group with data. All data-carrying
+  // groups share a dtype, so which one is immaterial. If every count is 0 there
+  // is no data to type.
+  int dtypeGroup = segGroup;
+  if (per_group_segment_counts[dtypeGroup] == 0) {
+    for (int g = 0; g < nGroups; g++) {
+      if (per_group_segment_counts[g] > 0) {
+        dtypeGroup = g;
+        break;
+      }
+    }
+  }
+  // Every group that carries data must agree on dtype: the kernel is handed ONE
+  // ncclDataType_t for all of them, so a mismatch would silently reinterpret
+  // another group's buffer with the wrong element size. Count-0 groups are
+  // exempt -- their placeholder is never read or written.
+  const auto relayScalarType = input_tensors[dtypeGroup].scalar_type();
+  for (int g = 0; g < nGroups; g++) {
+    if (per_group_segment_counts[g] == 0) {
+      continue;
+    }
+    if (input_tensors[g].scalar_type() != relayScalarType ||
+        output_tensors[g].scalar_type() != relayScalarType) {
+      throw std::runtime_error(
+          fmt::format(
+              "sharded_relay_multi_group_all_to_all: every group with a non-zero count must share one dtype; group {} has in={}/out={} but group {} has {}",
+              g,
+              c10::toString(input_tensors[g].scalar_type()),
+              c10::toString(output_tensors[g].scalar_type()),
+              dtypeGroup,
+              c10::toString(relayScalarType)));
+    }
+  }
+  auto dataType = getNcclDataType(input_tensors[dtypeGroup]);
+  ncclResult_t result = rcclx_api_->shardedRelayMultiGroupAllToAll(
+      sendBuffs.data(),
+      recvBuffs.data(),
+      segmentCounts.data(),
+      dataType,
+      nccl_comm_,
+      stream,
+      allActiveRanksPtr.data(),
+      nActiveRanksPerGroup,
+      nGroups);
+
+  if (result != ncclSuccess) {
+    throw RCCLXException(
+        *rcclx_api_,
+        "RCCLX Sharded Relay Multi-Group AllToAll failed",
+        result,
+        nccl_comm_);
+  }
+
+  work->recordEnd();
+
+  enqueueWork(work, stream);
+
+  return work;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
     const at::Tensor& tensor,
     int root,

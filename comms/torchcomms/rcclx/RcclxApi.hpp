@@ -288,6 +288,19 @@ class RcclxApi {
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
       int nGroups) = 0;
+
+  // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
+  // No reduction op (pure data movement); out-of-place only.
+  virtual ncclResult_t shardedRelayMultiGroupAllToAll(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* segmentCounts,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) = 0;
 };
 
 /**
@@ -548,6 +561,19 @@ class DefaultRcclxApi : public RcclxApi {
       const size_t* recvCounts,
       ncclDataType_t datatype,
       ncclRedOp_t op,
+      ncclComm_t comm,
+      hipStream_t stream,
+      const int* const* allActiveRanks,
+      int nActiveRanksPerGroup,
+      int nGroups) override;
+
+  // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
+  // No reduction op (pure data movement); out-of-place only.
+  ncclResult_t shardedRelayMultiGroupAllToAll(
+      const void* const* sendBuffs,
+      void* const* recvBuffs,
+      const size_t* segmentCounts,
+      ncclDataType_t datatype,
       ncclComm_t comm,
       hipStream_t stream,
       const int* const* allActiveRanks,

@@ -70,4 +70,17 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
   return ncclInternalError;
 }
 
+ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
+    const void* const* /*sendBuffs*/,
+    void* const* /*recvBuffs*/,
+    const size_t* /*segmentCounts*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    hipStream_t /*stream*/,
+    const int* const* /*allActiveRanks*/,
+    int /*nActiveRanksPerGroup*/,
+    int /*nGroups*/) {
+  return ncclInternalError;
+}
+
 } // namespace torch::comms
