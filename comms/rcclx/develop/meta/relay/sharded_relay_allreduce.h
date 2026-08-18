@@ -41,59 +41,63 @@
  * This causes bidirectional contention on shared XGMI links, degrading
  * bandwidth by up to 10x.
  *
- * Solution - Phase-Synchronized Execution with Passthrough Helpers:
+ * Solution - Phase-Synchronized Execution with Reduce-at-Helper:
  * =================================================================
- * This fused API executes ALL groups in lockstep phases:
+ * This fused API executes ALL groups in lockstep so that at any instant every
+ * group is driving the XGMI links the same way. For A==2 there are exactly TWO
+ * comm groups:
  *
- *   Phase 1: ALL groups scatter (active→helpers) simultaneously.
- *            Each helper receives one chunk per active rank into a
- *            two-slot helper buffer (slot 0 from a0, slot 1 from a1).
+ *   Group 1: ALL groups scatter (active->helpers) simultaneously -- each helper
+ *            receives one chunk per active rank into a two-slot helper buffer
+ * -- AND the two active ranks directly exchange one chunk over the
+ *            active<->active link, which the scatter leaves idle.
  *
- *   Phase 2: ALL groups forward (helpers→other active) simultaneously.
- *            Helpers act as PURE PASSTHROUGH (no local compute):
- *            they forward slot 0 to a1 and slot 1 to a0.  Active ranks
- *            receive into a per-group recv-scratch slot.
+ *   Helper reduce: each helper sums its two slots (both active ranks send the
+ *            SAME logical chunk index, so the sum is the final allreduced
+ * value) and applies the AVG divisor.
  *
- *   Phase 3: ALL active ranks reduce the numHelpers helper-relayed chunks
- *            into their own active buffer (pipelined with Phase 2 recvs)
- *            and apply the AVG scaling once across the reduced region.
+ *   Group 2: ALL helpers hand their single reduced chunk to BOTH active ranks,
+ *            landing directly in its final place in recvBuff -- AND the active
+ *            ranks directly exchange a second chunk over the same idle link.
  *
- *   Phase 4: ALL groups direct-exchange the last (chunk N) data
- *            simultaneously between the two active ranks.
+ *   Final reduce: each active rank folds the two directly exchanged chunks into
+ *            its own contribution in one fused pass.
  *
- *   Phase 5: Active ranks perform the final reduction on the directly
- *            exchanged chunk.
+ * Why numChunks = numHelpers + 2:
+ * ===============================
+ * Let d be the bytes exchanged directly on the active<->active link and
+ * r = count - d the bytes relayed through the numHelpers helpers. A rank's
+ * egress is d + r (its own scatter) + r (its helper duty for the other groups),
+ * spread over its (numHelpers + 1) links, and the direct link alone bounds the
+ * runtime by d. Both bounds meet at r/(numHelpers/2) == d, i.e. one chunk per
+ * link per group, which is numChunks = numHelpers + 2 with one direct chunk in
+ * each group. The critical path is then 2*count/numChunks -- on an 8-GPU node
+ * count/4, versus count for a plain 2-rank allreduce.
  *
- * Since all groups are in the same phase at any time, XGMI links carry
- * unidirectional traffic only, eliminating contention.
+ * Reducing at the helper rather than forwarding both slots costs the same link
+ * time (the helper still sends one chunk to each active rank) but removes the
+ * active rank's relay scratch and its fused add+scale over most of the buffer,
+ * and spreads the reduction over every helper GPU instead of the two actives.
  *
- * Helper-Buffer Contract (passthrough-at-helper):
- * ===============================================
- * Helpers no longer perform local reductions; they simply forward each
- * received chunk to the OTHER active rank.  Two slots are needed per
- * helper group so that the recv from a0 (slot 0) and the recv from a1
- * (slot 1) can proceed concurrently — without two slots, a helper would
- * have to serialize the two directions and halve its instantaneous
- * network bandwidth.
+ * Helper-Buffer Contract:
+ * =======================
+ * A helper needs two slots so the recv from a0 (slot 0) and the recv from a1
+ * (slot 1) can proceed concurrently; without two slots it would serialize the
+ * two directions and halve its instantaneous network bandwidth. The reduction
+ * is done in place into slot 0.
  *
  * Caller MUST supply at least
- *   nActiveRanksPerGroup × chunkSize_aligned
+ *   nActiveRanksPerGroup x chunkSize_aligned
  * elements per helper group, where:
  *   chunkSize_aligned = (per_group_count / numChunks) rounded down to
  *                       CHUNK_ALIGN_ELEMENTS (128 elements).
- * Returns ncclInvalidArgument when per_group_count < numChunks × 128
- * (the buffer is too small to scatter); callers should fall back to a
- * regular allreduce in that case.
- *
- * Across the (nGroups - 1) helper groups per rank, that totals:
- *   (nGroups - 1) × nActiveRanksPerGroup × chunkSize
- * For the BM-FM 4-group / 2-active topology this is:
- *   3 × 2 × chunkSize = 6 × chunkSize per rank.
+ * Returns ncclInvalidArgument when per_group_count < numChunks x 128 (the
+ * buffer is too small to scatter); callers should fall back to a regular
+ * allreduce in that case.
  *
  * For A=4 the helper (reduce-and-broadcast) holds A source chunks plus one
- * reduced chunk per offload slice, so the caller must supply a larger scratch:
- * at least 2 × counts[g] elements per helper group (covers (A+1) × oChunk for
- * any offload fraction).
+ * reduced chunk per offload slice, so the caller must supply at least
+ * 2 x counts[g] elements per helper group.
  *
  * Memory Model:
  * =============

@@ -27,14 +27,19 @@
  * phase-synchronized passthrough-helper scheme; helpers perform no local
  * compute and all reductions happen on the active ranks per group.
  *
- * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the original
- * 2-active passthrough path (block-restricted 5-phase relay); A>2 uses the
- * bandwidth-optimal recursive path (recursive-halving relay woven with a direct
- * all-to-all, mirroring the merged allreduce). The direct all-to-all's owned
- * shard is reduced with a single fused multi-input reduce pass (owned shard +
- * all A-1 peer contributions read once, AVG divisor applied, written once)
- * instead of a loop of per-contribution add + scale passes. Both keep the same
- * per-helper buffer contract (nActiveRanksPerGroup x chunkSize).
+ * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 uses the 2-active
+ * passthrough relay described below. A>2 uses a two-group flat relay with
+ * REDUCE-AT-HELPER: each helper owns one position slice of every block,
+ * collects that slice from the A-1 non-owner sources, sums them, and forwards a
+ * single reduced chunk to the owner, woven with a direct all-to-all
+ * reduce-scatter over the intra links. Both the direct region and the offload
+ * region are folded into the output with fused multi-input reduce passes rather
+ * than a loop of per-contribution add + scale passes.
+ *
+ * Because the A>2 helper reduces rather than forwards, it needs one chunk per
+ * (owner, source) pair -- A x (A-1) x chunk, i.e. 1.5 x recvCounts[g] on an
+ * 8-GPU node -- so its helper contract is larger than the A==2 two-slot one
+ * (see the Helper-Buffer Contract below).
  *
  * Reduce-Scatter Semantics (per group, 2 active ranks a0, a1):
  * ===========================================================
@@ -55,34 +60,48 @@
  *   - ownBlockOffset  = myActiveIndex    × recvCounts[g] (local contribution)
  *   - sendBlockOffset = otherActiveIndex × recvCounts[g] (shipped to other)
  *
- * Five Phases (mirroring allreduce, restricted to the relevant block):
- * ===================================================================
- *   Phase 1 (active→helpers): each active rank scatters numHelpers chunks of
- *            its sendBlockOffset block to helpers; each helper stores two
- *            slots (one per active rank) — same passthrough contract as
- *            allreduce.
- *   Phase 2 (helpers→active, batched): each helper forwards slot-from-a0 → a1
- *            and slot-from-a1 → a0; active rank receives numHelpers chunks
- *            into relay scratch (numHelpers × chunkSize).
- *   Phase 3 (active reduce): fused add (+scale for AVG) of relay scratch into
- *            the output block (recvBuff), seeded with the local ownBlockOffset
- *            contribution.
- *   Phase 4 (active↔active): direct exchange of the last (direct) chunk.
- *   Phase 5 (active reduce): final reduction of the direct chunk.
+ * Two Comm Groups (mirroring allreduce, restricted to the relevant block):
+ * ========================================================================
+ *   Group 1: each active rank scatters numHelpers chunks of its sendBlockOffset
+ *            block to helpers (each helper stores two slots, one per active
+ *            rank) AND the two active ranks directly exchange one chunk over
+ *            the otherwise-idle active<->active link.
+ *   Group 2: each helper forwards slot-from-a0 -> a1 and slot-from-a1 -> a0
+ * into the destination's scratch AND the active ranks directly exchange a
+ *            second chunk over the same idle link.
+ *   Reduce:  one fused pass folds the local ownBlockOffset contribution into
+ * the whole foreign-contribution scratch, which mirrors the output layout, so
+ * relayed and directly exchanged chunks reduce together.
+ *
+ * Unlike allreduce, the helper CANNOT reduce: its slot 0 holds a0's
+ * contribution to a1's output and slot 1 holds a1's contribution to a0's output
+ * -- different outputs. Helpers stay pure passthrough and the active rank
+ * reduces.
  *
  * Chunking:
  * =========
- *   chunkSize  = recvCounts[g] / numChunks rounded down to 128 elements,
- *   numChunks  = numHelpers + 1 (last chunk is the direct-exchange chunk).
- * Returns ncclInvalidArgument when recvCounts[g] < numChunks × 128 (too small
- * to scatter); callers should fall back to a plain reduce-scatter.
+ *   chunkSize = recvCounts[g] / numChunks rounded down to 128 elements,
+ *   numChunks = numHelpers + 2. The active<->active link is idle while the
+ * relay scatter and forward run on the cross links, so instead of a third comm
+ * group for one direct chunk, one direct chunk rides along with each relay
+ * group. Every link then carries exactly one chunk per direction per group and
+ * the critical path is 2 x chunkSize instead of 3 x
+ * recvCounts[g]/(numHelpers+1). Returns ncclInvalidArgument when recvCounts[g]
+ * < numChunks x 128 (too small to scatter); callers should fall back to a plain
+ * reduce-scatter.
  *
- * Helper-Buffer Contract (passthrough-at-helper):
- * ===============================================
- * Identical to allreduce. Caller MUST supply at least
+ * Helper-Buffer Contract:
+ * =======================
+ * A==2 path: identical to allreduce. Caller MUST supply at least
  *   nActiveRanksPerGroup × chunkSize_aligned
  * elements per helper group, where chunkSize_aligned is computed from
  * recvCounts[g] (NOT the doubled send count).
+ *
+ * A>2 path: the helper reduces rather than forwards, so it holds one chunk per
+ * (owner, contributing source) pair: A × (A-1) × cs, where cs is recvCounts[g]
+ * divided by (A + numHelpers) and 128-aligned. That is 1.5 × recvCounts[g] on
+ * an 8-GPU node, so allocating 2 × recvCounts[g] per helper group covers every
+ * supported (A, numHelpers) split.
  *
  * Memory Model:
  * =============
