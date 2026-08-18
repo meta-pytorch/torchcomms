@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -13,46 +12,9 @@
 #include <folly/logging/LogLevel.h>
 
 #include "comms/utils/commSpecs.h"
+#include "comms/utils/logger/LogTypes.h"
 
 namespace meta::comms::logger {
-
-enum class LogLevel {
-  NONE = 0,
-  VERSION = 1,
-  ERROR = 2,
-  WARN = 3,
-  INFO = 4,
-  ABORT = 5,
-  TRACE = 6
-};
-
-// Save and restore macros that collide with our enum values.
-// topo.h defines #define NET 5 which would expand inside the enum.
-#pragma push_macro("NET")
-#pragma push_macro("INIT")
-#undef NET
-#undef INIT
-enum SubSystem {
-  INIT = 0x1,
-  COLL = 0x2,
-  P2P = 0x4,
-  SHM = 0x8,
-  NET = 0x10,
-  GRAPH = 0x20,
-  TUNING = 0x40,
-  ENV = 0x80,
-  ALLOC = 0x100,
-  CALL = 0x200,
-  PROXY = 0x400,
-  NVLS = 0x800,
-  BOOTSTRAP = 0x1000,
-  REG = 0x2000,
-  PROFILE = 0x4000,
-  RAS = 0x8000,
-  ALL = ~0
-};
-#pragma pop_macro("INIT")
-#pragma pop_macro("NET")
 
 // TODO: Properly clean this up so that we directly parse NCCL logs to folly
 // levels.
