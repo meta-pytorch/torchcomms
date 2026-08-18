@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <spdlog/async.h>
+#include <spdlog/details/periodic_worker.h>
 #include <spdlog/pattern_formatter.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/sink.h>
@@ -30,10 +31,78 @@ namespace {
 constexpr std::string_view kLoggerName = "comms";
 constexpr size_t kAsyncQueueSize = 8192;
 constexpr size_t kAsyncThreadCount = 1;
+/*
+ * Bounds how much buffered file output an abnormal exit can lose. Folly wrote
+ * through to the fd, so without a periodic flush the migrated path would keep
+ * recent lines only in the stdio buffer.
+ */
+constexpr auto kPeriodicFlushInterval = std::chrono::seconds{1};
 thread_local std::string threadName = "main";
 // Guard the full callback chain so it cannot recurse through another context
 // logger and eventually re-enter the originating callback.
 thread_local bool errorCallbackInProgress = false;
+
+class PeriodicSinkFlusher final {
+ public:
+  PeriodicSinkFlusher()
+      : worker_{
+            [this]() noexcept { flushRegisteredSinks(); },
+            kPeriodicFlushInterval} {}
+  ~PeriodicSinkFlusher() = default;
+
+  void registerSink(const std::shared_ptr<spdlog::sinks::sink>& sink) {
+    std::lock_guard lock{mutex_};
+    for (auto it = sinks_.begin(); it != sinks_.end();) {
+      if (const auto registered = it->lock()) {
+        if (registered == sink) {
+          return;
+        }
+        ++it;
+      } else {
+        it = sinks_.erase(it);
+      }
+    }
+    sinks_.push_back(sink);
+  }
+
+  PeriodicSinkFlusher(const PeriodicSinkFlusher&) = delete;
+  PeriodicSinkFlusher& operator=(const PeriodicSinkFlusher&) = delete;
+  PeriodicSinkFlusher(PeriodicSinkFlusher&&) = delete;
+  PeriodicSinkFlusher& operator=(PeriodicSinkFlusher&&) = delete;
+
+ private:
+  void flushRegisteredSinks() noexcept {
+    std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks;
+    {
+      std::lock_guard lock{mutex_};
+      for (auto it = sinks_.begin(); it != sinks_.end();) {
+        if (auto sink = it->lock()) {
+          sinks.push_back(std::move(sink));
+          ++it;
+        } else {
+          it = sinks_.erase(it);
+        }
+      }
+    }
+
+    for (const auto& sink : sinks) {
+      try {
+        sink->flush();
+      } catch (...) {
+        // A sink failure must not terminate the process from this worker.
+      }
+    }
+  }
+
+  std::mutex mutex_;
+  std::vector<std::weak_ptr<spdlog::sinks::sink>> sinks_;
+  spdlog::details::periodic_worker worker_;
+};
+
+PeriodicSinkFlusher& getPeriodicSinkFlusher() {
+  static PeriodicSinkFlusher flusher;
+  return flusher;
+}
 
 class ErrorCallbackGuard {
  public:
@@ -163,8 +232,8 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
       outputSink_(
           std::make_shared<spdlog::sinks::dist_sink_mt>(logger_->sinks())) {
   logger_->sinks() = {outputSink_};
-  synchronousLogger_ = std::make_shared<spdlog::logger>(
-      logger_->name(), logger_->sinks().begin(), logger_->sinks().end());
+  synchronousLogger_ =
+      std::make_shared<spdlog::logger>(logger_->name(), outputSink_);
   synchronousLogger_->set_level(spdlog::level::trace);
   storeConfiguration(std::make_shared<const Configuration>());
 }
@@ -241,6 +310,17 @@ void CommsSpdlogLogger::configure(
           std::move(errorCallback),
           asyncLogging});
   storeConfiguration(std::move(configuration));
+
+  /*
+   * The file sink buffers in user space and spdlog does not flush by default,
+   * so errors would otherwise reach the log file only once the buffer filled.
+   * Set unconditionally: configure() is public and may switch a logger back to
+   * synchronous, which must not inherit the previous flush level.
+   */
+  logger_->flush_on(asyncLogging ? spdlog::level::err : spdlog::level::off);
+  if (asyncLogging) {
+    getPeriodicSinkFlusher().registerSink(outputSink_);
+  }
 }
 
 std::shared_ptr<const CommsSpdlogLogger::Configuration>
