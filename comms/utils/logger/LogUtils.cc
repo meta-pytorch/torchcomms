@@ -13,8 +13,6 @@
 namespace meta::comms::logger {
 
 namespace {
-static uint64_t subSystemMask = 0; // Bitmask of enabled subsystems
-
 folly::once_flag commLoggingInitOnceFlag;
 
 void initCommLoggingImpl() {
@@ -35,14 +33,6 @@ void initCommLoggingImpl() {
           }});
 }
 } // anonymous namespace
-
-void setSubSystemMask(uint64_t subSystemMask_) {
-  subSystemMask = subSystemMask_;
-}
-
-bool isEnabledSubSystemBitwise(uint64_t subSystem) {
-  return subSystemMask & subSystem;
-}
 
 void initCommLogging(bool alwaysInit) {
   if (alwaysInit) {
