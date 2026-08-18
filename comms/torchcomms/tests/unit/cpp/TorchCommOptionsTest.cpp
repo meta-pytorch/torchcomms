@@ -81,6 +81,38 @@ TEST(TorchCommOptionsTest, StringToBool) {
   EXPECT_THROW(torch::comms::string_to_bool("falsey"), std::runtime_error);
 }
 
+TEST(TorchCommOptionsTest, OptionsBaseDefaults) {
+  AllGatherOptions gather;
+  EXPECT_EQ(gather.timeout, kNoTimeout);
+  EXPECT_TRUE(gather.hints.empty());
+
+  // Options with extra fields keep the shared defaults from the base.
+  SendOptions send;
+  EXPECT_EQ(send.timeout, kNoTimeout);
+  EXPECT_EQ(send.tag, 0);
+
+  RecvOptions recv;
+  EXPECT_EQ(recv.timeout, kNoTimeout);
+  EXPECT_EQ(recv.tag, 0);
+
+  // Window options share the same base defaults.
+  PutOptions put;
+  EXPECT_EQ(put.timeout, kNoTimeout);
+  EXPECT_TRUE(put.hints.empty());
+}
+
+TEST(TorchCommOptionsTest, CommOptionsGetHint) {
+  CommOptions options;
+  options.hints["enabled"] = "yes";
+  options.hints["count"] = "12";
+  options.hints["name"] = "value";
+
+  EXPECT_TRUE(options.getHint<bool>("enabled", false));
+  EXPECT_EQ(options.getHint<size_t>("count", 0), 12U);
+  EXPECT_EQ(options.getHint<std::string>("name", ""), "value");
+  EXPECT_EQ(options.getHint<size_t>("missing", 3), 3U);
+}
+
 namespace {
 constexpr const char* kBackendName = "fake_test";
 constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";

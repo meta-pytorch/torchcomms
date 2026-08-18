@@ -15,144 +15,38 @@
 
 namespace torch::comms {
 
+// Derived is unused in the body on purpose: it gives every option type its own
+// base, so unrelated options cannot bind to a common OptionsBase reference.
+template <typename Derived>
+struct OptionsBase {
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout{kNoTimeout};
+};
+
 // Options classes for collective operations
-class SendOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
+struct SendOptions : OptionsBase<SendOptions> {
   int tag{0};
-
-  SendOptions() : timeout(kNoTimeout) {}
 };
 
-class RecvOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
+struct RecvOptions : OptionsBase<RecvOptions> {
   int tag{0};
-
-  RecvOptions() : timeout(kNoTimeout) {}
 };
 
-class BatchP2POptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  BatchP2POptions() : timeout(kNoTimeout) {}
-};
-
-class BroadcastOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  BroadcastOptions() : timeout(kNoTimeout) {}
-};
-
-class AllReduceOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllReduceOptions() : timeout(kNoTimeout) {}
-};
-
-class ReduceOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  ReduceOptions() : timeout(kNoTimeout) {}
-};
-
-class AllGatherOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllGatherOptions() : timeout(kNoTimeout) {}
-};
-
-class AllGatherSingleOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllGatherSingleOptions() : timeout(kNoTimeout) {}
-};
-
-class ReduceScatterOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  ReduceScatterOptions() : timeout(kNoTimeout) {}
-};
-
-class ReduceScatterSingleOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  ReduceScatterSingleOptions() : timeout(kNoTimeout) {}
-};
-
-class AllToAllOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllToAllOptions() : timeout(kNoTimeout) {}
-};
-
-class AllToAllSingleOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllToAllSingleOptions() : timeout(kNoTimeout) {}
-};
-
-class AllToAllvSingleOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllToAllvSingleOptions() : timeout(kNoTimeout) {}
-};
-
-class BarrierOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  BarrierOptions() : timeout(kNoTimeout) {}
-};
-
-class ScatterOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  ScatterOptions() : timeout(kNoTimeout) {}
-};
-
-class GatherOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  GatherOptions() : timeout(kNoTimeout) {}
-};
-
-class GatherSingleOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  GatherSingleOptions() : timeout(kNoTimeout) {}
-};
+struct BatchP2POptions : OptionsBase<BatchP2POptions> {};
+struct BroadcastOptions : OptionsBase<BroadcastOptions> {};
+struct AllReduceOptions : OptionsBase<AllReduceOptions> {};
+struct ReduceOptions : OptionsBase<ReduceOptions> {};
+struct AllGatherOptions : OptionsBase<AllGatherOptions> {};
+struct AllGatherSingleOptions : OptionsBase<AllGatherSingleOptions> {};
+struct ReduceScatterOptions : OptionsBase<ReduceScatterOptions> {};
+struct ReduceScatterSingleOptions : OptionsBase<ReduceScatterSingleOptions> {};
+struct AllToAllOptions : OptionsBase<AllToAllOptions> {};
+struct AllToAllSingleOptions : OptionsBase<AllToAllSingleOptions> {};
+struct AllToAllvSingleOptions : OptionsBase<AllToAllvSingleOptions> {};
+struct BarrierOptions : OptionsBase<BarrierOptions> {};
+struct ScatterOptions : OptionsBase<ScatterOptions> {};
+struct GatherOptions : OptionsBase<GatherOptions> {};
+struct GatherSingleOptions : OptionsBase<GatherSingleOptions> {};
 
 class CommOptions {
  public:
@@ -184,44 +78,12 @@ class CommOptions {
   T getHint(std::string_view key, const T& default_value) const;
 };
 
-class PutOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
+// Options classes for window operations
+struct PutOptions : OptionsBase<PutOptions> {};
+struct SignalOptions : OptionsBase<SignalOptions> {};
+struct WaitSignalOptions : OptionsBase<WaitSignalOptions> {};
 
-  PutOptions() : timeout(kNoTimeout) {}
-};
-
-class SignalOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  SignalOptions() : timeout(kNoTimeout) {}
-};
-
-class WaitSignalOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  WaitSignalOptions() : timeout(kNoTimeout) {}
-};
-
-class AllGatherPInitOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllGatherPInitOptions() : timeout(kNoTimeout) {}
-};
-
-class AllGatherPExecOptions {
- public:
-  std::unordered_map<std::string, std::string> hints;
-  std::chrono::milliseconds timeout;
-
-  AllGatherPExecOptions() : timeout(kNoTimeout) {}
-};
+struct AllGatherPInitOptions : OptionsBase<AllGatherPInitOptions> {};
+struct AllGatherPExecOptions : OptionsBase<AllGatherPExecOptions> {};
 
 } // namespace torch::comms
