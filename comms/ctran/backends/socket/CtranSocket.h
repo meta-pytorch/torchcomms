@@ -6,6 +6,7 @@
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
 #include <memory>
+#include <optional>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocketBase.h"
@@ -46,7 +47,17 @@ class CtranSocket {
   // Only call this function when the peer's ListenSocket address is available
   inline commResult_t
   isendCtrlMsg(const ControlMsg& msg, int peerRank, CtranSocketRequest& req) {
-    return isendCtrlMsg(msg, peerRank, SocketServerAddr(), req);
+    return isendCtrlMsg(&msg, sizeof(msg), peerRank, req);
+  }
+
+  // Raw-payload form. The mapper exchanges registration descriptor batches
+  // that are not a ControlMsg; both forms share one length-delimited frame.
+  inline commResult_t isendCtrlMsg(
+      const void* payload,
+      std::size_t size,
+      int peerRank,
+      CtranSocketRequest& req) {
+    return isendCtrlMsgImpl(payload, size, peerRank, SocketServerAddr(), req);
   }
 
   // Send control message packet to a remote address over the Socket
@@ -61,14 +72,22 @@ class CtranSocket {
       int peerRank,
       const SocketServerAddr& peerServerAddr,
       CtranSocketRequest& req) {
-    return isendCtrlMsgImpl(msg, peerRank, peerServerAddr, req);
+    return isendCtrlMsgImpl(&msg, sizeof(msg), peerRank, peerServerAddr, req);
   }
 
   // Receive control message packet over the Socket connection.
   // Only call this function when the peer's ListenSocket address is available
   inline commResult_t
   irecvCtrlMsg(ControlMsg& msg, int peerRank, CtranSocketRequest& req) {
-    return irecvCtrlMsg(msg, peerRank, SocketServerAddr(), req);
+    return irecvCtrlMsg(&msg, sizeof(msg), peerRank, req);
+  }
+
+  inline commResult_t irecvCtrlMsg(
+      void* payload,
+      std::size_t size,
+      int peerRank,
+      CtranSocketRequest& req) {
+    return irecvCtrlMsgImpl(payload, size, peerRank, SocketServerAddr(), req);
   }
 
   // Receive control message packet from a remote address over the Socket
@@ -83,7 +102,7 @@ class CtranSocket {
       int peerRank,
       const SocketServerAddr& peerServerAddr,
       CtranSocketRequest& req) {
-    return irecvCtrlMsgImpl(msg, peerRank, peerServerAddr, req);
+    return irecvCtrlMsgImpl(&msg, sizeof(msg), peerRank, peerServerAddr, req);
   }
 
   CtranComm* comm{nullptr};
@@ -91,7 +110,7 @@ class CtranSocket {
  private:
   struct recvCtrlQueue {
     std::deque<std::unique_ptr<SockPendingOp>> postedOps_;
-    std::deque<std::unique_ptr<ControlMsg>> unexpMsgs_;
+    std::deque<std::unique_ptr<SocketCtrlPacket>> unexpMsgs_;
 
     recvCtrlQueue() = default;
     recvCtrlQueue(recvCtrlQueue&& other) noexcept = default;
@@ -111,7 +130,7 @@ class CtranSocket {
 
   inline commResult_t checkValidPeer(int peerRank) {
     if (peerRank < 0 || (comm && peerRank >= comm->statex_->nRanks())) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "invalid peerRank ({}) < 0 or >= nRanks {}",
           peerRank,
@@ -123,7 +142,8 @@ class CtranSocket {
 
   // Check whether vc is ready and no outstanding pending ops
   bool addToPendingOpsIfRequired(
-      const ControlMsg& msg,
+      void* payload,
+      std::size_t size,
       int peerRank,
       CtranSocketRequest& req,
       SockPendingOp::OpType opType,
@@ -134,21 +154,37 @@ class CtranSocket {
   commResult_t progressInternal();
 
   commResult_t isendCtrlMsgImpl(
-      const ControlMsg& msg,
+      const void* payload,
+      std::size_t size,
       int peerRank,
       const SocketServerAddr& peerServerAddr,
       CtranSocketRequest& req);
 
   commResult_t irecvCtrlMsgImpl(
-      ControlMsg& msg,
+      void* payload,
+      std::size_t size,
       int peerRank,
       const SocketServerAddr& peerServerAddr,
       CtranSocketRequest& req);
 
-  int doRecvMsg(
+  // Reject a null or oversized control payload before it reaches the wire.
+  // dir is "send" or "receive", for the error message only.
+  commResult_t
+  checkCtrlPayload(const void* payload, std::size_t size, const char* dir);
+
+  // Resumable frame read. A non-blocking socket can deliver a frame in pieces,
+  // so per-peer progress is kept in rankToRecvFrameMap_ and the caller retries
+  // until packet holds a value. Sets *closed when the peer hung up.
+  commResult_t doRecvMsg(
       ctran::bootstrap::Socket* socket,
       int peerRank,
-      ControlMsg* msg);
+      std::optional<SocketCtrlPacket>& packet,
+      bool* closed);
+
+  commResult_t copyPacketToRecvOp(
+      const SocketCtrlPacket& packet,
+      SockPendingOp& recvOp,
+      int peerRank);
 
   commResult_t postRecvOp(int peerRank, std::unique_ptr<SockPendingOp> recvop);
 
@@ -206,6 +242,16 @@ class CtranSocket {
 
   folly::Synchronized<folly::F14FastMap<int, PendingOpQueue>>
       rankToPendingOpsMap_;
+
+  // Partially-read inbound frame per peer. Cleared once the frame completes or
+  // the connection closes.
+  struct RecvFrameState {
+    SocketCtrlPacket packet;
+    std::size_t headerBytes{0};
+    std::size_t payloadBytes{0};
+  };
+
+  folly::F14FastMap<int, RecvFrameState> rankToRecvFrameMap_;
 
   // every rank maintains a postedrecv queue and unexpected msg queue
   folly::F14FastMap<int, recvCtrlQueue> rankToRecvCtrlMap_;

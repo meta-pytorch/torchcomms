@@ -2165,6 +2165,26 @@ cvars:
      Usage: If the config is "ib, nvl, socket", the backend tries to enable
      ib first. If the ib initialization fails, the backend will enable socket.
 
+ - name        : NCCL_CTRAN_LOCAL_CTRL_BACKEND
+   type        : enum
+   default     : ib
+   choices     : ib, socket
+   description : |-
+     Transport used for control messages to peers on the same physical host.
+     Control messages always went over ib, even for a peer whose data path is
+     NVL. On a platform where host-local RDMA between NICs is unavailable --
+     GCP GB300, where two ranks on one host cannot reach each other through
+     their own HCAs even on the same plane -- those handshakes never complete
+     and communicator setup dies with 'transport retry counter exceeded'.
+     Set to "socket" to route same-host control traffic over the interface
+     NCCL_SOCKET_IFNAME resolves to instead. Peers on other hosts still use ib
+     and the data path is unchanged, so this only affects peers that ib cannot
+     serve anyway. Both the fixed-size ControlMsg path and the raw-payload path
+     (isendCtrlMsg/irecvCtrlMsg, used by intraNvlDomainAllGather and the
+     allGatherCtrl overflow segments) are routed.
+     Socket control is a TCP round trip rather than an RDMA one; the added
+     per-message latency has not been measured.
+
  - name        : NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET
    type        : bool
    default     : true

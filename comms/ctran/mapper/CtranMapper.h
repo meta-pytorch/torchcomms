@@ -1027,6 +1027,22 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    */
   std::vector<bool> getBackends();
 
+  /* Whether control traffic to peerRank bypasses ib for the frontend-NIC
+   * socket path. True only under NCCL_CTRAN_LOCAL_CTRL_BACKEND=socket for a
+   * peer sharing this rank's physical host.
+   *
+   * The mask is built from statex->host(), deliberately not from
+   * statex->node() or statex->localRankToRanks(): under nvl fabric both of
+   * those mean the clique, which spans hosts (32 ranks over 8 hosts on GB300).
+   * Widening this predicate to the clique would push ctrl for off-host peers
+   * onto the frontend network, which is not provisioned for it.
+   */
+  inline bool useSocketCtrl(int peerRank) const {
+    return this->ctranSock != nullptr && peerRank >= 0 &&
+        peerRank < static_cast<int>(sameHostPeers_.size()) &&
+        sameHostPeers_[peerRank];
+  }
+
   /* Some backends, notably NVL and TCPDM, require notifiers on the receiver
    * side. This method indicates whether the notifier is needed for
    * the specified peer rank.
@@ -1085,6 +1101,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
 
+  // number of control messages posted for each backend. Lets a caller (and the
+  // tests) confirm which transport a control op actually took, rather than
+  // inferring it from the op completing.
+  std::vector<int> ctrlMsgCount;
+
   // number of iCopy
   int iCopyCount{0};
 
@@ -1119,11 +1140,16 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
  protected:
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t progress() {
+    // Independent, not else-if: with NCCL_CTRAN_LOCAL_CTRL_BACKEND=socket both
+    // ctranIb and ctranSock are live, and a socket ctrl request whose backend
+    // is never progressed hangs rather than errors.
     if (this->ctranIb != nullptr) {
       FB_COMMCHECK(this->ctranIb->progress<PerfConfig>());
-    } else if (this->ctranSock != nullptr) {
+    }
+    if (this->ctranSock != nullptr) {
       FB_COMMCHECK(this->ctranSock->progress());
-    } else if (this->ctranTcpDm != nullptr) {
+    }
+    if (this->ctranTcpDm != nullptr) {
       FB_COMMCHECK(this->ctranTcpDm->progress());
     }
 
@@ -1501,9 +1527,14 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
   inline CtranMapperBackend getCtrlBackend(
+      int peerRank,
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     if (backend != CtranMapperBackend::UNSET) {
       return backend;
+    }
+
+    if (useSocketCtrl(peerRank)) {
+      return CtranMapperBackend::SOCKET;
     }
 
     if (this->ctranIb) {
@@ -1529,10 +1560,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     req->type = CtranMapperRequest::ReqType::SEND_CTRL;
     req->peer = peerRank;
-    req->backend = getCtrlBackend();
+    req->backend = getCtrlBackend(peerRank);
+    ctrlMsgCount[req->backend]++;
     FB_COMMCHECK(
         this->exportMem(peerRank, buf, hdl, req->sendCtrl.msg, backend));
     auto& msg = req->sendCtrl.msg;
+    const bool onIb = req->backend == CtranMapperBackend::IB;
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
           ncclx::colltrace::SendCtrlStart{
@@ -1544,16 +1577,16 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND ctrlmsg to rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         msg.toString());
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->isendCtrlMsg<PerfConfig>(
           msg.type, &msg, sizeof(ControlMsg), peerRank, req->ibReq);
-    } else if (ctranSock) {
+    } else if (req->backend == CtranMapperBackend::SOCKET) {
       return ctranSock->isendCtrlMsg(msg, peerRank, req->sockReq);
     } else {
       return ctranTcpDm->isendCtrlMsg(msg, peerRank, req->tcpDmReq);
@@ -1568,11 +1601,13 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperRequest* req) {
     req->type = CtranMapperRequest::ReqType::RECV_CTRL;
     req->peer = peerRank;
-    req->backend = getCtrlBackend();
+    req->backend = getCtrlBackend(peerRank);
+    ctrlMsgCount[req->backend]++;
     req->recvCtrl.msg.setType(ControlMsgType::UNSPECIFIED);
     req->recvCtrl.buf = buf;
     req->recvCtrl.key = key;
     auto& msg = req->recvCtrl.msg;
+    const bool onIb = req->backend == CtranMapperBackend::IB;
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
           ncclx::colltrace::RecvCtrlStart{
@@ -1584,16 +1619,16 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV ctrlmsg from rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         msg.toString());
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->irecvCtrlMsg<PerfConfig>(
           &msg, sizeof(msg), peerRank, req->ibReq);
-    } else if (ctranSock) {
+    } else if (req->backend == CtranMapperBackend::SOCKET) {
       return ctranSock->irecvCtrlMsg(msg, peerRank, req->sockReq);
     } else {
       return ctranTcpDm->irecvCtrlMsg(msg, peerRank, req->tcpDmReq);
@@ -1609,8 +1644,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     req->type = CtranMapperRequest::ReqType::SEND_CTRL_MSG;
     req->peer = peerRank;
-    req->backend =
-        ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
+    req->backend = getCtrlBackend(peerRank, backend);
+    ctrlMsgCount[req->backend]++;
+    const bool onIb = req->backend == CtranMapperBackend::IB;
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
           ncclx::colltrace::SendCtrlStart{
@@ -1621,20 +1657,22 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND msg to rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         payload);
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->isendCtrlMsg(
           ControlMsgType::SYNC, payload, size, peerRank, req->ibReq);
     }
-    // only support ib for now
+    if (req->backend == CtranMapperBackend::SOCKET && ctranSock) {
+      return ctranSock->isendCtrlMsg(payload, size, peerRank, req->sockReq);
+    }
     CTRAN_ERR(
         commInvalidArgument,
-        "CTRAN-MAPPER: isendCtrlMsg only supports the IB backend for peerRank {}",
+        "CTRAN-MAPPER: isendCtrlMsg supports only the IB and Socket backends for peerRank {}",
         peerRank);
     return commInvalidArgument;
   }
@@ -1648,8 +1686,9 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
     req->type = CtranMapperRequest::ReqType::RECV_CTRL_MSG;
     req->peer = peerRank;
-    req->backend =
-        ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
+    req->backend = getCtrlBackend(peerRank, backend);
+    ctrlMsgCount[req->backend]++;
+    const bool onIb = req->backend == CtranMapperBackend::IB;
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
           ncclx::colltrace::RecvCtrlStart{
@@ -1660,19 +1699,22 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV msg from rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         payload);
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->irecvCtrlMsg<PerfConfig>(
           payload, size, peerRank, req->ibReq);
     }
+    if (req->backend == CtranMapperBackend::SOCKET && ctranSock) {
+      return ctranSock->irecvCtrlMsg(payload, size, peerRank, req->sockReq);
+    }
     CTRAN_ERR(
         commInvalidArgument,
-        "CTRAN-MAPPER: irecvCtrlMsg only supports the IB backend for peerRank {}",
+        "CTRAN-MAPPER: irecvCtrlMsg supports only the IB and Socket backends for peerRank {}",
         peerRank);
     return commInvalidArgument;
   }
@@ -1724,11 +1766,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t isendCtrlImpl(int peerRank, CtranMapperRequest* req) {
     req->type = CtranMapperRequest::ReqType::SEND_SYNC_CTRL;
     req->peer = peerRank;
-    req->backend = ctranIb ? CtranMapperBackend::IB
-        : ctranSock        ? CtranMapperBackend::SOCKET
-                           : CtranMapperBackend::TCPDM;
+    req->backend = getCtrlBackend(peerRank);
+    ctrlMsgCount[req->backend]++;
     auto& msg = req->sendSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
+    const bool onIb = req->backend == CtranMapperBackend::IB;
 
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
@@ -1738,16 +1780,16 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} SEND(SYNC) ctrlmsg to rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         msg.toString());
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->isendCtrlMsg(
           msg.type, &msg, sizeof(ControlMsg), peerRank, req->ibReq);
-    } else if (ctranSock) {
+    } else if (req->backend == CtranMapperBackend::SOCKET && ctranSock) {
       return ctranSock->isendCtrlMsg(msg, peerRank, req->sockReq);
     } else if (ctranTcpDm) {
       return ctranTcpDm->isendCtrlMsg(msg, peerRank, req->tcpDmReq);
@@ -1762,11 +1804,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   inline commResult_t irecvCtrlImpl(int peerRank, CtranMapperRequest* req) {
     req->type = CtranMapperRequest::ReqType::RECV_SYNC_CTRL;
     req->peer = peerRank;
-    req->backend = ctranIb ? CtranMapperBackend::IB
-        : ctranSock        ? CtranMapperBackend::SOCKET
-                           : CtranMapperBackend::TCPDM;
+    req->backend = getCtrlBackend(peerRank);
+    ctrlMsgCount[req->backend]++;
     auto& msg = req->recvSyncCtrl.msg;
     msg.setType(ControlMsgType::SYNC);
+    const bool onIb = req->backend == CtranMapperBackend::IB;
 
     if (this->mapperTrace) {
       this->mapperTrace->recordMapperEvent(
@@ -1776,15 +1818,15 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-MAPPER: Post {} RECV(SYNC) ctrlmsg from rank {} with req {} {} {}: {}",
-        ctranIb ? "IB" : "SOCKET",
+        backendToStr(req->backend),
         peerRank,
         (void*)req,
-        ctranIb ? "ibReq " : "sockReq ",
-        ctranIb ? (void*)&req->ibReq : (void*)&req->sockReq,
+        onIb ? "ibReq " : "sockReq ",
+        onIb ? (void*)&req->ibReq : (void*)&req->sockReq,
         msg.toString());
-    if (ctranIb) {
+    if (onIb) {
       return ctranIb->irecvCtrlMsg(&msg, sizeof(msg), peerRank, req->ibReq);
-    } else if (ctranSock) {
+    } else if (req->backend == CtranMapperBackend::SOCKET && ctranSock) {
       return ctranSock->irecvCtrlMsg(msg, peerRank, req->sockReq);
     } else if (ctranTcpDm) {
       return ctranTcpDm->irecvCtrlMsg(msg, peerRank, req->tcpDmReq);
@@ -2356,6 +2398,10 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   // A unified struct for holding all available backends.
   std::vector<bool> enableBackends_{
       std::vector<bool>(CtranMapperBackend::NUM_BACKENDS, false)};
+
+  // Indexed by rank: peer shares this rank's physical host. Empty unless
+  // NCCL_CTRAN_LOCAL_CTRL_BACKEND=socket. Read by useSocketCtrl().
+  std::vector<bool> sameHostPeers_;
 
   // List of outstanding internal IPC release requests to be processed
   // when polling progress. We need to temporarily hold the request

@@ -343,6 +343,188 @@ TEST_F(CtranDistMapperTest, allGatherCtrlNRanks) {
   NCCLCHECK_TEST(ncclMemFree(buf));
 }
 
+// Arbitrary recognizable base so a mis-delivered ctrl payload is obvious.
+constexpr uint64_t kCtrlProbeBase{0xC0DE0000ull};
+
+// NCCL_CTRAN_LOCAL_CTRL_BACKEND must be set before the mapper is constructed:
+// the same-host mask and the extra CtranSocket are built in its ctor.
+class CtranDistMapperLocalCtrlSocketTest : public CtranDistMapperTest {
+  void SetUp() override {
+    setenv("NCCL_CTRAN_LOCAL_CTRL_BACKEND", "socket", 1);
+    ncclCvarInit();
+    CtranDistMapperTest::SetUp();
+  }
+  void TearDown() override {
+    CtranDistMapperTest::TearDown();
+    unsetenv("NCCL_CTRAN_LOCAL_CTRL_BACKEND");
+    ncclCvarInit();
+  }
+};
+
+// Same-host peers must route ctrl over SOCKET while remote peers stay on IB,
+// and the exchange must still complete with both backends live. Guards
+// CtranMapper::progress(), which hangs rather than errors if only the first
+// non-null backend is progressed.
+TEST_F(CtranDistMapperLocalCtrlSocketTest, allGatherCtrlSameHostOverSocket) {
+  void* buf = nullptr;
+  void* handle = nullptr;
+  constexpr size_t bufSize = 8192;
+  auto mapper = comm_->ctran_->mapper.get();
+  const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+  if (!mapper->hasBackend(statex->rank(), CtranMapperBackend::IB)) {
+    GTEST_SKIP() << "Test requires the IB backend to be enabled.  Skip test.";
+  }
+
+  const std::string myHost = statex->host(statex->rank());
+  int nSameHost = 0;
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (peer == statex->rank()) {
+      continue;
+    }
+    const bool sameHost = statex->host(peer) == myHost;
+    EXPECT_EQ(mapper->useSocketCtrl(peer), sameHost)
+        << "peer " << peer << " host " << statex->host(peer) << " vs "
+        << myHost;
+    nSameHost += sameHost;
+  }
+  ASSERT_GT(nSameHost, 0) << "Expected at least one same-host peer.";
+
+  NCCLCHECK_TEST(ncclMemAlloc(&buf, bufSize));
+  COMMCHECK_TEST(comm_->ctran_->commRegister(buf, bufSize, &handle));
+
+  void* sendHdl = nullptr;
+  bool localReg = false;
+  COMMCHECK_TEST(mapper->searchRegHandle(buf, bufSize, &sendHdl, &localReg));
+  ASSERT_NE(sendHdl, nullptr);
+
+  std::vector<void*> remoteBufs(statex->nRanks(), nullptr);
+  std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(
+      statex->nRanks());
+
+  const int socketBefore = mapper->ctrlMsgCount[CtranMapperBackend::SOCKET];
+
+  {
+    CtranMapperEpochRAII epochRAII(mapper);
+
+    auto res =
+        mapper->allGatherCtrl(buf, sendHdl, remoteBufs, remoteAccessKeys);
+    ASSERT_EQ(res, commSuccess);
+  }
+
+  // Some ctrl traffic must have gone over socket. IB is not asserted to be
+  // zero here: this allgather spans the whole comm, so remote peers use IB by
+  // design. sameHostCtrlUsesSocketNotIb makes the exclusive assertion.
+  EXPECT_GT(mapper->ctrlMsgCount[CtranMapperBackend::SOCKET] - socketBefore, 0);
+
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (peer != statex->rank()) {
+      ASSERT_NE(remoteBufs[peer], nullptr) << "peer " << peer;
+    }
+  }
+
+  barrierNvlDomain(comm_.get());
+
+  COMMCHECK_TEST(comm_->ctran_->commDeregister(handle));
+  NCCLCHECK_TEST(ncclMemFree(buf));
+}
+
+// intraNvlDomainAllGather runs the raw-payload ctrl path
+// (isendCtrlMsg/irecvCtrlMsg), which was IB-only before this change, over a
+// peer set that includes same-host ranks. With those routed to Socket it must
+// still deliver every domain rank's value.
+TEST_F(CtranDistMapperLocalCtrlSocketTest, intraNvlDomainAllGatherOverSocket) {
+  auto mapper = comm_->ctran_->mapper.get();
+  const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+  if (!mapper->hasBackend(statex->rank(), CtranMapperBackend::IB)) {
+    GTEST_SKIP() << "Test requires the IB backend to be enabled.  Skip test.";
+  }
+
+  const int nLocalRanks = statex->nLocalRanks();
+  const uint64_t sendVal = kCtrlProbeBase + statex->rank();
+  std::vector<uint64_t> recvVals(nLocalRanks, 0);
+
+  const int socketBefore = mapper->ctrlMsgCount[CtranMapperBackend::SOCKET];
+
+  {
+    CtranMapperEpochRAII epochRAII(mapper);
+    ASSERT_EQ(
+        mapper->intraNvlDomainAllGather(
+            &sendVal, recvVals.data(), sizeof(uint64_t)),
+        commSuccess);
+  }
+
+  // The raw-payload path reached socket for the same-host members of the
+  // clique. IB is not asserted zero: the clique spans hosts.
+  EXPECT_GT(mapper->ctrlMsgCount[CtranMapperBackend::SOCKET] - socketBefore, 0);
+
+  std::vector<uint64_t> expected(nLocalRanks);
+  for (int i = 0; i < nLocalRanks; i++) {
+    expected[i] = kCtrlProbeBase + statex->localRankToRank(i);
+  }
+  EXPECT_EQ(recvVals, expected);
+}
+
+// The two tests above show that same-host ctrl exchanges complete, but a silent
+// fallback to IB would complete too. Assert the transport directly: exchange
+// ctrl messages with same-host peers ONLY, and require that the socket counter
+// moves by exactly one send plus one recv per peer while the IB counter does
+// not move at all. Scoped to same-host peers because the whole-comm exchanges
+// legitimately use IB for everyone else.
+TEST_F(CtranDistMapperLocalCtrlSocketTest, sameHostCtrlUsesSocketNotIb) {
+  auto mapper = comm_->ctran_->mapper.get();
+  const auto& statex = comm_->statex_.get();
+
+  if (statex->nLocalRanks() < 2) {
+    GTEST_SKIP()
+        << "Test requires at least 2 localRanks on each node.  Skip test.";
+  }
+  if (!mapper->hasBackend(statex->rank(), CtranMapperBackend::IB)) {
+    GTEST_SKIP() << "Test requires the IB backend to be enabled.  Skip test.";
+  }
+
+  std::vector<int> sameHostPeers;
+  for (int peer = 0; peer < statex->nRanks(); peer++) {
+    if (peer != statex->rank() && mapper->useSocketCtrl(peer)) {
+      sameHostPeers.push_back(peer);
+    }
+  }
+  ASSERT_FALSE(sameHostPeers.empty())
+      << "Expected at least one same-host peer routed to SOCKET.";
+
+  const int socketBefore = mapper->ctrlMsgCount[CtranMapperBackend::SOCKET];
+  const int ibBefore = mapper->ctrlMsgCount[CtranMapperBackend::IB];
+
+  {
+    CtranMapperEpochRAII epochRAII(mapper);
+    // Pre-sized: the IB layer holds references into each request's ibReq, so
+    // the vector must not reallocate.
+    std::vector<CtranMapperRequest> reqs(sameHostPeers.size() * 2);
+    int idx = 0;
+    for (const int peer : sameHostPeers) {
+      ASSERT_EQ(mapper->irecvCtrl(peer, &reqs[idx++]), commSuccess);
+      ASSERT_EQ(mapper->isendCtrl(peer, &reqs[idx++]), commSuccess);
+    }
+    for (auto& req : reqs) {
+      ASSERT_EQ(mapper->waitRequest(&req), commSuccess);
+    }
+  }
+
+  EXPECT_EQ(
+      mapper->ctrlMsgCount[CtranMapperBackend::SOCKET] - socketBefore,
+      static_cast<int>(sameHostPeers.size()) * 2);
+  EXPECT_EQ(mapper->ctrlMsgCount[CtranMapperBackend::IB] - ibBefore, 0);
+}
+
 class CtranDistMapperPerfConfigTestParam
     : public CtranDistMapperTest,
       public ::testing::WithParamInterface<bool> {};
