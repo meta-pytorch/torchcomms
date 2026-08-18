@@ -8,11 +8,18 @@
 
 #include "sharded_relay_all_to_all.h"
 #include "comm.h"
+#include "sharded_relay_route.h"
+
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <tuple>
 
 // GPU memory access alignment in elements for chunk size rounding.
 // Distinct from the CPU CACHE_LINE_SIZE (64 bytes) defined in comm.h
 // which is used for struct padding.
-static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
+static constexpr size_t CHUNK_ALIGN_ELEMENTS =
+    rcclx::relay::kRelayChunkAlignElements;
 
 // The rank-config builder below is a deliberate copy of the file-local helper
 // in sharded_relay_allreduce.cc (also mirrored in
@@ -21,6 +28,69 @@ static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
 // anonymous namespace to keep it internal and ODR-safe. All-to-all performs no
 // reduction, so NO reduction kernels are used.
 namespace {
+
+// Cached scratch buffer pool for kernel-owned relay helper staging (keyed by
+// (device, stream, key), never shrinks, mutex-protected). A file-local copy of
+// the pool in sharded_relay_allreduce.cc / _reduce_scatter.cc so callers can
+// pass placeholder buffers for the groups where they are a helper.
+class ScratchBufferCache {
+ public:
+  static ScratchBufferCache& getInstance() {
+    static ScratchBufferCache instance;
+    return instance;
+  }
+
+  void* get(int key, size_t requiredBytes, cudaStream_t stream) {
+    if (requiredBytes == 0) {
+      return nullptr;
+    }
+    int device;
+    cudaGetDevice(&device);
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Keyed by (device, stream, key). The stream is part of the key because two
+    // relay collectives can run concurrently on one device on different streams
+    // (independent communicators do exactly this): sharing one staging buffer
+    // between them corrupts both. It also makes the stream-ordered free below
+    // safe -- an entry is only ever read or written by the stream that owns it.
+    auto& entry = buffers_[std::make_tuple(
+        device, static_cast<const void*>(stream), key)];
+    if (entry.buffer == nullptr || entry.size < requiredBytes) {
+      if (entry.buffer != nullptr) {
+        cudaFreeAsync(entry.buffer, stream);
+      }
+      size_t allocSize = requiredBytes;
+      if (allocSize >= 1024 * 1024) {
+        allocSize =
+            ((requiredBytes + 64 * 1024 * 1024 - 1) / (64 * 1024 * 1024)) *
+            (64 * 1024 * 1024);
+      }
+      cudaError_t err = cudaMallocAsync(&entry.buffer, allocSize, stream);
+      if (err != cudaSuccess) {
+        entry.buffer = nullptr;
+        entry.size = 0;
+        return nullptr;
+      }
+      entry.size = allocSize;
+    }
+    return entry.buffer;
+  }
+
+  ScratchBufferCache(const ScratchBufferCache&) = delete;
+  ScratchBufferCache& operator=(const ScratchBufferCache&) = delete;
+
+ private:
+  ScratchBufferCache() = default;
+  ~ScratchBufferCache() = default;
+  struct BufferEntry {
+    void* buffer = nullptr;
+    size_t size = 0;
+  };
+  std::mutex mutex_;
+  // (device, stream, group) -> grow-only staging buffer.
+  std::map<std::tuple<int, const void*, int>, BufferEntry> buffers_;
+};
+
+static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
 
 // Maximum number of helper ranks supported per group.
 constexpr int SHARDED_RELAY_MAX_HELPERS = 8;
@@ -322,6 +392,23 @@ static ncclResult_t shardedRelayAllToAll2Active(
         stream);
   }
 
+  // Helper staging is kernel-owned scratch: callers pass a placeholder buffer
+  // for groups where they are a helper. Each helper group holds nActiveRanks
+  // chunks (one per active source) to receive and forward.
+  void* helperScratch[SHARDED_RELAY_MAX_GROUPS] = {nullptr};
+  for (int g = 0; g < nGroups; g++) {
+    const ShardedRelayRankConfig& cfg = configs[g];
+    if (!cfg.isActiveRank && segmentCounts[g] > 0 && chunkSizes[g] > 0) {
+      size_t needBytes =
+          static_cast<size_t>(cfg.nActiveRanks) * chunkSizes[g] * elementSize;
+      helperScratch[g] = ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase + g, needBytes, stream);
+      if (helperScratch[g] == nullptr) {
+        return ncclInternalError;
+      }
+    }
+  }
+
   // =========================================================================
   // GROUP 1: relay scatter (active->helpers) || direct chunk A
   // (active<->active)
@@ -371,7 +458,7 @@ static ncclResult_t shardedRelayAllToAll2Active(
           stream));
     } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
-      char* helperBuf = static_cast<char*>(recvBuffs[g]);
+      char* helperBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclRecv(
             helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
@@ -435,7 +522,7 @@ static ncclResult_t shardedRelayAllToAll2Active(
           comm,
           stream));
     } else if (chunkSize > 0) {
-      const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
+      const char* helperBuf = static_cast<const char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(
             helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
@@ -480,7 +567,7 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
   for (int g = 0; g < nGroups; g++) {
     const size_t third = segmentCounts[g] / 3;
     directACounts[g] = third;
-    relayCounts[g] = (third / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
+    relayCounts[g] = rcclx::relay::allToAllA4RelayCount(segmentCounts[g]);
     directBCounts[g] = segmentCounts[g] - directACounts[g] - relayCounts[g];
     if (!buildA4RelayTasks(configs[g], tasks[g])) {
       return ncclInvalidArgument;
@@ -499,6 +586,22 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
         sc * elementSize,
         cudaMemcpyDeviceToDevice,
         stream);
+  }
+
+  // Helper staging is kernel-owned scratch: callers pass a placeholder buffer
+  // for groups where they are a helper. Each helper group holds its compact
+  // relay slots (bounded by the segment count).
+  void* helperScratch[SHARDED_RELAY_MAX_GROUPS] = {nullptr};
+  for (int g = 0; g < nGroups; g++) {
+    const ShardedRelayRankConfig& cfg = configs[g];
+    if (!cfg.isActiveRank && relayCounts[g] > 0) {
+      size_t needBytes = segmentCounts[g] * elementSize;
+      helperScratch[g] = ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase + g, needBytes, stream);
+      if (helperScratch[g] == nullptr) {
+        return ncclInternalError;
+      }
+    }
   }
 
   // Phase 1 sends the first direct third to its final destination while the
@@ -548,7 +651,7 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
           }
         }
       } else if (relay > 0 && task.helperIndex == cfg.myHelperIndex) {
-        char* helperSlot = static_cast<char*>(recvBuffs[g]) +
+        char* helperSlot = static_cast<char*>(helperScratch[g]) +
             static_cast<size_t>(task.helperSlot) * relay * elementSize;
         NCCLCHECK(ncclRecv(
             helperSlot,
@@ -608,7 +711,7 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
           }
         }
       } else if (relay > 0 && task.helperIndex == cfg.myHelperIndex) {
-        const char* helperSlot = static_cast<const char*>(recvBuffs[g]) +
+        const char* helperSlot = static_cast<const char*>(helperScratch[g]) +
             static_cast<size_t>(task.helperSlot) * relay * elementSize;
         NCCLCHECK(ncclSend(
             helperSlot,
@@ -801,43 +904,17 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
   }
 
   ncclResult_t r;
-  // Size-adaptive routing for A==2. The 2Active relay (scatter/forward/direct =
-  // 3 group boundaries + a helper HBM round trip) wins on bandwidth at large
-  // sizes, but at small sizes it is latency-bound; the A-generic Flat path does
-  // a single-group pure-direct exchange (the two active ranks swap their off-
-  // diagonal segment directly, helpers idle) with minimal latency. Route small
-  // A==2 to Flat, large to the relay. maxBytes (A*segment*elemSize) equals the
-  // bench per-rank input label; crossover set nGroups-aware below.
-  size_t maxSeg = 0;
-  for (int g = 0; g < nGroups; g++) {
-    if (segmentCounts[g] > maxSeg) {
-      maxSeg = segmentCounts[g];
-    }
-  }
-  const size_t maxBytes =
-      static_cast<size_t>(nActiveRanksPerGroup) * maxSeg * elementSize;
-  // Crossover measured MI350X (bf16, 8 GPUs): fused relay overtakes Flat at
-  // ~9 MB (Flat wins the small end big, e.g. 576 KB 0.92x->1.45x), independent
-  // at ~27 MB (0.38->0.53 @4KB). Independent has no cross-group contention so
-  // direct holds on longer. Cross over below each.
-  const size_t kA2PureDirectMaxBytes = (nGroups > 1)
-      ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(27) << 20); // independent: < 27 MB
-  const bool a2UseFlat =
-      (nActiveRanksPerGroup == 2) && (maxBytes < kA2PureDirectMaxBytes);
-  bool allSegmentCountsPositive = true;
-  for (int g = 0; g < nGroups; g++) {
-    allSegmentCountsPositive &= segmentCounts[g] > 0;
-  }
-  // Use the common maximum across groups so every rank selects the same A=4
-  // schedule. One segment of helper scratch is sufficient for all three relay
-  // slots because 3 * alignDown(segmentCount / 3, 128) <= segmentCount.
-  constexpr size_t kA4XorRelayMinBytes = static_cast<size_t>(63) << 20;
-  constexpr size_t kA4XorRelayMaxBytes = static_cast<size_t>(256) << 20;
-  const bool useA4XorRelay = nActiveRanksPerGroup == 4 && numHelpers == 4 &&
-      allSegmentCountsPositive && maxBytes >= kA4XorRelayMinBytes &&
-      maxBytes < kA4XorRelayMaxBytes;
-  if (nActiveRanksPerGroup == 2 && !a2UseFlat) {
+  // Size-adaptive routing. The 2Active relay (scatter/forward/direct = 3 group
+  // boundaries + a helper HBM round trip) wins on bandwidth at large sizes, but
+  // at small sizes it is latency-bound; the A-generic Flat path does a
+  // single-group pure-direct exchange (the active ranks swap their off-diagonal
+  // segments directly, helpers idle) with minimal latency. The size -> route
+  // mapping, including the A==4 XOR-relay window, lives in
+  // selectAllToAllRoute() so the tests assert the same definition the
+  // implementation dispatches on.
+  const rcclx::relay::AllToAllRoute route = rcclx::relay::selectAllToAllRoute(
+      nActiveRanksPerGroup, numHelpers, nGroups, segmentCounts, elementSize);
+  if (route == rcclx::relay::AllToAllRoute::A2Relay) {
     r = shardedRelayAllToAll2Active(
         sendBuffs2,
         recvBuffs2,
@@ -850,7 +927,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
         numHelpers,
         nGroups,
         elementSize);
-  } else if (useA4XorRelay) {
+  } else if (route == rcclx::relay::AllToAllRoute::A4XorRelay) {
     r = shardedRelayAllToAllA4XorRelay(
         sendBuffs2,
         recvBuffs2,

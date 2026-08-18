@@ -47,6 +47,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -329,6 +330,43 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     }
   }
 
+  static const char* allToAllRouteName(rcclx::relay::AllToAllRoute route) {
+    switch (route) {
+      case rcclx::relay::AllToAllRoute::PureDirect:
+        return "PureDirect";
+      case rcclx::relay::AllToAllRoute::A2Relay:
+        return "A2Relay";
+      case rcclx::relay::AllToAllRoute::A4XorRelay:
+        return "A4XorRelay";
+    }
+    return "unknown";
+  }
+
+  // Assert the collective's internal size -> route mapping resolves this
+  // geometry to `expected`. Which route runs is owned by the collective and
+  // derived only from the message size; this asks the very selector the
+  // implementation dispatches on, so a test can neither drive the route nor
+  // drift from the thresholds it means to pin.
+  void expectAllToAllRoute(
+      int nActiveRanksPerGroup,
+      int nGroups,
+      const size_t* segmentCounts,
+      rcclx::relay::AllToAllRoute expected) {
+    const rcclx::relay::AllToAllRoute actual =
+        rcclx::relay::selectAllToAllRoute(
+            nActiveRanksPerGroup,
+            this->numRanks - nActiveRanksPerGroup,
+            nGroups,
+            segmentCounts,
+            sizeof(int32_t));
+    EXPECT_EQ(actual, expected)
+        << "internal route selection resolved to " << allToAllRouteName(actual)
+        << " but this case is written for " << allToAllRouteName(expected)
+        << " (A=" << nActiveRanksPerGroup << ", nGroups=" << nGroups
+        << ", max segment count="
+        << rcclx::relay::relayMaxCount(segmentCounts, nGroups) << ")";
+  }
+
   void runA2CorrectnessCase(
       const std::vector<size_t>& segmentCounts,
       const int* const* allActiveRanks,
@@ -336,6 +374,20 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     constexpr int nActiveRanksPerGroup = 2;
     const int nGroups = static_cast<int>(segmentCounts.size());
     ASSERT_GT(nGroups, 0);
+    // Which route runs is internal to the collective and derived only from the
+    // message size, so assert the collective's own selector resolves this case
+    // the way the test intends. Without this the three IndependentThreshold
+    // cases below/at/above the crossover are indistinguishable, and a
+    // regression that collapsed the routing to always-direct would still pass
+    // them: the output is correct on either route. Helper participation used to
+    // supply this signal, but helpers now stage into kernel-owned internal
+    // scratch and never write the caller's buffer on any route.
+    expectAllToAllRoute(
+        nActiveRanksPerGroup,
+        nGroups,
+        segmentCounts.data(),
+        expectRelay ? rcclx::relay::AllToAllRoute::A2Relay
+                    : rcclx::relay::AllToAllRoute::PureDirect);
 
     int myActiveGroup = -1;
     int myActiveIndex = -1;
@@ -401,17 +453,16 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
           myActiveIndex,
           myActiveGroup);
     }
+    // New contract: helpers stage into kernel-owned internal scratch and never
+    // write the caller's helper buffer (on either route), so it stays at 0.
     for (int g = 0; g < nGroups; g++) {
       if (g != myActiveGroup) {
-        const int32_t expectedHelperFirstElement =
-            expectRelay ? segFillValue(0, 1) : 0;
         verifyDeviceBufferEquals(
             sendBuffs[g],
             1,
-            expectedHelperFirstElement,
+            0,
             g,
-            expectRelay ? "Relay route did not use helper storage"
-                        : "Pure-direct route modified helper storage");
+            "helper caller buffer was written; it must stay internal-scratch-only");
       }
     }
 
@@ -433,7 +484,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     const size_t segmentBytes = segmentCount * sizeof(int32_t);
     const size_t activeBufferBytes =
         static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
-    const size_t relayCount = (segmentCount / 3 / 128) * 128;
+    const size_t relayCount = rcclx::relay::allToAllA4RelayCount(segmentCount);
     const size_t helperElements = expectRelay ? 3 * relayCount : segmentCount;
     const size_t helperBufferBytes = (helperElements + 1) * sizeof(int32_t);
 
@@ -490,6 +541,12 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     const void* sendPtrs[nGroups] = {sendBuffs[0], sendBuffs[1]};
     void* recvPtrs[nGroups] = {recvBuffs[0], recvBuffs[1]};
     const size_t segmentCounts[nGroups] = {segmentCount, segmentCount};
+    expectAllToAllRoute(
+        nActiveRanksPerGroup,
+        nGroups,
+        segmentCounts,
+        expectRelay ? rcclx::relay::AllToAllRoute::A4XorRelay
+                    : rcclx::relay::AllToAllRoute::PureDirect);
     const ncclResult_t result = callAllToAllCompat(
         sendPtrs,
         recvPtrs,
@@ -532,29 +589,16 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
           nActiveRanksPerGroup);
     }
 
+    // New contract: helpers stage into kernel-owned internal scratch and never
+    // write the caller's helper buffer, on either route. It must stay at the
+    // sentinel throughout (start and past-contract tail).
     const int helperGroup = 1 - myActiveGroup;
-    if (expectRelay) {
-      constexpr int firstSlotSource[4] = {1, 0, 0, 0};
-      constexpr int firstSlotDest[4] = {3, 3, 1, 2};
-      const int32_t expectedFirstSlot = checkRegionBoundaries
-          ? boundaryFillValue(
-                firstSlotSource[myActiveIndex], firstSlotDest[myActiveIndex], 1)
-          : segFillValue(
-                firstSlotSource[myActiveIndex], firstSlotDest[myActiveIndex]);
-      verifyDeviceBufferEquals(
-          recvBuffs[helperGroup],
-          1,
-          expectedFirstSlot,
-          helperGroup,
-          "A=4 XOR route did not populate the expected first helper slot");
-    } else {
-      verifyDeviceBufferEquals(
-          recvBuffs[helperGroup],
-          1,
-          helperSentinel,
-          helperGroup,
-          "A=4 direct route unexpectedly modified helper scratch");
-    }
+    verifyDeviceBufferEquals(
+        recvBuffs[helperGroup],
+        1,
+        helperSentinel,
+        helperGroup,
+        "helper caller buffer was written; it must stay internal-scratch-only");
     verifyDeviceBufferEquals(
         recvBuffs[helperGroup] + helperElements,
         1,
@@ -585,7 +629,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     const size_t segmentBytes = segmentCount * sizeof(int32_t);
     const size_t activeBufferBytes =
         static_cast<size_t>(nActiveRanksPerGroup) * segmentBytes;
-    const size_t relayCount = (segmentCount / 3 / 128) * 128;
+    const size_t relayCount = rcclx::relay::allToAllA4RelayCount(segmentCount);
     const size_t helperElements = expectRelay ? 3 * relayCount : segmentCount;
     const size_t helperBufferBytes = (helperElements + 1) * sizeof(int32_t);
 
@@ -638,6 +682,12 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     const void* sendPtrs[1] = {sendBuff};
     void* recvPtrs[1] = {recvBuff};
     const size_t segmentCounts[1] = {segmentCount};
+    expectAllToAllRoute(
+        nActiveRanksPerGroup,
+        nGroups,
+        segmentCounts,
+        expectRelay ? rcclx::relay::AllToAllRoute::A4XorRelay
+                    : rcclx::relay::AllToAllRoute::PureDirect);
     const ncclResult_t result = callAllToAllCompat(
         sendPtrs,
         recvPtrs,
