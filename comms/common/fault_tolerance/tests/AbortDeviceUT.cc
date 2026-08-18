@@ -642,4 +642,229 @@ TEST(AbortDeviceTest, defaultConstructedHandleIsDisabledNoop) {
   EXPECT_EQ(readDeviceValue(observedMode), static_cast<int>(AbortReason::NONE));
 }
 
+// --- FT_ABORT_* macros ----------------------------------------------------
+//
+// Each case bounds its loop, so a macro that fails to terminate reports the
+// bound rather than hanging.
+
+constexpr int kMacroLoopBound = 1000;
+
+// The timeout case paces itself at roughly a microsecond per iteration, so the
+// bound has to outlast the deadline by a wide margin for "ended early" to mean
+// the deadline ended it. Reaching the bound caps the kernel at about a second.
+constexpr auto kMacroTimeoutMs = std::chrono::milliseconds{20};
+constexpr int kMacroTimeoutLoopBound = 1'000'000;
+// A correctly armed 20 ms deadline takes thousands of iterations to reach, so
+// anything this small means the deadline was already expired on entry.
+constexpr int kMacroTimeoutMinIterations = 100;
+
+TEST(AbortMacrosTest, BreakLeavesLoopWhenAborted) {
+  Abort abort{/*enabled=*/true};
+  abort.setAbort();
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  EXPECT_EQ(
+      launchMacroBreakLoop(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(iterations), 1)
+      << "FT_ABORT_BREAK must leave the loop on its first check";
+}
+
+TEST(AbortMacrosTest, BreakRunsToCompletionWhenNotAborted) {
+  Abort abort{/*enabled=*/true};
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  EXPECT_EQ(
+      launchMacroBreakLoop(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(iterations), kMacroLoopBound)
+      << "a healthy handle must not terminate the loop";
+}
+
+TEST(AbortMacrosTest, BreakIsANoOpForDisabledHandle) {
+  AbortDevice disabled;
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  EXPECT_EQ(
+      launchMacroBreakLoop(
+          disabled, iterations.get(), kMacroLoopBound, /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(iterations), kMacroLoopBound);
+}
+
+// FT_ABORT_BREAK expands to an `if`. If it does not consume a trailing `else`,
+// the caller's `else` binds to the macro, and the damage is silent: `fallback`
+// runs precisely when the guard held and nothing had aborted.
+//
+// The healthy case is the one that discriminates. With a pre-aborted handle the
+// macro's check is true on the first iteration, so the loop breaks and
+// `fallback` stays 0 under either expansion -- that case only pins the break
+// itself. Reaching the caller's `else` at all requires the check to be false,
+// which is why both cases are here.
+TEST(AbortMacrosTest, BreakDoesNotCaptureACallerElseWhenHealthy) {
+  Abort abort{/*enabled=*/true};
+
+  auto iterations = makeDeviceValue<int>();
+  auto fallback = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  ASSERT_NE(fallback, nullptr);
+  EXPECT_EQ(
+      launchMacroBreakInIfElse(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          fallback.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(iterations), kMacroLoopBound)
+      << "a healthy handle must not terminate the caller's loop";
+  EXPECT_EQ(readDeviceValue(fallback), 0)
+      << "the caller's else belongs to the caller's if, not to the macro; a "
+         "naked-if expansion sets this to 1";
+}
+
+TEST(AbortMacrosTest, BreakDoesNotCaptureACallerElseWhenAborted) {
+  Abort abort{/*enabled=*/true};
+  abort.setAbort();
+
+  auto iterations = makeDeviceValue<int>();
+  auto fallback = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  ASSERT_NE(fallback, nullptr);
+  EXPECT_EQ(
+      launchMacroBreakInIfElse(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          fallback.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(iterations), 1)
+      << "the break must still leave the caller's loop on the first check";
+  EXPECT_EQ(readDeviceValue(fallback), 0);
+}
+
+TEST(AbortMacrosTest, CheckReportsStopToTheCaller) {
+  Abort abort{/*enabled=*/true};
+  abort.setAbort();
+
+  auto iterations = makeDeviceValue<int>();
+  auto stop = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  ASSERT_NE(stop, nullptr);
+  EXPECT_EQ(
+      launchMacroCheckLoop(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          stop.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(stop), 1)
+      << "FT_ABORT_CHECK must report the terminal result";
+  EXPECT_EQ(readDeviceValue(iterations), 1);
+}
+
+TEST(AbortMacrosTest, CheckReportsContinueWhenHealthy) {
+  Abort abort{/*enabled=*/true};
+
+  auto iterations = makeDeviceValue<int>();
+  auto stop = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  ASSERT_NE(stop, nullptr);
+  EXPECT_EQ(
+      launchMacroCheckLoop(
+          abort.getDeviceHandle(),
+          iterations.get(),
+          stop.get(),
+          kMacroLoopBound,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(stop), 0);
+  EXPECT_EQ(readDeviceValue(iterations), kMacroLoopBound);
+}
+
+TEST(AbortMacrosTest, ReturnYieldsTheCallerSuppliedValue) {
+  Abort abort{/*enabled=*/true};
+  abort.setAbort();
+
+  auto observed = makeDeviceValue<int>(0);
+  ASSERT_NE(observed, nullptr);
+  EXPECT_EQ(
+      launchMacroReturnValue(
+          abort.getDeviceHandle(), observed.get(), /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(observed), -1)
+      << "FT_ABORT_RETURN must return the value the caller supplied";
+}
+
+TEST(AbortMacrosTest, ReturnFallsThroughWhenHealthy) {
+  Abort abort{/*enabled=*/true};
+
+  auto observed = makeDeviceValue<int>(0);
+  ASSERT_NE(observed, nullptr);
+  EXPECT_EQ(
+      launchMacroReturnValue(
+          abort.getDeviceHandle(), observed.get(), /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(observed), 7);
+}
+
+TEST(AbortMacrosTest, TimeoutTerminatesTheLoop) {
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(kMacroTimeoutMs);
+  auto handle = abort.getDeviceHandle();
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+  // The kernel arms the deadline itself: startTimeout() is device-only and
+  // reads the device clock, so arming it here would make the first check see
+  // an already-expired deadline and the loop would end for the wrong reason.
+  EXPECT_EQ(
+      launchMacroTimeoutLoop(
+          handle, iterations.get(), kMacroTimeoutLoopBound, /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  // The deadline is what ends it, so the exact iteration is timing dependent.
+  // Both bounds matter: reaching kMacroTimeoutLoopBound means the macro never
+  // observed the timeout, while stopping in the first few iterations means the
+  // deadline was already expired when the kernel started -- which is what an
+  // accidental host-side startTimeout() produces, and it would otherwise pass
+  // every assertion here.
+  const int observed = readDeviceValue(iterations);
+  EXPECT_LT(observed, kMacroTimeoutLoopBound);
+  EXPECT_GT(observed, kMacroTimeoutMinIterations);
+  EXPECT_TRUE(abort.isTimedOut());
+}
+
 } // namespace comms::fault_tolerance::testing
