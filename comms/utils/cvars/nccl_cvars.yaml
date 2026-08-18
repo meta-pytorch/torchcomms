@@ -3412,6 +3412,17 @@ cvars:
    default     : 30000.0
    description : Timeout in milliseconds for MCCL device-side abort polling.
 
+ - name        : MCCL_ABORT_MODE
+   type        : enum
+   default     : skip
+   choices     : skip, trap, none
+   description : |-
+     MCCL fault-tolerance abort behavior. "skip" is the default and asks device
+     wait loops to return aborted work results without trapping. "trap" forces
+     device-trap behavior even when the caller requests skip. "skip" does not
+     downgrade a caller's trap request. "none" disables MCCL abort support for
+     the communicator.
+
  - name        : MCCL_TREE_FANOUT
    type        : int
    default     : 2
