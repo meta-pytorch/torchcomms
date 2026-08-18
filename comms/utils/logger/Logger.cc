@@ -82,9 +82,11 @@ void NcclLogger::registerHandler(const NcclLoggerInitConfig& config) {
 }
 
 void NcclLogger::close() noexcept {
-  NcclLogHandlerFactory::close();
+  if (firstInit_.test()) {
+    NcclLogHandlerFactory::close();
+    firstInit_.clear();
+  }
   DataTableWrapper::shutdown();
-  firstInit_.clear();
 }
 
 std::shared_ptr<folly::LogWriter>
