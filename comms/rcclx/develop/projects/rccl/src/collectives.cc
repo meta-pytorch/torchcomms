@@ -471,8 +471,8 @@ ncclResult_t ncclShardedRelayMultiGroupAllReduce_impl(
     return ncclInvalidArgument;
   }
 
-  if (nActiveRanksPerGroup != 2) {
-    WARN("ncclShardedRelayMultiGroupAllReduce: nActiveRanksPerGroup must be 2, got %d", 
+  if (nActiveRanksPerGroup != 2 && nActiveRanksPerGroup != 4) {
+    WARN("ncclShardedRelayMultiGroupAllReduce: nActiveRanksPerGroup must be 2 or 4, got %d", 
          nActiveRanksPerGroup);
     return ncclInvalidArgument;
   }
