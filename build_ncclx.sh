@@ -289,6 +289,17 @@ if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
   conda install pyyaml --yes
 fi
 
+if [[ "${NCCL_PATCH_FMT_NVCC_CXX20:-0}" == "1" ]]; then
+  # fmt 9.1.0 disables relaxed constexpr under NVCC, which conflicts with its
+  # C++20-only constexpr APIs. This mirrors fmtlib PR #3544 and must run after
+  # dependency installation because conda may replace fmt/core.h above.
+  sed -i 's#!FMT_ICC_VERSION && !defined(__NVCC__)$#!FMT_ICC_VERSION \&\& (!defined(__NVCC__) || FMT_CPLUSPLUS >= 202002L)#' "${CONDA_PREFIX}/include/fmt/core.h"
+  grep -qF '!FMT_ICC_VERSION && (!defined(__NVCC__) || FMT_CPLUSPLUS >= 202002L)' "${CONDA_PREFIX}/include/fmt/core.h" || {
+    echo "ERROR: fmt PR#3544 patch did not apply to ${CONDA_PREFIX}/include/fmt/core.h" >&2
+    exit 1
+  }
+fi
+
 # Run the extractcvars.py script directly to generate the files
 export NCCL_CVARS_OUTPUT_DIR="$CVARS_DIR"
 python3 "$CVARS_DIR/extractcvars.py"
