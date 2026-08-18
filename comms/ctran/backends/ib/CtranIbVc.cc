@@ -271,7 +271,7 @@ commResult_t CtranIbVirtualConn::prepCtrlMsgs() {
   FOLLY_EXPECTED_CHECK(maybeRecvCtrlMr);
   this->recvCtrl_.ibvMr_ = std::move(*maybeRecvCtrlMr);
 
-  CLOGF_TRACE(
+  CTRAN_LOG_TRACE(
       INIT,
       "CTRAN-IB-VC: CMsg packets pre-registered to device {}: sendCtrl {}, recvCtrl {}, size {} (packetSize {} * MAX_RECV_WR {})",
       ctrlDevice,

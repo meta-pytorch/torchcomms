@@ -123,7 +123,7 @@ commResult_t LocalVirtualConn::iflush(
     ibverbx::ibv_send_wr* bad_wr{nullptr};
     auto maybeSend = ibvQps_[device].postSend(&wr, &bad_wr);
     FOLLY_EXPECTED_CHECK(maybeSend);
-    CLOGF_TRACE(
+    CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB: posted flush on qpn {}, req {}",
         ibvQps_[device].qp()->qp_num,
