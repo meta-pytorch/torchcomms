@@ -17,6 +17,15 @@
 
 namespace comms::fault_tolerance {
 
+/**
+ * Shared-abort-state polls per millisecond of device time.
+ *
+ * 100 polls/ms bounds abort-observation latency at ~10us - orders of magnitude
+ * finer than any timeout that matters - while removing the mapped-host read
+ * from the steady-state spin path.
+ */
+inline constexpr uint64_t kAbortPollsPerMs = 100;
+
 namespace detail {
 
 inline int hostCurrentDevice() {
@@ -263,10 +272,35 @@ struct AbortDevice final {
     if (!isEnabled()) {
       return false;
     }
-    if (reason() != AbortReason::NONE) {
+    // Terminal reasons are first-writer-wins and never cleared, so once this
+    // handle has observed one it can answer from a register forever.
+    if (sawTerminalReason_) {
       return true;
     }
-    return markTimedOutIfExpired() || reason() != AbortReason::NONE;
+
+    // `state_` lives in mapped pinned host memory, so every read here is an
+    // uncached PCIe round trip. The pre-migration Prims `Timeout` compared an
+    // on-chip clock and touched no memory at all, so a naive port turns each
+    // spin-loop iteration into a host access - worst case 32 lanes x 2 loads
+    // per warp per iteration in the LL small-message path. Gate the shared
+    // read on the free device clock: steady-state polling costs a register
+    // compare, and an abort is still observed within one poll interval.
+    const uint64_t now = detail::deviceClock();
+    const bool deadlineDue = deadlineCycles_ != 0 && now >= deadlineCycles_;
+    if (!deadlineDue && now < nextPollCycles_) {
+      return false;
+    }
+    nextPollCycles_ = now + pollIntervalCycles_;
+
+    if (reason() != AbortReason::NONE) {
+      sawTerminalReason_ = true;
+      return true;
+    }
+    if (deadlineDue && markTimedOutIfExpired()) {
+      sawTerminalReason_ = true;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -341,6 +375,10 @@ struct AbortDevice final {
    * read. Otherwise the communicator-level timeout is read from mapped shared
    * state on every start, which keeps it late-bound: a handle created before
    * `setDefaultTimeout()` still observes the new value.
+   *
+   * Deliberately NOT cached in the handle. Transports keep one handle for the
+   * communicator's lifetime, so caching here would silently ignore every later
+   * `Abort::setDefaultTimeout()`.
    */
   __device__ int64_t resolveTimeoutMs() const {
     if (opTimeoutMs_ >= 0) {
@@ -373,7 +411,10 @@ struct AbortDevice final {
       AbortState* state,
       uint64_t cyclesPerMs,
       AbortBehavior behavior = AbortBehavior::SKIP)
-      : state_{state}, cyclesPerMs_{cyclesPerMs}, behavior_{behavior} {}
+      : state_{state},
+        cyclesPerMs_{cyclesPerMs},
+        pollIntervalCycles_{cyclesPerMs / kAbortPollsPerMs},
+        behavior_{behavior} {}
 
   __device__ bool deadlineExpired() const {
     return deadlineCycles_ != 0 && detail::deviceClock() >= deadlineCycles_;
@@ -417,6 +458,25 @@ struct AbortDevice final {
    * reads it from registers rather than mapped host memory.
    */
   int64_t opTimeoutMs_{-1};
+
+  /**
+   * Minimum device-clock cycles between reads of the mapped shared state.
+   *
+   * Bounds abort-observation latency to one interval while keeping spin loops
+   * off the PCIe bus. Zero (disabled handles) polls every call, which is free
+   * because disabled handles short-circuit before the read.
+   */
+  uint64_t pollIntervalCycles_{0};
+
+  /**
+   * Device clock value after which the shared state may be read again.
+   */
+  mutable uint64_t nextPollCycles_{0};
+
+  /**
+   * Sticky: a terminal reason was already observed through this handle.
+   */
+  mutable bool sawTerminalReason_{false};
 
   /**
    * Device abort behavior selected by the owning host `Abort`.
