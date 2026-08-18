@@ -6,9 +6,8 @@
 #include "nccl.h"
 
 #include "comms/ctran/Ctran.h"
-#include "comms/utils/checks.h"
 
-#include "meta/NcclxLogUtils.h"
+#include "meta/NcclxChecks.h"
 #include "meta/wrapper/MetaFactory.h"
 
 namespace ncclx {
@@ -21,7 +20,7 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
     cudaStream_t stream,
     void** request) {
   if (!ctran::allGatherPSupport(comm->ctranComm_.get())) {
-    FB_ERRORTHROW(
+    NCCLX_ERRORTHROW(
         commInvalidUsage,
         "Persistent AllGather is not supported. Check whether CTRAN is enabled.");
   }

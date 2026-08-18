@@ -7,10 +7,9 @@
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/window/WinHintUtils.h"
-#include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
+#include "meta/NcclxChecks.h"
 #include "meta/NcclxConfig.h" // @manual
-#include "meta/NcclxLogUtils.h"
 #include "meta/commstate/FactoryCommStateX.h"
 #include "meta/ctran-integration/BaselineBootstrap.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -23,12 +22,12 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
   meta::comms::Hints ret;
   std::string v;
   for (const auto& k : meta::comms::hints::AllToAllPHintUtils::keys()) {
-    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    FB_COMMCHECKTHROW(ret.set(k, v));
+    NCCLX_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
+    NCCLX_COMMCHECKTHROW(ret.set(k, v));
   }
   for (const auto& k : meta::comms::hints::WinHintUtils::keys()) {
-    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    FB_COMMCHECKTHROW(ret.set(k, v));
+    NCCLX_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
+    NCCLX_COMMCHECKTHROW(ret.set(k, v));
   }
   return ret;
 }
