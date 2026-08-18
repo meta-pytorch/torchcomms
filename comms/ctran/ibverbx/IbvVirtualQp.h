@@ -4,7 +4,6 @@
 
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
-#include <folly/logging/xlog.h>
 #include <deque>
 #include <optional>
 #include <utility>
@@ -90,8 +89,10 @@ class IbvVirtualQp {
   const IbvQp& getNotifyQpRef() const;
   IbvQp& getNotifyQpRef();
   bool hasNotifyQp() const {
-    CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
-        << "notifyQp must be provided when using multiple data QPs!";
+    CTRAN_LOG_IF(
+        FATAL,
+        physicalQps_.size() != 1 && !notifyQp_.has_value(),
+        "Check failed: physicalQps_.size() == 1 || notifyQp_.has_value(): notifyQp must be provided when using multiple data QPs!");
     return notifyQp_.has_value();
   }
   bool isMultiQp() const {
@@ -544,7 +545,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   }
 
   // SPRAY mode: Post zero-length recv to notifyQp
-  CHECK(hasNotifyQp());
+  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   if (notifyQp_->physicalRecvWrStatus_.size() >=
       static_cast<size_t>(maxMsgCntPerQp_)) {
@@ -564,10 +565,11 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
 // Replenish a single DQPLB recv on the specified QP after consuming one
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::replenishDqplbRecv(
     int qpIdx) {
-  CHECK(qpIdx >= 0 && qpIdx < static_cast<int>(physicalQps_.size()))
-      << fmt::format(
-             "[Ibverbx]IbvVirtualQp::replenishDqplbRecv, invalid qpIdx={}",
-             qpIdx);
+  CTRAN_LOG_IF(
+      FATAL,
+      qpIdx < 0 || qpIdx >= static_cast<int>(physicalQps_.size()),
+      "Check failed: qpIdx >= 0 && qpIdx < static_cast<int>(physicalQps_.size()): [Ibverbx]IbvVirtualQp::replenishDqplbRecv, invalid qpIdx={}",
+      qpIdx);
 
   ibv_recv_wr recvWr{};
   ibv_recv_wr badWr{};
@@ -590,7 +592,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::replenishDqplbRecv(
 // Post zero-length recv to notifyQp (SPRAY mode)
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvToNotifyQp(
     uint64_t internalWrId) {
-  CHECK(hasNotifyQp());
+  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   ibv_recv_wr recvWr{};
   ibv_recv_wr badWr{};
@@ -613,7 +615,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvToNotifyQp(
 // Flush pending recv notifications when notifyQp backpressure clears
 inline folly::Expected<folly::Unit, Error>
 IbvVirtualQp::flushPendingRecvNotifies() {
-  CHECK(hasNotifyQp());
+  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingRecvNotifyQue_.empty()) {
     if (notifyQp_->physicalRecvWrStatus_.size() >=
@@ -643,8 +645,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
     uint64_t internalId = sendTracker_.frontPendingPost();
 
     auto* pending = sendTracker_.find(internalId);
-    CHECK(pending) << fmt::format(
-        "[Ibverbx]IbvVirtualQp::dispatchPendingSends, WR {} in pendingPostQue_ but not found in activeVirtualWrs_",
+    CTRAN_LOG_IF(
+        FATAL,
+        pending == nullptr,
+        "Check failed: pending != nullptr: [Ibverbx]IbvVirtualQp::dispatchPendingSends, WR {} in pendingPostQue_ but not found in activeVirtualWrs_",
         internalId);
 
     while (pending->offset < pending->length) {
@@ -736,8 +740,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
   while (sendTracker_.hasPendingCompletion()) {
     uint64_t frontId = sendTracker_.frontPendingCompletion();
     auto* frontWr = sendTracker_.find(frontId);
-    CHECK(frontWr) << fmt::format(
-        "[Ibverbx]IbvVirtualQp::reportSendCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
+    CTRAN_LOG_IF(
+        FATAL,
+        frontWr == nullptr,
+        "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::reportSendCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
         frontId);
 
     if (frontWr->needsNotify && !frontWr->notifyPosted) {
@@ -745,7 +751,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
         break;
       }
 
-      CHECK(hasNotifyQp());
+      CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
       if (notifyQp_->physicalSendWrStatus_.size() >=
           static_cast<size_t>(maxMsgCntPerQp_)) {
         pendingSendNotifyQue_.push_back(frontId);
@@ -776,11 +782,13 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
     uint64_t internalWrId) {
   auto* pending = sendTracker_.find(internalWrId);
-  CHECK(pending) << fmt::format(
-      "[Ibverbx]IbvVirtualQp::postSendToNotifyQp, WR {} not found",
+  CTRAN_LOG_IF(
+      FATAL,
+      pending == nullptr,
+      "Check failed: pending != nullptr: [Ibverbx]IbvVirtualQp::postSendToNotifyQp, WR {} not found",
       internalWrId);
 
-  CHECK(hasNotifyQp());
+  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   ibv_send_wr sendWr{};
   sendWr.wr_id = nextPhysicalWrId_++;
@@ -806,7 +814,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
 
 inline folly::Expected<folly::Unit, Error>
 IbvVirtualQp::flushPendingSendNotifies() {
-  CHECK(hasNotifyQp());
+  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingSendNotifyQue_.empty()) {
     if (notifyQp_->physicalSendWrStatus_.size() >=
@@ -816,8 +824,10 @@ IbvVirtualQp::flushPendingSendNotifies() {
 
     uint64_t frontId = pendingSendNotifyQue_.front();
     auto* frontWr = sendTracker_.find(frontId);
-    CHECK(frontWr) << fmt::format(
-        "[Ibverbx]IbvVirtualQp::flushPendingSendNotifies, WR {} in pendingSendNotifyQue_ but not found in activeVirtualWrs_",
+    CTRAN_LOG_IF(
+        FATAL,
+        frontWr == nullptr,
+        "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::flushPendingSendNotifies, WR {} in pendingSendNotifyQue_ but not found in activeVirtualWrs_",
         frontId);
 
     if (postSendToNotifyQp(frontId).hasError()) {
@@ -834,8 +844,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportRecvCompletions(
   while (recvTracker_.hasPendingCompletion()) {
     uint64_t frontId = recvTracker_.frontPendingCompletion();
     auto* frontWr = recvTracker_.find(frontId);
-    CHECK(frontWr) << fmt::format(
-        "[Ibverbx]IbvVirtualQp::reportRecvCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
+    CTRAN_LOG_IF(
+        FATAL,
+        frontWr == nullptr,
+        "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::reportRecvCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
         frontId);
 
     if (frontWr->remainingMsgCnt > 0) {
@@ -866,8 +878,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
     ibv_wc_status status,
     ibv_wc_opcode wcOpcode) {
   auto* wr = tracker.find(internalWrId);
-  CHECK(wr) << fmt::format(
-      "[Ibverbx] WR {} not found in tracker during updateWrState",
+  CTRAN_LOG_IF(
+      FATAL,
+      wr == nullptr,
+      "Check failed: wr != nullptr: [Ibverbx] WR {} not found in tracker during updateWrState",
       internalWrId);
 
   wr->remainingMsgCnt--;
@@ -906,13 +920,17 @@ inline folly::Expected<uint64_t, Error> IbvVirtualQp::popPhysicalQueueStatus(
     std::deque<IbvQp::PhysicalWrStatus>& queStatus,
     uint64_t expectedPhysicalWrId,
     const char* queueName) {
-  CHECK(!queStatus.empty()) << fmt::format(
-      "[Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, no pending WR in {}",
+  CTRAN_LOG_IF(
+      FATAL,
+      queStatus.empty(),
+      "Check failed: !queStatus.empty(): [Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, no pending WR in {}",
       queueName);
 
   auto& frontStatus = queStatus.front();
-  CHECK_EQ(frontStatus.physicalWrId, expectedPhysicalWrId) << fmt::format(
-      "[Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, {} WR ID mismatch: expected {}, got {}",
+  CTRAN_LOG_IF(
+      FATAL,
+      frontStatus.physicalWrId != expectedPhysicalWrId,
+      "Check failed: frontStatus.physicalWrId == expectedPhysicalWrId: [Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, {} WR ID mismatch: expected {}, got {}",
       queueName,
       frontStatus.physicalWrId,
       expectedPhysicalWrId);
@@ -943,8 +961,10 @@ IbvVirtualQp::processCompletion(const ibv_wc& physicalWc, int32_t deviceId) {
                   : processNotifyQpRecvCompletion(physicalWc, results);
   } else {
     auto qpIdxIt = qpNumToIdx_.find(QpId{deviceId, physicalWc.qp_num});
-    CHECK(qpIdxIt != qpNumToIdx_.end()) << fmt::format(
-        "[Ibverbx] unknown physical QP: qpNum={}, deviceId={}",
+    CTRAN_LOG_IF(
+        FATAL,
+        qpIdxIt == qpNumToIdx_.end(),
+        "Check failed: qpIdxIt != qpNumToIdx_.end(): [Ibverbx] unknown physical QP: qpNum={}, deviceId={}",
         physicalWc.qp_num,
         deviceId);
     int qpIdx = qpIdxIt->second;
@@ -1089,14 +1109,19 @@ IbvVirtualQp::processDataQpRecvCompletion(
   int notifyCount = dqplbSeqTracker_.processReceivedImm(physicalWc.imm_data);
 
   for (int i = 0; i < notifyCount; i++) {
-    CHECK(recvTracker_.hasPendingCompletion()) << fmt::format(
-        "[Ibverbx] DQPLB notifyCount={} exceeds outstanding recvs",
+    CTRAN_LOG_IF(
+        FATAL,
+        !recvTracker_.hasPendingCompletion(),
+        "Check failed: recvTracker_.hasPendingCompletion(): [Ibverbx] DQPLB notifyCount={} exceeds outstanding recvs",
         notifyCount);
 
     uint64_t frontId = recvTracker_.frontPendingCompletion();
     auto* frontWr = recvTracker_.find(frontId);
-    CHECK(frontWr) << fmt::format(
-        "[Ibverbx] DQPLB WR {} not found in recvTracker_", frontId);
+    CTRAN_LOG_IF(
+        FATAL,
+        frontWr == nullptr,
+        "Check failed: frontWr != nullptr: [Ibverbx] DQPLB WR {} not found in recvTracker_",
+        frontId);
 
     frontWr->remainingMsgCnt--;
     frontWr->wcOpcode = physicalWc.opcode;
