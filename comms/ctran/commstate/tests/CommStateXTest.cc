@@ -472,6 +472,68 @@ TEST(CommStateXTest, nvlFabricCliqueTest) {
   EXPECT_FALSE(commState->nvlFabricCliqueEnabled());
 }
 
+// Regression: a cliqueId is only meaningful WITHIN an NVL fabric cluster. It is
+// a partition index, not a globally unique id, and real GB200/GB300 hosts
+// commonly report the same sentinel value (32766) across unrelated racks.
+//
+// Keying clique membership on cliqueId alone merged ranks from DIFFERENT
+// clusters into one clique, making nLocalRanks span hosts that share no NVLink
+// domain. CTRAN then attempted a fabric IPC import across them and failed with
+// CUDA_ERROR_INVALID_HANDLE. Observed in production on nao GB200: 3 ranks,
+// 3 distinct clusterIds, collapsed into a single 3-rank clique with nNodes=1.
+//
+// Here two distinct clusters share ONE cliqueId. They must stay two separate
+// cliques of 2 ranks (nNodes=2), NOT merge into one 4-rank clique (nNodes=1).
+TEST(CommStateXTest, nvlFabricCliqueIdCollisionAcrossClusters) {
+  EnvRAII env1(NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE, true);
+  EnvRAII env2(NCCL_MNNVL_CLIQUE_SIZE, 2);
+  const int rank = 0;
+  const int nRanks = 4;
+
+  // Same cliqueId on every rank -- the sentinel-cliqueId case.
+  std::vector<NvlFabricTopology> nvlFabricTopologies{};
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(0, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(1, kNvlFabricClusterId1, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(2, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+  nvlFabricTopologies.emplace_back(
+      createNvlFabricTopology(3, kNvlFabricClusterId2, kNvlFabricCliqueId1));
+
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(createRankTopology(0, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(1, kDc, kZone, kHost0));
+  rankTopologies.emplace_back(createRankTopology(2, kDc, kZone, kHost1));
+  rankTopologies.emplace_back(createRankTopology(3, kDc, kZone, kHost1));
+
+  auto commState = std::make_unique<CommStateX>(
+      rank,
+      nRanks,
+      /*cudaDev=*/0,
+      /*cudaArch=*/90,
+      /*busId=*/25,
+      /*commHash=*/0,
+      rankTopologies,
+      std::vector<int>{});
+  commState->setNvlFabricTopos(std::move(nvlFabricTopologies), true);
+
+  ASSERT_TRUE(commState->nvlFabricEnabled());
+  ASSERT_TRUE(commState->nvlFabricCliqueEnabled());
+
+  // The load-bearing assertion: two clusters must not fuse into one group.
+  EXPECT_EQ(commState->nNodes(), 2);
+  for (int i = 0; i < nRanks; ++i) {
+    EXPECT_EQ(commState->nLocalRanks(i), 2) << "rank " << i;
+    EXPECT_EQ(commState->node(i), i / 2) << "rank " << i;
+  }
+  // Ranks 0,1 share cluster 1; ranks 2,3 are in cluster 2 and must not be
+  // reported as sharing an NVL fabric with rank 0.
+  EXPECT_TRUE(commState->isSameNvlFabric(0, 1));
+  EXPECT_FALSE(commState->isSameNvlFabric(0, 2));
+  EXPECT_FALSE(commState->isSameNvlFabric(0, 3));
+}
+
 TEST(CommStateXTest, nvlFabricVCliqueSizeHint) {
   const int rank = 0;
   const int nRanks = 8;
