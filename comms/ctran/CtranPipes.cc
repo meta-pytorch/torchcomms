@@ -15,7 +15,6 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 bool ctranPrimsEnabled(const CtranComm* comm) {
   const auto enablePrims = comm->config_.primsConfig.enablePrims;
@@ -177,7 +176,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.nvlConfig.perChannelSize = alignedPerChannelSize(
         nvlSharedDevbufSize, nvlMaxNumChannels, config.nvlConfig.pipelineDepth);
     if (config.nvlConfig.perChannelSize == 0) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "CTRAN-PRIMS: invalid NVL config; sharedDevbufSize={} maxNumChannels={} pipelineDepth={} cannot produce aligned perChannelSize",
           nvlSharedDevbufSize,
@@ -215,7 +214,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.nvlConfig.ll128BufferSize =
             comms::prims::ll128_buffer_size(256 * 1024);
       }
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "Prims LL128 buffer size configured (size={} per peer)",
           config.nvlConfig.ll128BufferSize);
@@ -250,7 +249,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (requestedMaxChannels <= 0 ||
         requestedMaxChannels >
             static_cast<int64_t>(std::numeric_limits<int>::max())) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "max channels must be in [1, {}], got {} (from {})",
           std::numeric_limits<int>::max(),
@@ -275,7 +274,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     if (requestedPipelineDepth <= 0 ||
         requestedPipelineDepth >
             static_cast<int64_t>(std::numeric_limits<int>::max())) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "channel pipeline depth must be in [1, {}], got {} (from {})",
           std::numeric_limits<int>::max(),
@@ -296,7 +295,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         : static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
     if (perDirectionChannelBuffer >
         std::numeric_limits<size_t>::max() / static_cast<size_t>(maxChannels)) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "channel buffer size {} (from {}) overflows total size for {} channels (from {})",
           perDirectionChannelBuffer,
@@ -332,7 +331,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
     config.ibConfig.ibLazyConnect = pc.ibLazyConnect;
     if (NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC <= 0) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC must be positive, got {}",
           NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
@@ -353,14 +352,14 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     }
 
     if (config.ibConfig.dataBufferSize == 0) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "send/recv requires a positive staging size via MCCL_CHANNEL_BUFFER_SIZE or primsConfig.channelBufferSize");
       return commInvalidArgument;
     }
     const auto pipelineDepth = static_cast<size_t>(channelPipelineDepth);
     if (perDirectionChannelBuffer % pipelineDepth != 0) {
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "IB per-direction channel buffer {} (from {}) must be divisible by pipeline depth {}",
           perDirectionChannelBuffer,
@@ -379,7 +378,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
           if (value >= 16 && value % 16 == 0) {
             return true;
           }
-          CLOGF(
+          CTRAN_LOG(
               ERR,
               "IB {} must be >= 16 and 16-byte aligned, got {} (from {})",
               what,
@@ -403,7 +402,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.perChannelSize = perDirectionChannelBuffer;
     config.ibConfig.max_num_channels = config.ibConfig.maxGroups;
     config.ibConfig.pipelineDepth = channelPipelineDepth;
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "Prims IB sendRecv configured: rank={}, commDesc={}, perChannelSize={} (from {}), channelChunkSize={}, maxNumChannels={}, pipelineDepth={} (from {}), dataBufferSize={}",
         comm->statex_->rank(),
@@ -428,7 +427,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         static_cast<comms::prims::MnnvlMode>(NCCL_MNNVL_ENABLE);
     config.topoConfig.logicalNvlRanks = comm->statex_->localRankToRanks();
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
         comm->statex_->rank(),
@@ -456,7 +455,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         config.ibConfig.qpDepth,
         config.ibConfig.ibLazyConnect);
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: full config prepared rank={} logicalNvlRanks={}",
         comm->statex_->rank(),
@@ -471,7 +470,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // reliable way to distinguish real MNNVL (GB200) from false positives.
     if (config.topoConfig.mnnvlMode != comms::prims::MnnvlMode::kDisabled &&
         !ctran::utils::isCuMemFabricEnabled()) {
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-PRIMS: FABRIC handle probe failed — disabling MNNVL Tier 1 "
           "topology detection (falling back to same-host peer access)");
@@ -510,7 +509,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         comm->multiPeerTransport_->ib_peer_ranks().size(),
         config.topoConfig.p2pDisable);
   } catch (const std::exception& e) {
-    CLOGF(ERR, "Failed to initialize Prims MultiPeerTransport: {}", e.what());
+    CTRAN_LOG(
+        ERR, "Failed to initialize Prims MultiPeerTransport: {}", e.what());
     return commInternalError;
   }
 
@@ -601,7 +601,7 @@ void validatePipesCtranConsistency(CtranComm* comm) {
 commResult_t ctranInitPipesResources(CtranAlgo* algo) {
   auto* comm = algo->comm_;
   if (!comm->multiPeerTransport_) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: resource initialization skipped; MultiPeerTransport is not initialized");
     return commSuccess;
@@ -609,7 +609,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
 
   auto* statex = comm->statex_.get();
   int localRank = statex->localRank();
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: resource initialization started rank={} localRank={} nLocalRanks={} nRanks={} cudaDev={}",
       statex->rank(),
@@ -628,7 +628,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
       "prims resource initialization");
 
   int nvlNRanks = comm->multiPeerTransport_->nvl_n_ranks();
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: resource topology rank={} nvlNRanks={} nvlPeers={} ibPeers={}",
       statex->rank(),
@@ -642,12 +642,12 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
   const bool canUseExternalNvlBuffers =
       nvlNRanks > 1 && nvlNRanks == statex->nLocalRanks();
   if (canUseExternalNvlBuffers) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: validating ctran/prims consistency rank={}",
         statex->rank());
     validatePipesCtranConsistency(comm);
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: ctran/prims consistency validated rank={}",
         statex->rank());
@@ -655,7 +655,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
     // Build per-NVL-rank buffer spans. DeviceSpan is non-assignable (const
     // pointer member), so we construct the vectors in NVL local rank order.
     const auto bufSize = static_cast<uint32_t>(algo->devState_.bufSize);
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: building external NVL staging spans rank={} bufSize={} nvlNRanks={}",
         statex->rank(),
@@ -674,7 +674,7 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
       }
       // Map NVL local rank back to statex local rank index (same value since
       // both systems assign indices in sorted global rank order).
-      CLOGF(
+      CTRAN_LOG(
           INFO,
           "CTRAN-PRIMS: wiring NVL staging span rank={} nvlLocalRank={} localBuf={} remoteBuf={} size={}",
           statex->rank(),
@@ -694,23 +694,23 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
     externalBufs.localBuffers = std::move(localSpans);
     externalBufs.remoteBuffers = std::move(remoteSpans);
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: setting external NVL data buffers rank={}",
         statex->rank());
     comm->multiPeerTransport_->setExternalNvlDataBuffers(
         std::move(externalBufs));
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: external NVL data buffers set rank={}",
         statex->rank());
   } else if (nvlNRanks <= 1) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: no NVL peers; skipping external staging buffer wiring rank={}",
         statex->rank());
   } else {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-PRIMS: physical NVLink group size {} differs from Ctran local group size {}; using internal staging buffers rank={}",
         nvlNRanks,
@@ -718,17 +718,17 @@ commResult_t ctranInitPipesResources(CtranAlgo* algo) {
         statex->rank());
   }
 
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: starting MultiPeerTransport exchange rank={}",
       statex->rank());
   comm->multiPeerTransport_->exchange();
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: MultiPeerTransport exchange finished rank={}",
       statex->rank());
 
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "CTRAN-PRIMS: resource initialization finished rank={}",
       statex->rank());
