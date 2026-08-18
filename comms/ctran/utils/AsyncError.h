@@ -4,6 +4,7 @@
 
 #include <folly/Synchronized.h>
 
+#include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
@@ -47,7 +48,17 @@ namespace ctran::utils {
           opCount,                                                            \
           comm->logMetaData_.rank,                                            \
           comm->logMetaData_.commHash);                                       \
-      comm->setAbort();                                                       \
+      comm->setAbort(                                                         \
+          comms::fault_tolerance::AbortInfo{                                  \
+              .reason = ctran::utils::abortReason(e.result()),                \
+              .context = fmt::format(                                         \
+                  "op_type={} op_count={} rank={} comm_hash={} error={}",     \
+                  opType,                                                     \
+                  opCount,                                                    \
+                  comm->logMetaData_.rank,                                    \
+                  comm->logMetaData_.commHash,                                \
+                  e.what()),                                                  \
+          });                                                                 \
     } else {                                                                  \
       throw;                                                                  \
     }                                                                         \

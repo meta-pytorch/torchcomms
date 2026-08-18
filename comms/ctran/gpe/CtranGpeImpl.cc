@@ -775,11 +775,13 @@ void CtranGpe::Impl::gpeThreadFn() {
       }
       SCOPE_EXIT {
         if (comm->testAbort()) {
-          // Preserve abort state across cancelTimeout(): an aborted comm
-          // must never flip back to not-aborted.
-          comm->setAbort();
-          const std::string_view reason =
-              comm->getAbort()->isTimedOut() ? "timeout" : "explicit";
+          const auto abortInfo = comm->getAbortInfo();
+          const auto reason = abortInfo.has_value()
+              ? fmt::format(
+                    "reason={} context=\"{}\"",
+                    ctran::utils::abortReasonName(abortInfo->reason),
+                    folly::cEscape<std::string>(abortInfo->context))
+              : std::string{"reason=unknown context=\"\""};
 
           // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
           if (!isTerminateCmd) {

@@ -16,6 +16,25 @@ class AsyncErrorTest : public ::testing::Test {
   void TearDown() override {}
 };
 
+void expectFaultToleranceAbortReason(
+    commResult_t result,
+    comms::fault_tolerance::AbortReason expectedReason) {
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/true));
+  CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+      comm, { throw ::ctran::utils::Exception("UT error", result); }, -1, 0);
+
+  const auto abortInfo = comm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, expectedReason);
+  EXPECT_THAT(
+      abortInfo->context,
+      ::testing::AllOf(
+          ::testing::HasSubstr("op_type=-1"),
+          ::testing::HasSubstr("op_count=0"),
+          ::testing::HasSubstr("UT error")));
+}
+
 TEST(CtranAsyncErrorTest, SetAndGet) {
   constexpr auto numThreads = 10;
   std::vector<std::thread> threads;
@@ -81,12 +100,12 @@ TEST(AsyncErrorTest, FaultToleranceDisabled) {
 }
 
 TEST(AsyncErrorTest, FaultToleranceEnabled) {
-  auto comm = std::make_unique<CtranComm>(
-      comms::fault_tolerance::createAbort(/*enabled=*/true));
-  CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
-      comm,
-      { throw ::ctran::utils::Exception("UT error", commRemoteError); },
-      -1,
-      0);
-  EXPECT_TRUE(comm->testAbort());
+  expectFaultToleranceAbortReason(
+      commRemoteError, comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+  expectFaultToleranceAbortReason(
+      commTimeout, comms::fault_tolerance::AbortReason::TIMED_OUT);
+  expectFaultToleranceAbortReason(
+      commUserAbort, comms::fault_tolerance::AbortReason::ABORTED);
+  expectFaultToleranceAbortReason(
+      commInternalError, comms::fault_tolerance::AbortReason::INTERNAL_ERROR);
 }
