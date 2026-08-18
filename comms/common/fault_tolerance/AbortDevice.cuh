@@ -10,6 +10,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
@@ -256,8 +257,8 @@ struct AbortDevice final {
    * performed by Prims helpers so common fault-tolerance code stays transport
    * agnostic.
    */
-  __device__ AbortCheckResult check() const {
-    if (!checkExpired()) {
+  __device__ AbortCheckResult check(bool* flippedHere = nullptr) const {
+    if (!checkExpired(flippedHere)) {
       return AbortCheckResult::CONTINUE;
     }
     return behavior_ == AbortBehavior::TRAP ? AbortCheckResult::TRAP
@@ -271,7 +272,10 @@ struct AbortDevice final {
    * timeout. If this handle's local deadline has expired, this records
    * `AbortReason::TIMED_OUT` in the shared state.
    */
-  __device__ bool checkExpired() const {
+  __device__ bool checkExpired(bool* flippedHere = nullptr) const {
+    if (flippedHere != nullptr) {
+      *flippedHere = false;
+    }
     if (!isEnabled()) {
       return false;
     }
@@ -299,7 +303,7 @@ struct AbortDevice final {
       sawTerminalReason_ = true;
       return true;
     }
-    if (deadlineDue && markTimedOutIfExpired()) {
+    if (deadlineDue && markTimedOutIfExpired(flippedHere)) {
       sawTerminalReason_ = true;
       return true;
     }
@@ -361,7 +365,6 @@ struct AbortDevice final {
     if (!isEnabled()) {
       return false;
     }
-    (void)context;
     const bool validReason = detail::deviceIsValidTerminalReason(newReason);
     assert(validReason);
     if (!validReason) {
@@ -369,8 +372,18 @@ struct AbortDevice final {
     }
 
     int expected = static_cast<int>(AbortReason::NONE);
-    return detail::deviceCompareExchangeSystem(
+    const bool won = detail::deviceCompareExchangeSystem(
         &state_->abort, &expected, static_cast<int>(newReason));
+    if (won && context != nullptr) {
+      // `context` must be device-accessible, normally a string literal. It is
+      // consumed only by the winning call and is never written to mapped host
+      // state. NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+      printf(
+          "COMMS FT ABORT FIRST WRITER: device reason=%d context=%s\n",
+          static_cast<int>(newReason),
+          context);
+    }
+    return won;
   }
 
  private:
@@ -429,7 +442,7 @@ struct AbortDevice final {
     return deadlineCycles_ != 0 && detail::deviceClock() >= deadlineCycles_;
   }
 
-  __device__ bool markTimedOutIfExpired() const {
+  __device__ bool markTimedOutIfExpired(bool* flippedHere = nullptr) const {
     if (!isEnabled() || !deadlineExpired()) {
       return false;
     }
@@ -439,6 +452,9 @@ struct AbortDevice final {
             &state_->abort,
             &expected,
             static_cast<int>(AbortReason::TIMED_OUT))) {
+      if (flippedHere != nullptr) {
+        *flippedHere = true;
+      }
       return true;
     }
     return expected == static_cast<int>(AbortReason::TIMED_OUT);
