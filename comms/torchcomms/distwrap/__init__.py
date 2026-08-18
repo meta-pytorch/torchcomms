@@ -6,8 +6,6 @@ from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
-
-# pyre-fixme[21]: Could not find name in module (ProcessGroup backends not in stubs)
 from torch.distributed import (  # noqa: F401
     get_process_group_ranks,
     get_rank,

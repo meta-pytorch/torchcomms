@@ -74,7 +74,6 @@ def per_token_cast_to_fp8(x: torch.Tensor):
         fp8_max = 240
         fp8_dtype = torch.float8_e4m3fnuz
     x_amax = x_padded_view.abs().float().amax(dim=2).view(m, -1).clamp(1e-4)
-    # pyre-ignore[6]: int / Tensor dispatches to Tensor.__rtruediv__ at runtime
     return (x_padded_view * (fp8_max / x_amax.unsqueeze(2))).to(fp8_dtype).view(
         m, aligned_n
     )[:, :n].contiguous(), (x_amax / fp8_max).view(m, -1)
@@ -215,7 +214,6 @@ def bench_kineto(
     with suppress():
         schedule = torch.profiler.schedule(wait=1, warmup=0, active=1, repeat=1)
         with torch.profiler.profile(
-            # pyre-ignore[16]: ProfilerActivity missing from torch.profiler stubs
             activities=[torch.profiler.ProfilerActivity.CUDA],
             schedule=schedule,
         ) as prof:

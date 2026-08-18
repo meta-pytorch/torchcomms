@@ -198,7 +198,7 @@ def _flatten_with_comm(
     else:
         from torch.distributed._mesh_layout import _MeshLayout
 
-        coalesced_layout = _MeshLayout([layout.collapse()])  # pyre-ignore[19]
+        coalesced_layout = _MeshLayout([layout.collapse()])
 
     # Compatibility layer for DeviceMesh API changes. The new API uses _rank_map
     # while the older API requires passing mesh tensor directly. This conditional
@@ -235,11 +235,9 @@ def _flatten_with_comm(
                 "Flattening with torchcomm is not supported for device mesh without mesh layout."
             )
         root_mesh = _mesh_resources.get_root_mesh(mesh)
-        _mesh_resources.child_to_root_mapping[  # pyre-ignore[16]
-            flattened_device_mesh
-        ] = root_mesh
-        _mesh_resources.root_to_flatten_mapping.setdefault(  # pyre-ignore[16]
-            root_mesh, {}
-        )[mesh_dim_name] = flattened_device_mesh
+        _mesh_resources.child_to_root_mapping[flattened_device_mesh] = root_mesh
+        _mesh_resources.root_to_flatten_mapping.setdefault(root_mesh, {})[
+            mesh_dim_name
+        ] = flattened_device_mesh
 
     return flattened_device_mesh
