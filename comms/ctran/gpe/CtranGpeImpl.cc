@@ -57,7 +57,7 @@ static bool hostNodeSideStreamEnabled() {
     return false;
   }
   if (NCCL_CTRAN_GRAPH_MIXING_SUPPORT != 0) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-GPE: NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM ignored because "
         "NCCL_CTRAN_GRAPH_MIXING_SUPPORT={} (requires 0)",
