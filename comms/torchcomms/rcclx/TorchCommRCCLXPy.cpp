@@ -68,5 +68,70 @@ Example:
           py::arg("all_active_ranks"),
           py::arg("per_group_counts"),
           py::arg("async_op") = false,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "sharded_relay_multi_group_reduce_scatter",
+          [](TorchCommRCCLX& self,
+             std::vector<at::Tensor>& input_tensors,
+             std::vector<at::Tensor>& output_tensors,
+             const ReduceOp& op,
+             const std::vector<std::vector<int64_t>>& all_active_ranks,
+             const std::vector<int64_t>& per_group_recv_counts,
+             bool async_op) {
+            return self.sharded_relay_multi_group_reduce_scatter(
+                input_tensors,
+                output_tensors,
+                op,
+                all_active_ranks,
+                per_group_recv_counts,
+                async_op);
+          },
+          R"(
+Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
+
+Reduce-scatter analogue of sharded_relay_multi_group_all_reduce. Executes
+multiple reduce-scatter groups in lockstep phases to eliminate XGMI link
+contention on MI300x GPUs. Each group has exactly 2 active ranks; the logical
+collective is a 2-rank reduce-scatter between them, accelerated by passthrough
+helpers that relay sharded chunks of a single output block.
+
+For each active rank, the input holds nActiveRanks x per_group_recv_counts[g]
+elements (block[i] is the slice destined for active index i) and the output
+holds per_group_recv_counts[g] elements receiving the reduced block[myIndex].
+
+Args:
+    input_tensors: List of send tensors (one per group). For an active rank,
+        holds nActiveRanks x per_group_recv_counts[g] elements. For a helper
+        rank, a two-slot scratch tensor.
+    output_tensors: List of receive tensors (one per group). For an active
+        rank, holds per_group_recv_counts[g] elements. Pass the
+        local-contribution block of the input tensor for in-place operation.
+        For a helper rank, the same scratch tensor as the input.
+    op: Reduction operation (ReduceOp.SUM or ReduceOp.AVG)
+    all_active_ranks: List of lists, where each inner list contains the active
+        rank IDs for one sparse group. All groups must have the same number of
+        active ranks.
+    per_group_recv_counts: List of OUTPUT element counts (one per group).
+    async_op: If True, returns a TorchWork handle for async operation
+
+Returns:
+    TorchWork object for operation completion if async_op=True
+
+Example:
+    # 2D sparse parallelism with 4 groups on 8 GPUs
+    input_tensors = [in0, in1, in2, in3]    # active: 2 x recvCount elements
+    output_tensors = [out0, out1, out2, out3]  # active: recvCount elements
+    all_active_ranks = [[0, 1], [2, 3], [4, 5], [6, 7]]
+    per_group_recv_counts = [1000000, 2000000, 500000, 1500000]
+    comm.sharded_relay_multi_group_reduce_scatter(
+        input_tensors, output_tensors, ReduceOp.SUM, all_active_ranks,
+        per_group_recv_counts, async_op=True)
+)",
+          py::arg("input_tensors"),
+          py::arg("output_tensors"),
+          py::arg("op"),
+          py::arg("all_active_ranks"),
+          py::arg("per_group_recv_counts"),
+          py::arg("async_op") = false,
           py::call_guard<py::gil_scoped_release>());
 }

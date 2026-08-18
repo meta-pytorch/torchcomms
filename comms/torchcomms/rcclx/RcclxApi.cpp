@@ -424,6 +424,7 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
 //     - DefaultRcclxApi::allGatherExec
 //     - DefaultRcclxApi::pFree
 //     - DefaultRcclxApi::shardedRelayMultiGroupAllReduce
+//     - DefaultRcclxApi::shardedRelayMultiGroupReduceScatter
 
 ncclResult_t DefaultRcclxApi::memAlloc(void** ptr, size_t size) {
   return ncclMemAlloc(ptr, size);
