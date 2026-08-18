@@ -12,7 +12,6 @@
 #include <folly/ScopeGuard.h>
 #include <folly/Singleton.h>
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
 #include "comms/utils/cvars/nccl_cvars.h"
 

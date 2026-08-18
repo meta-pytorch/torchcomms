@@ -24,8 +24,6 @@ namespace comms::prims {
 class P2pNvlTransportDevice;
 } // namespace comms::prims
 #endif // defined(ENABLE_PRIMS)
-#include "comms/utils/logger/Logger.h"
-
 #include <folly/Synchronized.h>
 
 #include "comms/ctran/algos/IPersistPlan.h"

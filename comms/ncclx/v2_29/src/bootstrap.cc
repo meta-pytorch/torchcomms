@@ -29,7 +29,6 @@
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/tcpstore/TCPStore.h"
 
-#include "comms/utils/logger/Logger.h"
 #include <fstream>
 
 #define BOOTSTRAP_N_CHECK_ABORT           10000
