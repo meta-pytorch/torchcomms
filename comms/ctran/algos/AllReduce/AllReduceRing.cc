@@ -23,6 +23,7 @@
 #include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
+#include "comms/ctran/algos/common/OccupancyUtils.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
@@ -1478,6 +1479,10 @@ commResult_t ctranAllReduceRing(
       opCount);
   config.numBlocks = numBlocks;
   config.numThreads = numThreads;
+  config.blocksPerSM = MCCL_COLLECTIVE_STATS_ENABLE
+      ? ctran::algos::getBlocksPerSM(
+            func, numThreads, config.launchSharedMemBytes())
+      : 0;
   config.args.devState_d = comm->ctran_->algo->getDevState();
   ctran::allreduce::ring::KernArgs kernArgs{
       .sendbuff = sendbuff,

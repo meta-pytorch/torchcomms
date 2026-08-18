@@ -7,6 +7,7 @@
 
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/common/OccupancyUtils.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -665,6 +666,12 @@ commResult_t ctranAllReduceDirect(
   if (config.numThreads > NCCL_CTRAN_ALLREDUCE_DIRECT_THREAD_BLOCK_SIZE) {
     config.numThreads = NCCL_CTRAN_ALLREDUCE_DIRECT_THREAD_BLOCK_SIZE;
   }
+  config.blocksPerSM = MCCL_COLLECTIVE_STATS_ENABLE
+      ? ctran::algos::getBlocksPerSM(
+            func,
+            static_cast<int>(config.numThreads),
+            config.launchSharedMemBytes())
+      : 0;
 
   // Prepare kElems for first segment symmetrically handled by each rank
   if (nSteps > 0) {
