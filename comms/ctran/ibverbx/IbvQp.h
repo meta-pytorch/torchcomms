@@ -3,11 +3,11 @@
 #pragma once
 
 #include <folly/Expected.h>
-#include <folly/logging/xlog.h>
 #include <deque>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/device/structs.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -75,7 +75,9 @@ class IbvQp {
 
 // IbvQp inline functions
 inline uint32_t IbvQp::getQpNum() const {
-  XCHECK_NE(qp_, nullptr);
+  if (qp_ == nullptr) {
+    CTRAN_LOG(FATAL, "Check failed: qp_ != nullptr");
+  }
   return qp_->qp_num;
 }
 

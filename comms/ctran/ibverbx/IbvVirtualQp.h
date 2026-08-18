@@ -4,6 +4,7 @@
 
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
+#include <folly/logging/xlog.h>
 #include <deque>
 #include <optional>
 #include <utility>

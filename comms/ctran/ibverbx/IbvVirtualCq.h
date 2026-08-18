@@ -4,7 +4,6 @@
 
 #include <folly/Expected.h>
 #include <folly/container/F14Map.h>
-#include <folly/logging/xlog.h>
 #include <deque>
 #include <vector>
 
@@ -13,6 +12,7 @@
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
@@ -124,10 +124,13 @@ IbvVirtualCq::pollCq() {
         const RegisteredQpInfo* info =
             findRegisteredQpInfo(physicalWc.qp_num, deviceId);
 
-        CHECK(info != nullptr) << fmt::format(
-            "[Ibverbx]IbvVirtualCq::pollCq, unregistered QP: qpNum={}, deviceId={}",
-            physicalWc.qp_num,
-            deviceId);
+        if (info == nullptr) {
+          CTRAN_LOG(
+              FATAL,
+              "Check failed: info != nullptr: [Ibverbx]IbvVirtualCq::pollCq, unregistered QP: qpNum={}, deviceId={}",
+              physicalWc.qp_num,
+              deviceId);
+        }
 
         if (isUsingMultiQpLoadBalancing(info->isMultiQp, physicalWc.opcode)) {
           // Multi-QP RDMA: route to VirtualQp for fragment reassembly
