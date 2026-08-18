@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 namespace comms::fault_tolerance {
 
@@ -16,6 +17,8 @@ enum class AbortReason : int {
   ABORTED = 1,
   TIMED_OUT = 2,
 };
+
+std::string_view abortReasonToString(AbortReason reason);
 
 enum class AbortBehavior : int {
   SKIP = 0,
@@ -148,6 +151,16 @@ class Abort final {
    * when the timeout is the first abort reason.
    */
   bool isAborted();
+
+  /**
+   * Returns the currently recorded abort reason.
+   *
+   * Disabled controllers and enabled controllers that have not recorded a
+   * terminal reason return `AbortReason::NONE`. This is a read-only query of
+   * the shared first-writer-wins state; timeout expiry is recorded by
+   * `isAborted()` or `isTimedOut()`.
+   */
+  AbortReason reason() const;
 
   /**
    * Returns whether a per-operation timeout deadline is currently active.
