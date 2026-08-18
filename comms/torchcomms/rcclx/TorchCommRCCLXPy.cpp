@@ -154,22 +154,23 @@ Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
 
 All-to-all analogue of sharded_relay_multi_group_reduce_scatter. Executes
 multiple all-to-all groups in lockstep phases to eliminate XGMI link contention
-on MI300x GPUs. Each group has exactly 2 active ranks; the logical collective is
-a 2-rank all-to-all between them, accelerated by passthrough helpers. There is
-NO reduction (pure data movement) and NO reduction op.
+on MI300x GPUs. Each group has a power-of-two number of active ranks (2 or 4);
+the logical collective is an all-to-all among them, accelerated by passthrough
+helpers (A==2 uses the original path; A>2 uses a flat all-to-all + 2-hop relay).
+There is NO reduction (pure data movement) and NO reduction op.
 
 For each active rank, the input holds nActiveRanks x per_group_segment_counts[g]
-elements (input = [sendSeg[0]|sendSeg[1]], sendSeg[j] destined for active index
-j) and the output holds the same number of elements (output =
-[recvSeg[0]|recvSeg[1]], recvSeg[i] from active index i).
+elements (input = [sendSeg[0]|...|sendSeg[A-1]], sendSeg[j] destined for active
+index j) and the output holds the same number of elements (output =
+[recvSeg[0]|...|recvSeg[A-1]], recvSeg[i] from active index i).
 
 OUT-OF-PLACE ONLY: input_tensors[g] and output_tensors[g] must be distinct for
 the active group (matches native ncclAllToAll); passing aliasing buffers raises.
 
 Args:
     input_tensors: List of send tensors (one per group). Active rank: holds
-        nActiveRanks x per_group_segment_counts[g] elements. Helper rank: a
-        two-slot scratch tensor.
+        nActiveRanks x per_group_segment_counts[g] elements. Helper rank: an
+        nActiveRanks-slot scratch tensor.
     output_tensors: List of receive tensors (one per group). Active rank: holds
         nActiveRanks x per_group_segment_counts[g] elements (distinct from
         input). Helper rank: the same scratch tensor as the input.
