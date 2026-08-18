@@ -729,7 +729,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
     const ReduceOp& op,
     const std::vector<std::vector<int64_t>>& all_active_ranks,
     const std::vector<int64_t>& per_group_counts,
-    bool async_op) {
+    bool async_op,
+    std::optional<std::vector<at::Tensor>> output_tensors) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -766,7 +767,16 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
     }
   }
 
-  // Allreduce is in-place (sendBuffs[g] == recvBuffs[g]).
+  // Allreduce defaults to in-place (sendBuffs[g] == recvBuffs[g]). When
+  // output_tensors is provided, the active group writes its reduced result
+  // out-of-place into the caller-provided output tensor while the input is
+  // preserved.
+  const bool hasOutput = output_tensors.has_value() && !output_tensors->empty();
+  if (hasOutput && output_tensors->size() != static_cast<size_t>(nGroups)) {
+    throw std::runtime_error(
+        "sharded_relay_multi_group_all_reduce: output_tensors size must match tensors size");
+  }
+
   std::vector<const void*> sendBuffs(nGroups);
   std::vector<void*> recvBuffs(nGroups);
   std::vector<size_t> counts(nGroups);
@@ -801,6 +811,18 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
   }
 
   int segGroup = (myActiveGroup >= 0) ? myActiveGroup : 0;
+  if (hasOutput) {
+    // Out-of-place: the active group's reduced result is written to the
+    // caller-provided output tensor; sendBuffs stays the (preserved) input.
+    auto& outTensor = (*output_tensors)[segGroup];
+    ensureTensorContiguous(outTensor);
+    if (static_cast<size_t>(outTensor.numel()) != counts[segGroup]) {
+      throw std::runtime_error(
+          "sharded_relay_multi_group_all_reduce: active output numel must match input numel");
+    }
+    all_tensors.push_back(outTensor);
+    recvBuffs[segGroup] = outTensor.data_ptr();
+  }
 
   std::vector<std::vector<int>> active_ranks_int(nGroups);
   std::vector<const int*> allActiveRanksPtr(nGroups);
@@ -857,6 +879,16 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
               dtypeGroup,
               c10::toString(relayScalarType)));
     }
+  }
+  // The out-of-place output is the buffer the kernel writes the active group's
+  // result into, so it has to carry the same dtype as the input it reduces.
+  if (hasOutput && per_group_counts[segGroup] > 0 &&
+      (*output_tensors)[segGroup].scalar_type() != relayScalarType) {
+    throw std::runtime_error(
+        fmt::format(
+            "sharded_relay_multi_group_all_reduce: out-of-place output dtype {} does not match the input dtype {}",
+            c10::toString((*output_tensors)[segGroup].scalar_type()),
+            c10::toString(relayScalarType)));
   }
   auto dataType = getNcclDataType(tensors[dtypeGroup]);
   ncclResult_t result = rcclx_api_->shardedRelayMultiGroupAllReduce(

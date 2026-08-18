@@ -16,6 +16,7 @@ class TorchCommRCCLX:
         all_active_ranks: list[list[int]],
         per_group_counts: list[int],
         async_op: bool = False,
+        output_tensors: list[torch.Tensor] | None = None,
     ) -> TorchWork | None:
         """
         Fused multi-group sharded relay allreduce for 2D sparse parallelism.
@@ -31,6 +32,11 @@ class TorchCommRCCLX:
             per_group_counts: List of element counts (one per group). This allows
                 different groups to have different tensor sizes.
             async_op: If True, returns a TorchWork handle for async operation
+            output_tensors: Optional list of output segment tensors (one list
+                per group), parallel to `tensors`. When None (default) the
+                allreduce is in-place. When provided, the active group's
+                reduced result is written out-of-place into these tensors
+                while the inputs are preserved.
 
         Returns:
             TorchWork handle if async_op=True, else None
