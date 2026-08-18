@@ -674,6 +674,7 @@ static ncclResult_t shardedRelayReduceScatter2Active(
 
   size_t chunkSizes[SHARDED_RELAY_MAX_GROUPS];
   size_t relayTotals[SHARDED_RELAY_MAX_GROUPS]; // == direct chunk A's offset
+  size_t dirASizes[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBOffsets[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBSizes[SHARDED_RELAY_MAX_GROUPS]; // absorbs the remainder
 
@@ -684,21 +685,23 @@ static ncclResult_t shardedRelayReduceScatter2Active(
     if (count == 0) {
       chunkSizes[g] = 0;
       relayTotals[g] = 0;
+      dirASizes[g] = 0;
       dirBOffsets[g] = 0;
       dirBSizes[g] = 0;
       continue;
     }
 
-    // A chunk size that rounds down to zero means the block is too small to
-    // scatter; the caller should fall back to a regular reduce-scatter.
     size_t chunkSize = count / numChunks;
     chunkSize = (chunkSize / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-    if (chunkSize == 0) {
-      return ncclInvalidArgument;
-    }
     chunkSizes[g] = chunkSize;
     relayTotals[g] = static_cast<size_t>(numHelpers) * chunkSize;
-    dirBOffsets[g] = relayTotals[g] + chunkSize;
+    if (chunkSize == 0) {
+      dirASizes[g] = count / 2;
+      dirBOffsets[g] = dirASizes[g];
+    } else {
+      dirASizes[g] = chunkSize;
+      dirBOffsets[g] = relayTotals[g] + chunkSize;
+    }
     dirBSizes[g] = count - dirBOffsets[g];
   }
 
@@ -750,7 +753,7 @@ static ncclResult_t shardedRelayReduceScatter2Active(
       const char* sendBlock = static_cast<const char*>(sendBuffs[g]) +
           sendBlockOffset * elementSize;
 
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclSend(
             sendBlock + static_cast<size_t>(h) * chunkSize * elementSize,
             chunkSize,
@@ -762,21 +765,23 @@ static ncclResult_t shardedRelayReduceScatter2Active(
 
       // Direct chunk A over the otherwise-idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
-      NCCLCHECK(ncclSend(
-          sendBlock + relayTotals[g] * elementSize,
-          chunkSize,
-          datatype,
-          partner,
-          comm,
-          stream));
-      NCCLCHECK(ncclRecv(
-          static_cast<char*>(foreignScratch) + relayTotals[g] * elementSize,
-          chunkSize,
-          datatype,
-          partner,
-          comm,
-          stream));
-    } else {
+      if (dirASizes[g] > 0) {
+        NCCLCHECK(ncclSend(
+            sendBlock + relayTotals[g] * elementSize,
+            dirASizes[g],
+            datatype,
+            partner,
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(foreignScratch) + relayTotals[g] * elementSize,
+            dirASizes[g],
+            datatype,
+            partner,
+            comm,
+            stream));
+      }
+    } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
       char* helperBuf = static_cast<char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
@@ -808,7 +813,7 @@ static ncclResult_t shardedRelayReduceScatter2Active(
     if (cfg.isActiveRank) {
       char* scratch = static_cast<char*>(foreignScratch);
 
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclRecv(
             scratch + static_cast<size_t>(h) * chunkSize * elementSize,
             chunkSize,
@@ -820,22 +825,24 @@ static ncclResult_t shardedRelayReduceScatter2Active(
 
       // Direct chunk B, again over the idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
-      NCCLCHECK(ncclSend(
-          static_cast<const char*>(sendBuffs[g]) +
-              (sendBlockOffset + dirBOffsets[g]) * elementSize,
-          dirBSizes[g],
-          datatype,
-          partner,
-          comm,
-          stream));
-      NCCLCHECK(ncclRecv(
-          scratch + dirBOffsets[g] * elementSize,
-          dirBSizes[g],
-          datatype,
-          partner,
-          comm,
-          stream));
-    } else {
+      if (dirBSizes[g] > 0) {
+        NCCLCHECK(ncclSend(
+            static_cast<const char*>(sendBuffs[g]) +
+                (sendBlockOffset + dirBOffsets[g]) * elementSize,
+            dirBSizes[g],
+            datatype,
+            partner,
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            scratch + dirBOffsets[g] * elementSize,
+            dirBSizes[g],
+            datatype,
+            partner,
+            comm,
+            stream));
+      }
+    } else if (chunkSize > 0) {
       // Passthrough: slot a goes to the OTHER active rank, which owns it.
       const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {

@@ -707,6 +707,7 @@ static ncclResult_t shardedRelayAllReduce2Active(
 
   size_t chunkSizes[SHARDED_RELAY_MAX_GROUPS];
   size_t relayTotals[SHARDED_RELAY_MAX_GROUPS]; // == direct chunk A's offset
+  size_t dirASizes[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBOffsets[SHARDED_RELAY_MAX_GROUPS];
   size_t dirBSizes[SHARDED_RELAY_MAX_GROUPS]; // absorbs the remainder
 
@@ -718,21 +719,23 @@ static ncclResult_t shardedRelayAllReduce2Active(
     if (count == 0) {
       chunkSizes[g] = 0;
       relayTotals[g] = 0;
+      dirASizes[g] = 0;
       dirBOffsets[g] = 0;
       dirBSizes[g] = 0;
       continue;
     }
 
-    // A chunk size that rounds down to zero means the buffer is too small to
-    // scatter; the caller should fall back to a regular allreduce.
     size_t chunkSize = count / numChunks;
     chunkSize = (chunkSize / CHUNK_ALIGN_ELEMENTS) * CHUNK_ALIGN_ELEMENTS;
-    if (chunkSize == 0) {
-      return ncclInvalidArgument;
-    }
     chunkSizes[g] = chunkSize;
     relayTotals[g] = static_cast<size_t>(numHelpers) * chunkSize;
-    dirBOffsets[g] = relayTotals[g] + chunkSize;
+    if (chunkSize == 0) {
+      dirASizes[g] = count / 2;
+      dirBOffsets[g] = dirASizes[g];
+    } else {
+      dirASizes[g] = chunkSize;
+      dirBOffsets[g] = relayTotals[g] + chunkSize;
+    }
     dirBSizes[g] = count - dirBOffsets[g];
   }
 
@@ -786,7 +789,7 @@ static ncclResult_t shardedRelayAllReduce2Active(
       const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
 
       // Scatter: chunk h goes to helper h.
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclSend(
             sendbuff + static_cast<size_t>(h) * chunkSize * elementSize,
             chunkSize,
@@ -798,16 +801,18 @@ static ncclResult_t shardedRelayAllReduce2Active(
 
       // Direct chunk A over the otherwise-idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
-      NCCLCHECK(ncclSend(
-          sendbuff + relayTotals[g] * elementSize,
-          chunkSize,
-          datatype,
-          partner,
-          comm,
-          stream));
-      NCCLCHECK(
-          ncclRecv(directDst(0), chunkSize, datatype, partner, comm, stream));
-    } else {
+      if (dirASizes[g] > 0) {
+        NCCLCHECK(ncclSend(
+            sendbuff + relayTotals[g] * elementSize,
+            dirASizes[g],
+            datatype,
+            partner,
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            directDst(0), dirASizes[g], datatype, partner, comm, stream));
+      }
+    } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
       char* helperBuf = static_cast<char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
@@ -834,7 +839,7 @@ static ncclResult_t shardedRelayAllReduce2Active(
   // fused add+scale over numHelpers/numChunks of the whole buffer. The work is
   // also spread over every helper GPU rather than piled onto the two actives.
   for (int g = 0; g < nGroups; g++) {
-    if (counts[g] == 0 || configs[g].isActiveRank)
+    if (counts[g] == 0 || chunkSizes[g] == 0 || configs[g].isActiveRank)
       continue;
     char* helperBuf = static_cast<char*>(recvBuffs[g]);
     size_t chunkSize = chunkSizes[g];
@@ -865,7 +870,7 @@ static ncclResult_t shardedRelayAllReduce2Active(
 
       // The helper's chunk is already reduced, so it lands directly in its
       // final place in recvBuff — no active-side reduction for this region.
-      for (int h = 0; h < cfg.numHelpers; h++) {
+      for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclRecv(
             recvbuff + static_cast<size_t>(h) * chunkSize * elementSize,
             chunkSize,
@@ -885,8 +890,13 @@ static ncclResult_t shardedRelayAllReduce2Active(
           comm,
           stream));
       NCCLCHECK(ncclRecv(
-          directDst(chunkSize), dirBSizes[g], datatype, partner, comm, stream));
-    } else {
+          directDst(dirASizes[g]),
+          dirBSizes[g],
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else if (chunkSize > 0) {
       // Helper: hand the reduced chunk to both active ranks.
       const char* helperBuf = static_cast<const char*>(recvBuffs[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
