@@ -692,12 +692,15 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdateWrState) {
     virtualQp.sendTracker_.remove(id);
   }
 
-  // Test 3: Not-found WR triggers CHECK failure
+  // Test 3: Not-found WR triggers a fatal failure
   {
-    ASSERT_DEATH(
+    const auto deathTestStyle = ::testing::FLAGS_gtest_death_test_style;
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    EXPECT_DEATH(
         virtualQp.updateWrState(
             virtualQp.sendTracker_, 99999, IBV_WC_SUCCESS, IBV_WC_SEND),
         "not found in tracker");
+    ::testing::FLAGS_gtest_death_test_style = deathTestStyle;
   }
 }
 
