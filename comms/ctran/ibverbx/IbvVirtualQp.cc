@@ -24,9 +24,14 @@ IbvVirtualQp::IbvVirtualQp(
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
       notifyQp_(std::move(notifyQp)) {
-  CHECK(!physicalQps_.empty()) << "At least one physical QP must be provided!";
-  CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
-      << "notifyQp must be provided when using multiple data QPs!";
+  CTRAN_LOG_IF(
+      FATAL,
+      physicalQps_.empty(),
+      "Check failed: !physicalQps_.empty(): At least one physical QP must be provided!");
+  CTRAN_LOG_IF(
+      FATAL,
+      physicalQps_.size() != 1 && !notifyQp_.has_value(),
+      "Check failed: physicalQps_.size() == 1 || notifyQp_.has_value(): notifyQp must be provided when using multiple data QPs!");
 
   virtualQpNum_ =
       nextVirtualQpNum_.fetch_add(1); // Assign unique virtual QP number
@@ -271,7 +276,10 @@ IbvVirtualQpBusinessCard::fromDynamic(const folly::dynamic& obj) {
     qpNums.reserve(qpNumsArray.size());
 
     for (const auto& qpNum : qpNumsArray) {
-      CHECK(qpNum.isString()) << "qp num is not string!";
+      CTRAN_LOG_IF(
+          FATAL,
+          !qpNum.isString(),
+          "Check failed: qpNum.isString(): qp num is not string!");
       try {
         uint32_t qpNumValue =
             static_cast<uint32_t>(std::stoul(qpNum.asString()));
