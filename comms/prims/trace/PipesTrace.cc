@@ -12,8 +12,9 @@
 #include <mutex>
 #include <utility>
 
+#include <fmt/format.h>
+
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace comms::prims {
 namespace {
@@ -166,9 +167,30 @@ uint64_t allocatePipesTraceSessionId() {
   return nextPipesTraceSessionId.fetch_add(1, std::memory_order_relaxed);
 }
 
+void emitWarning(
+    const PipesTrace::WarningCallback& warningCallback,
+    std::string_view message) noexcept {
+  try {
+    if (warningCallback) {
+      warningCallback(message);
+      return;
+    }
+  } catch (...) {
+  }
+
+  flockfile(stderr);
+  std::fputs("Prims trace warning: ", stderr);
+  std::fwrite(message.data(), sizeof(char), message.size(), stderr);
+  std::fputc('\n', stderr);
+  std::fflush(stderr);
+  funlockfile(stderr);
+}
+
 } // namespace
 
-PipesTrace::PipesTrace() : sessionId_(allocatePipesTraceSessionId()) {}
+PipesTrace::PipesTrace(WarningCallback warningCallback)
+    : warningCallback_(std::move(warningCallback)),
+      sessionId_(allocatePipesTraceSessionId()) {}
 
 PipesTrace::~PipesTrace() {
   // CTRAN teardown relies on the same lifetime contract as other comm-owned
@@ -181,24 +203,27 @@ PipesTrace::~PipesTrace() {
   try {
     drain();
   } catch (const std::exception& ex) {
-    CLOGF(WARN, "Prims trace final drain failed: {}", ex.what());
+    warn(fmt::format("Prims trace final drain failed: {}", ex.what()));
   } catch (...) {
-    CLOGF(WARN, "Prims trace final drain failed with unknown exception");
+    warn("Prims trace final drain failed with unknown exception");
   }
 }
 
-uint32_t PipesTrace::normalizeRingSize(uint64_t ringSize) {
+uint32_t PipesTrace::normalizeRingSize(
+    uint64_t ringSize,
+    const WarningCallback& warningCallback) {
   if (ringSize == 0) {
     return 0;
   }
 
   constexpr uint64_t kMaxRingEntries = 1ULL << 31;
   if (ringSize > kMaxRingEntries) {
-    CLOGF(
-        WARN,
-        "Prims trace clamps ring size {} to {}",
-        ringSize,
-        kMaxRingEntries);
+    emitWarning(
+        warningCallback,
+        fmt::format(
+            "Prims trace clamps ring size {} to {}",
+            ringSize,
+            kMaxRingEntries));
     return static_cast<uint32_t>(kMaxRingEntries);
   }
   return static_cast<uint32_t>(ringSize);
@@ -213,15 +238,16 @@ void PipesTrace::ensure(
     return;
   }
 
-  std::lock_guard<std::mutex> lock(drainMutex_);
+  std::unique_lock<std::mutex> lock(drainMutex_);
   rank_ = rank;
   if (buffer_ != nullptr && reader_ != nullptr) {
     if (buffer_->size() < ringSize) {
-      CLOGF(
-          WARN,
+      const auto warning = fmt::format(
           "Prims trace keeps existing ring_size={} despite requested_ring_size={} because device handles may be in flight",
           buffer_->size(),
           ringSize);
+      lock.unlock();
+      warn(warning);
     }
     return;
   }
@@ -229,9 +255,11 @@ void PipesTrace::ensure(
   reader_.reset();
   buffer_ = std::make_unique<Buffer>(ringSize);
   if (!buffer_->valid()) {
-    CLOGF(
-        WARN, "Prims trace failed to allocate ring with {} entries", ringSize);
+    const auto warning = fmt::format(
+        "Prims trace failed to allocate ring with {} entries", ringSize);
     buffer_.reset();
+    lock.unlock();
+    warn(warning);
     return;
   }
 
@@ -342,7 +370,7 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
   }
 
   if (batch.entriesLost != 0) {
-    CLOGF(WARN, "Prims trace lost {} entries", batch.entriesLost);
+    warn(fmt::format("Prims trace lost {} entries", batch.entriesLost));
   }
   if (!batch.entries.empty()) {
     std::fflush(stderr);
@@ -363,9 +391,9 @@ void PipesTrace::pollLoop() {
     try {
       drain();
     } catch (const std::exception& ex) {
-      CLOGF(WARN, "Prims trace poll drain failed: {}", ex.what());
+      warn(fmt::format("Prims trace poll drain failed: {}", ex.what()));
     } catch (...) {
-      CLOGF(WARN, "Prims trace poll drain failed with unknown exception");
+      warn("Prims trace poll drain failed with unknown exception");
     }
   }
 }
@@ -391,6 +419,10 @@ void PipesTrace::stopPollThread() {
   if (pollThread_.joinable()) {
     pollThread_.join();
   }
+}
+
+void PipesTrace::warn(std::string_view message) const noexcept {
+  emitWarning(warningCallback_, message);
 }
 
 } // namespace comms::prims
