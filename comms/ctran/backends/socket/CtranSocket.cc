@@ -132,7 +132,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
           "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
           NCCL_SOCKET_IFNAME,
           NCCL_SOCKET_IPADDR_PREFIX);
-      CERR(commSystemError, "{}", msg);
+      CTRAN_ERR(commSystemError, "{}", msg);
       throw ctran::utils::Exception(
           msg, commSystemError, rank_, commHash_, commDesc_);
     } else {
@@ -304,7 +304,7 @@ commResult_t CtranSocket::updateSocket(
     int peerRank) {
   auto locked = socketMaps_.wlock();
   if (locked->rankToSocket.find(peerRank) != locked->rankToSocket.end()) {
-    CERR(
+    CTRAN_ERR(
         commInternalError,
         "CTRAN-SOCKET: socket already exists for peerRank {} in pimpl {} "
         "commHash {:x}, commDesc {}. It likely indicates a NCCL bug.",
@@ -429,7 +429,7 @@ commResult_t CtranSocket::progressInternal() {
     continueWhileLoop = false;
     int count = poll(fds.data(), fds.size(), NCCL_CTRAN_SOCKET_POLL_TIMEOUT);
     if (count < 0) {
-      CERR(
+      CTRAN_ERR(
           commInternalError,
           "CTRAN-SOCKET: polling error, errno {}",
           strerror(errno));
@@ -479,7 +479,7 @@ commResult_t CtranSocket::progressInternal() {
               bytes_read);
         }
       } else if (fds[fid].revents != 0) {
-        CERR(
+        CTRAN_ERR(
             commInternalError,
             "CTRAN-SOCKET: unexpected poll event {} rank {}",
             fds[fid].revents,
