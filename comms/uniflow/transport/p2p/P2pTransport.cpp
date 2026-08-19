@@ -160,16 +160,30 @@ Status P2pTransport::connect(std::span<const uint8_t> remoteInfo) {
   CHECK_RETURN(parsedPeer);
   const int32_t peer = parsedPeer.value();
 
-  // Enable this device to access the peer device (no-op for same device or if
-  // already enabled). Covers same-process cross-device P2P; cross-process
-  // imports also lazily enable peer access via ipcOpenMemHandle. Commit
-  // peerDeviceId_ / Connected only after this succeeds, so a failure leaves the
-  // transport in its prior (Initialized) state.
+  // Enable peer access in BOTH directions (no-op for same device or if already
+  // enabled). Commit peerDeviceId_ / Connected only after both succeed, so a
+  // failure leaves the transport Initialized.
+  //
+  // The reverse direction is the non-obvious one: get() reads the IPC-imported
+  // peer buffer, and ROCm runs that copy on the SOURCE agent, which writes into
+  // THIS device's memory. With only local->peer, put() works and get() faults
+  // once the two ranks are separate processes. PeerToPeerTransferTest enables
+  // both directions for the same reason.
+  //
+  // The helper keeps each edge paired with its own source device current.
+  auto enableOneDirection = [this](int32_t from, int32_t to) {
+    CudaDeviceGuard guard(*cudaApi_, from);
+    return cudaApi_->deviceEnablePeerAccess(to);
+  };
+
   if (peer != deviceId_) {
-    CudaDeviceGuard guard(*cudaApi_, deviceId_);
-    auto st = cudaApi_->deviceEnablePeerAccess(peer);
-    if (st.hasError()) {
-      return st;
+    auto forward = enableOneDirection(deviceId_, peer);
+    if (forward.hasError()) {
+      return forward;
+    }
+    auto reverse = enableOneDirection(peer, deviceId_);
+    if (reverse.hasError()) {
+      return reverse;
     }
   }
 
