@@ -8,8 +8,10 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
+#include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
@@ -466,12 +468,12 @@ struct BenchmarkSetup {
       } else if (numWc == 1) {
         const auto& wc = maybeWcsVector->at(0);
         if (wc.status != IBV_WC_SUCCESS) {
-          XLOGF(FATAL, "{} WC failed with status {}", cqName, wc.status);
+          CTRAN_LOG(FATAL, "{} WC failed with status {}", cqName, wc.status);
           return;
         }
         stop = true;
       } else {
-        XLOGF(FATAL, "{} got {} wc", cqName, numWc);
+        CTRAN_LOG(FATAL, "{} got {} wc", cqName, numWc);
       }
     }
   }
@@ -522,7 +524,7 @@ static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
     state.counters["BW_GBps"] =
         benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
-    XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
+    CTRAN_LOG(FATAL, "Benchmark setup failed: {}", e.what());
     return;
   }
 }
@@ -560,7 +562,7 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
     state.counters["BW_GBps"] =
         benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
-    XLOGF(FATAL, "[BM_RdmaWrite] Benchmark setup failed: {}", e.what());
+    CTRAN_LOG(FATAL, "[BM_RdmaWrite] Benchmark setup failed: {}", e.what());
     return;
   }
 }
@@ -611,7 +613,7 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
     state.counters["BW_GBps"] =
         benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
-    XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
+    CTRAN_LOG(FATAL, "Benchmark setup failed: {}", e.what());
     return;
   }
 }
