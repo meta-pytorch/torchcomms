@@ -17,8 +17,6 @@
 #include "register_inline.h"
 #include "meta/nvls/NvlsBindWatchdog.h"
 
-#include "comms/utils/logger/Logger.h"
-
 #if CUDART_VERSION >= 12010
 
 struct graphRegData {

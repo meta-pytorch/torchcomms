@@ -23,7 +23,6 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/utils/logger/Logger.h"
 #include "meta/tcpstore/TCPStore.h"
 
 #define BOOTSTRAP_N_CHECK_ABORT           10000
