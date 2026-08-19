@@ -12,6 +12,7 @@
 #include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
+#include "comms/ncclx/meta/NcclxLogger.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 
 namespace {
@@ -378,8 +379,8 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   if (rank != 0) {
     // Sleep long enough to make other ranks timeout
     std::this_thread::sleep_for(timeoutSec + std::chrono::seconds{3});
-    // Hacky way to make the driver process believe rank 0 is faulty as well
-    XLOG(FATAL, "COMM FATAL");
+    // Hacky way to make the driver process believe rank 0 is faulty as well.
+    NCCLX_LOG(FATAL, "COMM FATAL");
   } else {
     NcclAllReduce allReduce(comm.raw(), stream, 32);
     std::this_thread::sleep_for(timeoutSec + std::chrono::seconds{3});
