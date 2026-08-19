@@ -90,5 +90,119 @@ TEST(CollectiveStatsTest, ConcurrentRecordIsThreadSafe) {
   EXPECT_EQ(out.at("all"), expected);
 }
 
+TEST(CollectiveStatsTest, RecordsLaunchGeometry) {
+  CollectiveStats stats;
+  stats.record(
+      "allreduce",
+      "allreduce.ctring.1024",
+      10,
+      /*numBlocks=*/8,
+      /*blockSize=*/512,
+      /*blocksPerSm=*/4);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 1,
+      .total_us = 10,
+      .min_us = 10,
+      .max_us = 10,
+      .num_blocks = 8,
+      .block_size = 512,
+      .blocks_per_sm = 4,
+      .total_sm_us = 20}; // ceil(8/4) * 10
+  EXPECT_EQ(out.at("allreduce.ctring.1024"), expected);
+}
+
+TEST(CollectiveStatsTest, GeometryDefaultsToUnknown) {
+  CollectiveStats stats;
+  stats.record("allreduce", "allreduce.ctring.1024", 10);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 1, .total_us = 10, .min_us = 10, .max_us = 10};
+  EXPECT_EQ(out.at("allreduce.ctring.1024"), expected);
+}
+
+TEST(CollectiveStatsTest, RollUpOverMatchingGeometryKeepsIt) {
+  CollectiveStats stats;
+  stats.record("allreduce", "allreduce.ctring.1024", 10, 8, 512, 4);
+  stats.record("allreduce", "allreduce.ctring.2048", 20, 8, 512, 4);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 2,
+      .total_us = 30,
+      .min_us = 10,
+      .max_us = 20,
+      .num_blocks = 8,
+      .block_size = 512,
+      .blocks_per_sm = 4,
+      .total_sm_us = 60};
+  EXPECT_EQ(out.at("allreduce.all"), expected);
+}
+
+TEST(CollectiveStatsTest, RollUpOverDifferingGeometryReportsUnknown) {
+  CollectiveStats stats;
+  stats.record("allreduce", "allreduce.ctring.1024", 10, 1, 512, 4);
+  stats.record("allreduce", "allreduce.ctring.1048576", 20, 8, 512, 4);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 2,
+      .total_us = 30,
+      .min_us = 10,
+      .max_us = 20,
+      .num_blocks = 0,
+      .block_size = 0,
+      .blocks_per_sm = 0,
+      .total_sm_us = 50}; // ceil(1/4)*10 + ceil(8/4)*20
+  EXPECT_EQ(out.at("allreduce.all"), expected);
+}
+
+TEST(CollectiveStatsTest, GeometrylessRecordDoesNotClearReportedGeometry) {
+  CollectiveStats stats;
+  stats.record("allreduce", "allreduce.ctring.1024", 10, 8, 512, 4);
+  stats.record("allreduce", "allreduce.ctring.1024", 20);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 2,
+      .total_us = 30,
+      .min_us = 10,
+      .max_us = 20,
+      .num_blocks = 8,
+      .block_size = 512,
+      .blocks_per_sm = 4,
+      .total_sm_us = 20}; // only the geometry-bearing record counts
+  EXPECT_EQ(out.at("allreduce.ctring.1024"), expected);
+}
+
+TEST(CollectiveStatsTest, DisagreeingGeometryWithinOneBucketReportsUnknown) {
+  CollectiveStats stats;
+  // Variable-size ops share a "<op>.<algo>.0" bucket.
+  stats.record("alltoallv", "alltoallv.ctran.0", 10, 4, 512, 2);
+  stats.record("alltoallv", "alltoallv.ctran.0", 20, 16, 512, 2);
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{
+      .count = 2,
+      .total_us = 30,
+      .min_us = 10,
+      .max_us = 20,
+      .num_blocks = 0,
+      .block_size = 0,
+      .blocks_per_sm = 0,
+      .total_sm_us = 180}; // ceil(4/2)*10 + ceil(16/2)*20
+  EXPECT_EQ(out.at("alltoallv.ctran.0"), expected);
+}
+
+TEST(CollectiveStatsTest, SmTimeFallsBackToGridWhenOccupancyUnknown) {
+  CollectiveStats stats;
+  stats.record("allreduce", "allreduce.ctdirect.8", 10, 32, 640, 0);
+
+  const auto out = stats.getAndClear();
+  EXPECT_EQ(out.at("allreduce.ctdirect.8").total_sm_us, 320u);
+}
+
 } // namespace
 } // namespace comms
