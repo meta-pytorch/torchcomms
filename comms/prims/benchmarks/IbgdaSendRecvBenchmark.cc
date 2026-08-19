@@ -1177,8 +1177,10 @@ bool runCorrectnessSweep(IbgdaSendRecvBenchmarkContext& context) {
   const bool mixed = correctnessMixed();
   const SendRecvProto proto = selectProto();
   const uint32_t iters = correctnessIters();
-  // Mixed uses the LL size list: every size in it is valid for both protocols,
-  // and it stays under the LL 1 MiB wire cap.
+  // Mixed uses the LL size list: every size in it is valid for both protocols.
+  // The list stops at 1 MiB because that is where LL has long since become
+  // bandwidth-bound (see kLlBenchmarkSizes), not because the protocol imposes
+  // any size limit -- LlxPacket computes its geometry in size_t with no cap.
   const bool useLlSizes = mixed || proto == SendRecvProto::LL;
   const BenchmarkSize* const sizes =
       useLlSizes ? kLlBenchmarkSizes.data() : kBenchmarkSizes.data();

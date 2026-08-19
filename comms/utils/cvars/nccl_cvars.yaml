@@ -3449,6 +3449,24 @@ cvars:
      Applies to tree and ring. 0 preserves the transport default signaling
      cadence.
 
+ - name        : MCCL_ALLREDUCE_LL_MAX_BYTES
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total message bytes strictly below which MCCL fused AllReduce runs its IB
+     phase on the LL (low-latency, inline-flag) wire format instead of Simple.
+     LL spends half of each 8 B packet on the flag, so it costs 2x on the wire
+     but drops the DATA_READY signal round trip -- a win only for small,
+     latency-bound messages.
+
+       0  (default) never use LL; every size stays on Simple.
+      -1  always use LL, at every size. Diagnostic only -- it forces LL past the
+          crossover where it is strictly slower.
+      >0  use LL strictly below this many bytes (16384 is the measured crossover
+          on GB300).
+
+     Tree only today; ring and direct always use Simple.
+
  - name        : MCCL_MAX_NCHANNELS
    type        : int
    default     : 32
