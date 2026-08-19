@@ -216,7 +216,7 @@ class MultiPeerTransport {
   /**
    * Return the device handle for the copy-based (staging) multimem NVL
    * transport. Delegates to
-   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the cnvlmm
+   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the nvlmm
    * staging path.
    *
    * Call initialize_multimem_nvl_transport() collectively before this cached
