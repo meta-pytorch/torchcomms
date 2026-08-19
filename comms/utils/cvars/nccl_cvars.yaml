@@ -3467,6 +3467,14 @@ cvars:
 
      Tree only today; ring and direct always use Simple.
 
+ - name        : MCCL_ALLREDUCE_IB_VIRTUAL_STRIPES
+   type        : int
+   default     : 1
+   description : |-
+     Number of independent Phase-2 IB progress groups per physical CUDA block
+     in MCCL fused AllReduce. Ring supports 1, 2, and 4; Tree currently uses 1.
+     The default preserves the existing full-block protocol.
+
  - name        : MCCL_MAX_NCHANNELS
    type        : int
    default     : 32
