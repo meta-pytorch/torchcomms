@@ -1107,6 +1107,8 @@ set(COMMON_FILES
   comms/utils/logger/Logger.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
+  comms/utils/logger/LogTypes.cc
+  comms/utils/logger/LogTypes.h
   comms/utils/logger/LogUtils.cc
   comms/utils/logger/LogUtils.h
   comms/utils/logger/NcclScubaSample.cc
