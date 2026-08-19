@@ -7,6 +7,9 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,6 +30,11 @@ namespace {
 
 constexpr auto kPollInterval = std::chrono::milliseconds{1};
 constexpr auto kWaitTimeout = std::chrono::seconds{10};
+const PipesTrace::WarningCallback kIgnoreWarnings = [](std::string_view) {};
+
+[[noreturn]] void throwWarningCallback(std::string_view) {
+  throw std::runtime_error("callback failure");
+}
 
 template <typename DeviceHandle>
 PipesTraceHandle toPipesTraceHandle(const DeviceHandle& handle) {
@@ -144,21 +152,37 @@ void waitForReceivedEvents(
 } // namespace
 
 TEST(PipesTraceTest, NormalizeRingSizeZero) {
-  EXPECT_EQ(PipesTrace::normalizeRingSize(0), 0u);
+  EXPECT_EQ(PipesTrace::normalizeRingSize(0, kIgnoreWarnings), 0u);
 }
 
 TEST(PipesTraceTest, NormalizeRingSizeClampsLarge) {
+  std::string warning;
   EXPECT_EQ(
-      PipesTrace::normalizeRingSize(1ULL << 32),
+      PipesTrace::normalizeRingSize(
+          1ULL << 32, [&](std::string_view message) { warning = message; }),
       static_cast<uint32_t>(1ULL << 31));
+  EXPECT_EQ(warning, "Prims trace clamps ring size 4294967296 to 2147483648");
+}
+
+TEST(PipesTraceTest, WarningCallbackFailureFallsBackToStderr) {
+  testing::internal::CaptureStderr();
+  EXPECT_EQ(
+      PipesTrace::normalizeRingSize(1ULL << 32, throwWarningCallback),
+      static_cast<uint32_t>(1ULL << 31));
+  const auto output = testing::internal::GetCapturedStderr();
+
+  EXPECT_NE(
+      output.find(
+          "Prims trace warning: Prims trace clamps ring size 4294967296 to 2147483648"),
+      std::string::npos);
 }
 
 TEST(PipesTraceTest, NormalizeRingSizePassthrough) {
-  EXPECT_EQ(PipesTrace::normalizeRingSize(1024), 1024u);
+  EXPECT_EQ(PipesTrace::normalizeRingSize(1024, kIgnoreWarnings), 1024u);
 }
 
 TEST_F(PipesTraceCudaTest, EnsureCreatesBuffer) {
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(64, kPollInterval);
   auto handle = trace.deviceHandle();
   EXPECT_NE(handle.ring, nullptr);
@@ -166,20 +190,20 @@ TEST_F(PipesTraceCudaTest, EnsureCreatesBuffer) {
 }
 
 TEST_F(PipesTraceCudaTest, EnsureZeroSizeIsNoOp) {
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(0, kPollInterval);
   auto handle = trace.deviceHandle();
   EXPECT_EQ(handle.ring, nullptr);
 }
 
 TEST_F(PipesTraceCudaTest, DeviceHandleNullBeforeEnsure) {
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   auto handle = trace.deviceHandle();
   EXPECT_EQ(handle.ring, nullptr);
 }
 
 TEST_F(PipesTraceCudaTest, DestructionAfterEnsure) {
-  auto trace = std::make_unique<PipesTrace>();
+  auto trace = std::make_unique<PipesTrace>(kIgnoreWarnings);
   trace->ensure(64, kPollInterval);
   auto handle = trace->deviceHandle();
   EXPECT_NE(handle.ring, nullptr);
@@ -187,7 +211,7 @@ TEST_F(PipesTraceCudaTest, DestructionAfterEnsure) {
 }
 
 TEST_F(PipesTraceCudaTest, EnsureIdempotent) {
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(64, kPollInterval);
   auto handle1 = trace.deviceHandle();
 
@@ -196,6 +220,51 @@ TEST_F(PipesTraceCudaTest, EnsureIdempotent) {
 
   EXPECT_EQ(handle1.ring, handle2.ring);
   EXPECT_EQ(handle1.writeIndex, handle2.writeIndex);
+}
+
+TEST_F(PipesTraceCudaTest, ReportsWarningThroughCallback) {
+  std::vector<std::string> warnings;
+  PipesTrace trace{
+      [&](std::string_view message) { warnings.emplace_back(message); }};
+  trace.ensure(64, kPollInterval);
+
+  trace.ensure(128, kPollInterval);
+
+  ASSERT_EQ(warnings.size(), 1u);
+  EXPECT_EQ(
+      warnings.front(),
+      "Prims trace keeps existing ring_size=64 despite requested_ring_size=128 because device handles may be in flight");
+}
+
+TEST_F(PipesTraceCudaTest, WarningCallbackFailureFallsBackOnInstancePath) {
+  PipesTrace trace{throwWarningCallback};
+  trace.ensure(64, kPollInterval);
+
+  testing::internal::CaptureStderr();
+  trace.ensure(128, kPollInterval);
+  const auto output = testing::internal::GetCapturedStderr();
+
+  EXPECT_NE(
+      output.find(
+          "Prims trace warning: Prims trace keeps existing ring_size=64 despite requested_ring_size=128 because device handles may be in flight"),
+      std::string::npos);
+}
+
+TEST_F(PipesTraceCudaTest, DestructionReportsDroppedEntriesThroughCallback) {
+  std::vector<std::string> warnings;
+  {
+    PipesTrace trace{
+        [&](std::string_view message) { warnings.emplace_back(message); }};
+    trace.ensure(2, std::chrono::hours{1});
+    auto handle = trace.deviceHandle();
+    ASSERT_NE(handle.ring, nullptr);
+
+    comms::prims::test::launchWriteEvents(handle, 10, stream_);
+    ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  }
+
+  ASSERT_EQ(warnings.size(), 1u);
+  EXPECT_NE(warnings.front().find("Prims trace lost "), std::string::npos);
 }
 
 TEST_F(PipesTraceCudaTest, WriteAndReadEvents) {
@@ -270,7 +339,7 @@ TEST_F(PipesTraceCudaTest, PollThreadPicksUpEventsBeforeKernelEnds) {
   std::mutex mu;
   std::vector<PipesTraceEvent> received;
 
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(64, kPollInterval, [&](const PipesTraceEvent& event, uint64_t) {
     std::lock_guard<std::mutex> lock(mu);
     received.push_back(event);
@@ -313,7 +382,7 @@ TEST_F(PipesTraceCudaTest, PollThreadConsumesEagerEvents) {
   std::mutex mu;
   std::vector<PipesTraceEvent> received;
 
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(64, kPollInterval, [&](const PipesTraceEvent& event, uint64_t) {
     std::lock_guard<std::mutex> lock(mu);
     received.push_back(event);
@@ -468,7 +537,7 @@ TEST_F(PipesTraceCudaTest, PollThreadWithGraphReplay) {
   std::mutex mu;
   std::vector<PipesTraceEvent> received;
 
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(256, kPollInterval, [&](const PipesTraceEvent& event, uint64_t) {
     std::lock_guard<std::mutex> lock(mu);
     received.push_back(event);
@@ -562,7 +631,7 @@ TEST_F(PipesTraceCudaTest, PollThreadMultiBlockEvents) {
   std::mutex mu;
   std::vector<PipesTraceEvent> received;
 
-  PipesTrace trace;
+  PipesTrace trace{kIgnoreWarnings};
   trace.ensure(256, kPollInterval, [&](const PipesTraceEvent& event, uint64_t) {
     std::lock_guard<std::mutex> lock(mu);
     received.push_back(event);

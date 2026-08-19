@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,15 +28,22 @@ class PipesTrace {
   using Entry = typename Buffer::Entry;
   using Reader =
       ::hrdw_ring_buffer::HRDWRingBufferReader<comms::prims::PipesTraceEvent>;
+  // May run on the internal poll thread; captured state must remain valid for
+  // the lifetime of this object and support concurrent invocation. Exceptions
+  // are contained and reported to stderr rather than escaping a worker thread
+  // or destructor.
+  using WarningCallback = std::function<void(std::string_view message)>;
 
-  PipesTrace();
+  explicit PipesTrace(WarningCallback warningCallback);
   ~PipesTrace();
   PipesTrace(const PipesTrace&) = delete;
   PipesTrace& operator=(const PipesTrace&) = delete;
   PipesTrace(PipesTrace&&) = delete;
   PipesTrace& operator=(PipesTrace&&) = delete;
 
-  static uint32_t normalizeRingSize(uint64_t ringSize);
+  static uint32_t normalizeRingSize(
+      uint64_t ringSize,
+      const WarningCallback& warningCallback);
 
   using EventCallback =
       std::function<void(const PipesTraceEvent& event, uint64_t slot)>;
@@ -74,7 +82,9 @@ class PipesTrace {
   void pollLoop();
   void startPollThread();
   void stopPollThread();
+  void warn(std::string_view message) const noexcept;
 
+  WarningCallback warningCallback_;
   std::unique_ptr<Buffer> buffer_;
   std::unique_ptr<Reader> reader_;
   mutable std::mutex drainMutex_;

@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <string_view>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
@@ -31,6 +32,10 @@ namespace {
 
 bool ctranPipesTraceEnabled() {
   return NCCL_CTRAN_PIPES_TRACE_ENABLE;
+}
+
+void logPipesTraceWarning(std::string_view message) {
+  CTRAN_LOG(WARN, "{}", message);
 }
 
 // Resolves the per-communicator override first, MCCL_MAX_NBLOCKS second. As
@@ -121,13 +126,14 @@ commResult_t ctran::ctranPreparePipesTrace(
     return commSuccess;
   }
   const uint32_t ringSize = comms::prims::PipesTrace::normalizeRingSize(
-      NCCL_CTRAN_PIPES_TRACE_RING_SIZE);
+      NCCL_CTRAN_PIPES_TRACE_RING_SIZE, logPipesTraceWarning);
   if (ringSize == 0) {
     return commSuccess;
   }
 
   if (comm->pipesTrace_ == nullptr) {
-    comm->pipesTrace_ = std::make_unique<comms::prims::PipesTrace>();
+    comm->pipesTrace_ =
+        std::make_unique<comms::prims::PipesTrace>(logPipesTraceWarning);
   }
   comm->pipesTrace_->ensure(
       ringSize,
