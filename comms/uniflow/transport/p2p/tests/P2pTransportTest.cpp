@@ -241,7 +241,9 @@ TEST(P2pTransportTest, ConnectEnablesPeerAccessForDifferentDevice) {
   auto mock = std::make_shared<NiceMock<MockCudaApi>>();
   ON_CALL(*mock, getDevice()).WillByDefault(Return(Result<int>(0)));
   ON_CALL(*mock, setDevice(_)).WillByDefault(Return(Ok()));
+  // BOTH directions: local->peer for put, peer->local for get.
   EXPECT_CALL(*mock, deviceEnablePeerAccess(1)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(0)).WillOnce(Return(Ok()));
 
   ScopedEventBaseThread ebt;
   P2pTransport transport(/*deviceId=*/0, ebt.getEventBase(), mock);
@@ -315,11 +317,60 @@ TEST(P2pTransportTest, ConnectRequiresBindFirst) {
   EXPECT_NE(transport.state(), TransportState::Connected);
 }
 
+// Regression test for a cross-process get() fault on AMD: with only
+// local->peer enabled, put() works and get() faults once the ranks are
+// separate processes.
+TEST(P2pTransportTest, ConnectEnablesPeerAccessInBothDirections) {
+  auto mock = std::make_shared<NiceMock<MockCudaApi>>();
+
+  int current = -1;
+  ON_CALL(*mock, setDevice(_)).WillByDefault([&current](int d) {
+    current = d;
+    return Ok();
+  });
+  ON_CALL(*mock, getDevice()).WillByDefault([&current]() {
+    return Result<int>(current);
+  });
+
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(1)).WillOnce([&current](int) {
+    EXPECT_EQ(current, 0) << "local->peer must be enabled with LOCAL current";
+    return Ok();
+  });
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(0)).WillOnce([&current](int) {
+    EXPECT_EQ(current, 1) << "peer->local must be enabled with PEER current";
+    return Ok();
+  });
+
+  ScopedEventBaseThread ebt;
+  P2pTransport transport(/*deviceId=*/0, ebt.getEventBase(), mock);
+  transport.bind();
+  EXPECT_FALSE(transport.connect(makeDeviceIdBytes(1)).hasError());
+  EXPECT_EQ(transport.state(), TransportState::Connected);
+}
+
+// A failure enabling the REVERSE direction must not leave the transport
+// half-connected: state stays Initialized so the caller can retry or fall back.
+TEST(P2pTransportTest, ConnectFailsClosedWhenReversePeerAccessFails) {
+  auto mock = std::make_shared<NiceMock<MockCudaApi>>();
+  ON_CALL(*mock, getDevice()).WillByDefault(Return(Result<int>(0)));
+  ON_CALL(*mock, setDevice(_)).WillByDefault(Return(Ok()));
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(1)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(0))
+      .WillOnce(Return(Err(ErrCode::DriverError, "no reverse peer access")));
+
+  ScopedEventBaseThread ebt;
+  P2pTransport transport(/*deviceId=*/0, ebt.getEventBase(), mock);
+  transport.bind();
+  EXPECT_TRUE(transport.connect(makeDeviceIdBytes(1)).hasError());
+  EXPECT_EQ(transport.state(), TransportState::Initialized);
+}
+
 TEST(P2pTransportTest, BindDoesNotRegressConnectedState) {
   auto mock = std::make_shared<NiceMock<MockCudaApi>>();
   ON_CALL(*mock, getDevice()).WillByDefault(Return(Result<int>(0)));
   ON_CALL(*mock, setDevice(_)).WillByDefault(Return(Ok()));
   EXPECT_CALL(*mock, deviceEnablePeerAccess(1)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mock, deviceEnablePeerAccess(0)).WillOnce(Return(Ok()));
 
   ScopedEventBaseThread ebt;
   P2pTransport transport(/*deviceId=*/0, ebt.getEventBase(), mock);
