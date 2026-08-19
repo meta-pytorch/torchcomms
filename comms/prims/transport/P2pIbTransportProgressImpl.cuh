@@ -1179,7 +1179,6 @@ __device__ __forceinline__ bool progress_recv_ready(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   using P = LlxPacket<4, 4>;
   (void)transport;
-  (void)localChannel;
   (void)localDataReady;
   (void)waitCredit;
   (void)traceContext;
@@ -1202,13 +1201,25 @@ __device__ __forceinline__ bool progress_recv_ready(
     }
   }
   const bool ready = group_all_ready(group, myReady != 0U);
-  if (!ready && group.is_leader()) {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-        timeout,
-        "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
-        "wireBytes=%llu",
-        static_cast<unsigned long long>(chunk.flagVal),
-        static_cast<unsigned long long>(chunk.wireBytes));
+  if (group.is_leader()) {
+    if (ready) {
+      // LL carries no DATA_READY, but its put still advanced the sender's
+      // IbQpState::cursor -- select_put_lane_ordinal() increments that cursor
+      // on every put regardless of protocol, and it is channel-scoped, not
+      // slot-scoped. recvDataReadyLaneCursor mirrors it, so the mirror has to
+      // advance here too: consuming an LL chunk without it leaves the two one
+      // chunk apart per LL transfer, and Simple's next receive on this channel
+      // then waits on a lane the sender never wrote. Matches the unconditional
+      // bump in poll_recv_data_ready() (a single lane makes it a no-op).
+      ++localChannel.recvDataReadyLaneCursor;
+    } else {
+      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          timeout,
+          "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
+          "wireBytes=%llu",
+          static_cast<unsigned long long>(chunk.flagVal),
+          static_cast<unsigned long long>(chunk.wireBytes));
+    }
   }
   return ready;
 #else
