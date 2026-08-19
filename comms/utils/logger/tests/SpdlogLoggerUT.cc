@@ -5,11 +5,14 @@
 
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -39,6 +42,27 @@ class ScopedTestFile {
 
   std::filesystem::path path_;
 };
+
+std::string readFile(const std::filesystem::path& path) {
+  std::ifstream file{path};
+  return {
+      std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+bool waitForFileToContain(
+    const std::filesystem::path& path,
+    std::string_view message) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  do {
+    if (readFile(path).find(message) != std::string::npos) {
+      return true;
+    }
+    /* sleep override */
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
 
 class LogLevelRestoringTest : public testing::Test {
  protected:
@@ -70,6 +94,44 @@ TEST(SpdlogLoggerTest, MatchesLegacyStderrRouting) {
   EXPECT_FALSE(
       meta::comms::logger::shouldWriteCommsLogToStderr("INFO message"));
   EXPECT_FALSE(meta::comms::logger::shouldWriteCommsLogToStderr(""));
+}
+
+TEST(SpdlogLoggerTest, AsyncErrorReachesFileWithoutExplicitFlush) {
+  constexpr std::string_view kContext = "comms.async_flush_test";
+  const ScopedTestFile scopedLogFile{"comms_spdlog_async_flush.log"};
+  meta::comms::logger::configureSpdlogLogger(
+      kContext,
+      "TEST",
+      scopedLogFile.path().string(),
+      []() { return 0; },
+      {},
+      true);
+  auto& logger = getSpdlogLogger(kContext);
+  logger.set_level(spdlog::level::info);
+
+  COMMS_LOG_NAMED(kContext, ERR, "asynchronous error flush");
+
+  EXPECT_TRUE(
+      waitForFileToContain(scopedLogFile.path(), "asynchronous error flush"));
+}
+
+TEST(SpdlogLoggerTest, AsyncInfoReachesFileViaPeriodicFlush) {
+  constexpr std::string_view kContext = "comms.periodic_flush_test";
+  const ScopedTestFile scopedLogFile{"comms_spdlog_periodic_flush.log"};
+  meta::comms::logger::configureSpdlogLogger(
+      kContext,
+      "TEST",
+      scopedLogFile.path().string(),
+      []() { return 0; },
+      {},
+      true);
+  auto& logger = getSpdlogLogger(kContext);
+  logger.set_level(spdlog::level::info);
+
+  COMMS_LOG_NAMED(kContext, INFO, "asynchronous periodic flush");
+
+  EXPECT_TRUE(waitForFileToContain(
+      scopedLogFile.path(), "asynchronous periodic flush"));
 }
 
 TEST(SpdlogLoggerTest, SynchronousFileDeliveryMatchesLegacyRouting) {
