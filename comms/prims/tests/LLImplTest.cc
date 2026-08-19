@@ -1,7 +1,10 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -91,6 +94,136 @@ TEST_F(LLImplTest, LlRoundTrip) {
         std::size_t(4096)}) {
     roundTrip<LlxPacketGeometry>(test::test_ll_pack_unpack, n);
   }
+}
+
+namespace {
+
+// Seed accum, pack src, reduce src into accum on device, return accum.
+// `expected` is built independently on the host from the same inputs.
+template <typename T, typename Launch>
+std::vector<T> runUnpackReduce(
+    const std::vector<T>& src,
+    const std::vector<T>& seed,
+    Launch launch) {
+  const std::size_t nelems = src.size();
+  const std::size_t nbytes = nelems * sizeof(T);
+
+  DeviceBuffer srcBuf(nbytes);
+  DeviceBuffer accumBuf(nbytes);
+  DeviceBuffer staging(LlxPacketGeometry::wire_bytes(nbytes));
+
+  CUDACHECK_TEST(
+      cudaMemcpy(srcBuf.get(), src.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(
+      cudaMemcpy(accumBuf.get(), seed.data(), nbytes, cudaMemcpyHostToDevice));
+  // Poison staging: unpack_reduce must wait for pack()'s flags, so a missing
+  // readiness poll shows up as reduced garbage rather than a pass.
+  CUDACHECK_TEST(
+      cudaMemset(staging.get(), 0xEE, LlxPacketGeometry::wire_bytes(nbytes)));
+
+  launch(srcBuf.get(), static_cast<char*>(staging.get()), accumBuf.get());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<T> out(nelems);
+  CUDACHECK_TEST(
+      cudaMemcpy(out.data(), accumBuf.get(), nbytes, cudaMemcpyDeviceToHost));
+  return out;
+}
+
+} // namespace
+
+// sizeof(T) == kData: one element per packet, all three reduce ops.
+// Values are small integers so float arithmetic is exact and the expected
+// vector can be compared with ==.
+TEST_F(LLImplTest, UnpackReduceOneElemPerPacket) {
+  constexpr std::size_t kElems = 133; // not a multiple of the block size
+  std::vector<float> src(kElems), seed(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    src[i] = static_cast<float>(i % 17);
+    seed[i] = static_cast<float>((i % 5) + 1);
+  }
+
+  const std::array<test::ReduceKind, 3> kinds{
+      test::ReduceKind::Sum, test::ReduceKind::Max, test::ReduceKind::Min};
+  for (const auto kind : kinds) {
+    std::vector<float> expected(kElems);
+    for (std::size_t i = 0; i < kElems; ++i) {
+      switch (kind) {
+        case test::ReduceKind::Sum:
+          expected[i] = seed[i] + src[i];
+          break;
+        case test::ReduceKind::Max:
+          expected[i] = std::max(seed[i], src[i]);
+          break;
+        case test::ReduceKind::Min:
+          expected[i] = std::min(seed[i], src[i]);
+          break;
+      }
+    }
+
+    const auto actual =
+        runUnpackReduce<float>(src, seed, [&](void* s, char* st, void* a) {
+          test::test_ll_unpack_reduce_f32(
+              static_cast<const float*>(s),
+              st,
+              static_cast<float*>(a),
+              kElems,
+              kind);
+        });
+    EXPECT_EQ(actual, expected)
+        << "float reduce mismatch for kind " << static_cast<int>(kind);
+  }
+}
+
+// sizeof(T) < kData: two elements per packet. kElems is odd so the final
+// packet carries one valid element and one that must be left alone -- the
+// valid_payload mask inside unpack_reduce.
+TEST_F(LLImplTest, UnpackReduceTwoElemsPerPacketPartialTail) {
+  constexpr std::size_t kElems = 101;
+  std::vector<__half> src(kElems), seed(kElems);
+  std::vector<float> expected(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    const float s = static_cast<float>(i % 7);
+    const float a = static_cast<float>(i % 3);
+    src[i] = __float2half(s);
+    seed[i] = __float2half(a);
+    expected[i] = s + a; // <= 8, exactly representable in fp16
+  }
+
+  const auto actual =
+      runUnpackReduce<__half>(src, seed, [&](void* s, char* st, void* a) {
+        test::test_ll_unpack_reduce_f16(s, st, a, kElems);
+      });
+
+  std::vector<float> actualF(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    actualF[i] = __half2float(actual[i]);
+  }
+  EXPECT_EQ(actualF, expected) << "fp16 two-elements-per-packet reduce wrong";
+}
+
+// sizeof(T) > kData: one element spans two packets and is reassembled
+// byte-wise. Integers make any byte-order or packet-ordering slip obvious
+// rather than a small numeric drift.
+TEST_F(LLImplTest, UnpackReduceElementSpansPackets) {
+  constexpr std::size_t kElems = 97;
+  std::vector<int64_t> src(kElems), seed(kElems), expected(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    // Distinct high and low words so a swapped packet is not self-masking.
+    src[i] = static_cast<int64_t>((i + 1) * 0x0001'0000'0007ULL);
+    seed[i] = static_cast<int64_t>(i);
+    expected[i] = seed[i] + src[i];
+  }
+
+  const auto actual =
+      runUnpackReduce<int64_t>(src, seed, [&](void* s, char* st, void* a) {
+        test::test_ll_unpack_reduce_i64(
+            static_cast<const int64_t*>(s),
+            st,
+            static_cast<int64_t*>(a),
+            kElems);
+      });
+  EXPECT_EQ(actual, expected) << "int64 spanning-packet reduce wrong";
 }
 
 TEST_F(LLImplTest, FlagRoundTrip) {

@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
@@ -192,19 +193,10 @@ struct LLImpl {
       const std::size_t off = i * static_cast<std::size_t>(P::kData);
 
       if constexpr (P::kPacketBytes == static_cast<int>(sizeof(uint64_t))) {
-        // 8 B packet: {data:4, flag:4} in one 8 B atomic word. Fuse the poll
-        // and the data read -- one wide volatile load yields both.
-        const auto* p = reinterpret_cast<const volatile uint64_t*>(pkt);
-        uint64_t v;
-        uint32_t spins = 0;
-        do {
-          v = comms::device::ld_volatile_global(p);
-          if (((++spins & kTimeoutPollMask) == 0) && timeout.checkExpired()) {
-            PIPES_DEVICE_TRAP();
-          }
-        } while (static_cast<FlagType>(v >> 32) !=
-                 flagVal); // high half is the flag
-        const auto data = static_cast<uint32_t>(v); // low half is the payload
+        // 8 B packet: {data:4, flag:4} in one 8 B atomic word -- the poll and
+        // the data read are one load. Shared with unpack_reduce so there is a
+        // single spin loop in this file.
+        const uint32_t data = load_ready_payload(pkt, flagVal, timeout);
         const auto* db = reinterpret_cast<const char*>(&data);
 #pragma unroll
         for (int b = 0; b < P::kData; ++b) {
@@ -248,6 +240,140 @@ struct LLImpl {
     (void)staging;
     (void)nbytes;
     (void)flagVal;
+#endif
+  }
+
+  /// Spin until `pkt` carries flag == `flagVal`, then return its data half.
+  /// One wide volatile load yields both halves, so the readiness poll and the
+  /// payload read are the same instruction -- the fused 8 B path unpack() uses.
+  __device__ __forceinline__ static uint32_t load_ready_payload(
+      const char* pkt,
+      FlagType flagVal,
+      const Timeout& timeout) {
+#ifdef __CUDA_ARCH__
+    const auto* p = reinterpret_cast<const volatile uint64_t*>(pkt);
+    uint64_t v;
+    uint32_t spins = 0;
+    do {
+      v = comms::device::ld_volatile_global(p);
+      if (((++spins & kTimeoutPollMask) == 0) && timeout.checkExpired()) {
+        PIPES_DEVICE_TRAP();
+      }
+    } while (static_cast<FlagType>(v >> 32) !=
+             flagVal); // high half is the flag
+    return static_cast<uint32_t>(v); // low half is the payload
+#else
+    (void)pkt;
+    (void)flagVal;
+    (void)timeout;
+    return 0;
+#endif
+  }
+
+  /// Reduce the packet stream into `accum` under `Combine`: the accumulating
+  /// counterpart of unpack(), which assigns. A reduce CopyOp cannot call
+  /// unpack() -- that would overwrite the partial sum -- and staging into a
+  /// scratch buffer first would cost an extra chunk-sized write and read on
+  /// what is the latency path.
+  ///
+  /// Lives here rather than in the CopyOp so the packet walk, the valid-payload
+  /// masking and the wide-T reassembly stay in the one place that owns the
+  /// packet format, and so the readiness spin is not something each caller has
+  /// to remember. A reduce op that re-implemented this walk without the spin
+  /// would consume staging before the data landed.
+  ///
+  /// Two element/packet tilings, both reachable from the fused AllReduce's
+  /// instantiation set. When an element fits inside a packet's data region
+  /// (float, __half, __nv_bfloat16 against kData = 4) one thread owns one
+  /// packet. When an element is wider (double, int64_t) it spans
+  /// sizeof(T)/kData consecutive packets, so one thread instead owns one
+  /// element and reassembles it before reducing -- a per-packet reduce would
+  /// corrupt a value split across two packets.
+  ///
+  /// NOTE: scalar-granular by construction (one float / two halves per 4 B
+  /// packet); the packet layout rules out the 16 B vectorized tile reduce the
+  /// contiguous path uses.
+  /// `Combine` is a default-constructible functor with
+  /// `operator()(T& accum, const T& value)`. Passing the combiner in keeps the
+  /// reduce vocabulary out of the codec: LLImpl owns the packet format, the
+  /// caller owns what "reduce" means. It also keeps this header host-includable
+  /// -- pulling in VecOps would drag device-only math (fmaxf/fminf) into every
+  /// host TU that reaches LLImpl through MemcpyCopyOp.cuh.
+  template <typename T, typename Combine, typename Group>
+  __device__ __forceinline__ static void unpack_reduce(
+      Group& group,
+      T* accum,
+      const void* staging,
+      std::size_t nbytes,
+      FlagType flagVal,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    constexpr std::size_t kData = static_cast<std::size_t>(P::kData);
+    constexpr std::size_t kPacket = static_cast<std::size_t>(P::kPacketBytes);
+    const auto* base = reinterpret_cast<const char*>(staging);
+
+    if constexpr (kData % sizeof(T) == 0) {
+      constexpr std::size_t kElemsPerPacket = kData / sizeof(T);
+      const std::size_t nPackets = P::packet_count(nbytes);
+      for (std::size_t i = group.thread_id_in_group; i < nPackets;
+           i += group.group_size) {
+        const uint32_t data =
+            load_ready_payload(base + i * kPacket, flagVal, timeout);
+        const T* payload = reinterpret_cast<const T*>(&data);
+        const std::size_t nElem = P::valid_payload(i, nbytes) / sizeof(T);
+        const std::size_t baseElem = i * kElemsPerPacket;
+#pragma unroll
+        for (std::size_t e = 0; e < kElemsPerPacket; ++e) {
+          if (e < nElem) {
+            Combine{}(accum[baseElem + e], payload[e]);
+          }
+        }
+      }
+    } else {
+      // Entered when kData % sizeof(T) != 0, but the reassembly below needs the
+      // stronger property: an element must be a whole number of packets.
+      // Without it kPacketsPerElem truncates and each element is silently
+      // under-filled -- at sizeof(T) == 3 it would be zero packets and `val`
+      // would be reduced wholly uninitialized. Every currently instantiated
+      // type (double, int64_t against kData == 4) satisfies this.
+      static_assert(
+          sizeof(T) % kData == 0,
+          "LL wide-element reduce needs sizeof(T) to be a whole number of "
+          "packet payloads");
+      constexpr std::size_t kPacketsPerElem = sizeof(T) / kData;
+      // Whole elements only. A chunk carrying a partial element would drop it
+      // here (integer division) and leave the next chunk's `accum` misaligned.
+      // Chunk sizing guarantees this: calcGeometry/make_progress_geometry align
+      // chunkPayload to lcm(kData, 8), a multiple of sizeof(T). This check
+      // is the backstop for a caller that bypasses that sizing.
+      PIPES_DEVICE_CHECK_MSG(
+          nbytes % sizeof(T) == 0, "LL reduce chunk must hold whole elements");
+      const std::size_t nElems = nbytes / sizeof(T);
+      for (std::size_t e = group.thread_id_in_group; e < nElems;
+           e += group.group_size) {
+        T val;
+        auto* valBytes = reinterpret_cast<char*>(&val);
+#pragma unroll
+        for (std::size_t k = 0; k < kPacketsPerElem; ++k) {
+          const uint32_t word = load_ready_payload(
+              base + (e * kPacketsPerElem + k) * kPacket, flagVal, timeout);
+          const auto* wordBytes = reinterpret_cast<const char*>(&word);
+#pragma unroll
+          for (std::size_t b = 0; b < kData; ++b) {
+            valBytes[k * kData + b] = wordBytes[b];
+          }
+        }
+        Combine{}(accum[e], val);
+      }
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)accum;
+    (void)staging;
+    (void)nbytes;
+    (void)flagVal;
+    (void)timeout;
 #endif
   }
 };

@@ -1,5 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <cstdint>
@@ -7,7 +8,9 @@
 #include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
+#include "comms/prims/core/Tile.cuh"
 #include "comms/prims/tests/Checks.h"
+#include "comms/prims/tests/LLImplTest.cuh"
 
 namespace comms::prims::test {
 
@@ -92,6 +95,102 @@ __global__ void test_ll_flag_roundtrip_kernel(void* p8, uint32_t* errorCount) {
 void test_ll_flag_roundtrip(void* p8_d, uint32_t* errorCount_d) {
   test_ll_flag_roundtrip_kernel<<<1, 1>>>(p8_d, errorCount_d);
   PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// pack() the source into staging, then reduce it into `accum` with
+// unpack_reduce. Building staging with pack() rather than by hand is
+// deliberate: it also pins that the two agree on packet layout and flag
+// placement, so a change to one without the other fails here.
+// LLImpl takes a Combine functor rather than a reduce op, so the test supplies
+// its own -- which also checks that the seam is usable without VecOps.
+template <typename T, typename Op>
+struct TestCombine {
+  __device__ __forceinline__ void operator()(T& accum, const T& value) const {
+    VecOps<T>::reduce_scalar(Op{}, accum, value);
+  }
+};
+
+template <typename P, typename T, typename Op>
+__global__ void unpack_reduce_kernel(
+    const T* src,
+    char* staging,
+    T* accum,
+    std::size_t nelems) {
+  ThreadGroup g{
+      threadIdx.x,
+      blockDim.x,
+      blockIdx.x,
+      blockIdx.x,
+      gridDim.x,
+      SyncScope::BLOCK};
+
+  const std::size_t nbytes = nelems * sizeof(T);
+  const typename P::FlagType flagVal = static_cast<typename P::FlagType>(7);
+
+  LLImpl<P>::pack(
+      g, staging, reinterpret_cast<const char*>(src), nbytes, flagVal);
+  g.sync();
+  // unpack_reduce polls each packet's flag itself and syncs on the way out.
+  LLImpl<P>::template unpack_reduce<T, TestCombine<T, Op>>(
+      g, accum, staging, nbytes, flagVal);
+}
+
+namespace {
+
+template <typename T>
+void launchByKind(
+    const T* src,
+    char* staging,
+    T* accum,
+    std::size_t nelems,
+    ReduceKind kind) {
+  switch (kind) {
+    case ReduceKind::Sum:
+      unpack_reduce_kernel<LlxPacketGeometry, T, SumOp>
+          <<<1, 256>>>(src, staging, accum, nelems);
+      break;
+    case ReduceKind::Max:
+      unpack_reduce_kernel<LlxPacketGeometry, T, MaxOp>
+          <<<1, 256>>>(src, staging, accum, nelems);
+      break;
+    case ReduceKind::Min:
+      unpack_reduce_kernel<LlxPacketGeometry, T, MinOp>
+          <<<1, 256>>>(src, staging, accum, nelems);
+      break;
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+} // namespace
+
+void test_ll_unpack_reduce_f32(
+    const float* src_d,
+    char* staging_d,
+    float* accum_d,
+    std::size_t nelems,
+    ReduceKind kind) {
+  launchByKind<float>(src_d, staging_d, accum_d, nelems, kind);
+}
+
+void test_ll_unpack_reduce_f16(
+    const void* src_d,
+    char* staging_d,
+    void* accum_d,
+    std::size_t nelems) {
+  launchByKind<__half>(
+      static_cast<const __half*>(src_d),
+      staging_d,
+      static_cast<__half*>(accum_d),
+      nelems,
+      ReduceKind::Sum);
+}
+
+void test_ll_unpack_reduce_i64(
+    const int64_t* src_d,
+    char* staging_d,
+    int64_t* accum_d,
+    std::size_t nelems) {
+  launchByKind<int64_t>(src_d, staging_d, accum_d, nelems, ReduceKind::Sum);
 }
 
 } // namespace comms::prims::test

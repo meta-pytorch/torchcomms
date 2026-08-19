@@ -1688,14 +1688,34 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
     PIPES_DEVICE_TRAP();
   }
 
+  // Chunks align to lcm(kData, widest reduced element), not to kData alone --
+  // see calcGeometry for the full reasoning: a reducing CopyOp needs each chunk
+  // to hold a whole number of elements, LL's kData of 4 splits a double/int64,
+  // and the alignment must come from the protocol rather than the CopyOp so the
+  // Memcpy send lane and the IbReduceCopy recv lane agree on the chunk
+  // boundary. Both terms are payload bytes; this is NOT kPacketBytes, which is
+  // a wire size. No-op for Simple (kData == 16 already covers 8).
+  constexpr std::size_t kDataBytes = static_cast<std::size_t>(Proto::kData);
+  static_assert(
+      (kDataBytes & (kDataBytes - 1)) == 0,
+      "kData must be a power of two, so that max() is its lcm with "
+      "kMaxReducedTypeBytes");
+  constexpr std::size_t kChunkAlign =
+      kDataBytes > kMaxReducedTypeBytes ? kDataBytes : kMaxReducedTypeBytes;
+
   const std::size_t perBlockSlotWire = pipeline_chunk(channelLayout);
   const std::size_t perBlockSlotPayload = Proto::max_payload(perBlockSlotWire);
-  if (perBlockSlotPayload == 0) {
+  // Widened from `== 0` to one aligned chunk unit: the chunk sizing below
+  // rounds to kChunkAlign, so a slot that cannot hold one such unit would be
+  // overrun by the smallest legal chunk. Same single branch as before, so this
+  // costs nothing extra on the progress hot path.
+  if (perBlockSlotPayload < kChunkAlign) {
     if (group.is_leader()) {
       printf(
-          "[PIPES] FATAL: %s perBlockSlotPayload=0 "
-          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          "[PIPES] FATAL: %s perBlockSlotPayload=%llu holds no whole chunk "
+          "unit (perChannelBufferSize=%llu, pipelineDepth=%d)\n",
           opName,
+          (unsigned long long)perBlockSlotPayload,
           (unsigned long long)pipeline_window(channelLayout),
           channelLayout.pipelineDepth);
     }
@@ -1708,12 +1728,19 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
   // Simple (kData == 16) this is the original 16B alignment.
   const std::size_t protocolBytes =
       (nbytes + Proto::kData - 1) / Proto::kData * Proto::kData;
+  // Guaranteed >= kChunkAlign by the slot check above.
+  const std::size_t alignedSlotPayload =
+      perBlockSlotPayload / kChunkAlign * kChunkAlign;
   std::size_t chunkPayload =
-      (max_signal_bytes > 0 && max_signal_bytes < perBlockSlotPayload)
-      ? (max_signal_bytes / Proto::kData * Proto::kData)
-      : perBlockSlotPayload;
+      (max_signal_bytes > 0 && max_signal_bytes < alignedSlotPayload)
+      ? (max_signal_bytes / kChunkAlign * kChunkAlign)
+      : alignedSlotPayload;
   if (chunkPayload == 0) {
-    chunkPayload = perBlockSlotPayload;
+    // Sub-unit request: clamp to one aligned unit, the finest granularity that
+    // still holds whole packets and whole elements. See calcGeometry --
+    // max_signal_bytes is a MAXIMUM, so neither the whole slot nor rounding up
+    // would respect it.
+    chunkPayload = kChunkAlign;
   }
   return ProgressGeometry{
       .groupId = groupId,
