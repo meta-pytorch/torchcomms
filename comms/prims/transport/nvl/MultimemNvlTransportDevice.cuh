@@ -79,6 +79,9 @@ struct MultimemNvlTransportDevice {
   uint32_t pipelineDepth{0};
   uint32_t maxChannels{0};
   uint32_t signalsPerChannel{0};
+  // Indexed by NVL-local destination rank. Each entry addresses the base of
+  // that destination's internal signal slots through its unicast mapping.
+  DeviceSpan<SignalState*> internalUnicastSignalsByRank{};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;
