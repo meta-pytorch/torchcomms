@@ -2,6 +2,8 @@
 
 #include "comms/common/algorithms/all_gather/AllGatherAlgoManager.h"
 
+#include <folly/logging/xlog.h>
+
 namespace meta::comms {
 
 AllGatherAlgoManager::AllGatherAlgoManager(

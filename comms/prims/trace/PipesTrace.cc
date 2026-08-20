@@ -4,6 +4,8 @@
 
 #include <pthread.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -12,8 +14,9 @@
 #include <mutex>
 #include <utility>
 
+#include <fmt/format.h>
+
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace comms::prims {
 namespace {
@@ -166,9 +169,94 @@ uint64_t allocatePipesTraceSessionId() {
   return nextPipesTraceSessionId.fetch_add(1, std::memory_order_relaxed);
 }
 
+void emitWarning(
+    const PipesTrace::WarningCallback& warningCallback,
+    std::string_view message) noexcept {
+  try {
+    if (warningCallback) {
+      warningCallback(message);
+      return;
+    }
+  } catch (...) {
+    /*
+     * The callback may have emitted before throwing. Falling back can
+     * duplicate that warning, but suppressing the fallback could lose the
+     * diagnostic.
+     */
+  }
+
+  flockfile(stderr);
+  std::fputs("Prims trace warning: ", stderr);
+  std::fwrite(message.data(), sizeof(char), message.size(), stderr);
+  std::fputc('\n', stderr);
+  std::fflush(stderr);
+  funlockfile(stderr);
+}
+
+size_t utf8CompletePrefixSize(std::string_view text) noexcept {
+  if (text.empty()) {
+    return 0;
+  }
+
+  size_t sequenceStart = text.size() - 1;
+  while (sequenceStart > 0 &&
+         (static_cast<unsigned char>(text[sequenceStart]) & 0xC0) == 0x80) {
+    --sequenceStart;
+  }
+
+  const auto lead = static_cast<unsigned char>(text[sequenceStart]);
+  size_t sequenceSize = 1;
+  if ((lead & 0xE0) == 0xC0) {
+    sequenceSize = 2;
+  } else if ((lead & 0xF0) == 0xE0) {
+    sequenceSize = 3;
+  } else if ((lead & 0xF8) == 0xF0) {
+    sequenceSize = 4;
+  }
+  return sequenceStart + sequenceSize <= text.size() ? text.size()
+                                                     : sequenceStart;
+}
+
+template <typename... Args>
+void emitFormattedWarning(
+    const PipesTrace::WarningCallback& warningCallback,
+    fmt::format_string<Args...> format,
+    Args&&... args) noexcept {
+  constexpr size_t kWarningBufferSize = 2048;
+  constexpr std::string_view kTruncationMarker = " [truncated]";
+  constexpr size_t kPayloadSize = kWarningBufferSize - kTruncationMarker.size();
+  std::array<char, kWarningBufferSize> buffer{};
+  try {
+    const auto result = fmt::format_to_n(
+        buffer.data(), kPayloadSize, format, std::forward<Args>(args)...);
+    size_t messageSize = std::min(result.size, kPayloadSize);
+    if (result.size > kPayloadSize) {
+      messageSize =
+          utf8CompletePrefixSize(std::string_view{buffer.data(), messageSize});
+      std::copy(
+          kTruncationMarker.begin(),
+          kTruncationMarker.end(),
+          buffer.begin() + messageSize);
+      messageSize += kTruncationMarker.size();
+    }
+    emitWarning(warningCallback, std::string_view{buffer.data(), messageSize});
+  } catch (...) {
+    emitWarning(warningCallback, "Prims trace warning formatting failed");
+  }
+}
+
+void emitExceptionWarning(
+    const PipesTrace::WarningCallback& warningCallback,
+    const char* prefix,
+    const std::exception& ex) noexcept {
+  emitFormattedWarning(warningCallback, "{}: {}", prefix, ex.what());
+}
+
 } // namespace
 
-PipesTrace::PipesTrace() : sessionId_(allocatePipesTraceSessionId()) {}
+PipesTrace::PipesTrace(WarningCallback warningCallback)
+    : warningCallback_(std::move(warningCallback)),
+      sessionId_(allocatePipesTraceSessionId()) {}
 
 PipesTrace::~PipesTrace() {
   // CTRAN teardown relies on the same lifetime contract as other comm-owned
@@ -181,21 +269,26 @@ PipesTrace::~PipesTrace() {
   try {
     drain();
   } catch (const std::exception& ex) {
-    CLOGF(WARN, "Prims trace final drain failed: {}", ex.what());
+    emitExceptionWarning(
+        warningCallback_, "Prims trace final drain failed", ex);
   } catch (...) {
-    CLOGF(WARN, "Prims trace final drain failed with unknown exception");
+    emitWarning(
+        warningCallback_,
+        "Prims trace final drain failed with unknown exception");
   }
 }
 
-uint32_t PipesTrace::normalizeRingSize(uint64_t ringSize) {
+uint32_t PipesTrace::normalizeRingSize(
+    uint64_t ringSize,
+    const WarningCallback& warningCallback) {
   if (ringSize == 0) {
     return 0;
   }
 
   constexpr uint64_t kMaxRingEntries = 1ULL << 31;
   if (ringSize > kMaxRingEntries) {
-    CLOGF(
-        WARN,
+    emitFormattedWarning(
+        warningCallback,
         "Prims trace clamps ring size {} to {}",
         ringSize,
         kMaxRingEntries);
@@ -213,43 +306,79 @@ void PipesTrace::ensure(
     return;
   }
 
-  std::lock_guard<std::mutex> lock(drainMutex_);
-  rank_ = rank;
-  if (buffer_ != nullptr && reader_ != nullptr) {
-    if (buffer_->size() < ringSize) {
-      CLOGF(
-          WARN,
-          "Prims trace keeps existing ring_size={} despite requested_ring_size={} because device handles may be in flight",
-          buffer_->size(),
-          ringSize);
+  enum class EnsureOutcome {
+    NoChange,
+    Initialized,
+    ExistingRingTooSmall,
+    AllocationFailure,
+  };
+  struct EnsureResult {
+    EnsureOutcome outcome{EnsureOutcome::NoChange};
+    uint32_t ringSize{0};
+  };
+  EnsureResult result;
+  {
+    std::lock_guard<std::mutex> lock(drainMutex_);
+    rank_ = rank;
+    if (buffer_ != nullptr && reader_ != nullptr) {
+      if (buffer_->size() < ringSize) {
+        result = {
+            .outcome = EnsureOutcome::ExistingRingTooSmall,
+            .ringSize = buffer_->size()};
+      }
+    } else {
+      reader_.reset();
+      buffer_ = std::make_unique<Buffer>(ringSize);
+      if (!buffer_->valid()) {
+        buffer_.reset();
+        result.outcome = EnsureOutcome::AllocationFailure;
+      } else {
+        reader_ = std::make_unique<Reader>(*buffer_);
+        ::hrdw_ring_buffer::GlobaltimerCalibration::get();
+        // Set before starting the poller; the poll thread reads pollInterval_
+        // only after this store and it is never mutated again for this ring.
+        pollInterval_ = pollInterval;
+        eventCallback_ = std::move(eventCallback);
+        startPollThread();
+        result = {
+            .outcome = EnsureOutcome::Initialized, .ringSize = buffer_->size()};
+      }
     }
-    return;
   }
 
-  reader_.reset();
-  buffer_ = std::make_unique<Buffer>(ringSize);
-  if (!buffer_->valid()) {
-    CLOGF(
-        WARN, "Prims trace failed to allocate ring with {} entries", ringSize);
-    buffer_.reset();
-    return;
+  switch (result.outcome) {
+    case EnsureOutcome::NoChange:
+      return;
+    case EnsureOutcome::Initialized:
+      /*
+       * Successful initialization and trace records remain an unsuppressed,
+       * parseable stderr stream; the injected callback is warning-only.
+       */
+      flockfile(stderr);
+      std::fprintf(
+          stderr,
+          "Prims trace buffer ready trace_session=%llu rank=%u ring_size=%u poll_interval_ms=%lld\n",
+          static_cast<unsigned long long>(sessionId_),
+          static_cast<unsigned int>(rank),
+          static_cast<unsigned int>(result.ringSize),
+          static_cast<long long>(pollInterval.count()));
+      std::fflush(stderr);
+      funlockfile(stderr);
+      return;
+    case EnsureOutcome::ExistingRingTooSmall:
+      emitFormattedWarning(
+          warningCallback_,
+          "Prims trace keeps existing ring_size={} despite requested_ring_size={} because device handles may be in flight",
+          result.ringSize,
+          ringSize);
+      return;
+    case EnsureOutcome::AllocationFailure:
+      emitFormattedWarning(
+          warningCallback_,
+          "Prims trace failed to allocate ring with {} entries",
+          ringSize);
+      return;
   }
-
-  reader_ = std::make_unique<Reader>(*buffer_);
-  ::hrdw_ring_buffer::GlobaltimerCalibration::get();
-  // Set before starting the poller; the poll thread reads pollInterval_ only
-  // after this store and it is never mutated again for this ring.
-  pollInterval_ = pollInterval;
-  eventCallback_ = std::move(eventCallback);
-  startPollThread();
-  std::fprintf(
-      stderr,
-      "Prims trace buffer ready trace_session=%llu rank=%u ring_size=%u poll_interval_ms=%lld\n",
-      static_cast<unsigned long long>(sessionId_),
-      static_cast<unsigned int>(rank_),
-      static_cast<unsigned int>(buffer_->size()),
-      static_cast<long long>(pollInterval_.count()));
-  std::fflush(stderr);
 }
 
 PipesTraceHandle PipesTrace::deviceHandle() const {
@@ -342,7 +471,8 @@ void PipesTrace::logBatch(const PendingLogBatch& batch) const {
   }
 
   if (batch.entriesLost != 0) {
-    CLOGF(WARN, "Prims trace lost {} entries", batch.entriesLost);
+    emitFormattedWarning(
+        warningCallback_, "Prims trace lost {} entries", batch.entriesLost);
   }
   if (!batch.entries.empty()) {
     std::fflush(stderr);
@@ -363,9 +493,12 @@ void PipesTrace::pollLoop() {
     try {
       drain();
     } catch (const std::exception& ex) {
-      CLOGF(WARN, "Prims trace poll drain failed: {}", ex.what());
+      emitExceptionWarning(
+          warningCallback_, "Prims trace poll drain failed", ex);
     } catch (...) {
-      CLOGF(WARN, "Prims trace poll drain failed with unknown exception");
+      emitWarning(
+          warningCallback_,
+          "Prims trace poll drain failed with unknown exception");
     }
   }
 }

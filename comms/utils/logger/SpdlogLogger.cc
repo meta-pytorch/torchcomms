@@ -26,6 +26,24 @@
 #include "comms/utils/logger/CommsLogFormatter.h"
 
 namespace meta::comms::logger {
+
+spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
+  switch (level) {
+    case LogLevel::NONE:
+    case LogLevel::VERSION:
+      return spdlog::level::off;
+    case LogLevel::ERROR:
+      return spdlog::level::err;
+    case LogLevel::WARN:
+      return spdlog::level::warn;
+    case LogLevel::INFO:
+      return spdlog::level::info;
+    case LogLevel::ABORT:
+    case LogLevel::TRACE:
+      return spdlog::level::debug;
+  }
+  return spdlog::level::off;
+}
 namespace {
 
 constexpr std::string_view kLoggerName = "comms";
@@ -236,6 +254,28 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
       std::make_shared<spdlog::logger>(logger_->name(), outputSink_);
   synchronousLogger_->set_level(spdlog::level::trace);
   storeConfiguration(std::make_shared<const Configuration>());
+}
+
+CommsLogStream::CommsLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level,
+    bool fatal)
+    : logger_(logger), location_(location), level_(level), fatal_(fatal) {}
+
+CommsLogStream::~CommsLogStream() {
+  const auto message = stream_.str();
+  if (fatal_) {
+    logger_.flush();
+    spdlog::shutdown();
+    logger_.logFatal(location_, message);
+    std::abort();
+  }
+  logger_.log(location_, level_, message);
+}
+
+std::ostream& CommsLogStream::stream() {
+  return stream_;
 }
 
 std::string_view CommsSpdlogLogger::getLevelName(

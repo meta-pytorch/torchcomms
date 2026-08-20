@@ -2,6 +2,8 @@
 
 #include "comms/common/algorithms/all_to_all/AllToAllAlgoManager.h"
 
+#include <folly/logging/xlog.h>
+
 namespace meta::comms {
 
 AllToAllAlgoManager::AllToAllAlgoManager(

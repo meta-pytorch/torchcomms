@@ -2,6 +2,8 @@
 
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
 
+#include <folly/logging/xlog.h>
+
 namespace meta::comms {
 
 AllReduceAlgoManager::AllReduceAlgoManager(

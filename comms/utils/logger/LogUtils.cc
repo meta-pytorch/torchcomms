@@ -16,8 +16,6 @@ namespace {
 folly::once_flag commLoggingInitOnceFlag;
 
 void initCommLoggingImpl() {
-  setSubSystemMask(
-      meta::comms::logger::parseDebugSubsysMask(NCCL_DEBUG_SUBSYS.c_str()));
   NcclLogger::init(
       NcclLoggerInitConfig{
           .contextName = std::string{kCommsUtilsCategory},

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/ibverbx/tests/IbverbxTestFixture.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <folly/ScopeGuard.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
@@ -59,10 +60,10 @@ TEST_F(IbverbxTestFixture, IbvGetDeviceList) {
     ASSERT_GT(ibvDevices->size(), 0);
 
     // Print all found ibv device names
-    XLOGF(INFO, "Found {} InfiniBand devices:", ibvDevices->size());
+    CTRAN_LOG(INFO, "Found {} InfiniBand devices:", ibvDevices->size());
     for (size_t i = 0; i < ibvDevices->size(); ++i) {
       const auto& device = ibvDevices->at(i);
-      XLOGF(INFO, "  Device[{}]: {}", i, device.device()->name);
+      CTRAN_LOG(INFO, "  Device[{}]: {}", i, device.device()->name);
     }
   }
   {
@@ -87,7 +88,7 @@ TEST_F(IbverbxTestFixture, IbvGetDeviceList) {
           numDevicesToSelect,
           gen);
 
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "Testing exact match (in order) with {} randomly selected devices",
           numDevicesToSelect);
@@ -122,7 +123,7 @@ TEST_F(IbverbxTestFixture, IbvGetDeviceList) {
       // Shuffle to create out-of-order
       std::shuffle(selectedDevices.begin(), selectedDevices.end(), gen);
 
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "Testing exact match (out of order) with {} randomly selected and shuffled devices",
           numDevicesToSelect);
@@ -154,7 +155,7 @@ TEST_F(IbverbxTestFixture, IbvGetDeviceList) {
           numDevicesToExclude,
           gen);
 
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "Testing exclude (in order) with {} randomly selected devices to exclude",
           numDevicesToExclude);
@@ -197,7 +198,7 @@ TEST_F(IbverbxTestFixture, IbvGetDeviceList) {
       // Shuffle the exclusion list
       std::shuffle(devicesToExclude.begin(), devicesToExclude.end(), gen);
 
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "Testing exclude (out of order) with {} randomly selected and shuffled devices to exclude",
           numDevicesToExclude);
@@ -377,7 +378,7 @@ TEST_F(IbverbxTestFixture, regMr) {
 
   for (size_t size : sizes) {
     void* devBuf{nullptr};
-    XLOGF(INFO, "regMr testing with buffer size: {} bytes", size);
+    CTRAN_LOG(INFO, "regMr testing with buffer size: {} bytes", size);
     CUDA_CHECK(cudaMalloc(&devBuf, size));
     auto mr = pd->regMr(devBuf, size, access);
     EXPECT_TRUE(mr);
@@ -621,7 +622,7 @@ TEST_F(IbverbxTestFixture, IbvCqGetDeviceCq) {
   ASSERT_GE(deviceCq.ncqes, cqe);
   ASSERT_NE(deviceCq.cq_dbrec, nullptr);
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Device CQ: cq_buf={}, ncqes={}, cq_dbrec={}",
       deviceCq.cq_buf,
@@ -677,7 +678,7 @@ TEST_F(IbverbxTestFixture, IbvQpGetDeviceQp) {
   ASSERT_EQ(deviceQp.producer_idx, 0);
   ASSERT_EQ(deviceQp.consumer_idx, 0);
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Device QP: qp_num={}, wq_buf={}, nwqes={}, sq_dbrec={}, bf_reg={}, cq={}",
       deviceQp.qp_num,

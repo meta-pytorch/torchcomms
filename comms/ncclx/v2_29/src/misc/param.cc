@@ -23,36 +23,13 @@
 #include <unordered_set>
 #include "os.h"
 
-#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/InitFolly.h"
 #include "meta/NcclxLogger.h"
 
 #include "cuda_runtime_api.h"
-
-namespace {
-
-spdlog::level::level_enum loggerLevelToSpdlogLevel(
-    meta::comms::logger::LogLevel level) {
-  switch (level) {
-    case meta::comms::logger::LogLevel::NONE:
-    case meta::comms::logger::LogLevel::VERSION:
-      return spdlog::level::off;
-    case meta::comms::logger::LogLevel::ERROR:
-      return spdlog::level::err;
-    case meta::comms::logger::LogLevel::WARN:
-      return spdlog::level::warn;
-    case meta::comms::logger::LogLevel::INFO:
-      return spdlog::level::info;
-    case meta::comms::logger::LogLevel::ABORT:
-    case meta::comms::logger::LogLevel::TRACE:
-      return spdlog::level::debug;
-  }
-  return spdlog::level::off;
-}
-
-} // namespace
 
 const char* userHomeDir() {
   struct passwd *pwUser = getpwuid(getuid());
@@ -182,22 +159,36 @@ const char* ncclGetEnv(const char* name) {
 }
 
 void initNcclLogger() {
-  // Shared CollTrace code still emits raw XLOG under comms.utils.
-  meta::comms::logger::initCommLogging();
+  meta::comms::logger::initCommLoggerRuntime();
+  const auto logFilePath =
+      meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str());
+  const auto threadContextFn = []() {
+    int cudaDev = -1;
+    (void)cudaGetDevice(&cudaDev);
+    return cudaDev;
+  };
+  const auto errorCallback = [](std::string_view message) {
+    meta::comms::logger::setLastError(std::string{message}, {});
+  };
+  const auto logLevel = meta::comms::logger::loggerLevelToSpdlogLevel(
+      meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG));
+
+  meta::comms::logger::configureSpdlogLogger(
+      "comms",
+      "COMM",
+      logFilePath,
+      threadContextFn,
+      errorCallback,
+      NCCL_DEBUG_LOGGING_ASYNC);
+  meta::comms::logger::getSpdlogLogger().set_level(logLevel);
+
   meta::comms::logger::configureSpdlogLogger(
       ncclx::logging::kNcclxLoggerName,
       "NCCL",
-      meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      []() {
-        int cudaDev = -1;
-        (void)cudaGetDevice(&cudaDev);
-        return cudaDev;
-      },
-      [](std::string_view message) {
-        meta::comms::logger::setLastError(std::string{message}, {});
-      },
+      logFilePath,
+      threadContextFn,
+      errorCallback,
       NCCL_DEBUG_LOGGING_ASYNC);
   meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
-      .set_level(loggerLevelToSpdlogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
+      .set_level(logLevel);
 }
