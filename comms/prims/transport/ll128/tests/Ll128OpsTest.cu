@@ -32,6 +32,26 @@ __global__ void ll128_forward_kernel(
 }
 
 // =============================================================================
+// Abort regression: ll128_forward must leave the successor's slot untouched.
+//
+// The predecessor never fills the local buffer, so Phase 1 spins and the
+// deadline releases it. Phase 3 must not run: it would store a stale packet
+// with lane 7 stamping the *current* flag onto it, so the successor would
+// accept never-arrived data as real and never learn a fault occurred.
+// =============================================================================
+__global__ void ll128_forward_abort_kernel(
+    char* dst,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    Ll128Packet* remote_ll128_buf,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_warp_group();
+  Timeout timeout = abort;
+  timeout.start();
+  ll128_forward(group, dst, nbytes, local_ll128_buf, remote_ll128_buf, timeout);
+}
+
+// =============================================================================
 // Multi-step combined kernel — send and recv in a single launch via
 // partition_interleaved(2) for warp-level role assignment.
 // Even-indexed warps are senders, odd-indexed warps are receivers.
@@ -108,6 +128,23 @@ void test_ll128_send_recv(
       /*num_steps=*/1,
       num_blocks,
       block_size);
+}
+
+// Runs ll128_forward against a local buffer that is never filled, with a short
+// device deadline as the only way out. Returns nothing: the assertion is that
+// the remote buffer is byte-identical to what the caller wrote before the call.
+void test_ll128_forward_abort_leaves_remote_untouched(
+    char* dst_d,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    Ll128Packet* remote_ll128_buf,
+    comms::fault_tolerance::AbortDevice abort,
+    int num_blocks,
+    int block_size) {
+  ll128_forward_abort_kernel<<<num_blocks, block_size>>>(
+      dst_d, nbytes, local_ll128_buf, remote_ll128_buf, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void test_ll128_forward(

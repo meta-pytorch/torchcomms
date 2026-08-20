@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 
 namespace comms::prims::test {
@@ -22,6 +23,20 @@ void test_ll128_send_recv(
 
 /// Test LL128 forward: read from local LL128 buf, forward to remote, copy to
 /// dst.
+// Abort regression for ll128_forward: the local buffer is never filled, so the
+// only exit is the deadline carried by `abort`. Asserting the remote buffer is
+// unchanged afterwards is what proves Phase 3 was suppressed -- an ungated
+// store would ship a stale packet stamped with the current flag, which the
+// successor cannot tell from real data.
+void test_ll128_forward_abort_leaves_remote_untouched(
+    char* dst_d,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    Ll128Packet* remote_ll128_buf,
+    comms::fault_tolerance::AbortDevice abort,
+    int num_blocks,
+    int block_size);
+
 void test_ll128_forward(
     char* dst_d,
     size_t nbytes,
