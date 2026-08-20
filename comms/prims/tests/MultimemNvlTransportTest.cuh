@@ -100,6 +100,16 @@ void launchReadUserAndInternal(
     uint64_t* out,
     cudaStream_t stream = nullptr);
 
+void launchSetAllPeerInternalSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t value,
+    cudaStream_t stream = nullptr);
+
+void launchReadPeerInternalSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
 void launchFillReductionInput(
     MultimemNvlTransportDevice transport,
     MultimemReductionTestType type,

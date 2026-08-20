@@ -82,6 +82,28 @@ __global__ void readUserAndInternalKernel(
   }
 }
 
+__global__ void setAllPeerInternalSignalsKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t value) {
+  for (auto destination = blockIdx.x * blockDim.x + threadIdx.x;
+       destination < transport.nvlRanks;
+       destination += blockDim.x * gridDim.x) {
+    auto* destinationSignals =
+        transport.internalUnicastSignalsByRank[destination];
+    destinationSignals[transport.nvlRank].signal(SignalOp::SIGNAL_SET, value);
+  }
+}
+
+__global__ void readPeerInternalSignalsKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out) {
+  for (auto source = blockIdx.x * blockDim.x + threadIdx.x;
+       source < transport.nvlRanks;
+       source += blockDim.x * gridDim.x) {
+    out[source] = transport.internalLocalSignals[source].load();
+  }
+}
+
 template <typename T>
 __device__ T reductionValue(float value) {
   if constexpr (std::is_same_v<T, __half>) {
@@ -249,6 +271,28 @@ void launchReadUserAndInternal(
     cudaStream_t stream) {
   readUserAndInternalKernel<<<1, 32, 0, stream>>>(
       transport, userId, internalId, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchSetAllPeerInternalSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t value,
+    cudaStream_t stream) {
+  constexpr int kThreads = 256;
+  const int blocks = (transport.nvlRanks + kThreads - 1) / kThreads;
+  setAllPeerInternalSignalsKernel<<<blocks, kThreads, 0, stream>>>(
+      transport, value);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchReadPeerInternalSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out,
+    cudaStream_t stream) {
+  constexpr int kThreads = 256;
+  const int blocks = (transport.nvlRanks + kThreads - 1) / kThreads;
+  readPeerInternalSignalsKernel<<<blocks, kThreads, 0, stream>>>(
+      transport, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

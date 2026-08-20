@@ -12,6 +12,10 @@
 #include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
 
+namespace meta::comms {
+class DeviceBuffer;
+}
+
 namespace comms::prims {
 
 /**
@@ -24,9 +28,8 @@ namespace comms::prims {
  * a signal. The numeric `multimemData` pointer is a process-local CUDA VA and
  * is not part of the cross-rank protocol.
  *
- * The caller must set the current CUDA device before construction. The
- * transport records that device ordinal and passes it to MultimemHandler; it
- * does not switch CUDA devices internally.
+ * The caller owns CUDA device selection and must keep the construction device
+ * current while calling exchange() and destroying the transport.
  *
  * `bootstrap` is the global communicator bootstrap. `commRank` is this
  * process's rank in that global communicator. `nvlRankToCommRank` maps each
@@ -50,7 +53,7 @@ class MultimemNvlTransport {
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultimemNvlTransportConfig& config);
 
-  ~MultimemNvlTransport() = default;
+  ~MultimemNvlTransport();
 
   MultimemNvlTransport(const MultimemNvlTransport&) = delete;
   MultimemNvlTransport& operator=(const MultimemNvlTransport&) = delete;
@@ -85,13 +88,21 @@ class MultimemNvlTransport {
       const std::vector<int>& nvlRankToCommRank);
 
  private:
-  const int commRank_{-1};
+  // Collectively imports the peer backing allocations and uploads the
+  // device-resident table of internal-signal pointers.
+  std::unique_ptr<meta::comms::DeviceBuffer> exchangeUnicastPeerViews();
+
+  enum class ExchangeState {
+    kNotStarted,
+    kReady,
+    kFailed,
+  };
+
   const int nvlRanks_{-1};
-  // This rank's index within the NVL team (its position in nvlRankToCommRank_).
+  // This rank's index within the NVL team.
   // Retained so getDeviceTransport() can expose it to the device staging
   // protocol, which keys its per-rank signal slots on the NVL-local rank.
   int nvlRank_{-1};
-  const std::vector<int> nvlRankToCommRank_;
   // Recorded after the rank-map validation in the constructor body so a bad
   // topology fails before cudaGetDevice is consulted (lets tests cover the
   // rank-map preconditions on CPU-only hosts).
@@ -100,12 +111,7 @@ class MultimemNvlTransport {
   std::size_t dataBufferSize_{0};
   uint32_t internalSignalCount_{0};
   uint32_t signalsPerChannel_{0};
-  bool exchanged_{false};
-  // Set when exchange() throws; subsequent calls throw instead of silently
-  // retrying. Multicast object create/import/bind failures can leave partial
-  // driver state, so a same-object retry is unsafe. Callers must rebuild the
-  // transport to recover.
-  bool broken_{false};
+  ExchangeState exchangeState_{ExchangeState::kNotStarted};
 
   // Single GpuMemHandler whose physical allocation contains both the data
   // window and the signal slots back-to-back. Layout: [data | pad-to-128B |
@@ -113,9 +119,11 @@ class MultimemNvlTransport {
   // and, via its multicast overlay (exchangeMulticast), the multicast VA
   // (getMultimemDeviceMemPtr) -- one cuMulticastCreate / one set of binds / one
   // MC VA range over one shared physical backing.
+  std::shared_ptr<meta::comms::IBootstrap> nvlBootstrap_;
   std::unique_ptr<GpuMemHandler> combinedHandler_;
   // Offset of the signal region within combinedHandler_'s allocation.
   std::size_t signalRegionOffset_{0};
+  std::unique_ptr<meta::comms::DeviceBuffer> internalUnicastSignalsByRank_;
 };
 
 } // namespace comms::prims
