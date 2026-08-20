@@ -15,6 +15,25 @@
 #include <ctime>
 #include <mutex>
 
+/* The build defines NCCL_OS_LINUX for libnccl itself, but targets that consume
+ * only the header set (ncclx-private-headers / -internal, e.g. the meta tests
+ * via comms/testinfra/TestUtils.h) do not inherit it -- compiler_flags are
+ * private in Buck. Without a definition neither os/ header is included and
+ * ncclSocketDescriptor / ncclAffinity go undeclared, so default from the
+ * compiler's own platform macros.
+ *
+ * Defined to 1, not left empty as in v2_30: 2.31 added bare `#if NCCL_OS_LINUX`
+ * tests (socket.h, and os.h below) that need a value, so v2_30's spelling would
+ * not compile here.
+ */
+#if !defined(NCCL_OS_LINUX) && !defined(NCCL_OS_WINDOWS)
+#if defined(_WIN32) || defined(_WIN64)
+#define NCCL_OS_WINDOWS 1
+#else
+#define NCCL_OS_LINUX 1
+#endif
+#endif
+
 #if defined(NCCL_OS_WINDOWS)
 #include "os/windows.h"
 #elif defined(NCCL_OS_LINUX)
