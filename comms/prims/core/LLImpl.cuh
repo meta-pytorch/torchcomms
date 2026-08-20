@@ -170,10 +170,15 @@ struct LLImpl {
   // the payload, so the wait happens HERE rather than in wait_signal -- without
   // a deadline a lost WQE, a dead peer, or a flagVal desync spins forever and
   // then holds the whole group at the group.sync() below. Each thread polls
-  // only the packets it owns, so the check is per-thread (checkExpired()) and
-  // not the leader-only group form. The clock is read once per
-  // kTimeoutPollMask+1 spins: LL is the latency path, and a clock64() on every
-  // poll is a measurable cost on a hot loop.
+  // only the packets it owns, so the check is per-thread
+  // (FT_ABORT_BREAK) and not the leader-only group form. The
+  // clock is read once per kTimeoutPollMask+1 spins: LL is the latency path,
+  // and a clock64() on every poll is a measurable cost on a hot loop.
+  //
+  // Stays `void` -- the macro terminates the loops itself and every thread
+  // still reaches the group.sync() below, which is all the abort contract
+  // requires. `dst` is undefined after an abort. This mirrors
+  // MemcpyCopyOp::recvLL; keep the two in step when either changes.
   template <typename Group>
   __device__ __forceinline__ static void unpack(
       Group& group,
@@ -195,8 +200,15 @@ struct LLImpl {
       if constexpr (P::kPacketBytes == static_cast<int>(sizeof(uint64_t))) {
         // 8 B packet: {data:4, flag:4} in one 8 B atomic word -- the poll and
         // the data read are one load. Shared with unpack_reduce so there is a
-        // single spin loop in this file.
-        const uint32_t data = load_ready_payload(pkt, flagVal, timeout);
+        // single abort-aware spin loop in this file.
+        bool abandoned = false;
+        const uint32_t data =
+            load_ready_payload(pkt, flagVal, timeout, abandoned);
+        // Leaves the packet loop as well: load_ready_payload only exits its own
+        // spin. `dst` is undefined from here, which the abort contract permits.
+        if (abandoned) {
+          break;
+        }
         const auto* db = reinterpret_cast<const char*>(&data);
 #pragma unroll
         for (int b = 0; b < P::kData; ++b) {
@@ -210,9 +222,19 @@ struct LLImpl {
         uint32_t spins = 0;
         while (!is_flag_set(pkt, flagVal)) {
           // Spin until this packet's flag reaches the current flagVal.
-          if (((++spins & kTimeoutPollMask) == 0) && timeout.checkExpired()) {
-            PIPES_DEVICE_TRAP();
+          if ((++spins & kTimeoutPollMask) == 0) {
+            FT_ABORT_BREAK(
+                timeout,
+                "LLImpl::unpack waiting for LL flag %u on packet %llu",
+                (unsigned)flagVal,
+                (unsigned long long)i);
           }
+        }
+        if (spins >= kTimeoutPollMask) {
+          FT_ABORT_BREAK(
+              timeout,
+              "LLImpl::unpack abandoning decode at packet %llu",
+              (unsigned long long)i);
         }
         constexpr int kDataWords =
             P::kData / static_cast<int>(sizeof(uint64_t));
@@ -246,18 +268,35 @@ struct LLImpl {
   /// Spin until `pkt` carries flag == `flagVal`, then return its data half.
   /// One wide volatile load yields both halves, so the readiness poll and the
   /// payload read are the same instruction -- the fused 8 B path unpack() uses.
+  ///
+  /// Sets `abandoned` when the spin gave up on an abort rather than seeing the
+  /// flag; the return value is then whatever was last on the wire, which the
+  /// abort contract permits. Callers MUST propagate it out of their own
+  /// packet/element loop: this only leaves its own spin, and re-entering it for
+  /// every remaining packet would burn a full poll interval each time before
+  /// giving up again.
   __device__ __forceinline__ static uint32_t load_ready_payload(
       const char* pkt,
       FlagType flagVal,
-      const Timeout& timeout) {
+      const Timeout& timeout,
+      bool& abandoned) {
 #ifdef __CUDA_ARCH__
     const auto* p = reinterpret_cast<const volatile uint64_t*>(pkt);
     uint64_t v;
     uint32_t spins = 0;
     do {
       v = comms::device::ld_volatile_global(p);
-      if (((++spins & kTimeoutPollMask) == 0) && timeout.checkExpired()) {
-        PIPES_DEVICE_TRAP();
+      if ((++spins & kTimeoutPollMask) == 0) {
+        // Honor behavior(): under the default SKIP a deliberate abort has to
+        // unwind, not kill the CUDA context from inside LL decode. CHECK rather
+        // than BREAK so the flag can be raised before leaving the spin.
+        if (FT_ABORT_CHECK(
+                timeout,
+                "LLImpl::load_ready_payload waiting for LL flag %u",
+                (unsigned)flagVal)) {
+          abandoned = true;
+          break;
+        }
       }
     } while (static_cast<FlagType>(v >> 32) !=
              flagVal); // high half is the flag
@@ -266,6 +305,7 @@ struct LLImpl {
     (void)pkt;
     (void)flagVal;
     (void)timeout;
+    (void)abandoned;
     return 0;
 #endif
   }
@@ -317,8 +357,13 @@ struct LLImpl {
       const std::size_t nPackets = P::packet_count(nbytes);
       for (std::size_t i = group.thread_id_in_group; i < nPackets;
            i += group.group_size) {
+        bool abandoned = false;
         const uint32_t data =
-            load_ready_payload(base + i * kPacket, flagVal, timeout);
+            load_ready_payload(base + i * kPacket, flagVal, timeout, abandoned);
+        // `accum` is undefined from here, which the abort contract permits.
+        if (abandoned) {
+          break;
+        }
         const T* payload = reinterpret_cast<const T*>(&data);
         const std::size_t nElem = P::valid_payload(i, nbytes) / sizeof(T);
         const std::size_t baseElem = i * kElemsPerPacket;
@@ -353,15 +398,28 @@ struct LLImpl {
            e += group.group_size) {
         T val;
         auto* valBytes = reinterpret_cast<char*>(&val);
+        bool abandoned = false;
 #pragma unroll
         for (std::size_t k = 0; k < kPacketsPerElem; ++k) {
           const uint32_t word = load_ready_payload(
-              base + (e * kPacketsPerElem + k) * kPacket, flagVal, timeout);
+              base + (e * kPacketsPerElem + k) * kPacket,
+              flagVal,
+              timeout,
+              abandoned);
+          if (abandoned) {
+            break;
+          }
           const auto* wordBytes = reinterpret_cast<const char*>(&word);
 #pragma unroll
           for (std::size_t b = 0; b < kData; ++b) {
             valBytes[k * kData + b] = wordBytes[b];
           }
+        }
+        // Skip the combine and leave the element loop: `val` is only partly
+        // reassembled, so reducing it would corrupt `accum` with wire garbage
+        // rather than merely leaving it undefined.
+        if (abandoned) {
+          break;
         }
         Combine{}(accum[e], val);
       }

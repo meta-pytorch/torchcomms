@@ -3,6 +3,7 @@
 #pragma once
 
 #include <type_traits>
+#include <utility>
 
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
@@ -862,6 +863,9 @@ __device__ __forceinline__ void consumeRecvBuf(
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
+    // recvLL terminates itself on abort and returns void; there is nothing to
+    // propagate. The decoded buffer is undefined after an abort, per the
+    // contract in FAULT_TOLERANCE.md.
     CopyOp::template recvLL<P>(
         group,
         dst,

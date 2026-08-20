@@ -4,6 +4,7 @@
 
 #include <cstddef>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
 namespace comms::prims {
@@ -17,7 +18,7 @@ struct RingAllgatherLaunchParams {
   char* recvbuf{nullptr};
   int num_blocks{16};
   int num_rings{1};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
 
   struct RingParams {
     int prev_rank{0};

@@ -9,7 +9,6 @@
 
 #include "comms/prims/collectives/ReduceScatterDirectIbV2.cuh"
 #include "comms/prims/core/Checks.h"
-#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 
@@ -45,16 +44,6 @@ void validate(const DirectReduceScatterIbV2LaunchParams& params) {
   }
 }
 
-Timeout make_launch_timeout(float timeout_ms) {
-  Timeout timeout;
-  if (timeout_ms > 0) {
-    int device = 0;
-    PIPES_CUDA_CHECK(cudaGetDevice(&device));
-    timeout = makeTimeout(timeout_ms, device);
-  }
-  return timeout;
-}
-
 } // namespace
 
 void launch_direct_reduce_scatter_ib_v2_impl(
@@ -80,7 +69,7 @@ void launch_direct_reduce_scatter_ib_v2_impl(
       params.num_blocks,
       params.block_threads,
       params.stream,
-      make_launch_timeout(params.timeout_ms));
+      params.abort);
 }
 
 } // namespace comms::prims

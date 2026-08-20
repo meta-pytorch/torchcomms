@@ -128,7 +128,7 @@ __device__ __forceinline__ void ll_send(
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "ll_send: waiting for READY_TO_WRITE on line %llu (buf_idx=%llu)",
               (unsigned long long)line_idx,
@@ -230,7 +230,7 @@ __device__ __forceinline__ void ll_recv(
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "ll_recv: waiting for flag=%u on line %llu (buf_idx=%llu, got flag1=%u flag2=%u)",
               (unsigned)pkt_flag_value,
@@ -331,7 +331,7 @@ __device__ __forceinline__ void ll_forward(
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "ll_forward: waiting for flag=%u on local line %llu (buf_idx=%llu)",
               (unsigned)pkt_flag_value,
@@ -347,7 +347,7 @@ __device__ __forceinline__ void ll_forward(
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "ll_forward: waiting for READY_TO_WRITE on remote line %llu (buf_idx=%llu)",
               (unsigned long long)line_idx,

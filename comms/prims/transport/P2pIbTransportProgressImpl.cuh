@@ -508,7 +508,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
             transport.read_signal(localSlotFree));
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "progress_send_once waiting for SLOT_FREE expected>=%llu, "
               "current=%llu",
@@ -718,7 +718,7 @@ progress_registered_send_once(
             transport.read_signal(localSlotFree));
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "progress_registered_send_once waiting for SLOT_FREE "
               "expected>=%llu, current=%llu",
@@ -830,7 +830,7 @@ progress_registered_send_drain_once(
           continue;
         }
         foundPending = true;
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        (void)FT_ABORT_CHECK(
             timeout,
             "registered send local completion timed out slot=%d lane=%u",
             slotId,
@@ -1054,7 +1054,7 @@ __device__ __forceinline__ bool progress_recv_ready(
             waitCredit);
         traceState->dataReadyWaitOpen = true;
       }
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      (void)FT_ABORT_CHECK(
           timeout,
           "progress_recv_once waiting for DATA_READY expected>=%llu, "
           "current=%llu",
@@ -1213,7 +1213,10 @@ __device__ __forceinline__ bool progress_recv_ready(
       // bump in poll_recv_data_ready() (a single lane makes it a no-op).
       ++localChannel.recvDataReadyLaneCursor;
     } else {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      // No loop to leave here -- this is a single resumable poll that returns
+      // Waiting to its driver. CHECK is only for the log-and-trap side effect
+      // on abort; the driver's own loop is what terminates.
+      (void)FT_ABORT_CHECK(
           timeout,
           "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
           "wireBytes=%llu",
@@ -2003,7 +2006,7 @@ __device__ __forceinline__ bool try_prepare_send_slot(
         slot.generation = generation;
       } else {
         ready = 0;
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        (void)FT_ABORT_CHECK(
             timeout,
             "send slot local completion timed out slot=%u generation=%llu "
             "pending=0x%llx",

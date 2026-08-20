@@ -23,7 +23,6 @@
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #ifndef __HIP_PLATFORM_AMD__
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/utils/CudaRAII.h"
 #endif
 
@@ -1759,7 +1758,6 @@ TEST_F(
   DeviceBuffer dataBuffer(nbytes);
   DeviceBuffer queueFullCountBuffer(sizeof(uint64_t));
   auto* queueFullCount = static_cast<uint64_t*>(queueFullCountBuffer.get());
-  const Timeout timeout = makeTimeout(5000, localRank);
 
   std::vector<uint8_t> expected(nbytes);
   for (std::size_t i = 0; i < nbytes; ++i) {
@@ -1787,8 +1785,7 @@ TEST_F(
         maxSignalBytes,
         /*send=*/true,
         queueDepth,
-        queueFullCount,
-        timeout.timeout_cycles);
+        queueFullCount);
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   if (!isSender) {
@@ -1799,8 +1796,7 @@ TEST_F(
         maxSignalBytes,
         /*send=*/false,
         queueDepth,
-        /*queueFullCount=*/nullptr,
-        timeout.timeout_cycles);
+        /*queueFullCount=*/nullptr);
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
