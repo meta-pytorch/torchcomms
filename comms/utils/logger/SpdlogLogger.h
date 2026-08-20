@@ -21,6 +21,8 @@
 #include <spdlog/sinks/dist_sink.h>
 #include <spdlog/spdlog.h>
 
+#include "comms/utils/logger/LogTypes.h"
+
 namespace meta::comms::logger {
 
 class CommsSpdlogLogger {
@@ -138,6 +140,8 @@ class CommsSpdlogLogger {
 CommsSpdlogLogger& getSpdlogLogger();
 CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 
+spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level);
+
 void configureSpdlogLogger(
     std::string prefix,
     std::function<int(void)> threadContextFn);
@@ -167,6 +171,11 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 #define COMMS_LOGGER_DEBUG(logger, ...) \
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
 
+/*
+ * shutdown() drains the async queue before the synchronous fatal message.
+ * CommsSpdlogLogger owns that synchronous logger and its output sinks outside
+ * spdlog's registry, so they remain valid after registry shutdown.
+ */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)               \
   do {                                                             \
     auto& _comms_logger = (logger_expression);                     \
