@@ -51,8 +51,31 @@ jobs:
           )
           echo "matrix=${patched}" >> "$GITHUB_OUTPUT"
 
-  build:
+  filter-matrix:
     needs: configure-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+      - uses: actions/setup-python@v6
+      - name: Checkout torchcomms
+        uses: actions/checkout@v6
+        with:
+          repository: meta-pytorch/torchcomms
+      # test-infra@main can list a CUDA version days before its torch nightly
+      # reaches download.pytorch.org; building against a torch that does not
+      # exist fails every affected coordinate.
+      - name: Drop coordinates with no published torch wheel
+        id: filter
+        env:
+          MAT: ${{ needs.configure-matrix.outputs.matrix }}
+        run: |
+          set -eu
+          MATRIX_BLOB="$( python .github/scripts/filter_matrix_by_torch_wheels.py --architecture x86_64 )"
+          echo "matrix=${MATRIX_BLOB}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: filter-matrix
     name: ${{ matrix.repository }}
     uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
     with:
@@ -66,5 +89,5 @@ jobs:
       package-name: torchcomms
       test-infra-repository: pytorch/test-infra
       test-infra-ref: main
-      build-matrix: ${{ needs.configure-matrix.outputs.matrix }}
+      build-matrix: ${{ needs.filter-matrix.outputs.matrix }}
       trigger-event: ${{ github.event_name }}
