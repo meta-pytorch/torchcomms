@@ -204,6 +204,70 @@ Fan-in publishers target the coordinator's lane counter.
 Global publishers update every destination's lane counter, including their local destination.
 
 Each active lane owner waits on the corresponding local counter with acquire semantics.
+Aggregate counters carry anonymous cumulative credits. They do not identify
+which publisher produced a credit or encode `StageRound::value`.
+
+The caller defines the credit contract for each acknowledged producer-consumer
+epoch. For epoch `k`, let `quota[k][publisher]` be the maximum number of Ready
+credits that publisher may contribute before Ack(k), and let
+`readyDelta[k]` be the sum of those quotas. A valid contract requires:
+
+```text
+budget:
+    every Ready publisher has a fixed credit quota for epoch k
+
+bound:
+    no publisher exceeds its quota before Ack(k)
+
+completion:
+    the consumer waits for previousReady + readyDelta[k]
+    the consumer performs the protected payload work
+
+acknowledgment:
+    publish Ack(k) only after Ready(k) and payload consumption complete
+
+turnstile:
+    every rank that may contribute to epoch k + 1
+    wait for Ack(k) before publishing the next Ready credit
+```
+
+Because each publisher cannot exceed its quota, reaching the sum of all quotas
+proves that every publisher met its assigned contribution. A total-credit
+threshold without per-publisher bounds is insufficient: one fast publisher
+could substitute extra credits for a delayed publisher. The Ack waiter mask
+must include every rank that may contribute to the next epoch, including ranks
+introduced by a participant-mask transition.
+
+For example, an `N`-producer-to-one-consumer protocol may assign two Ready
+credits to every producer before each Ack:
+
+```text
+initial state: Ready = 0, Ack = 0
+
+epoch 1:
+    each of N producers contributes at most 2 Ready credits
+    consumer waits for Ready >= 2 * N
+    consumer performs the protected work
+    consumer publishes Ack(1); every next-epoch producer waits for it
+
+epoch 2:
+    each of N producers contributes at most 2 more Ready credits
+    consumer waits for Ready >= 4 * N
+    consumer performs the protected work
+    consumer publishes Ack(2)
+```
+
+The quota may be one, two, or another caller-defined value, and may vary by
+publisher or epoch. Payload protected by the full epoch must not be consumed at
+an intermediate anonymous Ready threshold that does not establish the complete
+credit budget.
+
+Ready-only aggregate fan-in is unsupported when a publisher is not also a
+waiter and no external turnstile bounds its credits. Such a publisher could
+enter a later epoch and contribute another anonymous Ready credit before a
+delayed current-epoch publisher contributes.
+Ready-only aggregate barriers remain valid when every publisher is also a
+waiter for the same operation.
 For multicast access, every rank advances its local epoch by the expected arrival count for every operation.
 A selected waiter advances the epoch after observing the counter, while a nonwaiter reserves the same arrival count without blocking.
 This keeps each rank's counter and epoch accounting aligned when the waiter mask changes on a reused channel and lane.
