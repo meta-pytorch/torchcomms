@@ -340,6 +340,27 @@ CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
     val.store(1);
 }
 
+commResult_t CtranWin::retainDataSegments() {
+  if (allocDataBuf_ || winDataPtr == nullptr || dataBytes == 0 ||
+      !ownedDataSegHdls_.empty()) {
+    FB_ERRORRETURN(
+        commInvalidUsage,
+        "CtranWin: retainDataSegments requires one unretained caller-owned data buffer.");
+  }
+
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
+  std::vector<ctran::regcache::Segment*> segments;
+  return regCache->cacheSegment(
+      winDataPtr,
+      dataBytes,
+      comm->statex_->cudaDev(),
+      /*ncclManaged=*/false,
+      comm->statex_->commHash(),
+      segments,
+      ownedDataSegHdls_);
+}
+
 commResult_t CtranWin::exchange() {
   CtranMapperTimer exchangeTotalTimer;
   auto statex = comm->statex_.get();
@@ -393,9 +414,8 @@ commResult_t CtranWin::exchange() {
     dataRegHdl = baseRegHdl;
   } else {
     // User-provided buffer: acquire a scoped local registration. The buffer's
-    // segment must already be allocator-cached (CCA hook);
-    // acquireScopedRegister does not cache segments and returns
-    // commInvalidUsage otherwise. The window owns the scoped ref via
+    // segments were retained by ctranWinRegister before exchange, so this path
+    // does not depend on an allocator hook. The window owns the scoped ref via
     // dataScopedReg (released SW-only in free()); dataRegHdl borrows the
     // RegElem* for the allGatherCtrl handle exchange.
     auto regCache = ctran::RegCache::getInstance();
@@ -752,8 +772,6 @@ commResult_t CtranWin::free(bool skipBarrier) {
     FB_COMMCHECK(windowBarrier(comm, mapper));
   }
 
-  auto nRanks = statex->nRanks();
-
   // utils funcs to deregister memory
   auto deregMemIfNotNull = [&](void* segHdl) {
     if (segHdl != nullptr) {
@@ -778,8 +796,8 @@ commResult_t CtranWin::free(bool skipBarrier) {
   // signalRkey when signals are enabled (shared with dataRkey on the allocate
   // path). With signals disabled the allocate path tracks it via dataRkey, and
   // the register path has no base buffer to release.
-  for (auto i = 0; i < nRanks; ++i) {
-    if (i != statex->rank()) {
+  for (size_t i = 0; i < remWinInfo.size(); ++i) {
+    if (static_cast<int>(i) != statex->rank()) {
       if (enableSignal_) {
         FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
       } else if (allocDataBuf_) {
@@ -801,6 +819,21 @@ commResult_t CtranWin::free(bool skipBarrier) {
     auto ipcRegCache = ctran::IpcRegCache::getInstance();
     ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
     ipcRegCache->cleanupInvalidImports();
+
+    auto regCache = ctran::RegCache::getInstance();
+    ctran::CHECK_VALID_REGCACHE(regCache);
+    for (auto segHdl : ownedDataSegHdls_) {
+      bool freed = false;
+      bool ncclManaged = false;
+      std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+      FB_COMMCHECK(regCache->freeSegment(
+          segHdl,
+          freed,
+          ncclManaged,
+          regElems,
+          /*forceFree=*/false));
+    }
+    ownedDataSegHdls_.clear();
   }
 
 #if defined(ENABLE_PRIMS)
@@ -1006,6 +1039,8 @@ commResult_t ctranWinRegister(
   }
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
+
+  FB_COMMCHECK(newWin->retainDataSegments());
 
   FB_COMMCHECK(newWin->exchange()); // register and exchange both signal
                                     // & data buffer
