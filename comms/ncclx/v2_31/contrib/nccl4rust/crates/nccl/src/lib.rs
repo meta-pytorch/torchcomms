@@ -18,19 +18,34 @@ mod group;
 mod memory;
 mod types;
 
-pub use communicator::{AsyncStatus, Communicator, CommunicatorState};
-pub use config::{Config, CtaPolicy, GraphUsageMode};
-pub use device::{DeviceCommRequirements, DeviceCommunicator, GinConnectionType, GinType};
-pub use error::{Error, Result, Status};
+pub use communicator::AsyncStatus;
+pub use communicator::Communicator;
+pub use communicator::CommunicatorState;
+pub use config::Config;
+pub use config::CtaPolicy;
+pub use config::GraphUsageMode;
+pub use device::DeviceCommRequirements;
+pub use device::DeviceCommunicator;
+pub use device::GinConnectionType;
+pub use device::GinType;
+pub use error::Error;
+pub use error::Result;
+pub use error::Status;
 pub use group::Group;
-pub use memory::{NcclMemory, Window, WindowFlags};
-pub use types::{
-    BFloat16, CudaStream, Float8E4M3, Float8E5M2, Float16, NcclDataType, ReductionOp, UniqueId,
-    Version,
-};
-
+pub use memory::NcclMemory;
+pub use memory::Window;
+pub use memory::WindowFlags;
 /// Raw bindings used by this wrapper.
 ///
 /// Prefer the owned types in this crate. This re-export is provided for APIs
 /// that have not acquired a Rust wrapper yet.
 pub use nccl_sys as sys;
+pub use types::BFloat16;
+pub use types::CudaStream;
+pub use types::Float8E4M3;
+pub use types::Float8E5M2;
+pub use types::Float16;
+pub use types::NcclDataType;
+pub use types::ReductionOp;
+pub use types::UniqueId;
+pub use types::Version;

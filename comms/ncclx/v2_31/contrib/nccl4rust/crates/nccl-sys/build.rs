@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 const NCCL_HEADER: &str = "nccl.h";
 const NCCL_DEVICE_HEADER: &str = "nccl_device.h";

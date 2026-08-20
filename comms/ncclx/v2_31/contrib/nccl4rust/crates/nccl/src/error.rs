@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::sys;
 use std::error;
 use std::ffi::CStr;
 use std::fmt;
+
+use crate::sys;
 
 /// A decoded NCCL status value.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

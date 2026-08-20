@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_HOME");

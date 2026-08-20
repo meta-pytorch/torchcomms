@@ -1,17 +1,27 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::config::Config;
-use crate::error::{Error, Result, Status, check};
-use crate::group::{ensure_no_active_group, group_is_active, register_group_communicator};
-use crate::sys;
-use crate::types::{CudaStream, NcclDataType, ReductionOp, UniqueId};
 use std::cell::Cell;
 use std::env;
 use std::io::Write;
 use std::marker::PhantomData;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
+use std::ptr::{self};
 use std::rc::Rc;
+
+use crate::config::Config;
+use crate::error::Error;
+use crate::error::Result;
+use crate::error::Status;
+use crate::error::check;
+use crate::group::ensure_no_active_group;
+use crate::group::group_is_active;
+use crate::group::register_group_communicator;
+use crate::sys;
+use crate::types::CudaStream;
+use crate::types::NcclDataType;
+use crate::types::ReductionOp;
+use crate::types::UniqueId;
 
 /// The lifecycle state of a live communicator handle.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -761,8 +771,9 @@ fn validate_rank(rank_count: i32, rank: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ffi::CStr;
+
+    use super::*;
 
     #[test]
     fn rejects_invalid_ranks_without_touching_a_gpu() {

@@ -35,8 +35,10 @@ pub const NCCL_CONFIG_UNDEF_PTR: *const core::ffi::c_void = core::ptr::null();
 
 #[cfg(test)]
 mod tests {
+    use core::mem::align_of;
+    use core::mem::size_of;
+
     use super::*;
-    use core::mem::{align_of, size_of};
 
     #[test]
     fn unique_id_matches_public_abi() {

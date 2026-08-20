@@ -125,8 +125,11 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::align_of;
+    use core::mem::offset_of;
+    use core::mem::size_of;
+
     use super::*;
-    use core::mem::{align_of, offset_of, size_of};
 
     #[test]
     fn team_layout_and_fields_match_the_public_abi() {

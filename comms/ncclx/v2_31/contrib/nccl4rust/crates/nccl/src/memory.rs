@@ -1,15 +1,21 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::communicator::{Communicator, ManagementCompletion};
-use crate::error::{Error, Result, check};
-use crate::group::ensure_no_active_group;
-use crate::sys;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ops::{BitOr, BitOrAssign};
-use std::ptr::{self, NonNull};
+use std::ops::BitOr;
+use std::ops::BitOrAssign;
+use std::ptr::NonNull;
+use std::ptr::{self};
+
+use crate::communicator::Communicator;
+use crate::communicator::ManagementCompletion;
+use crate::error::Error;
+use crate::error::Result;
+use crate::error::check;
+use crate::group::ensure_no_active_group;
+use crate::sys;
 
 /// An allocation made by `ncclMemAlloc`.
 ///

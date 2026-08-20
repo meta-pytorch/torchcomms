@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error::{Error, Result, check};
-use crate::group::ensure_no_active_group;
-use crate::sys;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::ptr;
+
+use crate::error::Error;
+use crate::error::Result;
+use crate::error::check;
+use crate::group::ensure_no_active_group;
+use crate::sys;
 
 const UNIQUE_ID_BYTES: usize = sys::NCCL_UNIQUE_ID_BYTES as usize;
 
@@ -246,8 +249,10 @@ impl_data_type!(Float8E5M2, ncclFloat8e5m2);
 
 #[cfg(test)]
 mod tests {
+    use std::mem::align_of;
+    use std::mem::size_of;
+
     use super::*;
-    use std::mem::{align_of, size_of};
 
     #[test]
     fn decodes_old_and_current_version_schemes() {

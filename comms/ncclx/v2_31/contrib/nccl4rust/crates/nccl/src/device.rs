@@ -1,13 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::communicator::{Communicator, ManagementCompletion};
-use crate::error::{Error, Result, check};
+use std::alloc::Layout;
+use std::mem::MaybeUninit;
+use std::mem::align_of;
+use std::mem::size_of;
+use std::ptr;
+
+use crate::communicator::Communicator;
+use crate::communicator::ManagementCompletion;
+use crate::error::Error;
+use crate::error::Result;
+use crate::error::check;
 use crate::group::ensure_no_active_group;
 use crate::sys;
-use std::alloc::Layout;
-use std::mem::{MaybeUninit, align_of, size_of};
-use std::ptr;
 
 /// The GIN connections requested for a device communicator.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

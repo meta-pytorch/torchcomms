@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::communicator::CommunicatorState;
-use crate::error::{Error, Result, Status, check};
-use crate::sys;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
+
+use crate::communicator::CommunicatorState;
+use crate::error::Error;
+use crate::error::Result;
+use crate::error::Status;
+use crate::error::check;
+use crate::sys;
 
 thread_local! {
     /// Depth of groups started through this safe wrapper on the current host
@@ -242,8 +247,9 @@ impl Drop for Group {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ptr::NonNull;
+
+    use super::*;
 
     #[test]
     fn active_group_guard_tracks_nesting_on_this_thread() {

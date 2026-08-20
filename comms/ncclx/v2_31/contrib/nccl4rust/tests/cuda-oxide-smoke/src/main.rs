@@ -7,12 +7,21 @@ use core::ffi::c_void;
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use cuda_device::{kernel, thread};
-use libnvvm_sys::{LibNvvm, Program};
-use nccl_device::{self as nccl, DevComm, MultimemHandle, Window, sys};
-use nvjitlink_sys::{InputType, LibNvJitLink, Linker};
+use cuda_device::kernel;
+use cuda_device::thread;
+use libnvvm_sys::LibNvvm;
+use libnvvm_sys::Program;
+use nccl_device::DevComm;
+use nccl_device::MultimemHandle;
+use nccl_device::Window;
+use nccl_device::sys;
+use nccl_device::{self as nccl};
+use nvjitlink_sys::InputType;
+use nvjitlink_sys::LibNvJitLink;
+use nvjitlink_sys::Linker;
 
 const REQUIRED_DEVICE_SHIM_SYMBOLS: &[&str] = &[
     "nccl4rust_dev_comm_rank",

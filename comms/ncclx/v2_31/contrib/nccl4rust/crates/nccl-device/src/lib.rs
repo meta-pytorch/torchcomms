@@ -505,10 +505,14 @@ extern crate std;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use core::mem::{align_of, needs_drop, size_of};
-    use std::sync::{Mutex, MutexGuard};
+    use core::mem::align_of;
+    use core::mem::needs_drop;
+    use core::mem::size_of;
+    use std::sync::Mutex;
+    use std::sync::MutexGuard;
     use std::vec::Vec;
+
+    use super::*;
 
     #[derive(Debug, Eq, PartialEq)]
     enum Call {

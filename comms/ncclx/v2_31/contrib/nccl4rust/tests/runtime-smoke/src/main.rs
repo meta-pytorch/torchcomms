@@ -3,17 +3,29 @@
 
 //! One-process, two-GPU runtime validation for nccl4rust.
 
-use nccl::{
-    Communicator, CudaStream, DeviceCommRequirements, NcclMemory, ReductionOp, UniqueId, Version,
-    WindowFlags,
-};
 use std::error::Error;
-use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::ffi::c_char;
+use std::ffi::c_int;
+use std::ffi::c_uint;
+use std::ffi::c_void;
 use std::fmt;
 use std::mem::size_of;
-use std::path::{Path, PathBuf};
-use std::ptr::{self, NonNull};
+use std::path::Path;
+use std::path::PathBuf;
+use std::ptr::NonNull;
+use std::ptr::{self};
 use std::thread;
+
+use nccl::Communicator;
+use nccl::CudaStream;
+use nccl::DeviceCommRequirements;
+use nccl::NcclMemory;
+use nccl::ReductionOp;
+use nccl::UniqueId;
+use nccl::Version;
+use nccl::WindowFlags;
 
 const WORLD_SIZE: i32 = 2;
 const ELEMENT_COUNT: usize = 16;
@@ -774,7 +786,10 @@ fn c_string_or(pointer: *const c_char, fallback: &str) -> String {
 
 #[allow(non_snake_case)]
 mod ffi {
-    use super::{c_char, c_int, c_uint, c_void};
+    use super::c_char;
+    use super::c_int;
+    use super::c_uint;
+    use super::c_void;
 
     pub type CudaError = c_int;
     pub type CuResult = c_int;

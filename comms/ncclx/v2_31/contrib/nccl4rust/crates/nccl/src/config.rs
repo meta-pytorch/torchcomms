@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::error::{Error, Result};
-use crate::sys;
 use std::ffi::CString;
 use std::mem::size_of;
 use std::ptr;
+
+use crate::error::Error;
+use crate::error::Result;
+use crate::sys;
 
 /// NCCL's communicator CTA scheduling policy.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
