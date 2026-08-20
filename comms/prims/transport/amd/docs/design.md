@@ -33,9 +33,9 @@ AMD-only sources (`MultipeerIbgdaTransportAmd.{h,cu}`, etc.).
 
 Under `comms/prims/transport/amd/pipes_gda/`:
 
-- `PipesGdaDef.h` / `PipesGdaDev.h` / `PipesGdaOps.h` / `PipesGdaShared.h` /
-  `PipesGdaUtils.h` — device-side `pipes_gda_*` API implementations
-  (mlx5dv-direct WQE construction, HSA UAR mapping, etc.).
+- `PipesGdaDef.h` / `PipesGdaDev.h` / `PipesGdaOps.h` / `PipesGdaShared.h` —
+  device-side `pipes_gda_*` API implementations (mlx5dv-direct WQE
+  construction, HSA UAR mapping, etc.).
 - `PipesGdaHost.{h,cc}` — host-side `pipes_gda_*` API: `pipes_gda_gpu_*`
   context, `pipes_gda_verbs_*` QP/CQ creation and modification (with full
   IBV_QP_* mask translation), HSA dmabuf export, `ibv_reg_*` wrappers.
@@ -192,8 +192,7 @@ comms/prims/
 │   │   ├── PipesGdaDev.h
 │   │   ├── PipesGdaHost.{h,cc}    host-side QP / CQ / dmabuf / MR
 │   │   ├── PipesGdaOps.h
-│   │   ├── PipesGdaShared.h
-│   │   └── PipesGdaUtils.h
+│   │   └── PipesGdaShared.h
 │   ├── nic/                      NIC backends (Mlx5Hsi.h, Mlx5NicBackend.h, NicConfig.h, NicSelector.h)
 │   └── docs/                     this file + status.md
 ├── collectives/{,tests,benchmarks}/  unified collectives + tests
