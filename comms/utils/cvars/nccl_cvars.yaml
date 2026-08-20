@@ -2042,6 +2042,15 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
+ - name        : MCCL_SENDRECV_ASYNC
+   type        : bool
+   default     : false
+   description : |-
+     Within an all-IB communicator, also use the batched path for the two-rank
+     case that normally takes the pair path. Has no effect when the
+     communicator has any NVLink peer. Must be set identically on every rank.
+     For benchmarking only.
+
  - name        : MCCL_NVL_FABRIC_ENABLE
    type        : bool
    default     : false

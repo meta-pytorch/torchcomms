@@ -264,6 +264,12 @@ class MultiPeerTransport {
   std::optional<int> ibgda_pipeline_depth() const;
 
   /*
+   * Channel capacity of whichever IB backend is configured. Empty when this
+   * rank has no IB peers.
+   */
+  std::optional<int> ib_max_num_channels() const;
+
+  /*
    * Every requested edge must be requested by both endpoint ranks in the same
    * connect round. Peer-vector order may differ between ranks.
    */
