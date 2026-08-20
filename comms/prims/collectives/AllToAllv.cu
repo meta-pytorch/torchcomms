@@ -9,10 +9,10 @@
 
 #include <chrono>
 #include <optional>
+#include <stdexcept>
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/core/Checks.h"
-#include "comms/prims/core/TimeoutUtils.h"
 
 namespace comms::prims {
 
@@ -27,8 +27,8 @@ __global__ void allToAllvKernel(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abort) {
+  abort.start();
   all_to_allv(
       recvbuff_d,
       sendbuff_d,
@@ -36,7 +36,7 @@ __global__ void allToAllvKernel(
       transports_per_rank,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abort);
 }
 
 void all_to_allv(
@@ -46,7 +46,7 @@ void all_to_allv(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout_config,
+    AbortDevice abort,
     cudaStream_t stream,
     int num_blocks,
     int num_threads,
@@ -58,7 +58,7 @@ void all_to_allv(
       &transports_per_rank,
       &send_chunk_infos,
       &recv_chunk_infos,
-      &timeout_config};
+      &abort};
 
   comms::common::launchKernel(
       (void*)allToAllvKernel,
@@ -82,10 +82,10 @@ void all_to_allv(
     int num_blocks,
     int num_threads,
     std::optional<dim3> cluster_dim) {
-  int device = 0;
-  PIPES_CUDA_CHECK(cudaGetDevice(&device));
-  Timeout timeout_config =
-      makeTimeout(static_cast<uint32_t>(timeout.count()), device);
+  if (timeout.count() != 0) {
+    throw std::invalid_argument(
+        "all_to_allv legacy host timeout is no longer supported; pass an externally owned AbortDevice");
+  }
   all_to_allv(
       recvbuff_d,
       sendbuff_d,
@@ -93,7 +93,7 @@ void all_to_allv(
       transports_per_rank,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout_config,
+      AbortDevice{},
       stream,
       num_blocks,
       num_threads,

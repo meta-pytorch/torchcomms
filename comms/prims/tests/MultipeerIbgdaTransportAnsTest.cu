@@ -18,12 +18,15 @@
 #include <stdexcept>
 #include <string>
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::test {
+
+using comms::fault_tolerance::testing::testAbortDevice;
 
 namespace {
 
@@ -43,10 +46,10 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void sendAnsKernel(
     P2pIbgdaTransportDevice* transport,
     const void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes) {
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel (derives a
@@ -69,10 +72,10 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void recvAnsKernel(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes) {
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel; a non-zero value
@@ -96,15 +99,15 @@ void testSendRecvAns(
     switch (numWarps) {
       case 4:
         sendAnsKernel<4><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       case 8:
         sendAnsKernel<8><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       case 16:
         sendAnsKernel<16><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       default:
         throw std::runtime_error(
@@ -115,15 +118,15 @@ void testSendRecvAns(
     switch (numWarps) {
       case 4:
         recvAnsKernel<4><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       case 8:
         recvAnsKernel<8><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       case 16:
         recvAnsKernel<16><<<numBlocks, blockSize>>>(
-            transport, buffer, nbytes, maxSignalBytes);
+            transport, buffer, nbytes, maxSignalBytes, testAbortDevice());
         break;
       default:
         throw std::runtime_error(

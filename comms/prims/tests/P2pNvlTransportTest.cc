@@ -6,12 +6,14 @@
 #include <folly/logging/xlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <vector>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/benchmarks/TileSendRecv.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/tests/P2pNvlTransportTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
@@ -346,9 +348,9 @@ TEST_F(
   TiledBuffer<char> recvTiles(
       static_cast<char*>(recvBuf.get()), totalBytes, numBlocks);
 
-  int device = 0;
-  CUDACHECK_TEST(cudaGetDevice(&device));
-  Timeout timeout = makeTimeout(5000, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{5000});
+  Timeout timeout = abort.getDeviceHandle();
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   test::testTileTwoCallSendThenRecv(
@@ -1384,9 +1386,9 @@ TEST_F(
   TiledBuffer<char> recvTiles(
       static_cast<char*>(recvBuf.get()), totalBytes, numBlocks);
 
-  int device = 0;
-  CUDACHECK_TEST(cudaGetDevice(&device));
-  Timeout timeout = makeTimeout(5000, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{5000});
+  Timeout timeout = abort.getDeviceHandle();
 
   test::testTileTwoCallVariableSignalSendRecv(
       p2pHost,
@@ -2870,9 +2872,9 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
   MultiPeerNvlTransport transport(globalRank, numRanks, bs, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
-  int device = 0;
-  CUDACHECK_TEST(cudaGetDevice(&device));
-  Timeout timeout = makeTimeout(5000, device);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{5000});
+  Timeout timeout = abort.getDeviceHandle();
 
   if (globalRank == 0) {
     CUDACHECK_TEST(cudaMemset(

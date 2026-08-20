@@ -2,11 +2,14 @@
 
 #include "comms/prims/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace comms::prims::test {
+
+using comms::fault_tolerance::testing::testAbortDevice;
 
 // =============================================================================
 // DeviceWindow Accessors Test
@@ -267,15 +270,16 @@ void testSignalAll(
 __global__ void signalAllAggregateDistributedKernel(
     DeviceWindow dw,
     int signalIdx,
-    uint64_t* result) {
+    uint64_t* result,
+    Timeout timeout) {
   auto group = make_warp_group();
+  timeout.start();
 
   // Every rank signals all peers with value 1
   dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
 
   // Wait until aggregate reaches nRanks-1 (all peers have signaled us)
-  dw.wait_signal(
-      group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), Timeout(10000000000ULL));
+  dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), timeout);
 
   // Read aggregate (thread-level API)
   if (group.is_leader()) {
@@ -287,7 +291,8 @@ void testSignalAllAggregateDistributed(
     DeviceWindow& dw,
     int signalIdx,
     uint64_t* result) {
-  signalAllAggregateDistributedKernel<<<1, 32>>>(dw, signalIdx, result);
+  signalAllAggregateDistributedKernel<<<1, 32>>>(
+      dw, signalIdx, result, testAbortDevice());
   CUDACHECK_TEST(cudaGetLastError());
 }
 

@@ -10,7 +10,6 @@
 
 #include "comms/prims/collectives/AllGatherDirect.cuh"
 #include "comms/prims/core/Checks.h"
-#include "comms/prims/core/TimeoutUtils.h"
 
 // Keep the kernel definitions in this translation unit. Package builds link
 // this launcher as a standalone shared object, and CUDA kernel symbols are
@@ -27,16 +26,6 @@ void validate_direct_nvl(int num_ranks) {
         "Unsupported direct NVLink num_ranks=" + std::to_string(num_ranks) +
         " (supported: 1.." + std::to_string(kDirectNvlMaxRanks) + ")");
   }
-}
-
-Timeout make_launch_timeout(float timeout_ms) {
-  Timeout timeout;
-  if (timeout_ms > 0) {
-    int device = 0;
-    PIPES_CUDA_CHECK(cudaGetDevice(&device));
-    timeout = makeTimeout(timeout_ms, device);
-  }
-  return timeout;
 }
 
 } // namespace
@@ -60,8 +49,7 @@ void launch_direct_allgather_nvl(const DirectAllgatherNvlLaunchParams& params) {
   }
 
   direct_allgather_nvl_kernel<512>
-      <<<params.num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+      <<<params.num_blocks, 512, 0, params.stream>>>(args, params.abort);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -92,8 +80,7 @@ void launch_hierarchical_allgather_fused(
   }
 
   hierarchical_allgather_fused_kernel<512>
-      <<<params.ib_num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+      <<<params.ib_num_blocks, 512, 0, params.stream>>>(args, params.abort);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -144,7 +131,7 @@ void launch_hierarchical_allgather_overlap(
 
   hierarchical_allgather_overlap_kernel<512>
       <<<params.ib_num_blocks + params.nvl_num_blocks, 512, 0, params.stream>>>(
-          args, make_launch_timeout(params.timeout_ms));
+          args, params.abort);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 

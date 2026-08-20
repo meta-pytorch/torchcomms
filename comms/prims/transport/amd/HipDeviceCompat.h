@@ -39,8 +39,11 @@
 // paths (e.g., `IbgdaBuffer.h`) compile cleanly.
 // =============================================================================
 
+// Must stay character-identical to the definition in `HipHostCompat.h`: both
+// headers reach the same translation units, and a redefinition that differs
+// even in qualification is a `-Werror,-Wmacro-redefined` failure.
 #if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
-#define __trap() abort()
+#define __trap() ::abort()
 #endif
 
 // =============================================================================

@@ -208,10 +208,14 @@ __device__ __forceinline__ void wait_ready(
     std::size_t idx,
     uint64_t sequence,
     const Timeout& timeout) {
+  // Per-thread check, not the group form: the group form is leader-only, so a
+  // break driven by it would exit on the leader alone and leave the rest of the
+  // group at the group.sync() below. Every thread reads the same shared abort
+  // state, so all of them leave the loop - some on data-ready, some on abort -
+  // and all reach the barrier together.
   while (load_ready_counter(ready_counters + idx) != sequence) {
-    TIMEOUT_TRAP_IF_EXPIRED(
+    FT_ABORT_BREAK(
         timeout,
-        group,
         "hierarchical allgather waiting for ready counter idx=%llu sequence=%llu",
         static_cast<unsigned long long>(idx),
         static_cast<unsigned long long>(sequence));

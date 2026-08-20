@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 
 namespace comms::prims {
@@ -25,7 +26,7 @@ struct DirectReduceScatterIbLaunchParams {
   bool in_place{false};
   int num_blocks{16};
   bool use_tma{true};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   P2pIbTransportDevice peers[kDirectReduceScatterIbMaxRanks]{};
 };
