@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
 
 namespace comms::prims::test {
@@ -108,6 +109,67 @@ void launchSetAllPeerInternalSignals(
 void launchReadPeerInternalSignals(
     MultimemNvlTransportDevice transport,
     uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchAggregateSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchAggregateAckSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchPerPeerWaitAllSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchMultimemReadyPerPeerSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlPerPeerWaitPolicy waitPolicy,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchMultiChannelAggregateSignal(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchAggregateMultimemWaiterTransition(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchSeparatePublishAndWait(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchPerPeerWaitOnly(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream = nullptr);
+
+void launchInitializeAggregateSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t counterValue,
+    uint64_t epochValue,
     cudaStream_t stream = nullptr);
 
 void launchFillReductionInput(

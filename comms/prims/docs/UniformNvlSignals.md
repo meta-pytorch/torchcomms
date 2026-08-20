@@ -48,6 +48,9 @@ ackEpoch(lane)     = laneBase + 3
 ```
 
 The peer stripes are shared across pipeline lanes and carry monotonic round values.
+Every `StageRound` must carry a nonzero value.
+Per-peer round values begin at one and advance monotonically, with successive comparisons remaining within half of the `uint64_t` sequence space.
+Callers skip the reserved zero value when a per-peer sequence wraps.
 Aggregate counters are lane-private so concurrent pipeline rounds cannot mix their arrivals.
 Aggregate consumed signaling is unsupported because the layout has no consumed counter or epoch.
 
@@ -109,12 +112,17 @@ enum class NvlPerPeerWaitPolicy {
 ```
 
 `signal_publish`, `signal_wait`, and `signal_publish_and_wait` take the transport device handle, a channel and round description, participant roles, a thread group, and a timeout where waiting is required.
-`NvlSignalParticipants` identifies the coordinator, active publishers, active waiters, and expected arrival count without embedding benchmark-specific control flow in the primitive.
+`NvlSignalParticipants` identifies the active publishers, active waiters, and expected arrival count without embedding benchmark-specific control flow in the primitive.
+
+Aggregate multimem operations require `signal_publish_and_wait` on every rank because every multicast destination must reserve the same epoch increment.
+The split `signal_publish` and `signal_wait` entry points reject aggregate multimem at compile time.
+They remain available for per-peer protocols and aggregate unicast protocols whose counter updates target only selected waiters.
 
 The following combinations are rejected at compile time:
 
 - Aggregate topology with a non-default per-peer wait policy.
 - Aggregate topology with consumed phase.
+- Split aggregate multimem publication or waiting.
 - A phase or access operation that has no storage or instruction mapping.
 
 Host launch validation rejects aggregate pipeline depth above one warp and per-peer teams above two warps.
@@ -143,8 +151,11 @@ thread 0     owns NVL peer 0
 thread 1     owns NVL peer 1
 ...
 thread R - 1 owns NVL peer R - 1
-threads R..63 do not publish or wait
+threads R..63 own no peer slot
 ```
+
+All 64 threads participate in required block synchronization.
+`TreeMin` and `ButterflyMin` additionally use all threads for their reductions.
 
 Per-peer slots are shared across pipeline lanes, so per-peer operations use pipeline depth one.
 Their round value is monotonic across reuse of the same stripe.
@@ -166,29 +177,36 @@ The wait policies have identical completion and timeout semantics:
 3. `TreeMin` distributes slot loads and reduces completion through a block-wide tree.
 4. `ButterflyMin` distributes slot loads and reduces completion through a block-wide butterfly exchange.
 
-The completion predicate is always that every required peer slot has reached the selected round.
+The completion predicate is always that every required peer slot has reached or advanced beyond the selected round within half of the `uint64_t` sequence space.
+This modular comparison remains correct across wraparound and prevents a faster publisher from stranding a waiter on an earlier exact value.
 Wait-policy selection changes observation geometry, not protocol semantics.
 
 ## Aggregate Topology
 
 Aggregate multicast publication issues one `multimem.red.release.sys.global.add.u64` for each active lane.
 Every publisher targets the counter owned by its channel and lane.
-Global completion advances each counter by `R`.
-Fan-in completion advances each coordinator-observed counter by `R - 1`.
+The multicast instruction advances the corresponding counter on every rank, regardless of which ranks wait for that operation.
+Global completion advances each rank's counter by `R`.
+Fan-in completion advances each rank's counter by `R - 1`.
 
 Aggregate unicast publication atomically adds through the destination's unicast mapping.
 Fan-in publishers target the coordinator's lane counter.
 Global publishers update every destination's lane counter, including their local destination.
 
 Each active lane owner waits on the corresponding local counter with acquire semantics.
-After completion it advances the lane's local epoch baseline.
+For multicast access, every rank advances its local epoch by the expected arrival count for every operation.
+A selected waiter advances the epoch after observing the counter, while a nonwaiter reserves the same arrival count without blocking.
+This keeps each rank's counter and epoch accounting aligned when the waiter mask changes on a reused channel and lane.
+For unicast access, only selected waiters receive counter updates and advance their epochs.
+If the counter already contains later arrivals, the waiter completes the current epoch and leaves the additional arrivals available to later epochs.
 For `B` channels and `P` active lanes, the protocol uses `B * P` independent counters.
 It never redirects all channel arrivals into one counter.
 
 ## Ordering
 
 Unicast publication uses the existing system-scope release store or atomic add in `SignalState`.
-Unicast waiting uses the existing system-scope acquire load in `SignalState::wait_until`.
+Waiting polls `SignalState::load` with system-scope acquire semantics and the modular sequence predicate.
+A caller that enables a timeout starts the `Timeout` before entering the primitive.
 
 Multicast per-peer publication uses `multimem.st.release.sys.global.u64`.
 Multicast aggregate publication uses `multimem.red.release.sys.global.add.u64`.
